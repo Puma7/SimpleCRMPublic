@@ -329,7 +329,7 @@ type ComposeSendDraft = Readonly<{
   outboundBlockReason: string | null;
 }>;
 
-type ComposeSendAccount = Readonly<{
+export type ComposeSendAccount = Readonly<{
   id: number;
   sourceSqliteId: number;
   displayName: string;
@@ -2174,11 +2174,14 @@ function resolveSmtpUser(account: ComposeSendAccount): string {
     : account.smtpUsername?.trim() || account.imapUsername;
 }
 
-type ResolvedSmtpAuth =
+export type ResolvedSmtpAuth =
   | { ok: true; user: string; password?: string; accessToken?: string }
   | { ok: false; error: string };
 
-async function resolveSmtpAuth(input: {
+/** Resolves SMTP credentials for an account (dedicated SMTP secret, IMAP-auth
+ *  fallback, then OAuth refresh). Exported so the SMTP-relay submission
+ *  pipeline reuses the exact compose-send auth resolution. */
+export async function resolveSmtpAuth(input: {
   workspaceId: string;
   account: ComposeSendAccount;
   readSecret?: (input: SecretIdentifier) => Promise<Buffer | null>;

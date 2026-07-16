@@ -34,6 +34,7 @@ export * from './mail-sync';
 export * from './mail-sync-post-process';
 export * from './mail-smtp-send';
 export * from './mail-vacation-test';
+export * from './relay-submission';
 export * from './migrations';
 export * from './mssql-settings';
 export * from './pgp';

@@ -4241,7 +4241,8 @@ async function clearScheduledSendDraftMeta(
     .execute();
 }
 
-function serverCreatedEmailMessageSourceSqliteId(): number {
+/** Exported for reuse by server-side message writers (e.g. the SMTP relay). */
+export function serverCreatedEmailMessageSourceSqliteId(): number {
   return serverCreatedSourceSqliteId('email_messages');
 }
 
@@ -4249,7 +4250,8 @@ function serverCreatedEmailAccountSourceSqliteId(): number {
   return serverCreatedSourceSqliteId('email_accounts');
 }
 
-function serverCreatedEmailFolderSourceSqliteId(): number {
+/** Exported for reuse by server-side message writers (e.g. the SMTP relay). */
+export function serverCreatedEmailFolderSourceSqliteId(): number {
   return serverCreatedSourceSqliteId('email_folders');
 }
 
