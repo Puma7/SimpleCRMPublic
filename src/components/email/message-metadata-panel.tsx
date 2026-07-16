@@ -149,9 +149,10 @@ export function MessageMetadataPanel({
   const [editingNoteBody, setEditingNoteBody] = useState("")
   const [newTag, setNewTag] = useState("")
   // Links in Markdown notes go through the same confirm-and-open-externally
-  // flow as links in mail bodies (popups are blocked by the window policy).
-  // Bound to onClick AND onAuxClick so middle-click can't bypass the dialog.
-  const { handleBodyLinkClick: handleNoteLinkClick, dialog: noteLinkDialog } =
+  // flow as links in mail bodies. NoteMarkdown renders them inert (no href)
+  // and calls requestOpen directly, so no browser default (middle-click,
+  // context menu, drag) can bypass the confirmation dialog.
+  const { requestOpen: requestOpenNoteLink, dialog: noteLinkDialog } =
     useExternalLinkConfirm()
   // All categories a message is in (M:N). The legacy single-category select
   // is replaced by chips + a multi-select dropdown so a message can sit in any
@@ -307,11 +308,7 @@ export function MessageMetadataPanel({
 
       <ScrollArea className="flex-1">
         <div className="space-y-4 p-3">
-          <div
-            className="space-y-2"
-            onClick={handleNoteLinkClick}
-            onAuxClick={handleNoteLinkClick}
-          >
+          <div className="space-y-2">
             <Label className="text-xs">Interne Notizen</Label>
             {internalNotes.length === 0 ? (
               <p className="text-xs text-muted-foreground">Noch keine Notizen.</p>
@@ -363,7 +360,7 @@ export function MessageMetadataPanel({
                       </div>
                     ) : (
                       <>
-                        <NoteMarkdown body={n.body} />
+                        <NoteMarkdown body={n.body} onOpenLink={requestOpenNoteLink} />
                         <div className="mt-1 flex gap-1">
                           <Button
                             type="button"
