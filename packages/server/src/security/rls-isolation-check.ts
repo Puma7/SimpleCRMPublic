@@ -118,6 +118,12 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('email_tracking_messages'),
   rlsPolicyTable('email_tracking_links'),
   rlsPolicyTable('email_tracking_events'),
+  rlsPolicyTable('email_tracking_event_classifications', [
+    'email_tracking_events',
+    'event_id',
+    'app.can_access_workspace',
+    'workspace_id',
+  ]),
   rlsPolicyTable('email_tracking_token_resolver'),
   rlsPolicyTable('smtp_relays'),
   rlsPolicyTable('smtp_relay_credentials'),
@@ -192,6 +198,24 @@ export async function runRlsIsolationCheck(client: RlsCheckClient): Promise<RlsC
         expected: 0,
       });
     }
+    await expectCount(client, checks, {
+      name: 'workspace_a_reads_own_email_tracking_event_classifications',
+      sql: `SELECT count(*)::int AS count
+FROM email_tracking_event_classifications classifications
+JOIN email_tracking_events events ON events.id = classifications.event_id
+WHERE events.workspace_id = $1;`,
+      params: [WORKSPACE_A_ID],
+      expected: 1,
+    });
+    await expectCount(client, checks, {
+      name: 'workspace_a_cannot_read_workspace_b_email_tracking_event_classifications',
+      sql: `SELECT count(*)::int AS count
+FROM email_tracking_event_classifications classifications
+JOIN email_tracking_events events ON events.id = classifications.event_id
+WHERE events.workspace_id = $1;`,
+      params: [WORKSPACE_B_ID],
+      expected: 0,
+    });
     await expectPolicyError(client, checks, 'workspace_a_cannot_insert_workspace_b_customer', () => client.query(
       `INSERT INTO customers (workspace_id, source_sqlite_id, name, email, source_row)
 VALUES ($1, $2, $3, $4, '{}'::jsonb);`,
@@ -495,6 +519,16 @@ ON CONFLICT (id) DO NOTHING;`,
 VALUES ($1, $2, $3, 'queued', 'rls_probe', 'none', true, now(), $4)
 ON CONFLICT (workspace_id, dedupe_key) DO NOTHING;`,
     [input.workspaceId, input.trackingMessageId, messageId, `rls-probe-${input.label}`],
+  );
+  await client.query(
+    `INSERT INTO email_tracking_event_classifications (
+  event_id, classification_version, actor_class, confidence, reasons_json
+)
+SELECT id, 2, 'system', 'verified', '[]'::jsonb
+FROM email_tracking_events
+WHERE workspace_id = $1 AND dedupe_key = $2
+ON CONFLICT (event_id, classification_version) DO NOTHING;`,
+    [input.workspaceId, `rls-probe-${input.label}`],
   );
   await client.query(
     `INSERT INTO email_tracking_token_resolver (

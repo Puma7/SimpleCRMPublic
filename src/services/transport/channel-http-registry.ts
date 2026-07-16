@@ -1968,6 +1968,19 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => dataBody<Record<string, unknown>>(body),
     }
   }],
+  [IPCChannels.Email.GetMessageTrackingIpInsight, ([payload]) => {
+    const input = objectPayload(payload, "email tracking IP insight payload")
+    return {
+      method: "GET",
+      path: `/api/v1/email/messages/${positiveId(input.messageId, "email message id")}/tracking/events/${canonicalPositiveDecimalId(input.eventId, "email tracking event id")}/ip-insight`,
+      transform: (body) => dataBody<Record<string, unknown>>(body),
+    }
+  }],
+  [IPCChannels.Email.ReclassifyMessageTracking, ([messageId]) => ({
+    method: "POST",
+    path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/tracking/reclassify`,
+    transform: (body) => dataBody<{ classified: number; unavailableRaw: number }>(body),
+  })],
   [IPCChannels.Email.RevokeMessageTracking, ([messageId]) => ({
     method: "POST",
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/tracking/revoke`,
@@ -6233,6 +6246,22 @@ function positiveId(value: unknown, label: string): number {
     throw new Error(`Invalid ${label}`)
   }
   return id
+}
+
+function canonicalPositiveDecimalId(value: unknown, label: string): string {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Invalid ${label}`)
+    return String(value)
+  }
+  if (
+    typeof value !== "string"
+    || value.length > 19
+    || !/^[1-9]\d*$/.test(value)
+    || BigInt(value) > 9_223_372_036_854_775_807n
+  ) {
+    throw new Error(`Invalid ${label}`)
+  }
+  return value
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {

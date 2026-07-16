@@ -4,10 +4,39 @@ import {
   detectInboundEmailEvidence,
   emailEvidenceWorkflowVariables,
   instrumentEmailHtml,
+  type EmailEvidenceActorClass,
+  type EmailEvidenceClassification,
   type EmailEvidenceEvent,
 } from '../../packages/core/src/email';
+import { EMAIL_NODE_SCHEMAS } from '../../packages/core/src/workflow/schema/email';
 
 describe('email evidence tracking core', () => {
+  test('defines immutable V2 evidence classifications without changing evidence events', () => {
+    const actorClasses = [
+      'system',
+      'probable_human',
+      'mail_proxy',
+      'privacy_proxy',
+      'security_scanner',
+      'automated_unknown',
+      'unknown',
+    ] as const satisfies readonly EmailEvidenceActorClass[];
+    const classification = {
+      version: 2,
+      actorClass: 'unknown',
+      confidence: 'medium',
+      reasons: ['legacy_event_projection_v2'],
+    } as const satisfies EmailEvidenceClassification;
+
+    expect(actorClasses).toHaveLength(7);
+    expect(classification).toEqual({
+      version: 2,
+      actorClass: 'unknown',
+      confidence: 'medium',
+      reasons: ['legacy_event_projection_v2'],
+    });
+  });
+
   test('instruments only eligible http(s) links and appends one open pixel', () => {
     const result = instrumentEmailHtml({
       html: '<p><a href="https://customer.example/invoice?id=7">Rechnung</a> <a href="mailto:help@example.com">Hilfe</a> <a href="#top">Oben</a></p>',
@@ -92,6 +121,143 @@ describe('email evidence tracking core', () => {
     })).toMatchObject({ automated: true, eventType: 'click_automated', confidence: 'low' });
   });
 
+  test('classifies observed Google proxy fetches without promoting later direct requests', () => {
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      secondsSinceSmtpAccepted: 3,
+      requestIp: '74.125.216.133',
+      requestHeaders: {},
+      networkContext: {
+        asn: 15169,
+        networkName: 'GOOGLE',
+        providerClass: 'hosting_or_cloud',
+      },
+    })).toMatchObject({
+      version: 2,
+      actorClass: 'automated_unknown',
+      automated: true,
+      eventType: 'open_automated',
+      reasons: ['immediate_infrastructure_fetch'],
+    });
+
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) GoogleImageProxy',
+      secondsSinceSmtpAccepted: 30,
+      requestIp: '66.249.93.40',
+      requestHeaders: {},
+    })).toMatchObject({
+      version: 2,
+      actorClass: 'mail_proxy',
+      automated: true,
+      eventType: 'open_automated',
+      reasons: ['known_proxy_user_agent'],
+    });
+
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0',
+      secondsSinceSmtpAccepted: 600,
+      requestIp: '1.1.1.1',
+      requestHeaders: {},
+    })).toMatchObject({
+      version: 2,
+      actorClass: 'probable_human',
+      confidence: 'medium',
+      automated: false,
+      eventType: 'open_probable',
+    });
+  });
+
+  test('uses explicit proxy identity but does not treat a bare Google ASN as human', () => {
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'GoogleImageProxy',
+      secondsSinceSmtpAccepted: 600,
+      requestIp: '198.41.200.10',
+      requestHeaders: {},
+      networkContext: {
+        asn: 13335,
+        networkName: 'CLOUDFLARENET',
+        providerClass: 'unknown',
+      },
+    })).toMatchObject({
+      actorClass: 'mail_proxy',
+      automated: true,
+      reasons: ['known_proxy_user_agent'],
+    });
+
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0',
+      secondsSinceSmtpAccepted: 600,
+      requestIp: '74.125.216.133',
+      requestHeaders: {},
+      networkContext: {
+        asn: 15169,
+        networkName: 'GOOGLE',
+        providerClass: 'hosting_or_cloud',
+      },
+    })).toMatchObject({
+      actorClass: 'unknown',
+      automated: false,
+      eventType: 'open_probable',
+      reasons: ['unattributed_infrastructure_network'],
+    });
+  });
+
+  test('keeps an immediate fetch without usable network intelligence unknown', () => {
+    expect(classifyEmailTrackingRequest({
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      secondsSinceSmtpAccepted: 3,
+      requestIp: '74.125.216.133',
+      requestHeaders: {},
+    })).toMatchObject({
+      actorClass: 'unknown',
+      confidence: 'low',
+      automated: false,
+      eventType: 'open_probable',
+      reasons: ['immediate_unattributed_fetch'],
+    });
+  });
+
+  test('does not treat private or mapped-reserved addresses as plausible client identity', () => {
+    for (const requestIp of ['10.1.2.3', '203.0.113.9', '::ffff:127.0.0.1', '2001:db8::1']) {
+      expect(classifyEmailTrackingRequest({
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+        secondsSinceSmtpAccepted: 600,
+        requestIp,
+        requestHeaders: {},
+      })).toMatchObject({
+        actorClass: 'unknown',
+        confidence: 'low',
+        reasons: ['missing_client_identity'],
+      });
+    }
+  });
+
+  test('keeps public addresses adjacent to documentation ranges eligible for human classification', () => {
+    for (const requestIp of ['192.2.1.1', '198.51.1.1']) {
+      expect(classifyEmailTrackingRequest({
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+        secondsSinceSmtpAccepted: 600,
+        requestIp,
+        requestHeaders: {},
+      })).toMatchObject({
+        actorClass: 'probable_human',
+        confidence: 'medium',
+      });
+    }
+
+    for (const requestIp of ['192.0.2.1', '198.51.100.1']) {
+      expect(classifyEmailTrackingRequest({
+        userAgent: 'Mozilla/5.0 Chrome/140.0',
+        secondsSinceSmtpAccepted: 600,
+        requestIp,
+        requestHeaders: {},
+      })).toMatchObject({
+        actorClass: 'unknown',
+        reasons: ['missing_client_identity'],
+      });
+    }
+  });
+
   test('keeps transport, delivery and engagement evidence separate', () => {
     const events: EmailEvidenceEvent[] = [
       event('queued', 'none', '2026-07-13T08:00:00.000Z'),
@@ -116,6 +282,169 @@ describe('email evidence tracking core', () => {
       probableClickCount: 1,
       repliedAt: '2026-07-13T10:00:00.000Z',
     });
+  });
+
+  test('retains displayed MDNs as an additive summary fact and workflow key', () => {
+    const events: EmailEvidenceEvent[] = [
+      event('mdn_displayed', 'medium', '2026-07-13T08:00:00.000Z'),
+      event('open_automated', 'low', '2026-07-13T08:01:00.000Z'),
+    ];
+
+    expect(buildEmailEvidenceSummary(events)).toMatchObject({
+      engagement: 'probable_open',
+      mdnDisplayedCount: 1,
+      automatedPixelFetchCount: 1,
+    });
+    expect(emailEvidenceWorkflowVariables({ tracked: true, events })['tracking.mdn_displayed_count'])
+      .toBe(1);
+  });
+
+  test('adds precise pixel-fetch counters while preserving legacy open aliases', () => {
+    const events: EmailEvidenceEvent[] = [
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'probable_human'),
+      classifiedEvent('open_probable', '2026-07-13T08:01:00.000Z', 'mail_proxy'),
+      classifiedEvent('open_probable', '2026-07-13T08:02:00.000Z', 'privacy_proxy'),
+      classifiedEvent('open_probable', '2026-07-13T08:03:00.000Z', 'security_scanner'),
+      classifiedEvent('open_probable', '2026-07-13T08:04:00.000Z', 'automated_unknown'),
+      classifiedEvent('open_probable', '2026-07-13T08:05:00.000Z', 'unknown'),
+      event('open_probable', 'medium', '2026-07-13T08:06:00.000Z'),
+      event('open_automated', 'low', '2026-07-13T08:07:00.000Z'),
+    ];
+
+    expect(buildEmailEvidenceSummary(events)).toMatchObject({
+      pixelFetchCount: 8,
+      automatedPixelFetchCount: 5,
+      unknownPixelFetchCount: 2,
+      probableHumanPixelFetchCount: 1,
+      probableHumanOpenSessionCount: 1,
+      firstPixelFetchedAt: '2026-07-13T08:00:00.000Z',
+      lastPixelFetchedAt: '2026-07-13T08:07:00.000Z',
+      firstProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
+      lastProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
+      openCount: 8,
+      automatedOpenCount: 1,
+      probableOpenCount: 7,
+      firstOpenedAt: '2026-07-13T08:00:00.000Z',
+      lastOpenedAt: '2026-07-13T08:07:00.000Z',
+    });
+  });
+
+  test('starts a new probable-human open session at exactly thirty minutes', () => {
+    const summary = buildEmailEvidenceSummary([
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'probable_human'),
+      classifiedEvent('open_probable', '2026-07-13T08:29:59.999Z', 'probable_human'),
+      classifiedEvent('open_probable', '2026-07-13T08:59:59.999Z', 'probable_human'),
+    ]);
+
+    expect(summary.probableHumanPixelFetchCount).toBe(3);
+    expect(summary.probableHumanOpenSessionCount).toBe(2);
+    expect(summary.firstProbableHumanOpenAt).toBe('2026-07-13T08:00:00.000Z');
+    expect(summary.lastProbableHumanOpenAt).toBe('2026-07-13T08:59:59.999Z');
+  });
+
+  test('keeps immutable legacy interaction semantics when V2 actors disagree', () => {
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'mail_proxy'),
+    ])).toMatchObject({
+      engagement: 'probable_open',
+      automatedOpenCount: 0,
+      probableOpenCount: 1,
+      automatedPixelFetchCount: 1,
+      probableHumanPixelFetchCount: 0,
+    });
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('click', '2026-07-13T08:00:00.000Z', 'security_scanner'),
+    ])).toMatchObject({
+      engagement: 'link_interaction',
+      automatedClickCount: 0,
+      probableClickCount: 1,
+    });
+
+    for (const actorClass of ['unknown', 'system'] as const) {
+      expect(buildEmailEvidenceSummary([
+        classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', actorClass),
+      ])).toMatchObject({
+        engagement: 'probable_open',
+        unknownPixelFetchCount: 1,
+        automatedOpenCount: 0,
+        probableOpenCount: 1,
+      });
+    }
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('open_automated', '2026-07-13T08:00:00.000Z', 'probable_human'),
+    ])).toMatchObject({
+      engagement: 'automated_fetch',
+      automatedOpenCount: 1,
+      probableOpenCount: 0,
+      probableHumanPixelFetchCount: 1,
+    });
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('click_automated', '2026-07-13T08:00:00.000Z', 'probable_human'),
+    ])).toMatchObject({
+      engagement: 'automated_fetch',
+      automatedClickCount: 1,
+      probableClickCount: 0,
+    });
+
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'mail_proxy'),
+      event('replied', 'verified', '2026-07-13T08:01:00.000Z'),
+    ])).toMatchObject({
+      engagement: 'human_reply',
+      repliedAt: '2026-07-13T08:01:00.000Z',
+    });
+  });
+
+  test('counts link-fetch actors independently from immutable legacy click types', () => {
+    expect(buildEmailEvidenceSummary([
+      classifiedEvent('click', '2026-07-13T08:00:00.000Z', 'probable_human'),
+      classifiedEvent('click', '2026-07-13T08:01:00.000Z', 'security_scanner'),
+      classifiedEvent('click', '2026-07-13T08:02:00.000Z', 'unknown'),
+      event('click', 'medium', '2026-07-13T08:03:00.000Z'),
+      event('click_automated', 'low', '2026-07-13T08:04:00.000Z'),
+    ])).toMatchObject({
+      clickCount: 5,
+      automatedClickCount: 1,
+      probableClickCount: 4,
+      automatedLinkFetchCount: 2,
+      unknownLinkFetchCount: 2,
+      probableHumanLinkFetchCount: 1,
+    });
+  });
+
+  test('retains legacy interaction categories when no V2 classification exists', () => {
+    expect(buildEmailEvidenceSummary([
+      event('open_probable', 'medium', '2026-07-13T08:00:00.000Z'),
+      event('click', 'medium', '2026-07-13T08:01:00.000Z'),
+    ])).toMatchObject({
+      engagement: 'link_interaction',
+      probableOpenCount: 1,
+      probableClickCount: 1,
+    });
+  });
+
+  test('keeps old workflow variables event-type based when V2 actors disagree', () => {
+    expect(emailEvidenceWorkflowVariables({
+      tracked: true,
+      events: [
+        classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'mail_proxy'),
+        classifiedEvent('click', '2026-07-13T08:01:00.000Z', 'security_scanner'),
+      ],
+    })).toEqual(expect.objectContaining({
+      'tracking.engagement': 'link_interaction',
+      'tracking.automated_open_count': 0,
+      'tracking.probable_open_count': 1,
+      'tracking.automated_click_count': 0,
+      'tracking.probable_click_count': 1,
+      'tracking.automated_pixel_fetch_count': 1,
+      'tracking.probable_human_pixel_fetch_count': 0,
+      'tracking.automated_link_fetch_count': 1,
+      'tracking.unknown_link_fetch_count': 0,
+      'tracking.probable_human_link_fetch_count': 0,
+    }));
   });
 
   test('a later bounce wins over SMTP acceptance without inventing engagement', () => {
@@ -319,6 +648,63 @@ describe('email evidence tracking core', () => {
       'tracking.replied': false,
     }));
   });
+
+  test('exports all recommended V2 tracking evidence variables without removing legacy variables', () => {
+    const variables = emailEvidenceWorkflowVariables({
+      tracked: true,
+      events: [
+        classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'probable_human'),
+        classifiedEvent('open_probable', '2026-07-13T08:01:00.000Z', 'mail_proxy'),
+        classifiedEvent('open_probable', '2026-07-13T08:02:00.000Z', 'unknown'),
+        classifiedEvent('open_probable', '2026-07-13T08:30:00.000Z', 'probable_human'),
+      ],
+    });
+
+    expect(variables).toEqual(expect.objectContaining({
+      'tracking.pixel_fetch_count': 4,
+      'tracking.automated_pixel_fetch_count': 1,
+      'tracking.unknown_pixel_fetch_count': 1,
+      'tracking.probable_human_pixel_fetch_count': 2,
+      'tracking.probable_human_open_session_count': 2,
+      'tracking.automated_link_fetch_count': 0,
+      'tracking.unknown_link_fetch_count': 0,
+      'tracking.probable_human_link_fetch_count': 0,
+      'tracking.first_pixel_fetched_at': '2026-07-13T08:00:00.000Z',
+      'tracking.last_pixel_fetched_at': '2026-07-13T08:30:00.000Z',
+      'tracking.first_probable_human_open_at': '2026-07-13T08:00:00.000Z',
+      'tracking.last_probable_human_open_at': '2026-07-13T08:30:00.000Z',
+      'tracking.open_count': 4,
+      'tracking.probable_open_count': 4,
+    }));
+  });
+
+  test('documents all V2 tracking evidence outputs as the recommended workflow fields', () => {
+    const outputs = EMAIL_NODE_SCHEMAS['email.read_tracking_evidence']?.outputs ?? [];
+    const recommendedNames = [
+      'tracking.mdn_displayed_count',
+      'tracking.pixel_fetch_count',
+      'tracking.automated_pixel_fetch_count',
+      'tracking.unknown_pixel_fetch_count',
+      'tracking.probable_human_pixel_fetch_count',
+      'tracking.probable_human_open_session_count',
+      'tracking.automated_link_fetch_count',
+      'tracking.unknown_link_fetch_count',
+      'tracking.probable_human_link_fetch_count',
+      'tracking.first_pixel_fetched_at',
+      'tracking.last_pixel_fetched_at',
+      'tracking.first_probable_human_open_at',
+      'tracking.last_probable_human_open_at',
+    ];
+
+    expect(outputs.map((output) => output.name)).toEqual(expect.arrayContaining([
+      'tracking.open_count',
+      'tracking.probable_open_count',
+      ...recommendedNames,
+    ]));
+    for (const name of recommendedNames) {
+      expect(outputs.find((output) => output.name === name)?.description).toMatch(/empfohlen/i);
+    }
+  });
 });
 
 function event(
@@ -327,4 +713,20 @@ function event(
   occurredAt: string,
 ): EmailEvidenceEvent {
   return { type, confidence, occurredAt, automated: type.endsWith('_automated') };
+}
+
+function classifiedEvent(
+  type: 'open_automated' | 'open_probable' | 'click_automated' | 'click',
+  occurredAt: string,
+  actorClass: EmailEvidenceActorClass,
+): EmailEvidenceEvent {
+  return {
+    ...event(type, actorClass === 'probable_human' ? 'medium' : 'low', occurredAt),
+    classification: {
+      version: 2,
+      actorClass,
+      confidence: actorClass === 'probable_human' ? 'medium' : 'low',
+      reasons: ['test_projection'],
+    },
+  };
 }

@@ -99,7 +99,7 @@ export function MailSidebar({
                 categoryFilterId === n.id && "bg-muted font-medium",
                 dropCategoryId === n.id && "ring-2 ring-primary ring-offset-1",
               )}
-              style={{ paddingLeft: 8 + depth * 12 }}
+              style={{ paddingLeft: 8 + depth * 10 }}
               onClick={() => {
                 setCategoryFilterId(n.id)
                 setMailView("inbox")
@@ -141,10 +141,8 @@ export function MailSidebar({
 
   return (
     <aside className="flex h-full min-h-0 flex-col border-r bg-muted/20">
-      <div className="shrink-0 space-y-1 border-b p-3">
-        <label className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Konto
-        </label>
+      <div className="shrink-0 space-y-1 border-b p-2">
+        <label className="sr-only">Konto</label>
         <Select
           value={
             selectedAccountId === "all"
@@ -160,7 +158,7 @@ export function MailSidebar({
           }}
           disabled={loadingAccounts || accounts.length === 0}
         >
-          <SelectTrigger className="h-9">
+          <SelectTrigger className="h-8 text-xs">
             <SelectValue
               placeholder={
                 loadingAccounts
@@ -183,7 +181,7 @@ export function MailSidebar({
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="space-y-0.5 p-2">
+        <div className="space-y-0.5 p-1.5">
           {FOLDERS.map(({ id, label, icon: Icon, countKey }) => {
             const total = countKey ? counts[countKey] : 0
             const badge = total > 0 ? total : null
@@ -236,12 +234,12 @@ export function MailSidebar({
                     : undefined
                 }
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-muted",
                   mailView === id && categoryFilterId === null && "bg-muted font-medium",
                   dropTarget === id && "ring-2 ring-primary ring-offset-1",
                 )}
               >
-                <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1 truncate">{label}</span>
                 {badge != null ? (
                   <span
@@ -257,7 +255,7 @@ export function MailSidebar({
 
         <Separator className="my-1" />
 
-        <div className="space-y-0.5 p-2">
+        <div className="space-y-0.5 p-1.5">
           <div className="flex items-center justify-between gap-1 px-2 pb-1">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               Kategorien

@@ -26,6 +26,7 @@ tmp_*
 # env files
 .env*
 !docker/.env.example
+!docker/.env.geoip.example
 
 # vercel
 .vercel

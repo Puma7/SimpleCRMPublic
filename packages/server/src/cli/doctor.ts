@@ -8,6 +8,10 @@ import {
   serverMigrations,
   type PgQueryClient,
 } from '../migrations';
+import {
+  createEmailTrackingIpIntelligence,
+  type EmailTrackingIpIntelligencePort,
+} from '../email-tracking-ip-intelligence';
 
 export type DoctorStatus = 'ok' | 'warn' | 'fail';
 
@@ -45,6 +49,7 @@ export type DoctorCliRunOptions = Partial<DoctorCliIo> & Readonly<{
   argv?: readonly string[];
   env?: NodeJS.ProcessEnv;
   createClient?: (databaseUrl: string) => DoctorPgClient;
+  emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
 }>;
 
 export function parseDoctorCliArgs(argv: readonly string[]): DoctorCliOptions {
@@ -132,6 +137,11 @@ export async function runDoctorCli(options: DoctorCliRunOptions = {}): Promise<n
     connected = true;
     const result = await runDoctorChecks(client, {
       backupDir: parsed.backupDir ?? env.BACKUP_DIR,
+      emailTrackingIpIntelligence: options.emailTrackingIpIntelligence
+        ?? createEmailTrackingIpIntelligence({
+          countryDatabasePath: env.GEOIP_COUNTRY_DB_PATH,
+          asnDatabasePath: env.GEOIP_ASN_DB_PATH,
+        }),
     });
     if (parsed.json) {
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
@@ -153,7 +163,10 @@ export async function runDoctorCli(options: DoctorCliRunOptions = {}): Promise<n
 
 export async function runDoctorChecks(
   client: PgQueryClient,
-  options: { backupDir?: string } = {},
+  options: {
+    backupDir?: string;
+    emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
+  } = {},
 ): Promise<DoctorResult> {
   const checks: DoctorCheck[] = [];
 
@@ -162,10 +175,51 @@ export async function runDoctorChecks(
   checks.push(await checkJobQueue(client));
   checks.push(await checkConversationLocks(client));
   checks.push(await checkBackups(options.backupDir));
+  checks.push(await checkGeoIpIntelligence(
+    options.emailTrackingIpIntelligence ?? createEmailTrackingIpIntelligence(),
+  ));
 
   return {
     status: aggregateStatus(checks),
     checks,
+  };
+}
+
+async function checkGeoIpIntelligence(
+  intelligence: EmailTrackingIpIntelligencePort,
+): Promise<DoctorCheck> {
+  try {
+    // A fixed public address only initializes local readers; it is never emitted or persisted.
+    await intelligence.lookup('8.8.8.8');
+  } catch {
+    return geoIpDoctorCheck('invalid', null, null);
+  }
+
+  const status = intelligence.status();
+  return geoIpDoctorCheck(
+    status.state,
+    status.countryDatabaseBuildAt,
+    status.asnDatabaseBuildAt,
+  );
+}
+
+function geoIpDoctorCheck(
+  state: 'ready' | 'missing' | 'stale' | 'invalid',
+  countryDatabaseBuildAt: string | null,
+  asnDatabaseBuildAt: string | null,
+): DoctorCheck {
+  const message = state === 'ready'
+    ? 'ready: local GeoIP Country and ASN databases are available'
+    : `${state}: local GeoIP insights are disabled`;
+  return {
+    name: 'geoip_intelligence',
+    status: state === 'ready' ? 'ok' : 'warn',
+    message,
+    details: {
+      state,
+      countryDatabaseBuildAt,
+      asnDatabaseBuildAt,
+    },
   };
 }
 

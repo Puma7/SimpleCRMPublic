@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@maxmind/geoip2-node": "7.0.0",
     "@fastify/websocket": "^11.3.0",
     "@simplecrm/core": "0.1.0",
     "archiver": "^8.0.0",

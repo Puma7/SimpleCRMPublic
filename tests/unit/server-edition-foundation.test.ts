@@ -6,13 +6,18 @@ import { join, resolve } from 'path';
 import { PassThrough } from 'stream';
 
 import type { Kysely } from 'kysely';
-import type { EmailTrackingService } from '../../packages/server/src/email-tracking';
+import {
+  loadEmailEvidenceSummaryForTracking,
+  type EmailTrackingService,
+} from '../../packages/server/src/email-tracking';
 import { InboundMessageTooLargeError } from '../../packages/core/src/email/inbound-message-size';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
   SERVER_EDITION_TARGETS,
+  WORKFLOW_TEMPLATES,
   createCoreRuntime,
+  emailEvidenceSummaryWorkflowVariables,
   isServerEditionDeployMode,
   listBuiltinWorkflowNodeCatalog,
 } from '../../packages/core/src';
@@ -343,7 +348,8 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0027_email_evidence_tracking',
   '0028_auth_challenge_state',
   '0029_auto_reply_limits',
-  '0030_smtp_relay',
+  '0030_email_evidence_classification_v2',
+  '0031_smtp_relay',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -513,6 +519,67 @@ describe('server edition foundation', () => {
         expect(field.runtime).not.toBe('desktop');
       }
     }
+  });
+
+  test('server workflow catalog keeps legacy tracking outputs and exposes recommended V2 evidence', () => {
+    const trackingEvidence = listServerWorkflowNodeCatalog()
+      .find((entry) => entry.type === 'email.read_tracking_evidence');
+    const outputs = trackingEvidence?.outputs ?? [];
+    const v2OutputNames = [
+      'tracking.mdn_displayed_count',
+      'tracking.pixel_fetch_count',
+      'tracking.automated_pixel_fetch_count',
+      'tracking.unknown_pixel_fetch_count',
+      'tracking.probable_human_pixel_fetch_count',
+      'tracking.probable_human_open_session_count',
+      'tracking.first_pixel_fetched_at',
+      'tracking.last_pixel_fetched_at',
+      'tracking.first_probable_human_open_at',
+      'tracking.last_probable_human_open_at',
+    ];
+
+    expect(outputs.map((output) => output.name)).toEqual(expect.arrayContaining([
+      'tracking.open_count',
+      'tracking.probable_open_count',
+      ...v2OutputNames,
+    ]));
+    for (const name of v2OutputNames) {
+      expect(outputs.find((output) => output.name === name)?.description).toMatch(/empfohlen/i);
+    }
+  });
+
+  test('server summary keeps legacy aliases while projecting precise historical opens as unknown', async () => {
+    const { db, messageLocks } = makeWorkflowExecutionDb({
+      trackingEvents: [{
+        id: '501',
+        workspace_id: WORKSPACE_A_ID,
+        tracking_message_id: 'tracking-501',
+        event_type: 'open_probable',
+        source: 'pixel',
+        confidence: 'medium',
+        automated: false,
+        occurred_at: new Date('2026-07-16T08:00:00.000Z'),
+      }],
+    });
+
+    const summary = await loadEmailEvidenceSummaryForTracking(
+      db as never,
+      WORKSPACE_A_ID,
+      'tracking-501',
+    );
+    const variables = emailEvidenceSummaryWorkflowVariables({ tracked: true, summary });
+
+    expect(summary).toMatchObject({
+      engagement: 'probable_open',
+      unknownPixelFetchCount: 1,
+      probableOpenCount: 1,
+    });
+    expect(variables).toEqual(expect.objectContaining({
+      'tracking.engagement': 'probable_open',
+      'tracking.unknown_pixel_fetch_count': 1,
+      'tracking.probable_open_count': 1,
+    }));
+    expect(messageLocks).toEqual(['tracking-501']);
   });
 
   test('server template list omits templates with server-unsupported nodes', () => {
@@ -1448,7 +1515,7 @@ describe('server edition foundation', () => {
     const result = await runRlsIsolationCheck(client);
 
     expect(result.status).toBe('passed');
-    expect(result.checks).toHaveLength((RLS_POLICY_COVERAGE_TABLES.length * 3) + 25);
+    expect(result.checks).toHaveLength((RLS_POLICY_COVERAGE_TABLES.length * 3) + 27);
     expect(result.checks.every((check) => check.status === 'passed')).toBe(true);
     expect(result.checks).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'workspaces_rls_enabled', status: 'passed' }),
@@ -1462,6 +1529,8 @@ describe('server edition foundation', () => {
       expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_secret', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_reads_own_email_tracking_events', status: 'passed' }),
       expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_email_tracking_events', status: 'passed' }),
+      expect.objectContaining({ name: 'workspace_a_reads_own_email_tracking_event_classifications', status: 'passed' }),
+      expect.objectContaining({ name: 'workspace_a_cannot_read_workspace_b_email_tracking_event_classifications', status: 'passed' }),
       expect.objectContaining({ name: 'public_tracking_token_without_hash_cannot_read_resolver', status: 'passed' }),
       expect.objectContaining({ name: 'public_tracking_token_wrong_hash_cannot_read_resolver', status: 'passed' }),
       expect.objectContaining({ name: 'public_tracking_token_matching_hash_reads_one_resolver', status: 'passed' }),
@@ -4892,6 +4961,210 @@ describe('server edition foundation', () => {
       ['condition-1', 'logic.switch', 'ok', 'false', null],
       ['stop-1', 'logic.stop', 'ok', 'default', null],
     ]);
+  });
+
+  test('runs the outbound evidence follow-up graph conservatively for every evidence class', async () => {
+    const template = WORKFLOW_TEMPLATES.find((item) => item.id === 'outbound-evidence-follow-up');
+    expect(template).toBeDefined();
+    const cases = [
+      {
+        name: 'SMTP-only',
+        events: [] as Array<Record<string, unknown>>,
+        followsUp: true,
+        engagementPort: 'none',
+        pixelFetchPort: undefined,
+        mdnPort: undefined,
+        sessionPort: 'yes',
+      },
+      {
+        name: 'mail proxy',
+        events: [trackingWorkflowEvent('open_probable', 'mail_proxy')],
+        followsUp: true,
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'yes',
+        mdnPort: undefined,
+        sessionPort: 'yes',
+      },
+      {
+        name: 'unknown pixel fetch',
+        events: [trackingWorkflowEvent('open_probable', 'unknown')],
+        followsUp: true,
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'yes',
+        mdnPort: undefined,
+        sessionPort: 'yes',
+      },
+      {
+        name: 'probable-human open',
+        events: [trackingWorkflowEvent('open_probable', 'probable_human')],
+        followsUp: false,
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'yes',
+        mdnPort: undefined,
+        sessionPort: 'no',
+      },
+      {
+        name: 'legacy automated open reclassified as probable human',
+        events: [trackingWorkflowEvent('open_automated', 'probable_human')],
+        followsUp: false,
+        engagementPort: 'automated_fetch',
+        pixelFetchPort: undefined,
+        mdnPort: undefined,
+        sessionPort: 'no',
+      },
+      {
+        name: 'MDN displayed',
+        events: [trackingWorkflowEvent('mdn_displayed')],
+        followsUp: false,
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'no',
+        mdnPort: undefined,
+        sessionPort: undefined,
+      },
+      {
+        name: 'security-scanner link fetch',
+        events: [trackingWorkflowEvent('click', 'security_scanner')],
+        followsUp: true,
+        engagementPort: 'link_interaction',
+        pixelFetchPort: undefined,
+        mdnPort: 'yes',
+        sessionPort: 'yes',
+      },
+      {
+        name: 'MDN displayed with security-scanner link fetch',
+        events: [
+          trackingWorkflowEvent('mdn_displayed'),
+          trackingWorkflowEvent('click', 'security_scanner'),
+        ],
+        followsUp: false,
+        engagementPort: 'link_interaction',
+        pixelFetchPort: undefined,
+        mdnPort: 'no',
+        sessionPort: undefined,
+      },
+      {
+        name: 'probable-human click',
+        events: [trackingWorkflowEvent('click', 'probable_human')],
+        followsUp: false,
+        engagementPort: 'link_interaction',
+        pixelFetchPort: undefined,
+        mdnPort: 'yes',
+        sessionPort: 'yes',
+      },
+      {
+        name: 'reply',
+        events: [trackingWorkflowEvent('replied')],
+        followsUp: false,
+        engagementPort: 'default',
+        pixelFetchPort: undefined,
+        mdnPort: undefined,
+        sessionPort: undefined,
+      },
+    ] as const;
+    const results: Array<{
+      name: string;
+      followsUp: boolean;
+      engagementPort: unknown;
+      pixelFetchPort: unknown;
+      mdnPort: unknown;
+      sessionPort: unknown;
+    }> = [];
+
+    for (const [index, testCase] of cases.entries()) {
+      const now = new Date(`2026-07-16T08:0${index}:00.000Z`);
+      const workflowId = 260 + index;
+      const messageId = 160 + index;
+      const trackingId = `tracking-follow-up-${index}`;
+      const { db, rows } = makeWorkflowExecutionDb({
+        workflows: [{
+          id: workflowId,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: workflowId * 10,
+          trigger_name: 'outbound',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: template!.graph,
+          execution_mode: 'graph',
+        }],
+        messages: [{
+          id: messageId,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: messageId * 10,
+          customer_id: 7,
+          customer_source_sqlite_id: 70,
+          subject: 'Nachfassen',
+          from_json: { value: [{ address: 'agent@example.com' }] },
+          to_json: { value: [{ address: 'customer@example.com' }] },
+          cc_json: null,
+          snippet: 'Bitte melden Sie sich.',
+          body_text: 'Bitte melden Sie sich.',
+          body_html: null,
+          has_attachments: false,
+          attachments_json: null,
+        }],
+        customers: [{ id: 7, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 70, name: 'Kunde' }],
+        trackingMessages: [{ id: trackingId, workspace_id: WORKSPACE_A_ID, message_id: messageId }],
+        trackingEvents: [
+          {
+            id: `${index + 1}00`,
+            workspace_id: WORKSPACE_A_ID,
+            tracking_message_id: trackingId,
+            event_type: 'smtp_accepted',
+            source: 'smtp',
+            confidence: 'low',
+            automated: false,
+            occurred_at: now,
+          },
+          ...testCase.events.map((event, eventIndex) => ({
+            ...event,
+            id: `${index + 1}0${eventIndex + 1}`,
+            workspace_id: WORKSPACE_A_ID,
+            tracking_message_id: trackingId,
+            occurred_at: new Date(now.getTime() + 60_000),
+          })),
+        ],
+        trackingEventClassifications: testCase.events
+          .filter((event) => event.actor_class !== undefined)
+          .map((event, eventIndex) => ({
+            event_id: `${index + 1}0${eventIndex + 1}`,
+            classification_version: 2,
+            actor_class: event.actor_class,
+            confidence: 'medium',
+            reasons_json: [],
+          })),
+      });
+      const port = createPostgresWorkflowExecutionJobPort({
+        db,
+        now: () => now,
+        applyWorkspaceSession: async () => undefined,
+      });
+
+      await port.execute({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId,
+        messageId,
+        triggerName: 'outbound',
+        context: { resumeNodeId: 'evidence' },
+      });
+
+      results.push({
+        name: testCase.name,
+        followsUp: rows.tasks.length === 1,
+        engagementPort: rows.steps.find((step) => step.node_id === 'no_engagement')?.port,
+        pixelFetchPort: rows.steps.find((step) => step.node_id === 'probable_open_has_pixel')?.port,
+        mdnPort: rows.steps.find((step) => step.node_id === 'no_mdn')?.port,
+        sessionPort: rows.steps.find((step) => step.node_id === 'no_open')?.port,
+      });
+    }
+
+    expect(results).toEqual(cases.map((testCase) => ({
+      name: testCase.name,
+      followsUp: testCase.followsUp,
+      engagementPort: testCase.engagementPort,
+      pixelFetchPort: testCase.pixelFetchPort,
+      mdnPort: testCase.mdnPort,
+      sessionPort: testCase.sessionPort,
+    })));
   });
 
   test('postgres workflow execution job port requires inbound condition gate for side-effect nodes', async () => {
@@ -13732,13 +14005,14 @@ describe('server edition foundation', () => {
       expect(receivedDatabaseUrl).toBe('postgres://simplecrm:secret-password@postgres:5432/simplecrm');
       expect(io.stderrOutput()).toBe('');
       expect(io.stdoutOutput()).not.toContain('secret-password');
-      expect(output.status).toBe('ok');
+      expect(output.status).toBe('warn');
       expect(output.checks.map((check: { name: string }) => check.name)).toEqual([
         'database',
         'migrations',
         'job_queue',
         'conversation_locks',
         'backups',
+        'geoip_intelligence',
       ]);
       expect(output.checks.find((check: { name: string }) => check.name === 'database').details)
         .toEqual({ databaseName: 'simplecrm', databaseSize: '42 MB' });
@@ -13754,6 +14028,56 @@ describe('server edition foundation', () => {
     } finally {
       rmSync(backupDir, { recursive: true, force: true });
     }
+  });
+
+  test.each([
+    ['ready', 'ok'],
+    ['missing', 'warn'],
+    ['stale', 'warn'],
+    ['invalid', 'warn'],
+  ] as const)('doctor reports local GeoIP state %s without credentials or raw IP addresses', async (state, expectedStatus) => {
+    const io = makeCliIo();
+    const ipIntelligence = {
+      lookup: jest.fn(async () => ({
+        ipAddress: '203.0.113.19',
+        ipFamily: 'ipv4' as const,
+        scope: 'public' as const,
+        countryCode: null,
+        continentCode: null,
+        asn: null,
+        networkName: null,
+        networkCidr: null,
+        databaseBuildAt: null,
+      })),
+      status: () => ({
+        state,
+        countryDatabaseBuildAt: state === 'ready' || state === 'stale' ? '2026-07-15T12:00:00.000Z' : null,
+        asnDatabaseBuildAt: state === 'ready' || state === 'stale' ? '2026-07-15T12:00:00.000Z' : null,
+      }),
+    };
+
+    const exitCode = await runDoctorCli({
+      argv: ['--json'],
+      env: {
+        DATABASE_URL: 'postgres://simplecrm:database-secret@postgres:5432/simplecrm',
+        GEOIPUPDATE_LICENSE_KEY: 'geoip-license-secret',
+      },
+      stdout: io.stdout,
+      stderr: io.stderr,
+      createClient: () => makeDoctorPgClient(),
+      emailTrackingIpIntelligence: ipIntelligence,
+    });
+
+    const output = JSON.parse(io.stdoutOutput());
+    expect(exitCode).toBe(0);
+    expect(output.checks.find((check: { name: string }) => check.name === 'geoip_intelligence')).toMatchObject({
+      status: expectedStatus,
+      message: expect.stringContaining(state),
+    });
+    expect(io.stdoutOutput()).not.toContain('database-secret');
+    expect(io.stdoutOutput()).not.toContain('geoip-license-secret');
+    expect(io.stdoutOutput()).not.toContain('203.0.113.19');
+    expect(ipIntelligence.lookup).toHaveBeenCalledTimes(1);
   });
 
   test('doctor CLI fails backup health on checksum mismatch', async () => {
@@ -37768,6 +38092,7 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
   let currentPublicTrackingTokenHash = '';
   let nextCustomerId = 1;
   let nextMessageId = 1;
+  let nextTrackingEventId = 1;
   const queries: Array<{ sql: string; params?: readonly unknown[] }> = [];
   const workspaces = new Set<string>();
   const users = new Set<string>();
@@ -37778,9 +38103,10 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
     email_tracking_policies: [],
     email_tracking_messages: [],
     email_tracking_links: [],
-    email_tracking_events: [],
     email_tracking_token_resolver: [],
   };
+  const trackingEvents: Array<{ id: number; workspaceId: string; dedupeKey: string }> = [];
+  const trackingEventClassifications: Array<{ eventId: number }> = [];
 
   function canAccessWorkspace(workspaceId: string): boolean {
     return workspaceId === currentWorkspaceId
@@ -37914,9 +38240,29 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
       const trackingInsert = normalized.match(/^insert into (email_tracking_[a-z_]+)/);
       if (trackingInsert) {
         const table = trackingInsert[1]!;
+        if (table === 'email_tracking_event_classifications') {
+          const workspaceId = assertRlsWorkspace(params?.[0]);
+          const dedupeKey = String(params?.[1] ?? '');
+          const event = trackingEvents.find((row) => (
+            row.workspaceId === workspaceId && row.dedupeKey === dedupeKey
+          ));
+          if (event && !trackingEventClassifications.some((row) => row.eventId === event.id)) {
+            trackingEventClassifications.push({ eventId: event.id });
+          }
+          return { rows: [] };
+        }
+        if (table === 'email_tracking_events') {
+          const workspaceId = assertRlsWorkspace(params?.[0]);
+          const dedupeKey = String(params?.[3] ?? '');
+          if (!trackingEvents.some((row) => row.workspaceId === workspaceId && row.dedupeKey === dedupeKey)) {
+            trackingEvents.push({ id: nextTrackingEventId, workspaceId, dedupeKey });
+            nextTrackingEventId += 1;
+          }
+          return { rows: [] };
+        }
         const rows = trackingRows[table];
         if (!rows) throw new Error(`Unhandled RLS tracking fixture table: ${table}`);
-        const workspaceParamIndex = table === 'email_tracking_policies' || table === 'email_tracking_events' ? 0 : 1;
+        const workspaceParamIndex = table === 'email_tracking_policies' ? 0 : 1;
         const workspaceId = assertRlsWorkspace(params?.[workspaceParamIndex]);
         const tokenHash = table === 'email_tracking_token_resolver' ? String(params?.[0] ?? '') : undefined;
         if (!rows.some((row) => row.workspaceId === workspaceId)) rows.push({ workspaceId, tokenHash });
@@ -37948,11 +38294,23 @@ function makeRlsCheckClient(): RlsCheckPgClient & {
         /^select count\(\*\)::int as count from (email_tracking_[a-z_]+) where workspace_id = \$1/,
       );
       if (trackingWorkspaceCount) {
-        const rows = trackingRows[trackingWorkspaceCount[1]!] ?? [];
+        const table = trackingWorkspaceCount[1]!;
+        const rows = table === 'email_tracking_events'
+          ? trackingEvents
+          : (trackingRows[table] ?? []);
         const workspaceId = String(params?.[0]);
         const count = rows.filter((row) => (
           row.workspaceId === workspaceId && canAccessWorkspace(row.workspaceId)
         )).length;
+        return { rows: [{ count }] as readonly T[] };
+      }
+
+      if (normalized.startsWith('select count(*)::int as count from email_tracking_event_classifications classifications join email_tracking_events events')) {
+        const workspaceId = String(params?.[0]);
+        const count = trackingEventClassifications.filter((classification) => {
+          const event = trackingEvents.find((row) => row.id === classification.eventId);
+          return event?.workspaceId === workspaceId && canAccessWorkspace(event.workspaceId);
+        }).length;
         return { rows: [{ count }] as readonly T[] };
       }
 
@@ -38485,6 +38843,19 @@ function timestampMillis(value: unknown): number {
   return Number.NEGATIVE_INFINITY;
 }
 
+function trackingWorkflowEvent(
+  eventType: 'open_automated' | 'open_probable' | 'click' | 'mdn_displayed' | 'replied',
+  actorClass?: string,
+): Record<string, unknown> {
+  return {
+    event_type: eventType,
+    source: eventType === 'replied' ? 'reply' : 'tracking',
+    confidence: eventType === 'replied' ? 'verified' : 'medium',
+    automated: false,
+    ...(actorClass === undefined ? {} : { actor_class: actorClass }),
+  };
+}
+
 type WorkflowExecutionFakeRows = {
   workflows: Array<Record<string, unknown>>;
   messages: Array<Record<string, unknown>>;
@@ -38519,12 +38890,15 @@ type WorkflowExecutionFakeRows = {
   autoReplyCounters: Array<Record<string, unknown>>;
   trackingMessages: Array<Record<string, unknown>>;
   trackingEvents: Array<Record<string, unknown>>;
+  trackingEventClassifications: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
   db: Kysely<ServerDatabase>;
   rows: WorkflowExecutionFakeRows;
+  messageLocks: string[];
 } {
+  const messageLocks: string[] = [];
   const rows: WorkflowExecutionFakeRows = {
     workflows: input.workflows ?? [],
     messages: input.messages ?? [],
@@ -38559,9 +38933,10 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     autoReplyCounters: input.autoReplyCounters ?? [],
     trackingMessages: input.trackingMessages ?? [],
     trackingEvents: input.trackingEvents ?? [],
+    trackingEventClassifications: input.trackingEventClassifications ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
-    switch (table) {
+    switch (table.split(' ')[0]) {
       case 'email_message_attachments':
         return rows.messageAttachments;
       case 'email_workflows':
@@ -38628,11 +39003,23 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
         return rows.trackingMessages;
       case 'email_tracking_events':
         return rows.trackingEvents;
+      case 'email_tracking_event_classifications':
+        return rows.trackingEventClassifications;
       default:
         throw new Error(`unexpected workflow execution table: ${table}`);
     }
   };
   const db = {
+    getExecutor() {
+      return {
+        executeQuery: async (query: { sql?: string; parameters?: readonly unknown[] }) => {
+          if ((query.sql ?? '').includes('pg_advisory_xact_lock') && (query.sql ?? '').includes('hashtext')) {
+            messageLocks.push(String(query.parameters?.[0] ?? ''));
+          }
+          return { rows: [] };
+        },
+      };
+    },
     selectFrom(table: string) {
       return new FakeWorkflowExecutionSelect(tableRows(table));
     },
@@ -38651,7 +39038,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
       };
     },
   } as unknown as Kysely<ServerDatabase>;
-  return { db, rows };
+  return { db, rows, messageLocks };
 }
 
 class FakeWorkflowExecutionSelect {
@@ -38664,6 +39051,10 @@ class FakeWorkflowExecutionSelect {
   constructor(private readonly rows: Array<Record<string, unknown>>) {}
 
   select() {
+    return this;
+  }
+
+  distinctOn() {
     return this;
   }
 
@@ -38697,19 +39088,21 @@ class FakeWorkflowExecutionSelect {
 
   private matchingRows(): Array<Record<string, unknown>> {
     const result = this.rows.filter((row) => this.wheres.every(([column, operator, value]) => {
-      if (operator === '=') return row[column] === value;
-      if (operator === '!=') return row[column] !== value;
-      if (operator === 'is') return value === null ? row[column] === null || row[column] === undefined : row[column] === value;
-      if (operator === 'in' && Array.isArray(value)) return value.includes(row[column]);
-      if (operator === 'ilike') return ilikeMatch(row[column], value);
-      if (operator === '<') return Number(row[column]) < Number(value);
-      if (operator === '>') return Number(row[column]) > Number(value);
+      const field = column.includes('.') ? column.slice(column.lastIndexOf('.') + 1) : column;
+      if (operator === '=') return row[field] === value;
+      if (operator === '!=') return row[field] !== value;
+      if (operator === 'is') return value === null ? row[field] === null || row[field] === undefined : row[field] === value;
+      if (operator === 'in' && Array.isArray(value)) return value.includes(row[field]);
+      if (operator === 'ilike') return ilikeMatch(row[field], value);
+      if (operator === '<') return Number(row[field]) < Number(value);
+      if (operator === '>') return Number(row[field]) > Number(value);
       throw new Error(`unexpected workflow execution select operator: ${operator}`);
     }));
     return [...result].sort((left, right) => {
       for (const [column, direction] of this.order) {
-        const leftValue = Number(left[column] ?? 0);
-        const rightValue = Number(right[column] ?? 0);
+        const field = column.includes('.') ? column.slice(column.lastIndexOf('.') + 1) : column;
+        const leftValue = Number(left[field] ?? 0);
+        const rightValue = Number(right[field] ?? 0);
         if (leftValue === rightValue) continue;
         return direction === 'desc' ? rightValue - leftValue : leftValue - rightValue;
       }

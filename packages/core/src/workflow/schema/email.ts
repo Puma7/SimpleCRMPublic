@@ -13,6 +13,19 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
       { name: 'tracking.delivery', label: 'Zustellstatus', example: 'external_system_reached', type: 'string' },
       { name: 'tracking.engagement', label: 'Interaktion', example: 'probable_open', type: 'string' },
       { name: 'tracking.confidence', label: 'Aussagekraft', example: 'medium', type: 'string' },
+      { name: 'tracking.mdn_displayed_count', label: 'Empfangsbestaetigungen', description: 'Empfohlen: Vom Empfaengersystem gemeldete Anzeige- oder Lesebestaetigungen.', example: '0', type: 'number' },
+      { name: 'tracking.pixel_fetch_count', label: 'Pixelabrufe gesamt', description: 'Empfohlen: Alle technisch beobachteten Pixelabrufe.', example: '1', type: 'number' },
+      { name: 'tracking.automated_pixel_fetch_count', label: 'Automatisierte Pixelabrufe (V2)', description: 'Empfohlen: Abrufe durch Proxy, Datenschutzdienst oder Scanner.', example: '0', type: 'number' },
+      { name: 'tracking.unknown_pixel_fetch_count', label: 'Unklare Pixelabrufe', description: 'Empfohlen: Abrufe ohne belastbare menschliche Zuordnung.', example: '0', type: 'number' },
+      { name: 'tracking.probable_human_pixel_fetch_count', label: 'Wahrscheinlich menschliche Pixelabrufe', description: 'Empfohlen: V2-Klassifizierung als wahrscheinlich menschlich.', example: '1', type: 'number' },
+      { name: 'tracking.probable_human_open_session_count', label: 'Wahrscheinlich menschliche Oeffnungssitzungen', description: 'Empfohlen: Zeitlich zusammengefasste V2-Oeffnungssitzungen.', example: '1', type: 'number' },
+      { name: 'tracking.automated_link_fetch_count', label: 'Automatisierte Linkabrufe (V2)', description: 'Empfohlen: Linkabrufe durch Proxy, Datenschutzdienst oder Scanner.', example: '0', type: 'number' },
+      { name: 'tracking.unknown_link_fetch_count', label: 'Unklare Linkabrufe', description: 'Empfohlen: Linkabrufe ohne belastbare menschliche Zuordnung.', example: '0', type: 'number' },
+      { name: 'tracking.probable_human_link_fetch_count', label: 'Wahrscheinlich menschliche Linkabrufe', description: 'Empfohlen: V2-Klassifizierung eines Linkabrufs als wahrscheinlich menschlich.', example: '1', type: 'number' },
+      { name: 'tracking.first_pixel_fetched_at', label: 'Erster Pixelabruf', description: 'Empfohlen: Zeitpunkt des ersten technischen Pixelabrufs.', type: 'string' },
+      { name: 'tracking.last_pixel_fetched_at', label: 'Letzter Pixelabruf', description: 'Empfohlen: Zeitpunkt des letzten technischen Pixelabrufs.', type: 'string' },
+      { name: 'tracking.first_probable_human_open_at', label: 'Erste wahrscheinlich menschliche Oeffnung', description: 'Empfohlen: Erster V2-klassifizierter wahrscheinlich menschlicher Abruf.', type: 'string' },
+      { name: 'tracking.last_probable_human_open_at', label: 'Letzte wahrscheinlich menschliche Oeffnung', description: 'Empfohlen: Letzter V2-klassifizierter wahrscheinlich menschlicher Abruf.', type: 'string' },
       { name: 'tracking.open_count', label: 'Anzahl Pixelabrufe', example: '1', type: 'number' },
       { name: 'tracking.click_count', label: 'Anzahl Klicks', example: '0', type: 'number' },
       { name: 'tracking.automated_open_count', label: 'Automatisierte Pixelabrufe', example: '0', type: 'number' },
@@ -28,7 +41,8 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
       longHelp:
         'Liest die Evidenz zum aktuellen ausgehenden Mail-Datensatz neu aus der Datenbank. ' +
         'Der Knoten gehört nach eine Wartezeit, damit anschließende Bedingungen nicht mit dem Stand beim Versand arbeiten. ' +
-        'Automatisierte und wahrscheinliche Abrufe/Klicks stehen getrennt bereit; tracking.replied ist die stärkste Interaktion.',
+        'Die empfohlenen V2-Felder trennen technische Abrufe, unklare Abrufe und wahrscheinlich menschliche Oeffnungen. ' +
+        'Bestehende Open-/Click-Zaehler bleiben zur Kompatibilitaet erhalten; tracking.replied ist die stärkste Interaktion.',
       prerequisites: [
         'Server-Edition mit aktivierter E-Mail-Nachverfolgung.',
         'Der Workflow benötigt eine aktuelle ausgehende Nachricht.',

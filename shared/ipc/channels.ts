@@ -326,6 +326,8 @@ const EmailChannels = literal({
   GetEmailTrackingSettings: 'email:get-tracking-settings',
   SetEmailTrackingSettings: 'email:set-tracking-settings',
   GetMessageTracking: 'email:get-message-tracking',
+  GetMessageTrackingIpInsight: 'email:get-message-tracking-ip-insight',
+  ReclassifyMessageTracking: 'email:reclassify-message-tracking',
   RevokeMessageTracking: 'email:revoke-message-tracking',
   DeleteMessageTracking: 'email:delete-message-tracking',
   ListSmtpRelays: 'email:list-smtp-relays',

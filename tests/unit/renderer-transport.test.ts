@@ -3567,13 +3567,14 @@ describe('renderer transport', () => {
     );
   });
 
-  test('maps email tracking settings and message evidence routes', async () => {
+  test('maps email tracking settings, message evidence, and IP insight routes without an IP URL parameter', async () => {
     const policy = {
       enabled: true,
       trackOpens: true,
       trackLinks: true,
       collectDerivedMetadata: true,
       collectRawMetadata: false,
+      ipInsightsEnabled: false,
       rawMetadataRetentionDays: 7,
       eventRetentionDays: 365,
       tokenTtlDays: 730,
@@ -3603,10 +3604,18 @@ describe('renderer transport', () => {
       },
       events: [],
     };
+    const ipInsight = {
+      ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public',
+      countryCode: 'US', continentCode: 'NA', asn: 15169,
+      networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+      databaseBuildAt: '2026-07-15T00:00:00.000Z',
+    };
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({ data: policy }))
       .mockResolvedValueOnce(jsonResponse({ data: { ...policy, trackLinks: false } }))
       .mockResolvedValueOnce(jsonResponse({ data: timeline }))
+      .mockResolvedValueOnce(jsonResponse({ data: ipInsight }))
+      .mockResolvedValueOnce(jsonResponse({ data: { classified: 2, unavailableRaw: 0 } }))
       .mockResolvedValueOnce(jsonResponse({ data: { revoked: true } }))
       .mockResolvedValueOnce(jsonResponse({ data: { erased: true } }));
     const transport = createHttpRendererTransport({
@@ -3622,6 +3631,14 @@ describe('renderer transport', () => {
       messageId: 41,
       includeSensitive: true,
     })).resolves.toEqual(timeline);
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTrackingIpInsight, {
+      messageId: 41,
+      eventId: '9007199254740993',
+    })).resolves.toEqual(ipInsight);
+    await expect(transport.invoke(IPCChannels.Email.ReclassifyMessageTracking, 41)).resolves.toEqual({
+      classified: 2,
+      unavailableRaw: 0,
+    });
     await expect(transport.invoke(IPCChannels.Email.RevokeMessageTracking, 41)).resolves.toEqual({ revoked: true });
     await expect(transport.invoke(IPCChannels.Email.DeleteMessageTracking, 41)).resolves.toEqual({ success: true });
 
@@ -3638,12 +3655,46 @@ describe('renderer transport', () => {
       expect.objectContaining({ method: 'GET' }),
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(4,
+      'https://crm.example.com/api/v1/email/messages/41/tracking/events/9007199254740993/ip-insight',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(5,
+      'https://crm.example.com/api/v1/email/messages/41/tracking/reclassify',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(6,
       'https://crm.example.com/api/v1/email/messages/41/tracking/revoke',
       expect.objectContaining({ method: 'POST' }),
     );
-    expect(fetchImpl).toHaveBeenNthCalledWith(5,
+    expect(fetchImpl).toHaveBeenNthCalledWith(7,
       'https://crm.example.com/api/v1/email/messages/41/tracking',
       expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  test('accepts only PostgreSQL signed bigint event IDs for IP insight transport', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: {
+      ipAddress: '127.0.0.1', ipFamily: 'ipv4', scope: 'loopback',
+      countryCode: null, continentCode: null, asn: null,
+      networkName: null, networkCidr: null, databaseBuildAt: null,
+    } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTrackingIpInsight, {
+      messageId: 41,
+      eventId: '9223372036854775807',
+    })).resolves.toMatchObject({ scope: 'loopback' });
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTrackingIpInsight, {
+      messageId: 41,
+      eventId: '9223372036854775808',
+    })).rejects.toThrow('Invalid email tracking event id');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/41/tracking/events/9223372036854775807/ip-insight',
+      expect.objectContaining({ method: 'GET' }),
     );
   });
 

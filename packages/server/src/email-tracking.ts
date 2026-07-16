@@ -13,15 +13,19 @@ import {
   buildEmailEvidenceSummary,
   classifyEmailTrackingRequest,
   instrumentEmailHtml,
+  type EmailEvidenceClassification,
   type EmailEvidenceConfidence,
+  type EmailEvidenceEvent,
   type EmailEvidenceSummary,
   type EmailEvidenceEventType,
+  type EmailTrackingNetworkContext,
 } from '@simplecrm/core';
 
 import type {
   AuditApiPort,
   EmailTrackingApiPort,
   EmailTrackingEventRecord,
+  EmailTrackingIpInsightRecord,
   EmailTrackingPublicRequest,
   EmailTrackingPolicyMutationInput,
   EmailTrackingPolicyRecord,
@@ -30,6 +34,8 @@ import type {
 } from './api/types';
 import type { ServerDatabase } from './db/schema';
 import { withWorkspaceTransaction, type WorkspaceTransaction } from './db/workspace-context';
+import type { EmailTrackingIpIntelligencePort } from './email-tracking-ip-intelligence';
+import { emailTrackingNetworkContext } from './email-tracking-network-rules';
 
 const TRACKING_TOKEN_CONTEXT = 'simplecrm/email-tracking/token/v1';
 const TRACKING_ENCRYPTION_CONTEXT = 'simplecrm/email-tracking/encryption/v1';
@@ -39,6 +45,15 @@ const MAX_SEALED_JSON_BYTES = 64 * 1024;
 const MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE = 10_000;
 const MAX_TRACKED_HTML_BYTES = 5 * 1024 * 1024;
 const MAX_PRIVACY_NOTICE_URL_LENGTH = 2_048;
+const EMAIL_TRACKING_RECLASSIFICATION_PAGE_SIZE = 500;
+const EMAIL_TRACKING_SUMMARY_PAGE_SIZE = 500;
+const TRACKING_CLASSIFIER_HEADER_NAMES = [
+  'x-forwarded-for',
+  'x-apple-mail-privacy',
+  'x-email-proxy',
+  'purpose',
+  'sec-purpose',
+] as const;
 
 export type SealedTrackingJson = Readonly<{
   ciphertext: Buffer;
@@ -53,6 +68,46 @@ export type NormalizedEmailTrackingPolicy = Omit<
 
 export class EmailTrackingPolicyValidationError extends Error {
   override readonly name = 'EmailTrackingPolicyValidationError';
+}
+
+export class EmailTrackingMessageNotFoundError extends Error {
+  override readonly name = 'EmailTrackingMessageNotFoundError';
+
+  constructor() {
+    super('E-Mail-Nachricht nicht gefunden');
+  }
+}
+
+export class EmailTrackingIpInsightNotFoundError extends Error {
+  override readonly name = 'EmailTrackingIpInsightNotFoundError';
+
+  constructor() {
+    super('Tracking-Ereignis nicht gefunden');
+  }
+}
+
+export class EmailTrackingIpInsightForbiddenError extends Error {
+  override readonly name = 'EmailTrackingIpInsightForbiddenError';
+
+  constructor() {
+    super('IP-Insights sind fuer diesen Workspace nicht aktiviert');
+  }
+}
+
+export class EmailTrackingIpInsightRawDataUnavailableError extends Error {
+  override readonly name = 'EmailTrackingIpInsightRawDataUnavailableError';
+
+  constructor() {
+    super('Rohdaten fuer den IP-Insight sind nicht mehr verfuegbar');
+  }
+}
+
+export class EmailTrackingIpInsightUnavailableError extends Error {
+  override readonly name = 'EmailTrackingIpInsightUnavailableError';
+
+  constructor() {
+    super('Lokale IP-Insight-Datenbank ist nicht verfuegbar');
+  }
 }
 
 type TrackingAttemptFlags = Readonly<{
@@ -143,6 +198,7 @@ export function normalizeEmailTrackingPolicy(input: {
     trackLinks: false,
     collectDerivedMetadata: false,
     collectRawMetadata: false,
+    ipInsightsEnabled: false,
     rawMetadataRetentionDays: 7,
     eventRetentionDays: 365,
     tokenTtlDays: 730,
@@ -157,6 +213,7 @@ export function normalizeEmailTrackingPolicy(input: {
     ...(input.values.trackLinks === undefined ? {} : { trackLinks: input.values.trackLinks }),
     ...(input.values.collectDerivedMetadata === undefined ? {} : { collectDerivedMetadata: input.values.collectDerivedMetadata }),
     ...(input.values.collectRawMetadata === undefined ? {} : { collectRawMetadata: input.values.collectRawMetadata }),
+    ...(input.values.ipInsightsEnabled === undefined ? {} : { ipInsightsEnabled: input.values.ipInsightsEnabled }),
     ...(input.values.rawMetadataRetentionDays === undefined ? {} : { rawMetadataRetentionDays: input.values.rawMetadataRetentionDays }),
     ...(input.values.eventRetentionDays === undefined ? {} : { eventRetentionDays: input.values.eventRetentionDays }),
     ...(input.values.tokenTtlDays === undefined ? {} : { tokenTtlDays: input.values.tokenTtlDays }),
@@ -174,6 +231,7 @@ export function normalizeEmailTrackingPolicy(input: {
     || next.trackLinks !== current.trackLinks
     || next.collectDerivedMetadata !== current.collectDerivedMetadata
     || next.collectRawMetadata !== current.collectRawMetadata
+    || next.ipInsightsEnabled !== current.ipInsightsEnabled
     || next.rawMetadataRetentionDays !== current.rawMetadataRetentionDays
     || next.eventRetentionDays !== current.eventRetentionDays
     || next.tokenTtlDays !== current.tokenTtlDays
@@ -188,6 +246,9 @@ export function normalizeEmailTrackingPolicy(input: {
   assertIntegerRange(next.tokenTtlDays, 1, 3650, 'Token-Laufzeit');
   if (next.collectRawMetadata && !next.collectDerivedMetadata) {
     throw new EmailTrackingPolicyValidationError('Raw-Metadaten erfordern abgeleitete Metadaten');
+  }
+  if (next.ipInsightsEnabled && (!next.collectDerivedMetadata || !next.collectRawMetadata)) {
+    throw new EmailTrackingPolicyValidationError('IP-Insights erfordern abgeleitete und Rohmetadaten');
   }
   if (next.privacyNoticeUrl) {
     if (next.privacyNoticeUrl.length > MAX_PRIVACY_NOTICE_URL_LENGTH) {
@@ -297,6 +358,17 @@ export type EmailTrackingPrepareResult = Readonly<{
 }>;
 
 export type EmailTrackingService = EmailTrackingApiPort & Readonly<{
+  getIpInsight(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+    eventId: string;
+  }): Promise<EmailTrackingIpInsightRecord>;
+  reclassifyMessage(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+  }): Promise<{ classified: number; unavailableRaw: number }>;
   prepareOutbound(input: {
     workspaceId: string;
     messageId: number;
@@ -349,9 +421,11 @@ export type PostgresEmailTrackingServiceOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   publicBaseUrl: string;
   masterKey?: Buffer;
+  emailTrackingCrypto?: TrackingCrypto;
   now?: () => Date;
   audit?: AuditApiPort;
   events?: ServerEventPort;
+  emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
 }>;
 
 export function createPostgresEmailTrackingService(
@@ -359,7 +433,7 @@ export function createPostgresEmailTrackingService(
 ): EmailTrackingService {
   const now = options.now ?? (() => new Date());
   const publicBaseUrl = normalizeTrackingBaseUrl(options.publicBaseUrl);
-  const crypto = options.masterKey ? createEmailTrackingCrypto(options.masterKey) : null;
+  const crypto = options.emailTrackingCrypto ?? (options.masterKey ? createEmailTrackingCrypto(options.masterKey) : null);
 
   const service: EmailTrackingService = {
     async getPolicy(input) {
@@ -579,6 +653,7 @@ export function createPostgresEmailTrackingService(
         request: input,
         interaction: 'open',
         now: now(),
+        ipIntelligence: options.emailTrackingIpIntelligence,
       });
       await publishTrackingChanged(
         options.events,
@@ -624,6 +699,7 @@ export function createPostgresEmailTrackingService(
         request: input,
         interaction: 'click',
         now: now(),
+        ipIntelligence: options.emailTrackingIpIntelligence,
       }).then(() => publishTrackingChanged(
         options.events,
         resolver.workspaceId,
@@ -644,6 +720,52 @@ export function createPostgresEmailTrackingService(
         input.messageId,
         input.includeSensitive === true,
       );
+    },
+
+    async getIpInsight(input) {
+      let insight: EmailTrackingIpInsightRecord;
+      try {
+        insight = await loadTrackingIpInsight({
+          db: options.db,
+          crypto,
+          ipIntelligence: options.emailTrackingIpIntelligence,
+          now,
+          ...input,
+        });
+      } catch (caught) {
+        await recordTrackingIpInsightAudit(
+          options.audit,
+          input,
+          'email_tracking.ip_insight_denied',
+          trackingIpInsightAuditOutcome(caught),
+        );
+        throw caught;
+      }
+      await recordTrackingIpInsightAudit(options.audit, input, 'email_tracking.ip_insight_accessed', 'success');
+      return insight;
+    },
+
+    async reclassifyMessage(input) {
+      const result = await reclassifyTrackingMessage({
+        db: options.db,
+        crypto,
+        ipIntelligence: options.emailTrackingIpIntelligence,
+        now: now(),
+        ...input,
+      });
+      await options.audit?.record({
+        workspaceId: input.workspaceId,
+        actorUserId: input.actorUserId,
+        action: 'email_tracking.reclassified',
+        entityType: 'email_message',
+        entityId: String(input.messageId),
+        metadata: {
+          classified: result.classified,
+          unavailableRaw: result.unavailableRaw,
+          classificationVersion: 2,
+        },
+      });
+      return result;
     },
 
     async revokeMessage(input) {
@@ -859,12 +981,187 @@ function positiveTickerDelay(value: number | undefined, fallback: number): numbe
 
 type TrackingCrypto = ReturnType<typeof createEmailTrackingCrypto>;
 
+async function loadTrackingIpInsight(input: Readonly<{
+  db: Kysely<ServerDatabase>;
+  crypto: TrackingCrypto | null;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
+  now: () => Date;
+  workspaceId: string;
+  actorUserId: string;
+  messageId: number;
+  eventId: string;
+}>): Promise<EmailTrackingIpInsightRecord> {
+  const context = { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' as const };
+  const authorized = await withWorkspaceTransaction(
+    input.db,
+    context,
+    (trx) => loadTrackingIpInsightTarget(trx, input),
+  );
+  const raw = openHistoricalRequestRaw(
+    input.crypto,
+    authorized.event,
+    input.workspaceId,
+    authorized.trackingMessageId,
+  );
+  if (!raw?.ip) throw new EmailTrackingIpInsightRawDataUnavailableError();
+  if (!input.ipIntelligence) throw new EmailTrackingIpInsightUnavailableError();
+
+  let insight: EmailTrackingIpInsightRecord;
+  try {
+    insight = await input.ipIntelligence.lookup(raw.ip);
+  } catch {
+    throw new EmailTrackingIpInsightUnavailableError();
+  }
+  if (insight.scope === 'public' && input.ipIntelligence.status().state !== 'ready') {
+    throw new EmailTrackingIpInsightUnavailableError();
+  }
+
+  const rechecked = await withWorkspaceTransaction(
+    input.db,
+    context,
+    (trx) => loadTrackingIpInsightTarget(trx, input),
+  );
+  if (!sameTrackingIpInsightTarget(authorized, rechecked)) {
+    throw new EmailTrackingIpInsightRawDataUnavailableError();
+  }
+  return insight;
+}
+
+type TrackingIpInsightTarget = Readonly<{
+  trackingMessageId: string;
+  event: Readonly<{
+    id: string;
+    event_type: string;
+    confidence: string;
+    occurred_at: Date | string;
+    raw_metadata_ciphertext: Buffer;
+    raw_metadata_nonce: Buffer;
+    raw_metadata_auth_tag: Buffer;
+    dedupe_key: string;
+    created_at: Date | string;
+  }>;
+}>;
+
+async function loadTrackingIpInsightTarget(
+  trx: WorkspaceTransaction,
+  input: Readonly<{
+    workspaceId: string;
+    messageId: number;
+    eventId: string;
+    now: () => Date;
+  }>,
+): Promise<TrackingIpInsightTarget> {
+  const message = await trx
+    .selectFrom('email_messages')
+    .select('id')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.messageId)
+    .executeTakeFirst();
+  if (!message) throw new EmailTrackingIpInsightNotFoundError();
+
+  const tracking = await trx
+    .selectFrom('email_tracking_messages')
+    .select(['id', 'collect_derived_metadata', 'collect_raw_metadata'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_id', '=', input.messageId)
+    .executeTakeFirst();
+  if (!tracking) throw new EmailTrackingIpInsightNotFoundError();
+
+  const event = await trx
+    .selectFrom('email_tracking_events')
+    .select([
+      'id', 'event_type', 'confidence', 'occurred_at',
+      'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag', 'dedupe_key', 'created_at',
+    ])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('tracking_message_id', '=', tracking.id)
+    .where('message_id', '=', input.messageId)
+    .where('id', '=', input.eventId)
+    .executeTakeFirst();
+  if (!event) throw new EmailTrackingIpInsightNotFoundError();
+
+  const policy = await trx
+    .selectFrom('email_tracking_policies')
+    .select([
+      'ip_insights_enabled', 'collect_derived_metadata', 'collect_raw_metadata',
+      'raw_metadata_retention_days',
+    ])
+    .where('workspace_id', '=', input.workspaceId)
+    .executeTakeFirst();
+  if (!policy
+    || !policy.ip_insights_enabled
+    || !policy.collect_derived_metadata
+    || !policy.collect_raw_metadata) {
+    throw new EmailTrackingIpInsightForbiddenError();
+  }
+
+  const rawCutoff = addDays(input.now(), -Number(policy.raw_metadata_retention_days));
+  if (!tracking.collect_derived_metadata
+    || !tracking.collect_raw_metadata
+    || toDate(event.created_at).getTime() < rawCutoff.getTime()
+    || !event.raw_metadata_ciphertext
+    || !event.raw_metadata_nonce
+    || !event.raw_metadata_auth_tag) {
+    throw new EmailTrackingIpInsightRawDataUnavailableError();
+  }
+  return {
+    trackingMessageId: tracking.id,
+    event: {
+      ...event,
+      id: canonicalTrackingEventId(event.id),
+      raw_metadata_ciphertext: event.raw_metadata_ciphertext,
+      raw_metadata_nonce: event.raw_metadata_nonce,
+      raw_metadata_auth_tag: event.raw_metadata_auth_tag,
+    },
+  };
+}
+
+function sameTrackingIpInsightTarget(
+  initial: TrackingIpInsightTarget,
+  current: TrackingIpInsightTarget,
+): boolean {
+  return initial.trackingMessageId === current.trackingMessageId
+    && initial.event.id === current.event.id
+    && initial.event.dedupe_key === current.event.dedupe_key
+    && toDate(initial.event.created_at).getTime() === toDate(current.event.created_at).getTime()
+    && initial.event.raw_metadata_ciphertext.equals(current.event.raw_metadata_ciphertext)
+    && initial.event.raw_metadata_nonce.equals(current.event.raw_metadata_nonce)
+    && initial.event.raw_metadata_auth_tag.equals(current.event.raw_metadata_auth_tag);
+}
+
+async function recordTrackingIpInsightAudit(
+  audit: AuditApiPort | undefined,
+  input: Readonly<{ workspaceId: string; actorUserId: string; eventId: string }>,
+  action: 'email_tracking.ip_insight_accessed' | 'email_tracking.ip_insight_denied',
+  outcome: 'success' | 'not_found' | 'forbidden' | 'raw_data_unavailable' | 'unavailable' | 'internal_error',
+): Promise<void> {
+  await audit?.record({
+    workspaceId: input.workspaceId,
+    actorUserId: input.actorUserId,
+    action,
+    entityType: 'email_tracking_event',
+    entityId: input.eventId,
+    metadata: { outcome },
+  });
+}
+
+function trackingIpInsightAuditOutcome(
+  error: unknown,
+): 'not_found' | 'forbidden' | 'raw_data_unavailable' | 'unavailable' | 'internal_error' {
+  if (error instanceof EmailTrackingIpInsightNotFoundError) return 'not_found';
+  if (error instanceof EmailTrackingIpInsightForbiddenError) return 'forbidden';
+  if (error instanceof EmailTrackingIpInsightRawDataUnavailableError) return 'raw_data_unavailable';
+  if (error instanceof EmailTrackingIpInsightUnavailableError) return 'unavailable';
+  return 'internal_error';
+}
+
 type PolicyRowLike = {
   enabled: boolean;
   track_opens: boolean;
   track_links: boolean;
   collect_derived_metadata: boolean;
   collect_raw_metadata: boolean;
+  ip_insights_enabled: boolean;
   raw_metadata_retention_days: number;
   event_retention_days: number;
   token_ttl_days: number;
@@ -889,7 +1186,7 @@ function loadPolicyRowInTransaction(
   return trx
     .selectFrom('email_tracking_policies')
     .select([
-      'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata',
+      'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata', 'ip_insights_enabled',
       'raw_metadata_retention_days', 'event_retention_days', 'token_ttl_days', 'legal_basis',
       'privacy_notice_url', 'compliance_acknowledged_at', 'updated_at',
     ])
@@ -901,6 +1198,10 @@ async function lockTrackingPolicy(trx: WorkspaceTransaction, workspaceId: string
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`email_tracking_policy:${workspaceId}`}, 0))`.execute(trx);
 }
 
+async function lockTrackingMessage(trx: WorkspaceTransaction, trackingMessageId: string): Promise<void> {
+  await sql`SELECT pg_advisory_xact_lock(hashtext(${trackingMessageId}))`.execute(trx);
+}
+
 function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
   return {
     enabled: Boolean(row.enabled),
@@ -908,6 +1209,7 @@ function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
     trackLinks: Boolean(row.track_links),
     collectDerivedMetadata: Boolean(row.collect_derived_metadata),
     collectRawMetadata: Boolean(row.collect_raw_metadata),
+    ipInsightsEnabled: Boolean(row.ip_insights_enabled),
     rawMetadataRetentionDays: Number(row.raw_metadata_retention_days),
     eventRetentionDays: Number(row.event_retention_days),
     tokenTtlDays: Number(row.token_ttl_days),
@@ -924,6 +1226,7 @@ function defaultTrackingPolicy(): NormalizedEmailTrackingPolicy {
     trackLinks: false,
     collectDerivedMetadata: false,
     collectRawMetadata: false,
+    ipInsightsEnabled: false,
     rawMetadataRetentionDays: 7,
     eventRetentionDays: 365,
     tokenTtlDays: 730,
@@ -961,6 +1264,7 @@ function policyUpdateValues(actorUserId: string, policy: NormalizedEmailTracking
     track_links: policy.trackLinks,
     collect_derived_metadata: policy.collectDerivedMetadata,
     collect_raw_metadata: policy.collectRawMetadata,
+    ip_insights_enabled: policy.ipInsightsEnabled,
     raw_metadata_retention_days: policy.rawMetadataRetentionDays,
     event_retention_days: policy.eventRetentionDays,
     token_ttl_days: policy.tokenTtlDays,
@@ -1262,8 +1566,14 @@ type InsertEventInput = {
   dedupeKey: string;
 };
 
-async function insertTrackingEvent(trx: WorkspaceTransaction, input: InsertEventInput): Promise<void> {
-  await trx
+async function insertTrackingEvent(
+  trx: WorkspaceTransaction,
+  input: InsertEventInput,
+  classification?: EmailEvidenceClassification,
+  options: { messageLockHeld?: boolean } = {},
+): Promise<void> {
+  if (!options.messageLockHeld) await lockTrackingMessage(trx, input.trackingMessageId);
+  const insert = trx
     .insertInto('email_tracking_events')
     .values({
       workspace_id: input.workspaceId,
@@ -1282,7 +1592,23 @@ async function insertTrackingEvent(trx: WorkspaceTransaction, input: InsertEvent
       dedupe_key: input.dedupeKey,
       created_at: input.occurredAt,
     })
-    .onConflict((oc) => oc.columns(['workspace_id', 'dedupe_key']).doNothing())
+    .onConflict((oc) => oc.columns(['workspace_id', 'dedupe_key']).doNothing());
+  if (!classification) {
+    await insert.execute();
+    return;
+  }
+  const event = await insert.returning('id').executeTakeFirst();
+  if (!event) return;
+  await trx
+    .insertInto('email_tracking_event_classifications')
+    .values({
+      event_id: canonicalTrackingEventId(event.id),
+      classification_version: classification.version,
+      actor_class: classification.actorClass,
+      confidence: classification.confidence,
+      reasons_json: classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+      classified_at: input.occurredAt,
+    })
     .execute();
 }
 
@@ -1348,12 +1674,33 @@ async function recordPublicInteraction(input: {
   request: EmailTrackingPublicRequest;
   interaction: 'open' | 'click';
   now: Date;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
 }): Promise<void> {
+  const precheck = await preparePublicInteraction({
+    db: input.db,
+    workspaceId: input.resolver.workspaceId,
+    trackingMessageId: input.resolver.trackingMessageId,
+    collectDerivedMetadata: input.resolver.collectDerivedMetadata,
+    requestIp: input.request.ip,
+    ipIntelligence: input.ipIntelligence,
+  });
+  if (precheck.atCapacity) return;
   await withWorkspaceTransaction(
     input.db,
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
-      await sql`SELECT pg_advisory_xact_lock(hashtext(${input.resolver.trackingMessageId}))`.execute(trx);
+      await lockTrackingPolicy(trx, input.resolver.workspaceId);
+      await lockTrackingMessage(trx, input.resolver.trackingMessageId);
+      const policy = await trx
+        .selectFrom('email_tracking_policies')
+        .select(['ip_insights_enabled', 'collect_derived_metadata'])
+        .where('workspace_id', '=', input.resolver.workspaceId)
+        .executeTakeFirst();
+      const allowedNetworkContext = input.resolver.collectDerivedMetadata
+        && policy?.ip_insights_enabled
+        && policy.collect_derived_metadata
+        ? precheck.networkContext
+        : null;
       const accepted = await trx
         .selectFrom('email_tracking_events')
         .select('occurred_at')
@@ -1362,16 +1709,11 @@ async function recordPublicInteraction(input: {
         .where('event_type', '=', 'smtp_accepted')
         .orderBy('occurred_at', 'desc')
         .executeTakeFirst();
-      const atCapacity = await trx
-        .selectFrom('email_tracking_events')
-        .select('id')
-        .where('workspace_id', '=', input.resolver.workspaceId)
-        .where('tracking_message_id', '=', input.resolver.trackingMessageId)
-        .where('event_type', 'in', ['open_automated', 'open_probable', 'click_automated', 'click'])
-        .orderBy('id', 'asc')
-        .offset(MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE - 1)
-        .limit(1)
-        .executeTakeFirst();
+      const atCapacity = await publicInteractionAtCapacity(
+        trx,
+        input.resolver.workspaceId,
+        input.resolver.trackingMessageId,
+      );
       if (atCapacity) return;
       const secondsSinceSmtpAccepted = accepted
         ? Math.max(0, (input.now.getTime() - toDate(accepted.occurred_at).getTime()) / 1_000)
@@ -1382,14 +1724,31 @@ async function recordPublicInteraction(input: {
         secondsSinceSmtpAccepted,
         requestHeaders: input.request.headers,
         interaction: input.interaction,
+        networkContext: allowedNetworkContext,
       });
-      const dedupeKey = input.crypto.dedupeHash([
+      const dedupeBucket = Math.floor(input.now.getTime() / 10_000);
+      const dedupeKeyForBucket = (bucket: number) => input.crypto.dedupeHash([
         classification.eventType,
         input.resolver.trackingMessageId,
         input.resolver.linkId ?? '',
         input.request.ip ?? '',
-        Math.floor(input.now.getTime() / 60_000),
+        bucket,
       ].join(':'));
+      const dedupeKey = dedupeKeyForBucket(dedupeBucket);
+      const dedupeCutoff = new Date(input.now.getTime() - 10_000);
+      const recentDuplicate = await trx
+        .selectFrom('email_tracking_events')
+        .select('occurred_at')
+        .where('workspace_id', '=', input.resolver.workspaceId)
+        .where('tracking_message_id', '=', input.resolver.trackingMessageId)
+        .where('dedupe_key', 'in', [dedupeKey, dedupeKeyForBucket(dedupeBucket - 1)])
+        .where('occurred_at', '>=', dedupeCutoff)
+        .orderBy('occurred_at', 'desc')
+        .executeTakeFirst();
+      if (
+        recentDuplicate
+        && input.now.getTime() - toDate(recentDuplicate.occurred_at).getTime() < 10_000
+      ) return;
       const metadata = buildStoredTrackingMetadata({
         collectDerivedMetadata: input.resolver.collectDerivedMetadata,
         ip: input.request.ip,
@@ -1400,6 +1759,7 @@ async function recordPublicInteraction(input: {
         ? input.crypto.sealJson({
           ip: input.request.ip?.slice(0, 64) ?? null,
           userAgent: input.request.userAgent?.slice(0, 2_048) ?? null,
+          classifierHeaders: trackingClassifierHeaderSubset(input.request.headers),
         }, emailTrackingEventAssociatedData(input.resolver.workspaceId, input.resolver.trackingMessageId, dedupeKey))
         : null;
       await insertTrackingEvent(trx, {
@@ -1415,9 +1775,681 @@ async function recordPublicInteraction(input: {
         metadata,
         raw,
         dedupeKey,
-      });
+      }, classification, { messageLockHeld: true });
     },
   );
+}
+
+async function preparePublicInteraction(input: Readonly<{
+  db: Kysely<ServerDatabase>;
+  workspaceId: string;
+  trackingMessageId: string;
+  collectDerivedMetadata: boolean;
+  requestIp?: string | null;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
+}>): Promise<Readonly<{
+  atCapacity: boolean;
+  networkContext: EmailTrackingNetworkContext | null;
+}>> {
+  const requestIp = input.requestIp?.trim();
+  const precheck = await withWorkspaceTransaction(
+    input.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => {
+      const policy = await trx
+        .selectFrom('email_tracking_policies')
+        .select(['ip_insights_enabled', 'collect_derived_metadata'])
+        .where('workspace_id', '=', input.workspaceId)
+        .executeTakeFirst();
+      const atCapacity = await publicInteractionAtCapacity(
+        trx,
+        input.workspaceId,
+        input.trackingMessageId,
+      );
+      return {
+        atCapacity,
+        insightsEnabled: Boolean(
+          input.collectDerivedMetadata
+          && policy?.ip_insights_enabled
+          && policy.collect_derived_metadata,
+        ),
+      };
+    },
+  );
+  if (precheck.atCapacity) return { atCapacity: true, networkContext: null };
+  if (!precheck.insightsEnabled || !requestIp || !input.ipIntelligence) {
+    return { atCapacity: false, networkContext: null };
+  }
+  try {
+    const insight = await input.ipIntelligence.lookup(requestIp);
+    if (input.ipIntelligence.status().state !== 'ready') {
+      return { atCapacity: false, networkContext: null };
+    }
+    return { atCapacity: false, networkContext: emailTrackingNetworkContext(insight) };
+  } catch {
+    return { atCapacity: false, networkContext: null };
+  }
+}
+
+async function publicInteractionAtCapacity(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  trackingMessageId: string,
+): Promise<boolean> {
+  const atCapacity = await trx
+    .selectFrom('email_tracking_events')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('tracking_message_id', '=', trackingMessageId)
+    .where('event_type', 'in', ['open_automated', 'open_probable', 'click_automated', 'click'])
+    .orderBy('id', 'asc')
+    .offset(MAX_PUBLIC_EVENTS_PER_TRACKING_MESSAGE - 1)
+    .limit(1)
+    .executeTakeFirst();
+  return Boolean(atCapacity);
+}
+
+type HistoricalTrackingEventRow = Readonly<{
+  id: string;
+  event_type: string;
+  confidence: string;
+  occurred_at: Date | string;
+  raw_metadata_ciphertext: Buffer | null;
+  raw_metadata_nonce: Buffer | null;
+  raw_metadata_auth_tag: Buffer | null;
+  dedupe_key: string;
+  created_at: Date | string;
+}>;
+
+type PreparedHistoricalClassification = Readonly<{
+  eventId: string;
+  base: EmailEvidenceClassification;
+  withNetworkContext: EmailEvidenceClassification | null;
+  unavailableRaw: boolean;
+  preserveExistingClassification: boolean;
+  rawEnvelope: Readonly<{
+    ciphertext: Buffer;
+    nonce: Buffer;
+    authTag: Buffer;
+    dedupeKey: string;
+  }> | null;
+}>;
+
+async function reclassifyTrackingMessage(input: Readonly<{
+  db: Kysely<ServerDatabase>;
+  crypto: TrackingCrypto | null;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
+  now: Date;
+  workspaceId: string;
+  actorUserId: string;
+  messageId: number;
+}>): Promise<{ classified: number; unavailableRaw: number }> {
+  const context = {
+    workspaceId: input.workspaceId,
+    userId: input.actorUserId,
+    role: 'admin' as const,
+  };
+  const target = await withWorkspaceTransaction(input.db, context, async (trx) => {
+    const message = await trx
+      .selectFrom('email_messages')
+      .select('id')
+      .where('workspace_id', '=', input.workspaceId)
+      .where('id', '=', input.messageId)
+      .executeTakeFirst();
+    if (!message) throw new EmailTrackingMessageNotFoundError();
+    const tracking = await trx
+      .selectFrom('email_tracking_messages')
+      .select(['id', 'collect_derived_metadata'])
+      .where('workspace_id', '=', input.workspaceId)
+      .where('message_id', '=', input.messageId)
+      .executeTakeFirst();
+    if (!tracking) return null;
+    const accepted = await trx
+      .selectFrom('email_tracking_events')
+      .select('occurred_at')
+      .where('workspace_id', '=', input.workspaceId)
+      .where('tracking_message_id', '=', tracking.id)
+      .where('event_type', '=', 'smtp_accepted')
+      .orderBy('occurred_at', 'desc')
+      .executeTakeFirst();
+    return {
+      trackingMessageId: tracking.id,
+      smtpAcceptedAt: accepted ? toDate(accepted.occurred_at) : null,
+    };
+  });
+  if (!target) return { classified: 0, unavailableRaw: 0 };
+
+  let afterEventId = '0';
+  let classified = 0;
+  let unavailableRaw = 0;
+  while (true) {
+    const page = await withWorkspaceTransaction(input.db, context, async (trx) => {
+      await lockTrackingMessage(trx, target.trackingMessageId);
+      const tracking = await trx
+        .selectFrom('email_tracking_messages')
+        .select('collect_derived_metadata')
+        .where('workspace_id', '=', input.workspaceId)
+        .where('id', '=', target.trackingMessageId)
+        .executeTakeFirst();
+      const policy = await trx
+        .selectFrom('email_tracking_policies')
+        .select(['ip_insights_enabled', 'collect_derived_metadata', 'raw_metadata_retention_days'])
+        .where('workspace_id', '=', input.workspaceId)
+        .executeTakeFirst();
+      const rows = await trx
+        .selectFrom('email_tracking_events')
+        .select([
+          'id', 'event_type', 'confidence', 'occurred_at',
+          'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag', 'dedupe_key',
+          'created_at',
+        ])
+        .where('workspace_id', '=', input.workspaceId)
+        .where('tracking_message_id', '=', target.trackingMessageId)
+        .where('id', '>', afterEventId)
+        .orderBy('id', 'asc')
+        .limit(EMAIL_TRACKING_RECLASSIFICATION_PAGE_SIZE)
+        .execute();
+      return {
+        rows,
+        allowNetworkContext: Boolean(
+          tracking?.collect_derived_metadata
+          && policy?.collect_derived_metadata
+          && policy.ip_insights_enabled,
+        ),
+        rawCutoff: addDays(input.now, -(Number(policy?.raw_metadata_retention_days ?? 7))),
+      };
+    });
+    if (page.rows.length === 0) break;
+
+    const prepared = await classifyHistoricalTrackingPage({
+      rows: page.rows.map((row) => logicallyRetainedHistoricalRow(
+        { ...row, id: canonicalTrackingEventId(row.id) },
+        page.rawCutoff,
+      )),
+      workspaceId: input.workspaceId,
+      trackingMessageId: target.trackingMessageId,
+      smtpAcceptedAt: target.smtpAcceptedAt,
+      allowNetworkContext: page.allowNetworkContext,
+      crypto: input.crypto,
+      ipIntelligence: input.ipIntelligence,
+    });
+    const upserted = await withWorkspaceTransaction(input.db, context, async (trx) => {
+      await lockTrackingPolicy(trx, input.workspaceId);
+      const tracking = await trx
+        .selectFrom('email_tracking_messages')
+        .select('collect_derived_metadata')
+        .where('workspace_id', '=', input.workspaceId)
+        .where('id', '=', target.trackingMessageId)
+        .executeTakeFirst();
+      const policy = await trx
+        .selectFrom('email_tracking_policies')
+        .select(['ip_insights_enabled', 'collect_derived_metadata', 'raw_metadata_retention_days'])
+        .where('workspace_id', '=', input.workspaceId)
+        .executeTakeFirst();
+      const allowNetworkContext = Boolean(
+        tracking?.collect_derived_metadata
+        && policy?.collect_derived_metadata
+        && policy.ip_insights_enabled,
+      );
+      const rawCutoff = addDays(input.now, -(Number(policy?.raw_metadata_retention_days ?? 7)));
+      const lockedEvents = await trx
+        .selectFrom('email_tracking_events')
+        .select([
+          'id', 'event_type', 'confidence', 'occurred_at',
+          'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag', 'dedupe_key',
+          'created_at',
+        ])
+        .where('workspace_id', '=', input.workspaceId)
+        .where('tracking_message_id', '=', target.trackingMessageId)
+        .where('id', 'in', prepared.map((item) => item.eventId))
+        .orderBy('id', 'asc')
+        .forUpdate()
+        .execute();
+      const preservationCandidates = prepared
+        .filter((item) => item.preserveExistingClassification)
+        .map((item) => item.eventId);
+      const existingClassifications = preservationCandidates.length > 0
+        ? await trx
+          .selectFrom('email_tracking_event_classifications')
+          .select('event_id')
+          .where('classification_version', '=', 2)
+          .where('event_id', 'in', preservationCandidates)
+          .execute()
+        : [];
+      const existingClassificationEventIds = new Set(
+        existingClassifications.map((row) => canonicalTrackingEventId(row.event_id)),
+      );
+      const preparedByEventId = new Map(prepared.map((item) => [item.eventId, item]));
+      const finalized = lockedEvents.flatMap((event) => {
+        const eventId = canonicalTrackingEventId(event.id);
+        const item = preparedByEventId.get(eventId);
+        if (!item) return [];
+        const normalizedEvent = { ...event, id: eventId };
+        const fallback = item.rawEnvelope && !historicalRawEnvelopeMatches(
+          item.rawEnvelope,
+          normalizedEvent,
+          rawCutoff,
+        )
+          ? historicalRawUnavailableClassification(normalizedEvent)
+          : null;
+        const classification = fallback?.base ?? (allowNetworkContext
+          ? item.withNetworkContext ?? item.base
+          : item.base);
+        return [{
+          item,
+          classification,
+          unavailableRaw: fallback?.unavailableRaw ?? item.unavailableRaw,
+          preserveExisting: fallback === null
+            && item.preserveExistingClassification
+            && existingClassificationEventIds.has(eventId),
+        }];
+      });
+      const rows = finalized.flatMap(({ item, classification, preserveExisting }) => {
+        if (preserveExisting) return [];
+        return {
+          event_id: item.eventId,
+          classification_version: classification.version,
+          actor_class: classification.actorClass,
+          confidence: classification.confidence,
+          reasons_json: classification.reasons
+            .slice(0, 10)
+            .map((reason) => sanitizeMetadataLabel(reason)),
+          classified_at: input.now,
+        };
+      });
+      if (rows.length > 0) {
+        await trx
+          .insertInto('email_tracking_event_classifications')
+          .values(rows)
+          .onConflict((oc) => oc
+            .columns(['event_id', 'classification_version'])
+            .doUpdateSet((eb) => ({
+              actor_class: eb.ref('excluded.actor_class'),
+              confidence: eb.ref('excluded.confidence'),
+              reasons_json: eb.ref('excluded.reasons_json'),
+              classified_at: eb.ref('excluded.classified_at'),
+            })))
+          .execute();
+      }
+      return {
+        classified: finalized.length,
+        unavailableRaw: finalized.filter((item) => item.unavailableRaw).length,
+      };
+    });
+
+    classified += upserted.classified;
+    unavailableRaw += upserted.unavailableRaw;
+    afterEventId = prepared[prepared.length - 1]!.eventId;
+    if (page.rows.length < EMAIL_TRACKING_RECLASSIFICATION_PAGE_SIZE) break;
+  }
+  return { classified, unavailableRaw };
+}
+
+async function classifyHistoricalTrackingPage(input: Readonly<{
+  rows: readonly HistoricalTrackingEventRow[];
+  workspaceId: string;
+  trackingMessageId: string;
+  smtpAcceptedAt: Date | null;
+  allowNetworkContext: boolean;
+  crypto: TrackingCrypto | null;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
+}>): Promise<PreparedHistoricalClassification[]> {
+  const prepared: PreparedHistoricalClassification[] = [];
+  for (const row of input.rows) {
+    prepared.push(await classifyHistoricalTrackingEvent({ ...input, row }));
+  }
+  return prepared;
+}
+
+async function classifyHistoricalTrackingEvent(input: Readonly<{
+  row: HistoricalTrackingEventRow;
+  workspaceId: string;
+  trackingMessageId: string;
+  smtpAcceptedAt: Date | null;
+  allowNetworkContext: boolean;
+  crypto: TrackingCrypto | null;
+  ipIntelligence?: EmailTrackingIpIntelligencePort;
+}>): Promise<PreparedHistoricalClassification> {
+  const interaction = historicalInteraction(input.row.event_type);
+  if (!interaction) {
+    return historicalRawUnavailableClassification(input.row);
+  }
+
+  const raw = openHistoricalRequestRaw(
+    input.crypto,
+    input.row,
+    input.workspaceId,
+    input.trackingMessageId,
+  );
+  if (!raw) {
+    return historicalRawUnavailableClassification(input.row);
+  }
+
+  const secondsSinceSmtpAccepted = input.smtpAcceptedAt
+    ? Math.max(0, (toDate(input.row.occurred_at).getTime() - input.smtpAcceptedAt.getTime()) / 1_000)
+    : null;
+  const request = {
+    userAgent: raw.userAgent,
+    requestIp: raw.ip,
+    secondsSinceSmtpAccepted,
+    requestHeaders: raw.classifierHeaders ?? {},
+    interaction,
+  } as const;
+  const base = classifyEmailTrackingRequest(request);
+  const networkContext = input.allowNetworkContext
+    ? await historicalNetworkContext(raw.ip, input.ipIntelligence)
+    : null;
+  return {
+    eventId: input.row.id,
+    base,
+    withNetworkContext: networkContext
+      ? classifyEmailTrackingRequest({ ...request, networkContext })
+      : null,
+    unavailableRaw: false,
+    preserveExistingClassification: raw.classifierHeaders === null,
+    rawEnvelope: {
+      ciphertext: input.row.raw_metadata_ciphertext!,
+      nonce: input.row.raw_metadata_nonce!,
+      authTag: input.row.raw_metadata_auth_tag!,
+      dedupeKey: input.row.dedupe_key,
+    },
+  };
+}
+
+function historicalRawUnavailableClassification(
+  row: HistoricalTrackingEventRow,
+): PreparedHistoricalClassification {
+  const interaction = historicalInteraction(row.event_type);
+  if (!interaction) {
+    return {
+      eventId: row.id,
+      base: {
+        version: 2,
+        actorClass: 'system',
+        confidence: normalizedEvidenceConfidence(row.confidence),
+        reasons: ['system_generated_evidence'],
+      },
+      withNetworkContext: null,
+      unavailableRaw: false,
+      preserveExistingClassification: false,
+      rawEnvelope: null,
+    };
+  }
+  const legacyAutomated = row.event_type === 'open_automated'
+    || row.event_type === 'click_automated';
+  return {
+    eventId: row.id,
+    base: {
+      version: 2,
+      actorClass: legacyAutomated ? 'automated_unknown' : 'unknown',
+      confidence: 'low',
+      reasons: ['raw_request_data_unavailable'],
+    },
+    withNetworkContext: null,
+    unavailableRaw: !legacyAutomated,
+    preserveExistingClassification: false,
+    rawEnvelope: null,
+  };
+}
+
+function logicallyRetainedHistoricalRow(
+  row: HistoricalTrackingEventRow,
+  rawCutoff: Date,
+): HistoricalTrackingEventRow {
+  if (toDate(row.created_at).getTime() >= rawCutoff.getTime()) return row;
+  return {
+    ...row,
+    raw_metadata_ciphertext: null,
+    raw_metadata_nonce: null,
+    raw_metadata_auth_tag: null,
+  };
+}
+
+function historicalRawEnvelopeMatches(
+  expected: NonNullable<PreparedHistoricalClassification['rawEnvelope']>,
+  row: HistoricalTrackingEventRow,
+  rawCutoff: Date,
+): boolean {
+  return toDate(row.created_at).getTime() >= rawCutoff.getTime()
+    && row.dedupe_key === expected.dedupeKey
+    && row.raw_metadata_ciphertext?.equals(expected.ciphertext) === true
+    && row.raw_metadata_nonce?.equals(expected.nonce) === true
+    && row.raw_metadata_auth_tag?.equals(expected.authTag) === true;
+}
+
+function historicalInteraction(value: string): 'open' | 'click' | null {
+  if (value === 'open_automated' || value === 'open_probable') return 'open';
+  if (value === 'click_automated' || value === 'click') return 'click';
+  return null;
+}
+
+function openHistoricalRequestRaw(
+  crypto: TrackingCrypto | null,
+  row: HistoricalTrackingEventRow,
+  workspaceId: string,
+  trackingMessageId: string,
+): {
+  ip: string | null;
+  userAgent: string | null;
+  classifierHeaders: Record<string, string> | null;
+} | null {
+  if (
+    !crypto
+    || !row.raw_metadata_ciphertext
+    || !row.raw_metadata_nonce
+    || !row.raw_metadata_auth_tag
+  ) return null;
+  try {
+    const value = crypto.openJson({
+      ciphertext: row.raw_metadata_ciphertext,
+      nonce: row.raw_metadata_nonce,
+      authTag: row.raw_metadata_auth_tag,
+    }, emailTrackingEventAssociatedData(workspaceId, trackingMessageId, row.dedupe_key));
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const source = value as { ip?: unknown; userAgent?: unknown; classifierHeaders?: unknown };
+    const ip = typeof source.ip === 'string' && source.ip.trim() ? source.ip.slice(0, 64) : null;
+    const userAgent = typeof source.userAgent === 'string' && source.userAgent.trim()
+      ? source.userAgent.slice(0, 2_048)
+      : null;
+    const classifierHeaders = Object.prototype.hasOwnProperty.call(source, 'classifierHeaders')
+      && source.classifierHeaders
+      && typeof source.classifierHeaders === 'object'
+      && !Array.isArray(source.classifierHeaders)
+      ? trackingClassifierHeaderSubset(source.classifierHeaders as Record<string, unknown>)
+      : null;
+    return ip || userAgent || classifierHeaders !== null ? { ip, userAgent, classifierHeaders } : null;
+  } catch {
+    return null;
+  }
+}
+
+function trackingClassifierHeaderSubset(
+  headers: Readonly<Record<string, unknown>>,
+): Record<string, string> {
+  const normalized = new Map(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+  return Object.fromEntries(TRACKING_CLASSIFIER_HEADER_NAMES.flatMap((name) => {
+    const value = normalized.get(name);
+    return typeof value === 'string' && value.length > 0
+      ? [[name, value.slice(0, 256)] as const]
+      : [];
+  }));
+}
+
+async function historicalNetworkContext(
+  requestIp: string | null,
+  ipIntelligence: EmailTrackingIpIntelligencePort | undefined,
+): Promise<EmailTrackingNetworkContext | null> {
+  const ip = requestIp?.trim();
+  if (!ip || !ipIntelligence) return null;
+  try {
+    const insight = await ipIntelligence.lookup(ip);
+    return ipIntelligence.status().state === 'ready'
+      ? emailTrackingNetworkContext(insight)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizedEvidenceConfidence(value: string): EmailEvidenceConfidence {
+  return value === 'low' || value === 'medium' || value === 'high' || value === 'verified'
+    ? value
+    : 'none';
+}
+
+function canonicalTrackingEventId(value: string | number | bigint): string {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error('Unsafe email tracking event id');
+    }
+    return String(value);
+  }
+  const canonical = String(value);
+  if (!/^\d+$/.test(canonical)) throw new Error('Invalid email tracking event id');
+  return BigInt(canonical).toString();
+}
+
+function publicTrackingEventId(value: string | number | bigint): number | string {
+  const canonical = canonicalTrackingEventId(value);
+  const numeric = Number(canonical);
+  return Number.isSafeInteger(numeric) ? numeric : canonical;
+}
+
+type TrackingEventProjectionRow = Readonly<{
+  id: string | number;
+  event_type: string;
+  source: string;
+  confidence: string;
+  automated: boolean;
+  occurred_at: Date | string;
+  metadata_json?: unknown;
+  raw_metadata_ciphertext?: Buffer | null;
+  raw_metadata_nonce?: Buffer | null;
+  raw_metadata_auth_tag?: Buffer | null;
+  dedupe_key?: string;
+  classification_version: number | string | null;
+  actor_class: string | null;
+  classification_confidence: string | null;
+  reasons_json: unknown;
+}>;
+
+type TrackingEventRow = Omit<
+  TrackingEventProjectionRow,
+  'classification_version' | 'actor_class' | 'classification_confidence' | 'reasons_json'
+>;
+
+function selectTrackingEventFields() {
+  return [
+    'event.id as id',
+    'event.event_type as event_type',
+    'event.source as source',
+    'event.confidence as confidence',
+    'event.automated as automated',
+    'event.occurred_at as occurred_at',
+  ] as const;
+}
+
+async function trackingEventsWithHighestClassification(
+  trx: WorkspaceTransaction,
+  rows: readonly TrackingEventRow[],
+): Promise<TrackingEventProjectionRow[]> {
+  const classifications = new Map<string, Readonly<{
+    classificationVersion: number | string;
+    actorClass: string;
+    confidence: string;
+    reasons: unknown;
+  }>>();
+  for (let offset = 0; offset < rows.length; offset += EMAIL_TRACKING_SUMMARY_PAGE_SIZE) {
+    const eventIds = rows
+      .slice(offset, offset + EMAIL_TRACKING_SUMMARY_PAGE_SIZE)
+      .map((row) => canonicalTrackingEventId(row.id));
+    if (eventIds.length === 0) continue;
+    const page = await trx
+      .selectFrom('email_tracking_event_classifications')
+      .distinctOn('event_id')
+      .select(['event_id', 'classification_version', 'actor_class', 'confidence', 'reasons_json'])
+      .where('event_id', 'in', eventIds)
+      .orderBy('event_id', 'asc')
+      .orderBy('classification_version', 'desc')
+      .execute();
+    for (const classification of page) {
+      classifications.set(canonicalTrackingEventId(classification.event_id), {
+        classificationVersion: classification.classification_version,
+        actorClass: classification.actor_class,
+        confidence: classification.confidence,
+        reasons: classification.reasons_json,
+      });
+    }
+  }
+  return rows.map((row) => {
+    const classification = classifications.get(canonicalTrackingEventId(row.id));
+    return {
+      ...row,
+      classification_version: classification?.classificationVersion ?? null,
+      actor_class: classification?.actorClass ?? null,
+      classification_confidence: classification?.confidence ?? null,
+      reasons_json: classification?.reasons ?? null,
+    };
+  });
+}
+
+function classificationFromProjectionRow(
+  row: TrackingEventProjectionRow,
+): EmailEvidenceClassification | null {
+  if (Number(row.classification_version) !== 2 || !isEmailEvidenceActorClass(row.actor_class)) {
+    return null;
+  }
+  return {
+    version: 2,
+    actorClass: row.actor_class,
+    confidence: normalizedEvidenceConfidence(row.classification_confidence ?? 'none'),
+    reasons: Array.isArray(row.reasons_json)
+      ? row.reasons_json
+        .filter((reason): reason is string => typeof reason === 'string')
+        .slice(0, 10)
+        .map((reason) => sanitizeMetadataLabel(reason))
+      : [],
+  };
+}
+
+function isEmailEvidenceActorClass(
+  value: string | null,
+): value is EmailEvidenceClassification['actorClass'] {
+  return value !== null && [
+    'system',
+    'probable_human',
+    'mail_proxy',
+    'privacy_proxy',
+    'security_scanner',
+    'automated_unknown',
+    'unknown',
+  ].includes(value);
+}
+
+function evidenceEventFromProjectionRow(row: TrackingEventProjectionRow): EmailEvidenceEvent {
+  return {
+    type: row.event_type as EmailEvidenceEventType,
+    confidence: normalizedEvidenceConfidence(row.confidence),
+    occurredAt: timestampToIso(row.occurred_at) ?? new Date(0).toISOString(),
+    automated: Boolean(row.automated),
+    classification: classificationFromProjectionRow(row),
+  };
+}
+
+function summaryEvidenceEventFromProjectionRow(row: TrackingEventProjectionRow): EmailEvidenceEvent {
+  const event = evidenceEventFromProjectionRow(row);
+  if (event.classification) return event;
+  return {
+    ...event,
+    classification: {
+      version: 2,
+      actorClass: 'unknown',
+      confidence: 'none',
+      reasons: ['classification_unavailable'],
+    },
+  };
 }
 
 async function loadTrackingTimeline(
@@ -1460,19 +2492,24 @@ async function loadTrackingTimeline(
         tracking.id,
       );
       const rows = await trx
-        .selectFrom('email_tracking_events')
+        .selectFrom('email_tracking_events as event')
         .select([
-          'id', 'event_type', 'source', 'confidence', 'automated', 'occurred_at', 'metadata_json',
-          'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag', 'dedupe_key',
+          ...selectTrackingEventFields(),
+          'event.metadata_json as metadata_json',
+          'event.raw_metadata_ciphertext as raw_metadata_ciphertext',
+          'event.raw_metadata_nonce as raw_metadata_nonce',
+          'event.raw_metadata_auth_tag as raw_metadata_auth_tag',
+          'event.dedupe_key as dedupe_key',
         ])
-        .where('workspace_id', '=', workspaceId)
-        .where('tracking_message_id', '=', tracking.id)
-        .orderBy('occurred_at', 'desc')
-        .orderBy('id', 'desc')
+        .where('event.workspace_id', '=', workspaceId)
+        .where('event.tracking_message_id', '=', tracking.id)
+        .orderBy('event.occurred_at', 'desc')
+        .orderBy('event.id', 'desc')
         .limit(1_001)
         .execute();
       const eventsTruncated = rows.length > 1_000;
-      const events: EmailTrackingEventRecord[] = rows.slice(0, 1_000).reverse().map((row) => {
+      const projectedRows = await trackingEventsWithHighestClassification(trx, rows.slice(0, 1_000));
+      const events: EmailTrackingEventRecord[] = projectedRows.reverse().map((row) => {
         const metadata = sanitizeMetadataObject(jsonObject(row.metadata_json));
         if (
           includeSensitive
@@ -1480,6 +2517,7 @@ async function loadTrackingTimeline(
           && row.raw_metadata_ciphertext
           && row.raw_metadata_nonce
           && row.raw_metadata_auth_tag
+          && row.dedupe_key
         ) {
           try {
             const raw = crypto.openJson({
@@ -1493,13 +2531,14 @@ async function loadTrackingTimeline(
           }
         }
         return {
-          id: Number(row.id),
+          id: publicTrackingEventId(row.id),
           type: row.event_type as EmailEvidenceEventType,
           source: row.source,
           confidence: row.confidence as EmailEvidenceConfidence,
           automated: Boolean(row.automated),
           occurredAt: timestampToIso(row.occurred_at) ?? new Date(0).toISOString(),
           metadata,
+          classification: classificationFromProjectionRow(row),
         };
       });
       return {
@@ -1516,108 +2555,108 @@ async function loadTrackingTimeline(
   );
 }
 
-type TrackingEvidenceAggregateRow = {
-  latest_transport_type: string | null;
-  confidence_rank: number | string | null;
-  engagement_rank: number | string | null;
-  has_dsn_delivery: boolean | null;
-  has_external_reach: boolean | null;
-  open_count: number | string | null;
-  click_count: number | string | null;
-  automated_open_count: number | string | null;
-  probable_open_count: number | string | null;
-  automated_click_count: number | string | null;
-  probable_click_count: number | string | null;
-  first_opened_at: Date | string | null;
-  last_opened_at: Date | string | null;
-  first_clicked_at: Date | string | null;
-  last_clicked_at: Date | string | null;
-  replied_at: Date | string | null;
-};
-
 export async function loadEmailEvidenceSummaryForTracking(
   trx: WorkspaceTransaction,
   workspaceId: string,
   trackingMessageId: string,
 ): Promise<EmailEvidenceSummary> {
-  const result = await sql<TrackingEvidenceAggregateRow>`
-    SELECT
-      (ARRAY_AGG(event_type ORDER BY occurred_at DESC, id DESC)
-        FILTER (WHERE event_type IN ('queued','sending','smtp_accepted','smtp_failed','delayed','bounced')))[1]
-        AS latest_transport_type,
-      COALESCE(MAX(CASE confidence
-        WHEN 'verified' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END)
-        FILTER (WHERE event_type NOT IN ('revoked','expired')), 0)::int
-        AS confidence_rank,
-      COALESCE(MAX(CASE
-        WHEN event_type = 'replied' THEN 4
-        WHEN event_type = 'click' THEN 3
-        WHEN event_type IN ('open_probable','mdn_displayed') THEN 2
-        WHEN event_type IN ('open_automated','click_automated') THEN 1
-        ELSE 0 END), 0)::int AS engagement_rank,
-      BOOL_OR(event_type = 'dsn_delivered') AS has_dsn_delivery,
-      BOOL_OR(event_type IN (
-        'open_automated','open_probable','click_automated','click','mdn_displayed','replied'
-      )) AS has_external_reach,
-      COUNT(*) FILTER (WHERE event_type IN ('open_automated','open_probable'))::int AS open_count,
-      COUNT(*) FILTER (WHERE event_type IN ('click_automated','click'))::int AS click_count,
-      COUNT(*) FILTER (WHERE event_type = 'open_automated')::int AS automated_open_count,
-      COUNT(*) FILTER (WHERE event_type = 'open_probable')::int AS probable_open_count,
-      COUNT(*) FILTER (WHERE event_type = 'click_automated')::int AS automated_click_count,
-      COUNT(*) FILTER (WHERE event_type = 'click')::int AS probable_click_count,
-      MIN(occurred_at) FILTER (WHERE event_type IN ('open_automated','open_probable')) AS first_opened_at,
-      MAX(occurred_at) FILTER (WHERE event_type IN ('open_automated','open_probable')) AS last_opened_at,
-      MIN(occurred_at) FILTER (WHERE event_type IN ('click_automated','click')) AS first_clicked_at,
-      MAX(occurred_at) FILTER (WHERE event_type IN ('click_automated','click')) AS last_clicked_at,
-      MAX(occurred_at) FILTER (WHERE event_type = 'replied') AS replied_at
-    FROM email_tracking_events
-    WHERE workspace_id = ${workspaceId}
-      AND tracking_message_id = ${trackingMessageId}
-  `.execute(trx);
-  const row = result.rows[0];
-  if (!row) return buildEmailEvidenceSummary([]);
-  const confidenceByRank: EmailEvidenceConfidence[] = ['none', 'low', 'medium', 'high', 'verified'];
-  const engagementByRank: EmailEvidenceSummary['engagement'][] = [
-    'none', 'automated_fetch', 'probable_open', 'link_interaction', 'human_reply',
-  ];
-  const confidenceRank = boundedAggregateRank(row.confidence_rank, confidenceByRank.length);
-  const engagementRank = boundedAggregateRank(row.engagement_rank, engagementByRank.length);
+  await lockTrackingMessage(trx, trackingMessageId);
+  let summary = buildEmailEvidenceSummary([]);
+  let afterOccurredAt: Date | null = null;
+  let afterEventId = '0';
+  while (true) {
+    let query = trx
+      .selectFrom('email_tracking_events as event')
+      .select(selectTrackingEventFields())
+      .where('event.workspace_id', '=', workspaceId)
+      .where('event.tracking_message_id', '=', trackingMessageId);
+    if (afterOccurredAt) {
+      query = query.where((eb) => eb.or([
+        eb('event.occurred_at', '>', afterOccurredAt!),
+        eb.and([
+          eb('event.occurred_at', '=', afterOccurredAt!),
+          eb('event.id', '>', afterEventId),
+        ]),
+      ]));
+    }
+    const rows = await query
+      .orderBy('event.occurred_at', 'asc')
+      .orderBy('event.id', 'asc')
+      .limit(EMAIL_TRACKING_SUMMARY_PAGE_SIZE)
+      .execute();
+    if (rows.length === 0) break;
+    const projectedRows = await trackingEventsWithHighestClassification(trx, rows);
+    const pageSummary = buildEmailEvidenceSummary(
+      projectedRows.map((row) => summaryEvidenceEventFromProjectionRow(row)),
+    );
+    summary = mergeEmailEvidenceSummaries(summary, pageSummary);
+    const last = rows[rows.length - 1]!;
+    afterOccurredAt = toDate(last.occurred_at);
+    afterEventId = canonicalTrackingEventId(last.id);
+    if (rows.length < EMAIL_TRACKING_SUMMARY_PAGE_SIZE) break;
+  }
+  return summary;
+}
+
+function mergeEmailEvidenceSummaries(
+  current: EmailEvidenceSummary,
+  page: EmailEvidenceSummary,
+): EmailEvidenceSummary {
+  const probableSessionContinues = current.lastProbableHumanOpenAt !== null
+    && page.firstProbableHumanOpenAt !== null
+    && Date.parse(page.firstProbableHumanOpenAt) - Date.parse(current.lastProbableHumanOpenAt) < 30 * 60_000;
   return {
-    transport: aggregateTransport(row.latest_transport_type),
-    delivery: row.has_dsn_delivery
-      ? 'dsn_delivered'
-      : row.has_external_reach ? 'external_system_reached' : 'unknown',
-    engagement: engagementByRank[engagementRank]!,
-    confidence: confidenceByRank[confidenceRank]!,
-    openCount: aggregateCount(row.open_count),
-    clickCount: aggregateCount(row.click_count),
-    automatedOpenCount: aggregateCount(row.automated_open_count),
-    probableOpenCount: aggregateCount(row.probable_open_count),
-    automatedClickCount: aggregateCount(row.automated_click_count),
-    probableClickCount: aggregateCount(row.probable_click_count),
-    firstOpenedAt: timestampToIso(row.first_opened_at),
-    lastOpenedAt: timestampToIso(row.last_opened_at),
-    firstClickedAt: timestampToIso(row.first_clicked_at),
-    lastClickedAt: timestampToIso(row.last_clicked_at),
-    repliedAt: timestampToIso(row.replied_at),
+    transport: page.transport === 'unknown' ? current.transport : page.transport,
+    delivery: higherSummaryValue(
+      current.delivery,
+      page.delivery,
+      ['unknown', 'external_system_reached', 'dsn_delivered'],
+    ),
+    engagement: higherSummaryValue(
+      current.engagement,
+      page.engagement,
+      ['none', 'automated_fetch', 'probable_open', 'link_interaction', 'human_reply'],
+    ),
+    confidence: higherSummaryValue(
+      current.confidence,
+      page.confidence,
+      ['none', 'low', 'medium', 'high', 'verified'],
+    ),
+    mdnDisplayedCount: current.mdnDisplayedCount + page.mdnDisplayedCount,
+    pixelFetchCount: current.pixelFetchCount + page.pixelFetchCount,
+    automatedPixelFetchCount: current.automatedPixelFetchCount + page.automatedPixelFetchCount,
+    unknownPixelFetchCount: current.unknownPixelFetchCount + page.unknownPixelFetchCount,
+    probableHumanPixelFetchCount: current.probableHumanPixelFetchCount + page.probableHumanPixelFetchCount,
+    probableHumanOpenSessionCount: current.probableHumanOpenSessionCount
+      + page.probableHumanOpenSessionCount
+      - (probableSessionContinues ? 1 : 0),
+    automatedLinkFetchCount: current.automatedLinkFetchCount + page.automatedLinkFetchCount,
+    unknownLinkFetchCount: current.unknownLinkFetchCount + page.unknownLinkFetchCount,
+    probableHumanLinkFetchCount: current.probableHumanLinkFetchCount + page.probableHumanLinkFetchCount,
+    firstPixelFetchedAt: current.firstPixelFetchedAt ?? page.firstPixelFetchedAt,
+    lastPixelFetchedAt: page.lastPixelFetchedAt ?? current.lastPixelFetchedAt,
+    firstProbableHumanOpenAt: current.firstProbableHumanOpenAt ?? page.firstProbableHumanOpenAt,
+    lastProbableHumanOpenAt: page.lastProbableHumanOpenAt ?? current.lastProbableHumanOpenAt,
+    openCount: current.openCount + page.openCount,
+    clickCount: current.clickCount + page.clickCount,
+    automatedOpenCount: current.automatedOpenCount + page.automatedOpenCount,
+    probableOpenCount: current.probableOpenCount + page.probableOpenCount,
+    automatedClickCount: current.automatedClickCount + page.automatedClickCount,
+    probableClickCount: current.probableClickCount + page.probableClickCount,
+    firstOpenedAt: current.firstOpenedAt ?? page.firstOpenedAt,
+    lastOpenedAt: page.lastOpenedAt ?? current.lastOpenedAt,
+    firstClickedAt: current.firstClickedAt ?? page.firstClickedAt,
+    lastClickedAt: page.lastClickedAt ?? current.lastClickedAt,
+    repliedAt: page.repliedAt ?? current.repliedAt,
   };
 }
 
-function aggregateTransport(value: string | null): EmailEvidenceSummary['transport'] {
-  if (value === 'queued' || value === 'sending' || value === 'smtp_accepted' || value === 'delayed' || value === 'bounced') {
-    return value;
-  }
-  return value === 'smtp_failed' ? 'failed' : 'unknown';
-}
-
-function boundedAggregateRank(value: number | string | null, length: number): number {
-  const parsed = Number(value ?? 0);
-  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed < length ? parsed : 0;
-}
-
-function aggregateCount(value: number | string | null): number {
-  const parsed = Number(value ?? 0);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
+function higherSummaryValue<T extends string>(
+  current: T,
+  candidate: T,
+  ordered: readonly T[],
+): T {
+  return ordered.indexOf(candidate) > ordered.indexOf(current) ? candidate : current;
 }
 
 export function normalizeInboundEvidenceOccurredAt(value: Date | undefined, observedAt: Date): Date {

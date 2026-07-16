@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { ExternalLink, Loader2, ShieldAlert } from "lucide-react"
 import { toast } from "sonner"
 
@@ -29,6 +29,7 @@ export type EmailTrackingPolicy = {
   trackLinks: boolean
   collectDerivedMetadata: boolean
   collectRawMetadata: boolean
+  ipInsightsEnabled: boolean
   rawMetadataRetentionDays: number
   eventRetentionDays: number
   tokenTtlDays: number
@@ -41,43 +42,79 @@ export type EmailTrackingPolicy = {
 
 export function TrackingSettingsPanel() {
   const { user, loading: authLoading } = useAuth()
+  const principalId = user?.id ?? null
   const hasUser = Boolean(user)
   const isAdmin = user?.role === "owner" || user?.role === "admin"
-  const [policy, setPolicy] = useState<EmailTrackingPolicy | null>(null)
-  const [acknowledged, setAcknowledged] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [loadedState, setLoadedState] = useState<{
+    principalId: string
+    policy: EmailTrackingPolicy | null
+    acknowledged: boolean
+    error: string | null
+  } | null>(null)
+  const [loadingPrincipalId, setLoadingPrincipalId] = useState<string | null>(principalId)
+  const [savingPrincipalId, setSavingPrincipalId] = useState<string | null>(null)
+  const requestSequence = useRef(0)
+  const activePrincipalId = useRef(principalId)
+  activePrincipalId.current = principalId
+  const visibleState = loadedState?.principalId === principalId ? loadedState : null
+  const policy = visibleState?.policy ?? null
+  const acknowledged = visibleState?.acknowledged ?? false
+  const loadError = visibleState?.error ?? null
+  const loading = principalId !== null && (loadingPrincipalId === principalId || visibleState === null)
+  const saving = savingPrincipalId === principalId
 
   const load = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
+    const requestPrincipalId = principalId
+    if (!requestPrincipalId) return
+    const requestId = ++requestSequence.current
+    const canCommit = () => activePrincipalId.current === requestPrincipalId
+      && requestId === requestSequence.current
+    setLoadingPrincipalId(requestPrincipalId)
+    setLoadedState((current) => current?.principalId === requestPrincipalId
+      ? { ...current, error: null }
+      : current)
     try {
       const next = await invokeRenderer(
         IPCChannels.Email.GetEmailTrackingSettings,
       ) as EmailTrackingPolicy
-      setPolicy(next)
-      setAcknowledged(Boolean(next.complianceAcknowledgedAt))
+      if (!canCommit()) return
+      setLoadedState({
+        principalId: requestPrincipalId,
+        policy: next,
+        acknowledged: Boolean(next.complianceAcknowledgedAt),
+        error: null,
+      })
     } catch (error) {
+      if (!canCommit()) return
       const message = error instanceof Error ? error.message : "Nachverfolgung konnte nicht geladen werden."
-      setLoadError(message)
+      setLoadedState((current) => current?.principalId === requestPrincipalId
+        ? { ...current, error: message }
+        : { principalId: requestPrincipalId, policy: null, acknowledged: false, error: message })
       toast.error(message)
     } finally {
-      setLoading(false)
+      if (canCommit()) setLoadingPrincipalId(null)
     }
-  }, [])
+  }, [principalId])
 
   useEffect(() => {
     if (!authLoading && hasUser) void load()
   }, [authLoading, hasUser, load])
 
   const patch = (values: Partial<EmailTrackingPolicy>) => {
-    setPolicy((current) => current ? { ...current, ...values } : current)
-    setAcknowledged(false)
+    setLoadedState((current) => current?.principalId === principalId && current.policy
+      ? { ...current, policy: { ...current.policy, ...values }, acknowledged: false }
+      : current)
+  }
+
+  const setAcknowledged = (acknowledged: boolean) => {
+    setLoadedState((current) => current?.principalId === principalId
+      ? { ...current, acknowledged }
+      : current)
   }
 
   const save = async () => {
-    if (!policy || !isAdmin) return
+    const savePrincipalId = principalId
+    if (!policy || !isAdmin || !savePrincipalId) return
     if (policy.enabled && !policy.trackOpens && !policy.trackLinks) {
       toast.error("Wählen Sie mindestens Öffnungen oder Link-Klicks aus.")
       return
@@ -86,7 +123,7 @@ export function TrackingSettingsPanel() {
       toast.error("Rechtsgrundlage, Datenschutzhinweis und Bestätigung sind zum Aktivieren erforderlich.")
       return
     }
-    setSaving(true)
+    setSavingPrincipalId(savePrincipalId)
     try {
       const next = await invokeRenderer(IPCChannels.Email.SetEmailTrackingSettings, {
         enabled: policy.enabled,
@@ -94,6 +131,7 @@ export function TrackingSettingsPanel() {
         trackLinks: policy.trackLinks,
         collectDerivedMetadata: policy.collectDerivedMetadata,
         collectRawMetadata: policy.collectRawMetadata,
+        ipInsightsEnabled: policy.ipInsightsEnabled,
         rawMetadataRetentionDays: policy.rawMetadataRetentionDays,
         eventRetentionDays: policy.eventRetentionDays,
         tokenTtlDays: policy.tokenTtlDays,
@@ -101,13 +139,19 @@ export function TrackingSettingsPanel() {
         privacyNoticeUrl: policy.privacyNoticeUrl?.trim() || null,
         complianceAcknowledged: acknowledged,
       }) as EmailTrackingPolicy
-      setPolicy(next)
-      setAcknowledged(Boolean(next.complianceAcknowledgedAt))
+      if (activePrincipalId.current !== savePrincipalId) return
+      setLoadedState({
+        principalId: savePrincipalId,
+        policy: next,
+        acknowledged: Boolean(next.complianceAcknowledgedAt),
+        error: null,
+      })
       toast.success("Nachverfolgung gespeichert.")
     } catch (error) {
+      if (activePrincipalId.current !== savePrincipalId) return
       toast.error(error instanceof Error ? error.message : "Speichern fehlgeschlagen.")
     } finally {
-      setSaving(false)
+      setSavingPrincipalId((current) => current === savePrincipalId ? null : current)
     }
   }
 
@@ -189,7 +233,10 @@ export function TrackingSettingsPanel() {
           label="Abgeleitete Geräte- und Clientdaten speichern"
           checked={policy.collectDerivedMetadata}
           disabled={!isAdmin || policy.collectRawMetadata}
-          onCheckedChange={(collectDerivedMetadata) => patch({ collectDerivedMetadata })}
+          onCheckedChange={(collectDerivedMetadata) => patch({
+            collectDerivedMetadata,
+            ...(!collectDerivedMetadata ? { ipInsightsEnabled: false } : {}),
+          })}
         />
         <SettingSwitch
           id="tracking-raw"
@@ -199,8 +246,24 @@ export function TrackingSettingsPanel() {
           onCheckedChange={(collectRawMetadata) => patch({
             collectRawMetadata,
             ...(collectRawMetadata ? { collectDerivedMetadata: true } : {}),
+            ...(!collectRawMetadata ? { ipInsightsEnabled: false } : {}),
           })}
         />
+        <div className="space-y-1">
+          <SettingSwitch
+            id="tracking-ip-insights"
+            label="IP-Insights aus lokalen Datenbanken"
+            checked={policy.ipInsightsEnabled}
+            disabled={!isAdmin || !policy.collectDerivedMetadata || !policy.collectRawMetadata}
+            onCheckedChange={(ipInsightsEnabled) => patch({ ipInsightsEnabled })}
+          />
+          <p className="text-xs text-muted-foreground">
+            Ordnet nur die abrufende Infrastruktur lokal einem Land und Netzwerk zu. Kein Nachweis eines Empfängerstandorts; die Option aktiviert weder Roh- noch abgeleitete Metadaten.
+          </p>
+          {!policy.collectDerivedMetadata || !policy.collectRawMetadata ? (
+            <p className="text-xs text-muted-foreground">Erfordert aktivierte abgeleitete Daten sowie verschlüsselt gespeicherte IP-Adresse und User-Agent.</p>
+          ) : null}
+        </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <NumberField
             id="tracking-raw-days"

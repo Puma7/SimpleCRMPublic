@@ -12,6 +12,7 @@ import {
   assertNoKnownWeakProductionSecrets,
   parseCorsAllowedOrigins,
   parseAuthInvitationMailConfig,
+  parseEmailTrackingIpIntelligenceConfig,
   parsePort,
   parseServerJobWorkerConfig,
   parseSmtpRelayServerConfig,
@@ -19,6 +20,10 @@ import {
   type ServerEditionEnv,
   type ServerJobWorkerConfig,
 } from './config';
+import {
+  createEmailTrackingIpIntelligence,
+  type EmailTrackingIpIntelligencePort,
+} from './email-tracking-ip-intelligence';
 import {
   createPostgresAuditPort,
   createPostgresAiProfileReadPort,
@@ -196,6 +201,7 @@ export type PostgresServerApiPortsOptions = Readonly<{
   rspamdFetch?: typeof fetch;
   publicBaseUrl?: string;
   masterKey?: Buffer;
+  emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
 }>;
 
 export type ServerListenOptions = Readonly<{
@@ -214,6 +220,7 @@ export type ServerListenOptions = Readonly<{
   createGraphileQueue?: (options: { connectionString: string; migrateOnStart?: boolean }) => Promise<GraphileQueuePort>;
   createJobWorker?: typeof startGraphileWorkerRuntime;
   createEventNotifications?: (options: { databaseUrl: string }) => Promise<PostgresServerEventNotificationChannel>;
+  emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
 }>;
 
 /**
@@ -287,6 +294,8 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     authInvitationMail,
     turnstileSiteKey: env.TURNSTILE_SITE_KEY?.trim(),
     turnstileSecretKey: env.TURNSTILE_SECRET_KEY?.trim(),
+    emailTrackingIpIntelligence: options.emailTrackingIpIntelligence
+      ?? createEmailTrackingIpIntelligence(parseEmailTrackingIpIntelligenceConfig(env)),
     onDatabaseCreated(database) {
       db = database;
     },
@@ -509,6 +518,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       masterKey: options.masterKey,
       audit,
       events,
+      emailTrackingIpIntelligence: options.emailTrackingIpIntelligence,
     })
     : undefined;
   return {
@@ -652,6 +662,7 @@ async function createDefaultServerPorts(input: {
   authInvitationMail?: AuthInvitationMailConfig;
   turnstileSiteKey?: string;
   turnstileSecretKey?: string;
+  emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
   onDatabaseCreated(db: Kysely<ServerDatabase>): void;
   onSecretsCreated(secrets: PostgresSecretPort | undefined): void;
   onEventNotificationsCreated(notifications: PostgresServerEventNotificationChannel): void;
@@ -693,6 +704,7 @@ async function createDefaultServerPorts(input: {
     authInvitationMail: input.authInvitationMail,
     turnstileSiteKey: input.turnstileSiteKey,
     turnstileSecretKey: input.turnstileSecretKey,
+    emailTrackingIpIntelligence: input.emailTrackingIpIntelligence,
     publicBaseUrl: input.publicBaseUrl,
     masterKey: masterKey?.bytes,
     events: createPostgresServerEventPort({ db, notifications: eventNotifications }),

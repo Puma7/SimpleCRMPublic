@@ -8,7 +8,7 @@ const workspacePolicyTables = [
 ] as const;
 
 export const smtpRelayMigration: SqlMigration = {
-  id: '0030_smtp_relay',
+  id: '0031_smtp_relay',
   description: 'Workspace-scoped SMTP relay endpoints, credentials, allowed accounts, and submission audit.',
   upSql: [
     `CREATE TABLE IF NOT EXISTS smtp_relays (
