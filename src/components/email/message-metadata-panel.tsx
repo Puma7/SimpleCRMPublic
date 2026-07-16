@@ -9,6 +9,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion"
 import { invokeRenderer } from "@/services/transport"
 import {
   Select,
@@ -293,11 +299,7 @@ export function MessageMetadataPanel({
       </div>
 
       <ScrollArea className="flex-1">
-        <div className="space-y-5 p-4">
-          <MessageEvidencePanel
-            messageId={selectedMessage.id}
-            folderKind={selectedMessage.folder_kind}
-          />
+        <div className="space-y-4 p-3">
           <div className="space-y-2">
             <Label className="text-xs">Interne Notizen</Label>
             {internalNotes.length === 0 ? (
@@ -410,179 +412,22 @@ export function MessageMetadataPanel({
               Speichern
             </Button>
           </div>
-          {correspondentEmail ||
-          conversation.length > 0 ||
-          selectedMessage.ticket_code?.trim() ||
-          (selectedMessage.customer_id != null && selectedMessage.customer_id > 0) ? (
-            <div
-              id={METADATA_CONVERSATION_SECTION_ID}
-              className="scroll-mt-4 space-y-1.5 rounded-md transition-shadow duration-300"
-            >
-              <Label className="text-xs">
-                {correspondentEmail
-                  ? `Alle Mails mit ${correspondentEmail}`
-                  : "Kommunikation (Ticket/Kunde)"}
-              </Label>
-              <p className="text-[10px] text-muted-foreground">
-                {correspondentEmail
-                  ? "Posteingang, Gesendet, Archiv — Klick auf Eintrag wechselt die Auswahl."
-                  : "Weitere Nachrichten zum Ticket oder verknüpften Kunden."}
+
+          <MessageEvidencePanel
+            messageId={selectedMessage.id}
+            folderKind={selectedMessage.folder_kind}
+          />
+
+          {selectedMessage.archived ? (
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
+              <p className="font-medium">Im Archiv</p>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Eingehende Workflows können neue Mails automatisch archivieren
+                (Einstellungen → Workflows). Nutzen Sie „Aus Archiv“ in der
+                Toolbar, um die Nachricht wieder im Posteingang zu sehen.
               </p>
-              {conversation.length > 0 ? (
-                <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded border bg-background p-1 text-xs">
-                  {conversation.map((m) => {
-                    const active = m.id === selectedMessage.id
-                    const opening = openingConversationId === m.id
-                    return (
-                      <li key={m.id}>
-                        <button
-                          type="button"
-                          disabled={active || opening}
-                          className={`w-full rounded px-2 py-1.5 text-left transition-colors ${
-                            active
-                              ? "bg-primary/10 text-primary"
-                              : "hover:bg-muted"
-                          }`}
-                          onClick={() => {
-                            if (!active) void openConversationMessage(m)
-                          }}
-                        >
-                          <p className="font-medium line-clamp-1">
-                            {m.subject || "(Ohne Betreff)"}
-                          </p>
-                          <p className="text-[10px] text-muted-foreground">
-                            {m.date_received
-                              ? new Date(m.date_received).toLocaleString("de-DE")
-                              : "—"}
-                            {m.ticket_code ? ` · ${m.ticket_code}` : ""}
-                          </p>
-                        </button>
-                      </li>
-                    )
-                  })}
-                </ul>
-              ) : correspondentEmail ? (
-                <p className="text-xs text-muted-foreground">
-                  Keine weiteren Nachrichten mit {correspondentEmail} in diesem Konto.
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Keine weiteren Nachrichten zu Ticket oder Kunde.
-                </p>
-              )}
             </div>
           ) : null}
-
-          <div className="space-y-1.5 rounded-md border bg-muted/20 p-2">
-            <div className="flex items-center justify-between gap-2">
-              <Label className="text-xs">Mail-Sicherheit</Label>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 text-[10px]"
-                disabled={securityLoading}
-                onClick={() => {
-                  if (!selectedMessage) return
-                  void (async () => {
-                    setSecurityLoading(true)
-                    try {
-                      const result = await invokeRenderer(
-                        IPCChannels.Email.RunMailSecurityCheck,
-                        selectedMessage.id,
-                      ) as { success?: boolean; queued?: boolean }
-                      const r = await invokeRenderer(
-                        IPCChannels.Email.GetMessageSecurity,
-                        selectedMessage.id,
-                      ) as MessageSecurityResponse
-                      if (r.success) setSecurity(messageSecurityStateFromResponse(r))
-                      toast.success(result.queued ? "Prüfung eingereiht" : "Prüfung abgeschlossen")
-                    } catch {
-                      toast.error("Sicherheitsprüfung fehlgeschlagen")
-                    } finally {
-                      setSecurityLoading(false)
-                    }
-                  })()
-                }}
-              >
-                Erneut prüfen
-              </Button>
-            </div>
-            {securityLoading && !security ? (
-              <p className="text-[10px] text-muted-foreground">Lädt…</p>
-            ) : hasSecurityDetails ? (
-              <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
-                <dt className="text-muted-foreground">SPF</dt>
-                <dd className="font-mono">{security.authSpf ?? "—"}</dd>
-                <dt className="text-muted-foreground">DKIM</dt>
-                <dd className="font-mono">{security.authDkim ?? "—"}</dd>
-                <dt className="text-muted-foreground">DMARC</dt>
-                <dd className="font-mono">{security.authDmarc ?? "—"}</dd>
-                <dt className="text-muted-foreground">ARC</dt>
-                <dd className="font-mono">{security.authArc ?? "—"}</dd>
-                {security.rspamdScore != null ? (
-                  <>
-                    <dt className="text-muted-foreground">Rspamd</dt>
-                    <dd className="font-mono">
-                      {security.rspamdScore}
-                      {security.rspamdAction ? ` (${security.rspamdAction})` : ""}
-                    </dd>
-                  </>
-                ) : null}
-                {security.spamScore != null ? (
-                  <>
-                    <dt className="text-muted-foreground">Spam-Score</dt>
-                    <dd className="font-mono">
-                      {security.spamScore}/100
-                      {security.spamScoreLabel ? ` (${security.spamScoreLabel})` : ""}
-                    </dd>
-                    <dt className="text-muted-foreground">Quelle</dt>
-                    <dd className="font-mono">{security.spamDecisionSource ?? "lokal"}</dd>
-                  </>
-                ) : null}
-              </dl>
-            ) : (
-              <p className="text-[10px] text-muted-foreground">
-                Noch nicht geprüft (läuft normalerweise beim Sync).
-              </p>
-            )}
-            {security?.authSpf === "temperror" ||
-            security?.authDkim === "temperror" ||
-            security?.authDmarc === "temperror" ? (
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                <strong>temperror</strong> = Live-DNS-Prüfung fehlgeschlagen. Netzwerk/VPN/DNS prüfen
-                und „Erneut prüfen“ — oder Authentication-Results des Servers in den Roh-Headern
-                prüfen.
-              </p>
-            ) : null}
-            {security?.authError?.includes(
-              "Werte aus Authentication-Results des empfangenden Servers",
-            ) ? (
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                SPF/DKIM/DMARC stammen aus dem Authentication-Results-Header Ihres Mailservers (keine
-                Live-DNS-Prüfung in SimpleCRM).
-              </p>
-            ) : null}
-            {security?.authArc === "fail" ? (
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                <strong>ARC fail</strong> ist bei normaler Post ohne Weiterleitungskette häufig — oft
-                unkritisch.
-              </p>
-            ) : null}
-            {security?.spamScoreBreakdownJson ? (
-              <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
-                {spamReasonLabels(security.spamScoreBreakdownJson).map((reason) => (
-                  <p key={reason}>{reason}</p>
-                ))}
-              </div>
-            ) : null}
-            {security?.authError || security?.rspamdError ? (
-              <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
-                {[security.authError, security.rspamdError].filter(Boolean).join(" · ")}
-              </p>
-            ) : null}
-          </div>
-
           <div className="space-y-1.5">
             <Label className="text-xs">Zuweisung</Label>
             <Select
@@ -711,10 +556,6 @@ export function MessageMetadataPanel({
                 </SelectContent>
               </Select>
             </div>
-            <p className="text-[10px] text-muted-foreground">
-              Tipp: Mails per Drag-Drop in eine Kategorie (Sidebar) fügen die Kategorie hinzu —
-              ohne andere zu entfernen.
-            </p>
           </div>
 
           <div className="space-y-1.5">
@@ -752,57 +593,244 @@ export function MessageMetadataPanel({
             ) : null}
           </div>
 
-          {selectedMessage.archived ? (
-            <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs text-amber-900 dark:text-amber-200">
-              <p className="font-medium">Im Archiv</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">
-                Eingehende Workflows können neue Mails automatisch archivieren
-                (Einstellungen → Workflows). Nutzen Sie „Aus Archiv“ in der
-                Toolbar, um die Nachricht wieder im Posteingang zu sehen.
+          {correspondentEmail ||
+          conversation.length > 0 ||
+          selectedMessage.ticket_code?.trim() ||
+          (selectedMessage.customer_id != null && selectedMessage.customer_id > 0) ? (
+            <div
+              id={METADATA_CONVERSATION_SECTION_ID}
+              className="scroll-mt-4 space-y-1.5 rounded-md transition-shadow duration-300"
+            >
+              <Label className="text-xs">
+                {correspondentEmail
+                  ? `Alle Mails mit ${correspondentEmail}`
+                  : "Kommunikation (Ticket/Kunde)"}
+              </Label>
+              <p className="text-[10px] text-muted-foreground">
+                {correspondentEmail
+                  ? "Posteingang, Gesendet, Archiv — Klick auf Eintrag wechselt die Auswahl."
+                  : "Weitere Nachrichten zum Ticket oder verknüpften Kunden."}
               </p>
+              {conversation.length > 0 ? (
+                <ul className="max-h-48 space-y-0.5 overflow-y-auto rounded border bg-background p-1 text-xs">
+                  {conversation.map((m) => {
+                    const active = m.id === selectedMessage.id
+                    const opening = openingConversationId === m.id
+                    return (
+                      <li key={m.id}>
+                        <button
+                          type="button"
+                          disabled={active || opening}
+                          className={`w-full rounded px-2 py-1.5 text-left transition-colors ${
+                            active
+                              ? "bg-primary/10 text-primary"
+                              : "hover:bg-muted"
+                          }`}
+                          onClick={() => {
+                            if (!active) void openConversationMessage(m)
+                          }}
+                        >
+                          <p className="font-medium line-clamp-1">
+                            {m.subject || "(Ohne Betreff)"}
+                          </p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {m.date_received
+                              ? new Date(m.date_received).toLocaleString("de-DE")
+                              : "—"}
+                            {m.ticket_code ? ` · ${m.ticket_code}` : ""}
+                          </p>
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              ) : correspondentEmail ? (
+                <p className="text-xs text-muted-foreground">
+                  Keine weiteren Nachrichten mit {correspondentEmail} in diesem Konto.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Keine weiteren Nachrichten zu Ticket oder Kunde.
+                </p>
+              )}
             </div>
           ) : null}
 
-          <div className="space-y-1.5">
-            <Label className="text-xs">Tags</Label>
-            {messageTags.length > 0 ? (
-              <div className="flex flex-wrap gap-1">
-                {messageTags.map((t) => (
-                  <span
-                    key={t}
-                    className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 pl-2 pr-1 py-0.5 text-[10px] font-medium text-primary"
+          <Accordion type="multiple" className="w-full">
+            <AccordionItem value="security">
+              <AccordionTrigger className="py-2 text-xs font-medium hover:no-underline">
+                Mail-Sicherheit
+              </AccordionTrigger>
+              <AccordionContent className="space-y-2 pb-3">
+                <div className="flex justify-end">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-[10px]"
+                    disabled={securityLoading}
+                    onClick={() => {
+                      if (!selectedMessage) return
+                      void (async () => {
+                        setSecurityLoading(true)
+                        try {
+                          const result = await invokeRenderer(
+                            IPCChannels.Email.RunMailSecurityCheck,
+                            selectedMessage.id,
+                          ) as { success?: boolean; queued?: boolean }
+                          const r = await invokeRenderer(
+                            IPCChannels.Email.GetMessageSecurity,
+                            selectedMessage.id,
+                          ) as MessageSecurityResponse
+                          if (r.success) setSecurity(messageSecurityStateFromResponse(r))
+                          toast.success(result.queued ? "Prüfung eingereiht" : "Prüfung abgeschlossen")
+                        } catch {
+                          toast.error("Sicherheitsprüfung fehlgeschlagen")
+                        } finally {
+                          setSecurityLoading(false)
+                        }
+                      })()
+                    }}
                   >
-                    {t}
-                    <button
-                      type="button"
-                      className="rounded-full p-0.5 hover:bg-primary/20"
-                      aria-label={`Tag ${t} entfernen`}
-                      onClick={async () => {
-                        await invokeRenderer(IPCChannels.Email.RemoveMessageTag, {
-                          messageId: selectedMessage.id,
-                          tag: t,
-                        })
-                        await reloadTags()
-                        toast.success("Tag entfernt")
-                      }}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">Keine Tags.</p>
-            )}
-            <div className="flex gap-1">
-              <Input
-                value={newTag}
-                onChange={(e) => setNewTag(e.target.value)}
-                placeholder="Neuer Tag…"
-                className="h-8 text-sm"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && newTag.trim()) {
-                    void (async () => {
+                    Erneut prüfen
+                  </Button>
+                </div>
+                {securityLoading && !security ? (
+                  <p className="text-[10px] text-muted-foreground">Lädt…</p>
+                ) : hasSecurityDetails ? (
+                  <dl className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
+                    <dt className="text-muted-foreground">SPF</dt>
+                    <dd className="font-mono">{security.authSpf ?? "—"}</dd>
+                    <dt className="text-muted-foreground">DKIM</dt>
+                    <dd className="font-mono">{security.authDkim ?? "—"}</dd>
+                    <dt className="text-muted-foreground">DMARC</dt>
+                    <dd className="font-mono">{security.authDmarc ?? "—"}</dd>
+                    <dt className="text-muted-foreground">ARC</dt>
+                    <dd className="font-mono">{security.authArc ?? "—"}</dd>
+                    {security.rspamdScore != null ? (
+                      <>
+                        <dt className="text-muted-foreground">Rspamd</dt>
+                        <dd className="font-mono">
+                          {security.rspamdScore}
+                          {security.rspamdAction ? ` (${security.rspamdAction})` : ""}
+                        </dd>
+                      </>
+                    ) : null}
+                    {security.spamScore != null ? (
+                      <>
+                        <dt className="text-muted-foreground">Spam-Score</dt>
+                        <dd className="font-mono">
+                          {security.spamScore}/100
+                          {security.spamScoreLabel ? ` (${security.spamScoreLabel})` : ""}
+                        </dd>
+                        <dt className="text-muted-foreground">Quelle</dt>
+                        <dd className="font-mono">{security.spamDecisionSource ?? "lokal"}</dd>
+                      </>
+                    ) : null}
+                  </dl>
+                ) : (
+                  <p className="text-[10px] text-muted-foreground">
+                    Noch nicht geprüft (läuft normalerweise beim Sync).
+                  </p>
+                )}
+                {security?.authSpf === "temperror" ||
+                security?.authDkim === "temperror" ||
+                security?.authDmarc === "temperror" ? (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    <strong>temperror</strong> = Live-DNS-Prüfung fehlgeschlagen. Netzwerk/VPN/DNS prüfen
+                    und „Erneut prüfen“ — oder Authentication-Results des Servers in den Roh-Headern
+                    prüfen.
+                  </p>
+                ) : null}
+                {security?.authError?.includes(
+                  "Werte aus Authentication-Results des empfangenden Servers",
+                ) ? (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    SPF/DKIM/DMARC stammen aus dem Authentication-Results-Header Ihres Mailservers (keine
+                    Live-DNS-Prüfung in SimpleCRM).
+                  </p>
+                ) : null}
+                {security?.authArc === "fail" ? (
+                  <p className="mt-1 text-[10px] text-muted-foreground">
+                    <strong>ARC fail</strong> ist bei normaler Post ohne Weiterleitungskette häufig — oft
+                    unkritisch.
+                  </p>
+                ) : null}
+                {security?.spamScoreBreakdownJson ? (
+                  <div className="mt-1 space-y-0.5 text-[10px] text-muted-foreground">
+                    {spamReasonLabels(security.spamScoreBreakdownJson).map((reason) => (
+                      <p key={reason}>{reason}</p>
+                    ))}
+                  </div>
+                ) : null}
+                {security?.authError || security?.rspamdError ? (
+                  <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-400">
+                    {[security.authError, security.rspamdError].filter(Boolean).join(" · ")}
+                  </p>
+                ) : null}
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="tags">
+              <AccordionTrigger className="py-2 text-xs font-medium hover:no-underline">
+                {messageTags.length > 0 ? `Tags (${messageTags.length})` : "Tags"}
+              </AccordionTrigger>
+              <AccordionContent className="space-y-2 pb-3">
+                {messageTags.length > 0 ? (
+                  <div className="flex flex-wrap gap-1">
+                    {messageTags.map((t) => (
+                      <span
+                        key={t}
+                        className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 pl-2 pr-1 py-0.5 text-[10px] font-medium text-primary"
+                      >
+                        {t}
+                        <button
+                          type="button"
+                          className="rounded-full p-0.5 hover:bg-primary/20"
+                          aria-label={`Tag ${t} entfernen`}
+                          onClick={async () => {
+                            await invokeRenderer(IPCChannels.Email.RemoveMessageTag, {
+                              messageId: selectedMessage.id,
+                              tag: t,
+                            })
+                            await reloadTags()
+                            toast.success("Tag entfernt")
+                          }}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Keine Tags.</p>
+                )}
+                <div className="flex gap-1">
+                  <Input
+                    value={newTag}
+                    onChange={(e) => setNewTag(e.target.value)}
+                    placeholder="Neuer Tag…"
+                    className="h-8 text-sm"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newTag.trim()) {
+                        void (async () => {
+                          await invokeRenderer(IPCChannels.Email.AddMessageTag, {
+                            messageId: selectedMessage.id,
+                            tag: newTag.trim(),
+                          })
+                          setNewTag("")
+                          await reloadTags()
+                          toast.success("Tag hinzugefügt")
+                        })()
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-8 shrink-0"
+                    disabled={!newTag.trim()}
+                    onClick={async () => {
                       await invokeRenderer(IPCChannels.Email.AddMessageTag, {
                         messageId: selectedMessage.id,
                         tag: newTag.trim(),
@@ -810,65 +838,53 @@ export function MessageMetadataPanel({
                       setNewTag("")
                       await reloadTags()
                       toast.success("Tag hinzugefügt")
-                    })()
-                  }
-                }}
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className="h-8 shrink-0"
-                disabled={!newTag.trim()}
-                onClick={async () => {
-                  await invokeRenderer(IPCChannels.Email.AddMessageTag, {
-                    messageId: selectedMessage.id,
-                    tag: newTag.trim(),
-                  })
-                  setNewTag("")
-                  await reloadTags()
-                  toast.success("Tag hinzugefügt")
-                }}
-              >
-                +
-              </Button>
-            </div>
-          </div>
-
-          {selectedMessage.imap_thread_id ? (
-            <div className="space-y-1">
-              <Label className="text-xs">IMAP-Thread</Label>
-              <p className="break-all font-mono text-[10px] text-muted-foreground">
-                {selectedMessage.imap_thread_id}
-              </p>
-            </div>
-          ) : null}
-
-          <div className="space-y-1.5">
-            <Label className="text-xs">Nachrichten-ID</Label>
-            <div className="flex items-center gap-2">
-              <code className="flex-1 rounded border bg-muted/50 px-2 py-1 font-mono text-xs">
-                {selectedMessage.id}
-              </code>
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="h-8 w-8 shrink-0"
-                aria-label="ID kopieren"
-                onClick={() => {
-                  void navigator.clipboard.writeText(String(selectedMessage.id))
-                  toast.success("Nachrichten-ID kopiert")
-                }}
-              >
-                <Copy className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              Workflow manuell starten: Toolbar „Workflow“ oder Workflows → Erweitert (Dry-Run mit
-              ID).
-            </p>
-          </div>
+                    }}
+                  >
+                    +
+                  </Button>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="tech" className="border-b-0">
+              <AccordionTrigger className="py-2 text-xs font-medium hover:no-underline">
+                Technische Details
+              </AccordionTrigger>
+              <AccordionContent className="space-y-3 pb-3">
+                {selectedMessage.imap_thread_id ? (
+                  <div className="space-y-1">
+                    <Label className="text-xs">IMAP-Thread</Label>
+                    <p className="break-all font-mono text-[10px] text-muted-foreground">
+                      {selectedMessage.imap_thread_id}
+                    </p>
+                  </div>
+                ) : null}
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Nachrichten-ID</Label>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 rounded border bg-muted/50 px-2 py-1 font-mono text-xs">
+                      {selectedMessage.id}
+                    </code>
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      className="h-8 w-8 shrink-0"
+                      aria-label="ID kopieren"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(String(selectedMessage.id))
+                        toast.success("Nachrichten-ID kopiert")
+                      }}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">
+                    Workflow manuell starten: Toolbar „Workflow“ oder Workflows → Erweitert.
+                  </p>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
 
         </div>
       </ScrollArea>
