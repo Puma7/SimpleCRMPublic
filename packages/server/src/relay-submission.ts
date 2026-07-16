@@ -394,7 +394,12 @@ export function createRelaySubmissionPipeline(
         const cc = mailboxListFromAddressJson(parsed.ccJson);
         outgoingRfc822 = buildComposeRfc822({
           from: mailboxListFromAddressJson(parsed.fromJson) || String(account.email_address),
-          to: mailboxListFromAddressJson(parsed.toJson) || recipients.join(', '),
+          // A message with no To: header (Bcc-only / undisclosed recipients)
+          // must NOT fall back to the envelope recipient list here — that
+          // list is exactly what Bcc exists to keep hidden, and every
+          // recipient would see it in the rebuilt, visible To: header. Use
+          // the standard RFC5322 empty-group placeholder instead.
+          to: mailboxListFromAddressJson(parsed.toJson) || 'undisclosed-recipients:;',
           ...(cc ? { cc } : {}),
           subject,
           text: parsed.bodyText ?? '',
@@ -502,25 +507,16 @@ export function createRelaySubmissionPipeline(
         rejectedRecipientCount: 0,
       }).catch(() => undefined);
 
-      // 8. Best-effort Sent-folder copy — never fatal.
-      if (deps.sentCopyAppender) {
-        try {
-          const copy = await deps.sentCopyAppender.append({
-            workspaceId,
-            accountId: Number(account.id),
-            rfc822: outgoingRfc822,
-          });
-          if (!copy.ok) {
-            log('relay sent copy failed', { workspaceId, messageId, error: copy.error });
-          }
-        } catch (error) {
-          log('relay sent copy failed', { workspaceId, messageId, error: errorMessage(error) });
-        }
-      }
-
-      // 9. Mark relayed. SMTP already accepted the message, so a bookkeeping
-      //    failure must NOT surface as retryable (the sender would re-send a
-      //    delivered mail) — log and continue instead.
+      // 8. Mark relayed FIRST, before the best-effort Sent-copy below. SMTP
+      //    already accepted the message, so a bookkeeping failure here must
+      //    NOT surface as retryable (the sender would re-send a delivered
+      //    mail) — log and continue instead. Doing this before the IMAP
+      //    append (rather than after) shrinks the window between "message
+      //    actually sent" and "row marked relayed": persistMessage only
+      //    short-circuits a same-dedup-key retry once status is 'relayed',
+      //    so every extra await between accept and this write is time during
+      //    which a crash/hang + ERP retry would resend an already-delivered
+      //    message.
       try {
         await store.updateSubmission({
           workspaceId,
@@ -535,6 +531,23 @@ export function createRelaySubmissionPipeline(
           submissionId,
           error: errorMessage(error),
         });
+      }
+
+      // 9. Best-effort Sent-folder copy — never fatal, and no longer gates
+      //    marking the submission relayed (see above).
+      if (deps.sentCopyAppender) {
+        try {
+          const copy = await deps.sentCopyAppender.append({
+            workspaceId,
+            accountId: Number(account.id),
+            rfc822: outgoingRfc822,
+          });
+          if (!copy.ok) {
+            log('relay sent copy failed', { workspaceId, messageId, error: copy.error });
+          }
+        } catch (error) {
+          log('relay sent copy failed', { workspaceId, messageId, error: errorMessage(error) });
+        }
       }
 
       // 10. Optional follow-up workflow — fail-open.

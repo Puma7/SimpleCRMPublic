@@ -62,6 +62,7 @@ function relayConfig(overrides: Partial<SmtpRelayConfig> = {}): SmtpRelayConfig 
 
 function erpMessage(input: {
   from?: string;
+  to?: string | null;
   subject?: string;
   messageId?: string | null;
   extraHeaders?: readonly string[];
@@ -69,7 +70,7 @@ function erpMessage(input: {
 } = {}): Buffer {
   const lines = [
     `From: ${input.from ?? 'Buchhaltung <sales@acme.test>'}`,
-    'To: Kunde <kunde@example.com>',
+    ...(input.to === null ? [] : [`To: ${input.to ?? 'Kunde <kunde@example.com>'}`]),
     ...(input.messageId === null ? [] : [`Message-ID: ${input.messageId ?? '<erp-123@erp.local>'}`]),
     `Subject: ${input.subject ?? 'Mahnung 2'}`,
     ...(input.extraHeaders ?? []),
@@ -320,6 +321,24 @@ describe('submitRelay tracked path', () => {
     expect(persistInputs[0]!.trackingRuleReason).toBe('header_override');
     // Rebuilt message never carries the relay control header.
     expect(capturedRfc822(smtpSend)).not.toMatch(/x-simplecrm/i);
+  });
+
+  test('a Bcc-only (no To: header) tracked message does not expose the envelope recipient list', async () => {
+    // Regression test: falling back to the SMTP envelope recipients for a
+    // missing To: header would leak every Bcc'd recipient's address to every
+    // other recipient in the rebuilt, visible To: header.
+    const { pipeline, smtpSend } = makePipeline();
+
+    const result = await pipeline.submitRelay(submitInput(
+      erpMessage({ subject: 'Mahnung 2', to: null }),
+      { recipients: ['kunde-a@example.com', 'kunde-b@example.com'] },
+    ));
+
+    expect(result).toEqual(expect.objectContaining({ ok: true, tracked: true }));
+    const outgoing = capturedRfc822(smtpSend);
+    expect(outgoing).not.toContain('kunde-a@example.com');
+    expect(outgoing).not.toContain('kunde-b@example.com');
+    expect(outgoing).toContain('To: undisclosed-recipients:;');
   });
 });
 
