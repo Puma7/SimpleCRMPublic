@@ -117,6 +117,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const requestSequence = useRef(0)
   const actionSequence = useRef(0)
   const actionInFlight = useRef<{ id: number; messageId: number } | null>(null)
+  const includeSensitiveRef = useRef(false)
   const mounted = useRef(false)
   const activeMessageId = useRef(props.messageId)
 
@@ -174,6 +175,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
     resetEphemeralState()
     setTimeline(null)
     setAvailable(true)
+    includeSensitiveRef.current = false
     setIncludeSensitive(false)
     setOpen(false)
     void load(false)
@@ -225,7 +227,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
       await invokeRenderer(channel, messageId)
       if (!canCommit()) return
       toast.success(successMessage)
-      await load(includeSensitive)
+      await load(includeSensitiveRef.current && isAdmin)
       if (!canCommit()) return
       afterSuccess?.()
     } catch (error) {
@@ -309,7 +311,8 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                       aria-labelledby={sensitiveSwitchLabelId}
                       checked={includeSensitive}
                       onCheckedChange={(checked) => {
-                        if (!checked) resetEphemeralState()
+                        includeSensitiveRef.current = checked
+                        if (!checked) resetEphemeralState(true)
                         setIncludeSensitive(checked)
                         void load(checked)
                       }}
@@ -468,6 +471,7 @@ function evidenceStatus(kind: "transport" | "delivery" | "engagement", value: st
   if (value === "probable_open") return { category: "Interaktion", label: "Menschlicher Abruf wahrscheinlich", icon: Eye, color: "text-sky-600" }
   if (value === "automated_fetch") return { category: "Interaktion", label: "Automatischer Abruf", icon: Bot, color: "text-amber-600" }
   if (value === "unknown_fetch") return { category: "Interaktion", label: "Pixelabruf, Ursache unklar", icon: CircleDashed, color: "text-muted-foreground" }
+  if (value === "unknown_interaction") return { category: "Interaktion", label: "Interaktion, Ursache unklar", icon: CircleDashed, color: "text-muted-foreground" }
   return { category: "Interaktion", label: "Kein Signal", icon: CircleDashed, color: "text-muted-foreground" }
 }
 
@@ -605,7 +609,18 @@ function hasV2EvidenceMetrics(summary: EvidenceTimeline["summary"] | undefined):
 
 function displayedEngagement(summary: EvidenceTimeline["summary"] | undefined, events: EvidenceEvent[]): string {
   if (!summary) return "none"
-  if (summary.engagement === "human_reply" || summary.engagement === "link_interaction") return summary.engagement
+  if (summary.engagement === "human_reply") return summary.engagement
+  if (summary.engagement === "link_interaction") {
+    if (!hasV2EvidenceMetrics(summary)) return summary.engagement
+    const clickActors = events
+      .filter((event) => event.type === "click" || event.type === "click_automated")
+      .map(interactionActor)
+    if (clickActors.includes("probable_human")) return summary.engagement
+    if (clickActors.some((actor) => ["mail_proxy", "privacy_proxy", "security_scanner", "automated_unknown"].includes(actor))) {
+      return "automated_fetch"
+    }
+    return "unknown_interaction"
+  }
   if (
     summary.engagement === "probable_open"
     && ((summary.mdnDisplayedCount ?? 0) > 0 || events.some((event) => event.type === "mdn_displayed"))
