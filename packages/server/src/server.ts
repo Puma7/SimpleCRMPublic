@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import type { FastifyInstance } from 'fastify';
 import { sql } from 'kysely';
 import type { Kysely } from 'kysely';
@@ -13,6 +15,7 @@ import {
   parseEmailTrackingIpIntelligenceConfig,
   parsePort,
   parseServerJobWorkerConfig,
+  parseSmtpRelayServerConfig,
   type AuthInvitationMailConfig,
   type ServerEditionEnv,
   type ServerJobWorkerConfig,
@@ -72,6 +75,8 @@ import {
   createPostgresSpamListEntryReadPort,
   createPostgresSavedViewReadPort,
   createPostgresSecretPort,
+  createPostgresSmtpRelayAdminPort,
+  createPostgresSmtpRelayPort,
   createPostgresSyncInfoPort,
   createPostgresPublicAuthSecuritySettingsReader,
   createPostgresWorkflowDelayedJobReadPort,
@@ -145,7 +150,13 @@ import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
 import {
   createPostgresEmailTrackingService,
   startEmailTrackingRetentionTicker,
+  type EmailTrackingService,
 } from './email-tracking';
+import {
+  startInboundSmtpService,
+  type InboundSmtpService,
+} from './inbound-smtp-service';
+import { createRelaySubmissionPipeline } from './relay-submission';
 import { createPostgresServerImapSentCopyAppenderPort } from './mail-imap-append';
 import { createPostgresEmailReadReceiptResponderPort } from './mail-read-receipt-responder';
 import { createPostgresScheduledSendJobPort, startScheduledSendTicker } from './mail-scheduled-send';
@@ -268,6 +279,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let attachmentTextTicker: ReturnType<typeof startAttachmentTextBackfillTicker> | undefined;
   let bodyTextBackfillRun: ReturnType<typeof startBodyTextBackfillRun> | undefined;
   let emailTrackingRetentionTicker: ReturnType<typeof startEmailTrackingRetentionTicker> | undefined;
+  let inboundSmtpService: InboundSmtpService | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
     accessTokenSigner,
@@ -341,6 +353,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     attachmentTextTicker?.stop();
     bodyTextBackfillRun?.stop();
     emailTrackingRetentionTicker?.stop();
+    await inboundSmtpService?.stop().catch(() => undefined);
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
   });
 
@@ -392,6 +405,15 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
           service: { pruneWorkspace: ports.emailTracking.pruneWorkspace },
         });
       }
+      // After the email-tracking construction so the relay reuses its instance;
+      // tracking stays optional — without PUBLIC_BASE_URL + master key the
+      // relay still runs, it just sends untracked.
+      inboundSmtpService = await startConfiguredInboundSmtpService({
+        env,
+        db,
+        secrets,
+        emailTracking: ports.emailTracking,
+      });
     }
     await app.listen({ host, port });
   } catch (error) {
@@ -399,6 +421,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     attachmentTextTicker?.stop();
     bodyTextBackfillRun?.stop();
     emailTrackingRetentionTicker?.stop();
+    await inboundSmtpService?.stop().catch(() => undefined);
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
   }
@@ -599,6 +622,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     spamLearningEvents: createPostgresSpamLearningEventReadPort({ db: options.db }),
     spamListEntries: createPostgresSpamListEntryReadPort({ db: options.db }),
     savedViews: createPostgresSavedViewReadPort({ db: options.db }),
+    smtpRelay: createPostgresSmtpRelayAdminPort({ db: options.db, secrets: options.secrets }),
     syncInfo,
     tasks: createPostgresTaskReadPort({ db: options.db }),
     workflowDelayedJobs: createPostgresWorkflowDelayedJobReadPort({ db: options.db }),
@@ -728,6 +752,105 @@ async function startConfiguredJobWorker(input: {
       aiConcurrency: config.aiConcurrency,
     },
   });
+}
+
+type RelayEmailTrackingPipeline = Pick<
+  EmailTrackingService,
+  'prepareOutbound' | 'recordSending' | 'recordSmtpAccepted' | 'recordSmtpFailed'
+>;
+
+/**
+ * `ports.emailTracking` is typed as the narrower API port; the instance built
+ * by createPostgresServerApiPorts is the full tracking service. Narrow at
+ * runtime so injected fakes without the outbound hooks simply mean "untracked".
+ */
+function relayEmailTrackingFromPort(
+  port: ServerApiPorts['emailTracking'],
+): RelayEmailTrackingPipeline | null {
+  if (!port) return null;
+  const candidate = port as Partial<EmailTrackingService>;
+  return typeof candidate.prepareOutbound === 'function'
+    && typeof candidate.recordSending === 'function'
+    && typeof candidate.recordSmtpAccepted === 'function'
+    && typeof candidate.recordSmtpFailed === 'function'
+    ? candidate as RelayEmailTrackingPipeline
+    : null;
+}
+
+/**
+ * Start the inbound SMTP relay listeners when SMTP_RELAY_ENABLED is set. Any
+ * configuration problem (missing/unreadable TLS material, occupied port) is
+ * logged and skips the relay WITHOUT crashing the API server. Tracking is not
+ * required: without the email tracking service (PUBLIC_BASE_URL + master key)
+ * relayed mail simply goes out untracked.
+ */
+async function startConfiguredInboundSmtpService(input: {
+  env: ServerEditionEnv;
+  db: Kysely<ServerDatabase>;
+  secrets: PostgresSecretPort | undefined;
+  emailTracking: ServerApiPorts['emailTracking'];
+}): Promise<InboundSmtpService | undefined> {
+  const config = parseSmtpRelayServerConfig(input.env);
+  if (!config.enabled) return undefined;
+  if (!config.tlsCertFile || !config.tlsKeyFile) {
+    console.error('[smtp-relay] SMTP_RELAY_ENABLED is set but SMTP_RELAY_TLS_CERT_FILE/SMTP_RELAY_TLS_KEY_FILE are not configured; relay not started');
+    return undefined;
+  }
+  let tlsCert: Buffer;
+  let tlsKey: Buffer;
+  try {
+    tlsCert = readFileSync(config.tlsCertFile);
+    tlsKey = readFileSync(config.tlsKeyFile);
+  } catch (error) {
+    console.error(`[smtp-relay] TLS key/cert could not be read (${error instanceof Error ? error.message : String(error)}); relay not started`);
+    return undefined;
+  }
+  if (!input.secrets) {
+    // Without the secret store the pipeline cannot resolve a routing account's
+    // SMTP credentials, so EVERY accepted message would fail the send with a
+    // retryable 451 and external systems would retry forever. Refuse to start
+    // AUTH-capable listeners at all in that state rather than accept mail we
+    // can never deliver.
+    console.error('[smtp-relay] SMTP_RELAY_ENABLED is set but the secret store is not configured (SIMPLECRM_MASTER_KEY); relay not started — routing accounts need their SMTP credentials from the secret store');
+    return undefined;
+  }
+  const secrets = input.secrets;
+
+  const relayPort = createPostgresSmtpRelayPort({ db: input.db });
+  const emailTracking = relayEmailTrackingFromPort(input.emailTracking);
+  if (!emailTracking) {
+    console.warn('[smtp-relay] email tracking service is not configured (PUBLIC_BASE_URL + SIMPLECRM_MASTER_KEY); relayed messages are sent untracked');
+  }
+  const pipeline = createRelaySubmissionPipeline({
+    db: input.db,
+    relayPort,
+    emailTracking,
+    sentCopyAppender: createPostgresServerImapSentCopyAppenderPort({
+      db: input.db,
+      secrets,
+    }),
+    readSecret: secrets.readSecret.bind(secrets),
+    writeSecret: secrets.writeSecret.bind(secrets),
+  });
+
+  try {
+    return await startInboundSmtpService({
+      relayPort,
+      submitRelay: pipeline.submitRelay,
+      ...(config.hostname ? { hostname: config.hostname } : {}),
+      portSubmission: config.portSubmission,
+      portSmtps: config.portSmtps,
+      bindHost: config.bindHost,
+      tlsKey,
+      tlsCert,
+      maxMessageBytes: config.maxMessageBytes,
+      maxConnections: config.maxConnections,
+      socketTimeoutMs: config.socketTimeoutMs,
+    });
+  } catch (error) {
+    console.error(`[smtp-relay] inbound SMTP listeners could not be started (${error instanceof Error ? error.message : String(error)}); relay not started`);
+    return undefined;
+  }
 }
 
 async function closeServerResources(

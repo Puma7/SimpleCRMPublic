@@ -39,11 +39,18 @@ export type ServerMailSyncParsedMessage = Readonly<{
   toJson: unknown | null;
   ccJson: unknown | null;
   bccJson: unknown | null;
+  replyToJson: unknown | null;
   dateReceived: string | null;
   snippet: string | null;
   bodyText: string | null;
   bodyHtml: string | null;
   hasAttachments: boolean;
+  /** True when the parser dropped at least one attachment part (per-file or
+   *  total size cap, or an empty/unreadable part) — so `attachments` is NOT a
+   *  faithful copy of the source. Callers that rebuild the MIME from
+   *  `attachments` (e.g. the relay's tracked path) must not do so when this is
+   *  set, or delivered mail would silently lose those parts. */
+  attachmentsTruncated: boolean;
   attachmentsJson: unknown | null;
   rawHeaders: string | null;
   rawRfc822B64: string;
@@ -127,6 +134,7 @@ export async function parseMailSource(
       to?: unknown;
       cc?: unknown;
       bcc?: unknown;
+      replyTo?: unknown;
       date?: Date;
       text?: string;
       html?: string | false;
@@ -147,6 +155,10 @@ export async function parseMailSource(
   const textBody =
     parsed.text?.trim() || (htmlBody ? plainTextFromHtml(htmlBody) || null : null);
   const { hasAttachments, json: attachmentsJson } = parseAttachmentsMeta(parsed);
+  const storedAttachments = parsedAttachmentsForStorage(parsed.attachments);
+  // Fewer retained than the source carried => at least one part was dropped by
+  // the size caps (or was empty/unreadable).
+  const attachmentsTruncated = (parsed.attachments?.length ?? 0) > storedAttachments.length;
   return {
     messageId: parsed.messageId ?? null,
     inReplyTo: parsed.inReplyTo ?? null,
@@ -155,15 +167,17 @@ export async function parseMailSource(
     fromJson: parseJsonValue(addressJson(parsed.from)),
     toJson: parseJsonValue(addressJson(parsed.to)),
     ccJson: parseJsonValue(addressJson(parsed.cc)),
+    replyToJson: parseJsonValue(addressJson(parsed.replyTo)),
     bccJson: parseJsonValue(addressJson(parsed.bcc)),
     dateReceived: formatDate(parsed.date),
     snippet: snippetFromParsed(textBody, htmlBody),
     bodyText: textBody,
     bodyHtml: htmlBody,
     hasAttachments,
+    attachmentsTruncated,
     attachmentsJson: parseJsonValue(attachmentsJson),
     rawHeaders: rawHeadersFromParsed(parsed),
     rawRfc822B64: source.toString('base64'),
-    attachments: parsedAttachmentsForStorage(parsed.attachments),
+    attachments: storedAttachments,
   };
 }

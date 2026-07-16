@@ -31,6 +31,16 @@ export type ServerEditionEnv = {
   INITIAL_SETUP_TOKEN?: string;
   TURNSTILE_SITE_KEY?: string;
   TURNSTILE_SECRET_KEY?: string;
+  SMTP_RELAY_ENABLED?: string;
+  SMTP_RELAY_HOSTNAME?: string;
+  SMTP_RELAY_PORT_SUBMISSION?: string;
+  SMTP_RELAY_PORT_SMTPS?: string;
+  SMTP_RELAY_BIND_HOST?: string;
+  SMTP_RELAY_TLS_CERT_FILE?: string;
+  SMTP_RELAY_TLS_KEY_FILE?: string;
+  SMTP_RELAY_MAX_MESSAGE_BYTES?: string;
+  SMTP_RELAY_MAX_CONNECTIONS?: string;
+  SMTP_RELAY_SOCKET_TIMEOUT_MS?: string;
   GEOIP_COUNTRY_DB_PATH?: string;
   GEOIP_ASN_DB_PATH?: string;
 };
@@ -48,6 +58,7 @@ export type ServerEditionConfig = {
   host: string;
   port: number;
   jobWorker: ServerJobWorkerConfig;
+  smtpRelay: SmtpRelayServerConfig;
   initialSetupToken?: string;
   turnstileSiteKey?: string;
   turnstileSecretKey?: string;
@@ -65,6 +76,19 @@ export type ServerJobWorkerConfig = {
   aiConcurrency?: number;
   migrateOnStart: boolean;
   webhookAllowlist?: string;
+};
+
+export type SmtpRelayServerConfig = {
+  enabled: boolean;
+  hostname?: string;
+  portSubmission: number;
+  portSmtps: number;
+  bindHost: string;
+  tlsCertFile?: string;
+  tlsKeyFile?: string;
+  maxMessageBytes: number;
+  maxConnections: number;
+  socketTimeoutMs: number;
 };
 
 export type AuthInvitationMailConfig = {
@@ -105,6 +129,7 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
   const host = env.HOST?.trim() || '0.0.0.0';
   const port = parsePort(env.PORT ?? '3000');
   const jobWorker = parseServerJobWorkerConfig(env);
+  const smtpRelay = parseSmtpRelayServerConfig(env);
   const initialSetupToken = env.INITIAL_SETUP_TOKEN?.trim() || undefined;
   const turnstileSiteKey = env.TURNSTILE_SITE_KEY?.trim() || undefined;
   const turnstileSecretKey = env.TURNSTILE_SECRET_KEY?.trim() || undefined;
@@ -123,6 +148,7 @@ export function parseServerEditionConfig(env: ServerEditionEnv): ServerEditionCo
     host,
     port,
     jobWorker,
+    smtpRelay,
     ...(initialSetupToken ? { initialSetupToken } : {}),
     ...(turnstileSiteKey ? { turnstileSiteKey } : {}),
     ...(turnstileSecretKey ? { turnstileSecretKey } : {}),
@@ -264,6 +290,33 @@ export function parseServerJobWorkerConfig(env: ServerEditionEnv): ServerJobWork
       : undefined,
     migrateOnStart: parseBooleanEnv(env.JOB_WORKER_MIGRATE_ON_START, false, 'JOB_WORKER_MIGRATE_ON_START'),
     ...(env.JOB_WEBHOOK_ALLOWLIST?.trim() ? { webhookAllowlist: env.JOB_WEBHOOK_ALLOWLIST.trim() } : {}),
+  };
+}
+
+export function parseSmtpRelayServerConfig(env: ServerEditionEnv): SmtpRelayServerConfig {
+  return {
+    enabled: parseBooleanEnv(env.SMTP_RELAY_ENABLED, false, 'SMTP_RELAY_ENABLED'),
+    ...(env.SMTP_RELAY_HOSTNAME?.trim() ? { hostname: env.SMTP_RELAY_HOSTNAME.trim() } : {}),
+    portSubmission: parseIntegerEnv(env.SMTP_RELAY_PORT_SUBMISSION, 587, 'SMTP_RELAY_PORT_SUBMISSION', {
+      min: 1,
+      max: 65535,
+    }),
+    portSmtps: parseIntegerEnv(env.SMTP_RELAY_PORT_SMTPS, 465, 'SMTP_RELAY_PORT_SMTPS', {
+      min: 1,
+      max: 65535,
+    }),
+    bindHost: env.SMTP_RELAY_BIND_HOST?.trim() || '0.0.0.0',
+    ...(env.SMTP_RELAY_TLS_CERT_FILE?.trim() ? { tlsCertFile: env.SMTP_RELAY_TLS_CERT_FILE.trim() } : {}),
+    ...(env.SMTP_RELAY_TLS_KEY_FILE?.trim() ? { tlsKeyFile: env.SMTP_RELAY_TLS_KEY_FILE.trim() } : {}),
+    maxMessageBytes: parseIntegerEnv(env.SMTP_RELAY_MAX_MESSAGE_BYTES, 26_214_400, 'SMTP_RELAY_MAX_MESSAGE_BYTES', {
+      min: 1,
+    }),
+    maxConnections: parseIntegerEnv(env.SMTP_RELAY_MAX_CONNECTIONS, 50, 'SMTP_RELAY_MAX_CONNECTIONS', {
+      min: 1,
+    }),
+    socketTimeoutMs: parseIntegerEnv(env.SMTP_RELAY_SOCKET_TIMEOUT_MS, 120_000, 'SMTP_RELAY_SOCKET_TIMEOUT_MS', {
+      min: 1_000,
+    }),
   };
 }
 

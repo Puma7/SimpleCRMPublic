@@ -21,6 +21,7 @@ export * from './postgres-follow-up-port';
 export * from './postgres-job-queue-port';
 export * from './postgres-legacy-credential-import';
 export * from './postgres-lock-port';
+export * from './postgres-relay-port';
 export * from './postgres-secret-port';
 export * from './postgres-sqlite-final-import';
 export * from './postgres-sqlite-import-target';

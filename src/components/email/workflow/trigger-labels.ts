@@ -10,6 +10,8 @@ export const WORKFLOW_TRIGGER_LABELS: Record<string, string> = {
   "calendar.event_start": "Termin beginnt",
   "webhook.incoming": "Webhook (eingehend)",
   "crm.customer_created": "Kunde angelegt",
+  // Server-only: wird vom SMTP-Relay nach erfolgreichem Versand ausgelöst.
+  relay: "SMTP-Relay (nach Versand)",
 }
 
 export function workflowTriggerLabel(kind: string | undefined): string {

@@ -28,6 +28,7 @@ import { emailEvidenceTrackingMigration } from './0027_email_evidence_tracking';
 import { authChallengeStateMigration } from './0028_auth_challenge_state';
 import { autoReplyLimitsMigration } from './0029_auto_reply_limits';
 import { emailEvidenceClassificationV2Migration } from './0030_email_evidence_classification_v2';
+import { smtpRelayMigration } from './0031_smtp_relay';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -62,6 +63,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   authChallengeStateMigration,
   autoReplyLimitsMigration,
   emailEvidenceClassificationV2Migration,
+  smtpRelayMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

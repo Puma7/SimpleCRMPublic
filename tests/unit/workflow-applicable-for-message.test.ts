@@ -44,6 +44,11 @@ describe('workflow-applicable-for-message', () => {
     expect(workflowApplicableToMessage(wf(1, 'schedule'), msg)).toBe(false);
   });
 
+  test('relay excluded (fired only by the server SMTP relay pipeline)', () => {
+    expect(workflowApplicableToMessage(wf(1, 'relay'), { uid: 10 })).toBe(false);
+    expect(workflowApplicableToMessage(wf(1, 'relay'), { uid: -1 })).toBe(false);
+  });
+
   test('filterWorkflowsForMessage sorts by priority', () => {
     const list = [wf(1, 'inbound', 1, 1), wf(2, 'inbound', 1, 5), wf(3, 'outbound', 1, 9)];
     const filtered = filterWorkflowsForMessage(list, { uid: 10 });

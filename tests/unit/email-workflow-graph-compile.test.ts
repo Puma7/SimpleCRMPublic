@@ -130,6 +130,64 @@ describe('email-workflow-graph-compile', () => {
     ]));
   });
 
+  it('ships a relay dunning follow-up template (14 days wait, no release, ends in task)', () => {
+    const template = WORKFLOW_TEMPLATES.find((item) => item.id === 'relay-dunning-follow-up');
+    expect(template).toBeDefined();
+    expect(template!.trigger).toBe('relay');
+
+    const trigger = template!.graph.nodes.find((node) => node.type === 'trigger');
+    expect(trigger?.data).toEqual({ kind: 'relay' });
+
+    // The relay already sent the mail — the graph must NOT release anything.
+    const nodeTypes = template!.graph.nodes
+      .map((node) => (node.data as { nodeType?: string }).nodeType)
+      .filter((type): type is string => typeof type === 'string');
+    expect(nodeTypes).not.toContain('email.release_outbound');
+
+    // Exactly two chained 7-day delays (per-delay cap 604800 s) = 14 days.
+    const delays = template!.graph.nodes.filter(
+      (node) => (node.data as { nodeType?: string }).nodeType === 'logic.delay',
+    );
+    expect(delays).toHaveLength(2);
+    for (const delay of delays) {
+      expect((delay.data as { config?: { delaySeconds?: number } }).config?.delaySeconds).toBe(604800);
+    }
+    expect(template!.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 't1', target: 'wait1' }),
+      expect.objectContaining({ source: 'wait1', target: 'wait2' }),
+      expect.objectContaining({ source: 'wait2', target: 'evidence' }),
+    ]));
+
+    // Same evidence/guard chain as outbound-evidence-follow-up.
+    const nodes = template!.graph.nodes.map((node) => node.data as { nodeType?: string; config?: Record<string, unknown> });
+    expect(nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nodeType: 'email.read_tracking_evidence' }),
+      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.tracked', cases: 'true' }) }),
+      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.transport', cases: 'smtp_accepted' }) }),
+      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.engagement', cases: 'none,automated_fetch,probable_open,link_interaction' }) }),
+      // V2 human-evidence gate (mirrors outbound-evidence-follow-up).
+      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_human_open_session_count', operator: 'lte', value: 0 }) }),
+      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_human_link_fetch_count', operator: 'lte', value: 0 }) }),
+      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.pixel_fetch_count', operator: 'gte', value: 1 }) }),
+      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.replied', cases: 'false' }) }),
+    ]));
+    expect(template!.graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'none' }),
+      expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'automated_fetch' }),
+      expect.objectContaining({ source: 'reply_state', target: 'task', label: 'false' }),
+    ]));
+
+    // The graph ends in the phone follow-up task (no outgoing edges from it).
+    const task = template!.graph.nodes.find(
+      (node) => (node.data as { nodeType?: string }).nodeType === 'crm.create_task',
+    );
+    expect(task).toBeDefined();
+    expect((task!.data as { config?: Record<string, unknown> }).config).toEqual(
+      expect.objectContaining({ title: 'Mahnung telefonisch nachfassen: {{subject}}' }),
+    );
+    expect(template!.graph.edges.some((edge) => edge.source === task!.id)).toBe(false);
+  });
+
   it('preserves forward_copy attachment and outbound-review options when compiling registry nodes', () => {
     const template = WORKFLOW_TEMPLATES.find((item) => item.id === 'inbound-invoice-auto-forward');
     expect(template).toBeDefined();

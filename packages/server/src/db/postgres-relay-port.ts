@@ -1,0 +1,1178 @@
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+
+import type { Kysely, Selectable } from 'kysely';
+
+import { normalizeEmailAddress } from '@simplecrm/core';
+
+import type {
+  SmtpRelayAdminPort,
+  SmtpRelayAllowedAccountRecord,
+  SmtpRelayAllowedAccountResult,
+  SmtpRelayCredentialCreateResult,
+  SmtpRelayCredentialRecord,
+  SmtpRelayCredentialRevokeResult,
+  SmtpRelayMutationInput,
+  SmtpRelayMutationResult,
+  SmtpRelayRecord,
+  SmtpRelaySubmissionRecord,
+} from '../api/types';
+import type {
+  EmailAccountsTable,
+  ServerDatabase,
+} from './schema';
+import type { PostgresSecretPort } from './postgres-secret-port';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './workspace-context';
+
+export type PostgresSmtpRelayPortOptions = Readonly<{
+  db: Kysely<ServerDatabase>;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
+  now?: () => Date;
+}>;
+
+/** Identity resolved from a successful SMTP AUTH against a relay credential. */
+export type SmtpRelayCredentialMatch = Readonly<{
+  workspaceId: string;
+  relayId: string;
+  credentialId: string;
+}>;
+
+/**
+ * The email account a relayed message is routed through (the sender's
+ * fields). Narrowed to exactly the columns `resolveRoutingAccount` actually
+ * selects (`relayRoutingAccountColumns`, defined below) rather than the full
+ * `email_accounts` row — the query never fetches the rest, so claiming the
+ * full table type here would let a caller (or a future refactor) reference a
+ * field that silently comes back `undefined` at runtime, right before it
+ * feeds the live outbound SMTP connection parameters.
+ */
+export type SmtpRelayRoutingAccount = Pick<
+  Selectable<EmailAccountsTable>,
+  typeof relayRoutingAccountColumns[number]
+>;
+
+/** The relay's tracking + submission-limit configuration. */
+export type SmtpRelayConfig = Readonly<{
+  trackingMode: 'off' | 'rule' | 'always';
+  trackingSubjectPatterns: string | null;
+  allowHeaderOverride: boolean;
+  maxRecipients: number;
+  maxMessageBytes: number;
+  rateLimitPerMin: number;
+  allowArbitraryRecipients: boolean;
+  followupWorkflowId: number | null;
+}>;
+
+export type PostgresSmtpRelayPort = Readonly<{
+  verifyCredential(input: {
+    username: string;
+    password: string;
+  }): Promise<SmtpRelayCredentialMatch | null>;
+  resolveRoutingAccount(input: {
+    workspaceId: string;
+    relayId: string;
+    fromAddress: string;
+  }): Promise<SmtpRelayRoutingAccount | null>;
+  loadRelayConfig(input: {
+    workspaceId: string;
+    relayId: string;
+  }): Promise<SmtpRelayConfig | null>;
+  /**
+   * Per-message revalidation for an already-authenticated SMTP session. AUTH
+   * only gates NEW connections; a long-lived session keeps its resolved
+   * credential id, so an admin who disables the relay or revokes the
+   * credential mid-session must still be able to stop further submissions on
+   * that connection. Returns the config only when the relay is still enabled
+   * AND the specific credential is still un-revoked; otherwise null.
+   */
+  revalidateSession(input: {
+    workspaceId: string;
+    relayId: string;
+    credentialId: string;
+  }): Promise<SmtpRelayConfig | null>;
+}>;
+
+/** Columns of `email_accounts` a relayed send needs to actually deliver mail. */
+const relayRoutingAccountColumns = [
+  'id',
+  'workspace_id',
+  'source_sqlite_id',
+  'display_name',
+  'email_address',
+  'protocol',
+  'smtp_host',
+  'smtp_port',
+  'smtp_tls',
+  'smtp_username',
+  'smtp_use_imap_auth',
+  'smtp_keytar_account_key',
+  'smtp_password_secret_id',
+  'imap_username',
+  'keytar_account_key',
+  'imap_password_secret_id',
+  'oauth_provider',
+  'oauth_refresh_keytar_key',
+  'oauth_refresh_secret_id',
+] as const;
+
+const relayConfigColumns = [
+  'tracking_mode',
+  'tracking_subject_patterns',
+  'allow_header_override',
+  'max_recipients',
+  'max_message_bytes',
+  'rate_limit_per_min',
+  'allow_arbitrary_recipients',
+  'followup_workflow_id',
+] as const;
+
+export function createPostgresSmtpRelayPort(
+  options: PostgresSmtpRelayPortOptions,
+): PostgresSmtpRelayPort {
+  const now = options.now ?? (() => new Date());
+
+  return {
+    async verifyCredential(input): Promise<SmtpRelayCredentialMatch | null> {
+      const username = input.username.trim();
+      // Reject empty inputs before touching the DB — an empty password would
+      // still hash to a fixed value and could match a mis-seeded row.
+      if (!username || !input.password) return null;
+
+      // Cross-workspace lookup: the SMTP AUTH username is not workspace-scoped,
+      // so we resolve the owning workspace from the credential itself. The match
+      // is performed by the DB on the indexed `password_hash` column — we never
+      // string-compare the secret in JS, which keeps the check constant-time-ish
+      // and avoids leaking a timing side-channel.
+      const row = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: randomUUID(), role: 'system', crossWorkspaceAccess: true },
+        async (trx) => trx
+          .selectFrom('smtp_relay_credentials as cred')
+          .innerJoin('smtp_relays as relay', (join) => join
+            .onRef('relay.id', '=', 'cred.relay_id')
+            .onRef('relay.workspace_id', '=', 'cred.workspace_id'))
+          .select([
+            'cred.id as credential_id',
+            'cred.workspace_id as workspace_id',
+            'cred.relay_id as relay_id',
+          ])
+          .where('cred.username', '=', username)
+          .where('cred.password_hash', '=', hashRelayPassword(input.password))
+          .where('cred.revoked_at', 'is', null)
+          .where('relay.enabled', '=', true)
+          .executeTakeFirst(),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!row) return null;
+
+      const match: SmtpRelayCredentialMatch = {
+        workspaceId: String(row.workspace_id),
+        relayId: String(row.relay_id),
+        credentialId: String(row.credential_id),
+      };
+
+      // Best-effort last_used_at bump; never fail auth because the touch failed.
+      await touchCredentialLastUsed(options, match, now()).catch(() => undefined);
+
+      return match;
+    },
+
+    async resolveRoutingAccount(input): Promise<SmtpRelayRoutingAccount | null> {
+      // EXACT case-insensitive mailbox — see canonicalizeSenderAddress: never
+      // fold plus-tags, or the allowlist would authorise unconfigured senders.
+      const target = canonicalizeSenderAddress(input.fromAddress);
+      if (!target) return null;
+
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const rows = await trx
+            .selectFrom('smtp_relay_allowed_accounts as allowed')
+            .innerJoin('email_accounts as acct', (join) => join
+              .onRef('acct.id', '=', 'allowed.account_id')
+              .onRef('acct.workspace_id', '=', 'allowed.workspace_id'))
+            .where('allowed.workspace_id', '=', input.workspaceId)
+            .where('allowed.relay_id', '=', input.relayId)
+            // Deterministic order: if an account-email edit (which is not
+            // re-checked against relay claims) ever left two mappings claiming
+            // the same From, routing must at least be stable — always the
+            // oldest mapping — rather than "whichever row comes back first".
+            .orderBy('allowed.created_at')
+            .orderBy('allowed.id')
+            .select('allowed.from_address as allowed_from_address')
+            .select(relayRoutingAccountColumns.map((column) => `acct.${column} as ${column}` as never))
+            .execute();
+
+          // The relay permits a From when it equals either the mapped account's
+          // own address OR an explicit `from_address` override on the mapping.
+          // Compare canonically (case-insensitive, plus-tag/domain normalised)
+          // on both sides so the same helper governs matching everywhere.
+          const match = rows.find((row) => {
+            const record = row as Record<string, unknown>;
+            const accountAddress = canonicalizeSenderAddress(record.email_address as string | null);
+            const overrideAddress = canonicalizeSenderAddress(
+              record.allowed_from_address as string | null,
+            );
+            return accountAddress === target || overrideAddress === target;
+          });
+          if (!match) return null;
+
+          const { allowed_from_address: _ignored, ...account } = match as Record<string, unknown>;
+          return account as unknown as SmtpRelayRoutingAccount;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
+    async loadRelayConfig(input): Promise<SmtpRelayConfig | null> {
+      const row = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('smtp_relays')
+          .select(relayConfigColumns)
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.relayId)
+          // A disabled relay must not resolve config for the runtime send path
+          // — verifyCredential already blocks new AUTH on a disabled relay, and
+          // this keeps the submission pipeline from acting on one that was
+          // disabled after the session authenticated.
+          .where('enabled', '=', true)
+          .executeTakeFirst(),
+        { applySession: options.applyWorkspaceSession },
+      );
+      return row ? mapRelayConfigRow(row as Record<string, unknown>) : null;
+    },
+
+    async revalidateSession(input): Promise<SmtpRelayConfig | null> {
+      const row = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('smtp_relays as relay')
+          .innerJoin('smtp_relay_credentials as cred', (join) => join
+            .onRef('cred.relay_id', '=', 'relay.id')
+            .onRef('cred.workspace_id', '=', 'relay.workspace_id'))
+          .select(relayConfigColumns.map((column) => `relay.${column}` as never))
+          .where('relay.workspace_id', '=', input.workspaceId)
+          .where('relay.id', '=', input.relayId)
+          .where('cred.id', '=', input.credentialId)
+          .where('relay.enabled', '=', true)
+          .where('cred.revoked_at', 'is', null)
+          .executeTakeFirst(),
+        { applySession: options.applyWorkspaceSession },
+      );
+      return row ? mapRelayConfigRow(row as Record<string, unknown>) : null;
+    },
+  };
+}
+
+// Accepts a permissive row shape because `revalidateSession` selects the same
+// columns through a join with an `as never` alias map (which erases the row
+// type to `{}`), while `loadRelayConfig` selects them directly. Both feed the
+// identical config mapping.
+function mapRelayConfigRow(row: Record<string, unknown>): SmtpRelayConfig {
+  const followup = row.followup_workflow_id;
+  return {
+    trackingMode: row.tracking_mode as 'off' | 'rule' | 'always',
+    trackingSubjectPatterns: (row.tracking_subject_patterns as string | null) ?? null,
+    allowHeaderOverride: Boolean(row.allow_header_override),
+    maxRecipients: Number(row.max_recipients),
+    maxMessageBytes: Number(row.max_message_bytes),
+    rateLimitPerMin: Number(row.rate_limit_per_min),
+    allowArbitraryRecipients: Boolean(row.allow_arbitrary_recipients),
+    followupWorkflowId: followup === null || followup === undefined ? null : Number(followup),
+  };
+}
+
+async function touchCredentialLastUsed(
+  options: PostgresSmtpRelayPortOptions,
+  match: SmtpRelayCredentialMatch,
+  timestamp: Date,
+): Promise<void> {
+  await withWorkspaceTransaction(
+    options.db,
+    { workspaceId: match.workspaceId, role: 'system' },
+    async (trx: WorkspaceTransaction) => {
+      await trx
+        .updateTable('smtp_relay_credentials')
+        .set({ last_used_at: timestamp, updated_at: timestamp })
+        .where('workspace_id', '=', match.workspaceId)
+        .where('id', '=', match.credentialId)
+        .where('revoked_at', 'is', null)
+        .execute();
+    },
+    { applySession: options.applyWorkspaceSession },
+  );
+}
+
+/**
+ * Hash a relay credential password the same way automation API keys are hashed
+ * (`sha256:` + lowercase hex). `hashAutomationApiKey` in the automation port is
+ * not exported, so we replicate the exact scheme here to keep the stored
+ * `password_hash` format identical across the two credential systems.
+ */
+function hashRelayPassword(password: string): string {
+  return `sha256:${createHash('sha256').update(password, 'utf8').digest('hex')}`;
+}
+
+/**
+ * Canonical form for From-address AUTHORIZATION: an EXACT case-insensitive
+ * mailbox. Deliberately NOT `normalizeEmailAddress`, which strips everything
+ * after a `+` in the local part — using that here would let an allowlist entry
+ * for `sales@example.com` also authorise `sales+anything@example.com`, widening
+ * the permitted senders beyond what the admin configured (plus-tags are
+ * distinct addresses on many mail systems).
+ */
+function canonicalizeSenderAddress(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = String(value).trim().toLowerCase();
+  return trimmed || null;
+}
+
+/**
+ * The set of authorised From addresses an allowed-account mapping "claims" for
+ * routing: the account's own address AND its optional `from_address` override
+ * (mirroring `resolveRoutingAccount`, which matches either). Used to detect
+ * collisions between mappings on any shared claimed address.
+ */
+function collectClaimedAddresses(
+  accountEmail: string | null | undefined,
+  fromAddress: string | null | undefined,
+): Set<string> {
+  const claims = new Set<string>();
+  const account = canonicalizeSenderAddress(accountEmail);
+  if (account) claims.add(account);
+  const override = canonicalizeSenderAddress(fromAddress);
+  if (override) claims.add(override);
+  return claims;
+}
+
+// ---------------------------------------------------------------------------
+// Management port (the API surface behind /api/v1/email/relays)
+// ---------------------------------------------------------------------------
+
+export type PostgresSmtpRelayAdminPortOptions = Readonly<{
+  db: Kysely<ServerDatabase>;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
+  /** Required for credential creation (plaintext reveal-once storage). */
+  secrets?: Pick<PostgresSecretPort, 'writeSecret' | 'deleteSecret'>;
+  generateId?: () => string;
+  generateUsername?: () => string;
+  generatePassword?: () => string;
+  now?: () => Date;
+}>;
+
+const relayAdminSelectColumns = [
+  'id',
+  'label',
+  'enabled',
+  'tracking_mode',
+  'tracking_subject_patterns',
+  'allow_header_override',
+  'max_recipients',
+  'max_message_bytes',
+  'rate_limit_per_min',
+  'allow_arbitrary_recipients',
+  'followup_workflow_id',
+  'created_at',
+] as const;
+
+const relayCredentialSelectColumns = [
+  'id',
+  'relay_id',
+  'username',
+  'last_used_at',
+  'revoked_at',
+  'created_at',
+] as const;
+
+const relaySubmissionSelectColumns = [
+  'id',
+  'status',
+  'recipient_count',
+  'tracking_applied',
+  'tracking_rule_reason',
+  'message_id',
+  'smtp_message_id_header',
+  'error_text',
+  'created_at',
+] as const;
+
+/** How often createCredential retries a fresh username after a UNIQUE conflict. */
+const USERNAME_GENERATION_ATTEMPTS = 5;
+
+const RELAY_DEFAULTS = {
+  enabled: true,
+  allowArbitraryRecipients: false,
+  maxRecipients: 50,
+  maxMessageBytes: 26_214_400,
+  rateLimitPerMin: 60,
+  trackingMode: 'rule' as const,
+  trackingSubjectPatterns: null,
+  allowHeaderOverride: true,
+  followupWorkflowId: null,
+};
+
+export function createPostgresSmtpRelayAdminPort(
+  options: PostgresSmtpRelayAdminPortOptions,
+): SmtpRelayAdminPort {
+  const generateId = options.generateId ?? randomUUID;
+  const generateUsername = options.generateUsername ?? generateRelayUsername;
+  const generatePassword = options.generatePassword ?? generateRelayPassword;
+  const now = options.now ?? (() => new Date());
+  const applySession = options.applyWorkspaceSession;
+
+  async function loadRelayRecord(
+    trx: WorkspaceTransaction,
+    workspaceId: string,
+    relayRow: RelayAdminRow,
+  ): Promise<SmtpRelayRecord> {
+    const accountRows = await trx
+      .selectFrom('smtp_relay_allowed_accounts as allowed')
+      .innerJoin('email_accounts as acct', (join) => join
+        .onRef('acct.id', '=', 'allowed.account_id')
+        .onRef('acct.workspace_id', '=', 'allowed.workspace_id'))
+      .select([
+        'allowed.account_id as account_id',
+        'allowed.from_address as from_address',
+        'acct.email_address as email_address',
+        'acct.display_name as display_name',
+      ])
+      .where('allowed.workspace_id', '=', workspaceId)
+      .where('allowed.relay_id', '=', String(relayRow.id))
+      .execute();
+    const credentialRows = await trx
+      .selectFrom('smtp_relay_credentials')
+      .select(relayCredentialSelectColumns)
+      .where('workspace_id', '=', workspaceId)
+      .where('relay_id', '=', String(relayRow.id))
+      .orderBy('created_at', 'asc')
+      .execute();
+    return {
+      ...mapRelayAdminRow(relayRow),
+      allowedAccounts: accountRows.map(mapAllowedAccountRow),
+      credentials: credentialRows.map(mapRelayCredentialRow),
+    };
+  }
+
+  return {
+    async listRelays(input): Promise<readonly SmtpRelayRecord[]> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const relayRows = await trx
+            .selectFrom('smtp_relays')
+            .select(relayAdminSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .orderBy('created_at', 'asc')
+            .execute();
+          if (relayRows.length === 0) return [];
+
+          const accountRows = await trx
+            .selectFrom('smtp_relay_allowed_accounts as allowed')
+            .innerJoin('email_accounts as acct', (join) => join
+              .onRef('acct.id', '=', 'allowed.account_id')
+              .onRef('acct.workspace_id', '=', 'allowed.workspace_id'))
+            .select([
+              'allowed.relay_id as relay_id',
+              'allowed.account_id as account_id',
+              'allowed.from_address as from_address',
+              'acct.email_address as email_address',
+              'acct.display_name as display_name',
+            ])
+            .where('allowed.workspace_id', '=', input.workspaceId)
+            .execute();
+          const credentialRows = await trx
+            .selectFrom('smtp_relay_credentials')
+            .select(relayCredentialSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .orderBy('created_at', 'asc')
+            .execute();
+
+          return relayRows.map((row) => ({
+            ...mapRelayAdminRow(row),
+            allowedAccounts: accountRows
+              .filter((account) => String(account.relay_id) === String(row.id))
+              .map(mapAllowedAccountRow),
+            credentials: credentialRows
+              .filter((credential) => String(credential.relay_id) === String(row.id))
+              .map(mapRelayCredentialRow),
+          }));
+        },
+        { applySession },
+      );
+    },
+
+    async createRelay(input): Promise<SmtpRelayMutationResult> {
+      const timestamp = now();
+      try {
+        const relay = await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+          async (trx) => {
+            const followupWorkflowId = await resolveRelayFollowupWorkflowId(
+              trx,
+              input.workspaceId,
+              input.values.followupWorkflowId ?? RELAY_DEFAULTS.followupWorkflowId,
+            );
+            const row = await trx
+              .insertInto('smtp_relays')
+              .values({
+                id: generateId(),
+                workspace_id: input.workspaceId,
+                label: input.values.label.trim(),
+                enabled: input.values.enabled ?? RELAY_DEFAULTS.enabled,
+                allow_arbitrary_recipients:
+                  input.values.allowArbitraryRecipients ?? RELAY_DEFAULTS.allowArbitraryRecipients,
+                max_recipients: input.values.maxRecipients ?? RELAY_DEFAULTS.maxRecipients,
+                max_message_bytes: input.values.maxMessageBytes ?? RELAY_DEFAULTS.maxMessageBytes,
+                rate_limit_per_min: input.values.rateLimitPerMin ?? RELAY_DEFAULTS.rateLimitPerMin,
+                tracking_mode: input.values.trackingMode ?? RELAY_DEFAULTS.trackingMode,
+                tracking_subject_patterns:
+                  input.values.trackingSubjectPatterns ?? RELAY_DEFAULTS.trackingSubjectPatterns,
+                allow_header_override:
+                  input.values.allowHeaderOverride ?? RELAY_DEFAULTS.allowHeaderOverride,
+                followup_workflow_id: followupWorkflowId,
+                created_by_user_id: input.actorUserId,
+                created_at: timestamp,
+                updated_at: timestamp,
+              })
+              .returning(relayAdminSelectColumns)
+              .executeTakeFirstOrThrow();
+            return mapRelayAdminRow(row);
+          },
+          { applySession },
+        );
+        return { ok: true, relay: { ...relay, allowedAccounts: [], credentials: [] } };
+      } catch (caught) {
+        const code = mapRelayConstraintViolation(caught);
+        if (code) return { ok: false, code };
+        throw caught;
+      }
+    },
+
+    async updateRelay(input): Promise<SmtpRelayMutationResult | null> {
+      const timestamp = now();
+      try {
+        const relay = await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+          async (trx) => {
+            const setColumns = relayUpdateColumns(input.values);
+            // Resolve + validate only when the caller is actually setting a
+            // follow-up (a number); undefined = unchanged, null = cleared. Store
+            // the resolved Postgres id, not the (possibly source-id) reference.
+            if (typeof input.values.followupWorkflowId === 'number') {
+              setColumns.followup_workflow_id = await resolveRelayFollowupWorkflowId(
+                trx,
+                input.workspaceId,
+                input.values.followupWorkflowId,
+              );
+            }
+            const row = await trx
+              .updateTable('smtp_relays')
+              .set({
+                ...setColumns,
+                updated_at: timestamp,
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.relayId)
+              .returning(relayAdminSelectColumns)
+              .executeTakeFirst();
+            if (!row) return null;
+            return loadRelayRecord(trx, input.workspaceId, row);
+          },
+          { applySession },
+        );
+        return relay ? { ok: true, relay } : null;
+      } catch (caught) {
+        const code = mapRelayConstraintViolation(caught);
+        if (code) return { ok: false, code };
+        throw caught;
+      }
+    },
+
+    async deleteRelay(input): Promise<{ id: string; label: string } | null> {
+      // Collect the credential ids FIRST (read-only). We delete secrets by their
+      // deterministic name, so every credential is covered regardless of its
+      // secret_id pointer.
+      const credentialIds = (await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('smtp_relay_credentials')
+          .select(['id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('relay_id', '=', input.relayId)
+          .execute(),
+        { applySession },
+      )).map((credential) => String(credential.id));
+
+      // Delete the reveal-once credential secrets BEFORE the relay row (and its
+      // cascade) is removed, and let a failure PROPAGATE without deleting the
+      // relay. Otherwise a transient secret-store failure would leave the
+      // plaintexts orphaned with no way to rediscover the credential ids (the
+      // cascade already removed them). Deletion is by the deterministic name, so
+      // a retry re-discovers the still-present credentials and re-deletes
+      // idempotently.
+      if (options.secrets) {
+        for (const credentialId of credentialIds) {
+          await options.secrets.deleteSecret(
+            smtpRelayCredentialSecretIdentifier(input.workspaceId, credentialId),
+          );
+        }
+      }
+
+      const row = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+        async (trx) => trx
+          .deleteFrom('smtp_relays')
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.relayId)
+          .returning(['id', 'label'])
+          .executeTakeFirst(),
+        { applySession },
+      );
+      return row ? { id: String(row.id), label: row.label } : null;
+    },
+
+    async addAllowedAccount(input): Promise<SmtpRelayAllowedAccountResult> {
+      const timestamp = now();
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+        async (trx) => {
+          const relay = await trx
+            .selectFrom('smtp_relays')
+            .select(['id'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.relayId)
+            // Lock the relay row so concurrent addAllowedAccount calls for the
+            // SAME relay serialize here: the claimed-address collision scan
+            // below is not covered by any DB uniqueness constraint (the DB only
+            // enforces (relay_id, account_id)), so without this two adds could
+            // both pass the scan and insert mappings that claim the same From.
+            .forUpdate()
+            .executeTakeFirst();
+          if (!relay) return { ok: false, code: 'relay_not_found' } as const;
+
+          // In server-client mode ListAccounts exposes source_sqlite_id as the
+          // public account id, so the submitted accountId may be a source id.
+          // Resolve it to the real email_accounts.id UNAMBIGUOUSLY (see helper):
+          // an ambiguous reference is refused rather than authorizing the wrong
+          // SMTP account for the relay.
+          const resolvedAccountId = await resolveRelayAllowedAccountId(trx, input.workspaceId, input.accountId);
+          if (resolvedAccountId === null || resolvedAccountId === 'ambiguous') {
+            return { ok: false, code: 'account_not_found' } as const;
+          }
+          const account = await trx
+            .selectFrom('email_accounts')
+            .select(['id', 'email_address', 'display_name'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', resolvedAccountId)
+            .executeTakeFirst();
+          if (!account) return { ok: false, code: 'account_not_found' } as const;
+
+          const existing = await trx
+            .selectFrom('smtp_relay_allowed_accounts')
+            .select(['id'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('relay_id', '=', input.relayId)
+            .where('account_id', '=', resolvedAccountId)
+            .executeTakeFirst();
+          if (existing) return { ok: false, code: 'duplicate_account' } as const;
+
+          const fromAddress = input.fromAddress?.trim() || null;
+
+          // resolveRoutingAccount matches an inbound From against BOTH an
+          // allowed account's own address AND its `from_address` override (the
+          // `||` in its predicate), with no ORDER BY — so an allowed entry
+          // "claims" up to two From addresses. Two entries that share ANY
+          // claimed address make routing for it non-deterministic (could pick
+          // either account's SMTP credentials). Comparing only the single
+          // effective address (override ?? account email) misses collisions
+          // where the new entry's account email clashes with a sibling's
+          // override, or vice versa — so compare the FULL claimed-address set
+          // of the new mapping against every sibling's full set.
+          const newClaims = collectClaimedAddresses(account.email_address, fromAddress);
+          if (newClaims.size > 0) {
+            const siblings = await trx
+              .selectFrom('smtp_relay_allowed_accounts as allowed')
+              .innerJoin('email_accounts as acct', (join) => join
+                .onRef('acct.id', '=', 'allowed.account_id')
+                .onRef('acct.workspace_id', '=', 'allowed.workspace_id'))
+              .where('allowed.workspace_id', '=', input.workspaceId)
+              .where('allowed.relay_id', '=', input.relayId)
+              .select(['allowed.from_address as allowed_from_address', 'acct.email_address'])
+              .execute();
+            const collides = siblings.some((sibling) => {
+              const siblingClaims = collectClaimedAddresses(
+                sibling.email_address,
+                sibling.allowed_from_address,
+              );
+              for (const claimed of siblingClaims) {
+                if (newClaims.has(claimed)) return true;
+              }
+              return false;
+            });
+            if (collides) return { ok: false, code: 'duplicate_from_address' } as const;
+          }
+
+          await trx
+            .insertInto('smtp_relay_allowed_accounts')
+            .values({
+              id: generateId(),
+              workspace_id: input.workspaceId,
+              relay_id: input.relayId,
+              account_id: resolvedAccountId,
+              from_address: fromAddress,
+              created_at: timestamp,
+            })
+            .execute();
+
+          return {
+            ok: true,
+            account: {
+              accountId: Number(account.id),
+              fromAddress,
+              emailAddress: account.email_address,
+              displayName: account.display_name,
+            },
+          } as const;
+        },
+        { applySession },
+      );
+    },
+
+    async removeAllowedAccount(input): Promise<boolean> {
+      const removed = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+        async (trx) => trx
+          // Delete by the STORED account_id directly: the remove UI passes the
+          // FK exposed by listRelays (allowed.account_id), which already
+          // identifies the row uniquely. Resolving it as a public reference
+          // would wrongly reject it as ambiguous when some other account's
+          // source_sqlite_id equals this db id, making the mapping unremovable.
+          .deleteFrom('smtp_relay_allowed_accounts')
+          .where('workspace_id', '=', input.workspaceId)
+          .where('relay_id', '=', input.relayId)
+          .where('account_id', '=', input.accountId)
+          .returning(['id'])
+          .executeTakeFirst(),
+        { applySession },
+      );
+      return Boolean(removed);
+    },
+
+    async createCredential(input): Promise<SmtpRelayCredentialCreateResult> {
+      const secrets = options.secrets;
+      if (!secrets) return { ok: false, code: 'secret_port_unavailable' };
+
+      const relay = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('smtp_relays')
+          .select(['id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.relayId)
+          .executeTakeFirst(),
+        { applySession },
+      );
+      if (!relay) return { ok: false, code: 'relay_not_found' };
+
+      const id = generateId();
+      const password = generatePassword();
+      const secretIdentifier = smtpRelayCredentialSecretIdentifier(input.workspaceId, id);
+      const secret = await secrets.writeSecret({
+        ...secretIdentifier,
+        value: password,
+      });
+
+      try {
+        // The generated username must be globally unique (SMTP AUTH usernames
+        // are not workspace-scoped) — retry with a fresh one on a UNIQUE
+        // conflict. Every attempt is its own transaction so the aborted insert
+        // does not poison the retry.
+        for (let attempt = 1; ; attempt += 1) {
+          const username = generateUsername();
+          try {
+            const credential = await withWorkspaceTransaction(
+              options.db,
+              { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+              async (trx) => {
+                const timestamp = now();
+                const row = await trx
+                  .insertInto('smtp_relay_credentials')
+                  .values({
+                    id,
+                    workspace_id: input.workspaceId,
+                    relay_id: input.relayId,
+                    username,
+                    password_hash: hashRelayPassword(password),
+                    secret_id: secret.id,
+                    last_used_at: null,
+                    revoked_at: null,
+                    created_at: timestamp,
+                    updated_at: timestamp,
+                  })
+                  .returning(relayCredentialSelectColumns)
+                  .executeTakeFirstOrThrow();
+                return mapRelayCredentialRow(row);
+              },
+              { applySession },
+            );
+            return { ok: true, credential, password };
+          } catch (caught) {
+            if (isUniqueViolation(caught) && attempt < USERNAME_GENERATION_ATTEMPTS) continue;
+            throw caught;
+          }
+        }
+      } catch (caught) {
+        await secrets.deleteSecret(secretIdentifier).catch(() => false);
+        throw caught;
+      }
+    },
+
+    async revokeCredential(input): Promise<SmtpRelayCredentialRevokeResult | null> {
+      const current = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+        async (trx) => trx
+          .selectFrom('smtp_relay_credentials')
+          .select([...relayCredentialSelectColumns, 'secret_id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('relay_id', '=', input.relayId)
+          .where('id', '=', input.credentialId)
+          .executeTakeFirst(),
+        { applySession },
+      );
+      if (!current) return null;
+      if (current.secret_id !== null && !options.secrets) {
+        return { ok: false, code: 'secret_port_unavailable' };
+      }
+
+      const credential = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
+        async (trx) => {
+          const timestamp = now();
+          const row = await trx
+            .updateTable('smtp_relay_credentials')
+            .set({
+              secret_id: null,
+              revoked_at: current.revoked_at ?? timestamp,
+              updated_at: timestamp,
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.credentialId)
+            .returning(relayCredentialSelectColumns)
+            .executeTakeFirstOrThrow();
+          return mapRelayCredentialRow(row);
+        },
+        { applySession },
+      );
+
+      // Delete by the DETERMINISTIC credential secret name, NOT gated on
+      // current.secret_id. The row's secret_id was just nulled; if a PRIOR
+      // revoke had nulled it but then failed to delete the secret, gating on
+      // secret_id would skip cleanup forever and orphan the reveal-once
+      // plaintext. The identifier is derived purely from workspace + credential
+      // id, so a re-revoke still removes it (deleteSecret is idempotent).
+      await options.secrets?.deleteSecret(
+        smtpRelayCredentialSecretIdentifier(input.workspaceId, input.credentialId),
+      );
+
+      return { ok: true, credential };
+    },
+
+    async listSubmissions(input): Promise<readonly SmtpRelaySubmissionRecord[] | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const relay = await trx
+            .selectFrom('smtp_relays')
+            .select(['id'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.relayId)
+            .executeTakeFirst();
+          if (!relay) return null;
+
+          const rows = await trx
+            .selectFrom('smtp_relay_submissions')
+            .select(relaySubmissionSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('relay_id', '=', input.relayId)
+            .orderBy('created_at', 'desc')
+            .limit(input.limit)
+            .execute();
+          return rows.map(mapRelaySubmissionRow);
+        },
+        { applySession },
+      );
+    },
+  };
+}
+
+function generateRelayUsername(): string {
+  return `relay-${randomBytes(4).toString('hex')}`;
+}
+
+function generateRelayPassword(): string {
+  // 32 random bytes -> 43 base64url characters, comfortably above the 32-char floor.
+  return randomBytes(32).toString('base64url');
+}
+
+function smtpRelayCredentialSecretIdentifier(workspaceId: string, credentialId: string): {
+  workspaceId: string;
+  kind: string;
+  name: string;
+} {
+  return {
+    workspaceId,
+    kind: 'smtp_relay.credential',
+    name: `smtp_relay_credential:${credentialId}:password`,
+  };
+}
+
+type RelayAdminRow = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  tracking_mode: 'off' | 'rule' | 'always';
+  tracking_subject_patterns: string | null;
+  allow_header_override: boolean;
+  max_recipients: number;
+  max_message_bytes: number;
+  rate_limit_per_min: number;
+  allow_arbitrary_recipients: boolean;
+  followup_workflow_id: number | null;
+  created_at: Date | string;
+};
+
+function relayUpdateColumns(values: SmtpRelayMutationInput): Record<string, unknown> {
+  const set: Record<string, unknown> = {};
+  if (values.label !== undefined) set.label = values.label.trim();
+  if (values.enabled !== undefined) set.enabled = values.enabled;
+  if (values.trackingMode !== undefined) set.tracking_mode = values.trackingMode;
+  if (values.trackingSubjectPatterns !== undefined) set.tracking_subject_patterns = values.trackingSubjectPatterns;
+  if (values.allowHeaderOverride !== undefined) set.allow_header_override = values.allowHeaderOverride;
+  if (values.maxRecipients !== undefined) set.max_recipients = values.maxRecipients;
+  if (values.maxMessageBytes !== undefined) set.max_message_bytes = values.maxMessageBytes;
+  if (values.rateLimitPerMin !== undefined) set.rate_limit_per_min = values.rateLimitPerMin;
+  if (values.allowArbitraryRecipients !== undefined) set.allow_arbitrary_recipients = values.allowArbitraryRecipients;
+  if (values.followupWorkflowId !== undefined) set.followup_workflow_id = values.followupWorkflowId;
+  return set;
+}
+
+function mapRelayAdminRow(row: RelayAdminRow): Omit<SmtpRelayRecord, 'allowedAccounts' | 'credentials'> {
+  return {
+    id: String(row.id),
+    label: row.label,
+    enabled: Boolean(row.enabled),
+    trackingMode: row.tracking_mode,
+    trackingSubjectPatterns: row.tracking_subject_patterns,
+    allowHeaderOverride: Boolean(row.allow_header_override),
+    maxRecipients: Number(row.max_recipients),
+    maxMessageBytes: Number(row.max_message_bytes),
+    rateLimitPerMin: Number(row.rate_limit_per_min),
+    allowArbitraryRecipients: Boolean(row.allow_arbitrary_recipients),
+    followupWorkflowId: row.followup_workflow_id === null ? null : Number(row.followup_workflow_id),
+    createdAt: timestampToIso(row.created_at),
+  };
+}
+
+function mapAllowedAccountRow(row: {
+  account_id: number | string;
+  from_address: string | null;
+  email_address: string;
+  display_name: string;
+}): SmtpRelayAllowedAccountRecord {
+  return {
+    accountId: Number(row.account_id),
+    fromAddress: row.from_address,
+    emailAddress: row.email_address,
+    displayName: row.display_name,
+  };
+}
+
+function mapRelayCredentialRow(row: {
+  id: string;
+  username: string;
+  last_used_at: Date | string | null;
+  revoked_at: Date | string | null;
+  created_at: Date | string;
+}): SmtpRelayCredentialRecord {
+  return {
+    id: String(row.id),
+    username: row.username,
+    lastUsedAt: timestampToIsoOrNull(row.last_used_at),
+    revokedAt: timestampToIsoOrNull(row.revoked_at),
+    createdAt: timestampToIso(row.created_at),
+  };
+}
+
+function mapRelaySubmissionRow(row: {
+  id: string;
+  status: 'received' | 'relayed' | 'failed';
+  recipient_count: number;
+  tracking_applied: boolean;
+  tracking_rule_reason: string | null;
+  message_id: number | string | null;
+  smtp_message_id_header: string | null;
+  error_text: string | null;
+  created_at: Date | string;
+}): SmtpRelaySubmissionRecord {
+  return {
+    id: String(row.id),
+    status: row.status,
+    recipientCount: Number(row.recipient_count),
+    trackingApplied: Boolean(row.tracking_applied),
+    trackingRuleReason: row.tracking_rule_reason,
+    messageId: row.message_id === null ? null : Number(row.message_id),
+    smtpMessageIdHeader: row.smtp_message_id_header,
+    errorText: row.error_text,
+    createdAt: timestampToIso(row.created_at),
+  };
+}
+
+/**
+ * Resolve a follow-up-workflow reference supplied through the API to the
+ * `email_workflows.id` FK that the relay stores, enforcing two rules at write
+ * time (inside the tx, so it rolls back atomically with the mutation):
+ *
+ *  1. Public-ID mapping: in server-client mode the workflow list exposes the
+ *     desktop-compatible `source_sqlite_id ?? id` as the workflow id, so the
+ *     reference may be a source id rather than the Postgres id. Resolve by
+ *     `id` first, then `source_sqlite_id`, WITHIN the workspace — a
+ *     cross-workspace (or unknown) reference finds no row and is rejected as
+ *     not-found rather than being trusted to the global FK (which would accept
+ *     it, then silently never run because enqueue filters by workspace).
+ *  2. Trigger: the relay enqueues runs with triggerName 'relay', and
+ *     runServerWorkflowGraph falls back to the graph's FIRST trigger when no
+ *     relay trigger exists — so a non-relay workflow would run after every
+ *     relay send. Require trigger_name = 'relay'.
+ *
+ * Returns the resolved Postgres id (or null when the caller clears the
+ * follow-up); throws a tagged error the create/update catch blocks translate
+ * into a result code.
+ */
+const RELAY_FOLLOWUP_NOT_RELAY = Symbol('followup_workflow_not_relay');
+const RELAY_FOLLOWUP_NOT_FOUND = Symbol('followup_workflow_not_found');
+
+async function resolveRelayFollowupWorkflowId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  reference: number | null,
+): Promise<number | null> {
+  if (reference === null) return null;
+  // The renderer exposes workflows as `sourceSqliteId ?? id`, so the reference
+  // may be a Postgres id OR a source id. Resolve BOTH and, if they land on
+  // DIFFERENT rows (an imported workflow's source id numerically equals another
+  // workflow's db id), refuse rather than silently attach the wrong one.
+  const byId = await trx
+    .selectFrom('email_workflows')
+    .select(['id', 'trigger_name'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', reference)
+    .executeTakeFirst();
+  const bySource = await trx
+    .selectFrom('email_workflows')
+    .select(['id', 'trigger_name'])
+    .where('workspace_id', '=', workspaceId)
+    .where('source_sqlite_id', '=', reference)
+    .executeTakeFirst();
+  if (byId && bySource && Number(byId.id) !== Number(bySource.id)) {
+    // Ambiguous public reference — treat as not-found instead of guessing.
+    throw Object.assign(new Error('followup workflow reference is ambiguous'), {
+      [RELAY_FOLLOWUP_NOT_FOUND]: true,
+    });
+  }
+  const workflow = byId ?? bySource;
+  if (!workflow) {
+    throw Object.assign(new Error('followup workflow not found in workspace'), {
+      [RELAY_FOLLOWUP_NOT_FOUND]: true,
+    });
+  }
+  if (workflow.trigger_name !== 'relay') {
+    throw Object.assign(new Error('followup workflow is not a relay-triggered workflow'), {
+      [RELAY_FOLLOWUP_NOT_RELAY]: true,
+    });
+  }
+  return Number(workflow.id);
+}
+
+/**
+ * Resolve a public account reference (the renderer's `sourceSqliteId ?? id`) to
+ * the Postgres email_accounts.id, workspace-scoped and UNAMBIGUOUSLY: if the
+ * number matches one account by `id` and a DIFFERENT account by
+ * `source_sqlite_id`, return 'ambiguous' so the caller refuses rather than
+ * authorizing the wrong SMTP account. (The shared resolveEmailAccountReference
+ * silently prefers id — fine for read APIs, but sender authorization must not
+ * guess.)
+ */
+async function resolveRelayAllowedAccountId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  reference: number,
+): Promise<number | 'ambiguous' | null> {
+  const byId = await trx
+    .selectFrom('email_accounts')
+    .select(['id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', reference)
+    .executeTakeFirst();
+  const bySource = await trx
+    .selectFrom('email_accounts')
+    .select(['id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('source_sqlite_id', '=', reference)
+    .executeTakeFirst();
+  if (byId && bySource && Number(byId.id) !== Number(bySource.id)) return 'ambiguous';
+  const row = byId ?? bySource;
+  return row ? Number(row.id) : null;
+}
+
+function mapRelayConstraintViolation(
+  caught: unknown,
+): 'duplicate_label' | 'followup_workflow_not_found' | 'followup_workflow_not_relay' | null {
+  const tags = caught as Record<PropertyKey, unknown> | null;
+  if (tags?.[RELAY_FOLLOWUP_NOT_RELAY]) return 'followup_workflow_not_relay';
+  if (tags?.[RELAY_FOLLOWUP_NOT_FOUND]) return 'followup_workflow_not_found';
+  if (isUniqueViolation(caught)) return 'duplicate_label';
+  if (pgErrorCode(caught) === '23503' && pgErrorConstraint(caught).includes('followup_workflow')) {
+    return 'followup_workflow_not_found';
+  }
+  return null;
+}
+
+function isUniqueViolation(caught: unknown): boolean {
+  return pgErrorCode(caught) === '23505';
+}
+
+function pgErrorCode(caught: unknown): string | null {
+  const code = (caught as { code?: unknown } | null)?.code;
+  return typeof code === 'string' ? code : null;
+}
+
+function pgErrorConstraint(caught: unknown): string {
+  const constraint = (caught as { constraint?: unknown } | null)?.constraint;
+  return typeof constraint === 'string' ? constraint : '';
+}
+
+function timestampToIsoOrNull(value: Date | string | null): string | null {
+  return value === null ? null : timestampToIso(value);
+}
+
+function timestampToIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}

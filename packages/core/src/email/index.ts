@@ -15,6 +15,7 @@ export * from './parse-utils';
 export * from './pop3-uidl-cache';
 export * from './read-receipt';
 export * from './reference-threading';
+export * from './relay-tracking-rules';
 export * from './scheduled-send-state';
 export * from './search-highlight';
 export * from './search-query';

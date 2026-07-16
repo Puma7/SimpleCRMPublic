@@ -219,6 +219,19 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         get: { summary: 'Get privacy-controlled email evidence settings' },
         patch: { summary: 'Update email evidence settings (admin)' },
       },
+      '/email/relays': {
+        get: { summary: 'List SMTP relays with allowed accounts and credentials (sans secrets)' },
+        post: { summary: 'Create SMTP relay (admin)' },
+      },
+      '/email/relays/{id}': {
+        patch: { summary: 'Update SMTP relay configuration (admin)' },
+        delete: { summary: 'Delete SMTP relay (admin)' },
+      },
+      '/email/relays/{id}/accounts': { post: { summary: 'Allow sender account on SMTP relay (admin)' } },
+      '/email/relays/{id}/accounts/{accountId}': { delete: { summary: 'Remove allowed sender account from SMTP relay (admin)' } },
+      '/email/relays/{id}/credentials': { post: { summary: 'Create SMTP relay credential; returns the password exactly once (admin)' } },
+      '/email/relays/{id}/credentials/{credentialId}/revoke': { post: { summary: 'Revoke SMTP relay credential (admin)' } },
+      '/email/relays/{id}/submissions': { get: { summary: 'List recent SMTP relay submissions' } },
       '/email/messages': {
         get: { summary: 'List messages' },
       },

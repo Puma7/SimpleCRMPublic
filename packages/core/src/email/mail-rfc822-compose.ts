@@ -68,6 +68,7 @@ export function buildComposeRfc822(input: {
   to: string;
   cc?: string;
   bcc?: string;
+  replyTo?: string;
   subject: string;
   text?: string;
   html?: string;
@@ -85,6 +86,7 @@ export function buildComposeRfc822(input: {
   headerLines.push(`To: ${encodeMailboxListHeader(input.to)}`);
   if (input.cc?.trim()) headerLines.push(`Cc: ${encodeMailboxListHeader(input.cc.trim())}`);
   if (input.bcc?.trim()) headerLines.push(`Bcc: ${encodeMailboxListHeader(input.bcc.trim())}`);
+  if (input.replyTo?.trim()) headerLines.push(`Reply-To: ${encodeMailboxListHeader(input.replyTo.trim())}`);
   headerLines.push(`Subject: ${encodeRfc2047(input.subject)}`);
   if (input.messageId) headerLines.push(`Message-ID: ${sanitizeHeaderValue(input.messageId)}`);
   if (input.inReplyTo) headerLines.push(`In-Reply-To: ${sanitizeHeaderValue(input.inReplyTo)}`);

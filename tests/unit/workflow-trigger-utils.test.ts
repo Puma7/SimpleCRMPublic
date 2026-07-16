@@ -22,4 +22,9 @@ describe('workflow-trigger-utils', () => {
     expect(workflowTriggerNeedsMessage('manual')).toBe(false);
     expect(workflowTriggerNeedsMessage('schedule')).toBe(false);
   });
+
+  test('relay trigger runs outbound on a persisted message (tracking follow-up)', () => {
+    expect(workflowDirectionForTrigger('relay')).toBe('outbound');
+    expect(workflowTriggerNeedsMessage('relay')).toBe(true);
+  });
 });

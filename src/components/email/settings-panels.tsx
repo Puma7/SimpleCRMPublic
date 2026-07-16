@@ -13,6 +13,7 @@ import {
   Clock,
   Download,
   KeyRound,
+  Send,
   Sparkles,
   Type,
   Users,
@@ -45,6 +46,7 @@ import { AuditLogPanel } from "./settings/audit-log-panel"
 import { ThreadToolsPanel } from "./settings/thread-tools-panel"
 export { SETTINGS_TAB_IDS } from "./settings-tab-ids"
 import { TrackingSettingsPanel } from "./settings/tracking-settings-panel"
+import { RelaySettingsPanel } from "./settings/relay-settings-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -93,6 +95,13 @@ const TAB_DEFS: TabDef[] = [
     serverOnly: true,
   },
   {
+    id: "smtpRelay",
+    label: "SMTP-Relay",
+    icon: Send,
+    render: () => <RelaySettingsPanel />,
+    serverOnly: true,
+  },
+  {
     id: "automation",
     label: "Automatisierung",
     icon: Workflow,
@@ -130,7 +139,7 @@ const TAB_DEFS: TabDef[] = [
 ]
 
 export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
-  { label: "Konten & Versand", tabIds: ["accounts", "oauthApps"] },
+  { label: "Konten & Versand", tabIds: ["accounts", "oauthApps", "smtpRelay"] },
   {
     label: "KI & Automation",
     tabIds: ["ai", "knowledge", "mailSecurity", "tracking", "automation", "prompts"],

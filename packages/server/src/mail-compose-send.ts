@@ -329,7 +329,7 @@ type ComposeSendDraft = Readonly<{
   outboundBlockReason: string | null;
 }>;
 
-type ComposeSendAccount = Readonly<{
+export type ComposeSendAccount = Readonly<{
   id: number;
   sourceSqliteId: number;
   displayName: string;
@@ -2174,11 +2174,19 @@ function resolveSmtpUser(account: ComposeSendAccount): string {
     : account.smtpUsername?.trim() || account.imapUsername;
 }
 
-type ResolvedSmtpAuth =
+export type ResolvedSmtpAuth =
   | { ok: true; user: string; password?: string; accessToken?: string }
-  | { ok: false; error: string };
+  // `retryable` distinguishes a TRANSIENT failure (e.g. an OAuth token-refresh
+  // request that hit a provider/network outage) — which can heal on retry —
+  // from a permanent MISCONFIGURATION (missing secret / provider / app config).
+  // Callers that gate SMTP retry semantics (the relay listener's 451 vs 550)
+  // read it; the compose path ignores it. Absent/false ⇒ treat as permanent.
+  | { ok: false; error: string; retryable?: boolean };
 
-async function resolveSmtpAuth(input: {
+/** Resolves SMTP credentials for an account (dedicated SMTP secret, IMAP-auth
+ *  fallback, then OAuth refresh). Exported so the SMTP-relay submission
+ *  pipeline reuses the exact compose-send auth resolution. */
+export async function resolveSmtpAuth(input: {
   workspaceId: string;
   account: ComposeSendAccount;
   readSecret?: (input: SecretIdentifier) => Promise<Buffer | null>;
@@ -2276,9 +2284,13 @@ async function resolveOAuthSmtpAuth(input: {
       accessToken: refreshed.accessToken,
     };
   } catch (error) {
+    // A thrown refresh failure is transient (token endpoint down, network
+    // blip) — the token may refresh fine on the next attempt, so mark it
+    // retryable rather than permanently rejecting the send.
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      retryable: true,
     };
   }
 }

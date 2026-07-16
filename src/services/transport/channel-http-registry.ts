@@ -1991,6 +1991,80 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/tracking`,
     transform: () => ({ success: true }),
   })],
+  [IPCChannels.Email.ListSmtpRelays, () => ({
+    method: "GET",
+    path: "/api/v1/email/relays",
+    transform: (body) => listItems<Record<string, unknown>>(body),
+  })],
+  [IPCChannels.Email.CreateSmtpRelay, ([payload]) => ({
+    method: "POST",
+    path: "/api/v1/email/relays",
+    body: objectPayload(payload, "smtp relay payload"),
+    transform: (body) => dataBody<{ relay?: Record<string, unknown> }>(body).relay ?? {},
+  })],
+  [IPCChannels.Email.UpdateSmtpRelay, ([payload]) => {
+    const input = objectPayload(payload, "smtp relay payload")
+    const { relayId, ...values } = input
+    return {
+      method: "PATCH",
+      path: `/api/v1/email/relays/${pathTextSegment(relayId, "smtp relay id", 80)}`,
+      body: values,
+      transform: (body) => dataBody<{ relay?: Record<string, unknown> }>(body).relay ?? {},
+    }
+  }],
+  [IPCChannels.Email.DeleteSmtpRelay, ([relayId]) => ({
+    method: "DELETE",
+    path: `/api/v1/email/relays/${pathTextSegment(relayId, "smtp relay id", 80)}`,
+    transform: () => ({ success: true }),
+  })],
+  [IPCChannels.Email.AddSmtpRelayAccount, ([payload]) => {
+    const input = objectPayload(payload, "smtp relay account payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/relays/${pathTextSegment(input.relayId, "smtp relay id", 80)}/accounts`,
+      body: {
+        accountId: positiveId(input.accountId, "email account id"),
+        ...(input.fromAddress === undefined ? {} : { fromAddress: input.fromAddress }),
+      },
+      transform: (body) => dataBody<{ account?: Record<string, unknown> }>(body).account ?? {},
+    }
+  }],
+  [IPCChannels.Email.RemoveSmtpRelayAccount, ([payload]) => {
+    const input = objectPayload(payload, "smtp relay account payload")
+    return {
+      method: "DELETE",
+      path: `/api/v1/email/relays/${pathTextSegment(input.relayId, "smtp relay id", 80)}/accounts/${positiveId(input.accountId, "email account id")}`,
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.CreateSmtpRelayCredential, ([payload]) => {
+    const input = objectPayload(payload, "smtp relay credential payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/relays/${pathTextSegment(input.relayId, "smtp relay id", 80)}/credentials`,
+      // Reveal-once: the response body is the only time the password is visible.
+      transform: (body) => dataBody<{ id?: string; username?: string; password?: string }>(body),
+    }
+  }],
+  [IPCChannels.Email.RevokeSmtpRelayCredential, ([payload]) => {
+    const input = objectPayload(payload, "smtp relay credential payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/relays/${pathTextSegment(input.relayId, "smtp relay id", 80)}/credentials/${pathTextSegment(input.credentialId, "smtp relay credential id", 80)}/revoke`,
+      transform: (body) => dataBody<Record<string, unknown>>(body),
+    }
+  }],
+  [IPCChannels.Email.ListSmtpRelaySubmissions, ([payload]) => {
+    const input = objectPayload(payload, "smtp relay submissions payload")
+    return {
+      method: "GET",
+      path: `/api/v1/email/relays/${pathTextSegment(input.relayId, "smtp relay id", 80)}/submissions`,
+      query: pruneQueryUndefined({
+        limit: input.limit === undefined ? undefined : positiveId(input.limit, "smtp relay submissions limit"),
+      }),
+      transform: (body) => listItems<Record<string, unknown>>(body),
+    }
+  }],
   [IPCChannels.Email.GetMessageRawHeaders, ([messageId]) => ({
     method: "GET",
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/raw-headers`,

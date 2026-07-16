@@ -17,7 +17,7 @@ export type ServerSmtpSendInput = Readonly<{
   accessToken?: string;
   envelopeFrom: string;
   recipients: readonly string[];
-  rfc822: string;
+  rfc822: string | Buffer;
   timeoutMs?: number;
   socketFactory?: SmtpSocketFactory;
   diagnosticsContext?: SmtpSendDiagnosticsContext;
@@ -132,7 +132,7 @@ export async function sendSmtpMessage(input: ServerSmtpSendInput): Promise<void>
 
     response = await smtpCommand(client, 'DATA');
     if (response.code !== 354) failWithResponse('DATA', response);
-    client.writeData(dotStuff(input.rfc822));
+    client.writeData(input.rfc822);
     response = await readSmtpResponse(client);
     if (response.code !== 250) failWithResponse('DATA_FINAL', response);
 
@@ -335,8 +335,11 @@ function dotStuff(value: string): string {
   return `${stuffed}\r\n.\r\n`;
 }
 
-export function inspectRfc822ForSmtpDiagnostics(rfc822: string): SmtpRfc822Diagnostics {
-  const normalized = rfc822.replace(/\r?\n/g, '\r\n');
+export function inspectRfc822ForSmtpDiagnostics(rfc822: string | Buffer): SmtpRfc822Diagnostics {
+  // latin1 preserves bytes 1:1 for a Buffer, so header/line analysis stays
+  // byte-accurate without a lossy UTF-8 decode.
+  const source = Buffer.isBuffer(rfc822) ? rfc822.toString('latin1') : rfc822;
+  const normalized = source.replace(/\r?\n/g, '\r\n');
   const headerEnd = normalized.indexOf('\r\n\r\n');
   const headerSection = headerEnd >= 0 ? normalized.slice(0, headerEnd) : normalized;
   const body = headerEnd >= 0 ? normalized.slice(headerEnd + 4) : '';
@@ -466,8 +469,16 @@ class LineProtocolClient {
     this.socket.write(`${line}\r\n`);
   }
 
-  writeData(data: string): void {
-    this.socket.write(data);
+  writeData(data: string | Buffer): void {
+    // Byte-preserving for Buffers: round-trip through latin1 (each byte <-> one
+    // char) so dot-stuffing (which only touches ASCII CR/LF/'.') runs correctly
+    // WITHOUT re-encoding the 8-bit body, then write the exact bytes back. A
+    // string caller (compose) keeps its existing UTF-8 write path.
+    if (Buffer.isBuffer(data)) {
+      this.socket.write(Buffer.from(dotStuff(data.toString('latin1')), 'latin1'));
+    } else {
+      this.socket.write(dotStuff(data));
+    }
   }
 
   close(): void {

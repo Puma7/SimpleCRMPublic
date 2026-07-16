@@ -4,6 +4,11 @@ export type WorkflowTriggerKind =
   | 'draft_created'
   | 'schedule'
   | 'manual'
+  /**
+   * Server-only: fired by the SMTP relay pipeline (relay-submission.ts) AFTER
+   * a mail was successfully relayed. The desktop edition never emits it.
+   */
+  | 'relay'
   | 'crm.deal_stage_changed'
   | 'task.due'
   | 'calendar.event_start'
@@ -20,7 +25,8 @@ export type WorkflowDirection =
 
 /** Maps stored workflow trigger to runtime execution direction. */
 export function workflowDirectionForTrigger(trigger: WorkflowTriggerKind): WorkflowDirection {
-  if (trigger === 'outbound') return 'outbound';
+  // 'relay' runs the outbound follow-up graph on the already-sent message.
+  if (trigger === 'outbound' || trigger === 'relay') return 'outbound';
   if (trigger === 'draft_created') return 'draft_created';
   if (trigger === 'schedule') return 'schedule';
   if (trigger === 'manual') return 'manual';
@@ -38,5 +44,7 @@ export function workflowDirectionForTrigger(trigger: WorkflowTriggerKind): Workf
 }
 
 export function workflowTriggerNeedsMessage(trigger: WorkflowTriggerKind): boolean {
-  return trigger === 'inbound' || trigger === 'outbound' || trigger === 'draft_created';
+  // 'relay' needs the persisted message: the follow-up graph reads its
+  // tracking evidence (email.read_tracking_evidence).
+  return trigger === 'inbound' || trigger === 'outbound' || trigger === 'draft_created' || trigger === 'relay';
 }

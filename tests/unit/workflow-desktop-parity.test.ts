@@ -56,6 +56,14 @@ describe('workflow desktop parity', () => {
     expect(missing).toEqual([]);
   });
 
+  test('desktop template list omits server-only templates (relay follow-up)', () => {
+    // Beide Vorlagen enthalten email.read_tracking_evidence (runtime 'server');
+    // der Relay-Trigger existiert auf dem Desktop ohnehin nicht.
+    const ids = WORKFLOW_TEMPLATES.map((t) => t.id);
+    expect(ids).not.toContain('relay-dunning-follow-up');
+    expect(ids).not.toContain('outbound-evidence-follow-up');
+  });
+
   test('parseClassificationOutput extracts label and confidence', () => {
     expect(parseClassificationOutput('Rechnung|85')).toEqual({
       label: 'Rechnung',

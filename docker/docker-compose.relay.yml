@@ -1,0 +1,23 @@
+# Opt-in override that turns on the inbound SMTP relay for the API service.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.relay.yml up -d
+#
+# It publishes the submission (587) and SMTPS (465) ports and mounts the TLS
+# cert/key the relay presents. The relay itself only starts when
+# SMTP_RELAY_ENABLED=true and the cert/key are readable (see docs/SMTP_RELAY.md);
+# without this override the base compose keeps those mail ports closed.
+#
+# Provide the TLS material in the host directory SMTP_RELAY_TLS_DIR (default
+# ./relay-tls) as cert.pem + key.pem — e.g. copy/symlink the same Let's Encrypt
+# files Caddy already obtains for SMTP_RELAY_HOSTNAME.
+services:
+  api:
+    ports:
+      # HOST:CONTAINER — both sides use the SAME configured port, because the
+      # in-container listener binds SMTP_RELAY_PORT_SUBMISSION/_SMTPS (passed
+      # through in the base compose). Mapping host<port> to a fixed container
+      # 587/465 would miss the listener when an operator customizes the port.
+      - "${SMTP_RELAY_PORT_SUBMISSION:-587}:${SMTP_RELAY_PORT_SUBMISSION:-587}"
+      - "${SMTP_RELAY_PORT_SMTPS:-465}:${SMTP_RELAY_PORT_SMTPS:-465}"
+    volumes:
+      - "${SMTP_RELAY_TLS_DIR:-./relay-tls}:/app/data/relay-tls:ro"

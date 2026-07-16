@@ -337,6 +337,14 @@ const TRIGGER_DESCRIPTIONS: Record<string, React.ReactNode> = {
       <code>customer.email</code>.
     </>
   ),
+  relay: (
+    <>
+      Nur Server-Edition: Startet, nachdem das SMTP-Relay eine Mail erfolgreich versendet hat —
+      die Mail ist also schon raus. Ideal für Nachfass-Workflows, die später den Versandstatus
+      lesen (<code>email.read_tracking_evidence</code>) und z.&nbsp;B. ohne Reaktion eine
+      Aufgabe anlegen.
+    </>
+  ),
 }
 
 function TriggerReference() {

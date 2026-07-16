@@ -4,6 +4,7 @@ export type WorkflowGraphTriggerKind =
   | 'draft_created'
   | 'schedule'
   | 'manual'
+  | 'relay'
   | 'crm.deal_stage_changed'
   | 'crm.customer_created'
   | 'task.due'

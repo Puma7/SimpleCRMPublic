@@ -10,6 +10,8 @@ export type WorkflowTriggerKind =
   | 'draft_created'
   | 'schedule'
   | 'manual'
+  /** Server-only: SMTP-Relay-Follow-up (nach erfolgreichem Relay-Versand). */
+  | 'relay'
   | 'crm.deal_stage_changed'
   | 'task.due'
   | 'calendar.event_start'

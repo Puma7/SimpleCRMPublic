@@ -187,10 +187,10 @@ export function WorkflowShell() {
       return rows.filter((w) => w.trigger === "inbound" || w.trigger === "draft_created")
     }
     if (triggerFilter === "outbound") {
-      return rows.filter((w) => w.trigger === "outbound")
+      return rows.filter((w) => w.trigger === "outbound" || w.trigger === "relay")
     }
     return rows.filter(
-      (w) => !["inbound", "outbound", "draft_created"].includes(w.trigger),
+      (w) => !["inbound", "outbound", "draft_created", "relay"].includes(w.trigger),
     )
   }, [rows, triggerFilter])
 
@@ -833,7 +833,7 @@ export function WorkflowShell() {
                   {(() => {
                     const row = rows.find((w) => w.id === selectedId)
                     const trig = row?.trigger ?? "inbound"
-                    const needsMsg = trig === "inbound" || trig === "outbound" || trig === "draft_created"
+                    const needsMsg = trig === "inbound" || trig === "outbound" || trig === "draft_created" || trig === "relay"
                     const trimmed = testMessageId.trim()
                     const parsedId = trimmed ? parseInt(trimmed, 10) : NaN
                     const msgOk =

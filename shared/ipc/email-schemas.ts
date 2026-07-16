@@ -791,6 +791,103 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: positiveInt,
     result: successResult,
   });
+  // --- SMTP relay administration (server edition only, like tracking settings) ---
+  const smtpRelayTrackingModeSchema = z.enum(['off', 'rule', 'always']);
+  const smtpRelayAllowedAccountSchema = z.object({
+    accountId: positiveInt,
+    fromAddress: z.string().nullable(),
+    emailAddress: z.string(),
+    displayName: z.string(),
+  });
+  const smtpRelayCredentialSchema = z.object({
+    id: nonEmptyString,
+    username: nonEmptyString,
+    lastUsedAt: z.string().nullable(),
+    revokedAt: z.string().nullable(),
+    createdAt: z.string(),
+  });
+  const smtpRelaySchema = z.object({
+    id: nonEmptyString,
+    label: nonEmptyString,
+    enabled: z.boolean(),
+    trackingMode: smtpRelayTrackingModeSchema,
+    trackingSubjectPatterns: z.string().nullable(),
+    allowHeaderOverride: z.boolean(),
+    maxRecipients: positiveInt,
+    maxMessageBytes: positiveInt,
+    rateLimitPerMin: positiveInt,
+    allowArbitraryRecipients: z.boolean(),
+    followupWorkflowId: positiveInt.nullable(),
+    createdAt: z.string(),
+    allowedAccounts: z.array(smtpRelayAllowedAccountSchema),
+    credentials: z.array(smtpRelayCredentialSchema),
+  });
+  const smtpRelayMutationFields = {
+    enabled: z.boolean().optional(),
+    trackingMode: smtpRelayTrackingModeSchema.optional(),
+    trackingSubjectPatterns: z.string().nullable().optional(),
+    allowHeaderOverride: z.boolean().optional(),
+    maxRecipients: z.number().int().min(1).max(1000).optional(),
+    maxMessageBytes: positiveInt.optional(),
+    rateLimitPerMin: positiveInt.optional(),
+    allowArbitraryRecipients: z.boolean().optional(),
+    followupWorkflowId: positiveInt.nullable().optional(),
+  };
+  set(IPCChannels.Email.ListSmtpRelays, {
+    payload: voidPayload.optional(),
+    result: z.array(smtpRelaySchema),
+  });
+  set(IPCChannels.Email.CreateSmtpRelay, {
+    payload: z.object({ label: nonEmptyString, ...smtpRelayMutationFields }),
+    result: smtpRelaySchema,
+  });
+  set(IPCChannels.Email.UpdateSmtpRelay, {
+    payload: z.object({
+      relayId: nonEmptyString,
+      label: nonEmptyString.optional(),
+      ...smtpRelayMutationFields,
+    }),
+    result: smtpRelaySchema,
+  });
+  set(IPCChannels.Email.DeleteSmtpRelay, {
+    payload: nonEmptyString,
+    result: successResult,
+  });
+  set(IPCChannels.Email.AddSmtpRelayAccount, {
+    payload: z.object({
+      relayId: nonEmptyString,
+      accountId: positiveInt,
+      fromAddress: z.string().nullable().optional(),
+    }),
+    result: smtpRelayAllowedAccountSchema,
+  });
+  set(IPCChannels.Email.RemoveSmtpRelayAccount, {
+    payload: z.object({ relayId: nonEmptyString, accountId: positiveInt }),
+    result: successResult,
+  });
+  set(IPCChannels.Email.CreateSmtpRelayCredential, {
+    payload: z.object({ relayId: nonEmptyString }),
+    // The ONLY place the generated relay password is ever exposed.
+    result: z.object({ id: nonEmptyString, username: nonEmptyString, password: nonEmptyString }),
+  });
+  set(IPCChannels.Email.RevokeSmtpRelayCredential, {
+    payload: z.object({ relayId: nonEmptyString, credentialId: nonEmptyString }),
+    result: z.object({ revoked: z.literal(true), credential: smtpRelayCredentialSchema }),
+  });
+  set(IPCChannels.Email.ListSmtpRelaySubmissions, {
+    payload: z.object({ relayId: nonEmptyString, limit: positiveInt.optional() }),
+    result: z.array(z.object({
+      id: nonEmptyString,
+      status: z.enum(['received', 'relayed', 'failed']),
+      recipientCount: z.number().int().nonnegative(),
+      trackingApplied: z.boolean(),
+      trackingRuleReason: z.string().nullable(),
+      messageId: positiveInt.nullable(),
+      smtpMessageIdHeader: z.string().nullable(),
+      errorText: z.string().nullable(),
+      createdAt: z.string(),
+    })),
+  });
   set(IPCChannels.Email.TestRspamdConnection, {
     payload: z.object({
       rspamdUrl: z.string().optional(),
