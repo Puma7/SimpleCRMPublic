@@ -8,6 +8,7 @@ test.describe.serial('email compose tab order', () => {
   test.describe.configure({ timeout: 120_000 });
 
   test.beforeAll(async () => {
+    test.setTimeout(120_000);
     session = await launchAuthenticatedElectron('email-compose-tab-order');
     page = session.page;
 
@@ -30,7 +31,7 @@ test.describe.serial('email compose tab order', () => {
       window.location.hash = '#/email';
     });
     await expect(page.getByRole('link', { name: 'Postfach', exact: true })).toBeVisible();
-  }, 120_000);
+  });
 
   test.afterAll(async () => {
     if (session) await session.close();
@@ -42,7 +43,7 @@ test.describe.serial('email compose tab order', () => {
     await expect(dialog.getByRole('heading', { name: 'Neue Nachricht', exact: true })).toBeVisible();
 
     const to = dialog.getByPlaceholder('empfänger@example.com');
-    const cc = dialog.getByPlaceholder('optional');
+    const cc = dialog.getByPlaceholder('optional', { exact: true });
     const bcc = dialog.getByPlaceholder('Blindkopie, optional');
     const subject = dialog.getByLabel('Betreff', { exact: true });
     const editor = dialog.locator('.ql-editor');
