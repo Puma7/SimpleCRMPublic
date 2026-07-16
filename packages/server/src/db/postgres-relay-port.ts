@@ -648,6 +648,12 @@ export function createPostgresSmtpRelayAdminPort(
             .select(['id'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.relayId)
+            // Lock the relay row so concurrent addAllowedAccount calls for the
+            // SAME relay serialize here: the claimed-address collision scan
+            // below is not covered by any DB uniqueness constraint (the DB only
+            // enforces (relay_id, account_id)), so without this two adds could
+            // both pass the scan and insert mappings that claim the same From.
+            .forUpdate()
             .executeTakeFirst();
           if (!relay) return { ok: false, code: 'relay_not_found' } as const;
 

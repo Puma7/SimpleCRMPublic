@@ -159,6 +159,7 @@ function makeTrx(tables: Tables) {
     b.where = (col: string, op: string, val: unknown) => { wheres.push({ col, op, val }); return b; };
     b.orderBy = (col: string, dir?: string) => { ordering = { col, dir: dir ?? 'asc' }; return b; };
     b.limit = (count: number) => { limitCount = count; return b; };
+    b.forUpdate = () => b; // row-lock is a no-op in the in-memory fake
 
     const combined = (): Array<Record<string, Record<string, unknown>>> => {
       let rows: Array<Record<string, Record<string, unknown>>> = table(base.table).map((r) => ({ [base.alias]: r }));

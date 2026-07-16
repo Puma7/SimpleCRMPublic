@@ -771,6 +771,24 @@ describe('submitRelay SMTP failure', () => {
     expect(submissions[0]!.status).toBe('failed');
   });
 
+  test('a THROWN auth-resolution error is recorded as failed + retryable (not left in-flight)', async () => {
+    // readSecret throws (transient secret-store/DB error). This must go through
+    // failSend so the submission is marked 'failed' + retryable — if it escaped
+    // as a bare throw, the row would stay 'received' and the in-flight guard
+    // would wrongly defer immediate retries.
+    const smtpSend = jest.fn(async () => undefined);
+    const { pipeline, submissions } = makePipeline({
+      readSecret: async () => { throw new Error('secret store timeout'); },
+      smtpSend,
+    });
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Mahnung 2' })));
+
+    expect(result).toMatchObject({ ok: false, code: 'relay_failed', retryable: true });
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect(submissions[0]!.status).toBe('failed');
+  });
+
   test('a missing SMTP secret is a permanent (non-retryable) config rejection', async () => {
     // resolveSmtpAuth returns ok:false (no password available) when the secret
     // is absent; a transient secret-store failure would THROW instead and be

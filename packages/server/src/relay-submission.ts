@@ -539,14 +539,25 @@ export function createRelaySubmissionPipeline(
       };
 
       // 7. Resolve SMTP auth for the routing account and relay the message.
-      const auth = await resolveSmtpAuth({
-        workspaceId,
-        account: composeSendAccountFromRoutingAccount(account),
-        readSecret: deps.readSecret,
-        writeSecret: deps.writeSecret,
-        getSyncInfo: store.getSyncInfo,
-        oauthFetchImpl: deps.oauthFetchImpl,
-      });
+      //    A THROW here (readSecret / getSyncInfo hits a transient DB/secret
+      //    error) must go through failSend, not escape to the listener's generic
+      //    451: otherwise the submission stays 'received' and the in-flight
+      //    dedup guard would wrongly defer immediate retries for
+      //    RELAY_INFLIGHT_STALE_MS even though no send is running. Mark it
+      //    failed + retryable so a retry re-attempts immediately.
+      let auth: Awaited<ReturnType<typeof resolveSmtpAuth>>;
+      try {
+        auth = await resolveSmtpAuth({
+          workspaceId,
+          account: composeSendAccountFromRoutingAccount(account),
+          readSecret: deps.readSecret,
+          writeSecret: deps.writeSecret,
+          getSyncInfo: store.getSyncInfo,
+          oauthFetchImpl: deps.oauthFetchImpl,
+        });
+      } catch (error) {
+        return failSend(errorMessage(error), true);
+      }
       // A missing SMTP secret / OAuth token / host is a permanent account
       // MISCONFIGURATION: retrying the same DATA will never heal it, so reject
       // permanently (550) rather than have external systems loop forever.
@@ -1316,6 +1327,16 @@ async function nextLocalRelayUid(
   accountId: number,
   folderId: number,
 ): Promise<number> {
+  // Serialize UID allocation per folder: lock the folder row so two concurrent
+  // relay persists for the same account/folder cannot both read the same
+  // min(uid) and pick the same next negative uid (which the local-uid UNIQUE
+  // constraint would then reject, spuriously deferring one as persist_failed).
+  await trx
+    .selectFrom('email_folders')
+    .select('id')
+    .where('id', '=', folderId)
+    .forUpdate()
+    .executeTakeFirst();
   const row = await trx
     .selectFrom('email_messages')
     .select((eb) => eb.fn.min<number>('uid').as('min_uid'))
