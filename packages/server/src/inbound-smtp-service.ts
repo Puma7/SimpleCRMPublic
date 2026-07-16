@@ -44,7 +44,7 @@ export type InboundSmtpLogger = Readonly<{
 export type InboundSmtpServiceOptions = Readonly<{
   relayPort: Pick<
     PostgresSmtpRelayPort,
-    'verifyCredential' | 'resolveRoutingAccount' | 'loadRelayConfig'
+    'verifyCredential' | 'resolveRoutingAccount' | 'loadRelayConfig' | 'revalidateSession'
   >;
   submitRelay: (input: RelaySubmissionInput) => Promise<RelaySubmissionResult>;
   /** EHLO name of the listener (defaults to os.hostname() via smtp-server). */
@@ -222,23 +222,28 @@ export async function startInboundSmtpService(
       const user = sessionUser(session);
       if (!user) return callback(smtpError(530, '5.7.0 Authentication required'));
 
-      // Reload (not the AUTH-time memoized peek) so an admin disabling the
-      // relay or tightening its limits takes effect on the NEXT message of
-      // an already-authenticated, possibly long-lived connection — a client
-      // can submit many messages over one SMTP session, so caching this for
-      // the whole session would let a since-revoked/tightened relay keep
-      // accepting mail until the connection happens to drop.
-      const config = await options.relayPort.loadRelayConfig({
+      // Revalidate (not the AUTH-time memoized peek) so an admin disabling the
+      // relay, REVOKING this credential, or tightening its limits takes effect
+      // on the NEXT message of an already-authenticated, possibly long-lived
+      // connection — a client can submit many messages over one SMTP session,
+      // and AUTH only gates NEW connections, so caching this for the whole
+      // session would let a since-disabled relay or since-revoked credential
+      // keep accepting mail until the connection happens to drop.
+      // revalidateSession returns config only while the relay is still enabled
+      // AND this exact credential is still un-revoked.
+      const config = await options.relayPort.revalidateSession({
         workspaceId: user.workspaceId,
         relayId: user.relayId,
+        credentialId: user.credentialId,
       });
       sessionState(session).relayConfig = config;
       if (!config) {
-        log.warn('inbound smtp sender rejected: relay not configured', {
+        log.warn('inbound smtp sender rejected: relay disabled or credential revoked', {
           workspaceId: user.workspaceId,
           relayId: user.relayId,
+          credentialId: user.credentialId,
         });
-        return callback(smtpError(550, '5.7.1 Relay is not configured'));
+        return callback(smtpError(550, '5.7.1 Relay is no longer available for this credential'));
       }
       if (!rateLimiter.tryConsume(user.credentialId, config.rateLimitPerMin)) {
         log.warn('inbound smtp message deferred: rate limit exceeded', {

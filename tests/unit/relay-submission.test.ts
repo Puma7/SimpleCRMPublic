@@ -435,6 +435,33 @@ describe('submitRelay untracked pass-through', () => {
     expect(persistInputs[0]!.dedupKey).not.toBe(persistInputs[0]!.messageIdHeader);
   });
 
+  test('a Message-ID-less message to DIFFERENT envelope recipients is not deduped (Bcc split)', async () => {
+    // Regression: an ERP sending a Bcc-only / undisclosed-recipients message
+    // delivers byte-identical DATA in separate transactions, one per RCPT. A
+    // dedup key over the bytes alone would treat the second recipient as a
+    // replay of the first and silently drop it. The envelope recipients must
+    // be part of the fallback key so each distinct recipient is relayed.
+    const { pipeline, smtpSend, persistInputs } = makePipeline({
+      relayPort: makeRelayPort({ config: relayConfig({ trackingMode: 'off' }) }),
+    });
+    const message = erpMessage({ messageId: null, subject: 'Sammelversand' });
+
+    const first = await pipeline.submitRelay(submitInput(message, { recipients: ['kunde-a@example.com'] }));
+    const second = await pipeline.submitRelay(submitInput(message, { recipients: ['kunde-b@example.com'] }));
+
+    expect(first).toEqual(expect.objectContaining({ ok: true }));
+    expect(second).toEqual(expect.objectContaining({ ok: true }));
+    // Both recipients were actually relayed — the second was NOT short-circuited.
+    expect(smtpSend).toHaveBeenCalledTimes(2);
+    expect(persistInputs[0]!.dedupKey).not.toBe(persistInputs[1]!.dedupKey);
+
+    // ...but a true retry to the SAME recipient still dedupes.
+    const retry = await pipeline.submitRelay(submitInput(message, { recipients: ['kunde-a@example.com'] }));
+    expect(retry).toEqual(expect.objectContaining({ ok: true }));
+    expect(smtpSend).toHaveBeenCalledTimes(2);
+    expect(persistInputs[2]!.dedupKey).toBe(persistInputs[0]!.dedupKey);
+  });
+
   test('a failing sent-copy appender does not fail the relay', async () => {
     const sentCopyAppend = jest.fn(async () => {
       throw new Error('imap down');

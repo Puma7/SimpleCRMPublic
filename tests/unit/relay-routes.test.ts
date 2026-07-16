@@ -300,8 +300,9 @@ describe('smtp relay routes', () => {
     ]);
   });
 
-  test('adds and removes allowed accounts', async () => {
-    const api = apiFor(makeRelayPort());
+  test('adds and removes allowed accounts, recording an audit event for each', async () => {
+    const audit = makeAudit();
+    const api = apiFor(makeRelayPort(), audit);
     const added = await api.handle({
       method: 'POST',
       path: `/api/v1/email/relays/${RELAY_ID}/accounts`,
@@ -322,6 +323,23 @@ describe('smtp relay routes', () => {
       principal: admin,
     });
     expect(removed.status).toBe(200);
+
+    // The allowlist governs which From addresses may send through the relay, so
+    // add + remove must both leave an audit trail with the relay + account ids.
+    expect(audit.events).toEqual([
+      expect.objectContaining({
+        action: 'smtp_relay_account.added',
+        entityType: 'smtp_relay',
+        entityId: RELAY_ID,
+        metadata: expect.objectContaining({ accountId: 100, fromAddress: 'noreply@acme.test' }),
+      }),
+      expect.objectContaining({
+        action: 'smtp_relay_account.removed',
+        entityType: 'smtp_relay',
+        entityId: RELAY_ID,
+        metadata: expect.objectContaining({ accountId: 100 }),
+      }),
+    ]);
 
     const duplicate = await apiFor(makeRelayPort({
       async addAllowedAccount() { return { ok: false, code: 'duplicate_account' }; },

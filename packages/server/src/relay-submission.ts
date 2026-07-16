@@ -335,7 +335,8 @@ export function createRelaySubmissionPipeline(
       const outgoingMessageId = willTrack || !incomingMessageId
         ? generateOutboundMessageId(String(account.email_address))
         : incomingMessageId;
-      const dedupKey = incomingMessageId ?? hashRelaySubmissionForDedup(relayId, input.rfc822);
+      const dedupKey = incomingMessageId
+        ?? hashRelaySubmissionForDedup(relayId, input.envelopeFrom, recipients, input.rfc822);
 
       // 4. Persist message + submission row (idempotent on the Message-ID).
       let persisted: RelaySubmissionPersistResult;
@@ -763,12 +764,30 @@ function smtpCodeFromError(message: string): { smtpCode?: number } {
 }
 
 /** Deterministic dedup fallback for a message with no Message-ID header: an
- *  ERP retry after a lost SMTP response resends byte-identical DATA, so
- *  hashing the exact submitted bytes (scoped per relay) yields a stable key
- *  — unlike the wire Message-ID, which the tracked path re-mints every
- *  attempt. */
-function hashRelaySubmissionForDedup(relayId: string, rfc822: Buffer): string {
-  return `sha256:${createHash('sha256').update(relayId).update(rfc822).digest('hex')}`;
+ *  ERP retry after a lost SMTP response resends the identical DATA to the
+ *  identical envelope, so hashing the exact submitted bytes together with the
+ *  envelope sender + recipients (scoped per relay) yields a stable key —
+ *  unlike the wire Message-ID, which the tracked path re-mints every attempt.
+ *
+ *  The envelope MUST be part of the key: a Bcc-only / undisclosed-recipients
+ *  submission sends byte-identical DATA in separate transactions, one per RCPT
+ *  (or per recipient batch). Keying on the bytes alone would treat the second
+ *  recipient's transaction as a replay of the first and silently drop it, so
+ *  that recipient would never receive the mail. Recipients are normalised and
+ *  sorted so RCPT ordering does not change the key (a true retry still matches). */
+function hashRelaySubmissionForDedup(
+  relayId: string,
+  envelopeFrom: string,
+  recipients: readonly string[],
+  rfc822: Buffer,
+): string {
+  const hash = createHash('sha256').update(relayId).update('\0');
+  hash.update(normalizeEmailAddress(envelopeFrom) ?? envelopeFrom.trim().toLowerCase()).update('\0');
+  const normalizedRecipients = recipients
+    .map((recipient) => normalizeEmailAddress(recipient) ?? recipient.trim().toLowerCase())
+    .sort();
+  for (const recipient of normalizedRecipients) hash.update(recipient).update('\0');
+  return `sha256:${hash.update(rfc822).digest('hex')}`;
 }
 
 // ---------------------------------------------------------------------------

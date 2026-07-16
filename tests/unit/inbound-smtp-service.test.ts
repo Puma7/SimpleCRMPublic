@@ -83,6 +83,10 @@ function makeRelayPort(config: SmtpRelayConfig) {
       input.fromAddress.toLowerCase() === 'sales@acme.test' ? routingAccount() : null
     )),
     loadRelayConfig: jest.fn(async () => config),
+    // Per-message revalidation (relay still enabled AND credential un-revoked).
+    // Defaults to the same config; individual tests override to simulate a relay
+    // disabled or a credential revoked mid-session.
+    revalidateSession: jest.fn(async () => config as SmtpRelayConfig | null),
   };
 }
 
@@ -219,6 +223,28 @@ describe('startInboundSmtpService', () => {
       relayId: RELAY_ID,
       fromAddress: 'spoofed@evil.test',
     });
+    expect(submitRelay).not.toHaveBeenCalled();
+  });
+
+  it('rejects with 550 when the relay is disabled or the credential is revoked mid-session', async () => {
+    const { relayPort, submitRelay, ports } = await startService();
+    // Simulate an admin disabling the relay / revoking this credential AFTER the
+    // session already authenticated: revalidateSession now returns null.
+    relayPort.revalidateSession.mockResolvedValue(null);
+    const transport = makeTransport({ port: ports.smtps, secure: true });
+
+    await expect(transport.sendMail({
+      envelope: { from: 'sales@acme.test', to: ['kunde@example.com'] },
+      raw: rfc822(),
+    })).rejects.toMatchObject({ responseCode: 550 });
+    // Revalidation is keyed on the exact credential of the session, not just the relay.
+    expect(relayPort.revalidateSession).toHaveBeenCalledWith({
+      workspaceId: WS,
+      relayId: RELAY_ID,
+      credentialId: CREDENTIAL_ID,
+    });
+    // The routing account is never resolved and nothing is submitted.
+    expect(relayPort.resolveRoutingAccount).not.toHaveBeenCalled();
     expect(submitRelay).not.toHaveBeenCalled();
   });
 

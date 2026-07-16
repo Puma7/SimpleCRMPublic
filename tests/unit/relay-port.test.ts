@@ -438,6 +438,35 @@ describe('createPostgresSmtpRelayPort.loadRelayConfig', () => {
     const port = makePort(seedTables());
     expect(await port.loadRelayConfig({ workspaceId: WS_A, relayId: 'nope' })).toBeNull();
   });
+
+  test('returns null for a disabled relay (runtime send path must not act on it)', async () => {
+    const port = makePort(seedTables());
+    expect(await port.loadRelayConfig({ workspaceId: WS_A, relayId: 'relay-disabled' })).toBeNull();
+  });
+});
+
+describe('createPostgresSmtpRelayPort.revalidateSession', () => {
+  test('returns config while the relay is enabled and the credential un-revoked', async () => {
+    const port = makePort(seedTables());
+    const config = await port.revalidateSession({
+      workspaceId: WS_A, relayId: 'relay-a', credentialId: 'cred-a',
+    });
+    expect(config).toMatchObject({ trackingMode: 'rule', rateLimitPerMin: 60 });
+  });
+
+  test('returns null once the credential is revoked (mid-session revocation)', async () => {
+    const port = makePort(seedTables());
+    expect(await port.revalidateSession({
+      workspaceId: WS_A, relayId: 'relay-a', credentialId: 'cred-revoked',
+    })).toBeNull();
+  });
+
+  test('returns null once the relay is disabled (mid-session disable)', async () => {
+    const port = makePort(seedTables());
+    expect(await port.revalidateSession({
+      workspaceId: WS_A, relayId: 'relay-disabled', credentialId: 'cred-disabled',
+    })).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -641,6 +670,40 @@ describe('createPostgresSmtpRelayAdminPort.addAllowedAccount / removeAllowedAcco
     expect(await port.addAllowedAccount({
       workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', accountId: 100,
     })).toEqual({ ok: false, code: 'duplicate_account' });
+  });
+
+  test('rejects a From override that collides with a sibling account address (not just its override)', async () => {
+    // al-2 maps account 101 (support@acme.test) with override noreply@acme.test,
+    // so it CLAIMS both support@acme.test and noreply@acme.test for routing.
+    // Adding a different account whose override is support@acme.test must be
+    // rejected: resolveRoutingAccount would then match From: support@acme.test
+    // to whichever row comes back first. The old check compared only each
+    // mapping's single effective address (override ?? email), so support (new
+    // override) vs noreply (al-2 override) looked distinct and slipped through.
+    const tables = seedTables();
+    tables.email_accounts.push({
+      id: 102, workspace_id: WS_A, source_sqlite_id: 102, display_name: 'Ops',
+      email_address: 'ops@acme.test', protocol: 'imap', smtp_host: 'smtp.acme.test',
+      smtp_port: 587, smtp_tls: true, smtp_username: 'ops', smtp_use_imap_auth: false,
+      smtp_keytar_account_key: null, smtp_password_secret_id: 'secret-ops', imap_username: 'ops',
+      keytar_account_key: null, imap_password_secret_id: null, oauth_provider: null,
+      oauth_refresh_keytar_key: null, oauth_refresh_secret_id: null,
+    } as (typeof tables.email_accounts)[number]);
+    const port = makeAdminPort(tables, { generateId: () => 'al-collide' });
+
+    const collides = await port.addAllowedAccount({
+      workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', accountId: 102,
+      fromAddress: 'support@acme.test',
+    });
+    expect(collides).toEqual({ ok: false, code: 'duplicate_from_address' });
+    expect(tables.smtp_relay_allowed_accounts.some((row) => row.id === 'al-collide')).toBe(false);
+
+    // A genuinely distinct override for the same new account is still accepted.
+    const ok = await port.addAllowedAccount({
+      workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', accountId: 102,
+      fromAddress: 'unique@acme.test',
+    });
+    expect(ok).toMatchObject({ ok: true });
   });
 
   test('removes an existing mapping and reports a missing one', async () => {

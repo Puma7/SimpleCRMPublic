@@ -80,6 +80,19 @@ export type PostgresSmtpRelayPort = Readonly<{
     workspaceId: string;
     relayId: string;
   }): Promise<SmtpRelayConfig | null>;
+  /**
+   * Per-message revalidation for an already-authenticated SMTP session. AUTH
+   * only gates NEW connections; a long-lived session keeps its resolved
+   * credential id, so an admin who disables the relay or revokes the
+   * credential mid-session must still be able to stop further submissions on
+   * that connection. Returns the config only when the relay is still enabled
+   * AND the specific credential is still un-revoked; otherwise null.
+   */
+  revalidateSession(input: {
+    workspaceId: string;
+    relayId: string;
+    credentialId: string;
+  }): Promise<SmtpRelayConfig | null>;
 }>;
 
 /** Columns of `email_accounts` a relayed send needs to actually deliver mail. */
@@ -217,22 +230,55 @@ export function createPostgresSmtpRelayPort(
           .select(relayConfigColumns)
           .where('workspace_id', '=', input.workspaceId)
           .where('id', '=', input.relayId)
+          // A disabled relay must not resolve config for the runtime send path
+          // — verifyCredential already blocks new AUTH on a disabled relay, and
+          // this keeps the submission pipeline from acting on one that was
+          // disabled after the session authenticated.
+          .where('enabled', '=', true)
           .executeTakeFirst(),
         { applySession: options.applyWorkspaceSession },
       );
-      if (!row) return null;
-
-      return {
-        trackingMode: row.tracking_mode,
-        trackingSubjectPatterns: row.tracking_subject_patterns,
-        allowHeaderOverride: Boolean(row.allow_header_override),
-        maxRecipients: Number(row.max_recipients),
-        maxMessageBytes: Number(row.max_message_bytes),
-        rateLimitPerMin: Number(row.rate_limit_per_min),
-        allowArbitraryRecipients: Boolean(row.allow_arbitrary_recipients),
-        followupWorkflowId: row.followup_workflow_id === null ? null : Number(row.followup_workflow_id),
-      };
+      return row ? mapRelayConfigRow(row as Record<string, unknown>) : null;
     },
+
+    async revalidateSession(input): Promise<SmtpRelayConfig | null> {
+      const row = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('smtp_relays as relay')
+          .innerJoin('smtp_relay_credentials as cred', (join) => join
+            .onRef('cred.relay_id', '=', 'relay.id')
+            .onRef('cred.workspace_id', '=', 'relay.workspace_id'))
+          .select(relayConfigColumns.map((column) => `relay.${column}` as never))
+          .where('relay.workspace_id', '=', input.workspaceId)
+          .where('relay.id', '=', input.relayId)
+          .where('cred.id', '=', input.credentialId)
+          .where('relay.enabled', '=', true)
+          .where('cred.revoked_at', 'is', null)
+          .executeTakeFirst(),
+        { applySession: options.applyWorkspaceSession },
+      );
+      return row ? mapRelayConfigRow(row as Record<string, unknown>) : null;
+    },
+  };
+}
+
+// Accepts a permissive row shape because `revalidateSession` selects the same
+// columns through a join with an `as never` alias map (which erases the row
+// type to `{}`), while `loadRelayConfig` selects them directly. Both feed the
+// identical config mapping.
+function mapRelayConfigRow(row: Record<string, unknown>): SmtpRelayConfig {
+  const followup = row.followup_workflow_id;
+  return {
+    trackingMode: row.tracking_mode as 'off' | 'rule' | 'always',
+    trackingSubjectPatterns: (row.tracking_subject_patterns as string | null) ?? null,
+    allowHeaderOverride: Boolean(row.allow_header_override),
+    maxRecipients: Number(row.max_recipients),
+    maxMessageBytes: Number(row.max_message_bytes),
+    rateLimitPerMin: Number(row.rate_limit_per_min),
+    allowArbitraryRecipients: Boolean(row.allow_arbitrary_recipients),
+    followupWorkflowId: followup === null || followup === undefined ? null : Number(followup),
   };
 }
 
@@ -265,6 +311,24 @@ async function touchCredentialLastUsed(
  */
 function hashRelayPassword(password: string): string {
   return `sha256:${createHash('sha256').update(password, 'utf8').digest('hex')}`;
+}
+
+/**
+ * The set of normalised From addresses an allowed-account mapping "claims" for
+ * routing: the account's own address AND its optional `from_address` override
+ * (mirroring `resolveRoutingAccount`, which matches either). Used to detect
+ * collisions between mappings on any shared claimed address.
+ */
+function collectClaimedAddresses(
+  accountEmail: string | null | undefined,
+  fromAddress: string | null | undefined,
+): Set<string> {
+  const claims = new Set<string>();
+  const account = accountEmail == null ? null : normalizeEmailAddress(String(accountEmail));
+  if (account) claims.add(account);
+  const override = fromAddress == null ? null : normalizeEmailAddress(String(fromAddress));
+  if (override) claims.add(override);
+  return claims;
 }
 
 // ---------------------------------------------------------------------------
@@ -569,14 +633,18 @@ export function createPostgresSmtpRelayAdminPort(
 
           const fromAddress = input.fromAddress?.trim() || null;
 
-          // resolveRoutingAccount matches an inbound From against EITHER an
-          // allowed account's own address or its override, with no ORDER BY
-          // — so two allowed entries that normalize to the same effective
-          // From address make routing for that address non-deterministic
-          // (could pick either account's SMTP credentials). Reject the
-          // collision here instead of allowing it to be inserted.
-          const effectiveFrom = normalizeEmailAddress(fromAddress ?? account.email_address);
-          if (effectiveFrom) {
+          // resolveRoutingAccount matches an inbound From against BOTH an
+          // allowed account's own address AND its `from_address` override (the
+          // `||` in its predicate), with no ORDER BY — so an allowed entry
+          // "claims" up to two From addresses. Two entries that share ANY
+          // claimed address make routing for it non-deterministic (could pick
+          // either account's SMTP credentials). Comparing only the single
+          // effective address (override ?? account email) misses collisions
+          // where the new entry's account email clashes with a sibling's
+          // override, or vice versa — so compare the FULL claimed-address set
+          // of the new mapping against every sibling's full set.
+          const newClaims = collectClaimedAddresses(account.email_address, fromAddress);
+          if (newClaims.size > 0) {
             const siblings = await trx
               .selectFrom('smtp_relay_allowed_accounts as allowed')
               .innerJoin('email_accounts as acct', (join) => join
@@ -587,10 +655,14 @@ export function createPostgresSmtpRelayAdminPort(
               .select(['allowed.from_address as allowed_from_address', 'acct.email_address'])
               .execute();
             const collides = siblings.some((sibling) => {
-              const siblingEffective = normalizeEmailAddress(
-                sibling.allowed_from_address ?? String(sibling.email_address ?? ''),
+              const siblingClaims = collectClaimedAddresses(
+                sibling.email_address,
+                sibling.allowed_from_address,
               );
-              return siblingEffective === effectiveFrom;
+              for (const claimed of siblingClaims) {
+                if (newClaims.has(claimed)) return true;
+              }
+              return false;
             });
             if (collides) return { ok: false, code: 'duplicate_from_address' } as const;
           }

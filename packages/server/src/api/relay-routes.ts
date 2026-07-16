@@ -70,7 +70,7 @@ export async function handleSmtpRelayRoute(
     if (!requireAdmin(principal)) return forbidden();
     if (segments.length === 2) {
       if (req.method !== 'POST') return methodNotAllowed();
-      return handleAccountAdd(req, relays, principal, relayId);
+      return handleAccountAdd(req, ports, relays, principal, relayId);
     }
     if (segments.length === 3) {
       if (req.method !== 'DELETE') return methodNotAllowed();
@@ -78,7 +78,7 @@ export async function handleSmtpRelayRoute(
       if (accountId === null) {
         return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
       }
-      return handleAccountRemove(relays, principal, relayId, accountId);
+      return handleAccountRemove(ports, relays, principal, relayId, accountId);
     }
     return null;
   }
@@ -179,6 +179,7 @@ async function handleRelayDelete(
 
 async function handleAccountAdd(
   req: ApiRequest,
+  ports: ServerApiPorts,
   relays: SmtpRelayAdminPort,
   principal: AuthenticatedPrincipal,
   relayId: string,
@@ -223,10 +224,18 @@ async function handleAccountAdd(
     }
     return error(409, 'duplicate_relay_account', 'Konto ist dem Relay bereits zugeordnet');
   }
+  // The allowed-account set decides which From addresses an external system may
+  // send through, so add/remove is a security-sensitive change that must leave
+  // an audit trail, just like relay + credential mutations.
+  await auditAllowedAccount(ports, principal, 'smtp_relay_account.added', relayId, {
+    accountId: result.account.accountId,
+    fromAddress: result.account.fromAddress,
+  });
   return data(201, { account: result.account });
 }
 
 async function handleAccountRemove(
+  ports: ServerApiPorts,
   relays: SmtpRelayAdminPort,
   principal: AuthenticatedPrincipal,
   relayId: string,
@@ -239,6 +248,9 @@ async function handleAccountRemove(
     accountId,
   });
   if (!removed) return error(404, 'relay_account_not_found', 'Konto-Zuordnung nicht gefunden');
+  await auditAllowedAccount(ports, principal, 'smtp_relay_account.removed', relayId, {
+    accountId,
+  });
   return data(200, { removed: true });
 }
 
@@ -484,5 +496,22 @@ async function auditCredential(
     entityType: 'smtp_relay_credential',
     entityId: credentialId,
     metadata: { id: credentialId, ...metadata },
+  });
+}
+
+async function auditAllowedAccount(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  action: 'smtp_relay_account.added' | 'smtp_relay_account.removed',
+  relayId: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action,
+    entityType: 'smtp_relay',
+    entityId: relayId,
+    metadata: { id: relayId, ...metadata },
   });
 }

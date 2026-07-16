@@ -793,6 +793,16 @@ async function startConfiguredInboundSmtpService(input: {
     console.error(`[smtp-relay] TLS key/cert could not be read (${error instanceof Error ? error.message : String(error)}); relay not started`);
     return undefined;
   }
+  if (!input.secrets) {
+    // Without the secret store the pipeline cannot resolve a routing account's
+    // SMTP credentials, so EVERY accepted message would fail the send with a
+    // retryable 451 and external systems would retry forever. Refuse to start
+    // AUTH-capable listeners at all in that state rather than accept mail we
+    // can never deliver.
+    console.error('[smtp-relay] SMTP_RELAY_ENABLED is set but the secret store is not configured (SIMPLECRM_MASTER_KEY); relay not started — routing accounts need their SMTP credentials from the secret store');
+    return undefined;
+  }
+  const secrets = input.secrets;
 
   const relayPort = createPostgresSmtpRelayPort({ db: input.db });
   const emailTracking = relayEmailTrackingFromPort(input.emailTracking);
@@ -805,12 +815,10 @@ async function startConfiguredInboundSmtpService(input: {
     emailTracking,
     sentCopyAppender: createPostgresServerImapSentCopyAppenderPort({
       db: input.db,
-      secrets: input.secrets,
+      secrets,
     }),
-    ...(input.secrets ? {
-      readSecret: input.secrets.readSecret.bind(input.secrets),
-      writeSecret: input.secrets.writeSecret.bind(input.secrets),
-    } : {}),
+    readSecret: secrets.readSecret.bind(secrets),
+    writeSecret: secrets.writeSecret.bind(secrets),
   });
 
   try {
