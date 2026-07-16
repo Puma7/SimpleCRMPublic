@@ -629,14 +629,29 @@ describe('createPostgresSmtpRelayAdminPort.deleteRelay', () => {
 
     expect(result).toEqual({ id: 'relay-a', label: 'Relay A' });
     expect(tables.smtp_relays.some((relay) => relay.id === 'relay-a')).toBe(false);
-    // Only cred-a carries a secret_id in the seed.
-    expect(secrets.deletes).toEqual([
-      {
-        workspaceId: WS_A,
-        kind: 'smtp_relay.credential',
-        name: 'smtp_relay_credential:cred-a:password',
-      },
-    ]);
+    // Every credential's secret is deleted by its deterministic name (relay-a
+    // has cred-a and cred-revoked), regardless of the row's secret_id pointer.
+    expect(secrets.deletes).toEqual(expect.arrayContaining([
+      { workspaceId: WS_A, kind: 'smtp_relay.credential', name: 'smtp_relay_credential:cred-a:password' },
+      { workspaceId: WS_A, kind: 'smtp_relay.credential', name: 'smtp_relay_credential:cred-revoked:password' },
+    ]));
+    expect(secrets.deletes).toHaveLength(2);
+  });
+
+  test('does NOT delete the relay when a credential secret deletion fails (retryable)', async () => {
+    // The secret store is down: deleteSecret throws. The relay row must survive
+    // so a retry can rediscover the credential ids and clean up the secrets —
+    // otherwise the reveal-once plaintexts would be orphaned forever.
+    const tables = seedTables();
+    const throwingSecrets = {
+      async writeSecret() { throw new Error('unused'); },
+      async deleteSecret() { throw new Error('secret store unavailable'); },
+    };
+    const port = makeAdminPort(tables, { secrets: throwingSecrets as never });
+    await expect(port.deleteRelay({ workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a' }))
+      .rejects.toThrow('secret store unavailable');
+    // Relay (and its credentials) still there for the retry.
+    expect(tables.smtp_relays.some((relay) => relay.id === 'relay-a')).toBe(true);
   });
 
   test('returns null for an unknown relay', async () => {
@@ -741,6 +756,26 @@ describe('createPostgresSmtpRelayAdminPort.addAllowedAccount / removeAllowedAcco
     // The stored FK is the real email_accounts.id, not the source id.
     const row = tables.smtp_relay_allowed_accounts.find((r) => r.id === 'al-src')!;
     expect(row.account_id).toBe(300);
+  });
+
+  test('refuses an ambiguous account reference (source id equals another account db id)', async () => {
+    // Account P has db id 600 (source id -600); account Q's source_sqlite_id is
+    // ALSO 600. The public reference "600" then matches P by id AND Q by source
+    // -> ambiguous -> refuse rather than authorize the wrong SMTP account.
+    const tables = seedTables();
+    const mkAccount = (id: number, source: number, email: string) => ({
+      id, workspace_id: WS_A, source_sqlite_id: source, display_name: 'X', email_address: email,
+      protocol: 'imap', smtp_host: 'smtp.acme.test', smtp_port: 587, smtp_tls: true, smtp_username: 'x',
+      smtp_use_imap_auth: false, smtp_keytar_account_key: null, smtp_password_secret_id: 'secret-x',
+      imap_username: 'x', keytar_account_key: null, imap_password_secret_id: null, oauth_provider: null,
+      oauth_refresh_keytar_key: null, oauth_refresh_secret_id: null,
+    } as (typeof tables.email_accounts)[number]);
+    tables.email_accounts.push(mkAccount(600, -600, 'p@acme.test'));
+    tables.email_accounts.push(mkAccount(601, 600, 'q@acme.test'));
+    const port = makeAdminPort(tables);
+    expect(await port.addAllowedAccount({
+      workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', accountId: 600,
+    })).toEqual({ ok: false, code: 'account_not_found' });
   });
 
   test('removes an existing mapping and reports a missing one', async () => {

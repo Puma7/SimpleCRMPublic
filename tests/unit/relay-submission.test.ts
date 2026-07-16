@@ -272,15 +272,15 @@ describe('submitRelay tracked path', () => {
     expect(prepareArgs.accountId).toBe(100);
     expect(prepareArgs.recipientCount).toBe(1);
     expect(prepareArgs.html).toContain('bitte begleichen');
-    // Tracked messages get OUR Message-ID, not the ERP's.
-    expect(prepareArgs.messageIdHeader).not.toBe('<erp-123@erp.local>');
-    expect(prepareArgs.messageIdHeader).toMatch(/^<.+@acme\.test>$/);
+    // The wire Message-ID matches what is persisted: the ERP's own Message-ID
+    // is preserved (tracking references the email_messages id + token, not the
+    // Message-ID), so the audit row and delivered mail stay consistent.
+    expect(prepareArgs.messageIdHeader).toBe('<erp-123@erp.local>');
 
-    // The outgoing message was rebuilt with the instrumented html + minted id.
+    // The outgoing message was rebuilt with the instrumented html + that id.
     const outgoing = capturedRfc822(smtpSend);
     expect(outgoing).toContain(TRACK_MARKER);
-    expect(outgoing).toContain(`Message-ID: ${prepareArgs.messageIdHeader}`);
-    expect(outgoing).not.toContain('<erp-123@erp.local>');
+    expect(outgoing).toContain('Message-ID: <erp-123@erp.local>');
     const sendArgs = smtpSend.mock.calls[0]![0] as ServerSmtpSendInput;
     expect(sendArgs.host).toBe('smtp.acme.test');
     expect(sendArgs.port).toBe(587);
@@ -442,6 +442,25 @@ describe('submitRelay untracked pass-through', () => {
     // Pass-through keeps the ERP's original Message-ID (no rebuild -> no mint).
     expect(outgoing).toContain('Message-ID: <erp-123@erp.local>');
     expect(submissions[0]!.status).toBe('relayed');
+  });
+
+  test('does NOT rebuild (tracks) a message whose HTML references cid: inline images', async () => {
+    // Rule matches, but the HTML uses inline images via cid: — the rebuild from
+    // parsed parts would ship them as broken attachments, so we deliver the
+    // ERP's original bytes intact (untracked) instead.
+    const { pipeline, tracking, smtpSend } = makePipeline();
+    const original = erpMessage({
+      subject: 'Mahnung 2',
+      body: '<p>Sehr geehrter Kunde</p><img src="cid:logo-42@erp"><p>bitte begleichen</p>',
+    });
+
+    const result = await pipeline.submitRelay(submitInput(original));
+
+    expect(result).toMatchObject({ ok: true, tracked: false });
+    expect(tracking!.prepareOutbound).not.toHaveBeenCalled();
+    const outgoing = capturedRfc822(smtpSend);
+    expect(outgoing).not.toContain(TRACK_MARKER);
+    expect(outgoing).toContain('cid:logo-42@erp');
   });
 
   test('a plus-tagged recipient does NOT collide with the base address in the dedup key', async () => {
@@ -756,15 +775,14 @@ describe('submitRelay idempotent replay', () => {
     // Not re-sent: the second attempt short-circuited on alreadyRelayed.
     expect(smtpSend).toHaveBeenCalledTimes(1);
 
-    // Both attempts minted DIFFERENT wire Message-IDs (existing tracked-path
-    // behaviour) but shared the SAME stable dedup key. The key now folds in the
-    // ERP Message-ID together with the envelope (sha256), so it is a hash
-    // rather than the bare Message-ID — the point is it is STABLE across the
-    // retry (same identity + same recipients), not the wire id.
-    expect(persistInputs[0]!.messageIdHeader).not.toBe(persistInputs[1]!.messageIdHeader);
+    // Both attempts preserve the ERP's Message-ID on the wire (same value) and
+    // share the SAME stable dedup key. The key folds the Message-ID together
+    // with the envelope (sha256), so it is a hash rather than the bare
+    // Message-ID — stable across the retry, and distinct from the wire id.
+    expect(persistInputs[0]!.messageIdHeader).toBe('<erp-stable-1@erp.local>');
+    expect(persistInputs[1]!.messageIdHeader).toBe('<erp-stable-1@erp.local>');
     expect(persistInputs[0]!.dedupKey).toMatch(/^sha256:/);
     expect(persistInputs[0]!.dedupKey).toBe(persistInputs[1]!.dedupKey);
-    // ...and NOT the freshly minted wire id.
     expect(persistInputs[0]!.dedupKey).not.toBe(persistInputs[0]!.messageIdHeader);
   });
 

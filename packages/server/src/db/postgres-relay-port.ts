@@ -21,7 +21,6 @@ import type {
   ServerDatabase,
 } from './schema';
 import type { PostgresSecretPort } from './postgres-secret-port';
-import { resolveEmailAccountReference } from './resolve-email-account-reference';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -594,41 +593,48 @@ export function createPostgresSmtpRelayAdminPort(
     },
 
     async deleteRelay(input): Promise<{ id: string; label: string } | null> {
-      const result = await withWorkspaceTransaction(
+      // Collect the credential ids FIRST (read-only). We delete secrets by their
+      // deterministic name, so every credential is covered regardless of its
+      // secret_id pointer.
+      const credentialIds = (await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .selectFrom('smtp_relay_credentials')
+          .select(['id'])
+          .where('workspace_id', '=', input.workspaceId)
+          .where('relay_id', '=', input.relayId)
+          .execute(),
+        { applySession },
+      )).map((credential) => String(credential.id));
+
+      // Delete the reveal-once credential secrets BEFORE the relay row (and its
+      // cascade) is removed, and let a failure PROPAGATE without deleting the
+      // relay. Otherwise a transient secret-store failure would leave the
+      // plaintexts orphaned with no way to rediscover the credential ids (the
+      // cascade already removed them). Deletion is by the deterministic name, so
+      // a retry re-discovers the still-present credentials and re-deletes
+      // idempotently.
+      if (options.secrets) {
+        for (const credentialId of credentialIds) {
+          await options.secrets.deleteSecret(
+            smtpRelayCredentialSecretIdentifier(input.workspaceId, credentialId),
+          );
+        }
+      }
+
+      const row = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
-        async (trx) => {
-          // Collect credential secrets BEFORE the cascade removes the rows, so
-          // the encrypted plaintexts do not linger as orphans in the secret store.
-          const credentials = await trx
-            .selectFrom('smtp_relay_credentials')
-            .select(['id', 'secret_id'])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('relay_id', '=', input.relayId)
-            .execute();
-          const row = await trx
-            .deleteFrom('smtp_relays')
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.relayId)
-            .returning(['id', 'label'])
-            .executeTakeFirst();
-          if (!row) return null;
-          return {
-            relay: { id: String(row.id), label: row.label },
-            secretCredentialIds: credentials
-              .filter((credential) => credential.secret_id !== null)
-              .map((credential) => String(credential.id)),
-          };
-        },
+        async (trx) => trx
+          .deleteFrom('smtp_relays')
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.relayId)
+          .returning(['id', 'label'])
+          .executeTakeFirst(),
         { applySession },
       );
-      if (!result) return null;
-      for (const credentialId of result.secretCredentialIds) {
-        await options.secrets
-          ?.deleteSecret(smtpRelayCredentialSecretIdentifier(input.workspaceId, credentialId))
-          .catch(() => false);
-      }
-      return result.relay;
+      return row ? { id: String(row.id), label: row.label } : null;
     },
 
     async addAllowedAccount(input): Promise<SmtpRelayAllowedAccountResult> {
@@ -645,19 +651,20 @@ export function createPostgresSmtpRelayAdminPort(
             .executeTakeFirst();
           if (!relay) return { ok: false, code: 'relay_not_found' } as const;
 
-          // Resolve the account the SAME way the rest of the account API does:
-          // in server-client mode ListAccounts exposes the desktop-compatible
-          // source_sqlite_id as the public account id, so a submitted accountId
-          // may be a source id. Resolving by id-or-source (workspace-scoped) to
-          // the real email_accounts.id lets imported accounts be added and
-          // avoids attaching the wrong row on a numeric-id collision.
-          const accountRef = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
-          if (!accountRef) return { ok: false, code: 'account_not_found' } as const;
+          // In server-client mode ListAccounts exposes source_sqlite_id as the
+          // public account id, so the submitted accountId may be a source id.
+          // Resolve it to the real email_accounts.id UNAMBIGUOUSLY (see helper):
+          // an ambiguous reference is refused rather than authorizing the wrong
+          // SMTP account for the relay.
+          const resolvedAccountId = await resolveRelayAllowedAccountId(trx, input.workspaceId, input.accountId);
+          if (resolvedAccountId === null || resolvedAccountId === 'ambiguous') {
+            return { ok: false, code: 'account_not_found' } as const;
+          }
           const account = await trx
             .selectFrom('email_accounts')
             .select(['id', 'email_address', 'display_name'])
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', accountRef.id)
+            .where('id', '=', resolvedAccountId)
             .executeTakeFirst();
           if (!account) return { ok: false, code: 'account_not_found' } as const;
 
@@ -666,7 +673,7 @@ export function createPostgresSmtpRelayAdminPort(
             .select(['id'])
             .where('workspace_id', '=', input.workspaceId)
             .where('relay_id', '=', input.relayId)
-            .where('account_id', '=', accountRef.id)
+            .where('account_id', '=', resolvedAccountId)
             .executeTakeFirst();
           if (existing) return { ok: false, code: 'duplicate_account' } as const;
 
@@ -712,7 +719,7 @@ export function createPostgresSmtpRelayAdminPort(
               id: generateId(),
               workspace_id: input.workspaceId,
               relay_id: input.relayId,
-              account_id: accountRef.id,
+              account_id: resolvedAccountId,
               from_address: fromAddress,
               created_at: timestamp,
             })
@@ -738,15 +745,15 @@ export function createPostgresSmtpRelayAdminPort(
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
         async (trx) => {
           // Resolve the (possibly source-id) public account reference to the
-          // stored email_accounts.id, so an imported account can be removed the
-          // same way it was added.
-          const accountRef = await resolveEmailAccountReference(trx, input.workspaceId, input.accountId);
-          if (!accountRef) return undefined;
+          // stored email_accounts.id unambiguously, so an imported account can
+          // be removed the same way it was added.
+          const resolvedAccountId = await resolveRelayAllowedAccountId(trx, input.workspaceId, input.accountId);
+          if (resolvedAccountId === null || resolvedAccountId === 'ambiguous') return undefined;
           return trx
             .deleteFrom('smtp_relay_allowed_accounts')
             .where('workspace_id', '=', input.workspaceId)
             .where('relay_id', '=', input.relayId)
-            .where('account_id', '=', accountRef.id)
+            .where('account_id', '=', resolvedAccountId)
             .returning(['id'])
             .executeTakeFirst();
         },
@@ -1058,18 +1065,29 @@ async function resolveRelayFollowupWorkflowId(
   reference: number | null,
 ): Promise<number | null> {
   if (reference === null) return null;
+  // The renderer exposes workflows as `sourceSqliteId ?? id`, so the reference
+  // may be a Postgres id OR a source id. Resolve BOTH and, if they land on
+  // DIFFERENT rows (an imported workflow's source id numerically equals another
+  // workflow's db id), refuse rather than silently attach the wrong one.
   const byId = await trx
     .selectFrom('email_workflows')
     .select(['id', 'trigger_name'])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', reference)
     .executeTakeFirst();
-  const workflow = byId ?? await trx
+  const bySource = await trx
     .selectFrom('email_workflows')
     .select(['id', 'trigger_name'])
     .where('workspace_id', '=', workspaceId)
     .where('source_sqlite_id', '=', reference)
     .executeTakeFirst();
+  if (byId && bySource && Number(byId.id) !== Number(bySource.id)) {
+    // Ambiguous public reference — treat as not-found instead of guessing.
+    throw Object.assign(new Error('followup workflow reference is ambiguous'), {
+      [RELAY_FOLLOWUP_NOT_FOUND]: true,
+    });
+  }
+  const workflow = byId ?? bySource;
   if (!workflow) {
     throw Object.assign(new Error('followup workflow not found in workspace'), {
       [RELAY_FOLLOWUP_NOT_FOUND]: true,
@@ -1081,6 +1099,37 @@ async function resolveRelayFollowupWorkflowId(
     });
   }
   return Number(workflow.id);
+}
+
+/**
+ * Resolve a public account reference (the renderer's `sourceSqliteId ?? id`) to
+ * the Postgres email_accounts.id, workspace-scoped and UNAMBIGUOUSLY: if the
+ * number matches one account by `id` and a DIFFERENT account by
+ * `source_sqlite_id`, return 'ambiguous' so the caller refuses rather than
+ * authorizing the wrong SMTP account. (The shared resolveEmailAccountReference
+ * silently prefers id — fine for read APIs, but sender authorization must not
+ * guess.)
+ */
+async function resolveRelayAllowedAccountId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  reference: number,
+): Promise<number | 'ambiguous' | null> {
+  const byId = await trx
+    .selectFrom('email_accounts')
+    .select(['id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', reference)
+    .executeTakeFirst();
+  const bySource = await trx
+    .selectFrom('email_accounts')
+    .select(['id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('source_sqlite_id', '=', reference)
+    .executeTakeFirst();
+  if (byId && bySource && Number(byId.id) !== Number(bySource.id)) return 'ambiguous';
+  const row = byId ?? bySource;
+  return row ? Number(row.id) : null;
 }
 
 function mapRelayConstraintViolation(

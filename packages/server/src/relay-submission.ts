@@ -313,7 +313,17 @@ export function createRelaySubmissionPipeline(
         subject,
         headerOverride: parseRelayTrackingHeaderOverride(input.rfc822),
       });
-      const willTrack = decision.track && emailTracking !== null;
+      // Tracking rebuilds the MIME from the PARSED parts, which cannot faithfully
+      // reproduce two things: (a) inline images referenced from the HTML via
+      // `cid:` (the parser does not surface content-ids, so they would ship as
+      // ordinary attachments and render broken), and (b) attachments the parser
+      // dropped at its size caps (they would silently vanish). In either case we
+      // must NOT rebuild — deliver the ERP's original bytes intact via the
+      // untracked pass-through instead. Losing the open-signal on such a message
+      // is the safe trade vs. delivering broken/incomplete mail.
+      const htmlReferencesCid = /\bcid:/i.test(parsed.bodyHtml ?? '');
+      const canTrackFaithfully = !htmlReferencesCid && !parsed.attachmentsTruncated;
+      const willTrack = decision.track && emailTracking !== null && canTrackFaithfully;
 
       // Message-ID contract: pass-through keeps the sender's Message-ID; the
       // tracked/rebuilt path mints our own (see the "OUR Message-ID, not the
@@ -332,9 +342,16 @@ export function createRelaySubmissionPipeline(
       // than the minted wire id (unstable: a fresh one every attempt, which
       // would never match on retry).
       const incomingMessageId = normalizeMessageIdHeader(parsed.messageId);
-      const outgoingMessageId = willTrack || !incomingMessageId
-        ? generateOutboundMessageId(String(account.email_address))
-        : incomingMessageId;
+      // The Message-ID that will ACTUALLY be on the wire, decided up front and
+      // used for BOTH persistence and every send path (tracked rebuild and
+      // pass-through), so the audit row / threading always match the delivered
+      // mail. We keep the ERP's Message-ID when present (the tracked rebuild
+      // reuses it too — tracking references the email_messages id + token, not
+      // the Message-ID) and mint one only when the ERP supplied none. Minting
+      // eagerly on tracking-intent was the bug: a declined prepareOutbound then
+      // passed through the ERP's original id while the row stored the minted one.
+      const outgoingMessageId = incomingMessageId
+        ?? generateOutboundMessageId(String(account.email_address));
       // The envelope recipients are ALWAYS part of the dedup key, even when the
       // ERP supplies a Message-ID: a Bcc / undisclosed-recipients fan-out sends
       // the SAME Message-ID (and identical DATA) in separate transactions, one
@@ -886,6 +903,12 @@ export function createPostgresRelaySubmissionStore(
                 .updateTable('smtp_relay_submissions')
                 .set({
                   status: 'received',
+                  // Refresh the credential to THIS attempt's: an ERP retry may
+                  // authenticate with a different (e.g. rotated) credential, and
+                  // the audit row must attribute the send to the credential that
+                  // actually delivered it — not the first attempt's — for
+                  // revocation/forensics.
+                  credential_id: input.credentialId,
                   account_id: input.accountId,
                   message_id: messageId,
                   tracking_applied: input.trackingApplied,
@@ -966,11 +989,15 @@ export function createPostgresRelaySubmissionStore(
           const timestamp = now();
           const workflow = await trx
             .selectFrom('email_workflows')
-            .select(['id', 'source_sqlite_id', 'enabled'])
+            .select(['id', 'source_sqlite_id', 'enabled', 'trigger_name'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.workflowId)
             .executeTakeFirst();
-          if (!workflow || !workflow.enabled) return null;
+          // Re-check the trigger at enqueue time, not just at attach time: the
+          // workflow could have been edited from 'relay' to another trigger
+          // after it was attached, and runServerWorkflowGraph would otherwise
+          // run it against the relayed message via the first-trigger fallback.
+          if (!workflow || !workflow.enabled || workflow.trigger_name !== 'relay') return null;
           const message = await trx
             .selectFrom('email_messages')
             .select(['id', 'source_sqlite_id'])
