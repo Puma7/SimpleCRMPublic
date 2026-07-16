@@ -5,6 +5,7 @@ export const SETTINGS_TAB_IDS = [
   "knowledge",
   "mailSecurity",
   "tracking",
+  "smtpRelay",
   "automation",
   "prompts",
   "team",
