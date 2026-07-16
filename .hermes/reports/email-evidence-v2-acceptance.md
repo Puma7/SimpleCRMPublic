@@ -1,7 +1,7 @@
 # E-Mail-Evidenz V2 - Abnahme und Rollout
 
-Stand: 15.07.2026  
-Branch: `codex/email-evidence-validity-v2`  
+Stand: 15.07.2026
+Branch: `codex/email-evidence-validity-v2`
 Basis: `e3fd76e91cefff42ddc887367d76058c07eab5b5`
 
 ## Ergebnis
