@@ -566,7 +566,7 @@ export function MessageList({
 
   return (
     <section className="flex h-full min-h-0 flex-col border-r">
-      <div className="shrink-0 space-y-2 border-b bg-background p-3">
+      <div className="shrink-0 space-y-2 border-b bg-background p-2.5">
         <div className="relative">
           <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
           <Input
@@ -752,7 +752,7 @@ export function MessageList({
         ) : (
           <ul className="divide-y">
             {selectableIds.length > 0 ? (
-              <li className="flex items-center gap-2 border-b bg-muted/20 px-3 py-1.5">
+              <li className="flex items-center gap-2 border-b bg-muted/20 px-2 py-1.5">
                 <Checkbox
                   checked={allSelected}
                   disabled={bulkBusy}
@@ -809,47 +809,12 @@ export function MessageList({
                 <li key={m.id}>
                   <div
                     className={cn(
-                      "flex w-full items-start gap-1 transition-colors hover:bg-muted/60",
+                      "flex w-full items-start transition-colors hover:bg-muted/60",
                       active && "bg-muted",
                     )}
                   >
-                    {isThreadRoot ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="mt-2 h-6 w-6 shrink-0"
-                        onClick={async (e) => {
-                          e.stopPropagation()
-                          const next = new Set(expandedThreads)
-                          if (expanded) next.delete(tKey)
-                          else {
-                            next.add(tKey)
-                            if (!threadChildren[tKey] && threadIdForExpand) {
-                              const rows = await invokeRenderer(IPCChannels.Email.ListThreadMessages, {
-                                threadId: threadIdForExpand,
-                                limit: 50,
-                              })
-                              if (Array.isArray(rows)) {
-                                setThreadChildren((prev) => ({
-                                  ...prev,
-                                  [tKey]: rows as EmailMessage[],
-                                }))
-                              }
-                            }
-                          }
-                          setExpandedThreads(next)
-                        }}
-                      >
-                        <ChevronDown
-                          className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")}
-                        />
-                      </Button>
-                    ) : (
-                      <div className="w-6 shrink-0" />
-                    )}
-                    {canSelect ? (
-                      <div className="flex shrink-0 items-center py-3 pl-2">
+                    <div className="flex w-7 shrink-0 flex-col items-center gap-0.5 pt-2">
+                      {canSelect ? (
                         <Checkbox
                           checked={checked}
                           disabled={bulkBusy}
@@ -863,10 +828,43 @@ export function MessageList({
                             }
                           }}
                         />
-                      </div>
-                    ) : (
-                      <div className="w-8 shrink-0" />
-                    )}
+                      ) : (
+                        <span className="h-4 w-4" />
+                      )}
+                      {isThreadRoot ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5"
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            const next = new Set(expandedThreads)
+                            if (expanded) next.delete(tKey)
+                            else {
+                              next.add(tKey)
+                              if (!threadChildren[tKey] && threadIdForExpand) {
+                                const rows = await invokeRenderer(IPCChannels.Email.ListThreadMessages, {
+                                  threadId: threadIdForExpand,
+                                  limit: 50,
+                                })
+                                if (Array.isArray(rows)) {
+                                  setThreadChildren((prev) => ({
+                                    ...prev,
+                                    [tKey]: rows as EmailMessage[],
+                                  }))
+                                }
+                              }
+                            }
+                            setExpandedThreads(next)
+                          }}
+                        >
+                          <ChevronDown
+                            className={cn("h-3.5 w-3.5 transition-transform", expanded && "rotate-180")}
+                          />
+                        </Button>
+                      ) : null}
+                    </div>
                     <button
                       type="button"
                       data-message-id={m.id}
@@ -898,7 +896,7 @@ export function MessageList({
                         }
                         void onOpen(m)
                       }}
-                      className="min-w-0 flex-1 px-2 py-2.5 text-left disabled:cursor-not-allowed disabled:opacity-60"
+                      className="min-w-0 flex-1 py-2 pl-0.5 pr-2 text-left disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <div className="flex items-start gap-2">
                         <div
@@ -1001,7 +999,7 @@ export function MessageList({
                           <button
                             key={c.id}
                             type="button"
-                            className="flex w-full border-t border-muted/40 py-2 pl-12 pr-3 text-left text-xs hover:bg-muted/40"
+                            className="flex w-full border-t border-muted/40 py-2 pl-8 pr-3 text-left text-xs hover:bg-muted/40"
                             onClick={() => void onOpen(c)}
                           >
                             <span className="truncate font-medium">{formatFrom(c.from_json)}</span>

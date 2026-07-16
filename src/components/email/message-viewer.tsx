@@ -1194,7 +1194,7 @@ export function MessageViewer(props: Props) {
         <div className="flex min-h-0 flex-1">
           <div className="flex min-h-0 flex-1 flex-col">
             <ScrollArea className="flex-1">
-              <div className="mx-auto w-full max-w-5xl space-y-4 px-5 py-6 sm:px-8">
+              <div className="w-full space-y-4 px-4 py-4 sm:px-6">
                 <div className="space-y-1">
                   <h2
                     className={cn(
@@ -1599,7 +1599,7 @@ export function MessageViewer(props: Props) {
                         </Button>
                       </div>
                     ) : null}
-                    <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                    <pre className="max-w-[80ch] whitespace-pre-wrap font-sans text-sm leading-relaxed">
                       {decryptedPlain ?? bodyText}
                     </pre>
                   </div>

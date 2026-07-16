@@ -279,7 +279,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
 
   return (
     <TooltipProvider delayDuration={200}>
-    <div className="space-y-2 border-b pb-4">
+    <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs font-medium">Versandstatus</p>
         <Button type="button" size="sm" variant="ghost" className="h-7" onClick={() => setOpen(true)}>

@@ -91,5 +91,5 @@ export function useExternalLinkConfirm() {
     </AlertDialog>
   )
 
-  return { handleBodyLinkClick, dialog }
+  return { handleBodyLinkClick, requestOpen, dialog }
 }

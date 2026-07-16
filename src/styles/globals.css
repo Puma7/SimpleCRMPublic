@@ -166,3 +166,23 @@
   box-shadow: 0 0 0 2px hsl(var(--primary) / 0.45);
   background-color: hsl(var(--primary) / 0.06);
 }
+
+/* Workflow-Editor: Verbindungspunkte sichtbar & greifbar machen
+   (xyflow-Default ist ein 6px-Punkt, der schwer zu treffen ist). */
+.react-flow__handle {
+  width: 14px;
+  height: 14px;
+  border: 2px solid hsl(var(--background));
+  border-radius: 9999px;
+}
+/* Unsichtbare vergrößerte Trefferfläche — Pointer-Events auf dem
+   Pseudo-Element zählen als Events auf dem Handle selbst. */
+.react-flow__handle::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+  border-radius: 9999px;
+}
+.react-flow__handle:hover {
+  box-shadow: 0 0 0 4px hsl(var(--primary) / 0.25);
+}
