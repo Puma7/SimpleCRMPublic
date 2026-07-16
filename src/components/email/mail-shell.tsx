@@ -48,7 +48,7 @@ const IMAP_SYNC_MIN_GAP_MS = 15_000
 
 function MailShellInner() {
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
-    id: "email-panes",
+    id: "email-panes-v2",
     panelIds: [...MAIL_PANE_IDS],
   })
   const {
@@ -379,12 +379,12 @@ function MailShellInner() {
 
       <ResizablePanelGroup
         direction="horizontal"
-        id="email-panes"
+        id="email-panes-v2"
         className="min-h-0 flex-1"
         defaultLayout={defaultLayout}
         onLayoutChanged={onLayoutChanged}
       >
-        <ResizablePanel id={MAIL_PANE_IDS[0]} defaultSize="18%" minSize="14%" maxSize="28%">
+        <ResizablePanel id={MAIL_PANE_IDS[0]} defaultSize="13%" minSize="9%" maxSize="22%">
           <MailSidebar
             accounts={accounts}
             loadingAccounts={loadingAccounts}
@@ -399,7 +399,7 @@ function MailShellInner() {
           />
         </ResizablePanel>
         <ResizableHandle />
-        <ResizablePanel id={MAIL_PANE_IDS[1]} defaultSize="26%" minSize="18%">
+        <ResizablePanel id={MAIL_PANE_IDS[1]} defaultSize="27%" minSize="18%">
           <MessageList
             messages={messages}
             accounts={accounts}
@@ -418,8 +418,8 @@ function MailShellInner() {
         <ResizableHandle />
         <ResizablePanel
           id={MAIL_PANE_IDS[2]}
-          defaultSize="42%"
-          minSize="28%"
+          defaultSize="44%"
+          minSize="30%"
           className="min-w-0"
         >
           <MessageViewer
@@ -446,9 +446,9 @@ function MailShellInner() {
         <ResizableHandle />
         <ResizablePanel
           id={MAIL_PANE_IDS[3]}
-          defaultSize="18%"
+          defaultSize="16%"
           minSize="12%"
-          maxSize="32%"
+          maxSize="30%"
           className="min-w-0"
         >
           {selectedMessage ? (
