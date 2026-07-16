@@ -234,10 +234,24 @@ export function createRelaySubmissionPipeline(
       let account: SmtpRelayRoutingAccount;
       let config: SmtpRelayConfig;
       try {
-        const headerFrom = firstAddressFromAddressJson(parsed.fromJson);
-        if (!headerFrom) {
-          return failure('from_mismatch', 'Header-From fehlt oder ist ungueltig', false);
+        // Exactly one From mailbox required: a multi-address From header
+        // (RFC5322 permits a comma-separated mailbox-list here) could carry
+        // an allowed address FIRST and an attacker-controlled address after
+        // it — checking only the first entry while the full header (with
+        // every address) is what actually goes out on the wire/pass-through
+        // would let a spoofed second sender ride along disguised behind a
+        // legitimate one.
+        const fromAddresses = parsedAddressEntries(parsed.fromJson);
+        if (fromAddresses.length !== 1) {
+          return failure(
+            'from_mismatch',
+            fromAddresses.length === 0
+              ? 'Header-From fehlt oder ist ungueltig'
+              : 'Header-From darf nur eine Absenderadresse enthalten',
+            false,
+          );
         }
+        const headerFrom = fromAddresses[0]!.address;
         const headerAccount = await deps.relayPort.resolveRoutingAccount({
           workspaceId,
           relayId,
@@ -683,10 +697,6 @@ function parsedAddressEntries(value: unknown): Array<{ address: string; name: st
     entries.push({ address, name });
   }
   return entries;
-}
-
-function firstAddressFromAddressJson(value: unknown): string | null {
-  return parsedAddressEntries(value)[0]?.address ?? null;
 }
 
 function mailboxListFromAddressJson(value: unknown): string {

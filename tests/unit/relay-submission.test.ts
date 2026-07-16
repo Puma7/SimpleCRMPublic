@@ -409,6 +409,28 @@ describe('submitRelay header-From spoofing check', () => {
     expect(store.persistMessage).not.toHaveBeenCalled();
   });
 
+  test('rejects a multi-address header From even when the first address is allowed', async () => {
+    // Regression test: only the FIRST From address was ever checked against
+    // the relay's allowed accounts, but the full header (every address) is
+    // what actually ships in the rebuilt/pass-through message — a second,
+    // attacker-controlled mailbox could ride along disguised behind the
+    // allowed one.
+    const { pipeline, smtpSend, store } = makePipeline();
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({
+      from: 'Buchhaltung <sales@acme.test>, Evil <evil@example.test>',
+    })));
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'from_mismatch',
+      message: expect.any(String),
+      retryable: false,
+    });
+    expect(smtpSend).not.toHaveBeenCalled();
+    expect(store.persistMessage).not.toHaveBeenCalled();
+  });
+
   test('rejects a header From that resolves to a different account than the envelope From', async () => {
     const relayPort = makeRelayPort({
       accounts: [

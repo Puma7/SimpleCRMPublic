@@ -549,7 +549,7 @@ function RelayConfigForm(props: {
                 Workflow #{followupWorkflowId}
               </SelectItem>
             ) : null}
-            {workflows.map((workflow) => (
+            {workflows.filter((workflow) => workflow.trigger === "relay").map((workflow) => (
               <SelectItem key={workflow.id} value={String(workflow.id)}>
                 {workflow.name}
                 {workflow.trigger ? ` (${workflow.trigger})` : ""}
