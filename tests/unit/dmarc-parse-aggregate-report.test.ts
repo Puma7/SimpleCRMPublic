@@ -201,6 +201,32 @@ describe('parseDmarcXml', () => {
     </feedback>`;
     expect(parseDmarcXml(xml)).toBeNull(); // org_name missing
   });
+
+  test('clamps an oversized <count> to the int4 ceiling (no DB overflow)', () => {
+    const xml = `<feedback>
+      <report_metadata><org_name>o</org_name><report_id>r</report_id>
+        <date_range><begin>1720396800</begin><end>1720483199</end></date_range></report_metadata>
+      <policy_published><domain>d.com</domain></policy_published>
+      <record><row><source_ip>9.9.9.9</source_ip><count>99999999999999999999999999999999</count>
+        <policy_evaluated><disposition>none</disposition><dkim>pass</dkim><spf>pass</spf></policy_evaluated></row></record>
+    </feedback>`;
+    expect(parseDmarcXml(xml)?.records[0]?.count).toBe(2_147_483_647);
+  });
+
+  test('clamps an implausible/overlong date to a valid range (never Invalid Date)', () => {
+    const xml = `<feedback>
+      <report_metadata><org_name>o</org_name><report_id>r</report_id>
+        <date_range><begin>99999999999999999999</begin><end>0</end></date_range></report_metadata>
+      <policy_published><domain>d.com</domain></policy_published>
+    </feedback>`;
+    const report = parseDmarcXml(xml);
+    expect(report).not.toBeNull();
+    expect(Number.isNaN(report?.dateBegin.getTime() ?? NaN)).toBe(false);
+    expect(Number.isNaN(report?.dateEnd.getTime() ?? NaN)).toBe(false);
+    // begin clamps to the 2100 upper bound, end (0) clamps up to the 1990 floor.
+    expect(report?.dateBegin.getUTCFullYear()).toBe(2100);
+    expect(report?.dateEnd.getUTCFullYear()).toBe(1990);
+  });
 });
 
 describe('decompressReportAttachment', () => {

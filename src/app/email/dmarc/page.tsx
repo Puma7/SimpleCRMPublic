@@ -74,6 +74,7 @@ export default function EmailDmarcPage() {
   const [windowDays, setWindowDays] = useState<number>(30)
   const [data, setData] = useState<DmarcStatsSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!serverMode) {
@@ -81,14 +82,21 @@ export default function EmailDmarcPage() {
       return
     }
     setLoading(true)
+    setError(null)
     try {
       const r = (await invokeRenderer(IPCChannels.Email.ListDmarcStats, { windowDays })) as {
         success: boolean
         data?: DmarcStatsSnapshot
       }
-      if (r.success && r.data) setData(r.data)
-      else toast.error("DMARC-Auswertung konnte nicht geladen werden.")
-    } catch {
+      if (r.success && r.data) {
+        setData(r.data)
+      } else {
+        setError("Die DMARC-Auswertung konnte nicht geladen werden.")
+        toast.error("DMARC-Auswertung konnte nicht geladen werden.")
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Unbekannter Fehler"
+      setError(`Die DMARC-Auswertung konnte nicht geladen werden: ${message}`)
       toast.error("DMARC-Auswertung konnte nicht geladen werden.")
     } finally {
       setLoading(false)
@@ -166,6 +174,15 @@ export default function EmailDmarcPage() {
               <div className="flex justify-center py-12">
                 <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
               </div>
+            ) : error && !data ? (
+              <Alert variant="destructive">
+                <ShieldX className="h-4 w-4" />
+                <AlertTitle>Auswertung nicht verfügbar</AlertTitle>
+                <AlertDescription>
+                  {error} Bitte später erneut „Aktualisieren" — dies ist kein Zeichen dafür, dass keine
+                  Reports vorliegen.
+                </AlertDescription>
+              </Alert>
             ) : !hasData ? (
               <Card>
                 <CardContent className="flex flex-col items-center gap-3 py-12 text-center">

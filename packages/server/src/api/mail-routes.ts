@@ -27,6 +27,7 @@ import type {
   EmailReadReceiptResponseResult,
   EmailReadReceiptStateResult,
   EmailReportingSnapshot,
+  DmarcReportingSnapshot,
   EmailRemoteContentPolicy,
   EmailRemoteContentPolicyMutationInput,
   EmailMessageSecurityRecord,
@@ -1324,7 +1325,58 @@ async function handleDmarcStats(req: ApiRequest, ports: ServerApiPorts): Promise
     ...(windowDays === undefined ? {} : { windowDays }),
     ...(domainRaw ? { domain: domainRaw } : {}),
   });
-  return data(200, snapshot);
+  return data(200, sanitizeDmarcStatsSnapshot(snapshot));
+}
+
+/** Mirror of sanitizeEmailReportingSnapshot for the sister endpoint: clamp all
+ *  counters and bound string lengths before the snapshot leaves the server, so a
+ *  later field addition can't accidentally ship raw/oversized values. */
+function sanitizeDmarcStatsSnapshot(snapshot: DmarcReportingSnapshot): DmarcReportingSnapshot {
+  const str = (value: string, max = 320): string => (typeof value === 'string' ? value.slice(0, max) : '');
+  return {
+    windowDays: safeCount(snapshot.windowDays),
+    totals: {
+      reports: safeCount(snapshot.totals.reports),
+      records: safeCount(snapshot.totals.records),
+      messages: safeCount(snapshot.totals.messages),
+      passMessages: safeCount(snapshot.totals.passMessages),
+      failMessages: safeCount(snapshot.totals.failMessages),
+      rejectMessages: safeCount(snapshot.totals.rejectMessages),
+      quarantineMessages: safeCount(snapshot.totals.quarantineMessages),
+      unauthorizedSources: safeCount(snapshot.totals.unauthorizedSources),
+      domains: safeCount(snapshot.totals.domains),
+    },
+    timeSeries: snapshot.timeSeries.map((row) => ({
+      date: str(row.date, 10),
+      pass: safeCount(row.pass),
+      fail: safeCount(row.fail),
+      reject: safeCount(row.reject),
+      quarantine: safeCount(row.quarantine),
+    })),
+    topSourceIps: snapshot.topSourceIps.map((row) => ({
+      sourceIp: str(row.sourceIp, 64),
+      messages: safeCount(row.messages),
+      passMessages: safeCount(row.passMessages),
+      failMessages: safeCount(row.failMessages),
+    })),
+    topFromDomains: snapshot.topFromDomains.map((row) => ({
+      headerFrom: str(row.headerFrom, 253),
+      messages: safeCount(row.messages),
+      failMessages: safeCount(row.failMessages),
+    })),
+    dispositions: snapshot.dispositions.map((row) => ({
+      disposition: str(row.disposition, 32),
+      messages: safeCount(row.messages),
+    })),
+    unauthorizedSources: snapshot.unauthorizedSources.map((row) => ({
+      sourceIp: str(row.sourceIp, 64),
+      headerFrom: row.headerFrom === null ? null : str(row.headerFrom, 253),
+      domain: str(row.domain, 253),
+      orgName: str(row.orgName, 253),
+      messages: safeCount(row.messages),
+      lastSeen: str(row.lastSeen, 32),
+    })),
+  };
 }
 
 async function handleEmailGdprExport(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

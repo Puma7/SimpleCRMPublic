@@ -249,7 +249,7 @@ function parseRecord(raw: unknown): DmarcRecordRow | null {
   const sourceIp = asText(row.source_ip);
   return {
     sourceIp,
-    count: Math.max(0, asOptionalInt(row.count) ?? 0),
+    count: asMessageCount(row.count),
     disposition: normalizeToken(asText(evaluated?.disposition)) || 'none',
     dkimEval: normalizeResult(asText(evaluated?.dkim)),
     spfEval: normalizeResult(asText(evaluated?.spf)),
@@ -360,7 +360,27 @@ function asOptionalInt(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** Postgres int4 upper bound — `message_count` is an `integer` column, so a
+ *  hostile/garbled `<count>` (e.g. a 34-digit number) must be clamped or the
+ *  INSERT overflows and the whole ingest transaction aborts. */
+const MAX_MESSAGE_COUNT = 2_147_483_647;
+
+function asMessageCount(value: unknown): number {
+  const parsed = asOptionalInt(value);
+  if (parsed === null || parsed <= 0) return 0;
+  return Math.min(parsed, MAX_MESSAGE_COUNT);
+}
+
+/** Valid `date_range` bounds (seconds) — outside this the epoch is implausible
+ *  or would produce an `Invalid Date`, which cannot go into the NOT NULL
+ *  `timestamptz` columns. Clamp to the window [1990-01-01, 2100-01-01). */
+const MIN_EPOCH_SECONDS = 631_152_000; // 1990-01-01Z
+const MAX_EPOCH_SECONDS = 4_102_444_800; // 2100-01-01Z
+
 function epochToDate(value: unknown): Date {
   const seconds = asOptionalInt(value);
-  return seconds === null ? new Date(0) : new Date(seconds * 1000);
+  if (seconds === null) return new Date(0);
+  const clamped = Math.min(Math.max(seconds, MIN_EPOCH_SECONDS), MAX_EPOCH_SECONDS);
+  const date = new Date(clamped * 1000);
+  return Number.isNaN(date.getTime()) ? new Date(0) : date;
 }

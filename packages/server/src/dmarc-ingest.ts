@@ -87,21 +87,35 @@ export function createPostgresWorkflowDmarcIngestPort(
 
   return {
     async ingest(input): Promise<void> {
-      const attachments = await withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => loadMessageAttachments(trx, input.workspaceId, input.messageId),
-        { applySession: options.applyWorkspaceSession },
-      );
+      let summary: IngestSummary = { reportCount: 0, newReportCount: 0, domain: '', records: [] };
+      try {
+        const attachments = await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => loadMessageAttachments(trx, input.workspaceId, input.messageId),
+          { applySession: options.applyWorkspaceSession },
+        );
 
-      const summary = await ingestAttachments({
-        input,
-        attachments,
-        attachmentsRoot: options.attachmentsRoot,
-        readAttachmentFile,
-        store,
-        receivedAt: now(),
-      });
+        summary = await ingestAttachments({
+          input,
+          attachments,
+          attachmentsRoot: options.attachmentsRoot,
+          readAttachmentFile,
+          store,
+          receivedAt: now(),
+        });
+      } catch (error) {
+        // Mirror failOrEnqueueForwardCopyContinuation: a deterministic failure
+        // (bad DB read, unexpected parse/persist error) must NEVER strand the
+        // workflow — otherwise the resume node hangs forever and the anomaly
+        // task never fires. With a continuation, enqueue it (dmarc.ok=false so
+        // the graph can branch) instead of rethrowing; without one there is
+        // nothing to resume, so surface the failure to the job queue.
+        console.warn(
+          `workflow.dmarc_ingest failed for message ${input.messageId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (!input.continuation) throw error;
+      }
 
       await enqueueDmarcIngestContinuation(options, input, summary, now());
     },
@@ -142,20 +156,31 @@ async function ingestAttachments(args: {
     if (next > MAX_TOTAL_ATTACHMENT_BYTES) break;
     total = next;
 
-    const report = await parseDmarcReportAttachment(attachment.filename, bytes);
-    if (!report) continue;
+    // Guard each report independently: a single malformed/oversized report must
+    // not abort the whole batch (which would leave the workflow unresumed). The
+    // parser already returns null for non-DMARC XML; this also catches a persist
+    // that throws (e.g. a value the DB rejects) so the remaining reports still
+    // ingest and the summary/continuation stay accurate.
+    try {
+      const report = await parseDmarcReportAttachment(attachment.filename, bytes);
+      if (!report) continue;
 
-    const persisted = await store.persistReport({
-      workspaceId: input.workspaceId,
-      report,
-      sourceMessageId: input.messageId,
-      receivedAt,
-    });
+      const persisted = await store.persistReport({
+        workspaceId: input.workspaceId,
+        report,
+        sourceMessageId: input.messageId,
+        receivedAt,
+      });
 
-    summary.reportCount += 1;
-    if (persisted.isNew) summary.newReportCount += 1;
-    if (!summary.domain) summary.domain = report.domain;
-    summary.records.push(...report.records);
+      summary.reportCount += 1;
+      if (persisted.isNew) summary.newReportCount += 1;
+      if (!summary.domain) summary.domain = report.domain;
+      summary.records.push(...report.records);
+    } catch (error) {
+      console.warn(
+        `workflow.dmarc_ingest: skipping report attachment "${attachment.filename}": ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   return summary;
