@@ -343,6 +343,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0027_email_evidence_tracking',
   '0028_auth_challenge_state',
   '0029_auto_reply_limits',
+  '0030_smtp_relay',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -522,6 +523,9 @@ describe('server edition foundation', () => {
     // Die klassische Auto-Antwort-Vorlage besteht nur aus Server-fähigen
     // Knoten und bleibt anwählbar.
     expect(templateIds).toContain('inbound-ai-auto-reply');
+    // Die Relay-Nachfass-Vorlage (Trigger 'relay', nur Server) nutzt
+    // ausschließlich Server-fähige Knoten und wird angeboten.
+    expect(templateIds).toContain('relay-dunning-follow-up');
 
     // Generisch: keine angebotene Vorlage enthält einen Registry-Knoten,
     // den der Server nicht ausführen kann.
