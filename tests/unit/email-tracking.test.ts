@@ -281,8 +281,8 @@ describe('email evidence tracking core', () => {
       firstProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
       lastProbableHumanOpenAt: '2026-07-13T08:00:00.000Z',
       openCount: 8,
-      automatedOpenCount: 5,
-      probableOpenCount: 2,
+      automatedOpenCount: 1,
+      probableOpenCount: 7,
       firstOpenedAt: '2026-07-13T08:00:00.000Z',
       lastOpenedAt: '2026-07-13T08:07:00.000Z',
     });
@@ -301,13 +301,13 @@ describe('email evidence tracking core', () => {
     expect(summary.lastProbableHumanOpenAt).toBe('2026-07-13T08:59:59.999Z');
   });
 
-  test('lets V2 actor classifications override immutable legacy interaction types', () => {
+  test('keeps immutable legacy interaction semantics when V2 actors disagree', () => {
     expect(buildEmailEvidenceSummary([
       classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'mail_proxy'),
     ])).toMatchObject({
-      engagement: 'automated_fetch',
-      automatedOpenCount: 1,
-      probableOpenCount: 0,
+      engagement: 'probable_open',
+      automatedOpenCount: 0,
+      probableOpenCount: 1,
       automatedPixelFetchCount: 1,
       probableHumanPixelFetchCount: 0,
     });
@@ -315,37 +315,37 @@ describe('email evidence tracking core', () => {
     expect(buildEmailEvidenceSummary([
       classifiedEvent('click', '2026-07-13T08:00:00.000Z', 'security_scanner'),
     ])).toMatchObject({
-      engagement: 'automated_fetch',
-      automatedClickCount: 1,
-      probableClickCount: 0,
+      engagement: 'link_interaction',
+      automatedClickCount: 0,
+      probableClickCount: 1,
     });
 
     for (const actorClass of ['unknown', 'system'] as const) {
       expect(buildEmailEvidenceSummary([
         classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', actorClass),
       ])).toMatchObject({
-        engagement: 'none',
+        engagement: 'probable_open',
         unknownPixelFetchCount: 1,
         automatedOpenCount: 0,
-        probableOpenCount: 0,
+        probableOpenCount: 1,
       });
     }
 
     expect(buildEmailEvidenceSummary([
       classifiedEvent('open_automated', '2026-07-13T08:00:00.000Z', 'probable_human'),
     ])).toMatchObject({
-      engagement: 'probable_open',
-      automatedOpenCount: 0,
-      probableOpenCount: 1,
+      engagement: 'automated_fetch',
+      automatedOpenCount: 1,
+      probableOpenCount: 0,
       probableHumanPixelFetchCount: 1,
     });
 
     expect(buildEmailEvidenceSummary([
       classifiedEvent('click_automated', '2026-07-13T08:00:00.000Z', 'probable_human'),
     ])).toMatchObject({
-      engagement: 'link_interaction',
-      automatedClickCount: 0,
-      probableClickCount: 1,
+      engagement: 'automated_fetch',
+      automatedClickCount: 1,
+      probableClickCount: 0,
     });
 
     expect(buildEmailEvidenceSummary([
@@ -366,6 +366,24 @@ describe('email evidence tracking core', () => {
       probableOpenCount: 1,
       probableClickCount: 1,
     });
+  });
+
+  test('keeps old workflow variables event-type based when V2 actors disagree', () => {
+    expect(emailEvidenceWorkflowVariables({
+      tracked: true,
+      events: [
+        classifiedEvent('open_probable', '2026-07-13T08:00:00.000Z', 'mail_proxy'),
+        classifiedEvent('click', '2026-07-13T08:01:00.000Z', 'security_scanner'),
+      ],
+    })).toEqual(expect.objectContaining({
+      'tracking.engagement': 'link_interaction',
+      'tracking.automated_open_count': 0,
+      'tracking.probable_open_count': 1,
+      'tracking.automated_click_count': 0,
+      'tracking.probable_click_count': 1,
+      'tracking.automated_pixel_fetch_count': 1,
+      'tracking.probable_human_pixel_fetch_count': 0,
+    }));
   });
 
   test('a later bounce wins over SMTP acceptance without inventing engagement', () => {
@@ -592,7 +610,7 @@ describe('email evidence tracking core', () => {
       'tracking.first_probable_human_open_at': '2026-07-13T08:00:00.000Z',
       'tracking.last_probable_human_open_at': '2026-07-13T08:30:00.000Z',
       'tracking.open_count': 4,
-      'tracking.probable_open_count': 2,
+      'tracking.probable_open_count': 4,
     }));
   });
 

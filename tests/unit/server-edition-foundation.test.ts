@@ -546,7 +546,7 @@ describe('server edition foundation', () => {
     }
   });
 
-  test('server summary conservatively projects historical unclassified opens as unknown', async () => {
+  test('server summary keeps legacy aliases while projecting precise historical opens as unknown', async () => {
     const { db } = makeWorkflowExecutionDb({
       trackingEvents: [{
         id: '501',
@@ -568,14 +568,14 @@ describe('server edition foundation', () => {
     const variables = emailEvidenceSummaryWorkflowVariables({ tracked: true, summary });
 
     expect(summary).toMatchObject({
-      engagement: 'none',
+      engagement: 'probable_open',
       unknownPixelFetchCount: 1,
-      probableOpenCount: 0,
+      probableOpenCount: 1,
     });
     expect(variables).toEqual(expect.objectContaining({
-      'tracking.engagement': 'none',
+      'tracking.engagement': 'probable_open',
       'tracking.unknown_pixel_fetch_count': 1,
-      'tracking.probable_open_count': 0,
+      'tracking.probable_open_count': 1,
     }));
   });
 
@@ -4961,38 +4961,78 @@ describe('server edition foundation', () => {
     const template = WORKFLOW_TEMPLATES.find((item) => item.id === 'outbound-evidence-follow-up');
     expect(template).toBeDefined();
     const cases = [
-      { name: 'SMTP-only', events: [] as Array<Record<string, unknown>>, followsUp: true, engagementPort: 'none' },
+      {
+        name: 'SMTP-only',
+        events: [] as Array<Record<string, unknown>>,
+        followsUp: true,
+        engagementPort: 'none',
+        pixelFetchPort: undefined,
+        sessionPort: 'yes',
+      },
       {
         name: 'mail proxy',
         events: [trackingWorkflowEvent('open_probable', 'mail_proxy')],
         followsUp: true,
-        engagementPort: 'automated_fetch',
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'yes',
+        sessionPort: 'yes',
       },
       {
         name: 'unknown pixel fetch',
         events: [trackingWorkflowEvent('open_probable', 'unknown')],
         followsUp: true,
-        engagementPort: 'none',
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'yes',
+        sessionPort: 'yes',
       },
       {
         name: 'probable-human open',
         events: [trackingWorkflowEvent('open_probable', 'probable_human')],
         followsUp: false,
-        engagementPort: 'default',
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'yes',
+        sessionPort: 'no',
+      },
+      {
+        name: 'legacy automated open reclassified as probable human',
+        events: [trackingWorkflowEvent('open_automated', 'probable_human')],
+        followsUp: false,
+        engagementPort: 'automated_fetch',
+        pixelFetchPort: undefined,
+        sessionPort: 'no',
+      },
+      {
+        name: 'MDN displayed',
+        events: [trackingWorkflowEvent('mdn_displayed')],
+        followsUp: false,
+        engagementPort: 'probable_open',
+        pixelFetchPort: 'no',
+        sessionPort: undefined,
       },
       {
         name: 'probable-human click',
         events: [trackingWorkflowEvent('click', 'probable_human')],
         followsUp: false,
         engagementPort: 'default',
+        pixelFetchPort: undefined,
+        sessionPort: undefined,
       },
       {
         name: 'reply',
         events: [trackingWorkflowEvent('replied')],
         followsUp: false,
         engagementPort: 'default',
+        pixelFetchPort: undefined,
+        sessionPort: undefined,
       },
     ] as const;
+    const results: Array<{
+      name: string;
+      followsUp: boolean;
+      engagementPort: unknown;
+      pixelFetchPort: unknown;
+      sessionPort: unknown;
+    }> = [];
 
     for (const [index, testCase] of cases.entries()) {
       const now = new Date(`2026-07-16T08:0${index}:00.000Z`);
@@ -5071,11 +5111,22 @@ describe('server edition foundation', () => {
         context: { resumeNodeId: 'evidence' },
       });
 
-      expect(rows.tasks).toHaveLength(testCase.followsUp ? 1 : 0);
-      expect(rows.steps.find((step) => step.node_id === 'no_engagement')).toMatchObject({
-        port: testCase.engagementPort,
+      results.push({
+        name: testCase.name,
+        followsUp: rows.tasks.length === 1,
+        engagementPort: rows.steps.find((step) => step.node_id === 'no_engagement')?.port,
+        pixelFetchPort: rows.steps.find((step) => step.node_id === 'probable_open_has_pixel')?.port,
+        sessionPort: rows.steps.find((step) => step.node_id === 'no_open')?.port,
       });
     }
+
+    expect(results).toEqual(cases.map((testCase) => ({
+      name: testCase.name,
+      followsUp: testCase.followsUp,
+      engagementPort: testCase.engagementPort,
+      pixelFetchPort: testCase.pixelFetchPort,
+      sessionPort: testCase.sessionPort,
+    })));
   });
 
   test('postgres workflow execution job port requires inbound condition gate for side-effect nodes', async () => {
@@ -38755,7 +38806,7 @@ function timestampMillis(value: unknown): number {
 }
 
 function trackingWorkflowEvent(
-  eventType: 'open_probable' | 'click' | 'replied',
+  eventType: 'open_automated' | 'open_probable' | 'click' | 'mdn_displayed' | 'replied',
   actorClass?: string,
 ): Record<string, unknown> {
   return {

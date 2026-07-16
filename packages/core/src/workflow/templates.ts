@@ -111,7 +111,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'outbound-evidence-follow-up',
     name: 'Ausgehend: Ohne Reaktion nachfassen',
     description:
-      'Versendet die Mail, wartet zwei Tage und legt nur nach SMTP-Annahme ohne Oeffnung, Linkklick oder Antwort eine Aufgabe an.',
+      'Versendet die Mail, wartet zwei Tage und legt nur nach SMTP-Annahme ohne wahrscheinlich menschliches Oeffnungssignal, menschlichen Linkklick oder Antwort eine Aufgabe an.',
     trigger: 'outbound',
     graph: {
       version: 1,
@@ -145,7 +145,15 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         {
           id: 'no_engagement',
           type: 'registry',
-          data: { nodeType: 'logic.switch', config: { field: 'tracking.engagement', cases: 'none,automated_fetch' } },
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.engagement', cases: 'none,automated_fetch,probable_open' } },
+        },
+        {
+          id: 'probable_open_has_pixel',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'tracking.pixel_fetch_count', operator: 'gte', value: 1 },
+          },
         },
         {
           id: 'no_open',
@@ -190,6 +198,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'e_transport', source: 'transport_accepted', target: 'no_engagement', label: 'smtp_accepted' },
         { id: 'e_no_engagement', source: 'no_engagement', target: 'no_open', label: 'none' },
         { id: 'e_automated_fetch', source: 'no_engagement', target: 'no_open', label: 'automated_fetch' },
+        { id: 'e_probable_open', source: 'no_engagement', target: 'probable_open_has_pixel', label: 'probable_open' },
+        { id: 'e_probable_open_pixel', source: 'probable_open_has_pixel', target: 'no_open', label: 'yes' },
         { id: 'e4', source: 'no_open', target: 'no_click', label: 'yes' },
         { id: 'e5', source: 'no_click', target: 'reply_state', label: 'yes' },
         { id: 'e6', source: 'reply_state', target: 'task', label: 'false' },

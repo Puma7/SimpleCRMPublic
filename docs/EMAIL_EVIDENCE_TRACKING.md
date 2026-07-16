@@ -178,9 +178,10 @@ Oeffnungssignale:
 Die Vorlage **Ausgehend: Ohne Reaktion nachfassen** versendet, wartet zwei Tage, lädt die
 Evidenz neu und erstellt nur nach aktueller SMTP-Annahme bei aktivem Tracking ohne
 wahrscheinlich menschliches Oeffnungssignal, menschlichen Klick oder Antwort eine Aufgabe.
-Technische Proxy- und unklare Pixelabrufe unterdruecken den Nachfasspfad nicht. Fehlgeschlagene,
-verzögerte oder gebouncte Sendungen lösen diesen Nachfasspfad nicht aus. Schwellen und Wartezeit
-können im Workflow angepasst werden.
+Technische Proxy- und unklare Pixelabrufe unterdruecken den Nachfasspfad nicht. Eine MDN-Anzeige
+ohne Pixelabruf startet dagegen keinen Nachfasspfad. Fehlgeschlagene, verzögerte oder gebouncte
+Sendungen lösen diesen Nachfasspfad nicht aus. Schwellen und Wartezeit können im Workflow
+angepasst werden.
 
 ## Aufbewahrung und Betrieb
 
