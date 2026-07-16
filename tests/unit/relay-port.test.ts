@@ -790,6 +790,26 @@ describe('createPostgresSmtpRelayAdminPort.addAllowedAccount / removeAllowedAcco
       workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', accountId: 100,
     })).toBe(false);
   });
+
+  test('removes by the stored db account id even when it is an ambiguous public reference', async () => {
+    // Another account's source_sqlite_id equals account 100's db id. Remove
+    // uses the STORED account_id (100) directly, so the mapping is still
+    // deletable — it must not be rejected as ambiguous like the add path.
+    const tables = seedTables();
+    tables.email_accounts.push({
+      id: 900, workspace_id: WS_A, source_sqlite_id: 100, display_name: 'Collide',
+      email_address: 'collide@acme.test', protocol: 'imap', smtp_host: 'smtp.acme.test',
+      smtp_port: 587, smtp_tls: true, smtp_username: 'c', smtp_use_imap_auth: false,
+      smtp_keytar_account_key: null, smtp_password_secret_id: 's', imap_username: 'c',
+      keytar_account_key: null, imap_password_secret_id: null, oauth_provider: null,
+      oauth_refresh_keytar_key: null, oauth_refresh_secret_id: null,
+    } as (typeof tables.email_accounts)[number]);
+    const port = makeAdminPort(tables);
+    expect(await port.removeAllowedAccount({
+      workspaceId: WS_A, actorUserId: ACTOR, relayId: 'relay-a', accountId: 100,
+    })).toBe(true);
+    expect(tables.smtp_relay_allowed_accounts.some((row) => row.id === 'al-1')).toBe(false);
+  });
 });
 
 describe('createPostgresSmtpRelayAdminPort.createCredential', () => {

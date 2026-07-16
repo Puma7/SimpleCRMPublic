@@ -197,6 +197,12 @@ export function createPostgresSmtpRelayPort(
               .onRef('acct.workspace_id', '=', 'allowed.workspace_id'))
             .where('allowed.workspace_id', '=', input.workspaceId)
             .where('allowed.relay_id', '=', input.relayId)
+            // Deterministic order: if an account-email edit (which is not
+            // re-checked against relay claims) ever left two mappings claiming
+            // the same From, routing must at least be stable — always the
+            // oldest mapping — rather than "whichever row comes back first".
+            .orderBy('allowed.created_at')
+            .orderBy('allowed.id')
             .select('allowed.from_address as allowed_from_address')
             .select(relayRoutingAccountColumns.map((column) => `acct.${column} as ${column}` as never))
             .execute();
@@ -749,20 +755,18 @@ export function createPostgresSmtpRelayAdminPort(
       const removed = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
-        async (trx) => {
-          // Resolve the (possibly source-id) public account reference to the
-          // stored email_accounts.id unambiguously, so an imported account can
-          // be removed the same way it was added.
-          const resolvedAccountId = await resolveRelayAllowedAccountId(trx, input.workspaceId, input.accountId);
-          if (resolvedAccountId === null || resolvedAccountId === 'ambiguous') return undefined;
-          return trx
-            .deleteFrom('smtp_relay_allowed_accounts')
-            .where('workspace_id', '=', input.workspaceId)
-            .where('relay_id', '=', input.relayId)
-            .where('account_id', '=', resolvedAccountId)
-            .returning(['id'])
-            .executeTakeFirst();
-        },
+        async (trx) => trx
+          // Delete by the STORED account_id directly: the remove UI passes the
+          // FK exposed by listRelays (allowed.account_id), which already
+          // identifies the row uniquely. Resolving it as a public reference
+          // would wrongly reject it as ambiguous when some other account's
+          // source_sqlite_id equals this db id, making the mapping unremovable.
+          .deleteFrom('smtp_relay_allowed_accounts')
+          .where('workspace_id', '=', input.workspaceId)
+          .where('relay_id', '=', input.relayId)
+          .where('account_id', '=', input.accountId)
+          .returning(['id'])
+          .executeTakeFirst(),
         { applySession },
       );
       return Boolean(removed);

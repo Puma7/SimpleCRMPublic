@@ -31,9 +31,25 @@ hosten.
 
 Ohne lesbares Zertifikat/Key startet der Relay **nicht** (die API läuft normal
 weiter; Fehlermeldung im Log unter `[smtp-relay]`). Caddy proxyt nur HTTP —
-die Ports 587/465 müssen in Firewall/Compose zusätzlich zum Container
-durchgereicht werden; das TLS des Relays kommt aus den beiden PEM-Dateien
-(z. B. dieselben Let's-Encrypt-Dateien, die Caddy nutzt, als Volume mounten).
+die Ports 587/465 müssen zusätzlich zum Container durchgereicht werden; das TLS
+des Relays kommt aus den beiden PEM-Dateien (z. B. dieselben Let's-Encrypt-
+Dateien, die Caddy nutzt).
+
+### Docker Compose
+
+Die `SMTP_RELAY_*`-Variablen werden bereits vom Basis-`docker/docker-compose.yml`
+an den `api`-Container durchgereicht (aus `.env`). Der Basis-Stack lässt die
+Mail-Ports aber **geschlossen** — der Relay ist opt-in. Zum Aktivieren die
+Override-Datei dazunehmen, die 587/465 veröffentlicht und das TLS-Material
+mountet:
+
+```
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.relay.yml up -d
+```
+
+In `.env` mindestens setzen: `SMTP_RELAY_ENABLED=true`, `SMTP_RELAY_HOSTNAME`,
+und `SMTP_RELAY_TLS_DIR` auf ein Host-Verzeichnis mit `cert.pem`+`key.pem` (Default
+`./relay-tls`; z. B. die Let's-Encrypt-Dateien für `SMTP_RELAY_HOSTNAME`).
 
 Tracking setzt zusätzlich die bestehende Tracking-Infrastruktur voraus
 (`PUBLIC_BASE_URL` + `SIMPLECRM_MASTER_KEY` und eine aktivierte

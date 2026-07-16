@@ -63,6 +63,21 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       GEOIP_COUNTRY_DB_PATH: /var/lib/simplecrm/geoip/GeoLite2-Country.mmdb
       GEOIP_ASN_DB_PATH: /var/lib/simplecrm/geoip/GeoLite2-ASN.mmdb
+      # SMTP relay (opt-in — see docs/SMTP_RELAY.md). These pass through so the
+      # documented .env vars reach the container; the listener only binds when
+      # SMTP_RELAY_ENABLED=true AND the TLS cert/key are readable. Publishing the
+      # 587/465 ports + mounting the TLS material is done via the opt-in
+      # docker-compose.relay.yml override (keeps mail ports closed by default).
+      SMTP_RELAY_ENABLED: ${SMTP_RELAY_ENABLED:-false}
+      SMTP_RELAY_HOSTNAME: ${SMTP_RELAY_HOSTNAME:-}
+      SMTP_RELAY_PORT_SUBMISSION: ${SMTP_RELAY_PORT_SUBMISSION:-587}
+      SMTP_RELAY_PORT_SMTPS: ${SMTP_RELAY_PORT_SMTPS:-465}
+      SMTP_RELAY_BIND_HOST: ${SMTP_RELAY_BIND_HOST:-0.0.0.0}
+      SMTP_RELAY_TLS_CERT_FILE: ${SMTP_RELAY_TLS_CERT_FILE:-/app/data/relay-tls/cert.pem}
+      SMTP_RELAY_TLS_KEY_FILE: ${SMTP_RELAY_TLS_KEY_FILE:-/app/data/relay-tls/key.pem}
+      SMTP_RELAY_MAX_MESSAGE_BYTES: ${SMTP_RELAY_MAX_MESSAGE_BYTES:-26214400}
+      SMTP_RELAY_MAX_CONNECTIONS: ${SMTP_RELAY_MAX_CONNECTIONS:-50}
+      SMTP_RELAY_SOCKET_TIMEOUT_MS: ${SMTP_RELAY_SOCKET_TIMEOUT_MS:-120000}
       PORT: 3000
     volumes:
       - attachments:/app/data/attachments
