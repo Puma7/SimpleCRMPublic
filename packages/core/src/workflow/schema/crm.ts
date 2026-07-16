@@ -65,6 +65,17 @@ export const CRM_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         advanced: true,
         validation: { min: 1, integer: true },
       },
+      {
+        key: 'allowWithoutCustomer',
+        type: 'boolean',
+        label: 'Auch ohne Kunden anlegen (nur Server-Edition)',
+        help:
+          'Ein: die Aufgabe wird auch dann angelegt, wenn keine Kunden-Verknüpfung vorhanden ist ' +
+          '(z. B. DMARC-Report-Warnungen aus einem Provider-Postfach). Aus (Standard): ohne Kunde ' +
+          'wird der Knoten übersprungen. Hinweis: In der Desktop-App bleibt eine Kunden-Verknüpfung ' +
+          'Pflicht — dort wird ohne Kunde weiterhin übersprungen.',
+        advanced: true,
+      },
     ],
     outputs: [
       {
@@ -78,9 +89,11 @@ export const CRM_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
       longHelp:
         'Legt eine Aufgabe beim Kunden der Mail an (Titel, Priorität, Fälligkeit) — z. B. „Reklamation prüfen“ ' +
         'nach einer KI-Klassifizierung. Ist kein Kunde mit der Mail verknüpft und keine feste Kunden-Nummer ' +
-        'angegeben, wird der Knoten übersprungen.',
+        'angegeben, wird der Knoten übersprungen — außer „Auch ohne Kunden anlegen“ ist aktiv, dann entsteht ' +
+        'eine kundenlose Aufgabe (z. B. für DMARC-Report-Warnungen).',
       prerequisites: [
-        'Die Mail muss mit einem Kunden verknüpft sein — am einfachsten vorher den Knoten „Kunde verknüpfen“ ausführen.',
+        'Die Mail muss mit einem Kunden verknüpft sein (oder „Auch ohne Kunden anlegen“ aktivieren) — ' +
+        'am einfachsten vorher den Knoten „Kunde verknüpfen“ ausführen.',
       ],
       seeAlso: ['crm.link_customer', 'crm.log_activity', 'email.assign'],
     },

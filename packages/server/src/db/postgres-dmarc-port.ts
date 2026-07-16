@@ -37,6 +37,9 @@ export type DmarcStorePort = Readonly<{
   persistReport(input: PersistDmarcReportInput): Promise<PersistDmarcReportResult>;
 }>;
 
+/** Max dmarc_records rows per INSERT (each row binds 11 params; 2000×11 = 22000,
+ *  comfortably below Postgres' 65535 bind-parameter limit). */
+const RECORD_INSERT_CHUNK = 2000;
 const DEFAULT_WINDOW_DAYS = 30;
 const MAX_WINDOW_DAYS = 365;
 const TOP_LIMIT = 15;
@@ -107,22 +110,26 @@ async function persistReportInTransaction(
   }
 
   const reportRowId = String(inserted.id);
-  if (report.records.length > 0) {
+  const rows = report.records.map((row) => ({
+    workspace_id: workspaceId,
+    dmarc_report_id: reportRowId,
+    source_ip: row.sourceIp,
+    message_count: row.count,
+    disposition: row.disposition,
+    dkim_eval: row.dkimEval,
+    spf_eval: row.spfEval,
+    header_from: row.headerFrom,
+    envelope_from: row.envelopeFrom,
+    dkim_domains: row.dkimDomains.length > 0 ? row.dkimDomains.join(', ') : null,
+    spf_domains: row.spfDomains.length > 0 ? row.spfDomains.join(', ') : null,
+  }));
+  // Chunk the insert: each row binds 11 params, and a large provider report can
+  // carry thousands of records — a single INSERT would blow Postgres' 65535
+  // bind-parameter ceiling. RECORD_INSERT_CHUNK * 11 stays well under it.
+  for (let i = 0; i < rows.length; i += RECORD_INSERT_CHUNK) {
     await trx
       .insertInto('dmarc_records')
-      .values(report.records.map((row) => ({
-        workspace_id: workspaceId,
-        dmarc_report_id: reportRowId,
-        source_ip: row.sourceIp,
-        message_count: row.count,
-        disposition: row.disposition,
-        dkim_eval: row.dkimEval,
-        spf_eval: row.spfEval,
-        header_from: row.headerFrom,
-        envelope_from: row.envelopeFrom,
-        dkim_domains: row.dkimDomains.length > 0 ? row.dkimDomains.join(', ') : null,
-        spf_domains: row.spfDomains.length > 0 ? row.spfDomains.join(', ') : null,
-      })))
+      .values(rows.slice(i, i + RECORD_INSERT_CHUNK))
       .execute();
   }
 

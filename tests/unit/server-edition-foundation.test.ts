@@ -6066,6 +6066,86 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('crm.create_task with allowWithoutCustomer creates a customerless task (DMARC alerts)', async () => {
+    const now = new Date('2026-07-05T09:00:00.000Z');
+    const due = new Date('2026-07-07T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 44,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 440,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'task-1',
+              type: 'registry',
+              data: {
+                nodeType: 'crm.create_task',
+                config: {
+                  title: 'DMARC-Auffaelligkeit pruefen',
+                  priority: 'high',
+                  daysUntilDue: 2,
+                  allowWithoutCustomer: true,
+                },
+              },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'task-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 40,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 400,
+        subject: 'Report Domain: firma.de',
+        from_json: { value: [{ address: 'noreply-dmarc-support@google.com' }] },
+        to_json: { value: [{ address: 'dmarc@firma.de' }] },
+        cc_json: null,
+        snippet: 'DMARC-Report',
+        body_text: 'aggregate report',
+        body_html: null,
+        has_attachments: true,
+        attachments_json: null,
+        customer_id: null,
+        customer_source_sqlite_id: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 44,
+      messageId: 40,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(rows.tasks).toEqual([
+      expect.objectContaining({
+        workspace_id: WORKSPACE_A_ID,
+        customer_id: null,
+        customer_source_sqlite_id: null,
+        title: 'DMARC-Auffaelligkeit pruefen',
+        priority: 'high',
+        due_date: due,
+        completed: false,
+      }),
+    ]);
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.message])).toEqual([
+      ['crm.create_task', 'ok', null],
+    ]);
+  });
+
   test('postgres workflow execution job port links messages to customers before CRM actions', async () => {
     const now = new Date('2026-07-04T10:28:30.000Z');
     const { db, rows } = makeWorkflowExecutionDb({

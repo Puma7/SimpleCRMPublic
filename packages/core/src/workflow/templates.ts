@@ -378,6 +378,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
               title: 'DMARC-Auffälligkeit: {{dmarc.unauthorized_source_count}} nicht-autorisierte Quelle(n) für {{dmarc.domain}}',
               priority: 'high',
               daysUntilDue: 2,
+              // DMARC-Reports kommen vom Provider-Postfach ohne Kundenbezug —
+              // die Aufgabe muss auch kundenlos angelegt werden.
+              allowWithoutCustomer: true,
             },
           },
         },

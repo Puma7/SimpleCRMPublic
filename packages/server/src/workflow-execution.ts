@@ -4881,23 +4881,32 @@ async function createWorkflowTask(
 ): Promise<NodeResult> {
   const configuredCustomerId = optionalPositiveIntegerConfig(config.customerId, 'customerId');
   if (!configuredCustomerId.ok) return { status: 'error', port: 'error', message: configuredCustomerId.message };
+  // Opt-in: allow a task without any linked customer (e.g. DMARC-report alerts,
+  // where the report mail comes from a mailbox provider, not a CRM customer).
+  // Default false preserves the historic skip-when-no-customer behaviour.
+  const allowWithoutCustomer = config.allowWithoutCustomer === true;
   const customerId = configuredCustomerId.value ?? positiveIntegerVariable(context.variables['customer.id']);
-  if (customerId === null) {
+  if (customerId === null && !allowWithoutCustomer) {
     return { status: 'skipped', port: 'default', message: 'Kein Kunde verknuepft' };
   }
-  if (!Number.isSafeInteger(customerId) || customerId <= 0) {
-    return { status: 'error', port: 'error', message: 'customerId ungueltig' };
-  }
 
-  const customer = await resolveWorkflowCustomerReference(trx, context.workspaceId, customerId);
-  if (!customer) return { status: 'error', port: 'error', message: 'Kunde nicht gefunden' };
+  let customer: { id: number; sourceSqliteId: number } | null = null;
+  if (customerId !== null) {
+    if (!Number.isSafeInteger(customerId) || customerId <= 0) {
+      return { status: 'error', port: 'error', message: 'customerId ungueltig' };
+    }
+    customer = await resolveWorkflowCustomerReference(trx, context.workspaceId, customerId);
+    if (!customer) return { status: 'error', port: 'error', message: 'Kunde nicht gefunden' };
+  }
 
   const title = String(config.title ?? 'E-Mail bearbeiten').trim() || 'E-Mail bearbeiten';
   const priority = String(config.priority ?? 'medium').trim() || 'medium';
   const dueDate = workflowTaskDueDate(config.daysUntilDue, now);
   if (!dueDate) return { status: 'error', port: 'error', message: 'daysUntilDue ungueltig' };
   const description = String(context.strings.snippet ?? '').trim() || null;
-  const sourceSqliteId = serverCreatedWorkflowTaskSourceSqliteId(context, node.id, customer.id);
+  // customerId 0 marks the customerless task in the idempotency key so re-runs
+  // of the same (workflow, run, message, node) dedup instead of duplicating.
+  const sourceSqliteId = serverCreatedWorkflowTaskSourceSqliteId(context, node.id, customer?.id ?? 0);
 
   const existing = await trx
     .selectFrom('tasks')
@@ -4913,7 +4922,7 @@ async function createWorkflowTask(
       message: `task_exists:${taskId}`,
       variables: {
         'task.id': taskId,
-        'task.customer_id': customer.id,
+        'task.customer_id': customer?.id ?? null,
       },
     };
   }
@@ -4923,8 +4932,8 @@ async function createWorkflowTask(
     .values({
       workspace_id: context.workspaceId,
       source_sqlite_id: sourceSqliteId,
-      customer_source_sqlite_id: customer.sourceSqliteId,
-      customer_id: customer.id,
+      customer_source_sqlite_id: customer?.sourceSqliteId ?? null,
+      customer_id: customer?.id ?? null,
       title,
       description,
       due_date: dueDate,
@@ -4948,7 +4957,7 @@ async function createWorkflowTask(
     port: 'default',
     variables: {
       'task.id': taskId,
-      'task.customer_id': customer.id,
+      'task.customer_id': customer?.id ?? null,
     },
   };
 }
