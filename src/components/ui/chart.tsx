@@ -264,7 +264,10 @@ const ChartLegend = RechartsPrimitive.Legend
 const ChartLegendContent = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"div"> &
-    Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign"> & {
+    // payload/verticalAlign are injected by Recharts when this is passed as
+    // <ChartLegend content={<ChartLegendContent />} />, so callers never supply
+    // them — keep them optional to match that usage.
+    Partial<Pick<RechartsPrimitive.LegendProps, "payload" | "verticalAlign">> & {
       hideIcon?: boolean
       nameKey?: string
     }

@@ -51,6 +51,51 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
     },
   },
 
+  'email.ingest_dmarc_report': {
+    fields: [
+      {
+        key: 'attachmentNameFilter',
+        type: 'text',
+        label: 'Anhang-Namensfilter (optional)',
+        help:
+          'Nur Anhänge, deren Dateiname diesen Text enthält, werden ausgewertet (zusätzlich zur ' +
+          'Endung .xml/.xml.gz/.zip). Leer lassen, um alle passenden Anhänge zu prüfen. ' +
+          'Nicht-DMARC-Dateien werden ohnehin sicher übersprungen.',
+        example: 'dmarc',
+        placeholder: 'dmarc',
+      },
+    ],
+    outputs: [
+      { name: 'dmarc.ok', label: 'Report gefunden', description: 'Mindestens ein gültiger DMARC-Report wurde ausgewertet.', type: 'boolean' },
+      { name: 'dmarc.report_count', label: 'Ausgewertete Reports', example: '1', type: 'number' },
+      { name: 'dmarc.new_report_count', label: 'Neu gespeicherte Reports', description: 'Ohne bereits zuvor eingelesene (idempotente) Reports.', example: '1', type: 'number' },
+      { name: 'dmarc.record_count', label: 'Datensätze', description: 'Anzahl der <record>-Zeilen über alle Reports.', example: '12', type: 'number' },
+      { name: 'dmarc.message_count', label: 'Nachrichten gesamt', description: 'Summe der gemeldeten Nachrichten.', example: '340', type: 'number' },
+      { name: 'dmarc.pass_count', label: 'DMARC bestanden', description: 'Nachrichten mit DKIM- oder SPF-Ausrichtung.', example: '330', type: 'number' },
+      { name: 'dmarc.fail_count', label: 'DMARC gescheitert', description: 'Nachrichten ohne jede Ausrichtung.', example: '10', type: 'number' },
+      { name: 'dmarc.reject_count', label: 'Abgewiesen', description: 'Nachrichten mit Disposition reject.', example: '8', type: 'number' },
+      { name: 'dmarc.quarantine_count', label: 'In Quarantäne', description: 'Nachrichten mit Disposition quarantine.', example: '2', type: 'number' },
+      { name: 'dmarc.unauthorized_source_count', label: 'Nicht-autorisierte Quellen', description: 'Anzahl unterschiedlicher Absender-IPs, die DMARC vollständig scheitern (mögliche Spoofer).', example: '3', type: 'number' },
+      { name: 'dmarc.domain', label: 'Domain', description: 'Die Domain des ausgewerteten Reports.', example: 'firma.de', type: 'string' },
+      { name: 'dmarc.top_source_ip', label: 'Top-Quell-IP', description: 'Absender-IP mit dem höchsten Nachrichtenvolumen.', example: '209.85.220.41', type: 'string' },
+    ],
+    docs: {
+      longHelp:
+        'Wertet DMARC-Aggregat-Reports (RUA) aus, die Mailbox-Anbieter (Google, Microsoft, …) als ' +
+        'E-Mail-Anhang an die rua=-Adresse der Domain zurückschicken. Der Knoten liest die Anhänge der ' +
+        'aktuellen Nachricht (entpackt .xml.gz/.zip), speichert Reports und Datensätze und stellt die ' +
+        'dmarc.*-Variablen bereit. Damit entscheidet der Workflow selbst, was passiert — z. B. bei ' +
+        'dmarc.unauthorized_source_count > 0 eine Aufgabe anlegen. Die Auswertung erfolgt asynchron im ' +
+        'Hintergrund; der Knoten setzt den Workflow danach automatisch fort. Nicht-DMARC-Anhänge werden ' +
+        'sicher übersprungen (dmarc.report_count = 0).',
+      prerequisites: [
+        'Server-Edition mit synchronisiertem Postfach, das die DMARC-Reports empfängt.',
+        'Der Workflow läuft auf einer eingegangenen Nachricht mit Anhängen.',
+      ],
+      seeAlso: ['email.auth_check', 'logic.threshold', 'logic.switch', 'crm.create_task'],
+    },
+  },
+
   'email.auto_reply': {
     fields: [
       {

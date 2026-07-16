@@ -22,6 +22,10 @@ import type {
   WorkflowForwardCopyJobPlan,
   WorkflowForwardCopyJobPort,
 } from '../workflow-forward-copy';
+import type {
+  WorkflowDmarcIngestJobPlan,
+  WorkflowDmarcIngestJobPort,
+} from '../dmarc-ingest';
 
 export type MailSyncProtocol = 'imap' | 'pop3';
 
@@ -72,6 +76,7 @@ export type { AiReviewJobPlan };
 export type { AiTransformTextJobPlan };
 export type { WorkflowHttpRequestJobPlan };
 export type { WorkflowForwardCopyJobPlan };
+export type { WorkflowDmarcIngestJobPlan };
 
 export type WorkflowExecutionJobPlan = Readonly<{
   workspaceId: string;
@@ -119,6 +124,7 @@ export type WorkflowExecutionJobPort = Readonly<{
 
 export type WorkflowHttpRequestPort = WorkflowHttpRequestJobPort;
 export type WorkflowForwardCopyPort = WorkflowForwardCopyJobPort;
+export type WorkflowDmarcIngestPort = WorkflowDmarcIngestJobPort;
 
 export type MailSyncPostProcessPort = Readonly<{
   afterSync(input: MailSyncJobPlan & {
@@ -142,6 +148,7 @@ export type ProductionJobHandlersOptions = Readonly<{
   workflowExecution?: WorkflowExecutionJobPort;
   workflowHttpRequest?: WorkflowHttpRequestPort;
   workflowForwardCopy?: WorkflowForwardCopyPort;
+  workflowDmarcIngest?: WorkflowDmarcIngestPort;
   now?: () => Date;
 }>;
 
@@ -154,6 +161,7 @@ const MAX_WORKFLOW_HTTP_TIMEOUT_MS = 60_000;
 const MAX_WORKFLOW_HTTP_URL_LENGTH = 2048;
 const MAX_WORKFLOW_HTTP_BODY_LENGTH = 128 * 1024;
 const MAX_WORKFLOW_FORWARD_COPY_TO_LENGTH = 1000;
+const MAX_DMARC_ATTACHMENT_FILTER_LENGTH = 200;
 
 export function createProductionJobHandlers(options: ProductionJobHandlersOptions): JobHandlerRegistry {
   const now = options.now ?? (() => new Date());
@@ -209,6 +217,10 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'workflow.forward_copy': async (job) => {
       if (!options.workflowForwardCopy) throw new Error('workflow forward-copy job port is not configured');
       await options.workflowForwardCopy.forwardCopy(buildWorkflowForwardCopyJobPlan(job.payload, job.workspaceId));
+    },
+    'workflow.dmarc_ingest': async (job) => {
+      if (!options.workflowDmarcIngest) throw new Error('workflow DMARC ingest job port is not configured');
+      await options.workflowDmarcIngest.ingest(buildWorkflowDmarcIngestJobPlan(job.payload, job.workspaceId));
     },
   };
 }
@@ -425,6 +437,19 @@ export function buildWorkflowForwardCopyJobPlan(
     runOutboundReview: optionalBoolean(payload, 'runOutboundReview', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload),
+  };
+}
+
+export function buildWorkflowDmarcIngestJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): WorkflowDmarcIngestJobPlan {
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    workflowId: requiredPositiveInteger(payload, 'workflowId'),
+    messageId: requiredPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'attachmentNameFilter', MAX_DMARC_ATTACHMENT_FILTER_LENGTH),
     ...optionalClassificationContinuation(payload),
   };
 }

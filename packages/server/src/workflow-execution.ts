@@ -1663,6 +1663,9 @@ async function executeServerNode(
   if (type === 'email.forward_copy' || type === 'forward_copy') {
     return await scheduleWorkflowForwardCopyJob(trx, doc, context, node, config, now);
   }
+  if (type === 'email.ingest_dmarc_report') {
+    return await scheduleWorkflowDmarcIngestJob(trx, doc, context, node, config, now);
+  }
   if (type === 'http.request') {
     return await scheduleWorkflowHttpRequestJob(trx, doc, context, node, config, now);
   }
@@ -1885,6 +1888,10 @@ function dryRunMutatingNodeResult(
     case 'forward_copy':
       return dryRunAsyncContinuationResult(type, config, node, log, {
         'forward_copy.status': 'dry_run',
+      });
+    case 'email.ingest_dmarc_report':
+      return dryRunAsyncContinuationResult(type, config, node, log, {
+        'dmarc.status': 'dry_run',
       });
     case 'http.request':
       return dryRunAsyncContinuationResult(type, config, node, log, {
@@ -2768,6 +2775,64 @@ async function scheduleWorkflowForwardCopyJob(
       'forward_copy.status': 'pending',
       'forward_copy.job_id': jobId,
       'forward_copy.to': to.value,
+    },
+  };
+}
+
+async function scheduleWorkflowDmarcIngestJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  const attachmentNameFilter = String(config.attachmentNameFilter ?? '').trim();
+
+  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    workflowId: context.workflowId,
+    messageId: context.messageId,
+    ...(attachmentNameFilter ? { attachmentNameFilter } : {}),
+  };
+  if (resumeNodeId) {
+    payload.resumeNodeId = resumeNodeId;
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      resumeNodeId,
+      eventStrings: context.strings,
+      eventVariables: context.variables,
+    };
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'workflow.dmarc_ingest',
+      payload,
+      run_after: now,
+      max_attempts: 5,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: Boolean(resumeNodeId),
+    deferred: Boolean(resumeNodeId),
+    message: `queued_dmarc_ingest:${jobId}`,
+    variables: {
+      'dmarc.status': 'pending',
+      'dmarc.job_id': jobId,
     },
   };
 }

@@ -3,6 +3,7 @@ export * from './postgres-core-crm-read-ports';
 export * from './postgres-core-mail-import';
 export * from './postgres-customer-port';
 export * from './postgres-dashboard-port';
+export * from './postgres-dmarc-port';
 export * from './postgres-mail-metadata-read-ports';
 export * from './postgres-mail-diagnostics-port';
 export * from './postgres-email-reporting-port';

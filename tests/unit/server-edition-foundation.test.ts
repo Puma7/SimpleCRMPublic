@@ -126,6 +126,7 @@ import {
   buildSpamScoringPlan,
   buildWorkflowExecutionJobPlan,
   buildWorkflowForwardCopyJobPlan,
+  buildWorkflowDmarcIngestJobPlan,
   buildWorkflowHttpRequestJobPlan,
   buildWebhookFirePlan,
   calculateJobRetryDelaySeconds,
@@ -350,6 +351,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0029_auto_reply_limits',
   '0030_email_evidence_classification_v2',
   '0031_smtp_relay',
+  '0032_dmarc_reports',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1892,6 +1894,7 @@ describe('server edition foundation', () => {
       'workflow.execute',
       'workflow.http_request',
       'workflow.forward_copy',
+      'workflow.dmarc_ingest',
       'webhook.fire',
       'lock.cleanup',
       'audit.retention',
@@ -2021,6 +2024,7 @@ describe('server edition foundation', () => {
     expect(graphileQueueNameForJob('workflow.execute', {})).toBe('workflow');
     expect(graphileQueueNameForJob('workflow.http_request', {})).toBe('workflow');
     expect(graphileQueueNameForJob('workflow.forward_copy', {})).toBe('workflow');
+    expect(graphileQueueNameForJob('workflow.dmarc_ingest', {})).toBe('workflow');
     expect(graphileJobKeyForJob('mail.sync.pop3', { accountId: 42 }, 'workspace-a'))
       .toBe('mail.sync.pop3:workspace-a:42');
     expect(graphileJobKeyForJob('mail.sync.pop3', { workspaceId: 'workspace-payload', accountId: 42 }))
@@ -2053,6 +2057,8 @@ describe('server edition foundation', () => {
       .toBe('workflow.http_request:workspace-a:23:11:tag-1');
     expect(graphileJobKeyForJob('workflow.forward_copy', { workflowId: 23, messageId: 11, to: 'audit@example.com' }, 'workspace-a'))
       .toBe('workflow.forward_copy:workspace-a:23:11:audit@example.com');
+    expect(graphileJobKeyForJob('workflow.dmarc_ingest', { workflowId: 23, messageId: 11 }, 'workspace-a'))
+      .toBe('workflow.dmarc_ingest:workspace-a:23:11');
     expect(graphileJobKeyForJob('workflow.execute', { workflowId: 23, messageId: 11 }, 'workspace-a'))
       .toBe('workflow.execute:workspace-a:23:message:11');
     expect(graphileJobKeyForJob('workflow.execute', { workflowId: 23, delayedJobId: 87 }, 'workspace-a'))
@@ -2428,6 +2434,28 @@ describe('server edition foundation', () => {
         workflowId: 23,
         triggerName: 'inbound',
         resumeNodeId: 'tag-1',
+      },
+    });
+
+    expect(buildWorkflowDmarcIngestJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 23,
+      messageId: 11,
+      attachmentNameFilter: ' dmarc ',
+      continuation: {
+        workflowId: 23,
+        triggerName: ' inbound ',
+        resumeNodeId: 'ingest-1',
+      },
+    }, WORKSPACE_A_ID)).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 23,
+      messageId: 11,
+      attachmentNameFilter: 'dmarc',
+      continuation: {
+        workflowId: 23,
+        triggerName: 'inbound',
+        resumeNodeId: 'ingest-1',
       },
     });
 

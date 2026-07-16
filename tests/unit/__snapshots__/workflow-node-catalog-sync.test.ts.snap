@@ -95,6 +95,9 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
   "email.hold_outbound": [
     "reason",
   ],
+  "email.ingest_dmarc_report": [
+    "attachmentNameFilter",
+  ],
   "email.mark_seen": [],
   "email.mark_spam": [
     "moveImap",

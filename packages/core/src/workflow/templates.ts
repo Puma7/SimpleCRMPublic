@@ -338,6 +338,59 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     } as WorkflowGraphDocument,
   },
   {
+    id: 'dmarc-report-triage',
+    name: 'DMARC-Reports auswerten & bei Auffälligkeit Aufgabe (empfohlen)',
+    description:
+      'Für ein Postfach, das DMARC-Aggregat-Reports (RUA) empfängt: erkennt Report-Mails am '
+      + 'Standard-Betreff „Report Domain: …", wertet die angehängten XML/GZ/ZIP-Reports aus, '
+      + 'speichert sie für die Statistik-Seite und legt eine Aufgabe an, sobald nicht-autorisierte '
+      + 'Absender-Quellen (mögliche Spoofer) auftauchen. Frei anpassbar: Schwelle, Betreff-Filter und '
+      + 'Aktion. Nur Server-Edition.',
+    trigger: 'inbound',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'is_report',
+          type: 'condition',
+          data: { field: 'subject', op: 'contains', value: 'Report Domain', caseInsensitive: true },
+        },
+        {
+          id: 'ingest',
+          type: 'registry',
+          data: { nodeType: 'email.ingest_dmarc_report', config: { attachmentNameFilter: '' } },
+        },
+        {
+          id: 'has_unauthorized',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'dmarc.unauthorized_source_count', operator: 'gte', value: 1 },
+          },
+        },
+        {
+          id: 'task',
+          type: 'registry',
+          data: {
+            nodeType: 'crm.create_task',
+            config: {
+              title: 'DMARC-Auffälligkeit: {{dmarc.unauthorized_source_count}} nicht-autorisierte Quelle(n) für {{dmarc.domain}}',
+              priority: 'high',
+              daysUntilDue: 2,
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'is_report' },
+        { id: 'e1', source: 'is_report', target: 'ingest', label: 'ja' },
+        { id: 'e2', source: 'ingest', target: 'has_unauthorized' },
+        { id: 'e3', source: 'has_unauthorized', target: 'task', label: 'yes' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
     id: 'inbound-attachments',
     name: 'Eingehend: Anhänge markieren',
     description: 'Taggt Nachrichten mit PDF-Anhang.',

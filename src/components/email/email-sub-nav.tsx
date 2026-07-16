@@ -1,9 +1,10 @@
 "use client"
 
 import { Link, useMatchRoute } from "@tanstack/react-router"
-import { BarChart3, FlaskConical, Inbox, Settings, Workflow } from "lucide-react"
+import { BarChart3, FlaskConical, Inbox, Settings, ShieldAlert, Workflow } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
+import { isServerClientMode } from "@/lib/runtime-mode"
 
 const SVELTE_LAB_ENABLED = import.meta.env.VITE_ENABLE_SVELTE_LAB === "true"
 
@@ -11,6 +12,11 @@ const ITEMS = [
   { to: "/email" as const, label: "Postfach", icon: Inbox, exact: true as const },
   { to: "/email/workflows" as const, label: "Workflows", icon: Workflow, exact: false as const },
   { to: "/email/reporting" as const, label: "Auswertung", icon: BarChart3, exact: false as const },
+  // DMARC-Auswertung ist Server-Edition-only (kein Electron-IPC-Handler):
+  // im Desktop-Modus ausblenden, damit der Aufruf nicht ins Leere läuft.
+  ...(isServerClientMode()
+    ? [{ to: "/email/dmarc" as const, label: "DMARC", icon: ShieldAlert, exact: false as const }]
+    : []),
   {
     to: "/email/settings" as const,
     label: "Einstellungen",

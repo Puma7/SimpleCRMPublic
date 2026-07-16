@@ -240,6 +240,7 @@ const MAIL_ROUTES: readonly MailRouteEntry[] = [
   { kind: 'route', pattern: /^\/api\/v1\/email\/folder-counts$/, handler: (req, ports) => handleMailFolderCounts(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/diagnostics$/, handler: (req, ports) => handleMailDiagnostics(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/reporting$/, handler: (req, ports) => handleEmailReporting(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/dmarc\/stats$/, handler: (req, ports) => handleDmarcStats(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/gdpr-export$/, handler: (req, ports) => handleEmailGdprExport(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/threads\/backfill$/, handler: (req, ports) => handleMailThreadBackfill(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/backfill-customer-links$/, handler: (req, ports) => handleMessageCustomerLinkBackfill(req, ports) },
@@ -1306,6 +1307,24 @@ async function handleEmailReporting(req: ApiRequest, ports: ServerApiPorts): Pro
     ...(accountId === undefined ? {} : { accountId }),
   });
   return data(200, sanitizeEmailReportingSnapshot(snapshot));
+}
+
+async function handleDmarcStats(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+  if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const windowDays = parseOptionalPositiveInt(req.query?.windowDays);
+  if (windowDays === null) return error(400, 'invalid_window_days', 'windowDays muss eine positive Ganzzahl sein');
+  const domainRaw = typeof req.query?.domain === 'string' ? req.query.domain.trim() : '';
+  if (!ports.dmarcReporting) {
+    return error(503, 'dmarc_reporting_unavailable', 'DMARC-Auswertung nicht konfiguriert (nur Server-Edition)');
+  }
+  const snapshot = await ports.dmarcReporting.collect({
+    workspaceId: principal.workspaceId,
+    ...(windowDays === undefined ? {} : { windowDays }),
+    ...(domainRaw ? { domain: domainRaw } : {}),
+  });
+  return data(200, snapshot);
 }
 
 async function handleEmailGdprExport(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

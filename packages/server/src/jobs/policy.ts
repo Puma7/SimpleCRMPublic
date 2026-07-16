@@ -19,6 +19,7 @@ export const SERVER_JOB_TYPES = [
   'workflow.execute',
   'workflow.http_request',
   'workflow.forward_copy',
+  'workflow.dmarc_ingest',
   'webhook.fire',
   'lock.cleanup',
   'audit.retention',

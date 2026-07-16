@@ -50,6 +50,7 @@ import {
   createPostgresEmailCannedResponseReadPort,
   createPostgresEmailCategoryReadPort,
   createPostgresEmailReportingPort,
+  createPostgresDmarcReportingPort,
   createPostgresMailDiagnosticsPort,
   createPostgresEmailFolderReadPort,
   createPostgresEmailInternalNoteReadPort,
@@ -178,6 +179,7 @@ import { createPostgresWorkflowExecutionJobPort } from './workflow-execution';
 import { createPostgresWorkflowInboundBackfillPort } from './workflow-backfill';
 import { createPostgresMailThreadBackfillPort } from './mail-thread-backfill';
 import { createPostgresWorkflowForwardCopyPort } from './workflow-forward-copy';
+import { createPostgresWorkflowDmarcIngestPort } from './dmarc-ingest';
 import { createPostgresWorkflowHttpRequestPort } from './workflow-http-request';
 import { createPostgresWorkflowImapActionPort } from './workflow-imap-actions';
 import { createStaticWorkflowNodeCatalogPort } from './workflow-node-catalog';
@@ -571,6 +573,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     emailOutboundValidation,
     emailDiagnostics: createPostgresMailDiagnosticsPort({ db: options.db, attachmentsRoot }),
     emailReporting: createPostgresEmailReportingPort({ db: options.db }),
+    dmarcReporting: createPostgresDmarcReportingPort({ db: options.db }),
     emailFolders: createPostgresEmailFolderReadPort({ db: options.db }),
     emailGdprExport: createPostgresEmailGdprExportPort({
       db: options.db,
@@ -930,6 +933,10 @@ function buildServerJobHandlers(input: {
             secrets,
             attachmentsRoot,
             ...(ports.emailComposeSender ? { composeSender: ports.emailComposeSender } : {}),
+          }),
+          workflowDmarcIngest: createPostgresWorkflowDmarcIngestPort({
+            db,
+            attachmentsRoot,
           }),
           workflowHttpRequest: createPostgresWorkflowHttpRequestPort({ db }),
         } : {}),
