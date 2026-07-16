@@ -665,6 +665,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     trackLinks: z.boolean(),
     collectDerivedMetadata: z.boolean(),
     collectRawMetadata: z.boolean(),
+    ipInsightsEnabled: z.boolean().default(false),
     rawMetadataRetentionDays: z.number().int(),
     eventRetentionDays: z.number().int(),
     tokenTtlDays: z.number().int(),
@@ -680,6 +681,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     trackLinks: z.boolean().optional(),
     collectDerivedMetadata: z.boolean().optional(),
     collectRawMetadata: z.boolean().optional(),
+    ipInsightsEnabled: z.boolean().optional(),
     rawMetadataRetentionDays: z.number().int().optional(),
     eventRetentionDays: z.number().int().optional(),
     tokenTtlDays: z.number().int().optional(),
@@ -692,8 +694,25 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     delivery: z.enum(['unknown', 'external_system_reached', 'dsn_delivered']),
     engagement: z.enum(['none', 'automated_fetch', 'probable_open', 'link_interaction', 'human_reply']),
     confidence: z.enum(['none', 'low', 'medium', 'high', 'verified']),
+    mdnDisplayedCount: z.number().int().nonnegative().optional(),
+    pixelFetchCount: z.number().int().nonnegative().optional(),
+    automatedPixelFetchCount: z.number().int().nonnegative().optional(),
+    unknownPixelFetchCount: z.number().int().nonnegative().optional(),
+    probableHumanPixelFetchCount: z.number().int().nonnegative().optional(),
+    probableHumanOpenSessionCount: z.number().int().nonnegative().optional(),
+    automatedLinkFetchCount: z.number().int().nonnegative().optional(),
+    unknownLinkFetchCount: z.number().int().nonnegative().optional(),
+    probableHumanLinkFetchCount: z.number().int().nonnegative().optional(),
+    firstPixelFetchedAt: z.string().nullable().optional(),
+    lastPixelFetchedAt: z.string().nullable().optional(),
+    firstProbableHumanOpenAt: z.string().nullable().optional(),
+    lastProbableHumanOpenAt: z.string().nullable().optional(),
     openCount: z.number().int().nonnegative(),
     clickCount: z.number().int().nonnegative(),
+    automatedOpenCount: z.number().int().nonnegative().optional(),
+    probableOpenCount: z.number().int().nonnegative().optional(),
+    automatedClickCount: z.number().int().nonnegative().optional(),
+    probableClickCount: z.number().int().nonnegative().optional(),
     firstOpenedAt: z.string().nullable(),
     lastOpenedAt: z.string().nullable(),
     firstClickedAt: z.string().nullable(),
@@ -717,7 +736,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       summary: emailEvidenceSummarySchema,
       eventsTruncated: z.boolean(),
       events: z.array(z.object({
-        id: positiveInt,
+        id: z.union([positiveInt, z.string().regex(/^[1-9]\d*$/)]),
         type: z.enum([
           'queued', 'sending', 'smtp_accepted', 'smtp_failed', 'delayed', 'bounced',
           'dsn_delivered', 'mdn_displayed', 'open_automated', 'open_probable',
@@ -728,7 +747,40 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
         automated: z.boolean(),
         occurredAt: z.string(),
         metadata: z.record(z.string(), z.unknown()),
+        classification: z.object({
+          version: z.literal(2),
+          actorClass: z.enum([
+            'system', 'probable_human', 'mail_proxy', 'privacy_proxy',
+            'security_scanner', 'automated_unknown', 'unknown',
+          ]),
+          confidence: z.enum(['none', 'low', 'medium', 'high', 'verified']),
+          reasons: z.array(z.string()),
+        }).nullable().optional(),
       })),
+    }),
+  });
+  set(IPCChannels.Email.GetMessageTrackingIpInsight, {
+    payload: z.object({
+      messageId: positiveInt,
+      eventId: z.union([positiveInt, z.string().regex(/^[1-9]\d*$/)]),
+    }),
+    result: z.object({
+      ipAddress: z.string(),
+      ipFamily: z.enum(['ipv4', 'ipv6']),
+      scope: z.enum(['public', 'private', 'loopback', 'reserved', 'unknown']),
+      countryCode: z.string().nullable(),
+      continentCode: z.string().nullable(),
+      asn: z.number().int().nonnegative().nullable(),
+      networkName: z.string().nullable(),
+      networkCidr: z.string().nullable(),
+      databaseBuildAt: z.string().nullable(),
+    }),
+  });
+  set(IPCChannels.Email.ReclassifyMessageTracking, {
+    payload: positiveInt,
+    result: z.object({
+      classified: z.number().int().nonnegative(),
+      unavailableRaw: z.number().int().nonnegative(),
     }),
   });
   set(IPCChannels.Email.RevokeMessageTracking, {

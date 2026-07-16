@@ -24,15 +24,18 @@ services:
       dockerfile: docker/api.Dockerfile
     image: simplecrm/api:${VERSION:-dev}
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
       SIMPLECRM_MASTER_KEY: ${MASTER_KEY}
       ACCESS_TOKEN_SECRET: ${ACCESS_TOKEN_SECRET}
+      ACCESS_TOKEN_KEY_ID: ${ACCESS_TOKEN_KEY_ID:-}
+      VERSION: ${VERSION:-dev}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      HOST: ${HOST:-0.0.0.0}
+      NODE_ENV: ${NODE_ENV:-production}
+      CI: ${CI:-}
+      BACKUP_DIR: ${BACKUP_DIR:-}
       # Trust exactly the one Caddy hop in front of the API so rate limiting sees
       # the real client IP (not Caddy's). The API is only reachable via Caddy on
       # the internal network, so a client cannot inject extra XFF hops.
@@ -54,13 +57,18 @@ services:
       JOB_WORKER_AI_CONCURRENCY: ${JOB_WORKER_AI_CONCURRENCY:-5}
       JOB_WORKER_MIGRATE_ON_START: ${JOB_WORKER_MIGRATE_ON_START:-false}
       JOB_WEBHOOK_ALLOWLIST: ${JOB_WEBHOOK_ALLOWLIST:-}
+      AI_DAILY_SOFT_LIMIT_MICRO_USD: ${AI_DAILY_SOFT_LIMIT_MICRO_USD:-}
+      AI_DAILY_HARD_LIMIT_MICRO_USD: ${AI_DAILY_HARD_LIMIT_MICRO_USD:-}
       SERVER_LOG_FILE: ${SERVER_LOG_FILE:-/app/data/logs/server-log.jsonl}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      GEOIP_COUNTRY_DB_PATH: /var/lib/simplecrm/geoip/GeoLite2-Country.mmdb
+      GEOIP_ASN_DB_PATH: /var/lib/simplecrm/geoip/GeoLite2-ASN.mmdb
       PORT: 3000
     volumes:
       - attachments:/app/data/attachments
       - audit_archives:/app/data/audit-archive
       - server_logs:/app/data/logs
+      - geoip:/var/lib/simplecrm/geoip:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,6 +83,18 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+  geoip-updater:
+    image: ghcr.io/maxmind/geoipupdate:v7.1.1@sha256:45e15eb310528fd308c5c0abee9a8e6d580f1e2b1251e960dec2863dc7f0102f
+    profiles: ["geoip"]
+    env_file:
+      - path: ${GEOIP_UPDATER_ENV_FILE:-.env.geoip}
+        required: false
+    environment:
+      GEOIPUPDATE_EDITION_IDS: "GeoLite2-Country GeoLite2-ASN"
+      GEOIPUPDATE_FREQUENCY: "168"
+    volumes:
+      - geoip:/usr/share/GeoIP
 
   postgres:
     image: postgres:18-alpine
@@ -101,9 +121,6 @@ services:
       dockerfile: docker/api.Dockerfile
     image: simplecrm/api:${VERSION:-dev}
     command: ["node", "packages/server/dist/cli/migrate.js"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
     depends_on:
@@ -114,11 +131,9 @@ services:
   backup:
     image: postgres:18-alpine
     profiles: ["backup"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      BACKUP_DIR: ${BACKUP_DIR:-/backups}
       ATTACHMENTS_DIR: /data/attachments
       AUDIT_ARCHIVE_DIR: /data/audit-archive
       BACKUP_RETENTION_DAILY: ${BACKUP_RETENTION_DAILY:-7}
@@ -141,11 +156,9 @@ services:
     image: postgres:18-alpine
     profiles: ["backup-scheduler"]
     restart: unless-stopped
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      BACKUP_DIR: ${BACKUP_DIR:-/backups}
       ATTACHMENTS_DIR: /data/attachments
       AUDIT_ARCHIVE_DIR: /data/audit-archive
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
@@ -168,9 +181,6 @@ services:
   restore:
     image: postgres:18-alpine
     profiles: ["restore"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       PG_RESTORE_ROLE: simplecrm_app
@@ -220,9 +230,6 @@ services:
   doctor:
     image: postgres:18-alpine
     profiles: ["doctor"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       BACKUP_DIR: /backups
@@ -238,14 +245,13 @@ services:
   restore-drill:
     image: postgres:18-alpine
     profiles: ["restore-drill"]
-    env_file:
-      - path: .env
-        required: false
     environment:
       DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
       PG_APP_USER: simplecrm_app
       PG_RESTORE_ROLE: simplecrm_app
       RESTORE_DRILL_DB_NAME: ${RESTORE_DRILL_DB_NAME:-}
+      RESTORE_DRILL_DATABASE_URL: ${RESTORE_DRILL_DATABASE_URL:-}
+      RESTORE_DRILL_MAINTENANCE_DATABASE_URL: ${RESTORE_DRILL_MAINTENANCE_DATABASE_URL:-}
       RESTORE_DRILL_DUMP_PATH: ${RESTORE_DRILL_DUMP_PATH:-}
       RESTORE_DRILL_ATTACHMENTS_PATH: ${RESTORE_DRILL_ATTACHMENTS_PATH:-}
       RESTORE_DRILL_AUDIT_ARCHIVE_PATH: ${RESTORE_DRILL_AUDIT_ARCHIVE_PATH:-}
@@ -329,6 +335,7 @@ volumes:
   attachments:
   audit_archives:
   server_logs:
+  geoip:
   caddy_data:
   caddy_config:
   caddy_logs:

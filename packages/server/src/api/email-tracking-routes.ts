@@ -5,7 +5,14 @@ import type {
   EmailTrackingPolicyMutationInput,
   ServerApiPorts,
 } from './types';
-import { EmailTrackingPolicyValidationError } from '../email-tracking';
+import {
+  EmailTrackingIpInsightForbiddenError,
+  EmailTrackingIpInsightNotFoundError,
+  EmailTrackingIpInsightRawDataUnavailableError,
+  EmailTrackingIpInsightUnavailableError,
+  EmailTrackingMessageNotFoundError,
+  EmailTrackingPolicyValidationError,
+} from '../email-tracking';
 import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
 
 const PUBLIC_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -137,10 +144,59 @@ export async function handleEmailTrackingRoute(
   const isSettings = req.path === '/api/v1/email/tracking/settings';
   const timelineMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking$/.exec(req.path);
   const revokeMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/revoke$/.exec(req.path);
-  if (!isSettings && !timelineMatch && !revokeMatch) return null;
+  const reclassifyMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/reclassify$/.exec(req.path);
+  const ipInsightMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/events\/([^/]+)\/ip-insight$/.exec(req.path);
+  if (!isSettings && !timelineMatch && !revokeMatch && !reclassifyMatch && !ipInsightMatch) return null;
 
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  if (ipInsightMatch && !requireAdmin(principal)) {
+    const eventId = canonicalPositiveDecimalEventId(ipInsightMatch[2]);
+    await auditIpInsightRouteDenial(ports, principal, 'forbidden', eventId);
+    return error(403, 'forbidden', 'Adminrechte erforderlich');
+  }
+
+  if (ipInsightMatch) {
+    if (req.method !== 'GET') {
+      await auditIpInsightRouteDenial(ports, principal, 'method_not_allowed');
+      return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    }
+    const messageId = positiveIntFromPath(ipInsightMatch[1]);
+    if (messageId === null) {
+      await auditIpInsightRouteDenial(ports, principal, 'invalid_message_id');
+      return error(400, 'invalid_message_id', 'messageId muss eine positive Ganzzahl sein');
+    }
+    const eventId = canonicalPositiveDecimalEventId(ipInsightMatch[2]);
+    if (!eventId) {
+      await auditIpInsightRouteDenial(ports, principal, 'invalid_event_id');
+      return error(400, 'invalid_event_id', 'eventId muss eine positive dezimale Ganzzahl sein');
+    }
+    if (!ports.emailTracking?.getIpInsight) {
+      await auditIpInsightRouteDenial(ports, principal, 'unavailable', eventId);
+      return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
+    }
+    try {
+      return data(200, await ports.emailTracking.getIpInsight({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        messageId,
+        eventId,
+      }));
+    } catch (caught) {
+      if (caught instanceof EmailTrackingIpInsightNotFoundError) return trackingNotFound();
+      if (caught instanceof EmailTrackingIpInsightForbiddenError) {
+        return error(403, 'ip_insights_forbidden', 'IP-Insights sind nicht aktiviert');
+      }
+      if (caught instanceof EmailTrackingIpInsightRawDataUnavailableError) {
+        return error(410, 'ip_insight_raw_data_unavailable', 'Rohdaten fuer den IP-Insight sind nicht mehr verfuegbar');
+      }
+      if (caught instanceof EmailTrackingIpInsightUnavailableError) {
+        return error(503, 'ip_insights_unavailable', 'Lokale IP-Insight-Datenbank ist nicht verfuegbar');
+      }
+      throw caught;
+    }
+  }
+
   if (!ports.emailTracking) {
     return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
   }
@@ -167,9 +223,27 @@ export async function handleEmailTrackingRoute(
     }
   }
 
-  const rawMessageId = timelineMatch?.[1] ?? revokeMatch?.[1];
+  const rawMessageId = timelineMatch?.[1] ?? revokeMatch?.[1] ?? reclassifyMatch?.[1];
   const messageId = positiveIntFromPath(rawMessageId);
   if (messageId === null) return error(400, 'invalid_message_id', 'messageId muss eine positive Ganzzahl sein');
+
+  if (reclassifyMatch) {
+    if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+    if (!ports.emailTracking.reclassifyMessage) {
+      return error(503, 'email_tracking_unavailable', 'E-Mail-Nachverfolgung ist nicht konfiguriert');
+    }
+    try {
+      return data(200, await ports.emailTracking.reclassifyMessage({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        messageId,
+      }));
+    } catch (caught) {
+      if (caught instanceof EmailTrackingMessageNotFoundError) return trackingNotFound();
+      throw caught;
+    }
+  }
 
   if (revokeMatch) {
     if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
@@ -214,7 +288,7 @@ function parsePolicyMutation(body: unknown):
   }
   const source = body as Record<string, unknown>;
   const allowed = new Set([
-    'enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata',
+    'enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata', 'ipInsightsEnabled',
     'rawMetadataRetentionDays', 'eventRetentionDays', 'tokenTtlDays', 'legalBasis',
     'privacyNoticeUrl', 'complianceAcknowledged',
   ]);
@@ -223,7 +297,7 @@ function parsePolicyMutation(body: unknown):
     return { ok: false, response: error(400, 'invalid_tracking_policy', 'Unbekannte Tracking-Einstellung', { fields: unknown }) };
   }
   const values: EmailTrackingPolicyMutationInput = {};
-  for (const key of ['enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata', 'complianceAcknowledged'] as const) {
+  for (const key of ['enabled', 'trackOpens', 'trackLinks', 'collectDerivedMetadata', 'collectRawMetadata', 'ipInsightsEnabled', 'complianceAcknowledged'] as const) {
     if (source[key] === undefined) continue;
     if (typeof source[key] !== 'boolean') {
       return { ok: false, response: error(400, 'invalid_tracking_policy', `${key} muss boolesch sein`) };
@@ -269,6 +343,27 @@ function safeRedirectUrl(value: string | null): string | null {
 
 function trackingNotFound(): ApiResponse<ApiErrorBody> {
   return error(404, 'tracking_not_found', 'Tracking-Link nicht gefunden oder abgelaufen');
+}
+
+function canonicalPositiveDecimalEventId(value: string | undefined): string | null {
+  if (!value || value.length > 19 || !/^[1-9]\d*$/.test(value)) return null;
+  return BigInt(value) <= 9_223_372_036_854_775_807n ? value : null;
+}
+
+async function auditIpInsightRouteDenial(
+  ports: ServerApiPorts,
+  principal: { workspaceId: string; userId: string },
+  outcome: 'invalid_message_id' | 'invalid_event_id' | 'forbidden' | 'method_not_allowed' | 'unavailable',
+  eventId: string | null = null,
+): Promise<void> {
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: 'email_tracking.ip_insight_denied',
+    entityType: 'email_tracking_event',
+    entityId: eventId,
+    metadata: { outcome },
+  });
 }
 
 async function withPublicTimeout<T>(promise: Promise<T>): Promise<T> {

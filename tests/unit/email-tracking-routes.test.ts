@@ -1,6 +1,13 @@
 import { createServerApi } from '../../packages/server/src/api/server-api';
 import { resetEmailTrackingRateLimitersForTests } from '../../packages/server/src/api/email-tracking-routes';
-import { EmailTrackingPolicyValidationError } from '../../packages/server/src/email-tracking';
+import {
+  EmailTrackingIpInsightForbiddenError,
+  EmailTrackingIpInsightNotFoundError,
+  EmailTrackingIpInsightRawDataUnavailableError,
+  EmailTrackingIpInsightUnavailableError,
+  EmailTrackingMessageNotFoundError,
+  EmailTrackingPolicyValidationError,
+} from '../../packages/server/src/email-tracking';
 import type {
   AuthenticatedPrincipal,
   EmailTrackingApiPort,
@@ -21,6 +28,7 @@ const policy: EmailTrackingPolicyRecord = {
   trackLinks: false,
   collectDerivedMetadata: false,
   collectRawMetadata: false,
+  ipInsightsEnabled: false,
   rawMetadataRetentionDays: 7,
   eventRetentionDays: 365,
   tokenTtlDays: 730,
@@ -40,6 +48,15 @@ function makeTrackingPort(overrides: Partial<EmailTrackingApiPort> = {}): EmailT
     async resolvePublicClick() { return null; },
     async revokeMessage() { return false; },
     async eraseMessage() { return false; },
+    async reclassifyMessage() { return { classified: 0, unavailableRaw: 0 }; },
+    async getIpInsight() {
+      return {
+        ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public',
+        countryCode: 'US', continentCode: 'NA', asn: 15169,
+        networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+        databaseBuildAt: '2026-07-15T00:00:00.000Z',
+      };
+    },
     ...overrides,
   };
 }
@@ -143,7 +160,13 @@ describe('email tracking routes', () => {
           eventsTruncated: false,
           summary: {
             transport: 'smtp_accepted', delivery: 'unknown', engagement: 'none', confidence: 'low',
+            pixelFetchCount: 0, automatedPixelFetchCount: 0, unknownPixelFetchCount: 0,
+            probableHumanPixelFetchCount: 0, probableHumanOpenSessionCount: 0,
+            firstPixelFetchedAt: null, lastPixelFetchedAt: null,
+            firstProbableHumanOpenAt: null, lastProbableHumanOpenAt: null,
             openCount: 0, clickCount: 0, firstOpenedAt: null, lastOpenedAt: null,
+            automatedOpenCount: 0, probableOpenCount: 0,
+            automatedClickCount: 0, probableClickCount: 0,
             firstClickedAt: null, lastClickedAt: null, repliedAt: null,
           },
           events: [],
@@ -174,6 +197,238 @@ describe('email tracking routes', () => {
     ]);
   });
 
+  test('reclassifies tracking evidence only for admins and keeps missing messages non-disclosing', async () => {
+    const calls: unknown[] = [];
+    const tracking = makeTrackingPort({
+      async reclassifyMessage(input) {
+        calls.push(input);
+        if (input.messageId === 18) throw new EmailTrackingMessageNotFoundError();
+        return { classified: 7, unavailableRaw: 2 };
+      },
+    });
+    const api = apiFor(tracking);
+    const user = { ...principal, role: 'user' as const };
+
+    const forbidden = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/17/tracking/reclassify',
+      principal: user,
+    });
+    expect(forbidden.status).toBe(403);
+    expect(calls).toEqual([]);
+
+    const success = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/17/tracking/reclassify',
+      principal,
+    });
+    expect(success).toMatchObject({
+      status: 200,
+      body: { data: { classified: 7, unavailableRaw: 2 } },
+    });
+    expect(calls).toEqual([{
+      workspaceId: 'workspace-1',
+      actorUserId: 'user-1',
+      messageId: 17,
+    }]);
+
+    const missing = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/18/tracking/reclassify',
+      principal,
+    });
+    const unknownTimeline = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/18/tracking',
+      principal,
+    });
+    expect(missing).toEqual(unknownTimeline);
+    expect(missing.status).toBe(404);
+  });
+
+  test('protects tracking IP insight with authentication, admin rights, and a canonical bigint event id', async () => {
+    const calls: unknown[] = [];
+    const audit = { record: jest.fn(async () => undefined) };
+    const tracking = makeTrackingPort({
+      async getIpInsight(input) {
+        calls.push(input);
+        return {
+          ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public',
+          countryCode: 'US', continentCode: 'NA', asn: 15169,
+          networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+          databaseBuildAt: '2026-07-15T00:00:00.000Z',
+        };
+      },
+    });
+    const api = createServerApi({ auth: {} as never, emailTracking: tracking, audit } satisfies ServerApiPorts);
+    const path = '/api/v1/email/messages/17/tracking/events/9007199254740993/ip-insight';
+
+    await expect(api.handle({ method: 'GET', path })).resolves.toMatchObject({
+      status: 401,
+      body: { error: { code: 'unauthorized' } },
+    });
+    await expect(api.handle({
+      method: 'GET', path, principal: { ...principal, role: 'user' },
+    })).resolves.toMatchObject({ status: 403, body: { error: { code: 'forbidden' } } });
+    const unavailableApi = createServerApi({ auth: {} as never } satisfies ServerApiPorts);
+    await expect(unavailableApi.handle({
+      method: 'GET', path, principal: { ...principal, role: 'user' },
+    })).resolves.toMatchObject({ status: 403, body: { error: { code: 'forbidden' } } });
+    expect(calls).toEqual([]);
+
+    await expect(api.handle({ method: 'GET', path, principal })).resolves.toMatchObject({
+      status: 200,
+      body: { data: {
+        ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public', countryCode: 'US', continentCode: 'NA',
+        asn: 15169, networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+        databaseBuildAt: '2026-07-15T00:00:00.000Z',
+      } },
+    });
+    expect(calls).toEqual([{
+      workspaceId: 'workspace-1', actorUserId: 'user-1', messageId: 17, eventId: '9007199254740993',
+    }]);
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/8\.8\.8\.8|Google|Mozilla|CIDR/i);
+  });
+
+  test.each([
+    ['missing or foreign workspace/message/event association', new EmailTrackingIpInsightNotFoundError(), 404, 'tracking_not_found'],
+    ['disabled policy', new EmailTrackingIpInsightForbiddenError(), 403, 'ip_insights_forbidden'],
+    ['cleared or expired raw request data', new EmailTrackingIpInsightRawDataUnavailableError(), 410, 'ip_insight_raw_data_unavailable'],
+    ['unavailable local MMDB for public IP', new EmailTrackingIpInsightUnavailableError(), 503, 'ip_insights_unavailable'],
+  ])('keeps IP insight %s non-disclosing', async (_label, failure, status, code) => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({
+      auth: {} as never,
+      audit,
+      emailTracking: makeTrackingPort({
+        async getIpInsight() { throw failure; },
+      }),
+    } satisfies ServerApiPorts);
+
+    const response = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/9007199254740993/ip-insight',
+      principal,
+    });
+
+    expect(response).toMatchObject({ status, body: { error: { code } } });
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/IP|UA|Geo|ASN|CIDR|secret/i);
+  });
+
+  test('rejects non-canonical tracking IP insight event ids without coercing them to numbers', async () => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({
+      auth: {} as never,
+      audit,
+      emailTracking: makeTrackingPort(),
+    } satisfies ServerApiPorts);
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/09007199254740993/ip-insight',
+      principal,
+    })).resolves.toMatchObject({ status: 400, body: { error: { code: 'invalid_event_id' } } });
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/9223372036854775808/ip-insight',
+      principal,
+    })).resolves.toMatchObject({ status: 400, body: { error: { code: 'invalid_event_id' } } });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'email_tracking.ip_insight_denied',
+      entityId: null,
+      metadata: { outcome: 'invalid_event_id' },
+    }));
+    expect(JSON.stringify(audit.record.mock.calls)).not.toContain('9223372036854775808');
+  });
+
+  test('accepts the PostgreSQL bigint maximum for an IP insight event id', async () => {
+    const calls: unknown[] = [];
+    const api = apiFor(makeTrackingPort({
+      async getIpInsight(input) {
+        calls.push(input);
+        return {
+          ipAddress: '127.0.0.1', ipFamily: 'ipv4', scope: 'loopback',
+          countryCode: null, continentCode: null, asn: null,
+          networkName: null, networkCidr: null, databaseBuildAt: null,
+        };
+      },
+    }));
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/9223372036854775807/ip-insight',
+      principal,
+    })).resolves.toMatchObject({ status: 200 });
+    expect(calls).toEqual([expect.objectContaining({ eventId: '9223372036854775807' })]);
+  });
+
+  test('checks IP insight admin rights before method, identifiers, or service availability', async () => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({ auth: {} as never, audit } satisfies ServerApiPorts);
+    const nonAdmin = { ...principal, role: 'user' as const };
+
+    for (const request of [
+      { method: 'POST', path: '/api/v1/email/messages/not-a-number/tracking/events/9223372036854775808/ip-insight' },
+      { method: 'GET', path: '/api/v1/email/messages/not-a-number/tracking/events/not-a-number/ip-insight' },
+    ]) {
+      await expect(api.handle({ ...request, principal: nonAdmin })).resolves.toMatchObject({
+        status: 403,
+        body: { error: { code: 'forbidden' } },
+      });
+    }
+    expect(audit.record).toHaveBeenCalledTimes(2);
+    expect(audit.record).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      entityId: null,
+      metadata: { outcome: 'forbidden' },
+    }));
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/not-a-number|9223372036854775808/);
+  });
+
+  test('rejects a malformed IP insight event identifier for an admin before the service', async () => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({
+      auth: {} as never,
+      audit,
+      emailTracking: makeTrackingPort(),
+    } satisfies ServerApiPorts);
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/17/tracking/events/9223372036854775808/ip-insight',
+      principal,
+    })).resolves.toMatchObject({
+      status: 400,
+      body: { error: { code: 'invalid_event_id' } },
+    });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      entityId: null,
+      metadata: { outcome: 'invalid_event_id' },
+    }));
+  });
+
+  test('audits an admin malformed IP insight identifier without retaining it', async () => {
+    const audit = { record: jest.fn(async () => undefined) };
+    const api = createServerApi({
+      auth: {} as never,
+      audit,
+      emailTracking: makeTrackingPort(),
+    } satisfies ServerApiPorts);
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/messages/not-a-number/tracking/events/9223372036854775808/ip-insight',
+      principal,
+    })).resolves.toMatchObject({
+      status: 400,
+      body: { error: { code: 'invalid_message_id' } },
+    });
+    expect(audit.record).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'email_tracking.ip_insight_denied',
+      entityId: null,
+      metadata: { outcome: 'invalid_message_id' },
+    }));
+    expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/not-a-number|9223372036854775808/);
+  });
+
   test('returns semantic policy errors as 400 without hiding infrastructure failures', async () => {
     const invalidApi = apiFor(makeTrackingPort({
       async setPolicy() {
@@ -199,5 +454,26 @@ describe('email tracking routes', () => {
       body: {},
       principal,
     })).rejects.toThrow('database unavailable');
+  });
+
+  test('accepts IP insight policy updates and passes the explicit field through', async () => {
+    const calls: unknown[] = [];
+    const api = apiFor(makeTrackingPort({
+      async setPolicy(input) {
+        calls.push(input.values);
+        return { ...policy, ipInsightsEnabled: true };
+      },
+    }));
+
+    await expect(api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/tracking/settings',
+      body: { ipInsightsEnabled: true },
+      principal,
+    })).resolves.toMatchObject({
+      status: 200,
+      body: { data: { ipInsightsEnabled: true } },
+    });
+    expect(calls).toEqual([{ ipInsightsEnabled: true }]);
   });
 });

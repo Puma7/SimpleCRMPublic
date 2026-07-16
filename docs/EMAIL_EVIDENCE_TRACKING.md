@@ -89,17 +89,35 @@ sichtbar macht; ohne oder mit einem anderen Hash bleibt der Resolver vollständi
 - Klickziele werden nur als `http` oder `https` weitergeleitet; CR/LF und überlange Ziele
   werden verworfen.
 
-## Metadaten
+## Metadaten und lokale IP-Intelligenz
 
 Abgeleitete Metadaten sind optional: IP-Familie, Clientfamilie, Betriebssystemklasse,
 Geräteklasse und Klassifizierungsgründe. Optional können die tatsächliche Client-IP und der
 User-Agent verschlüsselt gespeichert werden. Nur Owner/Admins dürfen diese Rohdaten anzeigen
 oder im Datenschutzexport entschlüsselt erhalten.
 
-Eine Standortableitung ist in diesem Stand absichtlich nicht implementiert. Es gibt weder eine
-externe Geo-IP-Übertragung noch ein stilles Vertrauen in vom Client mitsendbare Standortheader.
-Eine spätere Erweiterung benötigt eine lokal betriebene, versionierte Geo-IP-Datenbank, eine
-eigene Policy und eine getrennte Aufbewahrungsentscheidung.
+Optional kann der Server Country- und ASN-Daten aus lokal gemounteten MaxMind-GeoLite2-MMDBs
+auswerten. Dabei verlässt keine Ereignis-IP den Server; es gibt keinen externen Lookup-Dienst und
+keine Lookup-URL. Die Datenbanken werden nur über das optionale Docker-Profil `geoip` aktualisiert;
+die API erhält ausschließlich einen schreibgeschützten Mount. Ohne Datenbanken sowie bei fehlenden,
+veralteten oder beschädigten Dateien bleiben Versand und öffentliche Pixel-/Klick-Endpunkte aktiv;
+IP-Insights und zusätzliche Proxy-Signale sind dann deaktiviert.
+
+Country und ASN beschreiben allenfalls den ungefähren Standort der aufrufenden Infrastruktur oder
+eines Proxys, nicht Wohnort, Gebäude oder sicheren Aufenthaltsort einer empfangenden Person.
+MaxMind GeoLite2 ist unter der MaxMind-Lizenz zu verwenden und gemäß deren Anforderungen
+zuzuschreiben: "This product includes GeoLite2 data created by MaxMind, available from
+https://www.maxmind.com." Die Datenbankdateien sind Betriebsdaten, keine zusätzlichen
+Ereignisdaten. Abgeleitete Country-/ASN-Ansichten bleiben nur Owner/Admins zugänglich und nur so lange, wie die nach der
+Workspace-Policy erlaubten verschlüsselten Roh-IP-Daten noch aufbewahrt werden; es gibt keine
+separate oder verlängerte Aufbewahrung für GeoIP-Ergebnisse.
+
+Proton, Gmail und Apple können Remote-Inhalte über Proxy-Infrastruktur vorladen, cachen,
+wiederverwenden oder blockieren. Deshalb können mehrere menschliche Öffnungen keinen neuen Abruf
+erzeugen, ein Abruf kann automatisiert sein und ein fehlender Abruf ist kein Gegenbeweis. Das System
+unternimmt keine Umgehung von Tracking-Schutz, Caches oder Blocklisten. Weder Pixel-/Linkabrufe
+noch GeoIP-Daten beweisen, dass eine bestimmte Person die E-Mail gelesen hat oder persönliche
+Kenntnis vom Inhalt hatte.
 
 ## Eingehende Evidenz
 
@@ -146,10 +164,24 @@ persistent überstandenen Wartezeit den aktuellen Stand. Variablen:
 - `tracking.first_clicked_at`, `tracking.last_clicked_at`
 - `tracking.replied`, `tracking.replied_at`
 
+Empfohlene praezise V2-Variablen fuer Pixelabrufe und wahrscheinlich menschliche
+Oeffnungssignale:
+
+- `tracking.pixel_fetch_count`
+- `tracking.automated_pixel_fetch_count`
+- `tracking.unknown_pixel_fetch_count`
+- `tracking.probable_human_pixel_fetch_count`
+- `tracking.probable_human_open_session_count`
+- `tracking.first_pixel_fetched_at`, `tracking.last_pixel_fetched_at`
+- `tracking.first_probable_human_open_at`, `tracking.last_probable_human_open_at`
+
 Die Vorlage **Ausgehend: Ohne Reaktion nachfassen** versendet, wartet zwei Tage, lädt die
-Evidenz neu und erstellt nur nach aktueller SMTP-Annahme bei aktivem Tracking ohne Pixelabruf,
-Klick oder Antwort eine Aufgabe. Fehlgeschlagene, verzögerte oder gebouncte Sendungen lösen
-diesen Nachfasspfad nicht aus. Schwellen und Wartezeit können im Workflow angepasst werden.
+Evidenz neu und erstellt nur nach aktueller SMTP-Annahme bei aktivem Tracking ohne
+wahrscheinlich menschliches Oeffnungssignal, menschlichen Klick oder Antwort eine Aufgabe.
+Technische Proxy- und unklare Pixelabrufe unterdruecken den Nachfasspfad nicht. Eine MDN-Anzeige
+ohne Pixelabruf startet dagegen keinen Nachfasspfad. Fehlgeschlagene, verzögerte oder gebouncte
+Sendungen lösen diesen Nachfasspfad nicht aus. Schwellen und Wartezeit können im Workflow
+angepasst werden.
 
 ## Aufbewahrung und Betrieb
 

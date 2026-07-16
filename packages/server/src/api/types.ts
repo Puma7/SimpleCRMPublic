@@ -1,4 +1,5 @@
 import type {
+  EmailEvidenceClassification,
   EmailEvidenceConfidence,
   EmailEvidenceEventType,
   EmailEvidenceSummary,
@@ -2837,6 +2838,7 @@ export type EmailTrackingPolicyRecord = {
   trackLinks: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
+  ipInsightsEnabled: boolean;
   rawMetadataRetentionDays: number;
   eventRetentionDays: number;
   tokenTtlDays: number;
@@ -2853,6 +2855,7 @@ export type EmailTrackingPolicyMutationInput = Partial<{
   trackLinks: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
+  ipInsightsEnabled: boolean;
   rawMetadataRetentionDays: number;
   eventRetentionDays: number;
   tokenTtlDays: number;
@@ -2862,14 +2865,27 @@ export type EmailTrackingPolicyMutationInput = Partial<{
 }>;
 
 export type EmailTrackingEventRecord = {
-  id: number;
+  id: number | string;
   type: EmailEvidenceEventType;
   source: string;
   confidence: EmailEvidenceConfidence;
   automated: boolean;
   occurredAt: string;
   metadata: Readonly<Record<string, unknown>>;
+  classification?: EmailEvidenceClassification | null;
 };
+
+export type EmailTrackingIpInsightRecord = Readonly<{
+  ipAddress: string;
+  ipFamily: 'ipv4' | 'ipv6';
+  scope: 'public' | 'private' | 'loopback' | 'reserved' | 'unknown';
+  countryCode: string | null;
+  continentCode: string | null;
+  asn: number | null;
+  networkName: string | null;
+  networkCidr: string | null;
+  databaseBuildAt: string | null;
+}>;
 
 export type EmailTrackingTimelineRecord = {
   messageId: number;
@@ -2899,10 +2915,21 @@ export type EmailTrackingApiPort = {
     messageId: number;
     includeSensitive?: boolean;
   }): Promise<EmailTrackingTimelineRecord | null>;
+  getIpInsight?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+    eventId: string;
+  }): Promise<EmailTrackingIpInsightRecord>;
   recordPublicOpen(input: EmailTrackingPublicRequest): Promise<void>;
   resolvePublicClick(input: EmailTrackingPublicRequest): Promise<{ targetUrl: string } | null>;
   revokeMessage(input: { workspaceId: string; actorUserId: string; messageId: number }): Promise<boolean>;
   eraseMessage(input: { workspaceId: string; actorUserId: string; messageId: number }): Promise<boolean>;
+  reclassifyMessage?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+  }): Promise<{ classified: number; unavailableRaw: number }>;
   recordInboundEvidence?(input: {
     workspaceId: string;
     messageIdHeader: string;

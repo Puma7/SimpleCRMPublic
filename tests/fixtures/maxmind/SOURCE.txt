@@ -1,0 +1,13 @@
+Source: MaxMind-DB test data
+Upstream commit: 8caf400e4c7e0d58061f4d89d010e1c6b57fac2c
+
+Files:
+- GeoLite2-Country-Test.mmdb
+  https://raw.githubusercontent.com/maxmind/MaxMind-DB/8caf400e4c7e0d58061f4d89d010e1c6b57fac2c/test-data/GeoLite2-Country-Test.mmdb
+  SHA-256: 6996ce679243c7f719b901ebe3b490048af2fb5965163f083857533841154fd8
+- GeoLite2-ASN-Test.mmdb
+  https://raw.githubusercontent.com/maxmind/MaxMind-DB/8caf400e4c7e0d58061f4d89d010e1c6b57fac2c/test-data/GeoLite2-ASN-Test.mmdb
+  SHA-256: 75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a
+
+Provenance: Upstream MaxMind-DB is dual-licensed Apache-2.0/MIT. These files
+are unmodified copies of the pinned upstream test databases.

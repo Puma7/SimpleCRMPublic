@@ -97,6 +97,7 @@ The standard stack intentionally starts only Caddy, API, migrations, and Postgre
 docker compose --profile minio up -d minio
 docker compose --profile monitor up -d monitor
 docker compose --profile pgadmin up -d pgadmin
+docker compose --profile geoip up -d geoip-updater
 ```
 
 Profiles:
@@ -104,8 +105,19 @@ Profiles:
 - `minio`: S3-compatible storage drill for future attachment growth. Console defaults to `http://127.0.0.1:9001`.
 - `monitor`: Uptime Kuma on `http://127.0.0.1:3001`.
 - `pgadmin`: pgAdmin on `http://127.0.0.1:5050` for setup/debug only. Never expose this publicly.
+- `geoip`: updates local MaxMind GeoLite2 Country and ASN MMDB files once the MaxMind account ID
+  and license key are set in the ignored `docker/.env.geoip` file. Create it with
+  `cp .env.geoip.example .env.geoip`. The updater alone receives those credentials; the API
+  reads the resulting volume only at `/var/lib/simplecrm/geoip`.
 
 The profile ports bind to `127.0.0.1` by default. Change the bind variables only behind a firewall or private VPN, and replace every `CHANGE_ME` profile password before starting the service.
+
+GeoIP is optional. Without the profile or credentials, the normal stack starts with IP intelligence
+disabled and mail delivery plus public evidence endpoints stay available. A missing, stale or invalid
+MMDB has the same limited effect. GeoIP is an infrastructure approximation: proxies and caches from
+Proton, Gmail or Apple can make it describe their service rather than a recipient. It must not be
+used to infer a person's location or personal knowledge of an email, and SimpleCRM does not attempt
+to evade tracking protection, image caching or blocking.
 
 ## Web App And First Owner
 
@@ -142,20 +154,32 @@ curl -fsS -X POST "$PUBLIC_BASE_URL/api/v1/auth/initial-setup" \
 
 ## Server Doctor
 
-One-shot container doctor:
+The legacy Compose doctor is a PostgreSQL-shell check for backups and database state. It does not
+run the Node GeoIP check:
 
 ```sh
 cd docker
 docker compose --profile doctor run --rm doctor
 ```
 
-Node CLI doctor after building packages:
+For the Node doctor, including `geoip_intelligence`, run the already-built CLI in the API image:
 
 ```sh
-npm run build:packages
-$env:DATABASE_URL='postgres://simplecrm_app:password@localhost:5432/simplecrm'
-npm run doctor:server -- --backup-dir C:\path\to\backups
+cd docker
+docker compose exec api node packages/server/dist/cli/doctor.js --no-color
 ```
+
+The API container already has `DATABASE_URL`; it does not mount the backup volume, so omit
+`--backup-dir` there. For a host installation after building packages, use:
+
+```sh
+pnpm run build:packages
+$env:DATABASE_URL='postgres://simplecrm_app:password@localhost:5432/simplecrm'
+pnpm run doctor:server -- --backup-dir C:\path\to\backups
+```
+
+The Doctor includes `geoip_intelligence` as `ready`, `missing`, `stale` or `invalid`. It reports
+only database state and build timestamps, never MaxMind credentials or raw event IP addresses.
 
 ## Upgrade / Restart
 
