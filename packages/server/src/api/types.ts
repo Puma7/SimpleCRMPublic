@@ -4746,7 +4746,7 @@ export type SmtpRelayMutationInput = {
 
 export type SmtpRelayMutationResult =
   | { ok: true; relay: SmtpRelayRecord }
-  | { ok: false; code: 'duplicate_label' | 'followup_workflow_not_found' };
+  | { ok: false; code: 'duplicate_label' | 'followup_workflow_not_found' | 'followup_workflow_not_relay' };
 
 export type SmtpRelayAllowedAccountResult =
   | { ok: true; account: SmtpRelayAllowedAccountRecord }

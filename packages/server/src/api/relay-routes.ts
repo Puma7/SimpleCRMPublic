@@ -17,7 +17,11 @@ import type {
   SmtpRelayAdminPort,
   SmtpRelayMutationInput,
 } from './types';
+import { extractRelaySubjectRegexSources } from '@simplecrm/core';
 import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
+
+// Same catastrophic-backtracking guard the workflow regex conditions use.
+const safeRegex = require('safe-regex') as (pattern: string) => boolean;
 
 const BASE_PATH = '/api/v1/email/relays';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -390,6 +394,16 @@ function parseRelayMutation(
       && body.trackingSubjectPatterns.length > MAX_TRACKING_PATTERNS_LENGTH) {
       return invalidRelay(`trackingSubjectPatterns darf maximal ${MAX_TRACKING_PATTERNS_LENGTH} Zeichen haben`);
     }
+    // ReDoS guard: subject regexes run synchronously against attacker-controlled
+    // subjects during SMTP DATA, so reject a catastrophically-backtracking
+    // pattern (e.g. /(a+)+$/) at save time — the same safe-regex check the
+    // workflow regex conditions use. Substring patterns carry no such risk.
+    const unsafe = extractRelaySubjectRegexSources(
+      typeof body.trackingSubjectPatterns === 'string' ? body.trackingSubjectPatterns : null,
+    ).find((source) => !safeRegex(source));
+    if (unsafe !== undefined) {
+      return invalidRelay('Ein Betreff-Regex ist potenziell unsicher (katastrophales Backtracking) und wurde abgelehnt');
+    }
     values.trackingSubjectPatterns = body.trackingSubjectPatterns as string | null;
   }
 
@@ -428,9 +442,18 @@ function invalidRelay(message: string, details?: unknown): RelayMutationParseRes
   return { ok: false, response: error(400, 'invalid_smtp_relay', message, details) };
 }
 
-function relayMutationError(code: 'duplicate_label' | 'followup_workflow_not_found'): ApiResponse {
+function relayMutationError(
+  code: 'duplicate_label' | 'followup_workflow_not_found' | 'followup_workflow_not_relay',
+): ApiResponse {
   if (code === 'duplicate_label') {
     return error(409, 'duplicate_relay_label', 'Ein Relay mit diesem Label existiert bereits');
+  }
+  if (code === 'followup_workflow_not_relay') {
+    return error(
+      400,
+      'invalid_followup_workflow_trigger',
+      'Der Follow-up-Workflow muss den Trigger „SMTP-Relay" haben',
+    );
   }
   return error(400, 'invalid_followup_workflow', 'followupWorkflowId verweist auf keinen vorhandenen Workflow');
 }

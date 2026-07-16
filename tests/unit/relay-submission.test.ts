@@ -242,7 +242,11 @@ function submitInput(rfc822: Buffer, overrides: Partial<{
 
 function capturedRfc822(smtpSend: jest.Mock): string {
   expect(smtpSend).toHaveBeenCalledTimes(1);
-  return (smtpSend.mock.calls[0]![0] as ServerSmtpSendInput).rfc822;
+  // The pipeline now hands sendSmtpMessage a Buffer (byte-preserving pass-
+  // through). Decode via latin1 (1:1 byte<->char) so string assertions on the
+  // ASCII envelope/headers keep working AND byte-for-byte comparisons hold.
+  const rfc822 = (smtpSend.mock.calls[0]![0] as ServerSmtpSendInput).rfc822;
+  return Buffer.isBuffer(rfc822) ? rfc822.toString('latin1') : rfc822;
 }
 
 // --- (a) tracked path ---------------------------------------------------------
@@ -295,8 +299,10 @@ describe('submitRelay tracked path', () => {
     expect(tracking!.recordSending).toHaveBeenCalledTimes(1);
     expect(tracking!.recordSmtpAccepted).toHaveBeenCalledTimes(1);
     expect(tracking!.recordSmtpFailed).not.toHaveBeenCalled();
+    // The Sent-copy gets the SAME rfc822 (Buffer) that went to the wire.
+    const sentRfc822 = (smtpSend.mock.calls[0]![0] as ServerSmtpSendInput).rfc822;
     expect(sentCopyAppend).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: WS, accountId: 100, rfc822: outgoing }),
+      expect.objectContaining({ workspaceId: WS, accountId: 100, rfc822: sentRfc822 }),
     );
 
     // Follow-up workflow enqueued with the persisted message + 'relay' trigger.
@@ -410,6 +416,40 @@ describe('submitRelay untracked pass-through', () => {
     expect(submissions[0]!.status).toBe('relayed');
     // Follow-up workflow configured, but message untracked -> no run enqueued.
     expect(store.enqueueFollowup).not.toHaveBeenCalled();
+  });
+
+  test('preserves non-UTF-8 (ISO-8859-1 / 8bit) bytes exactly on pass-through', async () => {
+    // Regression for the byte-integrity fix: an ERP 8BITMIME body with raw
+    // ISO-8859-1 octets (0xFC = ü, 0xDF = ß) must reach the wire unchanged — a
+    // UTF-8 round-trip would replace those invalid-as-UTF-8 bytes.
+    const { pipeline, smtpSend } = makePipeline({
+      relayPort: makeRelayPort({ config: relayConfig({ trackingMode: 'off' }) }),
+    });
+    const raw = Buffer.concat([
+      Buffer.from(
+        'From: Buchhaltung <sales@acme.test>\r\n'
+        + 'To: Kunde <kunde@example.com>\r\n'
+        + 'Message-ID: <erp-iso@erp.local>\r\n'
+        + 'Subject: Rechnung\r\n'
+        + 'Content-Type: text/plain; charset=ISO-8859-1\r\n'
+        + 'Content-Transfer-Encoding: 8bit\r\n\r\n',
+        'latin1',
+      ),
+      Buffer.from([0x47, 0x72, 0xFC, 0xDF, 0x65]), // "Grüße"-ish 8-bit bytes
+    ]);
+
+    const result = await pipeline.submitRelay(submitInput(raw));
+    expect(result).toMatchObject({ ok: true });
+
+    const sent = (smtpSend.mock.calls[0]![0] as ServerSmtpSendInput).rfc822;
+    expect(Buffer.isBuffer(sent)).toBe(true);
+    const sentBuffer = sent as unknown as Buffer;
+    // High bytes survive (a UTF-8 decode would have dropped/replaced them)...
+    expect(sentBuffer.includes(0xFC)).toBe(true);
+    expect(sentBuffer.includes(0xDF)).toBe(true);
+    // ...and with a Message-ID present and no X-SimpleCRM headers, the bytes are
+    // passed through verbatim.
+    expect(sentBuffer.equals(raw)).toBe(true);
   });
 
   test('a pass-through message without a Message-ID gets one minted and prepended', async () => {

@@ -137,6 +137,10 @@ function subjectMatchesAnyPattern(subjectPatterns: string | null, subject: strin
   return false;
 }
 
+/** Matches a `/source/flags` regex-pattern line (shared by the compiler and the
+ *  server-side ReDoS validator so both agree on what counts as a regex). */
+const REGEX_PATTERN_LINE = /^\/(.+)\/([a-z]*)$/i;
+
 /**
  * Compile a `/source/flags` line into a RegExp, or return `null` so the caller
  * falls back to literal substring matching. `null` covers both "not regex
@@ -144,7 +148,7 @@ function subjectMatchesAnyPattern(subjectPatterns: string | null, subject: strin
  * literal rather than throwing.
  */
 function tryCompilePatternRegex(line: string): RegExp | null {
-  const match = /^\/(.+)\/([a-z]*)$/i.exec(line);
+  const match = REGEX_PATTERN_LINE.exec(line);
   if (!match) return null;
   const [, source, flags] = match;
   try {
@@ -152,4 +156,23 @@ function tryCompilePatternRegex(line: string): RegExp | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The RegExp *source* of every `/source/flags` line in the patterns (substring
+ * lines are skipped). Lets a server-side validator run a ReDoS/safe-regex check
+ * against exactly the sources this module would compile — regex evaluation runs
+ * synchronously against attacker-controlled subjects during the SMTP DATA
+ * phase, so a catastrophically-backtracking pattern must be rejected before it
+ * is ever stored. Applies the same trim + length bound as evaluation. */
+export function extractRelaySubjectRegexSources(subjectPatterns: string | null): string[] {
+  if (!subjectPatterns) return [];
+  const sources: string[] = [];
+  for (const raw of subjectPatterns.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.length > MAX_PATTERN_LENGTH) continue;
+    const match = REGEX_PATTERN_LINE.exec(line);
+    if (match) sources.push(match[1]!);
+  }
+  return sources;
 }

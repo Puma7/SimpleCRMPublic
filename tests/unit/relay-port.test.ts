@@ -411,6 +411,20 @@ describe('createPostgresSmtpRelayPort.resolveRoutingAccount', () => {
     expect(await port.resolveRoutingAccount({ workspaceId: WS_A, relayId: 'relay-a', fromAddress: 'stranger@acme.test' })).toBeNull();
   });
 
+  test('does NOT authorise a plus-tagged variant of an allowed address', async () => {
+    // Authorization is an EXACT case-insensitive mailbox — plus-tags are NOT
+    // folded (unlike normalizeEmailAddress), so allowing sales@acme.test must
+    // not also permit sales+anything@acme.test.
+    const port = makePort(seedTables());
+    expect(await port.resolveRoutingAccount({
+      workspaceId: WS_A, relayId: 'relay-a', fromAddress: 'sales+newsletter@acme.test',
+    })).toBeNull();
+    // The exact address still works (sanity).
+    expect(await port.resolveRoutingAccount({
+      workspaceId: WS_A, relayId: 'relay-a', fromAddress: 'sales@acme.test',
+    })).not.toBeNull();
+  });
+
   test('does not resolve accounts mapped to a different relay/workspace', async () => {
     const port = makePort(seedTables());
     // relay-b belongs to WS_B and has no allowed accounts.

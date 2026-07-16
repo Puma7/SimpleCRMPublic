@@ -421,7 +421,11 @@ export function createRelaySubmissionPipeline(
       // 6. Outgoing RFC822: rebuild when we track (instrumented html + minted
       //    Message-ID), otherwise pass the original bytes through with any
       //    X-SimpleCRM-* control headers stripped.
-      let outgoingRfc822: string;
+      // Kept as a Buffer end-to-end so the untracked pass-through preserves the
+      // ERP's exact bytes (8BITMIME / ISO-8859-1 bodies must not be mangled by
+      // a UTF-8 round-trip before hitting the wire). sendSmtpMessage + the
+      // sent-copy appender both accept Buffers.
+      let outgoingRfc822: string | Buffer;
       if (willTrack) {
         const cc = mailboxListFromAddressJson(parsed.ccJson);
         outgoingRfc822 = buildComposeRfc822({
@@ -441,7 +445,7 @@ export function createRelaySubmissionPipeline(
           ...(parsed.referencesHeader ? { references: parsed.referencesHeader } : {}),
           attachments: composeAttachmentsFromParsed(parsed.attachments),
           date: now(),
-        }).toString('utf8');
+        });
       } else {
         let outgoing = stripSimplecrmHeaders(input.rfc822);
         if (!incomingMessageId) {
@@ -450,7 +454,9 @@ export function createRelaySubmissionPipeline(
             outgoing,
           ]);
         }
-        outgoingRfc822 = outgoing.toString('utf8');
+        // Pass the raw bytes through unchanged (only SimpleCRM headers stripped
+        // + a Message-ID minted if absent) — NO UTF-8 decode.
+        outgoingRfc822 = outgoing;
       }
 
       // Shared failure path once a submission row exists: record + respond.
@@ -488,12 +494,11 @@ export function createRelaySubmissionPipeline(
         oauthFetchImpl: deps.oauthFetchImpl,
       });
       // A missing SMTP secret / OAuth token / host is a permanent account
-      // MISCONFIGURATION: resolveSmtpAuth returns ok:false for these (a
-      // transient secret-store failure THROWS instead and is caught upstream
-      // as a retryable 451). Retrying the same DATA will never heal it, so
-      // reject permanently (550) rather than have external systems loop
-      // forever refreshing the failed submission row.
-      if (!auth.ok) return failSend(auth.error, false);
+      // MISCONFIGURATION: retrying the same DATA will never heal it, so reject
+      // permanently (550) rather than have external systems loop forever.
+      // BUT a transient failure (e.g. an OAuth token-refresh outage) sets
+      // auth.retryable — those DO heal on retry, so surface them as 451.
+      if (!auth.ok) return failSend(auth.error, auth.retryable === true);
       const smtpHost = resolveConfiguredSmtpHost(account.smtp_host);
       if (!smtpHost) return failSend(SMTP_HOST_MISSING_ERROR, false);
 

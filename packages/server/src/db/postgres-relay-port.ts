@@ -181,7 +181,9 @@ export function createPostgresSmtpRelayPort(
     },
 
     async resolveRoutingAccount(input): Promise<SmtpRelayRoutingAccount | null> {
-      const target = normalizeEmailAddress(input.fromAddress);
+      // EXACT case-insensitive mailbox — see canonicalizeSenderAddress: never
+      // fold plus-tags, or the allowlist would authorise unconfigured senders.
+      const target = canonicalizeSenderAddress(input.fromAddress);
       if (!target) return null;
 
       return withWorkspaceTransaction(
@@ -205,11 +207,10 @@ export function createPostgresSmtpRelayPort(
           // on both sides so the same helper governs matching everywhere.
           const match = rows.find((row) => {
             const record = row as Record<string, unknown>;
-            const accountAddress = normalizeEmailAddress(String(record.email_address ?? ''));
-            const overrideRaw = record.allowed_from_address;
-            const overrideAddress = overrideRaw == null
-              ? null
-              : normalizeEmailAddress(String(overrideRaw));
+            const accountAddress = canonicalizeSenderAddress(record.email_address as string | null);
+            const overrideAddress = canonicalizeSenderAddress(
+              record.allowed_from_address as string | null,
+            );
             return accountAddress === target || overrideAddress === target;
           });
           if (!match) return null;
@@ -314,7 +315,21 @@ function hashRelayPassword(password: string): string {
 }
 
 /**
- * The set of normalised From addresses an allowed-account mapping "claims" for
+ * Canonical form for From-address AUTHORIZATION: an EXACT case-insensitive
+ * mailbox. Deliberately NOT `normalizeEmailAddress`, which strips everything
+ * after a `+` in the local part — using that here would let an allowlist entry
+ * for `sales@example.com` also authorise `sales+anything@example.com`, widening
+ * the permitted senders beyond what the admin configured (plus-tags are
+ * distinct addresses on many mail systems).
+ */
+function canonicalizeSenderAddress(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = String(value).trim().toLowerCase();
+  return trimmed || null;
+}
+
+/**
+ * The set of authorised From addresses an allowed-account mapping "claims" for
  * routing: the account's own address AND its optional `from_address` override
  * (mirroring `resolveRoutingAccount`, which matches either). Used to detect
  * collisions between mappings on any shared claimed address.
@@ -324,9 +339,9 @@ function collectClaimedAddresses(
   fromAddress: string | null | undefined,
 ): Set<string> {
   const claims = new Set<string>();
-  const account = accountEmail == null ? null : normalizeEmailAddress(String(accountEmail));
+  const account = canonicalizeSenderAddress(accountEmail);
   if (account) claims.add(account);
-  const override = fromAddress == null ? null : normalizeEmailAddress(String(fromAddress));
+  const override = canonicalizeSenderAddress(fromAddress);
   if (override) claims.add(override);
   return claims;
 }
@@ -495,6 +510,11 @@ export function createPostgresSmtpRelayAdminPort(
           options.db,
           { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
           async (trx) => {
+            await assertRelayFollowupTrigger(
+              trx,
+              input.workspaceId,
+              input.values.followupWorkflowId ?? RELAY_DEFAULTS.followupWorkflowId,
+            );
             const row = await trx
               .insertInto('smtp_relays')
               .values({
@@ -539,6 +559,11 @@ export function createPostgresSmtpRelayAdminPort(
           options.db,
           { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'admin' },
           async (trx) => {
+            // Only validate when the caller is actually setting a follow-up
+            // (a number); undefined = unchanged, null = cleared.
+            if (typeof input.values.followupWorkflowId === 'number') {
+              await assertRelayFollowupTrigger(trx, input.workspaceId, input.values.followupWorkflowId);
+            }
             const row = await trx
               .updateTable('smtp_relays')
               .set({
@@ -978,9 +1003,45 @@ function mapRelaySubmissionRow(row: {
   };
 }
 
+/**
+ * A follow-up workflow must itself be triggered by 'relay'. The relay enqueues
+ * runs with triggerName: 'relay', and runServerWorkflowGraph falls back to the
+ * graph's FIRST trigger when no relay trigger exists — so pointing a relay at
+ * an ordinary inbound/outbound workflow would run that unrelated workflow after
+ * every relay send. Reject the mapping at write time. Throws a tagged error
+ * that the create/update catch blocks translate into a result code (the check
+ * lives inside the tx so it rolls back atomically with the mutation).
+ */
+const RELAY_FOLLOWUP_NOT_RELAY = Symbol('followup_workflow_not_relay');
+
+async function assertRelayFollowupTrigger(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  followupWorkflowId: number | null,
+): Promise<void> {
+  if (followupWorkflowId === null) return;
+  const workflow = await trx
+    .selectFrom('email_workflows')
+    .select(['trigger_name'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', followupWorkflowId)
+    .executeTakeFirst();
+  // Absent -> let the FK constraint surface followup_workflow_not_found.
+  if (workflow && workflow.trigger_name !== 'relay') {
+    throw Object.assign(new Error('followup workflow is not a relay-triggered workflow'), {
+      [RELAY_FOLLOWUP_NOT_RELAY]: true,
+    });
+  }
+}
+
+function isRelayFollowupTriggerError(caught: unknown): boolean {
+  return Boolean((caught as Record<PropertyKey, unknown> | null)?.[RELAY_FOLLOWUP_NOT_RELAY]);
+}
+
 function mapRelayConstraintViolation(
   caught: unknown,
-): 'duplicate_label' | 'followup_workflow_not_found' | null {
+): 'duplicate_label' | 'followup_workflow_not_found' | 'followup_workflow_not_relay' | null {
+  if (isRelayFollowupTriggerError(caught)) return 'followup_workflow_not_relay';
   if (isUniqueViolation(caught)) return 'duplicate_label';
   if (pgErrorCode(caught) === '23503' && pgErrorConstraint(caught).includes('followup_workflow')) {
     return 'followup_workflow_not_found';

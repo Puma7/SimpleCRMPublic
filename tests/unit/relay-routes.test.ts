@@ -190,6 +190,30 @@ describe('smtp relay routes', () => {
     expect(calls).toEqual([]);
   });
 
+  test('rejects a catastrophically-backtracking subject regex (ReDoS guard)', async () => {
+    const calls: string[] = [];
+    const response = await apiFor(makeRelayPort({
+      async createRelay() { calls.push('create'); throw new Error('unreachable'); },
+    })).handle({
+      method: 'POST',
+      path: '/api/v1/email/relays',
+      principal: admin,
+      body: { label: 'ERP', trackingMode: 'rule', trackingSubjectPatterns: '/(a+)+$/' },
+    });
+    expect(response.status).toBe(400);
+    // Rejected before the port is ever touched.
+    expect(calls).toEqual([]);
+
+    // A safe substring pattern (and a safe regex) still go through.
+    const ok = await apiFor(makeRelayPort()).handle({
+      method: 'POST',
+      path: '/api/v1/email/relays',
+      principal: admin,
+      body: { label: 'ERP', trackingMode: 'rule', trackingSubjectPatterns: 'mahnung\n/zahlungserinnerung/i' },
+    });
+    expect(ok.status).toBe(201);
+  });
+
   test('creates a relay and records the audit event', async () => {
     const audit = makeAudit();
     const response = await apiFor(makeRelayPort(), audit).handle({
