@@ -4661,6 +4661,145 @@ export type PortalReturnCreateInput = {
   items: readonly ReturnItemMutationInput[];
 };
 
+// ---------------------------------------------------------------------------
+// SMTP relay administration (workspace-scoped relay endpoints for external
+// systems such as the ERP). The runtime verification/routing side lives in
+// PostgresSmtpRelayPort (db/postgres-relay-port.ts); this port is the
+// management surface behind /api/v1/email/relays. Credential secrets are
+// NEVER part of any record here — the plaintext password is returned exactly
+// once from createCredential (mirroring automation API keys).
+// ---------------------------------------------------------------------------
+
+export type SmtpRelayTrackingMode = 'off' | 'rule' | 'always';
+
+export type SmtpRelayAllowedAccountRecord = {
+  accountId: number;
+  fromAddress: string | null;
+  emailAddress: string;
+  displayName: string;
+};
+
+export type SmtpRelayCredentialRecord = {
+  id: string;
+  username: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+};
+
+export type SmtpRelayRecord = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  trackingMode: SmtpRelayTrackingMode;
+  trackingSubjectPatterns: string | null;
+  allowHeaderOverride: boolean;
+  maxRecipients: number;
+  maxMessageBytes: number;
+  rateLimitPerMin: number;
+  allowArbitraryRecipients: boolean;
+  followupWorkflowId: number | null;
+  createdAt: string;
+  allowedAccounts: readonly SmtpRelayAllowedAccountRecord[];
+  credentials: readonly SmtpRelayCredentialRecord[];
+};
+
+export type SmtpRelayMutationInput = {
+  label?: string;
+  enabled?: boolean;
+  trackingMode?: SmtpRelayTrackingMode;
+  trackingSubjectPatterns?: string | null;
+  allowHeaderOverride?: boolean;
+  maxRecipients?: number;
+  maxMessageBytes?: number;
+  rateLimitPerMin?: number;
+  allowArbitraryRecipients?: boolean;
+  followupWorkflowId?: number | null;
+};
+
+export type SmtpRelayMutationResult =
+  | { ok: true; relay: SmtpRelayRecord }
+  | { ok: false; code: 'duplicate_label' | 'followup_workflow_not_found' };
+
+export type SmtpRelayAllowedAccountResult =
+  | { ok: true; account: SmtpRelayAllowedAccountRecord }
+  | { ok: false; code: 'relay_not_found' | 'account_not_found' | 'duplicate_account' };
+
+export type SmtpRelayCredentialCreateResult =
+  | { ok: true; credential: SmtpRelayCredentialRecord; password: string }
+  | { ok: false; code: 'relay_not_found' | 'secret_port_unavailable' };
+
+export type SmtpRelayCredentialRevokeResult =
+  | { ok: true; credential: SmtpRelayCredentialRecord }
+  | { ok: false; code: 'secret_port_unavailable' };
+
+export type SmtpRelaySubmissionRecord = {
+  id: string;
+  status: 'received' | 'relayed' | 'failed';
+  recipientCount: number;
+  trackingApplied: boolean;
+  trackingRuleReason: string | null;
+  messageId: number | null;
+  smtpMessageIdHeader: string | null;
+  errorText: string | null;
+  createdAt: string;
+};
+
+export type SmtpRelayAdminPort = {
+  listRelays(input: { workspaceId: string }): Promise<readonly SmtpRelayRecord[]>;
+  createRelay(input: {
+    workspaceId: string;
+    actorUserId: string;
+    values: SmtpRelayMutationInput & { label: string };
+  }): Promise<SmtpRelayMutationResult>;
+  updateRelay(input: {
+    workspaceId: string;
+    actorUserId: string;
+    relayId: string;
+    values: SmtpRelayMutationInput;
+  }): Promise<SmtpRelayMutationResult | null>;
+  deleteRelay(input: {
+    workspaceId: string;
+    actorUserId: string;
+    relayId: string;
+  }): Promise<{ id: string; label: string } | null>;
+  addAllowedAccount(input: {
+    workspaceId: string;
+    actorUserId: string;
+    relayId: string;
+    accountId: number;
+    fromAddress?: string | null;
+  }): Promise<SmtpRelayAllowedAccountResult>;
+  removeAllowedAccount(input: {
+    workspaceId: string;
+    actorUserId: string;
+    relayId: string;
+    accountId: number;
+  }): Promise<boolean>;
+  /**
+   * Generates the username + password server-side, stores only the sha256 hash
+   * on the row and the plaintext via the secret port. The returned password is
+   * shown to the caller exactly once and is never retrievable afterwards.
+   */
+  createCredential(input: {
+    workspaceId: string;
+    actorUserId: string;
+    relayId: string;
+  }): Promise<SmtpRelayCredentialCreateResult>;
+  revokeCredential(input: {
+    workspaceId: string;
+    actorUserId: string;
+    relayId: string;
+    credentialId: string;
+  }): Promise<SmtpRelayCredentialRevokeResult | null>;
+  /** Returns null when the relay does not exist in the workspace. */
+  listSubmissions(input: {
+    workspaceId: string;
+    relayId: string;
+    limit: number;
+  }): Promise<readonly SmtpRelaySubmissionRecord[] | null>;
+};
+
 export type ServerApiPorts = {
   activityLog?: ActivityLogApiPort;
   auth: AuthApiPort;
@@ -4744,6 +4883,7 @@ export type ServerApiPorts = {
   spamLearningEvents?: SpamLearningEventApiPort;
   spamListEntries?: SpamListEntryApiPort;
   savedViews?: SavedViewApiPort;
+  smtpRelay?: SmtpRelayAdminPort;
   syncInfo?: SyncInfoApiPort;
   tasks?: TaskApiPort;
   workflowDelayedJobs?: WorkflowDelayedJobApiPort;

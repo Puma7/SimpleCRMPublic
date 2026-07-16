@@ -8,6 +8,7 @@ import { handleDiagnosticsRoute } from './diagnostics-routes';
 import { handleExtendedCrmReadRoute } from './extended-crm-routes';
 import { handleFollowUpRoute } from './follow-up-routes';
 import { handleEmailTrackingRoute, handlePublicEmailTrackingRoute } from './email-tracking-routes';
+import { handleSmtpRelayRoute } from './relay-routes';
 import { handleLockRoute } from './lock-routes';
 import { handleMailReadRoute } from './mail-routes';
 import { handleMaintenanceRoute } from './maintenance-routes';
@@ -86,6 +87,11 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
 
       const emailTracking = await handleEmailTrackingRoute(req, ports);
       if (emailTracking) return emailTracking;
+
+      // Must run before the generic mail routes: /api/v1/email/relays lives
+      // under the same /api/v1/email prefix.
+      const smtpRelay = await handleSmtpRelayRoute(req, ports);
+      if (smtpRelay) return smtpRelay;
 
       const customers = await handleCustomerRoute(req, ports);
       if (customers) return customers;
