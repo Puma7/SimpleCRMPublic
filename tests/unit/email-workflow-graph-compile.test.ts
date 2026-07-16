@@ -113,16 +113,17 @@ describe('email-workflow-graph-compile', () => {
       expect.objectContaining({ nodeType: 'email.read_tracking_evidence' }),
       expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.tracked', cases: 'true' }) }),
       expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.transport', cases: 'smtp_accepted' }) }),
-      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.engagement', cases: 'none,automated_fetch,probable_open' }) }),
+      expect.objectContaining({ nodeType: 'logic.switch', config: expect.objectContaining({ field: 'tracking.engagement', cases: 'none,automated_fetch,probable_open,link_interaction' }) }),
       expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.pixel_fetch_count', operator: 'gte', value: 1 }) }),
       expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_human_open_session_count' }) }),
-      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_click_count' }) }),
+      expect.objectContaining({ nodeType: 'logic.threshold', config: expect.objectContaining({ variable: 'tracking.probable_human_link_fetch_count' }) }),
       expect.objectContaining({ nodeType: 'crm.create_task' }),
     ]));
     expect(template!.graph.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'none' }),
       expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'automated_fetch' }),
       expect.objectContaining({ source: 'no_engagement', target: 'probable_open_has_pixel', label: 'probable_open' }),
+      expect.objectContaining({ source: 'no_engagement', target: 'no_open', label: 'link_interaction' }),
       expect.objectContaining({ source: 'probable_open_has_pixel', target: 'no_open', label: 'yes' }),
     ]));
   });

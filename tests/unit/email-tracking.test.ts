@@ -415,6 +415,9 @@ describe('email evidence tracking core', () => {
       'tracking.probable_click_count': 1,
       'tracking.automated_pixel_fetch_count': 1,
       'tracking.probable_human_pixel_fetch_count': 0,
+      'tracking.automated_link_fetch_count': 1,
+      'tracking.unknown_link_fetch_count': 0,
+      'tracking.probable_human_link_fetch_count': 0,
     }));
   });
 
@@ -637,6 +640,9 @@ describe('email evidence tracking core', () => {
       'tracking.unknown_pixel_fetch_count': 1,
       'tracking.probable_human_pixel_fetch_count': 2,
       'tracking.probable_human_open_session_count': 2,
+      'tracking.automated_link_fetch_count': 0,
+      'tracking.unknown_link_fetch_count': 0,
+      'tracking.probable_human_link_fetch_count': 0,
       'tracking.first_pixel_fetched_at': '2026-07-13T08:00:00.000Z',
       'tracking.last_pixel_fetched_at': '2026-07-13T08:30:00.000Z',
       'tracking.first_probable_human_open_at': '2026-07-13T08:00:00.000Z',
@@ -654,6 +660,9 @@ describe('email evidence tracking core', () => {
       'tracking.unknown_pixel_fetch_count',
       'tracking.probable_human_pixel_fetch_count',
       'tracking.probable_human_open_session_count',
+      'tracking.automated_link_fetch_count',
+      'tracking.unknown_link_fetch_count',
+      'tracking.probable_human_link_fetch_count',
       'tracking.first_pixel_fetched_at',
       'tracking.last_pixel_fetched_at',
       'tracking.first_probable_human_open_at',

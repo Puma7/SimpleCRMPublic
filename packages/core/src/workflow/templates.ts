@@ -145,7 +145,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         {
           id: 'no_engagement',
           type: 'registry',
-          data: { nodeType: 'logic.switch', config: { field: 'tracking.engagement', cases: 'none,automated_fetch,probable_open' } },
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.engagement', cases: 'none,automated_fetch,probable_open,link_interaction' } },
         },
         {
           id: 'probable_open_has_pixel',
@@ -168,7 +168,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           type: 'registry',
           data: {
             nodeType: 'logic.threshold',
-            config: { variable: 'tracking.probable_click_count', operator: 'lte', value: 0 },
+            config: { variable: 'tracking.probable_human_link_fetch_count', operator: 'lte', value: 0 },
           },
         },
         {
@@ -199,6 +199,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         { id: 'e_no_engagement', source: 'no_engagement', target: 'no_open', label: 'none' },
         { id: 'e_automated_fetch', source: 'no_engagement', target: 'no_open', label: 'automated_fetch' },
         { id: 'e_probable_open', source: 'no_engagement', target: 'probable_open_has_pixel', label: 'probable_open' },
+        { id: 'e_link_interaction', source: 'no_engagement', target: 'no_open', label: 'link_interaction' },
         { id: 'e_probable_open_pixel', source: 'probable_open_has_pixel', target: 'no_open', label: 'yes' },
         { id: 'e4', source: 'no_open', target: 'no_click', label: 'yes' },
         { id: 'e5', source: 'no_click', target: 'reply_state', label: 'yes' },

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 import { TrackingSettingsPanel } from '@/components/email/settings/tracking-settings-panel';
 import { invokeRenderer } from '@/services/transport';
@@ -73,4 +73,38 @@ describe('tracking settings panel', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith(IPCChannels.Email.SetEmailTrackingSettings,
       expect.objectContaining({ collectDerivedMetadata: false, ipInsightsEnabled: false })));
   });
+
+  test('ignores settings loaded for a previous authenticated principal', async () => {
+    const first = deferred<typeof policy>();
+    const second = deferred<typeof policy>();
+    const invoke = jest.mocked(invokeRenderer);
+    invoke.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+
+    const view = render(<TrackingSettingsPanel />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+
+    mockUser = { id: 'admin-2', role: 'admin' };
+    view.rerender(<TrackingSettingsPanel />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      first.resolve({ ...policy, publicBaseUrl: 'https://admin-a.example' });
+      await first.promise;
+    });
+    expect(screen.queryByText('https://admin-a.example')).not.toBeInTheDocument();
+
+    await act(async () => {
+      second.resolve({ ...policy, publicBaseUrl: 'https://admin-b.example' });
+      await second.promise;
+    });
+    expect(await screen.findByText('https://admin-b.example')).toBeInTheDocument();
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}

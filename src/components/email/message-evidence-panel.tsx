@@ -107,16 +107,31 @@ type EvidenceTimeline = {
 
 export function MessageEvidencePanel(props: { messageId: number; folderKind?: string | null }) {
   const { user, loading: authLoading } = useAuth()
+  const principalId = user?.id ?? null
   const hasUser = Boolean(user)
   const isAdmin = user?.role === "owner" || user?.role === "admin"
-  const [timeline, setTimeline] = useState<EvidenceTimeline | null>(null)
+  const [timelineState, setTimelineState] = useState<{
+    principalId: string
+    messageId: number
+    timeline: EvidenceTimeline
+  } | null>(null)
+  const timeline = timelineState?.principalId === principalId && timelineState.messageId === props.messageId
+    ? timelineState.timeline
+    : null
   const [available, setAvailable] = useState(true)
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
   const [includeSensitive, setIncludeSensitive] = useState(false)
   const [busy, setBusy] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
-  const [ipInsightEvent, setIpInsightEvent] = useState<EvidenceEvent | null>(null)
+  const [ipInsightState, setIpInsightState] = useState<{
+    principalId: string
+    messageId: number
+    event: EvidenceEvent
+  } | null>(null)
+  const ipInsightEvent = ipInsightState?.principalId === principalId && ipInsightState.messageId === props.messageId
+    ? ipInsightState.event
+    : null
   const requestSequence = useRef(0)
   const latestLoadPromise = useRef<Promise<void> | null>(null)
   const actionSequence = useRef(0)
@@ -124,6 +139,8 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   const includeSensitiveRef = useRef(false)
   const mounted = useRef(false)
   const activeMessageId = useRef(props.messageId)
+  const activePrincipalId = useRef(principalId)
+  activePrincipalId.current = principalId
 
   const resetEphemeralState = useCallback((preservePendingAction = false) => {
     if (!preservePendingAction || !actionInFlight.current) {
@@ -132,7 +149,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
       setBusy(false)
     }
     setDeleteConfirmOpen(false)
-    setIpInsightEvent(null)
+    setIpInsightState(null)
   }, [])
 
   useEffect(() => {
@@ -149,10 +166,12 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
     const promise = (async () => {
       const requestId = ++requestSequence.current
       const messageId = props.messageId
+      const requestPrincipalId = principalId
       const canCommit = () => mounted.current
         && activeMessageId.current === messageId
+        && activePrincipalId.current === requestPrincipalId
         && requestId === requestSequence.current
-      if (authLoading || !hasUser || !isServerClientMode() || props.folderKind !== "sent") {
+      if (authLoading || !hasUser || !requestPrincipalId || !isServerClientMode() || props.folderKind !== "sent") {
         if (canCommit()) setLoading(false)
         return
       }
@@ -163,11 +182,11 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
           ...(sensitive ? { includeSensitive: true } : {}),
         }) as EvidenceTimeline
         if (!canCommit()) return
-        setTimeline(result)
+        setTimelineState({ principalId: requestPrincipalId, messageId, timeline: result })
         setAvailable(true)
       } catch {
         if (!canCommit()) return
-        setTimeline(null)
+        setTimelineState(null)
         setAvailable(false)
       } finally {
         if (canCommit()) setLoading(false)
@@ -175,13 +194,13 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
     })()
     latestLoadPromise.current = promise
     return promise
-  }, [authLoading, hasUser, props.folderKind, props.messageId])
+  }, [authLoading, hasUser, principalId, props.folderKind, props.messageId])
 
   useEffect(() => {
     activeMessageId.current = props.messageId
     requestSequence.current += 1
     resetEphemeralState()
-    setTimeline(null)
+    setTimelineState(null)
     setAvailable(true)
     includeSensitiveRef.current = false
     setIncludeSensitive(false)
@@ -229,10 +248,12 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
   ) => {
     if (busy || actionInFlight.current) return
     const messageId = props.messageId
+    const actionPrincipalId = principalId
     const actionId = ++actionSequence.current
     actionInFlight.current = { id: actionId, messageId }
     const canCommit = () => mounted.current
       && activeMessageId.current === messageId
+      && activePrincipalId.current === actionPrincipalId
       && actionId === actionSequence.current
     setBusy(true)
     try {
@@ -363,7 +384,9 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                                 size="sm"
                                 className="mt-1 h-7 gap-1 px-2 font-mono text-xs"
                                 aria-label={`IP-Insight für ${rawIpAddress(event.metadata)}`}
-                                onClick={() => setIpInsightEvent(event)}
+                                onClick={() => {
+                                  if (principalId) setIpInsightState({ principalId, messageId: props.messageId, event })
+                                }}
                               ><Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}</Button>
                             </TooltipTrigger>
                             <TooltipContent>IP-Insight für diese Infrastruktur öffnen</TooltipContent>
@@ -448,7 +471,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
       </AlertDialog>
       {ipInsightEvent ? <IpInsightDialog
         open
-        onOpenChange={(open) => { if (!open) setIpInsightEvent(null) }}
+        onOpenChange={(open) => { if (!open) setIpInsightState(null) }}
         messageId={props.messageId}
         eventId={ipInsightEvent.id}
       /> : null}
@@ -632,13 +655,21 @@ function displayedEngagement(
 ): string {
   if (!summary) return "none"
   if (summary.engagement === "human_reply") return summary.engagement
+  const hasV2LinkMetrics = [
+    summary.automatedLinkFetchCount,
+    summary.unknownLinkFetchCount,
+    summary.probableHumanLinkFetchCount,
+  ].some((value) => value !== undefined)
+  const hasProbableHumanEvidence = (summary.probableHumanPixelFetchCount ?? 0) > 0
+    || (summary.probableHumanOpenSessionCount ?? 0) > 0
+    || events.some((event) => event.type.startsWith("open_") && event.classification?.actorClass === "probable_human")
   if ((summary.probableHumanLinkFetchCount ?? 0) > 0) return "link_interaction"
+  if (
+    (summary.mdnDisplayedCount ?? 0) > 0
+    || (summary.engagement === "probable_open" && events.some((event) => event.type === "mdn_displayed"))
+    || (hasV2LinkMetrics && hasProbableHumanEvidence)
+  ) return "probable_open"
   if (summary.engagement === "link_interaction") {
-    const hasV2LinkMetrics = [
-      summary.automatedLinkFetchCount,
-      summary.unknownLinkFetchCount,
-      summary.probableHumanLinkFetchCount,
-    ].some((value) => value !== undefined)
     if (hasV2LinkMetrics) {
       if ((summary.probableHumanLinkFetchCount ?? 0) > 0) return summary.engagement
       if ((summary.automatedLinkFetchCount ?? 0) > 0) return "automated_fetch"
@@ -662,9 +693,6 @@ function displayedEngagement(
     summary.engagement === "probable_open"
     && ((summary.mdnDisplayedCount ?? 0) > 0 || events.some((event) => event.type === "mdn_displayed"))
   ) return "probable_open"
-  const hasProbableHumanEvidence = (summary.probableHumanPixelFetchCount ?? 0) > 0
-    || (summary.probableHumanOpenSessionCount ?? 0) > 0
-    || events.some((event) => event.type.startsWith("open_") && event.classification?.actorClass === "probable_human")
   if (!hasV2EvidenceMetrics(summary)) {
     return summary.engagement === "probable_open" && !hasProbableHumanEvidence
       ? "unknown_fetch"

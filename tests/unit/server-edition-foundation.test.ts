@@ -5010,12 +5010,20 @@ describe('server edition foundation', () => {
         sessionPort: undefined,
       },
       {
+        name: 'security-scanner link fetch',
+        events: [trackingWorkflowEvent('click', 'security_scanner')],
+        followsUp: true,
+        engagementPort: 'link_interaction',
+        pixelFetchPort: undefined,
+        sessionPort: 'yes',
+      },
+      {
         name: 'probable-human click',
         events: [trackingWorkflowEvent('click', 'probable_human')],
         followsUp: false,
-        engagementPort: 'default',
+        engagementPort: 'link_interaction',
         pixelFetchPort: undefined,
-        sessionPort: undefined,
+        sessionPort: 'yes',
       },
       {
         name: 'reply',

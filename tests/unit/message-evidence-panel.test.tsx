@@ -368,6 +368,27 @@ describe('message evidence panel', () => {
     expect(screen.queryByText('Automatischer Abruf')).not.toBeInTheDocument();
   });
 
+  test('keeps a probable-human open stronger than an automated link fetch', async () => {
+    jest.mocked(invokeRenderer).mockResolvedValueOnce({
+      ...v2Timeline(41),
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'link_interaction',
+        pixelFetchCount: 1,
+        probableHumanPixelFetchCount: 1,
+        probableHumanOpenSessionCount: 1,
+        clickCount: 1,
+        automatedLinkFetchCount: 1,
+      },
+      events: [],
+    });
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Menschlicher Abruf wahrscheinlich')).toBeInTheDocument();
+    expect(screen.queryByText('Automatischer Abruf')).not.toBeInTheDocument();
+  });
+
   test('ignores a stale timeline response after selecting another message', async () => {
     const first = deferred<unknown>();
     const second = deferred<unknown>();
@@ -695,6 +716,51 @@ describe('message evidence panel', () => {
       messageId: 41,
       eventId: 2,
     }));
+  });
+
+  test('hides sensitive evidence immediately when the authenticated principal changes', async () => {
+    const sensitiveTimeline = {
+      ...v2Timeline(41),
+      events: [{
+        id: 2,
+        type: 'open_automated',
+        source: 'tracking_pixel',
+        confidence: 'low',
+        automated: true,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: { raw: { ip: '8.8.8.8' } },
+        classification: { version: 2, actorClass: 'mail_proxy', confidence: 'low', reasons: [] },
+      }],
+    };
+    const nextPrincipalTimeline = deferred<unknown>();
+    const invoke = jest.mocked(invokeRenderer);
+    invoke
+      .mockResolvedValueOnce(sensitiveTimeline)
+      .mockResolvedValueOnce(sensitiveTimeline)
+      .mockResolvedValueOnce({
+        ipAddress: '8.8.8.8', ipFamily: 'ipv4', scope: 'public', countryCode: 'US',
+        continentCode: 'NA', asn: 15169, networkName: 'Google LLC', networkCidr: '8.8.8.0/24',
+        databaseBuildAt: '2026-07-15T00:00:00.000Z',
+      })
+      .mockImplementationOnce(() => nextPrincipalTimeline.promise);
+
+    const view = render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Verlauf' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Sensible Rohdaten' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'IP-Insight für 8.8.8.8' }));
+    expect(await screen.findByRole('dialog', { name: 'IP-Insight' })).toBeInTheDocument();
+
+    mockUser = { id: 'admin-2', role: 'admin' };
+    view.rerender(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(screen.queryByRole('dialog', { name: 'IP-Insight' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'IP-Insight für 8.8.8.8' })).not.toBeInTheDocument();
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(4));
+
+    await act(async () => {
+      nextPrincipalTimeline.resolve(v2Timeline(41));
+      await nextPrincipalTimeline.promise;
+    });
   });
 
   test('clears message-specific confirmation and closes the IP dialog when the parent closes', async () => {
