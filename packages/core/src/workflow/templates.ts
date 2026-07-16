@@ -197,6 +197,100 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     } as WorkflowGraphDocument,
   },
   {
+    id: 'relay-dunning-follow-up',
+    name: 'Relay: Mahnung ohne Reaktion nachfassen (empfohlen)',
+    description:
+      'Für über das SMTP-Relay versendete (getrackte) Mahnungen: Das Relay hat die Mail bereits '
+      + 'verschickt, der Workflow wartet 14 Tage (2×7) und legt eine Telefon-Nachfass-Aufgabe an, '
+      + 'wenn keine Öffnung, kein Linkklick und keine Antwort registriert wurde. Nur Server-Edition.',
+    trigger: 'relay',
+    graph: {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'relay' } },
+        // KEIN email.release_outbound: Das Relay hat die Mail schon versendet —
+        // der Graph startet direkt mit der Wartezeit. Zwei verkettete Delays,
+        // weil ein einzelner Delay bei 7 Tagen (604800 s) gedeckelt ist.
+        {
+          id: 'wait1',
+          type: 'registry',
+          data: { nodeType: 'logic.delay', config: { delaySeconds: 604800 } },
+        },
+        {
+          id: 'wait2',
+          type: 'registry',
+          data: { nodeType: 'logic.delay', config: { delaySeconds: 604800 } },
+        },
+        {
+          id: 'evidence',
+          type: 'registry',
+          data: { nodeType: 'email.read_tracking_evidence', config: {} },
+        },
+        {
+          id: 'tracking_enabled',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.tracked', cases: 'true' } },
+        },
+        {
+          id: 'transport_accepted',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.transport', cases: 'smtp_accepted' } },
+        },
+        {
+          id: 'no_engagement',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.engagement', cases: 'none,automated_fetch' } },
+        },
+        {
+          id: 'no_open',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'tracking.probable_open_count', operator: 'lte', value: 0 },
+          },
+        },
+        {
+          id: 'no_click',
+          type: 'registry',
+          data: {
+            nodeType: 'logic.threshold',
+            config: { variable: 'tracking.probable_click_count', operator: 'lte', value: 0 },
+          },
+        },
+        {
+          id: 'reply_state',
+          type: 'registry',
+          data: { nodeType: 'logic.switch', config: { field: 'tracking.replied', cases: 'false' } },
+        },
+        {
+          id: 'task',
+          type: 'registry',
+          data: {
+            nodeType: 'crm.create_task',
+            config: {
+              title: 'Mahnung telefonisch nachfassen: {{subject}}',
+              priority: 'high',
+              daysUntilDue: 1,
+            },
+          },
+        },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'wait1' },
+        { id: 'e1', source: 'wait1', target: 'wait2' },
+        { id: 'e2', source: 'wait2', target: 'evidence' },
+        { id: 'e3', source: 'evidence', target: 'tracking_enabled' },
+        { id: 'e_tracking', source: 'tracking_enabled', target: 'transport_accepted', label: 'true' },
+        { id: 'e_transport', source: 'transport_accepted', target: 'no_engagement', label: 'smtp_accepted' },
+        { id: 'e_no_engagement', source: 'no_engagement', target: 'no_open', label: 'none' },
+        { id: 'e_automated_fetch', source: 'no_engagement', target: 'no_open', label: 'automated_fetch' },
+        { id: 'e4', source: 'no_open', target: 'no_click', label: 'yes' },
+        { id: 'e5', source: 'no_click', target: 'reply_state', label: 'yes' },
+        { id: 'e6', source: 'reply_state', target: 'task', label: 'false' },
+      ],
+    } as WorkflowGraphDocument,
+  },
+  {
     id: 'inbound-attachments',
     name: 'Eingehend: Anhänge markieren',
     description: 'Taggt Nachrichten mit PDF-Anhang.',

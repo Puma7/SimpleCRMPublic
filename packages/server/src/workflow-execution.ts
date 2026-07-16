@@ -6083,6 +6083,7 @@ function normalizeWorkflowTrigger(value: string | undefined): WorkflowTriggerKin
     case 'draft_created':
     case 'schedule':
     case 'manual':
+    case 'relay':
     case 'crm.deal_stage_changed':
     case 'task.due':
     case 'calendar.event_start':

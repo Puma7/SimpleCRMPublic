@@ -36,7 +36,7 @@ import { Switch } from "@/components/ui/switch"
 import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store"
 import { WorkflowCategorySelect } from "./workflow-category-select"
 import type { AiPrompt } from "../types"
-import { invokeRenderer } from "@/services/transport"
+import { getRendererTransport, invokeRenderer } from "@/services/transport"
 import {
   edgeLabelOptionsForSource,
   edgeSourceHandleFromLabel,
@@ -403,6 +403,12 @@ type ActionFieldProps = FieldProps & {
 
 function TriggerFields({ node, patch }: FieldProps) {
   const d = node.data as { kind?: string }
+  // Der Relay-Trigger feuert nur in der Server-Edition (SMTP-Relay). Im
+  // Desktop-Modus ausblenden — analog zum runtime:'server'-Filter des
+  // Knoten-Katalogs (use-workflow-node-catalog.ts). Ein bereits gesetzter
+  // Wert bleibt sichtbar, damit importierte Graphen nicht kaputtgehen.
+  const serverClientMode = getRendererTransport().kind === "http"
+  const showRelay = serverClientMode || d.kind === "relay"
   return (
     <div className="space-y-1.5">
       <Label className="text-xs">Typ</Label>
@@ -419,6 +425,9 @@ function TriggerFields({ node, patch }: FieldProps) {
           <SelectItem value="draft_created">Entwurf erstellt</SelectItem>
           <SelectItem value="schedule">Zeitplan (Cron)</SelectItem>
           <SelectItem value="manual">Manuell</SelectItem>
+          {showRelay ? (
+            <SelectItem value="relay">SMTP-Relay (nach Versand)</SelectItem>
+          ) : null}
           <SelectItem value="crm.deal_stage_changed">Deal-Phase geändert</SelectItem>
           <SelectItem value="task.due">Aufgabe fällig</SelectItem>
           <SelectItem value="calendar.event_start">Termin beginnt</SelectItem>

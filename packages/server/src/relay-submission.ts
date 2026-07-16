@@ -497,7 +497,8 @@ export function createRelaySubmissionPipeline(
             workspaceId,
             workflowId: config.followupWorkflowId,
             messageId,
-            // String literal until the trigger kind lands in core.
+            // First-class core WorkflowTriggerKind: direction 'outbound',
+            // needs the persisted message (tracking evidence follow-up).
             triggerName: 'relay',
             context: {
               relay: {
