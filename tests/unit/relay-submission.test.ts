@@ -88,6 +88,7 @@ type FakeSubmission = {
   messageId: number;
   status: 'received' | 'relayed' | 'failed';
   smtpMessageIdHeader: string | null;
+  dedupKey: string | null;
   trackingApplied: boolean;
   trackingRuleReason: string | null;
   recipientCount: number;
@@ -102,11 +103,24 @@ function makeStore() {
     persistMessage: jest.fn(async (input: RelaySubmissionPersistInput) => {
       persistInputs.push(input);
       const existing = submissions.find(
-        (submission) => input.messageIdHeader !== null
-          && submission.smtpMessageIdHeader === input.messageIdHeader,
+        (submission) => input.dedupKey !== null
+          && submission.dedupKey === input.dedupKey,
       );
       if (existing?.status === 'relayed') {
         return { alreadyRelayed: true as const, messageId: existing.messageId };
+      }
+      if (existing) {
+        existing.status = 'received';
+        existing.smtpMessageIdHeader = input.messageIdHeader;
+        existing.trackingApplied = input.trackingApplied;
+        existing.trackingRuleReason = input.trackingRuleReason;
+        existing.recipientCount = input.recipientCount;
+        existing.errorText = null;
+        return {
+          alreadyRelayed: false as const,
+          messageId: existing.messageId,
+          submissionId: existing.submissionId,
+        };
       }
       const messageId = nextMessageId;
       nextMessageId += 1;
@@ -115,6 +129,7 @@ function makeStore() {
         messageId,
         status: 'received',
         smtpMessageIdHeader: input.messageIdHeader,
+        dedupKey: input.dedupKey,
         trackingApplied: input.trackingApplied,
         trackingRuleReason: input.trackingRuleReason,
         recipientCount: input.recipientCount,
@@ -442,6 +457,23 @@ describe('submitRelay SMTP failure', () => {
     expect(tracking!.recordSmtpAccepted).not.toHaveBeenCalled();
     expect(store.enqueueFollowup).not.toHaveBeenCalled();
   });
+
+  test('a permanent (5xx) rejection is not retryable', async () => {
+    const smtpSend = jest.fn(async () => {
+      throw new Error('550 5.1.1 mailbox unavailable');
+    });
+    const { pipeline, submissions } = makePipeline({ smtpSend });
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Mahnung 2' })));
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'relay_failed',
+      message: '550 5.1.1 mailbox unavailable',
+      retryable: false,
+    });
+    expect(submissions[0]!.status).toBe('failed');
+  });
 });
 
 // --- (e) idempotent replay -------------------------------------------------------
@@ -460,6 +492,32 @@ describe('submitRelay idempotent replay', () => {
     const replay = await pipeline.submitRelay(submitInput(message));
     expect(replay).toEqual({ ok: true, messageId: 500, tracked: false });
     expect(smtpSend).toHaveBeenCalledTimes(1);
+  });
+
+  test('a retried submission with tracking active is deduped on the ERP Message-ID, not the minted wire id', async () => {
+    // Regression test: the tracked path mints a fresh outgoing Message-ID on
+    // every attempt (see the "OUR Message-ID, not the ERP's" test above), so
+    // dedup must NOT be keyed on that wire id — otherwise a connection drop
+    // between SMTP accept and the sender receiving the response, followed by
+    // an ERP retry of the identical Message-ID, would relay the same dunning
+    // email to the customer twice.
+    const { pipeline, smtpSend, persistInputs } = makePipeline();
+    const message = erpMessage({ subject: 'Mahnung 2', messageId: '<erp-stable-1@erp.local>' });
+
+    const first = await pipeline.submitRelay(submitInput(message));
+    expect(first).toEqual(expect.objectContaining({ ok: true, tracked: true }));
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+
+    const retry = await pipeline.submitRelay(submitInput(message));
+    expect(retry).toEqual(expect.objectContaining({ ok: true, tracked: false }));
+    // Not re-sent: the second attempt short-circuited on alreadyRelayed.
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+
+    // Both attempts minted DIFFERENT wire Message-IDs (existing tracked-path
+    // behaviour) but shared the SAME stable dedup key.
+    expect(persistInputs[0]!.messageIdHeader).not.toBe(persistInputs[1]!.messageIdHeader);
+    expect(persistInputs[0]!.dedupKey).toBe('<erp-stable-1@erp.local>');
+    expect(persistInputs[1]!.dedupKey).toBe('<erp-stable-1@erp.local>');
   });
 });
 

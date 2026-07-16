@@ -64,11 +64,12 @@ export const smtpRelayMigration: SqlMigration = {
   tracking_rule_reason text,
   status text NOT NULL CHECK (status IN ('received','relayed','failed')),
   smtp_message_id_header text,
+  dedup_key text,
   recipient_count integer NOT NULL,
   error_text text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (workspace_id, smtp_message_id_header)
+  UNIQUE (workspace_id, relay_id, dedup_key)
 );`,
     'CREATE INDEX IF NOT EXISTS smtp_relay_submissions_relay_created_idx ON smtp_relay_submissions (relay_id, created_at);',
     'CREATE INDEX IF NOT EXISTS smtp_relay_submissions_message_id_idx ON smtp_relay_submissions (message_id);',

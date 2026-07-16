@@ -110,8 +110,16 @@ export type RelaySubmissionPersistInput = Readonly<{
   credentialId: string | null;
   accountId: number;
   accountSourceSqliteId: number;
-  /** Message-ID header that will go out on the wire (idempotency key). */
+  /** Message-ID header that will go out on the wire. */
   messageIdHeader: string | null;
+  /**
+   * Idempotency key, independent of `messageIdHeader`: the tracked path mints
+   * a fresh wire Message-ID on every attempt (see submitRelay), so the wire
+   * id alone cannot detect a retry. Prefer the ERP's own Message-ID when
+   * supplied; only falls back to the (non-stable) minted id when the ERP
+   * sent none at all.
+   */
+  dedupKey: string | null;
   subject: string;
   fromJson: unknown | null;
   toJson: unknown | null;
@@ -138,7 +146,7 @@ export type RelaySubmissionStore = Readonly<{
    * Persist the relayed message (email_messages, folder 'sent') plus the
    * smtp_relay_submissions row (status 'received') in one transaction.
    * Must short-circuit with `alreadyRelayed` when a submission with the same
-   * (workspace_id, smtp_message_id_header) is already in status 'relayed'.
+   * (workspace_id, relay_id, dedup_key) is already in status 'relayed'.
    */
   persistMessage(input: RelaySubmissionPersistInput): Promise<RelaySubmissionPersistResult>;
   updateSubmission(input: {
@@ -279,14 +287,24 @@ export function createRelaySubmissionPipeline(
       });
       const willTrack = decision.track && emailTracking !== null;
 
-      // Message-ID contract: pass-through keeps the sender's Message-ID (it is
-      // the idempotency key across ERP retries); the tracked/rebuilt path mints
-      // our own. A pass-through message WITHOUT a Message-ID gets ours minted
-      // and prepended so the DB row matches the wire message.
+      // Message-ID contract: pass-through keeps the sender's Message-ID; the
+      // tracked/rebuilt path mints our own (see the "OUR Message-ID, not the
+      // ERP's" test). A pass-through message WITHOUT a Message-ID gets ours
+      // minted and prepended so the DB row matches the wire message.
+      //
+      // Idempotency contract: the WIRE Message-ID above is NOT a reliable
+      // dedup key by itself — the tracked path mints a fresh one on every
+      // attempt, so a naive retry check keyed on it would never catch a
+      // retried submission and could send the same email twice. `dedupKey`
+      // is therefore tracked separately and always prefers the ERP's own
+      // Message-ID (stable across retries) regardless of tracking mode; only
+      // messages that never carried one at all fall back to the (unstable)
+      // minted id, matching the pre-existing best-effort behaviour there.
       const incomingMessageId = normalizeMessageIdHeader(parsed.messageId);
       const outgoingMessageId = willTrack || !incomingMessageId
         ? generateOutboundMessageId(String(account.email_address))
         : incomingMessageId;
+      const dedupKey = incomingMessageId ?? outgoingMessageId;
 
       // 4. Persist message + submission row (idempotent on the Message-ID).
       let persisted: RelaySubmissionPersistResult;
@@ -298,6 +316,7 @@ export function createRelaySubmissionPipeline(
           accountId: Number(account.id),
           accountSourceSqliteId: Number(account.source_sqlite_id),
           messageIdHeader: outgoingMessageId,
+          dedupKey,
           subject,
           fromJson: parsed.fromJson,
           toJson: parsed.toJson,
@@ -383,8 +402,13 @@ export function createRelaySubmissionPipeline(
         outgoingRfc822 = outgoing.toString('utf8');
       }
 
-      // Shared failure path once a submission row exists: record + 451-retry.
-      const failSend = async (message: string): Promise<RelaySubmissionResult> => {
+      // Shared failure path once a submission row exists: record + respond.
+      // Defaults to retryable (451) for internal/config-resolution failures;
+      // the downstream SMTP send below passes an explicit classification.
+      const failSend = async (
+        message: string,
+        retryable: boolean = true,
+      ): Promise<RelaySubmissionResult> => {
         try {
           await store.updateSubmission({
             workspaceId,
@@ -400,7 +424,7 @@ export function createRelaySubmissionPipeline(
             error: errorMessage(error),
           });
         }
-        return failure('relay_failed', message, true);
+        return failure('relay_failed', message, retryable);
       };
 
       // 7. Resolve SMTP auth for the routing account and relay the message.
@@ -436,14 +460,23 @@ export function createRelaySubmissionPipeline(
         });
       } catch (error) {
         const message = errorMessage(error);
+        const { smtpCode } = smtpCodeFromError(message);
+        // A permanent (5xx) rejection from the downstream SMTP server — bad
+        // recipient, mailbox unavailable, auth revoked — is never going to
+        // succeed on retry. Telling the sender to retry it (451) forever just
+        // wastes downstream connections and, combined with the dedup-key
+        // fix above, could otherwise re-attempt a doomed send indefinitely.
+        // Anything else (timeout, connection reset, no code parsed) stays
+        // retryable, matching prior behaviour.
+        const retryable = smtpCode === undefined || smtpCode < 500;
         await emailTracking?.recordSmtpFailed({
           workspaceId,
           messageId,
           trackingMessageId,
           stage: 'send',
-          ...smtpCodeFromError(message),
+          ...(smtpCode === undefined ? {} : { smtpCode }),
         }).catch(() => undefined);
-        return failSend(message);
+        return failSend(message, retryable);
       }
 
       await emailTracking?.recordSmtpAccepted({
@@ -714,12 +747,13 @@ export function createPostgresRelaySubmissionStore(
         async (trx) => {
           const timestamp = now();
 
-          if (input.messageIdHeader) {
+          if (input.dedupKey) {
             const existing = await trx
               .selectFrom('smtp_relay_submissions')
               .select(['id', 'status', 'message_id'])
               .where('workspace_id', '=', input.workspaceId)
-              .where('smtp_message_id_header', '=', input.messageIdHeader)
+              .where('relay_id', '=', input.relayId)
+              .where('dedup_key', '=', input.dedupKey)
               .executeTakeFirst();
             if (existing?.status === 'relayed') {
               return {
@@ -729,11 +763,17 @@ export function createPostgresRelaySubmissionStore(
             }
             if (existing) {
               // Retry of a previously failed/interrupted submission with the
-              // same Message-ID: reuse the audit row (UNIQUE constraint) and
-              // the already persisted message instead of duplicating it.
+              // same dedup key: reuse the audit row (UNIQUE constraint) and
+              // the already persisted message instead of duplicating it. The
+              // outgoing bytes for THIS attempt are rebuilt from the current
+              // payload (see submitRelay), so refresh the stored content to
+              // match what is actually about to go out on the wire — an ERP
+              // retry can legitimately carry corrected content under the same
+              // Message-ID, and the persisted row is the DSGVO/audit record
+              // of what was communicated.
               const messageId = existing.message_id === null
                 ? await insertRelayedMessage(trx, input, timestamp)
-                : Number(existing.message_id);
+                : await updateRelayedMessageContent(trx, Number(existing.message_id), input, timestamp);
               await trx
                 .updateTable('smtp_relay_submissions')
                 .set({
@@ -742,6 +782,7 @@ export function createPostgresRelaySubmissionStore(
                   tracking_applied: input.trackingApplied,
                   tracking_rule_reason: input.trackingRuleReason,
                   recipient_count: input.recipientCount,
+                  smtp_message_id_header: input.messageIdHeader,
                   error_text: null,
                   updated_at: timestamp,
                 })
@@ -769,6 +810,7 @@ export function createPostgresRelaySubmissionStore(
               tracking_rule_reason: input.trackingRuleReason,
               status: 'received',
               smtp_message_id_header: input.messageIdHeader,
+              dedup_key: input.dedupKey,
               recipient_count: input.recipientCount,
               error_text: null,
               created_at: timestamp,
@@ -974,6 +1016,40 @@ async function insertRelayedMessage(
     .returning('id')
     .executeTakeFirstOrThrow();
   return Number(row.id);
+}
+
+/** Refreshes a previously persisted (but not yet successfully relayed)
+ *  email_messages row with the current attempt's content. A retry can
+ *  legitimately carry corrected content under the same dedup key, and the
+ *  outgoing bytes actually sent are always rebuilt from the current attempt
+ *  (see submitRelay) — so the stored audit row must track it, not the first
+ *  attempt's now-stale content. */
+async function updateRelayedMessageContent(
+  trx: WorkspaceTransaction,
+  messageId: number,
+  input: RelaySubmissionPersistInput,
+  timestamp: Date,
+): Promise<number> {
+  await trx
+    .updateTable('email_messages')
+    .set({
+      message_id: input.messageIdHeader,
+      subject: input.subject || '(Ohne Betreff)',
+      from_json: input.fromJson,
+      to_json: input.toJson,
+      cc_json: input.ccJson,
+      bcc_json: input.bccJson,
+      snippet: input.snippet,
+      body_text: input.bodyText,
+      body_html: input.bodyHtml,
+      has_attachments: input.hasAttachments,
+      attachments_json: input.attachmentsJson,
+      updated_at: timestamp,
+    })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', messageId)
+    .execute();
+  return messageId;
 }
 
 /** Same folder anchor as ensureServerComposeDraftFolder (postgres-mail-read-

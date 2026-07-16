@@ -831,6 +831,11 @@ export type SmtpRelaySubmissionsTable = {
   tracking_rule_reason: string | null;
   status: 'received' | 'relayed' | 'failed';
   smtp_message_id_header: string | null;
+  /** Stable idempotency key (independent of the wire Message-ID, which the
+   *  tracked path re-mints on every attempt) — the ERP's own Message-ID when
+   *  supplied, scoped per relay so two relays in the same workspace can never
+   *  collide. */
+  dedup_key: string | null;
   recipient_count: number;
   error_text: string | null;
   created_at: TimestampColumn;

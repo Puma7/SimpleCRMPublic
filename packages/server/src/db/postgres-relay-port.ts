@@ -40,8 +40,19 @@ export type SmtpRelayCredentialMatch = Readonly<{
   credentialId: string;
 }>;
 
-/** The email account a relayed message is routed through (the sender's fields). */
-export type SmtpRelayRoutingAccount = Selectable<EmailAccountsTable>;
+/**
+ * The email account a relayed message is routed through (the sender's
+ * fields). Narrowed to exactly the columns `resolveRoutingAccount` actually
+ * selects (`relayRoutingAccountColumns`, defined below) rather than the full
+ * `email_accounts` row — the query never fetches the rest, so claiming the
+ * full table type here would let a caller (or a future refactor) reference a
+ * field that silently comes back `undefined` at runtime, right before it
+ * feeds the live outbound SMTP connection parameters.
+ */
+export type SmtpRelayRoutingAccount = Pick<
+  Selectable<EmailAccountsTable>,
+  typeof relayRoutingAccountColumns[number]
+>;
 
 /** The relay's tracking + submission-limit configuration. */
 export type SmtpRelayConfig = Readonly<{
