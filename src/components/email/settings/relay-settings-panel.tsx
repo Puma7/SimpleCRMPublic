@@ -587,8 +587,14 @@ function RelayAccountsSection(props: {
   const [adding, setAdding] = useState(false)
   const [removingId, setRemovingId] = useState<number | null>(null)
 
+  // Filter already-allowed accounts by EMAIL, not id: in server-client mode the
+  // account list carries the public (source) id while allowedAccounts carry the
+  // database account_id, so an id comparison would leave an imported account
+  // that is already allowed in the dropdown (and produce duplicate-account
+  // errors). The email address is stable across both id conventions.
   const available = accounts.filter((account) =>
-    !relay.allowedAccounts.some((allowed) => allowed.accountId === account.id))
+    !relay.allowedAccounts.some((allowed) =>
+      allowed.emailAddress.trim().toLowerCase() === account.email_address.trim().toLowerCase()))
 
   const addAccount = async () => {
     const parsedId = Number(accountId)

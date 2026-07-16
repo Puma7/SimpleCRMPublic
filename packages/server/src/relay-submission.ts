@@ -143,6 +143,9 @@ export type RelaySubmissionPersistInput = Readonly<{
 
 export type RelaySubmissionPersistResult =
   | Readonly<{ alreadyRelayed: true; messageId: number | null }>
+  // Another attempt for the same dedup key is in flight (persisted, not yet
+  // relayed) — the caller must defer rather than send again.
+  | Readonly<{ inFlight: true }>
   | Readonly<{ alreadyRelayed: false; messageId: number; submissionId: string }>;
 
 export type RelaySubmissionStore = Readonly<{
@@ -200,6 +203,16 @@ export type RelaySubmissionPipelineDeps = Readonly<{
 }>;
 
 const MAX_SUBMISSION_ERROR_TEXT = 2_000;
+/** A 'received' submission older than this is treated as stale (a crashed
+ *  in-flight attempt) and may be retried; a fresher one is still in flight. */
+const RELAY_INFLIGHT_STALE_MS = 5 * 60 * 1000;
+
+function toEpochMs(value: Date | string | number): number {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
 
 export function createRelaySubmissionPipeline(
   deps: RelaySubmissionPipelineDeps,
@@ -323,7 +336,13 @@ export function createRelaySubmissionPipeline(
       // is the safe trade vs. delivering broken/incomplete mail.
       const htmlReferencesCid = /\bcid:/i.test(parsed.bodyHtml ?? '');
       const canTrackFaithfully = !htmlReferencesCid && !parsed.attachmentsTruncated;
-      const willTrack = decision.track && emailTracking !== null && canTrackFaithfully;
+      // Open tracking works by injecting a pixel into the HTML body — a
+      // plain-text / no-HTML message can never carry one. prepareOutbound would
+      // still mint a token (instrumentEmailHtml leaves empty HTML unchanged), so
+      // without this gate we'd mark such mail "tracked" and later raise
+      // "no reaction" follow-up tasks for opens that could never be observed.
+      const hasHtmlBody = Boolean(parsed.bodyHtml && parsed.bodyHtml.trim());
+      const willTrack = decision.track && emailTracking !== null && canTrackFaithfully && hasHtmlBody;
 
       // Message-ID contract: pass-through keeps the sender's Message-ID; the
       // tracked/rebuilt path mints our own (see the "OUR Message-ID, not the
@@ -398,6 +417,12 @@ export function createRelaySubmissionPipeline(
       } catch (error) {
         return failure('persist_failed', errorMessage(error), true);
       }
+      if ('inFlight' in persisted) {
+        // A concurrent attempt for the same dedup key is mid-send. Do NOT send
+        // again — ask the client to retry (451); by then it will have relayed.
+        log('relay submission deferred: concurrent attempt in flight', { workspaceId, relayId });
+        return failure('relay_failed', 'Eine parallele Zustellung dieser Nachricht laeuft bereits', true);
+      }
       if (persisted.alreadyRelayed) {
         // Same Message-ID already relayed for this workspace: the sender is
         // retrying a submission we completed. Acknowledge without re-sending.
@@ -452,6 +477,7 @@ export function createRelaySubmissionPipeline(
       // tracking benefit).
       if (trackingMessageId !== null) {
         const cc = mailboxListFromAddressJson(parsed.ccJson);
+        const replyTo = mailboxListFromAddressJson(parsed.replyToJson);
         outgoingRfc822 = buildComposeRfc822({
           from: mailboxListFromAddressJson(parsed.fromJson) || String(account.email_address),
           // A message with no To: header (Bcc-only / undisclosed recipients)
@@ -461,6 +487,10 @@ export function createRelaySubmissionPipeline(
           // the standard RFC5322 empty-group placeholder instead.
           to: mailboxListFromAddressJson(parsed.toJson) || 'undisclosed-recipients:;',
           ...(cc ? { cc } : {}),
+          // Preserve the ERP's Reply-To so tracked dunning replies still reach
+          // the intended (e.g. collections/ticketing) mailbox rather than the
+          // routing account's From.
+          ...(replyTo ? { replyTo } : {}),
           subject,
           text: parsed.bodyText ?? '',
           ...(outboundHtml?.trim() ? { html: outboundHtml } : {}),
@@ -875,16 +905,29 @@ export function createPostgresRelaySubmissionStore(
           if (input.dedupKey) {
             const existing = await trx
               .selectFrom('smtp_relay_submissions')
-              .select(['id', 'status', 'message_id'])
+              .select(['id', 'status', 'message_id', 'updated_at'])
               .where('workspace_id', '=', input.workspaceId)
               .where('relay_id', '=', input.relayId)
               .where('dedup_key', '=', input.dedupKey)
+              // Lock the row so a concurrent retry of the SAME dedup key
+              // serializes here instead of both racing past to smtpSend.
+              .forUpdate()
               .executeTakeFirst();
             if (existing?.status === 'relayed') {
               return {
                 alreadyRelayed: true as const,
                 messageId: existing.message_id === null ? null : Number(existing.message_id),
               };
+            }
+            if (existing && existing.status === 'received'
+              && timestamp.getTime() - toEpochMs(existing.updated_at) < RELAY_INFLIGHT_STALE_MS) {
+              // A 'received' row touched recently means another attempt is
+              // between persistence and SMTP-accept — retrying now would deliver
+              // twice. Defer this attempt (the caller returns a retryable 451);
+              // once the first finishes the row is 'relayed' and the next retry
+              // short-circuits. A STALE 'received' (crashed mid-send) or a
+              // 'failed' row falls through and is retried below.
+              return { inFlight: true as const };
             }
             if (existing) {
               // Retry of a previously failed/interrupted submission with the

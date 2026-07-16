@@ -39,6 +39,7 @@ export type ServerMailSyncParsedMessage = Readonly<{
   toJson: unknown | null;
   ccJson: unknown | null;
   bccJson: unknown | null;
+  replyToJson: unknown | null;
   dateReceived: string | null;
   snippet: string | null;
   bodyText: string | null;
@@ -133,6 +134,7 @@ export async function parseMailSource(
       to?: unknown;
       cc?: unknown;
       bcc?: unknown;
+      replyTo?: unknown;
       date?: Date;
       text?: string;
       html?: string | false;
@@ -165,6 +167,7 @@ export async function parseMailSource(
     fromJson: parseJsonValue(addressJson(parsed.from)),
     toJson: parseJsonValue(addressJson(parsed.to)),
     ccJson: parseJsonValue(addressJson(parsed.cc)),
+    replyToJson: parseJsonValue(addressJson(parsed.replyTo)),
     bccJson: parseJsonValue(addressJson(parsed.bcc)),
     dateReceived: formatDate(parsed.date),
     snippet: snippetFromParsed(textBody, htmlBody),

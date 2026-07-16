@@ -463,6 +463,43 @@ describe('submitRelay untracked pass-through', () => {
     expect(outgoing).toContain('cid:logo-42@erp');
   });
 
+  test('does NOT track a plain-text (no HTML) message even when the rule matches', async () => {
+    // No HTML body -> no pixel can be injected. prepareOutbound would still
+    // mint a token, so without the HTML gate we'd mark it tracked and raise
+    // "no reaction" tasks for opens that can never happen. Deliver untracked.
+    const { pipeline, tracking, smtpSend } = makePipeline();
+    const textOnly = Buffer.from([
+      'From: Buchhaltung <sales@acme.test>',
+      'To: Kunde <kunde@example.com>',
+      'Message-ID: <text-1@erp.local>',
+      'Subject: Mahnung 2',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Bitte begleichen Sie die offene Rechnung.',
+    ].join('\r\n'), 'utf8');
+
+    const result = await pipeline.submitRelay(submitInput(textOnly));
+
+    expect(result).toMatchObject({ ok: true, tracked: false });
+    expect(tracking!.prepareOutbound).not.toHaveBeenCalled();
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+  });
+
+  test('preserves the ERP Reply-To header on a tracked rebuild', async () => {
+    const { pipeline, smtpSend } = makePipeline();
+    const message = erpMessage({
+      subject: 'Mahnung 2',
+      extraHeaders: ['Reply-To: Inkasso <collections@erp.test>'],
+    });
+
+    const result = await pipeline.submitRelay(submitInput(message));
+
+    expect(result).toMatchObject({ ok: true, tracked: true });
+    const outgoing = capturedRfc822(smtpSend);
+    expect(outgoing).toContain(TRACK_MARKER); // rebuilt (tracked)
+    expect(outgoing).toMatch(/Reply-To:.*collections@erp\.test/i);
+  });
+
   test('a plus-tagged recipient does NOT collide with the base address in the dedup key', async () => {
     // Same Message-ID + body fanned out to kunde@ and kunde+shop@ (distinct
     // mailboxes on some domains) must relay independently — the dedup key uses
@@ -577,6 +614,19 @@ describe('submitRelay untracked pass-through', () => {
     expect(retry).toEqual(expect.objectContaining({ ok: true }));
     expect(smtpSend).toHaveBeenCalledTimes(2);
     expect(persistInputs[2]!.dedupKey).toBe(persistInputs[0]!.dedupKey);
+  });
+
+  test('defers (retryable) when a concurrent attempt for the same dedup key is in flight', async () => {
+    // The store reports another attempt is mid-send (persisted, not yet
+    // relayed). We must NOT send again — return a retryable failure so the
+    // client retries (by then the first will have relayed and short-circuit).
+    const { pipeline, store, smtpSend } = makePipeline();
+    store.persistMessage = jest.fn(async () => ({ inFlight: true as const }));
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({ subject: 'Mahnung 2' })));
+
+    expect(result).toMatchObject({ ok: false, code: 'relay_failed', retryable: true });
+    expect(smtpSend).not.toHaveBeenCalled();
   });
 
   test('a failing sent-copy appender does not fail the relay', async () => {
