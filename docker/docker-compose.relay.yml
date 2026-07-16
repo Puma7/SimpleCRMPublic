@@ -13,7 +13,11 @@
 services:
   api:
     ports:
-      - "${SMTP_RELAY_PORT_SUBMISSION:-587}:587"
-      - "${SMTP_RELAY_PORT_SMTPS:-465}:465"
+      # HOST:CONTAINER — both sides use the SAME configured port, because the
+      # in-container listener binds SMTP_RELAY_PORT_SUBMISSION/_SMTPS (passed
+      # through in the base compose). Mapping host<port> to a fixed container
+      # 587/465 would miss the listener when an operator customizes the port.
+      - "${SMTP_RELAY_PORT_SUBMISSION:-587}:${SMTP_RELAY_PORT_SUBMISSION:-587}"
+      - "${SMTP_RELAY_PORT_SMTPS:-465}:${SMTP_RELAY_PORT_SMTPS:-465}"
     volumes:
       - "${SMTP_RELAY_TLS_DIR:-./relay-tls}:/app/data/relay-tls:ro"
