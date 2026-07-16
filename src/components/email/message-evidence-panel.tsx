@@ -632,6 +632,7 @@ function displayedEngagement(
 ): string {
   if (!summary) return "none"
   if (summary.engagement === "human_reply") return summary.engagement
+  if ((summary.probableHumanLinkFetchCount ?? 0) > 0) return "link_interaction"
   if (summary.engagement === "link_interaction") {
     const hasV2LinkMetrics = [
       summary.automatedLinkFetchCount,

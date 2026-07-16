@@ -181,6 +181,35 @@ describe('message evidence panel', () => {
     expect(screen.queryByText('Menschlicher Abruf wahrscheinlich')).not.toBeInTheDocument();
   });
 
+  test('shows a reclassified probable-human link fetch over its automated legacy type', async () => {
+    jest.mocked(invokeRenderer).mockResolvedValueOnce({
+      ...v2Timeline(41),
+      summary: {
+        ...v2Timeline(41).summary,
+        engagement: 'automated_fetch',
+        clickCount: 1,
+        automatedClickCount: 1,
+        probableClickCount: 0,
+        probableHumanLinkFetchCount: 1,
+      },
+      events: [{
+        id: 1,
+        type: 'click_automated',
+        source: 'tracking_link',
+        confidence: 'medium',
+        automated: true,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+        classification: { version: 2, actorClass: 'probable_human', confidence: 'medium', reasons: [] },
+      }],
+    });
+
+    render(<MessageEvidencePanel messageId={41} folderKind="sent" />);
+
+    expect(await screen.findByText('Link angeklickt')).toBeInTheDocument();
+    expect(screen.queryByText('Automatischer Abruf')).not.toBeInTheDocument();
+  });
+
   test('does not present a scanner click as a human link interaction', async () => {
     jest.mocked(invokeRenderer).mockResolvedValueOnce({
       ...v2Timeline(41),

@@ -207,6 +207,54 @@ describe('IPC contracts', () => {
     });
   });
 
+  test('accepts legacy email evidence payloads with safe policy defaults', () => {
+    const parsedPolicy = getResultSchema(IPCChannels.Email.GetEmailTrackingSettings).parse({
+      enabled: true,
+      trackOpens: true,
+      trackLinks: true,
+      collectDerivedMetadata: true,
+      collectRawMetadata: true,
+      rawMetadataRetentionDays: 30,
+      eventRetentionDays: 365,
+      tokenTtlDays: 90,
+      legalBasis: null,
+      privacyNoticeUrl: null,
+      complianceAcknowledgedAt: null,
+      publicBaseUrl: 'https://crm.example',
+      updatedAt: null,
+    }) as Record<string, unknown>;
+    expect(parsedPolicy.ipInsightsEnabled).toBe(false);
+
+    expect(() => getResultSchema(IPCChannels.Email.GetMessageTracking).parse({
+      messageId: 41,
+      tracked: true,
+      warning: null,
+      summary: {
+        transport: 'smtp_accepted',
+        delivery: 'unknown',
+        engagement: 'link_interaction',
+        confidence: 'medium',
+        openCount: 0,
+        clickCount: 1,
+        firstOpenedAt: null,
+        lastOpenedAt: null,
+        firstClickedAt: '2026-07-15T10:00:00.000Z',
+        lastClickedAt: '2026-07-15T10:00:00.000Z',
+        repliedAt: null,
+      },
+      events: [{
+        id: 1,
+        type: 'click',
+        source: 'tracking_link',
+        confidence: 'medium',
+        automated: false,
+        occurredAt: '2026-07-15T10:00:00.000Z',
+        metadata: {},
+      }],
+      eventsTruncated: false,
+    })).not.toThrow();
+  });
+
   test('marks deprecated channels and supports result schema', () => {
     expect(isDeprecatedChannel(IPCChannels.Deals.UpdateProductQuantityLegacy)).toBe(true);
     expect(() =>
