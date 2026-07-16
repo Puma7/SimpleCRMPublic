@@ -222,7 +222,17 @@ export async function startInboundSmtpService(
       const user = sessionUser(session);
       if (!user) return callback(smtpError(530, '5.7.0 Authentication required'));
 
-      const config = await loadSessionRelayConfig(session, user);
+      // Reload (not the AUTH-time memoized peek) so an admin disabling the
+      // relay or tightening its limits takes effect on the NEXT message of
+      // an already-authenticated, possibly long-lived connection — a client
+      // can submit many messages over one SMTP session, so caching this for
+      // the whole session would let a since-revoked/tightened relay keep
+      // accepting mail until the connection happens to drop.
+      const config = await options.relayPort.loadRelayConfig({
+        workspaceId: user.workspaceId,
+        relayId: user.relayId,
+      });
+      sessionState(session).relayConfig = config;
       if (!config) {
         log.warn('inbound smtp sender rejected: relay not configured', {
           workspaceId: user.workspaceId,

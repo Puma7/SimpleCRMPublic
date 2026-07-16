@@ -121,6 +121,8 @@ export type RelaySubmissionPersistInput = Readonly<{
    */
   dedupKey: string | null;
   subject: string;
+  inReplyTo: string | null;
+  referencesHeader: string | null;
   fromJson: unknown | null;
   toJson: unknown | null;
   ccJson: unknown | null;
@@ -220,19 +222,35 @@ export function createRelaySubmissionPipeline(
       const { workspaceId, relayId } = input;
       const recipients = [...input.recipients];
 
-      // 1. Parse. A message we cannot parse is permanently unprocessable.
+      // 1. Relay config load — hoisted ahead of parsing so the parser can be
+      //    bounded by the relay's OWN configured size cap. Loading it first
+      //    only needs relayId (not parsed content), so this is safe.
+      let config: SmtpRelayConfig;
+      try {
+        const loaded = await deps.relayPort.loadRelayConfig({ workspaceId, relayId });
+        if (!loaded) {
+          return failure('account_not_allowed', 'Relay ist nicht (mehr) konfiguriert', false);
+        }
+        config = loaded;
+      } catch (error) {
+        return failure('relay_failed', errorMessage(error), true);
+      }
+
+      // 2. Parse. A message we cannot parse is permanently unprocessable.
+      //    Bounded by the relay's configured maxMessageBytes rather than the
+      //    parser's default cap — an admin who raises the relay's limit
+      //    above the default otherwise gets a silent, permanent parse
+      //    rejection for exactly the larger messages they configured it for.
       let parsed: ServerMailSyncParsedMessage;
       try {
-        parsed = await parseMailSource(input.rfc822);
+        parsed = await parseMailSource(input.rfc822, config.maxMessageBytes);
       } catch (error) {
         return failure('parse_failed', errorMessage(error), false);
       }
 
-      // 2. Header-From spoofing check: the header From must resolve to the
+      // 3. Header-From spoofing check: the header From must resolve to the
       //    SAME allowed account as the (already validated) envelope From.
-      // 3. Relay config load.
       let account: SmtpRelayRoutingAccount;
-      let config: SmtpRelayConfig;
       try {
         // Exactly one From mailbox required: a multi-address From header
         // (RFC5322 permits a comma-separated mailbox-list here) could carry
@@ -281,12 +299,6 @@ export function createRelaySubmissionPipeline(
           );
         }
         account = headerAccount;
-
-        const loaded = await deps.relayPort.loadRelayConfig({ workspaceId, relayId });
-        if (!loaded) {
-          return failure('account_not_allowed', 'Relay ist nicht (mehr) konfiguriert', false);
-        }
-        config = loaded;
       } catch (error) {
         return failure('relay_failed', errorMessage(error), true);
       }
@@ -332,6 +344,8 @@ export function createRelaySubmissionPipeline(
           messageIdHeader: outgoingMessageId,
           dedupKey,
           subject,
+          inReplyTo: parsed.inReplyTo,
+          referencesHeader: parsed.referencesHeader,
           fromJson: parsed.fromJson,
           toJson: parsed.toJson,
           ccJson: parsed.ccJson,
@@ -992,8 +1006,8 @@ async function insertRelayedMessage(
       folder_id: folder.id,
       uid,
       message_id: input.messageIdHeader,
-      in_reply_to: null,
-      references_header: null,
+      in_reply_to: input.inReplyTo,
+      references_header: input.referencesHeader,
       subject: input.subject || '(Ohne Betreff)',
       from_json: input.fromJson,
       to_json: input.toJson,
@@ -1053,10 +1067,21 @@ async function updateRelayedMessageContent(
   input: RelaySubmissionPersistInput,
   timestamp: Date,
 ): Promise<number> {
+  // A retry can legitimately carry corrected recipients under the same
+  // dedup key — re-resolve the customer link from the CURRENT firstRecipient
+  // rather than leaving the first attempt's linkage in place, since the
+  // relay follow-up task reads customer_id off this row.
+  const customer = await resolveCustomerForRecipient(
+    trx,
+    input.workspaceId,
+    input.firstRecipient,
+  );
   await trx
     .updateTable('email_messages')
     .set({
       message_id: input.messageIdHeader,
+      in_reply_to: input.inReplyTo,
+      references_header: input.referencesHeader,
       subject: input.subject || '(Ohne Betreff)',
       from_json: input.fromJson,
       to_json: input.toJson,
@@ -1067,6 +1092,8 @@ async function updateRelayedMessageContent(
       body_html: input.bodyHtml,
       has_attachments: input.hasAttachments,
       attachments_json: input.attachmentsJson,
+      customer_source_sqlite_id: customer?.sourceSqliteId ?? null,
+      customer_id: customer?.id ?? null,
       updated_at: timestamp,
     })
     .where('workspace_id', '=', input.workspaceId)

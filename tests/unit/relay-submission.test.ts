@@ -323,6 +323,24 @@ describe('submitRelay tracked path', () => {
     expect(capturedRfc822(smtpSend)).not.toMatch(/x-simplecrm/i);
   });
 
+  test('threading headers (In-Reply-To / References) are persisted with the message', async () => {
+    const { pipeline, persistInputs } = makePipeline();
+
+    const result = await pipeline.submitRelay(submitInput(erpMessage({
+      subject: 'Mahnung 2',
+      extraHeaders: [
+        'In-Reply-To: <original-msg@erp.local>',
+        'References: <thread-1@erp.local> <original-msg@erp.local>',
+      ],
+    })));
+
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    expect(persistInputs[0]!.inReplyTo).toBe('<original-msg@erp.local>');
+    expect(persistInputs[0]!.referencesHeader).toBe(
+      '<thread-1@erp.local> <original-msg@erp.local>',
+    );
+  });
+
   test('a Bcc-only (no To: header) tracked message does not expose the envelope recipient list', async () => {
     // Regression test: falling back to the SMTP envelope recipients for a
     // missing To: header would leak every Bcc'd recipient's address to every
