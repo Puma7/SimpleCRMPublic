@@ -15,3 +15,4 @@ Task 8: complete (commits 9654749 + 2645af5 + 779f15c + 6ac8e56; additive V2 wor
 Task 9: complete (commits b1d256e + 5a5bd23, review approved; 30/30 focused unit tests, Electron E2E discovery confirmed)
 Task 10: complete (commits 9fba34b + 3ccd9bd + 25759a5 + 000023e, final review approved; resolved Compose preserves baseline API env and leaks no GeoIP credentials)
 Task 11: complete (fresh PostgreSQL 18 migrations/RLS, 263/263 full suites, mail/server/UI coverage ratchets, production build and Electron Playwright pass; provider matrix remains optional by plan)
+Final review hardening: complete (commit 814ed9e; Principal-gebundener sensibler UI-State, actor-basierte Link-Workflowvariablen, gemischte Evidenzprioritaet; 2371/2371 Volltests)

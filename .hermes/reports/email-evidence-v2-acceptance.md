@@ -8,6 +8,8 @@ Basis: `e3fd76e91cefff42ddc887367d76058c07eab5b5`
 
 Der Masterplan `docs/superpowers/plans/2026-07-15-email-evidence-validity-masterplan.md` ist implementiert. Die Evidenzdarstellung trennt jetzt unveraenderliche Transport-/Legacy-Ereignisse von einer versionierten, konservativen V2-Klassifikation. Pixel- und Linkabrufe werden nach wahrscheinlich menschlich, automatisiert/Proxy und unbekannt getrennt; die UI leitet Aussagen nicht mehr aus einer auf 1.000 Zeilen begrenzten Timeline ab, sondern aus vollstaendig paginierten Summen.
 
+Der finale Review hat zusaetzlich Benutzerwechsel und gemischte Evidenz abgesichert: sensible Timeline-, IP-Insight- und Einstellungsdaten sind an den angemeldeten Principal gebunden. Der Standard-Nachfassworkflow nutzt fuer Links die V2-Akteursklassifikation, damit Scannerabrufe nicht mehr als menschliche Reaktion gelten; die bestehenden Legacy-Variablen bleiben unveraendert.
+
 IP-Insights werden ausschliesslich serverintern aus optionalen lokalen MaxMind-Country-/ASN-Datenbanken erzeugt. Es gibt keinen externen IP-Lookup und keine Tarnung des Trackingpixels. Tracking, Rohdatenerfassung und IP-Insights bleiben opt-in.
 
 ## Abnahmekriterien
@@ -18,6 +20,8 @@ IP-Insights werden ausschliesslich serverintern aus optionalen lokalen MaxMind-C
 | Lifecycle-Ereignisse erhalten keine Abrufbehauptung | Erfuellt | Core- und UI-Tests |
 | Pixelabrufe, unbekannte/automatisierte Abrufe und wahrscheinliche Sitzungen sind getrennt | Erfuellt | additive V2-Summary und UI-Metriken |
 | Linkklicke werden actor-basiert und auch bei gekuerzter Timeline vollstaendig bewertet | Erfuellt | paginierte Link-Akteur-Summen und Trunkierungsregression |
+| Scanner-/Proxy-Linkabrufe unterdruecken den Nachfassworkflow nicht | Erfuellt | actor-basierte Link-Workflowvariablen und echter Server-Workflowtest |
+| Benutzerwechsel uebernehmen keine Timeline-, Rohdaten-, IP-Insight- oder Einstellungszustaende | Erfuellt | Principal-gebundener UI-State und verzogerungsbasierte Regressionstests |
 | Blockierte Bilder erzeugen kein erfundenes Negativ- oder Oeffnungssignal | Erfuellt | UI-Fallback `Kein messbares Oeffnungssignal` |
 | IP-Insight ist Admin/Owner-, Workspace- und Policy-gebunden | Erfuellt | Route-/Service-Tests fuer 401/403/404/410/503 |
 | Roh-IP erscheint nicht in Lookup-URLs oder Auditdaten | Erfuellt | eventId-basierte Route, Audit ohne Roh-IP |
@@ -32,13 +36,13 @@ IP-Insights werden ausschliesslich serverintern aus optionalen lokalen MaxMind-C
 | `pnpm run check:typescript-toolchain` | bestanden |
 | `pnpm run lint` | bestanden, 0 Warnungen |
 | `pnpm run typecheck` | bestanden |
-| fokussierte Evidenz-/Security-/Composer-/IPC-Suiten | 7/7 Suiten, 159/159 Tests |
-| `pnpm test` | 263/263 Suiten, 2368/2368 Tests |
+| finale fokussierte Evidenz-/Workflow-/Principal-Suiten | 5/5 Suiten, 456/456 Tests |
+| `pnpm test` | 263/263 Suiten, 2371/2371 Tests |
 | `pnpm run test:mail:coverage` | 177/177 Suiten, 1150 bestanden, 1 uebersprungen; 91.91% Statements, 80.08% Branches |
-| `pnpm run test:server:coverage` | 263/263 Suiten, 2368/2368 Tests; 70.02% Statements, 68.94% Branches |
-| `pnpm run test:ui:coverage:check` | 240/240 Suiten, 2064/2064 Tests; Ratchet bestanden |
+| `pnpm run test:server:coverage` | 263/263 Suiten, 2371/2371 Tests; 70.02% Statements, 68.94% Branches |
+| `pnpm run test:ui:coverage:check` | 240/240 Suiten, 2067/2067 Tests; 18.47% Statements, 68.69% Branches; Ratchet bestanden |
 | `pnpm run build` | bestanden; nur bestehender Vite-Hinweis zu grossen Chunks |
-| `pnpm exec playwright test tests/e2e/email-compose-tab-order.spec.ts` | 1/1 Electron-Test bestanden |
+| Electron ABI -> `pnpm exec playwright test tests/e2e/email-compose-tab-order.spec.ts` -> Node ABI | 1/1 Electron-Test bestanden; Node ABI anschliessend wiederhergestellt |
 | `pnpm run native:status` | Node ABI 141 wiederhergestellt, Electron ABI 148 gecacht |
 
 ## Live-PostgreSQL
