@@ -4,6 +4,14 @@ export const pr156FollowupHardeningMigration: SqlMigration = {
   id: '0033_pr156_followup_hardening',
   description: 'Workspace isolation and retry safety for validated PR 156 follow-ups',
   upSql: [
+    // The workspace backfill reads the FORCE-RLS-protected users table while
+    // the migration service connects as the app role. Establish a
+    // transaction-local system context (the runner executes every statement
+    // of one migration inside a single transaction) so existing MFA-code rows
+    // resolve their workspace; without it the UPDATE matches nothing and the
+    // following SET NOT NULL aborts the upgrade.
+    `SELECT set_config('app.role', 'system', true),
+       set_config('app.cross_workspace_access', 'on', true);`,
     `ALTER TABLE auth_mfa_email_codes ADD COLUMN workspace_id uuid;
 UPDATE auth_mfa_email_codes AS code
 SET workspace_id = app_user.workspace_id

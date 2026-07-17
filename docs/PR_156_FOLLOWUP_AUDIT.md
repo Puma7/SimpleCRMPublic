@@ -550,6 +550,43 @@ den typisierten `SmtpPreDataSendError` aus Finding 32). Ohne dieses Signal
 gibt der Forward-Worker die Reservierung frei und der Retry darf senden;
 ambige Ausgaenge blockieren weiterhin. Tests decken beide Pfade ab.
 
+### 35a. (Nachtrag auf `b107ef65`) Codex-Review, ein bestaetigtes und ein abgelehntes Finding
+
+- `discussion_r3604288705` (P1): Migration 0033 backfillte unter RLS ohne Kontext
+- `discussion_r3604288701` (P2, abgelehnt): Plus-Tags in Thread-Korrespondenten
+
+| 36 | Migrations-Backfill sah unter FORCE RLS keine users-Zeilen | Bestaetigt | Behoben: transaktionslokaler System-RLS-Kontext vor dem Backfill |
+| 37 | Tag-Stripping in der Korrespondenten-Normalisierung | Abgelehnt | Bewusster Trade-off, siehe Begruendung |
+
+### 36. Migration 0033 scheiterte auf Bestandsinstallationen
+
+**Verifikation:** Der Workspace-Backfill (`UPDATE ... FROM users`) laeuft im
+Migrationsdienst als App-Rolle, waehrend `users` bereits FORCE-RLS-geschuetzt
+ist. Ohne gesetzten Kontext matcht das UPDATE keine Zeile, `workspace_id`
+bleibt null und das folgende `SET NOT NULL` bricht die Migration fuer jede
+Installation mit vorhandenen E-Mail-MFA-Codes ab.
+
+**Fix:** Erstes Statement der Migration setzt einen transaktionslokalen
+System-Kontext (`app.role='system'`, `app.cross_workspace_access='on'`);
+der Runner fuehrt alle Statements einer Migration in einer Transaktion aus,
+der Kontext verfaellt am Commit. Ein Test sichert die Reihenfolge
+Kontext-vor-Backfill ab.
+
+### 37. Plus-Tags in Thread-Korrespondenten (abgelehnt)
+
+Das Review schlug vor, die Tag-entfernende Normalisierung durch eine
+lokalteil-erhaltende zu ersetzen. Bewusst nicht uebernommen:
+
+- Der Overlap-Guard filtert nur Kandidaten, die bereits ueber References/
+  Ticket verknuepft sind — getrennte Alias-Konversationen teilen diese
+  Verknuepfung nicht, ein Merge erfordert sie aber.
+- Strikte Tags wuerden den haeufigen legitimen Fluss brechen: Mail an
+  `kunde+tag@x`, Antwort kommt `From: kunde@x` — kein Overlap, legitime
+  Antwort bliebe unthreaded. Genau dieses Base-Matching ist als gewolltes
+  Verhalten getestet.
+- `konto+x@domain` zu spoofen ist dieselbe Schwierigkeitsklasse wie
+  `konto@domain` (gleiche Domain-SPF/DMARC) — keine neue Angriffsklasse.
+
 ### 29. Uebergrosse IMAP-Nachrichten wurden endlos neu geladen
 
 **Verifikation:** Ueberschritt eine Nachricht den harten RFC822-Cap, warf
@@ -592,7 +629,8 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - Freigabe der Forward-Reservierung nach Pre-DATA-SMTP-Fehlern,
 - Empfaenger-Korrespondenten fuer konto-authored Archivkopien,
 - distinkte HTTP-Idempotency-Keys pro Loop-Iteration,
-- Freigabe der Review-Reservierung nach eindeutigen Pre-Send-Fehlern.
+- Freigabe der Review-Reservierung nach eindeutigen Pre-Send-Fehlern,
+- System-RLS-Kontext vor dem MFA-Workspace-Backfill in Migration 0033.
 
 Vor Merge sind mindestens Unit-, Integration-, Build- und Lint-Laeufe auf dem
 vollstaendigen Branch auszufuehren. Die konkreten Ergebnisse stehen in PR 156.

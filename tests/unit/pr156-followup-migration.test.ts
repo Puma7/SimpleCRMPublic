@@ -16,6 +16,16 @@ describe('PR 156 follow-up hardening migration', () => {
     expect(sql).toContain('app.can_access_workspace(workspace_id)');
   });
 
+  test('backfill establishes a system RLS context before reading users', () => {
+    const upSql = pr156FollowupHardeningMigration.upSql;
+    const contextIndex = upSql.findIndex((statement) =>
+      statement.includes("set_config('app.cross_workspace_access', 'on', true)")
+      && statement.includes("set_config('app.role', 'system', true)"));
+    const backfillIndex = upSql.findIndex((statement) => statement.includes('FROM users'));
+    expect(contextIndex).toBeGreaterThanOrEqual(0);
+    expect(backfillIndex).toBeGreaterThan(contextIndex);
+  });
+
   test('tracks MFA email delivery before codes become verifiable', () => {
     const sql = pr156FinalAuditMigration.upSql.join('\n');
     expect(sql).toMatch(/auth_mfa_email_codes[\s\S]*delivery_status/i);
