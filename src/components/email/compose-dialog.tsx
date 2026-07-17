@@ -273,6 +273,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
   const [pgpPassphrase, setPgpPassphrase] = useState("")
+  // Per-message tracking choice (server edition only). null until the policy
+  // default is known; the checkbox then reflects a concrete boolean.
+  const [trackMail, setTrackMail] = useState<boolean | null>(null)
+  const [trackingConfigured, setTrackingConfigured] = useState(false)
   const [recipientKeyHint, setRecipientKeyHint] = useState<string | null>(null)
   const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
@@ -998,6 +1002,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           replyParentMessageId: replyToId,
           markReplyParentDone:
             isReplyCompose && replyToId != null ? !keepReplyOpenInInbox : undefined,
+          trackingOverride: serverClientMode && trackingConfigured ? trackMail : undefined,
         })
         return true
       } catch (e) {
@@ -1021,8 +1026,40 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       isReplyCompose,
       keepReplyOpenInInbox,
       replyToId,
+      serverClientMode,
+      trackingConfigured,
+      trackMail,
     ],
   )
+
+  // Load the workspace tracking policy to seed the per-message checkbox
+  // (server edition only). Default checked when tracking is enabled, has a
+  // signal configured, and defaults new messages to tracked.
+  useEffect(() => {
+    if (!serverClientMode) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const policy = (await invokeRenderer(IPCChannels.Email.GetEmailTrackingSettings)) as {
+          enabled?: boolean
+          trackOpens?: boolean
+          trackLinks?: boolean
+          defaultTrackNewMessages?: boolean
+        } | null
+        if (cancelled || !policy) return
+        const defaultOn = Boolean(
+          policy.enabled
+          && (policy.trackOpens || policy.trackLinks)
+          && policy.defaultTrackNewMessages !== false,
+        )
+        setTrackMail((current) => (current === null ? defaultOn : current))
+        setTrackingConfigured(true)
+      } catch {
+        // Tracking settings unavailable — leave the checkbox hidden.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [serverClientMode])
 
   const handleServerAttachmentFiles = useCallback(
     async (files: FileList | readonly File[] | null) => {
@@ -1303,6 +1340,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         pgpEncrypt: pgpEncrypt || undefined,
         pgpSign: pgpSign || undefined,
         pgpPassphrase: pgpSign ? pgpPassphrase : undefined,
+        trackingOverride: serverClientMode && trackingConfigured ? trackMail : undefined,
       }) as {
         success: boolean
         error?: string
@@ -1975,6 +2013,23 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                   <Checkbox checked={pgpSign} onCheckedChange={(v) => setPgpSign(v === true)} />
                   PGP signieren
                 </label>
+                {serverClientMode && trackingConfigured ? (
+                  <label
+                    className="flex items-center gap-2"
+                    title={
+                      pgpEncrypt || pgpSign
+                        ? "PGP-geschützte Nachrichten werden nicht nachverfolgt."
+                        : "Sendet einen Tracking-Pixel mit dieser E-Mail."
+                    }
+                  >
+                    <Checkbox
+                      checked={!(pgpEncrypt || pgpSign) && trackMail === true}
+                      disabled={pgpEncrypt || pgpSign}
+                      onCheckedChange={(v) => setTrackMail(v === true)}
+                    />
+                    E-Mail-Tracking
+                  </label>
+                ) : null}
                 {pgpSign ? (
                   <Input
                     type="password"

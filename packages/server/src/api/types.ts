@@ -2067,6 +2067,7 @@ export type EmailComposeDraftUpdateInput = {
   bccJson?: unknown | null;
   draftAttachmentPaths?: readonly string[];
   replyParentMessageId?: number | null;
+  trackingOverride?: boolean | null;
 };
 
 export type EmailComposeDraftMutationResult =
@@ -2104,6 +2105,8 @@ export type EmailComposeSendInput = {
   pgpEncrypt?: boolean;
   pgpSign?: boolean;
   pgpPassphrase?: string;
+  /** Per-message tracking choice; null/undefined follows the workspace default. */
+  trackingOverride?: boolean | null;
 };
 
 export type EmailComposeSendResult =
@@ -2902,6 +2905,8 @@ export type EmailTrackingPolicyRecord = {
   enabled: boolean;
   trackOpens: boolean;
   trackLinks: boolean;
+  /** Default state of the per-message tracking checkbox for new messages. */
+  defaultTrackNewMessages: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
   ipInsightsEnabled: boolean;
@@ -2919,6 +2924,7 @@ export type EmailTrackingPolicyMutationInput = Partial<{
   enabled: boolean;
   trackOpens: boolean;
   trackLinks: boolean;
+  defaultTrackNewMessages: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
   ipInsightsEnabled: boolean;

@@ -935,6 +935,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               ...(input.values.replyParentMessageId === undefined ? {} : {
                 reply_parent_message_id: input.values.replyParentMessageId,
               }),
+              ...(input.values.trackingOverride === undefined ? {} : {
+                tracking_override: input.values.trackingOverride,
+              }),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)

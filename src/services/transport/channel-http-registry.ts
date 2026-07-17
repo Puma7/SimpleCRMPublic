@@ -5223,6 +5223,9 @@ function mapComposeDraftUpdatePayload(value: Record<string, any>): Record<string
         ? null
         : positiveId(value.replyParentMessageId, "reply parent message id"),
     markReplyParentDone: optionalBoolean(value.markReplyParentDone, "mark reply parent done flag"),
+    trackingOverride: value.trackingOverride === undefined || value.trackingOverride === null
+      ? value.trackingOverride
+      : optionalBoolean(value.trackingOverride, "tracking override flag"),
   })
 }
 
@@ -5248,6 +5251,9 @@ function mapComposeSendPayload(value: Record<string, any>): Record<string, unkno
     requestReadReceipt: optionalBoolean(value.requestReadReceipt, "request read receipt flag"),
     pgpEncrypt: optionalBoolean(value.pgpEncrypt, "pgp encrypt flag"),
     pgpSign: optionalBoolean(value.pgpSign, "pgp sign flag"),
+    trackingOverride: value.trackingOverride === undefined || value.trackingOverride === null
+      ? value.trackingOverride
+      : optionalBoolean(value.trackingOverride, "tracking override flag"),
     pgpPassphrase: value.pgpPassphrase === undefined
       ? undefined
       : composeTextValue(value.pgpPassphrase, "pgp passphrase", 10_000),

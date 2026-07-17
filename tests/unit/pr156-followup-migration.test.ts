@@ -1,11 +1,17 @@
 import { pr156FollowupHardeningMigration } from '../../packages/server/src/migrations/0033_pr156_followup_hardening';
 import { pr156FinalAuditMigration } from '../../packages/server/src/migrations/0034_pr156_final_audit';
+import { emailTrackingPerMessageMigration } from '../../packages/server/src/migrations/0035_email_tracking_per_message';
 import { serverMigrations } from '../../packages/server/src/migrations';
 
 describe('PR 156 follow-up hardening migration', () => {
-  test('registers the migration after DMARC reports', () => {
-    expect(serverMigrations.at(-2)).toBe(pr156FollowupHardeningMigration);
-    expect(serverMigrations.at(-1)).toBe(pr156FinalAuditMigration);
+  test('keeps the follow-up, final-audit, and per-message migrations in order', () => {
+    const hardeningIndex = serverMigrations.indexOf(pr156FollowupHardeningMigration);
+    const finalAuditIndex = serverMigrations.indexOf(pr156FinalAuditMigration);
+    const perMessageIndex = serverMigrations.indexOf(emailTrackingPerMessageMigration);
+    expect(hardeningIndex).toBeGreaterThanOrEqual(0);
+    // 0034 runs immediately after 0033; 0035 follows 0034.
+    expect(finalAuditIndex).toBe(hardeningIndex + 1);
+    expect(perMessageIndex).toBeGreaterThan(finalAuditIndex);
   });
 
   test('workspace-scopes MFA codes and forces RLS', () => {

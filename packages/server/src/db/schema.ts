@@ -656,6 +656,8 @@ export type EmailMessagesTable = {
   customer_id: number | null;
   folder_kind: string;
   imap_thread_id: string | null;
+  /** Per-message tracking choice: null follows the workspace policy default. */
+  tracking_override: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
   has_attachments: boolean;
   attachments_json: JsonColumn | null;
   auth_spf: string | null;
@@ -711,6 +713,7 @@ export type EmailTrackingPoliciesTable = {
   enabled: boolean;
   track_opens: boolean;
   track_links: boolean;
+  default_track_new_messages: ColumnType<boolean, boolean | undefined, boolean>;
   collect_derived_metadata: boolean;
   collect_raw_metadata: boolean;
   ip_insights_enabled: ColumnType<boolean, boolean | undefined, boolean>;

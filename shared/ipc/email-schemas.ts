@@ -663,6 +663,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     enabled: z.boolean(),
     trackOpens: z.boolean(),
     trackLinks: z.boolean(),
+    defaultTrackNewMessages: z.boolean().default(true),
     collectDerivedMetadata: z.boolean(),
     collectRawMetadata: z.boolean(),
     ipInsightsEnabled: z.boolean().default(false),
@@ -679,6 +680,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     enabled: z.boolean().optional(),
     trackOpens: z.boolean().optional(),
     trackLinks: z.boolean().optional(),
+    defaultTrackNewMessages: z.boolean().optional(),
     collectDerivedMetadata: z.boolean().optional(),
     collectRawMetadata: z.boolean().optional(),
     ipInsightsEnabled: z.boolean().optional(),
@@ -978,6 +980,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       draftAttachmentPaths: z.array(z.string()).optional(),
       replyParentMessageId: z.number().int().positive().nullable().optional(),
       markReplyParentDone: z.boolean().optional(),
+      trackingOverride: z.boolean().nullable().optional(),
     }),
     result: standardResult,
   });
@@ -1015,6 +1018,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       pgpEncrypt: z.boolean().optional(),
       pgpSign: z.boolean().optional(),
       pgpPassphrase: z.string().optional(),
+      trackingOverride: z.boolean().nullable().optional(),
     }),
     result: z.union([
       z.object({

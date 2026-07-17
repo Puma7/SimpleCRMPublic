@@ -687,6 +687,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
               recipientCount: recipients.length,
               html,
               pgpProtected: values.pgpEncrypt === true || values.pgpSign === true,
+              trackingOverride: values.trackingOverride ?? null,
             });
             outboundHtml = tracked.html;
             trackingMessageId = tracked.trackingMessageId;

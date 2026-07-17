@@ -124,6 +124,7 @@ type EmailComposeDraftUpdateParseResult =
       bccJson?: unknown | null;
       draftAttachmentPaths?: readonly string[];
       replyParentMessageId?: number | null;
+      trackingOverride?: boolean | null;
     };
     markReplyParentDone?: boolean;
   }
@@ -3340,6 +3341,7 @@ function parseComposeDraftUpdateBody(body: unknown): EmailComposeDraftUpdatePars
     'draftAttachmentPaths',
     'replyParentMessageId',
     'markReplyParentDone',
+    'trackingOverride',
   ]);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -3364,6 +3366,15 @@ function parseComposeDraftUpdateBody(body: unknown): EmailComposeDraftUpdatePars
       const parsed = normalizePositiveBodyInt(body.replyParentMessageId, 'replyParentMessageId');
       if (parsed.ok) values.replyParentMessageId = parsed.value;
       else errors.push({ field: 'replyParentMessageId', message: parsed.message });
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'trackingOverride')) {
+    // null = follow the workspace default; boolean = explicit per-message choice.
+    if (body.trackingOverride === null) values.trackingOverride = null;
+    else {
+      const parsed = normalizeBooleanBody(body.trackingOverride, 'trackingOverride');
+      if (parsed.ok) values.trackingOverride = parsed.value;
+      else errors.push({ field: 'trackingOverride', message: parsed.message });
     }
   }
   let markReplyParentDone: boolean | undefined;
@@ -3409,6 +3420,7 @@ function parseComposeSendBody(body: unknown): EmailComposeSendParseResult {
     'pgpSign',
     'pgpPassphrase',
     'pgpUserId',
+    'trackingOverride',
   ]);
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -3458,6 +3470,15 @@ function parseComposeSendBody(body: unknown): EmailComposeSendParseResult {
     const parsed = normalizeBooleanBody(body[field], field);
     if (parsed.ok) values[field] = parsed.value;
     else errors.push({ field, message: parsed.message });
+  }
+  if (Object.prototype.hasOwnProperty.call(body, 'trackingOverride')) {
+    // null = follow the workspace default; boolean = explicit per-message choice.
+    if (body.trackingOverride === null) values.trackingOverride = null;
+    else {
+      const parsed = normalizeBooleanBody(body.trackingOverride, 'trackingOverride');
+      if (parsed.ok) values.trackingOverride = parsed.value;
+      else errors.push({ field: 'trackingOverride', message: parsed.message });
+    }
   }
   if (Object.prototype.hasOwnProperty.call(body, 'pgpPassphrase')) {
     const parsed = normalizeComposeOptionalText(body.pgpPassphrase, 'pgpPassphrase', 10_000);

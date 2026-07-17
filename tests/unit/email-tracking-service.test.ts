@@ -13,7 +13,9 @@ import {
   clampInboundEvidenceAfterSmtpAccepted,
   normalizeEmailTrackingPolicy,
   normalizeInboundEvidenceOccurredAt,
+  resolveOutboundTrackingPolicy,
 } from '../../packages/server/src/email-tracking';
+import type { NormalizedEmailTrackingPolicy } from '../../packages/server/src/email-tracking';
 import type { Kysely } from 'kysely';
 import type { ServerDatabase } from '../../packages/server/src/db';
 import { emailTrackingNetworkContext } from '../../packages/server/src/email-tracking-network-rules';
@@ -165,6 +167,31 @@ describe('email tracking service security helpers', () => {
       now: new Date('2026-07-15T10:00:00.000Z'),
       encryptionAvailable: true,
     }).ipInsightsEnabled).toBe(true);
+  });
+
+  test('defaults new messages to tracked and roundtrips the per-message default flag', () => {
+    // Absent in the input → keeps the tracked-by-default stance.
+    expect(normalizeEmailTrackingPolicy({
+      current: null,
+      values: {},
+      now: new Date('2026-07-15T10:00:00.000Z'),
+      encryptionAvailable: true,
+    }).defaultTrackNewMessages).toBe(true);
+
+    // An explicit false is preserved and survives a later unrelated update.
+    const optedOut = normalizeEmailTrackingPolicy({
+      current: null,
+      values: { defaultTrackNewMessages: false },
+      now: new Date('2026-07-15T10:00:00.000Z'),
+      encryptionAvailable: true,
+    });
+    expect(optedOut.defaultTrackNewMessages).toBe(false);
+    expect(normalizeEmailTrackingPolicy({
+      current: optedOut,
+      values: { collectDerivedMetadata: true },
+      now: new Date('2026-07-16T10:00:00.000Z'),
+      encryptionAvailable: true,
+    }).defaultTrackNewMessages).toBe(false);
   });
 
   test('requires a fresh compliance acknowledgement after material policy changes', () => {
@@ -351,6 +378,61 @@ describe('email tracking service security helpers', () => {
       trackingMessageId: null,
       warning: 'PGP-geschuetzte Nachrichten werden nicht nachverfolgt.',
     });
+  });
+
+  test('per-message override decides outbound tracking on top of the workspace policy', () => {
+    const basePolicy = (overrides: Partial<NormalizedEmailTrackingPolicy> = {}): NormalizedEmailTrackingPolicy => ({
+      enabled: false,
+      trackOpens: false,
+      trackLinks: false,
+      defaultTrackNewMessages: true,
+      collectDerivedMetadata: false,
+      collectRawMetadata: false,
+      ipInsightsEnabled: false,
+      rawMetadataRetentionDays: 7,
+      eventRetentionDays: 365,
+      tokenTtlDays: 730,
+      legalBasis: null,
+      privacyNoticeUrl: null,
+      complianceAcknowledgedAt: null,
+      ...overrides,
+    });
+
+    // Explicit true instruments even when the workspace default is off, and
+    // turns on both signals when the policy configured none.
+    expect(resolveOutboundTrackingPolicy(basePolicy(), true)).toMatchObject({
+      enabled: true,
+      trackOpens: true,
+      trackLinks: true,
+    });
+    // Explicit true respects a narrower configured signal set.
+    expect(resolveOutboundTrackingPolicy(basePolicy({ trackOpens: true }), true)).toMatchObject({
+      enabled: true,
+      trackOpens: true,
+      trackLinks: false,
+    });
+    // Explicit false suppresses even when the policy is enabled.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true, trackLinks: true }),
+      false,
+    )).toMatchObject({ enabled: false });
+    // undefined follows an enabled policy that defaults new messages to tracked.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true }),
+      undefined,
+    )).toMatchObject({ enabled: true, trackOpens: true });
+    // undefined suppresses when the policy opts new messages out by default.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true, defaultTrackNewMessages: false }),
+      undefined,
+    )).toMatchObject({ enabled: false });
+    // undefined leaves a disabled policy disabled.
+    expect(resolveOutboundTrackingPolicy(basePolicy(), undefined)).toMatchObject({ enabled: false });
+    // null is treated like undefined — follow the workspace default.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackLinks: true, defaultTrackNewMessages: false }),
+      null,
+    )).toMatchObject({ enabled: false });
   });
 
   test('the real revoke and public-open chain cannot reactivate revoked tracking', async () => {
