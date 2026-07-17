@@ -1602,7 +1602,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
                     Fertigen Text aus Einstellungen → E-Mail → Textbausteine einfügen. Platzhalter
-                    wie Kundenname werden ersetzt, wenn ein Kunde verknüpft ist.
+                    für Kunde, Konto ({"{{account.display_name}}"}) und Absender ({"{{user.publicName}}"})
+                    werden beim Einfügen ersetzt.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -1625,7 +1626,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                       logError("compose: load customer for template", e)
                     }
                   }
-                  const block = applyCannedTemplate(c.body, customer)
+                  const accountRow = accounts.find((a) => a.id === composeAccountId)
+                  const block = applyCannedTemplate(c.body, customer, {
+                    accountDisplayName: accountRow?.display_name ?? null,
+                    userName: user?.displayName ?? null,
+                    userEmail: user?.username ?? null,
+                    userPublicName: user?.publicName ?? null,
+                  })
                   const frag = sanitizeComposeHtml(
                     `<p>${block.replace(/\n/g, "<br/>")}</p>`,
                   )

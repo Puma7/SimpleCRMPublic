@@ -1,4 +1,4 @@
-import { needsFullMessageBody } from '../../src/components/email/types';
+import { applyCannedTemplate, needsFullMessageBody } from '../../src/components/email/types';
 import {
   COMPOSE_BODY_MARKER,
   COMPOSE_QUOTE_MARKER,
@@ -298,6 +298,32 @@ describe('signature-template', () => {
 
     const viaAccount = buildSignatureTemplateContext({ accountDisplayName: 'Shop Nord' });
     expect(interpolateSignatureTemplate('{{user.publicName}}', viaAccount)).toBe('Shop Nord');
+  });
+});
+
+describe('applyCannedTemplate', () => {
+  it('fills customer, account and user placeholders', () => {
+    const out = applyCannedTemplate(
+      'Hallo {{customer.firstName}}, hier ist {{user.publicName}} von {{account.display_name}}.',
+      { id: 1, name: 'Anna Müller', firstName: 'Anna', email: 'a@example.com' },
+      {
+        accountDisplayName: 'Shop Nord',
+        userName: 'Bea Berater',
+        userEmail: 'bea@example.com',
+        userPublicName: 'Bea (Kundenservice)',
+      },
+    );
+    expect(out).toBe('Hallo Anna, hier ist Bea (Kundenservice) von Shop Nord.');
+  });
+
+  it('{{user.publicName}} falls back to the user name when no alias is set', () => {
+    const out = applyCannedTemplate('{{user.publicName}}', null, { userName: 'Bea Berater' });
+    expect(out).toBe('Bea Berater');
+  });
+
+  it('leaves account/user placeholders empty when no context is provided', () => {
+    const out = applyCannedTemplate('[{{account.display_name}}|{{user.name}}|{{customer.name}}]');
+    expect(out).toBe('[||]');
   });
 });
 
