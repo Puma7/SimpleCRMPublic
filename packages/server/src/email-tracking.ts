@@ -1606,7 +1606,11 @@ async function insertTrackingEvent(
       classification_version: classification.version,
       actor_class: classification.actorClass,
       confidence: classification.confidence,
-      reasons_json: classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+      // Stringify so the jsonb column accepts it even on the all-primitive
+      // insert path (belt-and-suspenders alongside the jsonb-array plugin).
+      reasons_json: JSON.stringify(
+        classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+      ),
       classified_at: input.occurredAt,
     })
     .execute();
@@ -2051,9 +2055,9 @@ async function reclassifyTrackingMessage(input: Readonly<{
           classification_version: classification.version,
           actor_class: classification.actorClass,
           confidence: classification.confidence,
-          reasons_json: classification.reasons
-            .slice(0, 10)
-            .map((reason) => sanitizeMetadataLabel(reason)),
+          reasons_json: JSON.stringify(
+            classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+          ),
           classified_at: input.now,
         };
       });

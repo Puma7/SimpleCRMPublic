@@ -504,6 +504,9 @@ describe('email tracking service security helpers', () => {
       reasons_json: ['immediate_infrastructure_fetch'],
       classified_at: new Date('2026-07-15T12:00:03.000Z'),
     }]);
+    // Regression guard for the 22P02 crash: reasons_json must reach the jsonb
+    // column as a JSON string, not a raw JS array.
+    expect(state.classificationBinds[0]!.reasons_json).toBe('["immediate_infrastructure_fetch"]');
     expect(state.operations).toEqual([
       'policy_read_initial',
       'capacity_precheck',
@@ -1908,6 +1911,8 @@ type PublicInteractionTestState = {
   operations: string[];
   eventRows: Array<Record<string, unknown>>;
   classificationRows: Array<Record<string, unknown>>;
+  /** Raw values as bound to .values() — reasons_json must be a JSON string. */
+  classificationBinds: Array<Record<string, unknown>>;
 };
 
 function publicInteractionDatabase(
@@ -1926,6 +1931,7 @@ function publicInteractionDatabase(
     policyReads: 0,
     policyLockHeld: false,
     eventInsertHeldPolicyLock: false,
+    classificationBinds: [],
     operations: [],
     eventRows: [],
     classificationRows: [],
@@ -2107,7 +2113,15 @@ class PublicInteractionInsert {
       throw new Error(`Unexpected public interaction insert table: ${this.table}`);
     }
     this.state.operations.push('classification_insert');
-    this.state.classificationRows.push(this.row);
+    // Capture the raw bind (reasons_json must be a JSON string post-fix), then
+    // normalize it back to an array like real Postgres jsonb does so the
+    // existing logical-value assertions keep working.
+    this.state.classificationBinds.push(this.row);
+    const normalized = { ...this.row };
+    if (typeof normalized.reasons_json === 'string') {
+      normalized.reasons_json = JSON.parse(normalized.reasons_json);
+    }
+    this.state.classificationRows.push(normalized);
   }
 }
 
@@ -2493,7 +2507,14 @@ class HistoricalReclassificationInsert {
       this.state.maxRowsInTransaction,
       this.state.currentRowsInTransaction,
     );
-    for (const row of this.rows) {
+    for (const rawRow of this.rows) {
+      // reasons_json reaches the jsonb column as a JSON string post-fix;
+      // normalize it back to an array like real Postgres so assertions on the
+      // logical value keep working.
+      const row = { ...rawRow };
+      if (typeof row.reasons_json === 'string') {
+        row.reasons_json = JSON.parse(row.reasons_json);
+      }
       const existing = this.state.classifications.findIndex((candidate) => (
         String(candidate.event_id) === String(row.event_id)
         && candidate.classification_version === row.classification_version
