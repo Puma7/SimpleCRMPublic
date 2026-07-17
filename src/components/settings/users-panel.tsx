@@ -56,7 +56,7 @@ export function UsersPanel() {
   const [pnEditId, setPnEditId] = useState<string | null>(null)
   const [pnValue, setPnValue] = useState("")
   const serverClientMode = getRendererTransport().kind === "http"
-  const { user: currentUser } = useAuth()
+  const { user: currentUser, refresh } = useAuth()
 
   const strength = useMemo(() => evaluatePassword(password), [password])
 
@@ -151,13 +151,17 @@ export function UsersPanel() {
           ...changes,
         })
         await load()
+        // If the signed-in user edited their own row (notably the public name),
+        // refresh the auth session so {{user.publicName}} interpolation in
+        // compose/signatures picks up the new value instead of the stale one.
+        if (u.id === currentUser?.id) await refresh()
       } catch (e) {
         setError(describeUserSaveError(e))
       } finally {
         setRowBusy(null)
       }
     },
-    [load],
+    [load, refresh, currentUser?.id],
   )
 
   const submitNewPassword = async (u: UserRow) => {
@@ -257,19 +261,24 @@ export function UsersPanel() {
                 >
                   Passwort neu setzen
                 </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  disabled={rowBusy === u.id}
-                  onClick={() => {
-                    setPnEditId(pnEditId === u.id ? null : u.id)
-                    setPnValue(u.public_name ?? "")
-                  }}
-                >
-                  Öffentl. Name
-                </Button>
+                {/* Public name is a server-edition concept: the local Electron
+                    auth store has no public_name column, so a desktop save would
+                    silently revert. Hide the control outside server mode. */}
+                {serverClientMode ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    disabled={rowBusy === u.id}
+                    onClick={() => {
+                      setPnEditId(pnEditId === u.id ? null : u.id)
+                      setPnValue(u.public_name ?? "")
+                    }}
+                  >
+                    Öffentl. Name
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   size="sm"
@@ -318,7 +327,7 @@ export function UsersPanel() {
                   </span>
                 </div>
               ) : null}
-              {pnEditId === u.id ? (
+              {serverClientMode && pnEditId === u.id ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Input
                     className="h-8 max-w-[16rem]"
@@ -368,15 +377,17 @@ export function UsersPanel() {
             <Label>Anzeigename</Label>
             <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
           </div>
-          <div className="sm:col-span-2">
-            <Label>Öffentlicher Name (für Signaturen)</Label>
-            <Input
-              value={publicName}
-              maxLength={120}
-              placeholder="optional — z. B. für {{user.publicName}}"
-              onChange={(e) => setPublicName(e.target.value)}
-            />
-          </div>
+          {serverClientMode ? (
+            <div className="sm:col-span-2">
+              <Label>Öffentlicher Name (für Signaturen)</Label>
+              <Input
+                value={publicName}
+                maxLength={120}
+                placeholder="optional — z. B. für {{user.publicName}}"
+                onChange={(e) => setPublicName(e.target.value)}
+              />
+            </div>
+          ) : null}
           <div className="sm:col-span-2">
             <div className="flex items-center gap-1.5">
               <Label htmlFor="new-user-password">Passwort</Label>

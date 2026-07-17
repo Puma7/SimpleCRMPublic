@@ -112,6 +112,20 @@ export function CannedPanel() {
     void persist(id)
   }, [persist])
 
+  // Persist every pending autosave immediately. Called before a scope switch:
+  // load() then replaces itemsRef/draftsRef with the new scope's rows, after
+  // which persist() can no longer find the edited row and would silently drop
+  // the change. persist() reads its row/draft/scope synchronously from the refs,
+  // which still hold the old scope here (setScope has not run yet).
+  const flushAllPending = useCallback(() => {
+    const timers = timersRef.current
+    for (const [id, timer] of timers) {
+      clearTimeout(timer)
+      void persist(id)
+    }
+    timers.clear()
+  }, [persist])
+
   const onEdit = useCallback((id: number, patch: Partial<Draft>) => {
     setDrafts((d) => ({ ...d, [id]: { ...d[id]!, ...patch } }))
     scheduleSave(id)
@@ -174,7 +188,13 @@ export function CannedPanel() {
         </p>
       </div>
 
-      <AccountScopeToolbar value={scope} onChange={setScope} />
+      <AccountScopeToolbar
+        value={scope}
+        onChange={(next) => {
+          if (next !== scope) flushAllPending()
+          setScope(next)
+        }}
+      />
 
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
