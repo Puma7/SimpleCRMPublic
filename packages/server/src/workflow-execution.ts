@@ -69,6 +69,10 @@ import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
 const MAX_WORKFLOW_LOOP_ITEMS = 500;
+/** Hard cap on chained workflow.subflow depth (cycle / runaway fan-out guard). */
+const MAX_SUBFLOW_DEPTH = 8;
+/** Reserved variable carrying the current subflow chain depth across child runs. */
+const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
 const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
@@ -4825,6 +4829,21 @@ async function enqueueWorkflowSubflow(
     return { status: 'error', port: 'error', message: 'Ungueltige Subflow-ID' };
   }
 
+  // Depth guard: the direct self-reference check above does not stop an indirect
+  // cycle (A → B → A). For message-less / non-inbound subflows there is no
+  // applied-marker to break the loop, so without a depth cap the pair would
+  // enqueue each other forever and exhaust the job queue. Carry the depth in a
+  // reserved variable that rides along in eventVariables into each child run.
+  const rawDepth = context.variables[SUBFLOW_DEPTH_VARIABLE];
+  const subflowDepth = typeof rawDepth === 'number' && Number.isFinite(rawDepth) ? rawDepth : 0;
+  if (subflowDepth >= MAX_SUBFLOW_DEPTH) {
+    return {
+      status: 'error',
+      port: 'error',
+      message: `Subflow-Tiefe ${MAX_SUBFLOW_DEPTH} überschritten (mögliche Rekursion) — Subflow nicht eingereiht`,
+    };
+  }
+
   const subflow = await loadWorkflow(trx, context.workspaceId, workflowId);
   if (!subflow?.enabled) {
     return { status: 'error', port: 'error', message: 'Subflow nicht gefunden oder inaktiv' };
@@ -4836,7 +4855,7 @@ async function enqueueWorkflowSubflow(
     triggerName: normalizeWorkflowTrigger(subflow.trigger_name),
     context: {
       eventStrings: context.strings,
-      eventVariables: context.variables,
+      eventVariables: { ...context.variables, [SUBFLOW_DEPTH_VARIABLE]: subflowDepth + 1 },
       subflowParent: {
         workflowId: context.workflowId,
         runId: context.runId,
