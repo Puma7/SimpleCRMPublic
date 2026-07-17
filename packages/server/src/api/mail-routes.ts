@@ -27,6 +27,7 @@ import type {
   EmailReadReceiptResponseResult,
   EmailReadReceiptStateResult,
   EmailReportingSnapshot,
+  DmarcReportingSnapshot,
   EmailRemoteContentPolicy,
   EmailRemoteContentPolicyMutationInput,
   EmailMessageSecurityRecord,
@@ -240,6 +241,7 @@ const MAIL_ROUTES: readonly MailRouteEntry[] = [
   { kind: 'route', pattern: /^\/api\/v1\/email\/folder-counts$/, handler: (req, ports) => handleMailFolderCounts(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/diagnostics$/, handler: (req, ports) => handleMailDiagnostics(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/reporting$/, handler: (req, ports) => handleEmailReporting(req, ports) },
+  { kind: 'route', pattern: /^\/api\/v1\/email\/dmarc\/stats$/, handler: (req, ports) => handleDmarcStats(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/gdpr-export$/, handler: (req, ports) => handleEmailGdprExport(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/threads\/backfill$/, handler: (req, ports) => handleMailThreadBackfill(req, ports) },
   { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/backfill-customer-links$/, handler: (req, ports) => handleMessageCustomerLinkBackfill(req, ports) },
@@ -1306,6 +1308,75 @@ async function handleEmailReporting(req: ApiRequest, ports: ServerApiPorts): Pro
     ...(accountId === undefined ? {} : { accountId }),
   });
   return data(200, sanitizeEmailReportingSnapshot(snapshot));
+}
+
+async function handleDmarcStats(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+  if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const windowDays = parseOptionalPositiveInt(req.query?.windowDays);
+  if (windowDays === null) return error(400, 'invalid_window_days', 'windowDays muss eine positive Ganzzahl sein');
+  const domainRaw = typeof req.query?.domain === 'string' ? req.query.domain.trim() : '';
+  if (!ports.dmarcReporting) {
+    return error(503, 'dmarc_reporting_unavailable', 'DMARC-Auswertung nicht konfiguriert (nur Server-Edition)');
+  }
+  const snapshot = await ports.dmarcReporting.collect({
+    workspaceId: principal.workspaceId,
+    ...(windowDays === undefined ? {} : { windowDays }),
+    ...(domainRaw ? { domain: domainRaw } : {}),
+  });
+  return data(200, sanitizeDmarcStatsSnapshot(snapshot));
+}
+
+/** Mirror of sanitizeEmailReportingSnapshot for the sister endpoint: clamp all
+ *  counters and bound string lengths before the snapshot leaves the server, so a
+ *  later field addition can't accidentally ship raw/oversized values. */
+function sanitizeDmarcStatsSnapshot(snapshot: DmarcReportingSnapshot): DmarcReportingSnapshot {
+  const str = (value: string, max = 320): string => (typeof value === 'string' ? value.slice(0, max) : '');
+  return {
+    windowDays: safeCount(snapshot.windowDays),
+    totals: {
+      reports: safeCount(snapshot.totals.reports),
+      records: safeCount(snapshot.totals.records),
+      messages: safeCount(snapshot.totals.messages),
+      passMessages: safeCount(snapshot.totals.passMessages),
+      failMessages: safeCount(snapshot.totals.failMessages),
+      rejectMessages: safeCount(snapshot.totals.rejectMessages),
+      quarantineMessages: safeCount(snapshot.totals.quarantineMessages),
+      unauthorizedSources: safeCount(snapshot.totals.unauthorizedSources),
+      domains: safeCount(snapshot.totals.domains),
+    },
+    timeSeries: snapshot.timeSeries.map((row) => ({
+      date: str(row.date, 10),
+      pass: safeCount(row.pass),
+      fail: safeCount(row.fail),
+      reject: safeCount(row.reject),
+      quarantine: safeCount(row.quarantine),
+    })),
+    topSourceIps: snapshot.topSourceIps.map((row) => ({
+      sourceIp: str(row.sourceIp, 64),
+      messages: safeCount(row.messages),
+      passMessages: safeCount(row.passMessages),
+      failMessages: safeCount(row.failMessages),
+    })),
+    topFromDomains: snapshot.topFromDomains.map((row) => ({
+      headerFrom: str(row.headerFrom, 253),
+      messages: safeCount(row.messages),
+      failMessages: safeCount(row.failMessages),
+    })),
+    dispositions: snapshot.dispositions.map((row) => ({
+      disposition: str(row.disposition, 32),
+      messages: safeCount(row.messages),
+    })),
+    unauthorizedSources: snapshot.unauthorizedSources.map((row) => ({
+      sourceIp: str(row.sourceIp, 64),
+      headerFrom: row.headerFrom === null ? null : str(row.headerFrom, 253),
+      domain: str(row.domain, 253),
+      orgName: str(row.orgName, 253),
+      messages: safeCount(row.messages),
+      lastSeen: str(row.lastSeen, 32),
+    })),
+  };
 }
 
 async function handleEmailGdprExport(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

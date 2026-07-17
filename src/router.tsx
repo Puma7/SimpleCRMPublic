@@ -36,6 +36,7 @@ const EmailPage = lazyRouteComponent(() => import('./app/email/page'))
 const EmailWorkflowsPage = lazyRouteComponent(() => import('./app/email/workflows/page'))
 const EmailSettingsPage = lazyRouteComponent(() => import('./app/email/settings/page'))
 const EmailReportingPage = lazyRouteComponent(() => import('./app/email/reporting/page'))
+const EmailDmarcPage = lazyRouteComponent(() => import('./app/email/dmarc/page'))
 const EmailSvelteLabPage = lazyRouteComponent(() => import('./app/email/svelte-lab/page'))
 
 const svelteLabEnabled = import.meta.env.VITE_ENABLE_SVELTE_LAB === 'true'
@@ -142,6 +143,11 @@ const emailReportingRoute = createRoute({
   path: '/reporting',
   component: EmailReportingPage,
 })
+const emailDmarcRoute = createRoute({
+  getParentRoute: () => emailLayoutRoute,
+  path: '/dmarc',
+  component: EmailDmarcPage,
+})
 const emailSvelteLabRoute = createRoute({
   getParentRoute: () => emailLayoutRoute,
   path: '/svelte-lab',
@@ -176,6 +182,7 @@ const routeTree = rootRoute.addChildren([
     emailWorkflowsRoute,
     emailSettingsRoute,
     emailReportingRoute,
+    emailDmarcRoute,
     ...(svelteLabEnabled ? [emailSvelteLabRoute] : []),
   ]),
   catchAllRoute,

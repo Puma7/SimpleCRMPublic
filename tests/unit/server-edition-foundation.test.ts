@@ -126,6 +126,7 @@ import {
   buildSpamScoringPlan,
   buildWorkflowExecutionJobPlan,
   buildWorkflowForwardCopyJobPlan,
+  buildWorkflowDmarcIngestJobPlan,
   buildWorkflowHttpRequestJobPlan,
   buildWebhookFirePlan,
   calculateJobRetryDelaySeconds,
@@ -350,6 +351,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0029_auto_reply_limits',
   '0030_email_evidence_classification_v2',
   '0031_smtp_relay',
+  '0032_dmarc_reports',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1892,6 +1894,7 @@ describe('server edition foundation', () => {
       'workflow.execute',
       'workflow.http_request',
       'workflow.forward_copy',
+      'workflow.dmarc_ingest',
       'webhook.fire',
       'lock.cleanup',
       'audit.retention',
@@ -2021,6 +2024,7 @@ describe('server edition foundation', () => {
     expect(graphileQueueNameForJob('workflow.execute', {})).toBe('workflow');
     expect(graphileQueueNameForJob('workflow.http_request', {})).toBe('workflow');
     expect(graphileQueueNameForJob('workflow.forward_copy', {})).toBe('workflow');
+    expect(graphileQueueNameForJob('workflow.dmarc_ingest', {})).toBe('workflow');
     expect(graphileJobKeyForJob('mail.sync.pop3', { accountId: 42 }, 'workspace-a'))
       .toBe('mail.sync.pop3:workspace-a:42');
     expect(graphileJobKeyForJob('mail.sync.pop3', { workspaceId: 'workspace-payload', accountId: 42 }))
@@ -2053,6 +2057,8 @@ describe('server edition foundation', () => {
       .toBe('workflow.http_request:workspace-a:23:11:tag-1');
     expect(graphileJobKeyForJob('workflow.forward_copy', { workflowId: 23, messageId: 11, to: 'audit@example.com' }, 'workspace-a'))
       .toBe('workflow.forward_copy:workspace-a:23:11:audit@example.com');
+    expect(graphileJobKeyForJob('workflow.dmarc_ingest', { workflowId: 23, messageId: 11 }, 'workspace-a'))
+      .toBe('workflow.dmarc_ingest:workspace-a:23:11');
     expect(graphileJobKeyForJob('workflow.execute', { workflowId: 23, messageId: 11 }, 'workspace-a'))
       .toBe('workflow.execute:workspace-a:23:message:11');
     expect(graphileJobKeyForJob('workflow.execute', { workflowId: 23, delayedJobId: 87 }, 'workspace-a'))
@@ -2428,6 +2434,28 @@ describe('server edition foundation', () => {
         workflowId: 23,
         triggerName: 'inbound',
         resumeNodeId: 'tag-1',
+      },
+    });
+
+    expect(buildWorkflowDmarcIngestJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 23,
+      messageId: 11,
+      attachmentNameFilter: ' dmarc ',
+      continuation: {
+        workflowId: 23,
+        triggerName: ' inbound ',
+        resumeNodeId: 'ingest-1',
+      },
+    }, WORKSPACE_A_ID)).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 23,
+      messageId: 11,
+      attachmentNameFilter: 'dmarc',
+      continuation: {
+        workflowId: 23,
+        triggerName: 'inbound',
+        resumeNodeId: 'ingest-1',
       },
     });
 
@@ -6035,6 +6063,86 @@ describe('server edition foundation', () => {
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
       ['task-1', 'crm.create_task', 'ok', 'default', null],
       ['task-1', 'crm.create_task', 'skipped', 'default', 'Kein Kunde verknuepft'],
+    ]);
+  });
+
+  test('crm.create_task with allowWithoutCustomer creates a customerless task (DMARC alerts)', async () => {
+    const now = new Date('2026-07-05T09:00:00.000Z');
+    const due = new Date('2026-07-07T09:00:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 44,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 440,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'task-1',
+              type: 'registry',
+              data: {
+                nodeType: 'crm.create_task',
+                config: {
+                  title: 'DMARC-Auffaelligkeit pruefen',
+                  priority: 'high',
+                  daysUntilDue: 2,
+                  allowWithoutCustomer: true,
+                },
+              },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'task-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 40,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 400,
+        subject: 'Report Domain: firma.de',
+        from_json: { value: [{ address: 'noreply-dmarc-support@google.com' }] },
+        to_json: { value: [{ address: 'dmarc@firma.de' }] },
+        cc_json: null,
+        snippet: 'DMARC-Report',
+        body_text: 'aggregate report',
+        body_html: null,
+        has_attachments: true,
+        attachments_json: null,
+        customer_id: null,
+        customer_source_sqlite_id: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 44,
+      messageId: 40,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(rows.tasks).toEqual([
+      expect.objectContaining({
+        workspace_id: WORKSPACE_A_ID,
+        customer_id: null,
+        customer_source_sqlite_id: null,
+        title: 'DMARC-Auffaelligkeit pruefen',
+        priority: 'high',
+        due_date: due,
+        completed: false,
+      }),
+    ]);
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.message])).toEqual([
+      ['crm.create_task', 'ok', null],
     ]);
   });
 

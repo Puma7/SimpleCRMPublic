@@ -390,6 +390,7 @@ const EmailChannels = literal({
   SaveAttachmentToDisk: 'email:save-attachment-to-disk',
   OpenAttachmentPath: 'email:open-attachment-path',
   EmailReporting: 'email:reporting',
+  ListDmarcStats: 'email:list-dmarc-stats',
   EmailGdprExport: 'email:gdpr-export',
   GetMicrosoftOAuthApp: 'email:get-microsoft-oauth-app',
   SetMicrosoftOAuthApp: 'email:set-microsoft-oauth-app',

@@ -129,6 +129,8 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('smtp_relay_credentials'),
   rlsPolicyTable('smtp_relay_allowed_accounts'),
   rlsPolicyTable('smtp_relay_submissions'),
+  rlsPolicyTable('dmarc_reports'),
+  rlsPolicyTable('dmarc_records'),
   rlsPolicyTable('pgp_identities'),
   rlsPolicyTable('pgp_peer_keys'),
   rlsPolicyTable('automation_api_keys'),

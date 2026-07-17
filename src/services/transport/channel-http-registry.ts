@@ -1,5 +1,6 @@
 import { IPCChannels, type InvokeChannel } from "@shared/ipc/channels"
 import { AUTOMATION_SCOPES, type AutomationScope } from "@shared/automation-api"
+import type { DmarcStatsSnapshot } from "@shared/dmarc-stats"
 import { AI_PROVIDER_PRESETS } from "@shared/ai-provider-presets"
 import { compileGraphToDefinition } from "@shared/email-workflow-graph-compile"
 import { exportWorkflowBundle, parseWorkflowImport } from "@shared/workflow-export-import"
@@ -523,6 +524,16 @@ type EmailReportingRecord = {
     count?: number | null
     errors?: number | null
   }>
+}
+
+type DmarcStatsRecord = {
+  windowDays?: number | null
+  totals?: Record<string, number | null> | null
+  timeSeries?: Array<Record<string, unknown>> | null
+  topSourceIps?: Array<Record<string, unknown>> | null
+  topFromDomains?: Array<Record<string, unknown>> | null
+  dispositions?: Array<Record<string, unknown>> | null
+  unauthorizedSources?: Array<Record<string, unknown>> | null
 }
 
 type EmailOAuthResultRecord = {
@@ -1782,6 +1793,27 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => ({
         success: true,
         data: mapEmailReportingSnapshot(dataBody<EmailReportingRecord>(body)),
+      }),
+    }
+  }],
+  [IPCChannels.Email.ListDmarcStats, ([payload]) => {
+    const input = payload === undefined || payload === null
+      ? {}
+      : objectPayload(payload, "DMARC stats payload")
+    const query: Record<string, string | number> = {}
+    if (input.windowDays !== undefined && input.windowDays !== null) {
+      query.windowDays = positiveId(input.windowDays, "DMARC stats windowDays")
+    }
+    if (typeof input.domain === "string" && input.domain.trim()) {
+      query.domain = input.domain.trim()
+    }
+    return {
+      method: "GET",
+      path: "/api/v1/email/dmarc/stats",
+      query: Object.keys(query).length > 0 ? query : undefined,
+      transform: (body) => ({
+        success: true,
+        data: mapDmarcStatsSnapshot(dataBody<DmarcStatsRecord>(body)),
       }),
     }
   }],
@@ -5519,6 +5551,57 @@ function mapEmailReportingSnapshot(record: EmailReportingRecord) {
         errors: countValue(row.errors),
       }))
       : [],
+  }
+}
+
+function mapDmarcStatsSnapshot(record: DmarcStatsRecord): DmarcStatsSnapshot {
+  const totals = record.totals ?? {}
+  const arr = (value: unknown): Array<Record<string, unknown>> =>
+    Array.isArray(value) ? (value as Array<Record<string, unknown>>) : []
+  const text = (value: unknown): string => (typeof value === "string" ? value : "")
+  return {
+    windowDays: countValue(record.windowDays),
+    totals: {
+      reports: countValue(totals.reports),
+      records: countValue(totals.records),
+      messages: countValue(totals.messages),
+      passMessages: countValue(totals.passMessages),
+      failMessages: countValue(totals.failMessages),
+      rejectMessages: countValue(totals.rejectMessages),
+      quarantineMessages: countValue(totals.quarantineMessages),
+      unauthorizedSources: countValue(totals.unauthorizedSources),
+      domains: countValue(totals.domains),
+    },
+    timeSeries: arr(record.timeSeries).map((row) => ({
+      date: text(row.date),
+      pass: countValue(row.pass),
+      fail: countValue(row.fail),
+      reject: countValue(row.reject),
+      quarantine: countValue(row.quarantine),
+    })),
+    topSourceIps: arr(record.topSourceIps).map((row) => ({
+      sourceIp: text(row.sourceIp),
+      messages: countValue(row.messages),
+      passMessages: countValue(row.passMessages),
+      failMessages: countValue(row.failMessages),
+    })),
+    topFromDomains: arr(record.topFromDomains).map((row) => ({
+      headerFrom: text(row.headerFrom),
+      messages: countValue(row.messages),
+      failMessages: countValue(row.failMessages),
+    })),
+    dispositions: arr(record.dispositions).map((row) => ({
+      disposition: text(row.disposition) || "none",
+      messages: countValue(row.messages),
+    })),
+    unauthorizedSources: arr(record.unauthorizedSources).map((row) => ({
+      sourceIp: text(row.sourceIp),
+      headerFrom: typeof row.headerFrom === "string" ? row.headerFrom : null,
+      domain: text(row.domain),
+      orgName: text(row.orgName),
+      messages: countValue(row.messages),
+      lastSeen: text(row.lastSeen),
+    })),
   }
 }
 

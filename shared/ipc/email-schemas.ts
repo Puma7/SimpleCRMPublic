@@ -1653,6 +1653,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.number().int().positive().nullable(),
     result: z.object({ success: z.literal(true), data: z.unknown() }),
   });
+  set(IPCChannels.Email.ListDmarcStats, {
+    payload: z.object({
+      windowDays: z.number().int().positive().max(365).optional(),
+      domain: z.string().max(253).optional(),
+    }).optional(),
+    result: z.object({ success: z.literal(true), data: z.unknown() }),
+  });
   set(IPCChannels.Email.EmailGdprExport, {
     payload: z.object({
       skipAttachments: z.boolean().optional(),

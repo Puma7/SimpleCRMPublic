@@ -76,6 +76,8 @@ export type ServerDatabase = {
   smtp_relay_credentials: SmtpRelayCredentialsTable;
   smtp_relay_allowed_accounts: SmtpRelayAllowedAccountsTable;
   smtp_relay_submissions: SmtpRelaySubmissionsTable;
+  dmarc_reports: DmarcReportsTable;
+  dmarc_records: DmarcRecordsTable;
   pgp_identities: PgpIdentitiesTable;
   pgp_peer_keys: PgpPeerKeysTable;
   automation_api_keys: AutomationApiKeysTable;
@@ -858,6 +860,47 @@ export type SmtpRelaySubmissionsTable = {
   error_text: string | null;
   created_at: TimestampColumn;
   updated_at: TimestampColumn;
+};
+
+export type DmarcReportsTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  /** Reporting organisation (report_metadata.org_name), e.g. `google.com`. */
+  org_name: string;
+  /** Provider-assigned report id (report_metadata.report_id); part of the
+   *  idempotency key together with org_name. Kept as text (can be 64-bit). */
+  report_id: string;
+  email: string | null;
+  date_begin: TimestampColumn;
+  date_end: TimestampColumn;
+  /** Domain the published policy applies to (policy_published.domain). */
+  domain: string;
+  policy_p: string | null;
+  policy_sp: string | null;
+  policy_pct: number | null;
+  policy_adkim: string | null;
+  policy_aspf: string | null;
+  /** The inbound e-mail this report was extracted from, if still present. */
+  source_message_id: number | null;
+  received_at: TimestampColumn;
+  created_at: TimestampColumn;
+};
+
+export type DmarcRecordsTable = {
+  id: Generated<string>;
+  workspace_id: string;
+  dmarc_report_id: string;
+  source_ip: string;
+  message_count: number;
+  disposition: string;
+  dkim_eval: string;
+  spf_eval: string;
+  header_from: string | null;
+  envelope_from: string | null;
+  /** Comma-separated auth_results DKIM/SPF domains (display-only). */
+  dkim_domains: string | null;
+  spf_domains: string | null;
+  created_at: TimestampColumn;
 };
 
 export type EmailMessageAttachmentsTable = EmailMessageChildTable & {

@@ -428,6 +428,9 @@ importers:
       archiver:
         specifier: ^8.0.0
         version: 8.0.0
+      fast-xml-parser:
+        specifier: 5.7.3
+        version: 5.7.3
       fastify:
         specifier: ^5.10.0
         version: 5.10.0
@@ -479,6 +482,9 @@ importers:
       smtp-server:
         specifier: 3.19.2
         version: 3.19.2
+      yauzl:
+        specifier: ^3.4.0
+        version: 3.4.0
     devDependencies:
       '@types/mssql':
         specifier: ^12.3.0
@@ -489,6 +495,9 @@ importers:
       '@types/smtp-server':
         specifier: 3.5.13
         version: 3.5.13
+      '@types/yauzl':
+        specifier: ^3.4.0
+        version: 3.4.0
 
 packages:
 

@@ -118,6 +118,16 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     defaultConfig: {},
   },
   {
+    type: 'email.ingest_dmarc_report',
+    label: 'DMARC-Report auswerten',
+    category: 'email',
+    canvasType: 'registry',
+    runtime: 'server',
+    description:
+      'Wertet DMARC-Aggregat-Reports (RUA) aus den Anhängen der Nachricht aus (.xml/.xml.gz/.zip), speichert sie und stellt dmarc.*-Variablen bereit (fail_count, unauthorized_source_count, domain, top_source_ip …). Optionaler Anhang-Namensfilter.',
+    defaultConfig: { attachmentNameFilter: '' },
+  },
+  {
     type: 'email.sender_filter',
     label: 'Absender-Filter',
     category: 'email',

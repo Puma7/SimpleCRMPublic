@@ -199,7 +199,12 @@ export function graphileQueueNameForJob(type: ServerJobType, payload: JobPayload
   if (type === 'webhook.fire') {
     return 'webhook';
   }
-  if (type === 'workflow.execute' || type === 'workflow.http_request' || type === 'workflow.forward_copy') {
+  if (
+    type === 'workflow.execute'
+    || type === 'workflow.http_request'
+    || type === 'workflow.forward_copy'
+    || type === 'workflow.dmarc_ingest'
+  ) {
     return 'workflow';
   }
   return undefined;
@@ -286,6 +291,13 @@ export function graphileJobKeyForJob(
     const to = graphileKeyScalar(payload.to);
     if (workspaceKey && workflowId && messageId && to) {
       return `${type}:${workspaceKey}:${workflowId}:${messageId}:${to}`;
+    }
+  }
+  if (type === 'workflow.dmarc_ingest') {
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const messageId = graphileKeyScalar(payload.messageId);
+    if (workspaceKey && workflowId && messageId) {
+      return `${type}:${workspaceKey}:${workflowId}:${messageId}`;
     }
   }
   if (type === 'workflow.execute') {

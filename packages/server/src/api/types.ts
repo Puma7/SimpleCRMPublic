@@ -1935,6 +1935,63 @@ export type EmailReportingApiPort = {
   }): Promise<EmailReportingSnapshot>;
 };
 
+export type DmarcReportingSnapshot = {
+  windowDays: number;
+  totals: {
+    reports: number;
+    records: number;
+    messages: number;
+    passMessages: number;
+    failMessages: number;
+    rejectMessages: number;
+    quarantineMessages: number;
+    unauthorizedSources: number;
+    domains: number;
+  };
+  /** Per-UTC-day message counts for the time-series chart. */
+  timeSeries: Array<{
+    date: string;
+    pass: number;
+    fail: number;
+    reject: number;
+    quarantine: number;
+  }>;
+  topSourceIps: Array<{
+    sourceIp: string;
+    messages: number;
+    passMessages: number;
+    failMessages: number;
+  }>;
+  topFromDomains: Array<{
+    headerFrom: string;
+    messages: number;
+    failMessages: number;
+  }>;
+  dispositions: Array<{
+    disposition: string;
+    messages: number;
+  }>;
+  /** Sources that failed DMARC entirely (no DKIM- or SPF-alignment) — the
+   *  candidate spoofers / unauthorised senders shown in the anomaly table. */
+  unauthorizedSources: Array<{
+    sourceIp: string;
+    headerFrom: string | null;
+    domain: string;
+    orgName: string;
+    messages: number;
+    lastSeen: string;
+  }>;
+};
+
+export type DmarcReportingApiPort = {
+  collect(input: {
+    workspaceId: string;
+    windowDays?: number;
+    domain?: string;
+    now?: Date;
+  }): Promise<DmarcReportingSnapshot>;
+};
+
 export type EmailMessageSecurityRecord = {
   authSpf: string | null;
   authDkim: string | null;
@@ -4885,6 +4942,7 @@ export type ServerApiPorts = {
   emailReadReceipts?: EmailReadReceiptApiPort;
   emailReadReceiptResponder?: EmailReadReceiptResponderApiPort;
   emailReporting?: EmailReportingApiPort;
+  dmarcReporting?: DmarcReportingApiPort;
   emailRemoteContentAllowlist?: EmailRemoteContentAllowlistApiPort;
   emailTeamMembers?: EmailTeamMemberApiPort;
   emailThreadAliases?: EmailThreadAliasApiPort;
