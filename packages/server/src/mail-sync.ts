@@ -484,7 +484,12 @@ async function syncImapFolder(input: {
   const fetchedMessages: FetchedImapMessage[] = [];
   const skippedUids = new Set<number>();
   const pendingUidKey = `email_imap_pending_uids:${input.account.id}:${folder.id}`;
+  // Messages over the hard RFC822 cap can never import; retrying them would
+  // refetch >cap bytes on every sync. They are skipped permanently via this
+  // persisted set (mirrors the POP3 oversized-UIDL handling).
+  const oversizedUidKey = `email_imap_oversized_uids:${input.account.id}:${folder.id}`;
   let pendingUids = new Set<number>();
+  let oversizedUids = new Set<number>();
   let chainEnd = lastUid;
 
   const lock = await input.client.getMailboxLock(input.spec.path);
@@ -521,9 +526,10 @@ async function syncImapFolder(input: {
     } else {
       const pendingValues = await input.store.getSyncInfo({
         workspaceId: input.plan.workspaceId,
-        keys: [pendingUidKey],
+        keys: [pendingUidKey, oversizedUidKey],
       });
       pendingUids = parsePendingImapUids(pendingValues.get(pendingUidKey));
+      oversizedUids = parsePendingImapUids(pendingValues.get(oversizedUidKey));
     }
 
     let uids: number[];
@@ -548,7 +554,13 @@ async function syncImapFolder(input: {
       folderId: folder.id,
       uids: sorted,
     }));
-    toProcess = fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted;
+    // Known-oversized UIDs are never fetched again; marking them skipped lets
+    // the sync cursor advance past them so the search range shrinks.
+    for (const uid of sorted) {
+      if (oversizedUids.has(uid)) skippedUids.add(uid);
+    }
+    toProcess = (fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted)
+      .filter((uid) => !oversizedUids.has(uid));
     chainEnd = lastUid;
 
     for (const uid of toProcess) {
@@ -569,7 +581,11 @@ async function syncImapFolder(input: {
         });
       } catch (error) {
         skippedUids.add(uid);
-        pendingUids.add(uid);
+        if (error instanceof InboundMessageTooLargeError) {
+          oversizedUids.add(uid);
+        } else {
+          pendingUids.add(uid);
+        }
         console.warn(
           `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -629,7 +645,14 @@ async function syncImapFolder(input: {
       if (canAdvanceImapSyncCursor(chainEnd, item.uid, sortedSet, skippedUids)) chainEnd = item.uid;
     } catch (error) {
       skippedUids.add(item.uid);
-      pendingUids.add(item.uid);
+      if (error instanceof InboundMessageTooLargeError) {
+        // Decoded size exceeded the cap during parsing — permanent, like the
+        // raw-size check in the fetch loop.
+        oversizedUids.add(item.uid);
+        pendingUids.delete(item.uid);
+      } else {
+        pendingUids.add(item.uid);
+      }
       console.warn(
         `[mail-sync] skipped message UID ${item.uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -653,7 +676,10 @@ async function syncImapFolder(input: {
 
   await input.store.setSyncInfo?.({
     workspaceId: input.plan.workspaceId,
-    values: { [pendingUidKey]: JSON.stringify([...pendingUids].sort((a, b) => a - b)) },
+    values: {
+      [pendingUidKey]: JSON.stringify([...pendingUids].sort((a, b) => a - b)),
+      [oversizedUidKey]: JSON.stringify([...oversizedUids].sort((a, b) => a - b)),
+    },
   });
 
   await input.store.updateFolderSyncState({

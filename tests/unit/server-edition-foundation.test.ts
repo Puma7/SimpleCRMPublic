@@ -10,7 +10,10 @@ import {
   loadEmailEvidenceSummaryForTracking,
   type EmailTrackingService,
 } from '../../packages/server/src/email-tracking';
-import { InboundMessageTooLargeError } from '../../packages/core/src/email/inbound-message-size';
+import {
+  InboundMessageTooLargeError,
+  MAX_INBOUND_RFC822_BYTES,
+} from '../../packages/core/src/email/inbound-message-size';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
@@ -2923,6 +2926,81 @@ describe('server edition foundation', () => {
       expect.objectContaining({ folderId: 71, lastUid: 7, uidvalidity: 22 }),
       expect.objectContaining({ folderId: 72, lastUid: 1, uidvalidity: 23 }),
     ]);
+  });
+
+  test('server mail sync permanently skips oversized IMAP messages instead of retrying them', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5 })],
+    ]);
+    const syncInfo = new Map<string, string>();
+    const store = makeServerMailSyncStore({
+      account,
+      folders,
+      upserts,
+      folderUpdates,
+      syncInfo,
+      messageIds: [301],
+    });
+    const fetchedUids: string[] = [];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        if (query.uid === '6:*') return [6, 7];
+        if (query.uid === '7:*') return [7];
+        return [];
+      },
+      async fetchOne(uid: string) {
+        fetchedUids.push(uid);
+        if (uid === '7') {
+          // Over the hard RFC822 cap — can never import.
+          return {
+            source: Buffer.alloc(MAX_INBOUND_RFC822_BYTES + 1),
+            flags: new Set<string>(),
+            threadId: null,
+          };
+        }
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8').slice(0, 64)),
+      imapClientFactory: () => client as any,
+    });
+    const plan = {
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap' as const,
+      actorUserId: USER_A_ID,
+    };
+
+    await port.sync(plan);
+
+    // The oversized UID is recorded permanently, not queued for retry.
+    expect(JSON.parse(syncInfo.get('email_imap_oversized_uids:7:71') ?? '[]')).toEqual([7]);
+    expect(JSON.parse(syncInfo.get('email_imap_pending_uids:7:71') ?? '[]')).toEqual([]);
+    expect(upserts.map((item) => item.uid)).toEqual([6]);
+    expect(fetchedUids).toEqual(['6', '7']);
+
+    // The next sync sees the UID again in the search range but never refetches
+    // the oversized body.
+    fetchedUids.length = 0;
+    await port.sync(plan);
+    expect(fetchedUids).toEqual([]);
+    expect(JSON.parse(syncInfo.get('email_imap_oversized_uids:7:71') ?? '[]')).toEqual([7]);
   });
 
   test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {

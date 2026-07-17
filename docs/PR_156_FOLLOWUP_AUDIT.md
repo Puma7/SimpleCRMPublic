@@ -422,6 +422,43 @@ gesendet, obwohl die abschliessende Mailbox-Syntax die letzte Adresse bindet.
 `neu@example.com`. Die vorhandene strikte E-Mail-Validierung bleibt danach
 unveraendert aktiv.
 
+Auf Head `31b210db` folgte ein weiteres Codex-Review:
+
+- `discussion_r3603330339`: SMTP-Auth-Identitaet kam auf dem Stored-Pfad aus dem Request
+- `discussion_r3603330341`: uebergrosse IMAP-Nachrichten landeten in der persistenten Retry-Liste
+
+| 28 | Stored-SMTP-Test uebernahm Request-`user`/`smtpUseImapAuth` | Bestaetigt | Behoben: Stored-Pfad bindet Benutzername und Secret-Auswahl ans Konto |
+| 29 | Uebergrosse IMAP-UIDs wurden endlos neu geladen | Bestaetigt | Behoben: persistente Oversized-Menge, Skip vor dem Fetch |
+
+### 28. Stored-SMTP-Test uebernahm die Auth-Identitaet aus dem Request
+
+**Verifikation:** Der Stored-Credentials-Pfad erzwang zwar Host, Port und TLS
+aus dem Konto, aufgeloest wurden Benutzername und `smtpUseImapAuth` aber vorher
+aus dem Request. Ein Aufrufer konnte damit das gespeicherte Passwort oder
+OAuth-Token unter beliebiger AUTH-Identitaet testen oder umschalten, welches
+gespeicherte Secret verwendet wird — inklusive false-negatives und moeglicher
+Konto-Sperren beim Provider.
+
+**Fix:** Der Stored-Modus wird vor der Auth-Aufloesung bestimmt. Auf diesem
+Pfad kommen Benutzername und `smtpUseImapAuth` ausschliesslich aus dem Konto;
+ein explizites Passwort oder Access-Token macht den Test wie bisher ad-hoc mit
+Request-Werten. Ein Test mit skriptetem SMTP-Dialog verifiziert die
+AUTH-PLAIN-Identitaet und die Secret-Auswahl auf beiden Pfaden.
+
+### 29. Uebergrosse IMAP-Nachrichten wurden endlos neu geladen
+
+**Verifikation:** Ueberschritt eine Nachricht den harten RFC822-Cap, warf
+`assertInboundRfc822Size` bei jedem Sync erneut — der Catch-Zweig trug die UID
+aber in die persistente Pending-Liste ein. Eine einzige >80-MiB-Nachricht
+wurde dadurch bei jedem Lauf erneut vollstaendig heruntergeladen, ohne jemals
+importierbar zu sein.
+
+**Fix:** `InboundMessageTooLargeError` gilt jetzt als permanenter Skip
+(analog zum POP3-Oversized-UIDL-Pfad): Die UID wandert in eine persistente
+Oversized-Menge, wird vor dem Fetch gefiltert und blockiert den Sync-Cursor
+nicht. Der Fall aus dem Parser (dekodierte Groesse) wird identisch behandelt.
+Ein Zwei-Lauf-Test verifiziert, dass der zweite Sync die UID nicht erneut laedt.
+
 ## Verifikation
 
 Neu oder erweitert wurden insbesondere Tests fuer:
@@ -442,7 +479,9 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - genau ein Challenge-Budget pro Pending-MFA-Code,
 - To-/Cc-/Bcc-Korrespondenten auf beiden Thread-Seiten,
 - finalen addr-spec in Workflow-Planung und Forward-Worker,
-- Admin-Gates fuer Mail-Security, Rspamd-Test und MSSQL-Metadaten.
+- Admin-Gates fuer Mail-Security, Rspamd-Test und MSSQL-Metadaten,
+- Stored-SMTP-Test mit konto-gebundener AUTH-Identitaet und Secret-Auswahl,
+- permanenten Skip uebergrosser IMAP-Nachrichten ueber zwei Sync-Laeufe.
 
 Vor Merge sind mindestens Unit-, Integration-, Build- und Lint-Laeufe auf dem
 vollstaendigen Branch auszufuehren. Die konkreten Ergebnisse stehen in PR 156.
