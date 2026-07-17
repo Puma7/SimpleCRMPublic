@@ -442,6 +442,18 @@ describe('server edition repository boundaries', () => {
         role: 'user',
       },
     });
+    // Admin token for the endpoints that are (now) admin-gated, e.g. the
+    // automation API-key inventory (credential-scope recon for non-admins).
+    const adminAccessToken = createAccessToken({
+      signer,
+      issuedAt: new Date(),
+      expiresInSeconds: 60,
+      principal: {
+        userId: 'owner-a',
+        workspaceId: 'workspace-a',
+        role: 'owner',
+      },
+    });
     const customerListCalls: unknown[] = [];
     const productListCalls: unknown[] = [];
     const dealListCalls: unknown[] = [];
@@ -1534,7 +1546,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/automation/api-keys?revoked=false&search=Import',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(automationApiKeys.statusCode).toBe(200);
