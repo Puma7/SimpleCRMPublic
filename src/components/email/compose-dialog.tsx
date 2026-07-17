@@ -1826,7 +1826,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           </div>
 
           <div
-            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col overflow-hidden rounded-md border bg-background shadow-sm [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-background"
+            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col rounded-md border bg-background shadow-sm [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-background"
             title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
           >
             <ComposeQuillEditor
