@@ -3698,6 +3698,24 @@ describe('renderer transport', () => {
     );
   });
 
+  test('propagates status + code on a 503 IP insight error (GeoIP DB missing)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(
+      { error: { code: 'ip_insights_unavailable', message: 'Lokale IP-Insight-Datenbank ist nicht verfuegbar' } },
+      503,
+    ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    // The dialog duck-types status/code off the rejection to show the specific
+    // GeoIP-setup message; both must survive the transport.
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTrackingIpInsight, {
+      messageId: 41,
+      eventId: '13',
+    })).rejects.toMatchObject({ status: 503, code: 'ip_insights_unavailable' });
+  });
+
   test('maps email GDPR export to server ZIP download route', async () => {
     const blob = new Blob(['zip-bytes'], { type: 'application/zip' });
     const fetchImpl = jest.fn().mockResolvedValueOnce(blobResponse(blob, {

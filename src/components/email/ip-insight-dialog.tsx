@@ -11,7 +11,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
-import { RendererTransportError, invokeRenderer } from "@/services/transport"
+import { invokeRenderer } from "@/services/transport"
 import { IPCChannels } from "@shared/ipc/channels"
 
 type IpInsight = {
@@ -33,7 +33,7 @@ export function IpInsightDialog(props: {
   eventId: number | string
 }) {
   const [insight, setInsight] = useState<IpInsight | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<IpInsightError | null>(null)
   const [loading, setLoading] = useState(false)
   const [retryGeneration, setRetryGeneration] = useState(0)
   const requestSequence = useRef(0)
@@ -92,7 +92,8 @@ export function IpInsightDialog(props: {
         </DialogHeader>
         {loading ? <div role="status" aria-live="polite" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Wird geladen…</div> : null}
         {error ? <div className="space-y-3">
-          <p role="alert" aria-live="assertive" className="text-sm text-muted-foreground">{error}</p>
+          <p role="alert" aria-live="assertive" className="text-sm text-muted-foreground">{error.message}</p>
+          {error.hint ? <p className="text-xs text-muted-foreground">{error.hint}</p> : null}
           <Button type="button" size="sm" variant="outline" onClick={() => setRetryGeneration((current) => current + 1)}>
             <RefreshCw className="mr-2 h-4 w-4" /> Erneut versuchen
           </Button>
@@ -136,10 +137,26 @@ function formatTimestamp(value: string | null): string | null {
   return Number.isFinite(date.getTime()) ? date.toLocaleDateString("de-DE") : null
 }
 
-function ipInsightErrorMessage(error: unknown): string {
-  if (error instanceof RendererTransportError) {
-    if (error.status === 410) return "Rohdaten für diesen IP-Insight sind nicht mehr verfügbar."
-    if (error.status === 503) return "Lokale IP-Insight-Datenbank ist nicht verfügbar."
+type IpInsightError = { message: string; hint?: string }
+
+// Duck-type on status/code rather than `instanceof` so the mapping survives
+// chunk duplication, error re-wrapping, or a proxy that only forwards the
+// JSON body — the class identity is not guaranteed across the IPC transport.
+function ipInsightErrorMessage(error: unknown): IpInsightError {
+  const status = (error as { status?: number } | null)?.status
+  const code = (error as { code?: string } | null)?.code
+  if (code === "ip_insight_raw_data_unavailable" || status === 410) {
+    return { message: "Rohdaten für diesen IP-Insight sind nicht mehr verfügbar." }
   }
-  return "IP-Insight konnte nicht geladen werden."
+  if (
+    code === "ip_insights_unavailable"
+    || code === "email_tracking_unavailable"
+    || status === 503
+  ) {
+    return {
+      message: "Lokale IP-Insight-Datenbank ist nicht verfügbar.",
+      hint: "Für IP-Insights müssen die GeoLite2-Datenbanken (Country + ASN) auf dem Server eingerichtet sein — siehe Serverdokumentation (GeoIP).",
+    }
+  }
+  return { message: "IP-Insight konnte nicht geladen werden." }
 }
