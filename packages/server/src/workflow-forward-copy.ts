@@ -222,8 +222,8 @@ export function createPostgresWorkflowForwardCopyPort(
       // runOutboundReview=true: instead of sending direct via SMTP, materialise
       // the forward as a draft and hand it to composeSender.send. The outbound
       // review pipeline (reviewOutbound.review → email.release_outbound) then
-      // runs as if a human had typed and sent the mail. dedup is still recorded
-      // here so retries don't create duplicate drafts.
+      // runs as if a human had typed and sent the mail. Delivery is reserved
+      // before composeSender can hand the message to that pipeline.
       if (input.runOutboundReview === true) {
         if (!options.composeSender) {
           await failOrEnqueueForwardCopyContinuation(options, input, {
@@ -248,7 +248,7 @@ export function createPostgresWorkflowForwardCopyPort(
           await failOrEnqueueForwardCopyContinuation(options, input, {
             ok: false,
             error: reviewResult.error,
-            duplicate: false,
+            duplicate: reviewResult.duplicate,
             now: now(),
             reviewPending: reviewResult.reviewPending,
           });
@@ -257,7 +257,7 @@ export function createPostgresWorkflowForwardCopyPort(
         await enqueueForwardCopyContinuation(options, input, {
           ok: true,
           error: null,
-          duplicate: false,
+          duplicate: reviewResult.duplicate,
           now: now(),
           reviewPending: reviewResult.reviewPending,
         });
@@ -601,43 +601,6 @@ async function forwardCopyDeliveryStatus(
   return row.delivery_status === 'outbox' ? 'outbox' : 'sent';
 }
 
-async function insertForwardCopyDedup(
-  trx: WorkspaceTransaction,
-  input: WorkflowForwardCopyJobPlan,
-  prepared: Extract<PreparedForwardCopy, { ok: true }>,
-  now: Date,
-): Promise<void> {
-  if (await forwardCopyDeliveryStatus(trx, input.workspaceId, {
-    messageSourceSqliteId: prepared.message.sourceSqliteId,
-    workflowSourceSqliteId: prepared.workflowSourceSqliteId,
-    destination: prepared.destination,
-  })) {
-    return;
-  }
-  await trx
-    .insertInto('email_workflow_forward_dedup')
-    .values({
-      workspace_id: input.workspaceId,
-      source_sqlite_id: serverCreatedWorkflowForwardDedupSourceSqliteId(
-        input.workspaceId,
-        prepared.message.sourceSqliteId,
-        prepared.workflowSourceSqliteId,
-        prepared.destination,
-      ),
-      message_source_sqlite_id: prepared.message.sourceSqliteId,
-      workflow_source_sqlite_id: prepared.workflowSourceSqliteId,
-      message_id: input.messageId,
-      workflow_id: input.workflowId,
-      dest: prepared.destination,
-      delivery_status: 'sent',
-      source_row: serverWorkerSourceRow(),
-      imported_in_run_id: null,
-      created_at: now,
-      updated_at: now,
-    })
-    .execute();
-}
-
 async function reserveForwardCopyDelivery(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
@@ -694,7 +657,12 @@ async function markForwardCopyDelivered(
     .execute();
 }
 
-type ForwardReviewResult = { ok: boolean; error: string | null; reviewPending: boolean };
+type ForwardReviewResult = {
+  ok: boolean;
+  error: string | null;
+  reviewPending: boolean;
+  duplicate: boolean;
+};
 
 /** Materialises the forward as a draft and runs it through composeSender.send,
  *  so the existing outbound-review pipeline (reviewOutbound.review →
@@ -730,10 +698,8 @@ async function forwardViaOutboundReview(args: {
         .filter((p): p is string => typeof p === 'string' && p.length > 0)
     : [];
 
-  // (1) Create the draft FIRST (with attachment paths persisted). Dedup is
-  //     recorded only after we have at least handed the draft to composeSender
-  //     — otherwise a transient draft-create failure would mark the
-  //     (message, workflow, dest) as forwarded and block retries forever.
+  // (1) Create the draft before reserving delivery. A draft is local and safe to
+  // retry, while a reservation must exist before composeSender can send.
   const draftResult = await args.createDraft({
     workspaceId: input.workspaceId,
     accountId: prepared.account.id,
@@ -743,10 +709,36 @@ async function forwardViaOutboundReview(args: {
     attachmentPaths: forwardedAttachmentPaths,
   });
   if (!draftResult.ok) {
-    return { ok: false, error: `Entwurf konnte nicht erstellt werden: ${draftResult.reason}`, reviewPending: false };
+    return {
+      ok: false,
+      error: `Entwurf konnte nicht erstellt werden: ${draftResult.reason}`,
+      reviewPending: false,
+      duplicate: false,
+    };
   }
 
-  // (2) Call composeSender.send. It runs reviewOutbound.review which holds the
+  // (2) Reserve before the first operation that may deliver externally. If a
+  // previous attempt reached this point, its outcome is intentionally treated
+  // as unknown instead of risking another send.
+  const reservation = await withWorkspaceTransaction(
+    args.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => reserveForwardCopyDelivery(trx, input, prepared, args.now),
+    { applySession: args.applyWorkspaceSession },
+  );
+  if (reservation === 'sent') {
+    return { ok: true, error: null, reviewPending: false, duplicate: true };
+  }
+  if (reservation === 'outbox') {
+    return {
+      ok: false,
+      error: 'Forward-Zustellstatus ist unklar; automatischer Neuversand wurde blockiert',
+      reviewPending: false,
+      duplicate: false,
+    };
+  }
+
+  // (3) Call composeSender.send. It runs reviewOutbound.review which holds the
   //     draft if outbound workflows exist (workflowRunId set on the error
   //     result). The pipeline then drives approval + send.
   const sendResult = await args.composeSender.send({
@@ -769,14 +761,14 @@ async function forwardViaOutboundReview(args: {
     await withWorkspaceTransaction(
       args.db,
       { workspaceId: input.workspaceId, role: 'system' },
-      async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
+      async (trx) => markForwardCopyDelivered(trx, input, prepared, args.now),
       { applySession: args.applyWorkspaceSession },
     );
   }
 
-  if (sent) return { ok: true, error: null, reviewPending: false };
-  if (queuedForReview) return { ok: true, error: null, reviewPending: true };
-  return { ok: false, error: sendResult.error, reviewPending: false };
+  if (sent) return { ok: true, error: null, reviewPending: false, duplicate: false };
+  if (queuedForReview) return { ok: true, error: null, reviewPending: true, duplicate: false };
+  return { ok: false, error: sendResult.error, reviewPending: false, duplicate: false };
 }
 
 

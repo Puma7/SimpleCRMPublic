@@ -253,6 +253,81 @@ Mit expliziter Fehlerkante wird genau deren Ziel mit `http.ok=false`, Status und
 Fehlertext queued. Der Success-Test stellt weiterhin die normale Fortsetzung
 sicher.
 
+### 17. Message-lose CRM-Side-Effects kollidierten zwischen Laeufen
+
+**Verifikation:** Der Retry-Fix fuer `crm.create_task` und `crm.log_activity`
+verwendete nur Workspace, Workflow, Message, Node und Kunde. Fuer manuelle,
+zeitgesteuerte oder Subflow-Laeufe ohne Message war die Message-Komponente
+konstant `none`. Ein spaeterer legitimer Lauf wurde dadurch als Wiederholung
+des ersten behandelt und erzeugte weder neue Aufgabe noch Aktivitaet.
+
+**Fix:** Bei Message-basierten Workflows bleibt die Identitaet Message-scoped,
+damit Wiederholungen derselben Mail dedupliziert werden. Nur bei Message-losen
+Workflows wird stattdessen die persistierte Run-Source-ID verwendet. Zwei
+legitime Laeufe bleiben damit getrennt, waehrend ein einzelner Lauf intern einen
+stabilen Schluessel behaelt.
+
+### 18. Message-lose HTTP-POSTs teilten einen Idempotency-Key
+
+**Verifikation:** Derselbe `none`-Fallback floss in den HTTP-Idempotency-Key.
+Ein Zielsystem, das den Header korrekt auswertet, konnte deshalb alle spaeteren
+POST-Laeufe desselben Workflow-Knotens als Duplikat verwerfen.
+
+**Fix:** HTTP verwendet dieselbe bedingte Ausfuehrungsidentitaet wie die CRM-
+Side-Effects: Message-ID fuer Message-basierte Laeufe, Run-Source-ID fuer
+Message-lose Laeufe. Retries des bereits eingereihten HTTP-Jobs behalten den im
+Payload gespeicherten Key.
+
+### 19. Thread-Kontinuitaet pruefte nur den ersten Sent-Empfaenger
+
+**Verifikation:** Fuer Sent- und Draft-Nachrichten lieferte die
+Korrespondentenfunktion nur den ersten `To`-Eintrag. Antwortete ein zweiter
+Empfaenger mit gueltigem `In-Reply-To` oder `References`, fiel der
+Sicherheitsvergleich durch und die legitime Antwort blieb unthreaded.
+
+**Fix:** Sent/Draft-Zeilen stellen alle normalisierten, eindeutigen Empfaenger
+fuer den Sicherheitsvergleich bereit. Inbound-Zeilen bleiben senderbasiert. Der
+skalare Helfer bleibt fuer bestehende Aufrufer kompatibel und liefert weiterhin
+den ersten Eintrag.
+
+### 20. Continuation-Limit blockierte lokale Knoten
+
+**Verifikation:** Das 128-KiB-Limit wurde vor jedem Nicht-Condition-Knoten
+geprueft. Dadurch konnten rein lokale Knoten einen temporaer grossen Kontext
+weder reduzieren noch ohne Queue-Payload ausfuehren; auch grosse E-Mails wurden
+vor lokalen Aktionen abgewiesen.
+
+**Fix:** Die Groessenpruefung liegt jetzt ausschliesslich an den Grenzen, an
+denen `eventStrings`/`eventVariables` in einen asynchronen Job oder Delayed-
+Context serialisiert werden. Ein lokaler `logic.set_variable` darf den Kontext
+vor dieser Grenze verkleinern; ein weiterhin zu grosser HTTP-, AI-, Forward-,
+DMARC-, Delay- oder Subflow-Payload wird weiterhin abgewiesen.
+
+### 21. Einzelne benannte HTTP-Success-Kanten gingen verloren
+
+**Verifikation:** Die Trennung von Success- und Error-Continuation akzeptierte
+nur unbenannte/default- oder yes-Kanten. Bestehende Graphen mit genau einer
+benannten Erfolgskante wie `weiter` oder `ok` queued keinen Nachfolger mehr.
+
+**Fix:** Explizite Default-/Yes-Kanten bleiben vorrangig. Fehlen sie, wird genau
+eine nicht als `error`/`no`/`nein`/`false` markierte Kante als kompatibler
+Success-Nachfolger akzeptiert. Mehrere mehrdeutige Custom-Kanten und reine
+Error-Kanten werden nicht als Erfolg geraten.
+
+### 22. Outbound-Review-Forward reservierte erst nach dem Sendepfad
+
+**Verifikation:** Der direkte SMTP-Pfad reservierte bereits vor dem Send, der
+`runOutboundReview`-Pfad schrieb den Dedup-Eintrag jedoch erst nach
+`composeSender.send`. Ein erfolgreicher oder fuer Review gehaltener Versand mit
+anschliessendem DB-Fehler konnte beim Job-Retry ein zweites Mal angestossen
+werden.
+
+**Fix:** Der Draft wird lokal erzeugt, danach wird die Forward-Zustellung vor
+`composeSender.send` atomar als `outbox` reserviert. Nur der reservierende Lauf
+darf den Sendepfad betreten. Erfolg oder Review-Pending markiert den Eintrag als
+`sent`; ein unklarer Fehler laesst `outbox` stehen und blockiert automatischen
+Neuversand.
+
 ## Verifikation
 
 Neu oder erweitert wurden insbesondere Tests fuer:
@@ -260,14 +335,15 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - Zustelladressen mit Plus-Tag, Case und IDN-Domain,
 - persistente IMAP-Pending-UIDs ueber zwei Sync-Laeufe,
 - DOCX-Expansion vor Mammoth,
-- stabile CRM-Side-Effect-Dedup-Schluessel,
-- HTTP-Idempotency-Key und Continuation-Groessenlimit,
-- getrennte HTTP-Success-/Error-Fortsetzung ohne Success-Fallback,
+- Message- und Run-scoped CRM-Side-Effect-Dedup-Schluessel,
+- Message- und Run-scoped HTTP-Idempotency-Keys,
+- Continuation-Groessenlimit nur an asynchronen Queue-Grenzen,
+- getrennte HTTP-Success-/Error-Fortsetzung mit sicherem Custom-Success-Fallback,
 - Draft-Ordnersperre,
 - Forward-Outbox bei unklarem SMTP-Ausgang,
 - sicheren Principal-Default,
 - MFA-Migration/RLS-Registrierung,
-- Thread-Korrespondentenbestimmung,
+- Thread-Korrespondentenbestimmung fuer alle Sent-/Draft-Empfaenger,
 - Admin-Gates fuer Mail-Security, Rspamd-Test und MSSQL-Metadaten.
 
 Vor Merge sind mindestens Unit-, Integration-, Build- und Lint-Laeufe auf dem

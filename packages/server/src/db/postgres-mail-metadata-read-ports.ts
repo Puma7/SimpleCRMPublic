@@ -3012,12 +3012,13 @@ export async function resolveReferenceThreadForSync(
       .orderBy(kyselySql`(thread_id is null)`)
       .limit(500)
       .execute()) as typeof siblings;
-    siblings = args.correspondentEmail
-      ? candidateSiblings.filter((sibling) => threadCorrespondentEmail({
+    const correspondentEmail = args.correspondentEmail;
+    siblings = correspondentEmail
+      ? candidateSiblings.filter((sibling) => threadCorrespondentEmails({
         folderKind: sibling.folder_kind,
         fromJson: sibling.from_json,
         toJson: sibling.to_json,
-      }) === args.correspondentEmail)
+      }).includes(correspondentEmail))
       : [];
   }
 
@@ -3127,31 +3128,41 @@ export function threadCorrespondentEmail(input: {
   fromJson: unknown;
   toJson: unknown;
 }): string | null {
-  const useRecipients = input.folderKind === 'sent' || input.folderKind === 'draft';
-  const address = firstRecipientAddress(useRecipients ? input.toJson : input.fromJson);
-  if (!address) return null;
-  const normalized = normalizeEmailAddress(address);
-  return normalized.includes('@') ? normalized : null;
+  return threadCorrespondentEmails(input)[0] ?? null;
 }
 
-function firstRecipientAddress(value: unknown): string | null {
+export function threadCorrespondentEmails(input: {
+  folderKind: string | null | undefined;
+  fromJson: unknown;
+  toJson: unknown;
+}): string[] {
+  const useRecipients = input.folderKind === 'sent' || input.folderKind === 'draft';
+  const addresses = recipientAddresses(useRecipients ? input.toJson : input.fromJson);
+  const normalized = addresses
+    .map((address) => normalizeEmailAddress(address))
+    .filter((address) => address.includes('@'));
+  return [...new Set(normalized)];
+}
+
+function recipientAddresses(value: unknown): string[] {
   let parsed = value;
   if (typeof parsed === 'string') {
     try {
       parsed = JSON.parse(parsed);
     } catch {
-      return null;
+      return [];
     }
   }
-  if (!parsed || typeof parsed !== 'object') return null;
+  if (!parsed || typeof parsed !== 'object') return [];
   const recipients = (parsed as { value?: unknown }).value;
-  if (!Array.isArray(recipients)) return null;
+  if (!Array.isArray(recipients)) return [];
+  const addresses: string[] = [];
   for (const recipient of recipients) {
     if (!recipient || typeof recipient !== 'object') continue;
     const address = (recipient as { address?: unknown }).address;
-    if (typeof address === 'string' && address.trim()) return address.trim();
+    if (typeof address === 'string' && address.trim()) addresses.push(address.trim());
   }
-  return null;
+  return addresses;
 }
 
 async function findExistingThreadForTicket(
@@ -3183,11 +3194,11 @@ async function threadContainsCorrespondent(
     .where('thread_id', '=', threadId)
     .limit(500)
     .execute();
-  return rows.some((row) => threadCorrespondentEmail({
+  return rows.some((row) => threadCorrespondentEmails({
     folderKind: row.folder_kind,
     fromJson: row.from_json,
     toJson: row.to_json,
-  }) === correspondentEmail);
+  }).includes(correspondentEmail));
 }
 
 /**

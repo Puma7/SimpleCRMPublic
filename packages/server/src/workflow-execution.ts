@@ -1364,11 +1364,6 @@ async function executeServerNode(
     return { status: 'ok', port: match ? 'yes' : 'no' };
   }
 
-  const continuationContextError = workflowContinuationContextError(context);
-  if (continuationContextError) {
-    return { status: 'error', port: 'error', message: continuationContextError };
-  }
-
   const type = nodeRuntimeType(node);
   const config = interpolateServerSchemaFields(type, nodeConfig(node), context);
   if (type === 'logic.stop' || type === 'stop') {
@@ -1411,6 +1406,10 @@ async function executeServerNode(
         message: `delayed_until:${executeAt.toISOString()}`,
         variables: { 'workflow.delayed_until': executeAt.toISOString() },
       });
+    }
+    const continuationContextError = workflowContinuationContextError(context);
+    if (continuationContextError) {
+      return { status: 'error', port: 'error', message: continuationContextError };
     }
     const delayedJobId = await scheduleWorkflowDelay(trx, context, {
       resumeNodeId,
@@ -2327,6 +2326,12 @@ async function scheduleAiClassificationJob(
   if (!contextMode.ok) return { status: 'error', port: 'error', message: contextMode.message };
 
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  if (resumeNodeId) {
+    const continuationContextError = workflowContinuationContextError(context);
+    if (continuationContextError) {
+      return { status: 'error', port: 'error', message: continuationContextError };
+    }
+  }
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
@@ -2381,6 +2386,10 @@ async function scheduleAiReviewJob(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');
   if (!promptId.ok) return { status: 'error', port: 'error', message: promptId.message };
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
@@ -2452,6 +2461,10 @@ async function scheduleAiTransformTextJob(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');
   if (!promptId.ok) return { status: 'error', port: 'error', message: promptId.message };
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
@@ -2518,6 +2531,10 @@ async function scheduleAiAgentJob(
   createDraft: boolean,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
   if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
   const knowledgeBaseId = optionalPositiveIntegerConfig(config.knowledgeBaseId, 'knowledgeBaseId');
@@ -2584,6 +2601,10 @@ async function scheduleAiPickCannedJob(
   createDraft: boolean,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
   if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
 
@@ -2677,6 +2698,10 @@ async function scheduleWorkflowHttpRequestJob(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const url = workflowHttpUrl(config.url);
   if (!url.ok) return { status: 'error', port: 'error', message: url.message };
   if (!url.value) return { status: 'skipped', port: 'default', message: 'leere URL' };
@@ -2754,6 +2779,10 @@ async function scheduleWorkflowForwardCopyJob(
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
   }
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const to = workflowForwardCopyRecipient(config.to);
   if (!to.ok) return { status: 'error', port: 'error', message: to.message };
   if (!to.value) return { status: 'skipped', port: 'default', message: 'Empfaenger fehlt' };
@@ -2822,6 +2851,12 @@ async function scheduleWorkflowDmarcIngestJob(
   const attachmentNameFilter = String(config.attachmentNameFilter ?? '').trim();
 
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  if (resumeNodeId) {
+    const continuationContextError = workflowContinuationContextError(context);
+    if (continuationContextError) {
+      return { status: 'error', port: 'error', message: continuationContextError };
+    }
+  }
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     workflowId: context.workflowId,
@@ -4189,7 +4224,11 @@ function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): str
 
 function resolveHttpSuccessNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   const outs = outgoing(doc.edges, nodeId);
-  return pickEdge(outs, 'default')?.target ?? pickEdge(outs, 'yes')?.target ?? '';
+  const explicit = pickEdge(outs, 'default') ?? pickEdge(outs, 'yes');
+  if (explicit) return explicit.target;
+  const nonErrorEdges = outs.filter((edge) => !['no', 'nein', 'false', 'error']
+    .includes(String(edge.label ?? '').trim().toLowerCase()));
+  return nonErrorEdges.length === 1 ? nonErrorEdges[0]!.target : '';
 }
 
 function resolveHttpErrorNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
@@ -4862,6 +4901,10 @@ async function enqueueWorkflowSubflow(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const configuredWorkflowId = optionalPositiveIntegerConfig(config.workflowId, 'workflowId');
   if (!configuredWorkflowId.ok) return { status: 'error', port: 'error', message: configuredWorkflowId.message };
   const workflowId = configuredWorkflowId.value;
@@ -6456,7 +6499,7 @@ function serverCreatedWorkflowTaskSourceSqliteId(
     'tasks',
     context.workspaceId,
     String(context.workflowSourceSqliteId),
-    String(context.messageSourceSqliteId ?? context.messageId ?? 'none'),
+    workflowSideEffectExecutionIdentity(context),
     nodeId,
     String(customerId),
   );
@@ -6471,7 +6514,7 @@ function serverCreatedWorkflowActivityLogSourceSqliteId(
     'activity_log',
     context.workspaceId,
     String(context.workflowSourceSqliteId),
-    String(context.messageSourceSqliteId ?? context.messageId ?? 'none'),
+    workflowSideEffectExecutionIdentity(context),
     nodeId,
     String(customerId),
   );
@@ -6495,11 +6538,18 @@ function workflowHttpIdempotencyKey(context: ServerWorkflowContext, nodeId: stri
     .update('\0')
     .update(String(context.workflowSourceSqliteId))
     .update('\0')
-    .update(String(context.messageSourceSqliteId ?? context.messageId ?? 'none'))
+    .update(workflowSideEffectExecutionIdentity(context))
     .update('\0')
     .update(nodeId)
     .digest('hex');
   return `simplecrm-workflow-http-${digest}`;
+}
+
+function workflowSideEffectExecutionIdentity(context: ServerWorkflowContext): string {
+  const messageIdentity = context.messageSourceSqliteId ?? context.messageId;
+  return messageIdentity === null
+    ? `run:${context.runSourceSqliteId}`
+    : `message:${messageIdentity}`;
 }
 
 function serverCreatedWorkflowDealStageActivitySourceSqliteId(

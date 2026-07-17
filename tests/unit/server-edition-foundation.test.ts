@@ -6457,6 +6457,82 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('message-less workflow runs keep CRM and HTTP side effects distinct', async () => {
+    const now = new Date('2026-07-04T10:29:15.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 351,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 3510,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'task-1',
+              type: 'registry',
+              data: {
+                nodeType: 'crm.create_task',
+                config: { title: 'Run-scoped task', customerId: 501 },
+              },
+            },
+            {
+              id: 'activity-1',
+              type: 'registry',
+              data: {
+                nodeType: 'crm.log_activity',
+                config: { activityType: 'note', title: 'Run-scoped activity' },
+              },
+            },
+            {
+              id: 'http-1',
+              type: 'registry',
+              data: {
+                nodeType: 'http.request',
+                config: { method: 'POST', url: 'https://api.example.com/hook' },
+              },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'task-1' },
+            { id: 'edge-2', source: 'task-1', target: 'activity-1' },
+            { id: 'edge-3', source: 'activity-1', target: 'http-1' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      customers: [{
+        id: 501,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 9501,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+    const input = {
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 351,
+      triggerName: 'manual' as const,
+      context: { eventVariables: { 'customer.id': 501 } },
+    };
+
+    await port.execute(input);
+    await port.execute(input);
+
+    expect(rows.tasks).toHaveLength(2);
+    expect(new Set(rows.tasks.map((task) => task.source_sqlite_id)).size).toBe(2);
+    expect(rows.activityLog).toHaveLength(2);
+    expect(new Set(rows.activityLog.map((activity) => activity.source_sqlite_id)).size).toBe(2);
+    expect(rows.jobs).toHaveLength(2);
+    expect(new Set(rows.jobs.map((job) => (job.payload as any).idempotencyKey)).size).toBe(2);
+  });
+
   test('postgres workflow execution job port updates CRM deals and logs stage changes', async () => {
     const now = new Date('2026-07-04T10:29:30.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
@@ -9665,7 +9741,7 @@ describe('server edition foundation', () => {
           ],
           edges: [
             { id: 'edge-1', source: 'trigger-1', target: 'http-1' },
-            { id: 'edge-2', source: 'http-1', target: 'switch-1' },
+            { id: 'edge-2', source: 'http-1', target: 'switch-1', label: 'weiter' },
             { id: 'edge-3', source: 'switch-1', target: 'tag-ok', label: '201' },
             { id: 'edge-4', source: 'http-1', target: 'tag-error', label: 'error' },
           ],
@@ -9771,6 +9847,60 @@ describe('server edition foundation', () => {
       port: 'error',
       message: expect.stringContaining('Continuation-Kontext'),
     });
+  });
+
+  test('oversized transient context can be reduced by local nodes before a queue boundary', async () => {
+    const now = new Date('2026-07-04T11:01:56.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 361,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 3610,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'shrink-1',
+              type: 'registry',
+              data: {
+                nodeType: 'logic.set_variable',
+                config: { name: 'temporary', value: 'small' },
+              },
+            },
+            { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop', config: {} } },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'shrink-1' },
+            { id: 'edge-2', source: 'shrink-1', target: 'stop-1' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 361,
+      triggerName: 'manual',
+      context: { eventVariables: { temporary: 'x'.repeat(128 * 1024) } },
+    });
+
+    expect(rows.runs).toEqual([
+      expect.objectContaining({ status: 'ok', finished_at: now }),
+    ]);
+    expect(rows.steps.map((step) => [step.node_id, step.status, step.port])).toEqual([
+      ['shrink-1', 'ok', 'default'],
+      ['stop-1', 'ok', 'default'],
+    ]);
   });
 
   test('postgres workflow execution job port queues forward-copy continuations', async () => {
@@ -10194,7 +10324,9 @@ describe('server edition foundation', () => {
       attachmentPaths: ['ws/30/rechnung.pdf'],
     });
     // Dedup is recorded so a retry won't create a duplicate draft.
-    expect(rows.forwardDedup).toHaveLength(1);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({ delivery_status: 'sent' }),
+    ]);
     // Continuation reflects ok=true + review_pending=true (it was held, not
     // failed). The follow-up workflow can branch on this.
     expect(rows.jobs).toEqual([
@@ -10213,7 +10345,7 @@ describe('server edition foundation', () => {
   });
 
 
-  test('postgres workflow forward-copy outbound-review send failures remain retryable', async () => {
+  test('postgres workflow forward-copy blocks retries after an ambiguous outbound-review send failure', async () => {
     const now = new Date('2026-07-04T11:05:20.000Z');
     let draftCreates = 0;
     const { db, rows } = makeWorkflowExecutionDb({
@@ -10274,10 +10406,12 @@ describe('server edition foundation', () => {
       messageId: 31,
       to: 'audit@example.com',
       runOutboundReview: true,
-    })).rejects.toThrow(/compose transient failure/);
+    })).rejects.toThrow(/Zustellstatus ist unklar/);
 
-    expect(draftCreates).toBe(2);
-    expect(rows.forwardDedup).toHaveLength(0);
+    expect(draftCreates).toBe(1);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({ delivery_status: 'outbox' }),
+    ]);
   });
 
   test('postgres workflow forward-copy port forwards to multiple recipients with attachments', async () => {

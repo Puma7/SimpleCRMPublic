@@ -1,4 +1,7 @@
-import { threadCorrespondentEmail } from '../../packages/server/src/db/postgres-mail-metadata-read-ports';
+import {
+  threadCorrespondentEmail,
+  threadCorrespondentEmails,
+} from '../../packages/server/src/db/postgres-mail-metadata-read-ports';
 
 const recipient = (address: string) => JSON.stringify({ value: [{ address }] });
 
@@ -28,5 +31,18 @@ describe('reference-thread correspondent continuity', () => {
       toJson: recipient('agent@example.com'),
     });
     expect(forged).not.toBe(legitimate);
+  });
+
+  test('keeps every external recipient on sent mail eligible for a reply thread', () => {
+    expect(threadCorrespondentEmails({
+      folderKind: 'sent',
+      fromJson: recipient('agent@example.com'),
+      toJson: JSON.stringify({
+        value: [
+          { address: 'first@example.com' },
+          { address: 'Second+case@Example.COM' },
+        ],
+      }),
+    })).toEqual(['first@example.com', 'second@example.com']);
   });
 });
