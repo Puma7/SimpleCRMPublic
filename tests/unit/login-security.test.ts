@@ -4,6 +4,7 @@ jest.mock('../../packages/server/src/mail-smtp-send', () => ({
   sendSmtpMessage: jest.fn().mockRejectedValue(new Error('smtp down')),
 }));
 
+import { sendSmtpMessage } from '../../packages/server/src/mail-smtp-send';
 import { createLoginSecurityService } from '../../packages/server/src/auth/login-security-service';
 import type { AuthChallengeStore } from '../../packages/server/src/security/auth-challenge-store';
 import {
@@ -177,6 +178,7 @@ describe('login security service MFA gate', () => {
       config: {},
       challengeStore: overrides.challengeStore ?? challengeStore,
       authInvitationSmtp: overrides.smtp as never,
+      applyWorkspaceSession: async () => undefined,
       now: () => new Date('2026-01-01T12:00:00.000Z'),
     });
   }
@@ -402,29 +404,153 @@ describe('login security service MFA gate', () => {
     expect(issueTokenPair).toHaveBeenCalledTimes(1);
   });
 
-  test('rolls back MFA email code row when SMTP delivery fails', async () => {
-    const deletedIds: number[] = [];
+  test('serializes concurrent email MFA issuance per user', async () => {
+    jest.mocked(sendSmtpMessage)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined);
+    const rows: Array<{ id: number; userId: string; active: boolean }> = [];
+    let nextId = 1;
+    let directUpdateCount = 0;
+    let releaseDirectUpdates: () => void = () => undefined;
+    const bothDirectUpdatesStarted = new Promise<void>((resolve) => {
+      releaseDirectUpdates = resolve;
+    });
+    let lockTail = Promise.resolve();
+
+    const makeUpdate = (coordinateDirectRace: boolean) => {
+      const chain: Record<string, jest.Mock> = {};
+      chain.set = jest.fn(() => chain);
+      chain.where = jest.fn(() => chain);
+      chain.execute = jest.fn(async () => {
+        rows.forEach((row) => { row.active = false; });
+        if (coordinateDirectRace) {
+          directUpdateCount += 1;
+          if (directUpdateCount === 2) releaseDirectUpdates();
+          await bothDirectUpdatesStarted;
+        }
+      });
+      return chain;
+    };
+    const makeInsert = () => ({
+      values: (value: { user_id: string }) => {
+        const executeTakeFirst = async () => {
+          const row = { id: nextId, userId: value.user_id, active: true };
+          nextId += 1;
+          rows.push(row);
+          return { id: row.id };
+        };
+        return {
+          executeTakeFirst,
+          returning: () => ({ executeTakeFirst }),
+        };
+      },
+    });
+    const transaction = jest.fn(() => ({
+      execute: async (operation: (trx: unknown) => Promise<unknown>) => {
+        const releases: Array<() => void> = [];
+        const trx = {
+          selectFrom: () => {
+            const chain: Record<string, jest.Mock> = {};
+            chain.select = jest.fn(() => chain);
+            chain.where = jest.fn(() => chain);
+            chain.forUpdate = jest.fn(() => chain);
+            chain.executeTakeFirst = jest.fn(async () => {
+              const previous = lockTail;
+              let release: () => void = () => undefined;
+              lockTail = new Promise<void>((resolve) => { release = resolve; });
+              await previous;
+              releases.push(release);
+              return { id: mfaUser.id };
+            });
+            return chain;
+          },
+          updateTable: () => makeUpdate(false),
+          insertInto: makeInsert,
+        };
+        try {
+          return await operation(trx);
+        } finally {
+          releases.reverse().forEach((release) => release());
+        }
+      },
+    }));
     const db = {
-      insertInto: () => ({
-        values: () => ({
-          returning: () => ({
-            executeTakeFirst: async () => ({ id: 42 }),
-          }),
-        }),
-      }),
-      updateTable: () => {
-        const chain: Record<string, unknown> = {};
-        chain.set = () => chain;
-        chain.where = () => chain;
-        chain.execute = async () => undefined;
+      transaction,
+      updateTable: () => makeUpdate(true),
+      insertInto: makeInsert,
+    };
+    const service = createService({
+      db: db as never,
+      smtp: {
+        host: 'smtp.example.com',
+        port: 587,
+        tls: true,
+        user: 'smtp-user',
+        password: 'smtp-pass',
+        from: 'noreply@example.com',
+      },
+    });
+    const settings = {
+      ...DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS,
+      mfaEnabled: true,
+      mfaEmailEnabled: true,
+    };
+
+    const results = await Promise.all([
+      service.beginMfaIfRequired({ user: mfaUser, workspaceSettings: settings }),
+      service.beginMfaIfRequired({ user: mfaUser, workspaceSettings: settings }),
+    ]);
+
+    expect(results).toEqual([
+      expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
+      expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
+    ]);
+    expect(rows.filter((row) => row.active)).toHaveLength(1);
+    expect(transaction).toHaveBeenCalledTimes(2);
+  });
+
+  test('rolls back MFA email code issuance when SMTP delivery fails', async () => {
+    const rows = [{ id: 41, active: true }];
+    let rolledBack = false;
+    const trx = {
+      selectFrom: () => {
+        const chain: Record<string, jest.Mock> = {};
+        chain.select = jest.fn(() => chain);
+        chain.where = jest.fn(() => chain);
+        chain.forUpdate = jest.fn(() => chain);
+        chain.executeTakeFirst = jest.fn(async () => ({ id: mfaUser.id }));
         return chain;
       },
-      deleteFrom: () => ({
-        where: () => ({
-          execute: async () => {
-            deletedIds.push(42);
+      updateTable: () => {
+        const chain: Record<string, jest.Mock> = {};
+        chain.set = jest.fn(() => chain);
+        chain.where = jest.fn(() => chain);
+        chain.execute = jest.fn(async () => {
+          rows.forEach((row) => { row.active = false; });
+        });
+        return chain;
+      },
+      insertInto: () => ({
+        values: () => ({
+          executeTakeFirst: async () => {
+            rows.push({ id: 42, active: true });
+            return { id: 42 };
           },
         }),
+      }),
+    };
+    const db = {
+      transaction: () => ({
+        execute: async (operation: (transaction: unknown) => Promise<unknown>) => {
+          const snapshot = rows.map((row) => ({ ...row }));
+          try {
+            return await operation(trx);
+          } catch (error) {
+            rows.splice(0, rows.length, ...snapshot);
+            rolledBack = true;
+            throw error;
+          }
+        },
       }),
     };
     const service = createLoginSecurityService({
@@ -453,6 +579,7 @@ describe('login security service MFA gate', () => {
         password: 'smtp-pass',
         from: 'noreply@example.com',
       },
+      applyWorkspaceSession: async () => undefined,
       now: () => new Date('2026-01-01T12:00:00.000Z'),
     });
 
@@ -464,7 +591,8 @@ describe('login security service MFA gate', () => {
         mfaEmailEnabled: true,
       },
     })).resolves.toEqual({ kind: 'mfa_delivery_failed' });
-    expect(deletedIds).toEqual([42]);
+    expect(rolledBack).toBe(true);
+    expect(rows).toEqual([{ id: 41, active: true }]);
   });
 
   test('fails closed when email MFA cannot be delivered', async () => {

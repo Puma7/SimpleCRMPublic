@@ -248,6 +248,7 @@ export function createLoginSecurityService(input: {
           smtp: input.authInvitationSmtp,
           user,
           now: now(),
+          applyWorkspaceSession: input.applyWorkspaceSession,
         });
         if (!sent) return { kind: 'mfa_delivery_failed' };
       }
@@ -537,43 +538,51 @@ async function sendEmailMfaCode(input: {
   smtp?: AuthInvitationSmtpConfig;
   user: AuthUserRecord;
   now: Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): Promise<boolean> {
-  if (!input.smtp || input.user.mfaMethod !== 'email') return false;
-  // Invalidate any still-outstanding codes for this user before issuing a new
-  // one. Otherwise every /login mints another live 6-digit code (each valid for
-  // 10 min) and verifyEmailMfaCode accepts ANY of them, so k concurrent codes
-  // raise a blind guess's success probability to k/10^6 — code-amplification on
-  // top of MFA-fatigue spam.
-  await input.db
-    .updateTable('auth_mfa_email_codes')
-    .set({ consumed_at: input.now })
-    .where('user_id', '=', input.user.id)
-    .where('consumed_at', 'is', null)
-    .execute();
-  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-  const codeHash = hashEmailCode(code);
-  const expiresAt = new Date(input.now.getTime() + 10 * 60 * 1000);
-  const inserted = await input.db.insertInto('auth_mfa_email_codes').values({
-    user_id: input.user.id,
-    code_hash: codeHash,
-    expires_at: expiresAt,
-  }).returning('id').executeTakeFirst();
-
+  const smtp = input.smtp;
+  if (!smtp || input.user.mfaMethod !== 'email') return false;
   try {
-    await sendMfaEmailCode({
-      smtp: input.smtp,
-      email: input.user.email,
-      displayName: input.user.displayName,
-      code,
-      now: input.now,
-    });
+    await withWorkspaceTransaction(
+      input.db,
+      { workspaceId: input.user.workspaceId, role: 'system' },
+      async (trx) => {
+        // Serialize issuance for one user through delivery. Without the row lock,
+        // concurrent logins can both invalidate before either inserts and leave
+        // multiple codes active.
+        const lockedUser = await trx
+          .selectFrom('users')
+          .select('id')
+          .where('id', '=', input.user.id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!lockedUser) throw new Error('MFA-Benutzer wurde nicht gefunden');
+
+        await trx
+          .updateTable('auth_mfa_email_codes')
+          .set({ consumed_at: input.now })
+          .where('user_id', '=', input.user.id)
+          .where('consumed_at', 'is', null)
+          .execute();
+        const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+        const expiresAt = new Date(input.now.getTime() + 10 * 60 * 1000);
+        await trx.insertInto('auth_mfa_email_codes').values({
+          user_id: input.user.id,
+          code_hash: hashEmailCode(code),
+          expires_at: expiresAt,
+        }).executeTakeFirst();
+
+        await sendMfaEmailCode({
+          smtp,
+          email: input.user.email,
+          displayName: input.user.displayName,
+          code,
+          now: input.now,
+        });
+      },
+      { applySession: input.applyWorkspaceSession },
+    );
   } catch {
-    if (inserted?.id !== undefined) {
-      await input.db
-        .deleteFrom('auth_mfa_email_codes')
-        .where('id', '=', inserted.id)
-        .execute();
-    }
     return false;
   }
   return true;
