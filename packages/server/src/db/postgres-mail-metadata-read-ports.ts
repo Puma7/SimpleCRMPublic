@@ -2925,7 +2925,7 @@ export async function resolveReferenceThreadForSync(
     inReplyTo: string | null;
     referencesHeader: string | null;
     subject: string | null;
-    correspondentEmail: string | null;
+    correspondentEmails: readonly string[];
     now: Date;
     /**
      * Exclude one message id from the sibling lookup. Used by the historical
@@ -3012,13 +3012,15 @@ export async function resolveReferenceThreadForSync(
       .orderBy(kyselySql`(thread_id is null)`)
       .limit(500)
       .execute()) as typeof siblings;
-    const correspondentEmail = args.correspondentEmail;
-    siblings = correspondentEmail
-      ? candidateSiblings.filter((sibling) => threadCorrespondentEmails({
-        folderKind: sibling.folder_kind,
-        fromJson: sibling.from_json,
-        toJson: sibling.to_json,
-      }).includes(correspondentEmail))
+    siblings = args.correspondentEmails.length > 0
+      ? candidateSiblings.filter((sibling) => threadCorrespondentsOverlap(
+        args.correspondentEmails,
+        threadCorrespondentEmails({
+          folderKind: sibling.folder_kind,
+          fromJson: sibling.from_json,
+          toJson: sibling.to_json,
+        }),
+      ))
       : [];
   }
 
@@ -3112,8 +3114,8 @@ export async function resolveReferenceThreadForSync(
     );
     if (
       canonical
-      && args.correspondentEmail
-      && await threadContainsCorrespondent(trx, args.workspaceId, canonical, args.correspondentEmail)
+      && args.correspondentEmails.length > 0
+      && await threadContainsCorrespondent(trx, args.workspaceId, canonical, args.correspondentEmails)
     ) {
       return { threadId: canonical, ticketCode: subjectTicket };
     }
@@ -3142,6 +3144,15 @@ export function threadCorrespondentEmails(input: {
     .map((address) => normalizeEmailAddress(address))
     .filter((address) => address.includes('@'));
   return [...new Set(normalized)];
+}
+
+export function threadCorrespondentsOverlap(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length === 0 || right.length === 0) return false;
+  const rightSet = new Set(right.map(normalizeEmailAddress).filter((email) => email.includes('@')));
+  return left.some((email) => rightSet.has(normalizeEmailAddress(email)));
 }
 
 function recipientAddresses(value: unknown): string[] {
@@ -3185,7 +3196,7 @@ async function threadContainsCorrespondent(
   trx: WorkspaceTransaction,
   workspaceId: string,
   threadId: string,
-  correspondentEmail: string,
+  correspondentEmails: readonly string[],
 ): Promise<boolean> {
   const rows = await trx
     .selectFrom('email_messages')
@@ -3194,11 +3205,14 @@ async function threadContainsCorrespondent(
     .where('thread_id', '=', threadId)
     .limit(500)
     .execute();
-  return rows.some((row) => threadCorrespondentEmails({
-    folderKind: row.folder_kind,
-    fromJson: row.from_json,
-    toJson: row.to_json,
-  }).includes(correspondentEmail));
+  return rows.some((row) => threadCorrespondentsOverlap(
+    correspondentEmails,
+    threadCorrespondentEmails({
+      folderKind: row.folder_kind,
+      fromJson: row.from_json,
+      toJson: row.to_json,
+    }),
+  ));
 }
 
 /**

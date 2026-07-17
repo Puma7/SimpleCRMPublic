@@ -1,6 +1,7 @@
 import {
   threadCorrespondentEmail,
   threadCorrespondentEmails,
+  threadCorrespondentsOverlap,
 } from '../../packages/server/src/db/postgres-mail-metadata-read-ports';
 
 const recipient = (address: string) => JSON.stringify({ value: [{ address }] });
@@ -34,7 +35,7 @@ describe('reference-thread correspondent continuity', () => {
   });
 
   test('keeps every external recipient on sent mail eligible for a reply thread', () => {
-    expect(threadCorrespondentEmails({
+    const sentCorrespondents = threadCorrespondentEmails({
       folderKind: 'sent',
       fromJson: recipient('agent@example.com'),
       toJson: JSON.stringify({
@@ -43,6 +44,10 @@ describe('reference-thread correspondent continuity', () => {
           { address: 'Second+case@Example.COM' },
         ],
       }),
-    })).toEqual(['first@example.com', 'second@example.com']);
+    });
+
+    expect(sentCorrespondents).toEqual(['first@example.com', 'second@example.com']);
+    expect(threadCorrespondentsOverlap(sentCorrespondents, ['second@example.com'])).toBe(true);
+    expect(threadCorrespondentsOverlap(sentCorrespondents, ['attacker@example.net'])).toBe(false);
   });
 });

@@ -37,6 +37,96 @@ const mfaUser = {
   mfaMethod: 'email' as const,
 };
 
+type EmailMfaTestRow = {
+  id: number;
+  userId: string;
+  deliveryStatus: 'pending' | 'sent' | 'failed' | 'superseded';
+  active: boolean;
+};
+
+function makeEmailMfaDb(rows: EmailMfaTestRow[], nextId: () => number) {
+  return {
+    selectFrom(table: string) {
+      const wheres: Array<[string, string, unknown]> = [];
+      const chain: Record<string, jest.Mock> = {};
+      chain.select = jest.fn(() => chain);
+      chain.where = jest.fn((column: string, operator: string, value: unknown) => {
+        wheres.push([column, operator, value]);
+        return chain;
+      });
+      chain.orderBy = jest.fn(() => chain);
+      chain.forUpdate = jest.fn(() => chain);
+      const selectedRows = () => rows.filter((row) => (
+          row.active
+          && wheres.every(([column, operator, value]) => {
+            if (column === 'delivery_status') return operator === '=' && row.deliveryStatus === value;
+            if (column === 'user_id') return operator === '=' && row.userId === value;
+            if (column === 'consumed_at') return operator === 'is' && value === null && row.active;
+            return true;
+          })
+        ));
+      chain.executeTakeFirst = jest.fn(async () => {
+        if (table === 'users') return { id: mfaUser.id };
+        return selectedRows()[0];
+      });
+      chain.execute = jest.fn(async () => selectedRows().map((row) => ({ id: row.id })));
+      return chain;
+    },
+    updateTable() {
+      const wheres: Array<[string, string, unknown]> = [];
+      let values: Record<string, unknown> = {};
+      const chain: Record<string, jest.Mock> = {};
+      chain.set = jest.fn((input: Record<string, unknown>) => {
+        values = input;
+        return chain;
+      });
+      chain.where = jest.fn((column: string, operator: string, value: unknown) => {
+        wheres.push([column, operator, value]);
+        return chain;
+      });
+      chain.execute = jest.fn(async () => {
+        for (const row of rows) {
+          const matches = wheres.every(([column, operator, value]) => {
+            if (column === 'id' && operator === 'in') return (value as unknown[]).includes(row.id);
+            if (column === 'id') return operator === '=' ? row.id === value : row.id !== value;
+            if (column === 'user_id') return row.userId === value;
+            if (column === 'delivery_status') return row.deliveryStatus === value;
+            if (column === 'consumed_at') return operator === 'is' && value === null && row.active;
+            return true;
+          });
+          if (!matches) continue;
+          if (values.delivery_status) {
+            row.deliveryStatus = values.delivery_status as EmailMfaTestRow['deliveryStatus'];
+          }
+          if (values.consumed_at instanceof Date) row.active = false;
+          if (values.consumed_at === null) row.active = true;
+        }
+      });
+      return chain;
+    },
+    insertInto() {
+      return {
+        values(value: { user_id: string; delivery_status: EmailMfaTestRow['deliveryStatus'] }) {
+          const executeTakeFirst = async () => {
+            const row = {
+              id: nextId(),
+              userId: value.user_id,
+              deliveryStatus: value.delivery_status,
+              active: true,
+            };
+            rows.push(row);
+            return { id: row.id };
+          };
+          return {
+            returning: () => ({ executeTakeFirst }),
+            executeTakeFirst,
+          };
+        },
+      };
+    },
+  };
+}
+
 describe('login security helpers', () => {
   test('captcha challenge roundtrip', () => {
     const issuedAt = new Date('2026-01-01T12:00:00.000Z');
@@ -404,81 +494,46 @@ describe('login security service MFA gate', () => {
     expect(issueTokenPair).toHaveBeenCalledTimes(1);
   });
 
-  test('serializes concurrent email MFA issuance per user', async () => {
-    jest.mocked(sendSmtpMessage)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(undefined);
-    const rows: Array<{ id: number; userId: string; active: boolean }> = [];
-    let nextId = 1;
-    let directUpdateCount = 0;
-    let releaseDirectUpdates: () => void = () => undefined;
-    const bothDirectUpdatesStarted = new Promise<void>((resolve) => {
-      releaseDirectUpdates = resolve;
+  test('releases the MFA transaction before SMTP and shares a concurrent delivery', async () => {
+    const rows: Array<{
+      id: number;
+      userId: string;
+      deliveryStatus: 'pending' | 'sent' | 'failed' | 'superseded';
+      active: boolean;
+    }> = [
+      { id: 0, userId: mfaUser.id, deliveryStatus: 'superseded', active: true },
+      { id: 1, userId: mfaUser.id, deliveryStatus: 'sent', active: true },
+    ];
+    let nextId = 2;
+    let activeTransactions = 0;
+    let transactionTail = Promise.resolve();
+    let releaseSmtp: () => void = () => undefined;
+    let notifySmtpStarted: () => void = () => undefined;
+    const smtpStarted = new Promise<void>((resolve) => { notifySmtpStarted = resolve; });
+    const smtpReleased = new Promise<void>((resolve) => { releaseSmtp = resolve; });
+    jest.mocked(sendSmtpMessage).mockImplementationOnce(async () => {
+      expect(activeTransactions).toBe(0);
+      notifySmtpStarted();
+      await smtpReleased;
     });
-    let lockTail = Promise.resolve();
 
-    const makeUpdate = (coordinateDirectRace: boolean) => {
-      const chain: Record<string, jest.Mock> = {};
-      chain.set = jest.fn(() => chain);
-      chain.where = jest.fn(() => chain);
-      chain.execute = jest.fn(async () => {
-        rows.forEach((row) => { row.active = false; });
-        if (coordinateDirectRace) {
-          directUpdateCount += 1;
-          if (directUpdateCount === 2) releaseDirectUpdates();
-          await bothDirectUpdatesStarted;
-        }
-      });
-      return chain;
-    };
-    const makeInsert = () => ({
-      values: (value: { user_id: string }) => {
-        const executeTakeFirst = async () => {
-          const row = { id: nextId, userId: value.user_id, active: true };
-          nextId += 1;
-          rows.push(row);
-          return { id: row.id };
-        };
-        return {
-          executeTakeFirst,
-          returning: () => ({ executeTakeFirst }),
-        };
-      },
-    });
     const transaction = jest.fn(() => ({
       execute: async (operation: (trx: unknown) => Promise<unknown>) => {
-        const releases: Array<() => void> = [];
-        const trx = {
-          selectFrom: () => {
-            const chain: Record<string, jest.Mock> = {};
-            chain.select = jest.fn(() => chain);
-            chain.where = jest.fn(() => chain);
-            chain.forUpdate = jest.fn(() => chain);
-            chain.executeTakeFirst = jest.fn(async () => {
-              const previous = lockTail;
-              let release: () => void = () => undefined;
-              lockTail = new Promise<void>((resolve) => { release = resolve; });
-              await previous;
-              releases.push(release);
-              return { id: mfaUser.id };
-            });
-            return chain;
-          },
-          updateTable: () => makeUpdate(false),
-          insertInto: makeInsert,
-        };
+        const previous = transactionTail;
+        let releaseTransaction: () => void = () => undefined;
+        transactionTail = new Promise<void>((resolve) => { releaseTransaction = resolve; });
+        await previous;
+        activeTransactions += 1;
+        const trx = makeEmailMfaDb(rows, () => nextId++);
         try {
           return await operation(trx);
         } finally {
-          releases.reverse().forEach((release) => release());
+          activeTransactions -= 1;
+          releaseTransaction();
         }
       },
     }));
-    const db = {
-      transaction,
-      updateTable: () => makeUpdate(true),
-      insertInto: makeInsert,
-    };
+    const db = { transaction };
     const service = createService({
       db: db as never,
       smtp: {
@@ -496,62 +551,51 @@ describe('login security service MFA gate', () => {
       mfaEmailEnabled: true,
     };
 
-    const results = await Promise.all([
-      service.beginMfaIfRequired({ user: mfaUser, workspaceSettings: settings }),
-      service.beginMfaIfRequired({ user: mfaUser, workspaceSettings: settings }),
-    ]);
+    const first = service.beginMfaIfRequired({ user: mfaUser, workspaceSettings: settings });
+    await smtpStarted;
+    expect(rows[0]?.active).toBe(false);
+    expect(rows[1]?.deliveryStatus).toBe('superseded');
+    const second = service.beginMfaIfRequired({ user: mfaUser, workspaceSettings: settings });
+    await expect(second).resolves.toEqual(
+      expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
+    );
+    releaseSmtp();
+    const results = await Promise.all([first, second]);
 
     expect(results).toEqual([
       expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
       expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
     ]);
     expect(rows.filter((row) => row.active)).toHaveLength(1);
-    expect(transaction).toHaveBeenCalledTimes(2);
+    expect(rows.filter((row) => row.active && row.deliveryStatus === 'sent')).toHaveLength(1);
+    expect(sendSmtpMessage).toHaveBeenCalledTimes(1);
+    expect(transaction).toHaveBeenCalledTimes(3);
   });
 
-  test('rolls back MFA email code issuance when SMTP delivery fails', async () => {
-    const rows = [{ id: 41, active: true }];
-    let rolledBack = false;
-    const trx = {
-      selectFrom: () => {
-        const chain: Record<string, jest.Mock> = {};
-        chain.select = jest.fn(() => chain);
-        chain.where = jest.fn(() => chain);
-        chain.forUpdate = jest.fn(() => chain);
-        chain.executeTakeFirst = jest.fn(async () => ({ id: mfaUser.id }));
-        return chain;
-      },
-      updateTable: () => {
-        const chain: Record<string, jest.Mock> = {};
-        chain.set = jest.fn(() => chain);
-        chain.where = jest.fn(() => chain);
-        chain.execute = jest.fn(async () => {
-          rows.forEach((row) => { row.active = false; });
-        });
-        return chain;
-      },
-      insertInto: () => ({
-        values: () => ({
-          executeTakeFirst: async () => {
-            rows.push({ id: 42, active: true });
-            return { id: 42 };
-          },
-        }),
-      }),
-    };
+  test('fails the pending MFA code and preserves the previous code when SMTP fails', async () => {
+    const rows: Array<{
+      id: number;
+      userId: string;
+      deliveryStatus: 'pending' | 'sent' | 'failed' | 'superseded';
+      active: boolean;
+    }> = [{ id: 41, userId: mfaUser.id, deliveryStatus: 'sent', active: true }];
+    let nextId = 42;
+    let activeTransactions = 0;
+    jest.mocked(sendSmtpMessage).mockImplementationOnce(async () => {
+      expect(activeTransactions).toBe(0);
+      throw new Error('smtp down');
+    });
     const db = {
-      transaction: () => ({
+      transaction: jest.fn(() => ({
         execute: async (operation: (transaction: unknown) => Promise<unknown>) => {
-          const snapshot = rows.map((row) => ({ ...row }));
+          activeTransactions += 1;
           try {
-            return await operation(trx);
-          } catch (error) {
-            rows.splice(0, rows.length, ...snapshot);
-            rolledBack = true;
-            throw error;
+            return await operation(makeEmailMfaDb(rows, () => nextId++));
+          } finally {
+            activeTransactions -= 1;
           }
         },
-      }),
+      })),
     };
     const service = createLoginSecurityService({
       db: db as never,
@@ -591,8 +635,11 @@ describe('login security service MFA gate', () => {
         mfaEmailEnabled: true,
       },
     })).resolves.toEqual({ kind: 'mfa_delivery_failed' });
-    expect(rolledBack).toBe(true);
-    expect(rows).toEqual([{ id: 41, active: true }]);
+    expect(rows).toEqual([
+      { id: 41, userId: mfaUser.id, deliveryStatus: 'sent', active: true },
+      { id: 42, userId: mfaUser.id, deliveryStatus: 'failed', active: false },
+    ]);
+    expect(db.transaction).toHaveBeenCalledTimes(2);
   });
 
   test('fails closed when email MFA cannot be delivered', async () => {

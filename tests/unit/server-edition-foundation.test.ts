@@ -353,6 +353,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0031_smtp_relay',
   '0032_dmarc_reports',
   '0033_pr156_followup_hardening',
+  '0034_pr156_final_audit',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -2404,6 +2405,7 @@ describe('server edition foundation', () => {
         triggerName: ' inbound ',
         resumeNodeId: 'tag-1',
         errorResumeNodeId: 'notify-error',
+        completeOnSuccess: true,
       },
     }, WORKSPACE_A_ID)).toEqual({
       workspaceId: WORKSPACE_A_ID,
@@ -2418,6 +2420,7 @@ describe('server edition foundation', () => {
         triggerName: 'inbound',
         resumeNodeId: 'tag-1',
         errorResumeNodeId: 'notify-error',
+        completeOnSuccess: true,
       },
     });
     expect(buildWorkflowForwardCopyJobPlan({
@@ -4594,6 +4597,63 @@ describe('server edition foundation', () => {
           'http.status': 503,
           'http.ok': false,
           'http.error': 'HTTP 503',
+        },
+      },
+    });
+  });
+
+  test('postgres workflow HTTP request port completes an error-only continuation after success', async () => {
+    const now = new Date('2026-06-03T12:42:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'workflow_http_allowlist',
+        value: 'api.example.com',
+      }],
+    });
+    const port = createPostgresWorkflowHttpRequestPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      lookup: async () => [{ address: '93.184.216.34' }],
+      fetchImpl: async () => ({
+        ok: true,
+        status: 204,
+        async text() {
+          return '';
+        },
+      }),
+    });
+
+    await port.request({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 11,
+      method: 'POST',
+      url: 'https://api.example.com/hook',
+      timeoutMs: 5000,
+      continuation: {
+        workflowId: 23,
+        triggerName: 'inbound',
+        errorResumeNodeId: 'notify-error',
+        completeOnSuccess: true,
+        eventVariables: { 'message.id': 11 },
+      },
+    });
+
+    expect(rows.jobs).toHaveLength(1);
+    expect(rows.jobs[0]?.payload).toEqual({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 23,
+      messageId: 11,
+      triggerName: 'inbound',
+      context: {
+        workflowTerminalSuccess: true,
+        eventStrings: {},
+        eventVariables: {
+          'message.id': 11,
+          'http.status': 204,
+          'http.body': '',
+          'http.ok': true,
         },
       },
     });
@@ -9847,6 +9907,102 @@ describe('server edition foundation', () => {
       port: 'error',
       message: expect.stringContaining('Continuation-Kontext'),
     });
+  });
+
+  test('postgres workflow execution marks an error-only HTTP branch applied after terminal success', async () => {
+    const now = new Date('2026-07-04T11:01:57.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 362,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 3620,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            {
+              id: 'http-1',
+              type: 'registry',
+              data: {
+                nodeType: 'http.request',
+                config: {
+                  method: 'POST',
+                  url: 'https://api.example.com/hook',
+                  runOnEveryInbound: true,
+                },
+              },
+            },
+            {
+              id: 'tag-error',
+              type: 'registry',
+              data: { nodeType: 'email.tag', config: { tag: 'http-error', runOnEveryInbound: true } },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'http-1' },
+            { id: 'edge-2', source: 'http-1', target: 'tag-error', label: 'error' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 25,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 250,
+        account_id: 7,
+        subject: 'HTTP terminal',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Bitte senden',
+        body_text: 'Bitte senden.',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 362,
+      messageId: 25,
+      triggerName: 'inbound',
+      context: {},
+    });
+
+    expect(rows.jobs).toHaveLength(1);
+    expect(rows.jobs[0]?.payload).toMatchObject({
+      continuation: {
+        workflowId: 362,
+        errorResumeNodeId: 'tag-error',
+        completeOnSuccess: true,
+      },
+    });
+    expect(rows.appliedWorkflows).toEqual([]);
+
+    rows.jobs.length = 0;
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 362,
+      messageId: 25,
+      triggerName: 'inbound',
+      context: {
+        workflowTerminalSuccess: true,
+        eventVariables: { 'http.status': 204, 'http.ok': true },
+      },
+    });
+
+    expect(rows.jobs).toEqual([]);
+    expect(rows.appliedWorkflows).toHaveLength(1);
+    expect(rows.runs.at(-1)?.log_json).toEqual(['continuation:terminal_success']);
   });
 
   test('oversized transient context can be reduced by local nodes before a queue boundary', async () => {

@@ -29,6 +29,11 @@ Am 2026-07-17 kamen drei weitere Inline-Reviews hinzu:
 - `discussion_r3601892548`: MSSQL-Settings-Metadaten fuer normale Benutzer
 - `discussion_r3601892557`: HTTP-Fehler setzte den normalen Workflow-Pfad fort
 
+Die abschliessende Gatekeeper-Pruefung desselben Tages fand drei weitere
+Randfaelle: SMTP-I/O innerhalb der MFA-Transaktion, einen fehlenden terminalen
+Workflow-Abschluss bei HTTP-Knoten mit reiner Fehlerkante und die weiterhin
+skalare Uebergabe der aktuellen Sent-/Draft-Korrespondentenmenge.
+
 ## Ergebnisuebersicht
 
 | Nr. | Finding | Ergebnis | Umsetzung in PR 156 |
@@ -49,6 +54,14 @@ Am 2026-07-17 kamen drei weitere Inline-Reviews hinzu:
 | 14 | Mail-Security/Rspamd-Endpunkte ohne Admin-Gate | Bestaetigt | Behoben: Lesen, Schreiben und Verbindungstest admin-only |
 | 15 | MSSQL-Settings-GET ohne Admin-Gate | Bestaetigt | Behoben: gesamter Settings-Endpunkt admin-only |
 | 16 | HTTP-Fehler folgt normalem Workflow-Nachfolger | Bestaetigt | Behoben: getrennte Success-/Error-Continuation, fail-closed ohne Fehlerkante |
+| 17 | Message-lose CRM-Side-Effects kollidieren | Bestaetigt | Behoben: Run-Identitaet nur ohne Message |
+| 18 | Message-lose HTTP-POSTs teilen Idempotency-Key | Bestaetigt | Behoben: Run-Identitaet nur ohne Message |
+| 19 | Threading beruecksichtigt nur ersten Sent-Empfaenger | Bestaetigt | Behoben: Mengenueberschneidung auf beiden Nachrichtenseiten |
+| 20 | Continuation-Limit blockiert lokale Knoten | Bestaetigt | Behoben: Limit nur an Queue-Grenzen |
+| 21 | Einzelne benannte HTTP-Success-Kante geht verloren | Bestaetigt | Behoben: eindeutiger Custom-Success-Fallback |
+| 22 | Outbound-Review-Forward reserviert nach Sendepfad | Bestaetigt | Behoben: Reservierung vor Compose-Sendepfad |
+| 23 | E-Mail-MFA haelt DB-Transaktion waehrend SMTP | Bestaetigt | Behoben: kurze Reservierungs-/Aktivierungstransaktionen, Delivery-Status |
+| 24 | HTTP-Erfolg mit reiner Fehlerkante bleibt dauerhaft deferred | Bestaetigt | Behoben: terminaler Success-Continuation-Job markiert den Workflow angewendet |
 
 ## Detailpruefung
 
@@ -286,9 +299,12 @@ Empfaenger mit gueltigem `In-Reply-To` oder `References`, fiel der
 Sicherheitsvergleich durch und die legitime Antwort blieb unthreaded.
 
 **Fix:** Sent/Draft-Zeilen stellen alle normalisierten, eindeutigen Empfaenger
-fuer den Sicherheitsvergleich bereit. Inbound-Zeilen bleiben senderbasiert. Der
-skalare Helfer bleibt fuer bestehende Aufrufer kompatibel und liefert weiterhin
-den ersten Eintrag.
+fuer den Sicherheitsvergleich bereit. Inbound-Zeilen bleiben senderbasiert.
+Die abschliessende Pruefung zeigte, dass Live-Sync und Backfill trotz pluralem
+Helfer noch den skalaren Kompatibilitaetswert uebergaben. Beide Pfade uebergeben
+nun die vollstaendige aktuelle Menge; Geschwister- und Ticket-Pruefung verwenden
+eine normalisierte Mengenueberschneidung. Der skalare Helfer bleibt nur fuer
+bestehende, nicht sicherheitskritische Aufrufer kompatibel.
 
 ### 20. Continuation-Limit blockierte lokale Knoten
 
@@ -328,6 +344,35 @@ darf den Sendepfad betreten. Erfolg oder Review-Pending markiert den Eintrag als
 `sent`; ein unklarer Fehler laesst `outbox` stehen und blockiert automatischen
 Neuversand.
 
+### 23. E-Mail-MFA hielt eine Pool-Verbindung waehrend SMTP
+
+**Verifikation:** Code-Erzeugung, Benutzer-Lock und SMTP-Versand liefen in
+derselben Workspace-Transaktion. Ein langsamer oder nicht antwortender
+Mailserver konnte deshalb pro parallelem Login eine PostgreSQL-Pool-Verbindung
+bis zum SMTP-Timeout belegen.
+
+**Fix:** Migration `0034_pr156_final_audit` ergaenzt den Zustellstatus
+`pending`, `sent`, `failed` und `superseded`. Eine kurze Transaktion reserviert genau einen
+laufenden Code pro Benutzer. SMTP laeuft danach ohne DB-Transaktion. Eine zweite
+kurze Transaktion aktiviert den Code erst nach erfolgreichem Versand und
+invalidiert dann aeltere Codes; bei SMTP-Fehler bleibt der vorherige Code aktiv
+und die neue Reservierung wird als fehlgeschlagen konsumiert. Die Verifikation
+akzeptiert ausschliesslich `sent`-Codes.
+
+### 24. HTTP-Erfolg mit reiner Fehlerkante blieb deferred
+
+**Verifikation:** Ein HTTP-Knoten mit ausschliesslicher `error`-Kante musste bis
+zum Worker-Ergebnis deferred bleiben. Bei erfolgreichem HTTP-Ergebnis existierte
+jedoch kein Success-Nachfolger und damit auch kein Job, der den erfolgreichen
+Inbound-Workflow als angewendet markierte.
+
+**Fix:** Solche HTTP-Jobs tragen `completeOnSuccess`. Der validierende
+Produktions-Payload-Parser behaelt dieses Merkmal. Bei erfolgreicher Antwort
+queued der HTTP-Worker einen expliziten terminalen `workflow.execute`-Job mit
+Status- und Body-Kontext; dieser beendet den Run erfolgreich und schreibt den
+Applied-Marker, ohne den HTTP-Knoten erneut auszufuehren. Der Fehlerfall folgt
+weiterhin ausschliesslich der expliziten Fehlerkante.
+
 ## Verifikation
 
 Neu oder erweitert wurden insbesondere Tests fuer:
@@ -342,7 +387,8 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - Draft-Ordnersperre,
 - Forward-Outbox bei unklarem SMTP-Ausgang,
 - sicheren Principal-Default,
-- MFA-Migration/RLS-Registrierung,
+- MFA-Migration/RLS-Registrierung sowie SMTP-ausserhalb-der-Transaktion,
+- terminalen HTTP-Erfolg bei reiner Fehlerkante inklusive Queue-Payload-Parser,
 - Thread-Korrespondentenbestimmung fuer alle Sent-/Draft-Empfaenger,
 - Admin-Gates fuer Mail-Security, Rspamd-Test und MSSQL-Metadaten.
 

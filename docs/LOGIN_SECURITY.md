@@ -130,14 +130,20 @@ OpenAPI: `/api/v1/openapi.json` (Server-Modus).
 
 ---
 
-## Datenmodell (Migration 0020)
+## Datenmodell (Migrationen 0020, 0033 und 0034)
 
 Neue Spalten auf `users`:
 
 - `login_pin_hash`, `login_pin_enabled`
 - `mfa_enabled`, `mfa_method` (`totp` | `email`)
-- `mfa_totp_secret` (verschlüsselt über Secret-Port)
-- `mfa_email_code_hash`, `mfa_email_code_expires_at`
+- `mfa_totp_secret_id` (Verweis auf den verschluesselten Secret-Port)
+
+`auth_mfa_email_codes` speichert Workspace, Benutzer, Code-Hash, Ablauf,
+Verbrauchszeit und den Zustellstatus `pending`, `sent`, `failed` oder
+`superseded`. RLS ist
+fuer die Tabelle erzwungen. Nur erfolgreich als `sent` aktivierte Codes koennen
+einen Login abschliessen; SMTP-Netzwerk-I/O laeuft ausserhalb der kurzen
+Reservierungs- und Aktivierungstransaktionen.
 
 Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-settings.ts`).
 
@@ -148,6 +154,7 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 - **Fail-closed**: ungültige CAPTCHA-Challenge, PIN, MFA oder deaktivierter User → kein Token.
 - **MFA-Challenge** ist single-use (In-Memory-Store + Verbrauch bei Erfolg).
 - **E-Mail-MFA-Code** wird atomar per `UPDATE … RETURNING` konsumiert (Race-sicher).
+- **E-Mail-MFA-Zustellung** reserviert konkurrierende Anforderungen pro Benutzer und haelt waehrend SMTP keine DB-Transaktion offen.
 - **Login-Failure-Counter** (Brute-Force) in einer Transaktion inkrementiert.
 - **INITIAL_SETUP_TOKEN** verhindert unbemerktes Owner-Takeover bei exponiertem Setup-Endpunkt.
 

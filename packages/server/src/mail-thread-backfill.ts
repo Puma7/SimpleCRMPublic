@@ -6,7 +6,7 @@ import { accountSyncAdvisoryLockKey } from './jobs/policy';
 import {
   resolveReferenceThreadForSync,
   refreshThreadAggregateAfterSync,
-  threadCorrespondentEmail,
+  threadCorrespondentEmails,
 } from './db/postgres-mail-metadata-read-ports';
 import {
   withWorkspaceTransaction,
@@ -163,7 +163,7 @@ async function threadOneRow(
     inReplyTo: row.in_reply_to,
     referencesHeader: row.references_header,
     subject: row.subject,
-    correspondentEmail: threadCorrespondentEmail({
+    correspondentEmails: threadCorrespondentEmails({
       folderKind: row.folder_kind,
       fromJson: row.from_json,
       toJson: row.to_json,

@@ -19,6 +19,7 @@ export type WorkflowHttpRequestContinuation = Readonly<{
   triggerName?: string;
   resumeNodeId?: string;
   errorResumeNodeId?: string;
+  completeOnSuccess?: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
 }>;
@@ -107,12 +108,17 @@ export function createPostgresWorkflowHttpRequestPort(
       const resumeNodeId = ok
         ? input.continuation?.resumeNodeId
         : input.continuation?.errorResumeNodeId;
+      const terminalSuccess = Boolean(
+        ok
+        && input.continuation?.completeOnSuccess
+        && !resumeNodeId,
+      );
       // Fail closed: an HTTP error must never enter the normal successor path.
       // Without an explicit error edge the job remains failed/retryable.
       if (!ok && !resumeNodeId) {
         throw new Error(`workflow HTTP request failed (${status || 'no response'}): ${errorMessage ?? ''}`);
       }
-      if (input.continuation && resumeNodeId) {
+      if (input.continuation && (resumeNodeId || terminalSuccess)) {
         await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
@@ -149,7 +155,7 @@ async function readWorkflowHttpAllowlist(
 async function enqueueWorkflowHttpContinuation(
   trx: WorkspaceTransaction,
   input: WorkflowHttpRequestJobPlan,
-  resumeNodeId: string,
+  resumeNodeId: string | undefined,
   status: number,
   body: string,
   now: Date,
@@ -169,7 +175,9 @@ async function enqueueWorkflowHttpContinuation(
         ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
         ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
         context: {
-          resumeNodeId,
+          ...(resumeNodeId
+            ? { resumeNodeId }
+            : { workflowTerminalSuccess: true }),
           eventStrings: continuation.eventStrings ?? {},
           eventVariables: {
             ...(continuation.eventVariables ?? {}),

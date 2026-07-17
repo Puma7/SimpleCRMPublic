@@ -673,6 +673,7 @@ function optionalWorkflowHttpContinuation(
       ...optionalString(continuationPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
       ...resumeNodeId,
       ...errorResumeNodeId,
+      ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(continuationPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
     },

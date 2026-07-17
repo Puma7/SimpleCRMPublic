@@ -31,6 +31,7 @@ import { emailEvidenceClassificationV2Migration } from './0030_email_evidence_cl
 import { smtpRelayMigration } from './0031_smtp_relay';
 import { dmarcReportsMigration } from './0032_dmarc_reports';
 import { pr156FollowupHardeningMigration } from './0033_pr156_followup_hardening';
+import { pr156FinalAuditMigration } from './0034_pr156_final_audit';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -68,6 +69,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   smtpRelayMigration,
   dmarcReportsMigration,
   pr156FollowupHardeningMigration,
+  pr156FinalAuditMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

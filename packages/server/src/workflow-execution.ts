@@ -398,6 +398,18 @@ export function createPostgresWorkflowExecutionJobPort(
             now,
           });
 
+          if (contextCompletesWorkflow(jobContext) && !resumeNodeId) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['continuation:terminal_success'],
+              now,
+            });
+            if (trigger === 'inbound' && message) {
+              await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+            }
+            return;
+          }
+
           if (!workflow.enabled) {
             await finishRun(trx, input.workspaceId, run.id, {
               status: 'ok',
@@ -2736,6 +2748,7 @@ async function scheduleWorkflowHttpRequestJob(
       triggerName: context.trigger,
       ...(resumeNodeId ? { resumeNodeId } : {}),
       ...(errorResumeNodeId ? { errorResumeNodeId } : {}),
+      ...(!resumeNodeId && errorResumeNodeId ? { completeOnSuccess: true } : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
     };
@@ -6441,6 +6454,10 @@ function contextHasOutbound(value: Record<string, unknown>): boolean {
 
 function contextForcesWorkflowReapply(value: Record<string, unknown>): boolean {
   return value.forceWorkflowReapply === true || value.workflowBackfill === true;
+}
+
+function contextCompletesWorkflow(value: Record<string, unknown>): boolean {
+  return value.workflowTerminalSuccess === true;
 }
 
 function contextSkipsSpamOrReview(value: Record<string, unknown>): boolean {

@@ -37,7 +37,7 @@ import { resolveAttachmentStoragePath } from './db';
 import {
   refreshThreadAggregateAfterSync,
   resolveReferenceThreadForSync,
-  threadCorrespondentEmail,
+  threadCorrespondentEmails,
 } from './db/postgres-mail-metadata-read-ports';
 import {
   MAX_SYNC_ATTACHMENT_BYTES,
@@ -1648,7 +1648,7 @@ async function upsertPostgresMailSyncMessage(
     inReplyTo: input.inReplyTo,
     referencesHeader: input.referencesHeader,
     subject: input.subject,
-    correspondentEmail: threadCorrespondentEmail({
+    correspondentEmails: threadCorrespondentEmails({
       folderKind: input.folderKind,
       fromJson: input.fromJson,
       toJson: input.toJson,
