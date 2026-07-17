@@ -9,6 +9,7 @@ jest.mock('@/components/auth/auth-context', () => ({
   useAuth: () => ({
     user: mockUser,
     loading: false,
+    hasCapability: () => false,
   }),
 }));
 

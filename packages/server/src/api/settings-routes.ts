@@ -283,7 +283,9 @@ async function handleWorkflowAutomationSettings(
   // allowlist and auto-reply context to non-admin workflow authors.
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireCapability(principal, 'workflows.manage')) return error(403, 'forbidden', 'Adminrechte oder Workflow-Berechtigung erforderlich');
+  // Stays admin-only: the payload includes the workflow HTTP allowlist, which is
+  // the SSRF boundary for http.request nodes — not safe to delegate.
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const parsed = parseWorkflowAutomationSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const saved = await saveSyncInfo(req, ports, parsed.values, 'workflow_settings.updated', 'workflow.settings.automation');

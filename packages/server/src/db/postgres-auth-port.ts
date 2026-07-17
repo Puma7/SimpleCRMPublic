@@ -18,7 +18,7 @@ import type {
   AuthUserRecord,
   TokenPair,
 } from '../api';
-import { isRoleAssignmentForbidden } from '../api/capabilities';
+import { isForbiddenUserMutation } from '../api/capabilities';
 import type { AuthInvitationRow, ServerDatabase, UserRow } from './schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './workspace-context';
 
@@ -157,7 +157,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             if (!input.password) return { ok: false as const, code: 'password_required' as const };
             // Only admins may create privileged accounts; delegated user
             // managers (users.manage) can create ordinary users only.
-            if (isRoleAssignmentForbidden(input.actorIsAdmin, input.role)) {
+            if (isForbiddenUserMutation(input.actorIsAdmin, input.role)) {
               return { ok: false as const, code: 'role_change_forbidden' as const };
             }
             const created = await trx
@@ -190,9 +190,10 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           const existing = await selectUserById(trx, input.workspaceId, input.id);
           if (!existing) return { ok: false as const, code: 'not_found' as const };
 
-          // Delegated user managers may edit users but never change a role
-          // (which would let them self-escalate to owner/admin).
-          if (isRoleAssignmentForbidden(input.actorIsAdmin, input.role, existing.role)) {
+          // Delegated user managers may edit ordinary users only — never change
+          // a role, and never mutate an existing admin/owner account (e.g. reset
+          // its password or disable an owner).
+          if (isForbiddenUserMutation(input.actorIsAdmin, input.role, existing.role)) {
             return { ok: false as const, code: 'role_change_forbidden' as const };
           }
 

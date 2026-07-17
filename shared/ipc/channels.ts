@@ -129,6 +129,7 @@ const AuthChannels = literal({
   ListUsers: 'auth:list-users',
   SaveUser: 'auth:save-user',
   DeleteUser: 'auth:delete-user',
+  ListCapabilities: 'auth:list-capabilities',
   ChangePassword: 'auth:change-password',
   CreateInvite: 'auth:create-invite',
   GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',

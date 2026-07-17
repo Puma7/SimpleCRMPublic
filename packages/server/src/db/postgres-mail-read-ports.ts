@@ -194,6 +194,7 @@ const emailMessageSummaryColumns = [
   'snoozed_until',
   'draft_attachment_paths_json',
   'reply_parent_message_id',
+  'tracking_override',
   'updated_at',
 ] as const;
 
@@ -4531,6 +4532,9 @@ function mapEmailMessageRow(
     ...(row.thread_message_count === undefined || row.thread_message_count === null
       ? {}
       : { threadMessageCount: Number(row.thread_message_count) }),
+    // Per-message tracking choice, so a reopened draft re-seeds the compose
+    // checkbox from its saved value rather than the current workspace default.
+    trackingOverride: row.tracking_override ?? null,
     ticketCode: row.ticket_code,
     customerId: row.customer_id === null ? null : Number(row.customer_id),
     hasAttachments: row.has_attachments,

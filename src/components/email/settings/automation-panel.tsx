@@ -41,7 +41,8 @@ export function AutomationPanel() {
   const { user } = useAuth()
   const rendererTransport = getRendererTransport()
   const serverClientMode = rendererTransport.kind === "http"
-  const isAdmin = user?.role === "owner" || user?.role === "admin"
+  // Admin-only: this panel edits the workflow HTTP allowlist (SSRF boundary).
+  const canManage = user?.role === "owner" || user?.role === "admin"
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false)
@@ -83,7 +84,7 @@ export function AutomationPanel() {
           : null,
       )
 
-      if (serverClientMode && isAdmin) {
+      if (serverClientMode && canManage) {
         const api = await invokeRenderer(
           IPCChannels.Automation.GetSettings,
         ) as ServerAutomationApiSettings
@@ -108,21 +109,21 @@ export function AutomationPanel() {
     } finally {
       setLoading(false)
     }
-  }, [isAdmin, serverClientMode])
+  }, [canManage, serverClientMode])
 
   useEffect(() => {
     void load()
   }, [load])
 
   useEffect(() => {
-    if (!serverClientMode || !isAdmin) return
+    if (!serverClientMode || !canManage) return
     const subscription = subscribeServerEvents({
       onEvent(event) {
         if (isAutomationApiKeyRefreshEvent(event)) void load()
       },
     })
     return () => subscription.unsubscribe()
-  }, [isAdmin, load, serverClientMode])
+  }, [canManage, load, serverClientMode])
 
   const saveWorkflowOpts = async () => {
     if (!serverClientMode && !hasLocalIpc()) return
@@ -243,7 +244,7 @@ export function AutomationPanel() {
 
   return (
     <div className="space-y-8">
-      {serverClientMode && !isAdmin ? (
+      {serverClientMode && !canManage ? (
         <section className="space-y-4">
           <div>
             <h3 className="text-base font-semibold">Externe API (n8n, Make, Skripte)</h3>

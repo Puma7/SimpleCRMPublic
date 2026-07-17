@@ -1,7 +1,7 @@
 import { requireCapability } from '../../packages/server/src/api/http';
 import {
   USER_GROUP_CAPABILITY_KEYS,
-  isRoleAssignmentForbidden,
+  isForbiddenUserMutation,
   isUserGroupCapability,
 } from '../../packages/server/src/api/capabilities';
 import { USER_GROUP_CAPABILITY_KEYS as SHARED_KEYS } from '../../shared/user-capabilities';
@@ -42,18 +42,21 @@ describe('user group capabilities', () => {
     expect(requireCapability(principal({ role: 'user' }), 'tracking.view')).toBe(false);
   });
 
-  test('only admins may assign or change roles (users.manage cannot self-escalate)', () => {
-    // Admins may assign any role, on create or update.
-    expect(isRoleAssignmentForbidden(true, 'owner')).toBe(false);
-    expect(isRoleAssignmentForbidden(true, 'admin', 'user')).toBe(false);
-    // A delegated user manager may create ordinary users…
-    expect(isRoleAssignmentForbidden(false, 'user')).toBe(false);
-    // …but not privileged ones, and not change an existing role.
-    expect(isRoleAssignmentForbidden(false, 'owner')).toBe(true);
-    expect(isRoleAssignmentForbidden(false, 'admin')).toBe(true);
-    expect(isRoleAssignmentForbidden(false, 'owner', 'user')).toBe(true);
-    expect(isRoleAssignmentForbidden(false, 'admin', 'user')).toBe(true);
-    // Editing a user without touching the role is allowed.
-    expect(isRoleAssignmentForbidden(false, 'user', 'user')).toBe(false);
+  test('delegated user managers may only create/edit ordinary users', () => {
+    // Admins may create or edit any account.
+    expect(isForbiddenUserMutation(true, 'owner')).toBe(false);
+    expect(isForbiddenUserMutation(true, 'admin', 'owner')).toBe(false);
+    // A delegated user manager may create and edit ordinary users…
+    expect(isForbiddenUserMutation(false, 'user')).toBe(false);
+    expect(isForbiddenUserMutation(false, 'user', 'user')).toBe(false);
+    // …but never create/assign a privileged role…
+    expect(isForbiddenUserMutation(false, 'owner')).toBe(true);
+    expect(isForbiddenUserMutation(false, 'admin')).toBe(true);
+    expect(isForbiddenUserMutation(false, 'owner', 'user')).toBe(true);
+    // …and never touch an existing admin/owner account (even keeping its role),
+    // which would otherwise allow resetting an admin's password or disabling an owner.
+    expect(isForbiddenUserMutation(false, 'admin', 'admin')).toBe(true);
+    expect(isForbiddenUserMutation(false, 'owner', 'owner')).toBe(true);
+    expect(isForbiddenUserMutation(false, 'user', 'admin')).toBe(true);
   });
 });

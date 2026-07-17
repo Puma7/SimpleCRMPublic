@@ -111,6 +111,8 @@ export type EmailMessage = {
   ticket_code?: string | null
   thread_id?: string | null
   thread_message_count?: number | null
+  /** Per-message tracking choice; null follows the workspace default. */
+  tracking_override?: boolean | null
   customer_id?: number | null
   folder_kind?: string
   assigned_to?: string | null

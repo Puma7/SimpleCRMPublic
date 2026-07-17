@@ -14,6 +14,7 @@ import { invokeIpc, hasElectron } from "@/components/email/types"
 import {
   createServerAuthClient,
   getRendererTransport,
+  invokeRenderer,
   ServerAuthClientError,
   type ServerAuthClient,
   type ServerAuthSession,
@@ -33,6 +34,8 @@ type AuthState = {
   authenticated: boolean
   authRequired: boolean
   user: AuthUser | null
+  /** Owners/admins hold every capability; other roles gain group-granted ones. */
+  hasCapability: (capability: string) => boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   refresh: () => Promise<void>
@@ -45,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false)
   const [authRequired, setAuthRequired] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(null)
+  const [capabilities, setCapabilities] = useState<readonly string[]>([])
   const [serverSessionExpiresAt, setServerSessionExpiresAt] = useState<string | null>(null)
 
   const applyServerSession = useCallback((session: ServerAuthSession | null) => {
@@ -135,6 +139,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer)
   }, [applyServerSession, authenticated, serverSessionExpiresAt])
 
+  // Load group-granted capabilities for non-admin users (server edition only).
+  // Owners/admins hold all implicitly, so the fetch is skipped for them.
+  useEffect(() => {
+    if (!authenticated || !user || getRendererTransport().kind !== "http"
+      || user.role === "owner" || user.role === "admin") {
+      setCapabilities([])
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await invokeRenderer(IPCChannels.Auth.ListCapabilities, undefined) as
+          { capabilities?: string[] } | null
+        if (!cancelled && res && Array.isArray(res.capabilities)) setCapabilities(res.capabilities)
+      } catch {
+        if (!cancelled) setCapabilities([])
+      }
+    })()
+    return () => { cancelled = true }
+  }, [authenticated, user])
+
+  const hasCapability = useCallback((capability: string): boolean => {
+    if (!user) return false
+    if (user.role === "owner" || user.role === "admin") return true
+    return capabilities.includes(capability)
+  }, [user, capabilities])
+
   const login = useCallback(async (username: string, passphrase: string) => {
     const transport = getRendererTransport()
     const serverAuth = getServerAuthClient(transport)
@@ -178,12 +209,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setAuthenticated(false)
     setUser(null)
+    setCapabilities([])
     setServerSessionExpiresAt(null)
   }, [])
 
   const value = useMemo(
-    () => ({ loading, authenticated, authRequired, user, login, logout, refresh }),
-    [loading, authenticated, authRequired, user, login, logout, refresh],
+    () => ({ loading, authenticated, authRequired, user, hasCapability, login, logout, refresh }),
+    [loading, authenticated, authRequired, user, hasCapability, login, logout, refresh],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

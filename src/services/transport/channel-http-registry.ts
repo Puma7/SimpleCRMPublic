@@ -350,6 +350,7 @@ type EmailMessageRecord = {
   threadId?: string | null
   imapThreadId?: string | null
   threadMessageCount?: number | null
+  trackingOverride?: boolean | null
   ticketCode?: string | null
   customerId?: number | null
   hasAttachments?: boolean | number | null
@@ -943,6 +944,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     method: "GET",
     path: "/api/v1/auth/users",
     transform: (body) => listItems<AuthUserRecord>(body).map(mapAuthUserRecord),
+  })],
+  [IPCChannels.Auth.ListCapabilities, () => ({
+    method: "GET",
+    path: "/api/v1/auth/capabilities",
+    transform: (body) => dataBody<{ role: string; capabilities: string[] }>(body),
   })],
   [IPCChannels.Auth.SaveUser, ([payload]) => {
     const input = objectPayload(payload, "auth user payload")
@@ -5394,6 +5400,7 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     thread_id: record.threadId ?? null,
     imap_thread_id: record.imapThreadId ?? null,
     thread_message_count: record.threadMessageCount ?? null,
+    tracking_override: record.trackingOverride ?? null,
     customer_id: record.customerId ?? null,
     folder_kind: record.folderKind ?? undefined,
     assigned_to: record.assignedTo ?? record.assignedToUserId ?? null,

@@ -21,16 +21,19 @@ export function isUserGroupCapability(value: unknown): value is UserGroupCapabil
 type UserRole = 'owner' | 'admin' | 'user';
 
 /**
- * Role assignment is admin-only. A delegated user manager (users.manage but not
- * admin) may create ordinary users and edit existing users, but must never set
- * or change a role — otherwise they could self-escalate to owner/admin.
+ * Privileged user management is admin-only. A delegated user manager
+ * (users.manage but not admin) may only create and edit ordinary `user`
+ * accounts: they must never assign a privileged role, and must never mutate an
+ * existing admin/owner account (e.g. reset its password or disable an owner).
  * `existingRole` is undefined when creating a new user.
  */
-export function isRoleAssignmentForbidden(
+export function isForbiddenUserMutation(
   actorIsAdmin: boolean,
   requestedRole: UserRole,
   existingRole?: UserRole,
 ): boolean {
   if (actorIsAdmin) return false;
-  return existingRole === undefined ? requestedRole !== 'user' : requestedRole !== existingRole;
+  if (requestedRole !== 'user') return true;
+  if (existingRole !== undefined && existingRole !== 'user') return true;
+  return false;
 }

@@ -467,6 +467,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           setSignatureHtml(hydrated.signatureHtml)
           setQuotedHtml(hydrated.quotedHtml)
           setAttachmentPaths(hydrated.attachmentPaths)
+          // Re-seed the per-message tracking choice from the saved draft so a
+          // later autosave/Send keeps an explicit opt-out (or opt-in) instead of
+          // flipping it to the workspace default. null → follow the default.
+          if (existing.tracking_override != null) setTrackMail(existing.tracking_override)
           setComposeSession(
             buildComposeSessionSnapshot(
               composeIntent,
@@ -514,6 +518,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             setSignatureHtml(hydrated.signatureHtml)
             setQuotedHtml(hydrated.quotedHtml)
             setAttachmentPaths(hydrated.attachmentPaths)
+            // See the draft-open branch: keep the saved per-message tracking
+            // choice rather than resetting it to the workspace default.
+            if (resumed.tracking_override != null) setTrackMail(resumed.tracking_override)
             if (session.keepReplyOpenInInbox != null) {
               setKeepReplyOpenInInbox(session.keepReplyOpenInInbox)
             }

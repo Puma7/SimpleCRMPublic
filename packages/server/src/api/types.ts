@@ -1708,6 +1708,8 @@ export type EmailMessageRecord = {
   threadId: string | null;
   imapThreadId: string | null;
   threadMessageCount?: number | null;
+  /** Per-message tracking choice; null follows the workspace default. */
+  trackingOverride?: boolean | null;
   ticketCode: string | null;
   customerId: number | null;
   hasAttachments: boolean;

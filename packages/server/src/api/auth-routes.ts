@@ -69,6 +69,10 @@ export async function handleAuthRoute(
     if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     return handleChangePassword(req, ports);
   }
+  if (req.path === '/api/v1/auth/capabilities') {
+    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    return handleGetCapabilities(req);
+  }
   if (req.path === '/api/v1/auth/users') {
     if (req.method === 'GET') return handleListUsers(req, ports);
     if (req.method === 'POST') return handleSaveUser(req, ports);
@@ -293,6 +297,17 @@ async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
   return authSessionData(req, 200, {
     user: publicUser(rotated.user),
   }, rotated.tokens);
+}
+
+function handleGetCapabilities(req: ApiRequest): ApiResponse {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  // Owners/admins hold every capability implicitly; the client mirrors that via
+  // its role, so only the group-granted union is returned here.
+  return data(200, {
+    role: principal.role,
+    capabilities: [...(principal.capabilities ?? [])],
+  });
 }
 
 async function handleListUsers(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
