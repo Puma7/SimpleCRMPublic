@@ -2926,6 +2926,9 @@ export async function resolveReferenceThreadForSync(
     referencesHeader: string | null;
     subject: string | null;
     correspondentEmails: readonly string[];
+    /** Account's own address(es) so sibling rows that are archived sent
+     *  copies (folderKind 'inbox') resolve to their recipients too. */
+    accountEmails?: readonly string[];
     now: Date;
     /**
      * Exclude one message id from the sibling lookup. Used by the historical
@@ -3023,6 +3026,7 @@ export async function resolveReferenceThreadForSync(
           toJson: sibling.to_json,
           ccJson: sibling.cc_json,
           bccJson: sibling.bcc_json,
+          accountEmails: args.accountEmails,
         }),
       ))
       : [];
@@ -3119,7 +3123,13 @@ export async function resolveReferenceThreadForSync(
     if (
       canonical
       && args.correspondentEmails.length > 0
-      && await threadContainsCorrespondent(trx, args.workspaceId, canonical, args.correspondentEmails)
+      && await threadContainsCorrespondent(
+        trx,
+        args.workspaceId,
+        canonical,
+        args.correspondentEmails,
+        args.accountEmails,
+      )
     ) {
       return { threadId: canonical, ticketCode: subjectTicket };
     }
@@ -3145,15 +3155,38 @@ export function threadCorrespondentEmails(input: {
   toJson: unknown;
   ccJson?: unknown;
   bccJson?: unknown;
+  /**
+   * The owning account's address(es). Archive/All-Mail folders sync with
+   * folderKind 'inbox', so a sent copy living only there would otherwise
+   * report the account's own address as its correspondent and replies
+   * referencing it would fail the overlap check. A message authored by the
+   * account uses its recipients instead. Accepting a spoofed From of the
+   * account's own address stays within the documented residual (From
+   * spoofing without DKIM/DMARC evidence) that the from-based match already
+   * carries.
+   */
+  accountEmails?: readonly string[];
 }): string[] {
-  const useRecipients = input.folderKind === 'sent' || input.folderKind === 'draft';
+  const fromAddresses = recipientAddresses(input.fromJson);
+  const selfAuthored = (() => {
+    if (!input.accountEmails?.length || fromAddresses.length === 0) return false;
+    const own = new Set(
+      input.accountEmails
+        .map((address) => normalizeEmailAddress(address))
+        .filter((address) => address.includes('@')),
+    );
+    return fromAddresses.some((address) => own.has(normalizeEmailAddress(address)));
+  })();
+  const useRecipients = input.folderKind === 'sent'
+    || input.folderKind === 'draft'
+    || selfAuthored;
   const addresses = useRecipients
     ? [
       ...recipientAddresses(input.toJson),
       ...recipientAddresses(input.ccJson),
       ...recipientAddresses(input.bccJson),
     ]
-    : recipientAddresses(input.fromJson);
+    : fromAddresses;
   const normalized = addresses
     .map((address) => normalizeEmailAddress(address))
     .filter((address) => address.includes('@'));
@@ -3211,6 +3244,7 @@ async function threadContainsCorrespondent(
   workspaceId: string,
   threadId: string,
   correspondentEmails: readonly string[],
+  accountEmails?: readonly string[],
 ): Promise<boolean> {
   const rows = await trx
     .selectFrom('email_messages')
@@ -3227,6 +3261,7 @@ async function threadContainsCorrespondent(
       toJson: row.to_json,
       ccJson: row.cc_json,
       bccJson: row.bcc_json,
+      accountEmails,
     }),
   ));
 }

@@ -14,6 +14,7 @@ import {
   InboundMessageTooLargeError,
   MAX_INBOUND_RFC822_BYTES,
 } from '../../packages/core/src/email/inbound-message-size';
+import { SmtpPreDataSendError } from '../../packages/server/src/mail-smtp-send';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
@@ -10792,6 +10793,80 @@ describe('server edition foundation', () => {
     expect(rows.forwardDedup).toEqual([
       expect.objectContaining({ message_id: 28, dest: 'bank@example.com,buchhaltung@example.com' }),
     ]);
+  });
+
+  test('postgres workflow forward-copy releases the reservation after a pre-DATA SMTP failure', async () => {
+    const now = new Date('2026-07-04T11:06:00.000Z');
+    let smtpMode: 'predata' | 'ambiguous' | 'ok' = 'predata';
+    const smtpSends: Array<{ recipients: string[] }> = [];
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 40, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 400, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        account_id: 7,
+        subject: 'Rechnung 2026-002',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Rechnung',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const secrets = {
+      async readSecret(input: { kind: string }) {
+        return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret', 'utf8') : null;
+      },
+      async writeSecret() { throw new Error('unexpected'); },
+      async deleteSecret() { return false; },
+      async rotateSecret() { return null; },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      smtpSend: async (input) => {
+        if (smtpMode === 'predata') throw new SmtpPreDataSendError('454 4.7.0 TLS not available');
+        if (smtpMode === 'ambiguous') throw new Error('socket hang up after DATA');
+        smtpSends.push(input as { recipients: string[] });
+      },
+    });
+    const plan = {
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 40,
+      messageId: 29,
+      to: 'audit@example.com',
+    };
+
+    // Pre-DATA failure: nothing was delivered, the reservation is released so
+    // the retry may send.
+    await expect(port.forwardCopy(plan)).rejects.toThrow(/TLS not available/);
+    expect(rows.forwardDedup).toEqual([]);
+
+    // Ambiguous failure (after body submission): the reservation stays and
+    // blocks automatic resend.
+    smtpMode = 'ambiguous';
+    await expect(port.forwardCopy(plan)).rejects.toThrow(/socket hang up/);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({ delivery_status: 'outbox' }),
+    ]);
+    smtpMode = 'ok';
+    await expect(port.forwardCopy(plan)).rejects.toThrow(/Zustellstatus ist unklar/);
+    expect(smtpSends).toHaveLength(0);
   });
 
   test('postgres workflow forward-copy port fails closed while outbound workflows are enabled', async () => {
@@ -40259,6 +40334,7 @@ function makeServerMailSyncAccount(overrides: Record<string, unknown> = {}): any
     id: 7,
     sourceSqliteId: -700,
     protocol: 'imap',
+    emailAddress: 'sync@example.com',
     imapHost: 'imap.example.com',
     imapPort: 993,
     imapTls: true,

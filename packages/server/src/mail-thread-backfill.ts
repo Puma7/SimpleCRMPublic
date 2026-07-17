@@ -51,6 +51,9 @@ export function createPostgresMailThreadBackfillPort(
       let scanned = 0;
       let threaded = 0;
       let cursor = 0;
+      // Account address per account id (for self-authored archived copies) —
+      // resolved lazily once per account and run.
+      const accountEmailCache = new Map<number, readonly string[]>();
 
       while (scanned < limit) {
         const rows = await withWorkspaceTransaction(
@@ -71,7 +74,7 @@ export function createPostgresMailThreadBackfillPort(
           const didThread = await withWorkspaceTransaction(
             options.db,
             { workspaceId: input.workspaceId, role: 'system' },
-            (trx) => threadOneRow(trx, input.workspaceId, Number(row.id), accountId, row, now),
+            (trx) => threadOneRow(trx, input.workspaceId, Number(row.id), accountId, row, now, accountEmailCache),
             { applySession: options.applyWorkspaceSession },
           );
           if (didThread) threaded += 1;
@@ -141,6 +144,7 @@ async function threadOneRow(
   accountId: number,
   row: UnthreadedRow,
   now: Date,
+  accountEmailCache: Map<number, readonly string[]>,
 ): Promise<boolean> {
   // Take the SAME per-account advisory lock the live sync path holds, so a
   // backfill can't race a concurrent sync (or a second backfill) and mint a
@@ -158,6 +162,18 @@ async function threadOneRow(
     .executeTakeFirst();
   if (!current || current.thread_id) return false;
 
+  let accountEmails = accountEmailCache.get(accountId);
+  if (!accountEmails) {
+    const account = await trx
+      .selectFrom('email_accounts')
+      .select(['email_address'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    accountEmails = account?.email_address?.trim() ? [account.email_address.trim()] : [];
+    accountEmailCache.set(accountId, accountEmails);
+  }
+
   const resolved = await resolveReferenceThreadForSync(trx, {
     workspaceId,
     accountId,
@@ -171,7 +187,9 @@ async function threadOneRow(
       toJson: row.to_json,
       ccJson: row.cc_json,
       bccJson: row.bcc_json,
+      accountEmails,
     }),
+    accountEmails,
     now,
     excludeMessageId: id,
   });

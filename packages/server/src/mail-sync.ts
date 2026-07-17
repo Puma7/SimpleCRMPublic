@@ -112,6 +112,9 @@ export type ServerMailSyncAccount = Readonly<{
   id: number;
   sourceSqliteId: number;
   protocol: string;
+  /** Account mailbox address — used to detect self-authored archived copies
+   *  during reference threading. */
+  emailAddress: string | null;
   imapHost: string;
   imapPort: number;
   imapTls: boolean;
@@ -940,6 +943,7 @@ function createPostgresMailSyncStore(options: PostgresMailSyncJobPortOptions): S
             'id',
             'source_sqlite_id',
             'protocol',
+            'email_address',
             'imap_host',
             'imap_port',
             'imap_tls',
@@ -1685,6 +1689,9 @@ async function upsertPostgresMailSyncMessage(
   // Reference-thread the message (Message-ID / In-Reply-To / References) so it
   // joins its conversation. Runs in this sync transaction and backfills
   // thread-less siblings; standalone/headerless mail stays unthreaded.
+  const accountEmails = input.account.emailAddress?.trim()
+    ? [input.account.emailAddress.trim()]
+    : [];
   const resolvedThread = await resolveReferenceThreadForSync(trx, {
     workspaceId: input.workspaceId,
     accountId: input.account.id,
@@ -1698,7 +1705,9 @@ async function upsertPostgresMailSyncMessage(
       toJson: input.toJson,
       ccJson: input.ccJson,
       bccJson: input.bccJson,
+      accountEmails,
     }),
+    accountEmails,
     now,
   });
   const row = await trx
@@ -2387,6 +2396,7 @@ function mapMailSyncAccount(row: Pick<EmailAccountRow,
   | 'id'
   | 'source_sqlite_id'
   | 'protocol'
+  | 'email_address'
   | 'imap_host'
   | 'imap_port'
   | 'imap_tls'
@@ -2406,6 +2416,7 @@ function mapMailSyncAccount(row: Pick<EmailAccountRow,
     id: Number(row.id),
     sourceSqliteId: Number(row.source_sqlite_id),
     protocol: row.protocol,
+    emailAddress: row.email_address ?? null,
     imapHost: row.imap_host,
     imapPort: Number(row.imap_port),
     imapTls: Boolean(row.imap_tls),

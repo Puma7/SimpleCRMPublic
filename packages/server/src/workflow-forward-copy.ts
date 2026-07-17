@@ -23,7 +23,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
-import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
+import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
 import type { JobPayload } from './jobs/types';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
@@ -342,6 +342,18 @@ export function createPostgresWorkflowForwardCopyPort(
           ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
         });
       } catch (error) {
+        if (error instanceof SmtpPreDataSendError) {
+          // Nothing reached the DATA stage, so nothing can have been
+          // delivered — release the reservation so a later retry may send.
+          // Ambiguous failures (after body submission) keep the reservation
+          // and block automatic resend.
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => releaseForwardCopyReservation(trx, input, prepared),
+            { applySession: options.applyWorkspaceSession },
+          );
+        }
         await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
@@ -639,6 +651,23 @@ async function reserveForwardCopyDelivery(
     workflowSourceSqliteId: prepared.workflowSourceSqliteId,
     destination: prepared.destination,
   }) ?? 'outbox';
+}
+
+/** Removes an unconsumed 'outbox' reservation after a provably pre-DATA SMTP
+ *  failure. Rows already marked 'sent' are never touched. */
+async function releaseForwardCopyReservation(
+  trx: WorkspaceTransaction,
+  input: WorkflowForwardCopyJobPlan,
+  prepared: Extract<PreparedForwardCopy, { ok: true }>,
+): Promise<void> {
+  await trx
+    .deleteFrom('email_workflow_forward_dedup')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_source_sqlite_id', '=', prepared.message.sourceSqliteId)
+    .where('workflow_source_sqlite_id', '=', prepared.workflowSourceSqliteId)
+    .where('dest', '=', prepared.destination)
+    .where('delivery_status', '=', 'outbox')
+    .execute();
 }
 
 async function markForwardCopyDelivered(

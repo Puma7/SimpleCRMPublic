@@ -480,6 +480,42 @@ Probe selbst fehl, bleibt die Liste unangetastet (kein blindes Verwerfen von
 Retries). Ein Test verifiziert Drain der expungten UID bei gleichzeitigem
 Retry der noch vorhandenen.
 
+### 31a. (Nachtrag auf `fc7ad49d`) Zwei weitere Codex-Findings
+
+- `discussion_r3603838250`/`_r3603838258`: Pre-DATA-SMTP-Fehler blockierten Forwards dauerhaft
+- `discussion_r3603838244`: archivierte Sent-Kopien fielen aus der Korrespondentenpruefung
+
+| 32 | Pre-DATA-SMTP-Fehler liess Forward-Reservierung stehen | Bestaetigt | Behoben: typisierter Pre-DATA-Fehler, Reservierung wird freigegeben |
+| 33 | Archivierte Sent-Kopien nutzten die eigene Adresse als Korrespondent | Bestaetigt | Behoben: konto-authored Nachrichten nutzen Empfaengerfelder |
+
+### 32. Pre-DATA-SMTP-Fehler blockierte Forwards dauerhaft
+
+**Verifikation:** Der Direktversand reserviert vor `smtpSend` eine
+`outbox`-Zeile. Scheiterte die Verbindung eindeutig vor DATA (Connect,
+STARTTLS, AUTH, MAIL FROM, RCPT TO), war nichts zugestellt — der Retry sah
+aber die Reservierung und blockierte den Forward dauerhaft als unklaren
+Versand.
+
+**Fix:** `sendSmtpMessage` wirft vor der Body-Uebertragung einen typisierten
+`SmtpPreDataSendError` (inklusive Socket-/Timeout-Fehlern vor DATA). Der
+Forward-Worker gibt in diesem Fall die unkonsumierte Reservierung frei und
+laesst den Job regulaer erneut versuchen. Ambige Fehler nach Body-Beginn
+blockieren weiterhin. Ein Test deckt beide Pfade ab.
+
+### 33. Archivierte Sent-Kopien fielen aus der Korrespondentenpruefung
+
+**Verifikation:** Archive-/All-Mail-Ordner synchronisieren mit
+`folderKind 'inbox'`. Eine dort liegende Sent-Kopie meldete deshalb die
+eigene Kontoadresse als Korrespondent; Antworten mit gueltigen References
+scheiterten am Overlap-Filter und blieben unthreaded.
+
+**Fix:** Die Korrespondentenbestimmung kennt jetzt die Kontoadresse
+(Sync, Backfill, Sibling- und Ticket-Pruefung): vom Konto verfasste
+Nachrichten nutzen ihre Empfaengerfelder wie Sent/Draft. Ein gefaelschtes
+From der eigenen Adresse bleibt innerhalb der bereits dokumentierten
+Restgrenze (From-Spoofing ohne DKIM/DMARC-Evidenz) und eroeffnet keine neue
+Angriffsklasse.
+
 ### 29. Uebergrosse IMAP-Nachrichten wurden endlos neu geladen
 
 **Verifikation:** Ueberschritt eine Nachricht den harten RFC822-Cap, warf
@@ -518,7 +554,9 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - Stored-SMTP-Test mit konto-gebundener AUTH-Identitaet und Secret-Auswahl,
 - permanenten Skip uebergrosser IMAP-Nachrichten ueber zwei Sync-Laeufe,
 - Admin-Gate fuer den Automation-Settings-PATCH (HTTP-Allowlist),
-- Drain expungter Pending-IMAP-UIDs bei erhaltenem Retry existierender UIDs.
+- Drain expungter Pending-IMAP-UIDs bei erhaltenem Retry existierender UIDs,
+- Freigabe der Forward-Reservierung nach Pre-DATA-SMTP-Fehlern,
+- Empfaenger-Korrespondenten fuer konto-authored Archivkopien.
 
 Vor Merge sind mindestens Unit-, Integration-, Build- und Lint-Laeufe auf dem
 vollstaendigen Branch auszufuehren. Die konkreten Ergebnisse stehen in PR 156.
