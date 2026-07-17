@@ -286,6 +286,22 @@ export function createLoginSecurityService(input: {
       if (user.disabledAt) {
         return { ok: false, code: 'user_disabled' };
       }
+
+      // Account-level throttle. The per-challenge-token attempt cap resets every
+      // time /login mints a fresh token, so on its own it does NOT stop a
+      // password-in-hand attacker from brute-forcing the second factor. Feed MFA
+      // failures into the same (email,ip) lockout the password step uses, and
+      // refuse while locked — so accumulated failures lock the /login step and
+      // cut off the supply of fresh challenge tokens.
+      const failIp = ip ?? '0.0.0.0';
+      const existingLock = await input.auth.checkLoginLock?.({ email, ip: failIp });
+      if (existingLock && existingLock.kind !== 'none') {
+        return { ok: false, code: 'mfa_attempts_exceeded' };
+      }
+      const recordMfaFailure = async () => {
+        await input.auth.recordFailedLogin?.({ email, ip: failIp, userId: user.id });
+      };
+
       if (!(await challengeStore.registerAttempt({
         token: mfaChallengeToken,
         purpose: 'mfa',
@@ -293,6 +309,7 @@ export function createLoginSecurityService(input: {
         ttlMs: mfaChallengeTtlMs,
         now: now(),
       }))) {
+        await recordMfaFailure();
         return { ok: false, code: 'mfa_attempts_exceeded' };
       }
 
@@ -309,7 +326,10 @@ export function createLoginSecurityService(input: {
           code,
           now: now(),
         });
-      if (!verified) return { ok: false, code: 'mfa_code_invalid' };
+      if (!verified) {
+        await recordMfaFailure();
+        return { ok: false, code: 'mfa_code_invalid' };
+      }
 
       const challengeTtlMs = 5 * 60 * 1000;
       if (!(await challengeStore.consume({
@@ -525,6 +545,17 @@ async function sendEmailMfaCode(input: {
   now: Date;
 }): Promise<boolean> {
   if (!input.smtp || input.user.mfaMethod !== 'email') return false;
+  // Invalidate any still-outstanding codes for this user before issuing a new
+  // one. Otherwise every /login mints another live 6-digit code (each valid for
+  // 10 min) and verifyEmailMfaCode accepts ANY of them, so k concurrent codes
+  // raise a blind guess's success probability to k/10^6 — code-amplification on
+  // top of MFA-fatigue spam.
+  await input.db
+    .updateTable('auth_mfa_email_codes')
+    .set({ consumed_at: input.now })
+    .where('user_id', '=', input.user.id)
+    .where('consumed_at', 'is', null)
+    .execute();
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
   const codeHash = hashEmailCode(code);
   const expiresAt = new Date(input.now.getTime() + 10 * 60 * 1000);

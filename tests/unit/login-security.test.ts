@@ -144,6 +144,13 @@ describe('login security service MFA gate', () => {
           execute: async () => undefined,
         }),
       }),
+      updateTable: () => {
+        const chain: Record<string, unknown> = {};
+        chain.set = () => chain;
+        chain.where = () => chain;
+        chain.execute = async () => undefined;
+        return chain;
+      },
       deleteFrom: () => ({
         where: () => ({
           execute: async () => undefined,
@@ -329,6 +336,13 @@ describe('login security service MFA gate', () => {
           }),
         }),
       }),
+      updateTable: () => {
+        const chain: Record<string, unknown> = {};
+        chain.set = () => chain;
+        chain.where = () => chain;
+        chain.execute = async () => undefined;
+        return chain;
+      },
       deleteFrom: () => ({
         where: () => ({
           execute: async () => {
