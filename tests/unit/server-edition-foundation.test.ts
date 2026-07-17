@@ -2307,6 +2307,25 @@ describe('server edition foundation', () => {
         resumeNodeId: 'tag-1',
       },
     });
+    // No explicit KB → the auto-knowledge flag and direction ride along so the
+    // executor can resolve account/direction knowledge bases.
+    expect(buildAiAgentJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 11,
+      systemPrompt: 'Agent',
+      autoKnowledge: true,
+      direction: 'inbound',
+      createDraft: true,
+    }, WORKSPACE_A_ID)).toMatchObject({
+      autoKnowledge: true,
+      direction: 'inbound',
+    });
+    // Absent auto-knowledge flag stays absent.
+    expect(buildAiAgentJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      systemPrompt: 'Agent',
+      createDraft: true,
+    }, WORKSPACE_A_ID)).not.toHaveProperty('autoKnowledge');
     expect(buildAiClassificationJobPlan({
       workspaceId: WORKSPACE_A_ID,
       messageId: 11,

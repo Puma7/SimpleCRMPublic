@@ -25,6 +25,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
 
 const CLASSIFY_BODY_MAX = 12_000;
@@ -137,6 +138,9 @@ export type AiAgentJobPlan = Readonly<{
   profileId?: number;
   systemPrompt: string;
   knowledgeBaseId?: number;
+  /** Opt-in: when no explicit knowledgeBaseId, resolve KBs by account + direction. */
+  autoKnowledge?: boolean;
+  direction?: string;
   createDraft: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -713,15 +717,21 @@ export function createPostgresAiAgentPort(
             ...stringsFromOptionalMessage(message),
             ...stringPayload(input.eventStrings),
           };
-          const chunks = input.knowledgeBaseId === undefined
-            ? []
-            : await selectAgentKnowledgeChunks(
-              trx,
-              input.workspaceId,
-              input.knowledgeBaseId,
-              strings.combined_text ?? '',
-              5,
-            );
+          const query = strings.combined_text ?? '';
+          const chunks = input.knowledgeBaseId !== undefined
+            ? await selectAgentKnowledgeChunks(trx, input.workspaceId, input.knowledgeBaseId, query, 5)
+            // Opt-in fallback: resolve the account/direction knowledge bases like
+            // reply suggestions do, but only when the node explicitly enabled it.
+            : (input.autoKnowledge && message)
+              ? await searchKnowledgeForWorkflow(
+                trx,
+                input.workspaceId,
+                message.account_id === null ? null : Number(message.account_id),
+                input.direction,
+                query,
+                5,
+              )
+              : [];
           return { message, profile, strings, chunks };
         },
         { applySession: options.applyWorkspaceSession },

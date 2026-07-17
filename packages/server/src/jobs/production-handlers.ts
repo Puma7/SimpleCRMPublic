@@ -328,6 +328,8 @@ export function buildAiAgentJobPlan(
       4000,
     ),
     ...optionalPositiveInteger(payload, 'knowledgeBaseId'),
+    ...(payload.autoKnowledge === undefined ? {} : { autoKnowledge: optionalBoolean(payload, 'autoKnowledge', false) }),
+    ...optionalString(payload, 'direction'),
     createDraft: optionalBoolean(payload, 'createDraft', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
