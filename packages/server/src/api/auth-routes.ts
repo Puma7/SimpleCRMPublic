@@ -389,10 +389,14 @@ async function handleDeleteUser(
   const result = await ports.auth.deleteUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
+    actorIsAdmin: requireAdmin(principal),
     id,
   });
   if (!result.ok) {
     if (result.code === 'not_found') return error(404, 'auth_user_not_found', 'Benutzer nicht gefunden');
+    if (result.code === 'role_change_forbidden') {
+      return error(403, 'forbidden', 'Nur Administratoren dürfen privilegierte Konten löschen');
+    }
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 

@@ -264,8 +264,9 @@ export type AuthApiPort = {
   deleteUser?(input: {
     workspaceId: string;
     actorUserId: string;
+    actorIsAdmin: boolean;
     id: string;
-  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' }>;
+  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' }>;
   changePassword?(input: {
     workspaceId: string;
     userId: string;

@@ -243,6 +243,12 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         async (trx) => {
           const existing = await selectUserById(trx, input.workspaceId, input.id);
           if (!existing) return { ok: false as const, code: 'not_found' as const };
+          // Delegated user managers (users.manage but not admin) may only delete
+          // ordinary users — never an admin/owner account, whose deletion would
+          // revoke that principal's sessions. Mirrors the saveUser guard.
+          if (isForbiddenUserMutation(input.actorIsAdmin, existing.role, existing.role)) {
+            return { ok: false as const, code: 'role_change_forbidden' as const };
+          }
           if (existing.role === 'owner') {
             const otherOwnerCount = await countActiveOwners(trx, input.workspaceId, input.id);
             if (otherOwnerCount < 1) return { ok: false as const, code: 'last_owner_required' as const };

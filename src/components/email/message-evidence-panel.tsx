@@ -379,21 +379,30 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                         </p>
                         <EvidenceMetadata event={event} infrastructure={isInfrastructureEvent(event)} />
                         {canViewSensitive && includeSensitive && rawIpAddress(event.metadata) ? (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="mt-1 h-7 gap-1 px-2 font-mono text-xs"
-                                aria-label={`IP-Insight für ${rawIpAddress(event.metadata)}`}
-                                onClick={() => {
-                                  if (principalId) setIpInsightState({ principalId, messageId: props.messageId, event })
-                                }}
-                              ><Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}</Button>
-                            </TooltipTrigger>
-                            <TooltipContent>IP-Insight für diese Infrastruktur öffnen</TooltipContent>
-                          </Tooltip>
+                          isAdmin ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="mt-1 h-7 gap-1 px-2 font-mono text-xs"
+                                  aria-label={`IP-Insight für ${rawIpAddress(event.metadata)}`}
+                                  onClick={() => {
+                                    if (principalId) setIpInsightState({ principalId, messageId: props.messageId, event })
+                                  }}
+                                ><Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}</Button>
+                              </TooltipTrigger>
+                              <TooltipContent>IP-Insight für diese Infrastruktur öffnen</TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            // tracking.view may read raw IPs, but the IP-Insight
+                            // drill-in route is admin-only — show the address
+                            // without the action that would always 403 for them.
+                            <span className="mt-1 inline-flex h-7 items-center gap-1 px-2 font-mono text-xs text-muted-foreground">
+                              <Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}
+                            </span>
+                          )
                         ) : null}
                       </div>
                     </li>

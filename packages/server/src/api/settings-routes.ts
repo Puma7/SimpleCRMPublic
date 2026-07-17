@@ -369,6 +369,13 @@ async function handleMailSecuritySettings(
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const parsed = parseMailSecuritySettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
+  // rspamdUrl is an SSRF boundary: checkMessageWithRspamd POSTs stored raw
+  // messages to `${rspamdUrl}/checkv2`, so repointing it can exfiltrate mail or
+  // probe internal hosts — exactly like the admin-only Rspamd test route. Never
+  // delegate it via email_settings.manage; the rest of the payload stays open.
+  if ('mail_security_rspamd_url' in parsed.values && !requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Die Rspamd-URL darf nur von Administratoren geändert werden');
+  }
   const saved = await saveSyncInfo(req, ports, parsed.values, 'email_settings.security.updated', 'email.settings.security');
   if ('status' in saved) return saved;
   return data(200, { success: true });

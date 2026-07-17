@@ -59,4 +59,19 @@ describe('user group capabilities', () => {
     expect(isForbiddenUserMutation(false, 'owner', 'owner')).toBe(true);
     expect(isForbiddenUserMutation(false, 'user', 'admin')).toBe(true);
   });
+
+  test('delegated deletes may only target ordinary users', () => {
+    // The DELETE route guards with isForbiddenUserMutation(actorIsAdmin, role, role)
+    // where `role` is the target account's existing role.
+    const forbiddenForNonAdmin = (targetRole: 'owner' | 'admin' | 'user') =>
+      isForbiddenUserMutation(false, targetRole, targetRole);
+    // Admins may delete anyone (subject to the separate last-owner check).
+    expect(isForbiddenUserMutation(true, 'owner', 'owner')).toBe(false);
+    expect(isForbiddenUserMutation(true, 'admin', 'admin')).toBe(false);
+    // A delegated user manager may delete ordinary users…
+    expect(forbiddenForNonAdmin('user')).toBe(false);
+    // …but never delete an admin or owner (which would revoke their sessions).
+    expect(forbiddenForNonAdmin('admin')).toBe(true);
+    expect(forbiddenForNonAdmin('owner')).toBe(true);
+  });
 });

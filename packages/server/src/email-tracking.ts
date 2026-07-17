@@ -231,6 +231,10 @@ export function normalizeEmailTrackingPolicy(input: {
   const materialPolicyChanged = next.enabled !== current.enabled
     || next.trackOpens !== current.trackOpens
     || next.trackLinks !== current.trackLinks
+    // Flipping the "track new messages by default" toggle switches future sends
+    // from opt-in to tracked-by-default — a material change that must force a
+    // fresh compliance acknowledgement, not inherit the previous one.
+    || next.defaultTrackNewMessages !== current.defaultTrackNewMessages
     || next.collectDerivedMetadata !== current.collectDerivedMetadata
     || next.collectRawMetadata !== current.collectRawMetadata
     || next.ipInsightsEnabled !== current.ipInsightsEnabled
