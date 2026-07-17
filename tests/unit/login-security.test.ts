@@ -272,6 +272,66 @@ describe('login security service MFA gate', () => {
     expect(issueTokenPair).not.toHaveBeenCalled();
   });
 
+  test('feeds MFA failures into the account lockout and refuses while locked', async () => {
+    const secret = generateTotpSecret();
+    const validCode = generateSync({ secret });
+    const invalidCode = validCode === '000000' ? '000001' : '000000';
+    const user = { ...mfaUser, mfaMethod: 'totp' as const };
+    const recordFailedLogin = jest.fn(async () => 1);
+    let locked = false;
+    const checkLoginLock = jest.fn(async () => (locked ? { kind: 'permanent' as const } : { kind: 'none' as const }));
+    const workspaceDb = createWorkspaceLookupDb(user.email);
+    const service = createLoginSecurityService({
+      db: workspaceDb.db as never,
+      syncInfo: { getMany: async () => [], setMany: async () => undefined },
+      listPublicWorkspaceSettings: async () => [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS],
+      secrets: {
+        readSecret: async () => Buffer.from(secret),
+        writeSecret: async () => ({ id: 'secret-id' }),
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: {
+        findUserByEmail: async () => user,
+        recordSuccessfulLogin: async () => undefined,
+        recordFailedLogin,
+        checkLoginLock,
+        issueTokenPair: jest.fn(),
+      } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    const challenge = () => issueMfaChallengeToken({
+      signer,
+      userId: user.id,
+      workspaceId: user.workspaceId,
+      method: 'totp',
+      issuedAt: new Date('2026-01-01T12:00:00.000Z'),
+    });
+
+    // A wrong code records a failed-login against the (email,ip) lockout —
+    // this is what eventually locks the /login step and starves the attacker
+    // of fresh challenge tokens.
+    await expect(service.completeMfaLogin({
+      mfaChallengeToken: challenge(),
+      code: invalidCode,
+      ip: '203.0.113.7',
+    })).resolves.toEqual({ ok: false, code: 'mfa_code_invalid' });
+    expect(recordFailedLogin).toHaveBeenCalledWith(
+      expect.objectContaining({ email: user.email, ip: '203.0.113.7' }),
+    );
+
+    // Once the account is locked, verification is refused before any guess.
+    locked = true;
+    await expect(service.completeMfaLogin({
+      mfaChallengeToken: challenge(),
+      code: validCode,
+      ip: '203.0.113.7',
+    })).resolves.toEqual({ ok: false, code: 'mfa_attempts_exceeded' });
+  });
+
   test('accepts a valid MFA code after one failed attempt and rejects replay', async () => {
     const secret = generateTotpSecret();
     const validCode = generateSync({ secret });
