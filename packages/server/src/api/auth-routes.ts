@@ -811,7 +811,10 @@ function normalizeInviteToken(value: string): string | null {
 function normalizeOptionalText(value: string | null, maxLength: number): string | undefined {
   const normalized = value?.trim();
   if (!normalized) return undefined;
-  return normalized.length <= maxLength ? normalized : normalized;
+  // Actually enforce the cap — the previous `? normalized : normalized` returned
+  // the full string in both branches, so e.g. an invitation displayName had no
+  // effective length limit.
+  return normalized.length <= maxLength ? normalized : normalized.slice(0, maxLength);
 }
 
 function normalizeOptionalInt(value: unknown, min: number, max: number): number | undefined {

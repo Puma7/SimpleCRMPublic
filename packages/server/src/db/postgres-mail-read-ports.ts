@@ -4112,15 +4112,6 @@ async function nextLocalDraftUid(
   accountId: number,
   folderId: number,
 ): Promise<number> {
-  // Serialize negative-UID allocation per (account, folder). Without this,
-  // two concurrent drafts from the same shared account both read the same
-  // min(uid) under READ COMMITTED and compute the identical UID, so the second
-  // insert violates UNIQUE(workspace_id, account_source_sqlite_id,
-  // folder_source_sqlite_id, uid) and the compose request 500s. The xact lock
-  // is held until commit, so the second allocation only proceeds once the
-  // first draft row is committed and visible.
-  await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${`draft-uid:${workspaceId}:${accountId}:${folderId}`}))`
-    .execute(trx);
   const row = await trx
     .selectFrom('email_messages')
     .select((eb) => eb.fn.min<number>('uid').as('min_uid'))

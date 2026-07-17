@@ -299,8 +299,16 @@ function createFastifyHandler(
 ): (request: FastifyRequest, reply: FastifyReply) => void {
   return (request, reply) => {
     void dispatchFastifyRequest(api, resolvePrincipal, request, reply).catch((error) => {
+      // Log the real error server-side, but never echo it to the client:
+      // Fastify's default handler would serialize err.message into the 500 body,
+      // leaking Postgres constraint/column text, secret-decryption detail, etc.
+      // (CWE-209). Return a generic, structured error instead.
+      console.error(
+        'unhandled API error:',
+        error instanceof Error ? (error.stack ?? error.message) : String(error),
+      );
       if (!reply.sent) {
-        reply.send(error);
+        reply.code(500).send({ error: { code: 'internal_error', message: 'Interner Serverfehler' } });
       }
     });
   };

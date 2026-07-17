@@ -170,7 +170,14 @@ export function assertNoKnownWeakProductionSecrets(
   masterKey: string | undefined,
   accessTokenSecret: string | undefined,
 ): void {
-  if (env.NODE_ENV?.trim() !== 'production' || env.CI?.trim() === 'true') return;
+  // Run for anything that is not explicitly a dev/test/CI environment — in
+  // particular when NODE_ENV is UNSET, which many container deployments leave
+  // as-is. The previous `!== 'production'` early-return meant an operator who
+  // copied the published CI smoke ACCESS_TOKEN_SECRET/SIMPLECRM_MASTER_KEY into
+  // a real deployment without NODE_ENV=production booted with no warning — and
+  // since those secrets are public source constants, anyone could forge tokens.
+  const nodeEnv = env.NODE_ENV?.trim();
+  if (nodeEnv === 'development' || nodeEnv === 'test' || env.CI?.trim() === 'true') return;
   if (isKnownWeakSecret(masterKey, KNOWN_WEAK_CI_SMOKE_MASTER_KEYS)) {
     throw new Error('SIMPLECRM_MASTER_KEY uses the known weak CI smoke-test value');
   }

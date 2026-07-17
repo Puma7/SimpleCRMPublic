@@ -4501,6 +4501,7 @@ describe('server edition foundation', () => {
           'message.id': 11,
           'http.status': 201,
           'http.body': 'created',
+          'http.ok': true,
         },
       },
     });
@@ -28636,7 +28637,9 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Generic sync-info is now admin-only (default-deny); the value round-trip
+    // contract it exercises is unchanged, just gated to admins.
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const loaded = await api.handle({
       method: 'GET',
@@ -28826,7 +28829,8 @@ describe('server edition foundation', () => {
         port: '1433',
         hasPassword: true,
       },
-      principal,
+      // test-connection is now admin-only (SSRF / stored-credential exposure).
+      principal: adminPrincipal,
     });
     expect(tested.status).toBe(200);
     expect((tested.body as any).data.success).toBe(true);
