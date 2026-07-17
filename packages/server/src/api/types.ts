@@ -1690,6 +1690,7 @@ export type EmailMessageRecord = {
   folderKind: string;
   threadId: string | null;
   imapThreadId: string | null;
+  threadMessageCount?: number | null;
   ticketCode: string | null;
   customerId: number | null;
   hasAttachments: boolean;

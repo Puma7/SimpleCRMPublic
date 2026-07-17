@@ -796,8 +796,15 @@ export function MessageList({
               const threadIdForExpand = m.thread_id?.trim() ?? ""
               const localSiblings = threadGroups.get(tKey) ?? []
               const hasLocalSiblings = localSiblings.length > 1
+              // Every message carries a thread_id since backfill, so a bare
+              // thread_id no longer implies a real thread. Prefer the
+              // authoritative server count (chevron only when >1); fall back to
+              // loaded siblings when the count isn't available (e.g. local mode).
+              const serverThreadCount =
+                typeof m.thread_message_count === "number" ? m.thread_message_count : null
               const isThreadRoot =
-                listDisplayMode === "thread" && (threadIdForExpand.length > 0 || hasLocalSiblings)
+                listDisplayMode === "thread"
+                && (serverThreadCount !== null ? serverThreadCount > 1 : hasLocalSiblings)
               const expanded = expandedThreads.has(tKey)
               // Prefer server-fetched thread messages; fall back to the siblings
               // already loaded on this page (covers imap_thread_id / ticket_code

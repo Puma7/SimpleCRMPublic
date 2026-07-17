@@ -348,6 +348,7 @@ type EmailMessageRecord = {
   folderKind?: string | null
   threadId?: string | null
   imapThreadId?: string | null
+  threadMessageCount?: number | null
   ticketCode?: string | null
   customerId?: number | null
   hasAttachments?: boolean | number | null
@@ -5335,6 +5336,7 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     ticket_code: record.ticketCode ?? null,
     thread_id: record.threadId ?? null,
     imap_thread_id: record.imapThreadId ?? null,
+    thread_message_count: record.threadMessageCount ?? null,
     customer_id: record.customerId ?? null,
     folder_kind: record.folderKind ?? undefined,
     assigned_to: record.assignedTo ?? record.assignedToUserId ?? null,

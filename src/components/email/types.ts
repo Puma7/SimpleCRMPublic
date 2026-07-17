@@ -110,6 +110,7 @@ export type EmailMessage = {
   approval_reason?: string | null
   ticket_code?: string | null
   thread_id?: string | null
+  thread_message_count?: number | null
   customer_id?: number | null
   folder_kind?: string
   assigned_to?: string | null

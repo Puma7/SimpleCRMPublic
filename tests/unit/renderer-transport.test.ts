@@ -4327,6 +4327,7 @@ describe('renderer transport', () => {
       folderKind: 'inbox',
       threadId: 'thread/encoded',
       imapThreadId: 'imap-1',
+      threadMessageCount: 3,
       ticketCode: 'T-11',
       customerId: 42,
       hasAttachments: false,
@@ -4720,7 +4721,8 @@ describe('renderer transport', () => {
             doneLocal: false,
             archived: false,
             folderKind: 'inbox',
-            threadId: null,
+            threadId: 'th-abc',
+            threadMessageCount: 3,
             ticketCode: null,
             customerId: null,
             hasAttachments: false,
@@ -4759,6 +4761,9 @@ describe('renderer transport', () => {
         from_json: JSON.stringify({ value: [{ address: 'sender@example.com' }] }),
         seen_local: 1,
         snoozed_until: null,
+        // Server thread count is threaded onto the list row so the chevron
+        // only shows for real multi-message threads.
+        thread_message_count: 3,
       }),
     ]);
     expect(fetchImpl).toHaveBeenCalledWith(
