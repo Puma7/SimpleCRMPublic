@@ -24,6 +24,7 @@ import {
   uidValidityAsOptionalNumber,
   uidValidityMismatch,
   InboundMessageTooLargeError,
+  MAX_INBOUND_RFC822_BYTES,
   type MailboxListEntry,
 } from '@simplecrm/core';
 import { mergeSeenLocalOnMailSync } from '@simplecrm/core';
@@ -2179,10 +2180,30 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
 
   private async readMultiline(): Promise<string[]> {
     const lines: string[] = [];
+    let totalBytes = 0;
+    let oversize = false;
     for (;;) {
       const line = await this.readLine();
-      if (line === '.') return lines;
-      lines.push(line.startsWith('..') ? line.slice(1) : line);
+      if (line === '.') {
+        if (oversize) throw new InboundMessageTooLargeError(totalBytes, MAX_INBOUND_RFC822_BYTES);
+        return lines;
+      }
+      const unstuffed = line.startsWith('..') ? line.slice(1) : line;
+      // Enforce the size cap DURING streaming, not after the whole message is
+      // resident: a multi-GB RETR would otherwise buffer in `lines` and OOM the
+      // worker before the post-download assertInboundRfc822Size check ever runs
+      // (and the OOM-crash-restart re-fetches the same UIDL → crash loop). Once
+      // over the limit we stop accumulating (bounding memory) but keep draining
+      // to the terminating '.' so the connection stays in sync for the next
+      // message, then throw the oversize error the POP3 loop already records.
+      totalBytes += unstuffed.length + 2; // + CRLF
+      if (oversize) continue;
+      if (totalBytes > MAX_INBOUND_RFC822_BYTES) {
+        oversize = true;
+        lines.length = 0;
+        continue;
+      }
+      lines.push(unstuffed);
     }
   }
 

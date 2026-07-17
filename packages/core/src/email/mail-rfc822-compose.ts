@@ -272,7 +272,26 @@ function isCompleteMailboxToken(value: string): boolean {
 
 function encodeSingleMailbox(mailbox: string): string {
   const match = /^(?:"([^"]*)"|([^<]*?))\s*<([^>]+)>$/.exec(mailbox);
-  if (!match) return mailbox;
+  if (!match) {
+    // The clean "phrase <addr>" parse failed — the usual cause is a display name
+    // that itself contains angle brackets, e.g. `Attacker <evil@x> <ceo@ok>`, a
+    // trick to smuggle a SECOND addr-spec into the header so an MUA renders the
+    // fake address (the relay's one-address spoof check treats the bracketed
+    // text as a display name and passes). Bind to the FINAL <addr> (the address
+    // our caller appended) and force-quote everything before it, so it can only
+    // ever be an (inert) display name — never a second address.
+    const lastAngle = /^(.*)<([^<>]+)>\s*$/.exec(mailbox);
+    if (lastAngle && lastAngle[2]) {
+      const phrase = lastAngle[1]!.trim();
+      const email = lastAngle[2].trim();
+      if (!phrase) return `<${email}>`;
+      const encodedPhrase = encodeRfc2047(phrase);
+      return encodedPhrase === phrase
+        ? `"${phrase.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" <${email}>`
+        : `${encodedPhrase} <${email}>`;
+    }
+    return mailbox;
+  }
   const rawName = (match[1] ?? match[2] ?? '').trim();
   const email = match[3]!.trim();
   if (!rawName) return `<${email}>`;
