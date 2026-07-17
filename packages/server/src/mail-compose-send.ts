@@ -46,7 +46,7 @@ import type {
   ServerImapSentCopyAppendInput,
   ServerImapSentCopyAppendResult,
 } from './mail-imap-append';
-import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
+import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import type { EmailTrackingService } from './email-tracking';
 
@@ -796,7 +796,13 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             ...smtpCodeFromError(error),
           }).catch(() => undefined);
           await clearSmtpOutboxClaim(options.store, input.workspaceId, values.draftMessageId);
-          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            // Pre-DATA failures provably delivered nothing; anything else
+            // after smtpSend started is an unknown outcome.
+            ...(error instanceof SmtpPreDataSendError ? {} : { deliveryAmbiguous: true }),
+          };
         }
 
         await markSmtpSent(

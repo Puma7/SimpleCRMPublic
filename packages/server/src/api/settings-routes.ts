@@ -35,16 +35,6 @@ const EMAIL_MISC_KEYS = [
   'email_max_attachment_mb',
 ] as const;
 
-function syncInfoKeyRequiresAdmin(key: string): boolean {
-  const lower = key.toLowerCase();
-  return (
-    lower.includes('secret')
-    || lower.includes('password')
-    || lower.includes('_token')
-    || lower.endsWith('_key')
-  );
-}
-
 function maskSyncInfoSecret(value: string | null | undefined): string {
   if (!value) return '';
   if (value.length <= 4) return '****';
@@ -217,13 +207,20 @@ async function handleGenericSyncInfo(
   if ('status' in principal) return principal;
   if (!ports.syncInfo) return error(503, 'sync_info_unavailable', 'Sync-info API nicht konfiguriert');
 
+  // Default-deny: the generic sync-info endpoint is an arbitrary-key catch-all
+  // (any 1–200 char key) with NO first-party non-admin caller — the app writes
+  // every setting through the dedicated structured routes. The previous
+  // substring blocklist (secret/password/_token/_key) let a plain user read AND
+  // overwrite structured admin config whose key didn't match — most dangerously
+  // `mssql_settings_v1` (repoint the server at an attacker MSSQL host → the
+  // stored SQL-auth password is exfiltrated on the next connect) and
+  // `mail_security_rspamd_url` (SSRF). Require admin for the whole route.
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+
   const parsedKey = parseSyncInfoPathKey(rawKey);
   if (!parsedKey.ok) return parsedKey.response;
 
   if (req.method === 'GET') {
-    if (syncInfoKeyRequiresAdmin(parsedKey.key) && !requireAdmin(principal)) {
-      return error(403, 'forbidden', 'Adminrechte erforderlich');
-    }
     const rows = await ports.syncInfo.getMany({
       workspaceId: principal.workspaceId,
       keys: [parsedKey.key],
@@ -235,10 +232,6 @@ async function handleGenericSyncInfo(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-
-  if (syncInfoKeyRequiresAdmin(parsedKey.key) && !requireAdmin(principal)) {
-    return error(403, 'forbidden', 'Adminrechte erforderlich');
-  }
 
   const parsedValue = parseGenericSyncInfoBody(req.body);
   if (!parsedValue.ok) return parsedValue.response;
@@ -283,6 +276,13 @@ async function handleWorkflowAutomationSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  // Writes cover global automation config including the workflow HTTP
+  // allowlist (the SSRF boundary for http.request nodes) — admin only.
+  // GET stays open to authenticated users: the workflow editor shows the
+  // allowlist and auto-reply context to non-admin workflow authors.
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const parsed = parseWorkflowAutomationSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const saved = await saveSyncInfo(req, ports, parsed.values, 'workflow_settings.updated', 'workflow.settings.automation');
@@ -325,6 +325,10 @@ async function handleMailSecuritySettings(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+
   if (req.method === 'GET') {
     const loaded = await loadSyncInfo(req, ports, MAIL_SECURITY_KEYS);
     if ('status' in loaded) return loaded;
@@ -371,6 +375,7 @@ async function handleRspamdConnectionTest(req: ApiRequest): Promise<ApiResponse>
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
 
   const parsed = parseRspamdConnectionTestBody(req.body);
   if (!parsed.ok) return parsed.response;
@@ -561,6 +566,7 @@ async function handleMssqlSettings(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   if (!ports.mssqlSettings) return error(503, 'mssql_settings_unavailable', 'MSSQL Settings API nicht konfiguriert');
 
   if (req.method === 'GET') {
@@ -569,7 +575,6 @@ async function handleMssqlSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const parsed = parseMssqlSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const result = await ports.mssqlSettings.saveSettings({
@@ -598,6 +603,11 @@ async function handleMssqlConnectionTest(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Admin-only, like the other /api/v1/mssql/* mutations: this opens an
+  // outbound TCP connection to a caller-supplied host and, with no body, uses
+  // the stored SQL-auth credentials — an authenticated SSRF/port-scan oracle
+  // and (chained with the sync-info gate) a credential-exfiltration trigger.
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   if (!ports.mssqlSettings) return error(503, 'mssql_settings_unavailable', 'MSSQL Settings API nicht konfiguriert');
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
 

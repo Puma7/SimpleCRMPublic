@@ -108,13 +108,21 @@ async function resolveImapInput(
       error: 'Kein Passwort angegeben (Feld ausfuellen oder gespeichertes Konto testen).',
     };
   }
+  // When a stored account secret is used (accountId resolved + no explicit
+  // password in the request), the host/port must come from the stored account
+  // too. Otherwise a caller could point a stored credential at an arbitrary
+  // host and have the server deliver the password there (SSRF + credential
+  // exfiltration). Explicit-credential ad-hoc tests keep using request values.
+  const useStored = account !== null && !input.password?.trim();
+  const storedHost = account?.imapHost?.trim() ?? '';
+  if (useStored && !storedHost) return { success: false, error: 'IMAP-Host des Kontos fehlt' };
   return {
     resolved: true,
     value: {
-      host: input.host,
-      port: input.port,
-      tls: input.tls,
-      user: input.user,
+      host: useStored ? storedHost : input.host,
+      port: useStored ? account!.imapPort : input.port,
+      tls: useStored ? account!.imapTls : input.tls,
+      user: useStored ? account!.imapUsername : input.user,
       password,
     },
   };
@@ -128,19 +136,23 @@ async function resolvePop3Input(
   if (input.accountId != null && !account) {
     return { success: false, error: 'Konto nicht gefunden' };
   }
-  const host = input.host?.trim() || account?.pop3Host?.trim() || '';
+  const password = await resolvePassword(input, account, options);
+  if (!password) return { success: false, error: 'Kein Passwort' };
+  // Stored secret ⇒ stored host (see resolveImapInput for the rationale).
+  const useStored = account !== null && !input.password?.trim();
+  const host = useStored
+    ? (account?.pop3Host?.trim() ?? '')
+    : (input.host?.trim() || account?.pop3Host?.trim() || '');
   if (!host) {
     return { success: false, error: 'POP3-Host fehlt' };
   }
-  const password = await resolvePassword(input, account, options);
-  if (!password) return { success: false, error: 'Kein Passwort' };
   return {
     resolved: true,
     value: {
       host,
-      port: input.port || account?.pop3Port || 995,
-      tls: input.tls,
-      user: input.user || account?.imapUsername || '',
+      port: useStored ? (account?.pop3Port ?? 995) : (input.port || account?.pop3Port || 995),
+      tls: useStored ? (account?.pop3Tls ?? input.tls) : input.tls,
+      user: useStored ? (account?.imapUsername ?? '') : (input.user || account?.imapUsername || ''),
       password,
     },
   };
@@ -154,10 +166,19 @@ async function resolveSmtpInput(
   if (input.accountId != null && !account) {
     return { success: false, error: 'Konto nicht gefunden' };
   }
-  const auth = await resolveSmtpAuth(input, account, options);
+  // Stored secret/OAuth ⇒ stored host (see resolveImapInput for the rationale)
+  // AND stored auth identity: username and smtpUseImapAuth must come from the
+  // account too, otherwise a caller could present the stored password under an
+  // arbitrary AUTH identity or flip which stored secret is used. An explicit
+  // password or OAuth token makes the test ad-hoc with request values.
+  const useStored =
+    account !== null && !input.password?.trim() && !input.accessToken?.trim();
+  const auth = await resolveSmtpAuth(input, account, options, useStored);
   if (!auth.ok) return { success: false, error: auth.error };
-  const user = input.user || auth.user;
-  const host = input.host?.trim() || resolveConfiguredSmtpHost(account?.smtpHost) || '';
+  const user = useStored ? auth.user : (input.user || auth.user);
+  const host = useStored
+    ? (resolveConfiguredSmtpHost(account?.smtpHost) || '')
+    : (input.host?.trim() || resolveConfiguredSmtpHost(account?.smtpHost) || '');
   if (!host) {
     return { success: false, error: SMTP_HOST_MISSING_ERROR };
   }
@@ -165,8 +186,8 @@ async function resolveSmtpInput(
     resolved: true,
     value: {
       host,
-      port: input.port || account?.smtpPort || 587,
-      tls: input.tls,
+      port: useStored ? (account?.smtpPort ?? 587) : (input.port || account?.smtpPort || 587),
+      tls: useStored ? account!.smtpTls : input.tls,
       user,
       password: auth.password ?? '',
       ...(auth.accessToken ? { accessToken: auth.accessToken } : {}),
@@ -241,12 +262,22 @@ async function resolveSmtpAuth(
   input: MailConnectionTestInput,
   account: StoredAccountConnectionSettings | null,
   options: ServerMailConnectionTestPortOptions,
+  useStored: boolean,
 ): Promise<ResolvedSmtpAuth> {
-  const user = input.user || resolveSmtpUser(input, account);
-  if (input.accessToken?.trim()) return { ok: true, user, accessToken: input.accessToken.trim() };
-  if (input.password?.trim()) return { ok: true, user, password: input.password };
+  // Stored mode binds the AUTH identity to the account: request `user` and
+  // `smtpUseImapAuth` are ignored so stored secrets are only ever presented
+  // with the identity they belong to.
+  const user = useStored
+    ? resolveSmtpUser(input, account, true)
+    : (input.user || resolveSmtpUser(input, account, false));
+  if (!useStored) {
+    if (input.accessToken?.trim()) return { ok: true, user, accessToken: input.accessToken.trim() };
+    if (input.password?.trim()) return { ok: true, user, password: input.password };
+  }
   if (!account || !options.secrets) return { ok: false, error: 'Kein Passwort oder OAuth-Token verfuegbar' };
-  const useImapAuth = input.smtpUseImapAuth ?? account.smtpUseImapAuth;
+  const useImapAuth = useStored
+    ? account.smtpUseImapAuth
+    : (input.smtpUseImapAuth ?? account.smtpUseImapAuth);
   if (!useImapAuth) {
     const smtpSecret = await options.secrets.readSecret(emailAccountSmtpSecretIdentifier(input.workspaceId, account.id));
     if (smtpSecret) return { ok: true, user, password: smtpSecret.toString('utf8') };
@@ -267,9 +298,12 @@ async function resolveSmtpAuth(
 function resolveSmtpUser(
   input: MailConnectionTestInput,
   account: StoredAccountConnectionSettings | null,
+  useStored: boolean,
 ): string {
   if (!account) return input.user;
-  const useImapAuth = input.smtpUseImapAuth ?? account.smtpUseImapAuth;
+  const useImapAuth = useStored
+    ? account.smtpUseImapAuth
+    : (input.smtpUseImapAuth ?? account.smtpUseImapAuth);
   return useImapAuth
     ? account.imapUsername
     : account.smtpUsername?.trim() || account.imapUsername;

@@ -2,6 +2,7 @@ import {
   collectRelatedIds,
   extractTicketFromSubject,
   generateTicketCode,
+  normalizeEmailAddress,
   normalizeMessageId,
 } from '@simplecrm/core';
 import { randomBytes } from 'crypto';
@@ -2924,6 +2925,10 @@ export async function resolveReferenceThreadForSync(
     inReplyTo: string | null;
     referencesHeader: string | null;
     subject: string | null;
+    correspondentEmails: readonly string[];
+    /** Account's own address(es) so sibling rows that are archived sent
+     *  copies (folderKind 'inbox') resolve to their recipients too. */
+    accountEmails?: readonly string[];
     now: Date;
     /**
      * Exclude one message id from the sibling lookup. Used by the historical
@@ -2958,7 +2963,15 @@ export async function resolveReferenceThreadForSync(
   }
 
 
-  let siblings: { id: number; thread_id: string | null }[] = [];
+  let siblings: Array<{
+    id: number;
+    thread_id: string | null;
+    from_json: unknown;
+    to_json: unknown;
+    cc_json: unknown;
+    bcc_json: unknown;
+    folder_kind: string | null;
+  }> = [];
   if (related.length > 0) {
     // Match siblings by NORMALIZED Message-ID / In-Reply-To (trim, strip a
     // single outer <> pair, lowercase). The expression comes from the SAME
@@ -2989,21 +3002,34 @@ export async function resolveReferenceThreadForSync(
       : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` OR `)})`;
     let siblingQuery = trx
       .selectFrom('email_messages')
-      .select(['id', 'thread_id'])
+      .select(['id', 'thread_id', 'from_json', 'to_json', 'cc_json', 'bcc_json', 'folder_kind'])
       .where('workspace_id', '=', args.workspaceId)
       .where('account_id', '=', args.accountId)
       .where(whereClause);
     if (args.excludeMessageId != null) {
       siblingQuery = siblingQuery.where('id', '!=', args.excludeMessageId);
     }
-    siblings = (await siblingQuery
+    const candidateSiblings = (await siblingQuery
       // Prioritize siblings that already carry a `thread_id` before the cap so a
       // huge (>500 message) conversation can't drop its single threaded row and
       // mint a duplicate thread. `thread_id IS NULL` sorts `false` (non-null)
       // first under Postgres' default ASC ordering.
       .orderBy(kyselySql`(thread_id is null)`)
       .limit(500)
-      .execute()) as { id: number; thread_id: string | null }[];
+      .execute()) as typeof siblings;
+    siblings = args.correspondentEmails.length > 0
+      ? candidateSiblings.filter((sibling) => threadCorrespondentsOverlap(
+        args.correspondentEmails,
+        threadCorrespondentEmails({
+          folderKind: sibling.folder_kind,
+          fromJson: sibling.from_json,
+          toJson: sibling.to_json,
+          ccJson: sibling.cc_json,
+          bccJson: sibling.bcc_json,
+          accountEmails: args.accountEmails,
+        }),
+      ))
+      : [];
   }
 
   const canonicalThreads: string[] = [];
@@ -3084,15 +3110,160 @@ export async function resolveReferenceThreadForSync(
     return { threadId: canonical, ticketCode: ticket };
   }
 
-  // (3) Subject carries a known ticket → attach to (or open) that account-scoped
-  // thread (matching how server compose creates ticket threads).
+  // (3) A subject ticket may join an EXISTING account-scoped thread only when
+  // the external correspondent already participates. Inbound mail must never
+  // create an attacker-chosen ticket thread from a guessable subject token.
   if (subjectTicket) {
-    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, subjectTicket, args.accountId, args.now);
-    return { threadId: canonical, ticketCode: subjectTicket };
+    const canonical = await findExistingThreadForTicket(
+      trx,
+      args.workspaceId,
+      subjectTicket,
+      args.accountId,
+    );
+    if (
+      canonical
+      && args.correspondentEmails.length > 0
+      && await threadContainsCorrespondent(
+        trx,
+        args.workspaceId,
+        canonical,
+        args.correspondentEmails,
+        args.accountEmails,
+      )
+    ) {
+      return { threadId: canonical, ticketCode: subjectTicket };
+    }
   }
 
   // (4) Standalone / headerless mail → leave unthreaded, exactly as before.
   return { threadId: null, ticketCode: null };
+}
+
+export function threadCorrespondentEmail(input: {
+  folderKind: string | null | undefined;
+  fromJson: unknown;
+  toJson: unknown;
+  ccJson?: unknown;
+  bccJson?: unknown;
+}): string | null {
+  return threadCorrespondentEmails(input)[0] ?? null;
+}
+
+export function threadCorrespondentEmails(input: {
+  folderKind: string | null | undefined;
+  fromJson: unknown;
+  toJson: unknown;
+  ccJson?: unknown;
+  bccJson?: unknown;
+  /**
+   * The owning account's address(es). Archive/All-Mail folders sync with
+   * folderKind 'inbox', so a sent copy living only there would otherwise
+   * report the account's own address as its correspondent and replies
+   * referencing it would fail the overlap check. A message authored by the
+   * account uses its recipients instead. Accepting a spoofed From of the
+   * account's own address stays within the documented residual (From
+   * spoofing without DKIM/DMARC evidence) that the from-based match already
+   * carries.
+   */
+  accountEmails?: readonly string[];
+}): string[] {
+  const fromAddresses = recipientAddresses(input.fromJson);
+  const selfAuthored = (() => {
+    if (!input.accountEmails?.length || fromAddresses.length === 0) return false;
+    const own = new Set(
+      input.accountEmails
+        .map((address) => normalizeEmailAddress(address))
+        .filter((address) => address.includes('@')),
+    );
+    return fromAddresses.some((address) => own.has(normalizeEmailAddress(address)));
+  })();
+  const useRecipients = input.folderKind === 'sent'
+    || input.folderKind === 'draft'
+    || selfAuthored;
+  const addresses = useRecipients
+    ? [
+      ...recipientAddresses(input.toJson),
+      ...recipientAddresses(input.ccJson),
+      ...recipientAddresses(input.bccJson),
+    ]
+    : fromAddresses;
+  const normalized = addresses
+    .map((address) => normalizeEmailAddress(address))
+    .filter((address) => address.includes('@'));
+  return [...new Set(normalized)];
+}
+
+export function threadCorrespondentsOverlap(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length === 0 || right.length === 0) return false;
+  const rightSet = new Set(right.map(normalizeEmailAddress).filter((email) => email.includes('@')));
+  return left.some((email) => rightSet.has(normalizeEmailAddress(email)));
+}
+
+function recipientAddresses(value: unknown): string[] {
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return [];
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return [];
+  const recipients = (parsed as { value?: unknown }).value;
+  if (!Array.isArray(recipients)) return [];
+  const addresses: string[] = [];
+  for (const recipient of recipients) {
+    if (!recipient || typeof recipient !== 'object') continue;
+    const address = (recipient as { address?: unknown }).address;
+    if (typeof address === 'string' && address.trim()) addresses.push(address.trim());
+  }
+  return addresses;
+}
+
+async function findExistingThreadForTicket(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  ticketCode: string,
+  accountId: number,
+): Promise<string | null> {
+  const row = await trx
+    .selectFrom('email_threads')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', accountId)
+    .where('ticket_code', '=', ticketCode)
+    .executeTakeFirst();
+  return row?.id ?? null;
+}
+
+async function threadContainsCorrespondent(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  threadId: string,
+  correspondentEmails: readonly string[],
+  accountEmails?: readonly string[],
+): Promise<boolean> {
+  const rows = await trx
+    .selectFrom('email_messages')
+    .select(['from_json', 'to_json', 'cc_json', 'bcc_json', 'folder_kind'])
+    .where('workspace_id', '=', workspaceId)
+    .where('thread_id', '=', threadId)
+    .limit(500)
+    .execute();
+  return rows.some((row) => threadCorrespondentsOverlap(
+    correspondentEmails,
+    threadCorrespondentEmails({
+      folderKind: row.folder_kind,
+      fromJson: row.from_json,
+      toJson: row.to_json,
+      ccJson: row.cc_json,
+      bccJson: row.bcc_json,
+      accountEmails,
+    }),
+  ));
 }
 
 /**

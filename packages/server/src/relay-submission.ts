@@ -704,10 +704,16 @@ export function createRelaySubmissionPipeline(
 // ---------------------------------------------------------------------------
 
 /**
- * Removes every `X-SimpleCRM-*` header (including folded continuation lines)
- * from the TOP-LEVEL header block only. The body — everything from the first
- * blank line on — is preserved byte-for-byte (latin1 round-trip), so MIME part
- * headers inside the body are never touched.
+ * Removes every `X-SimpleCRM-*` header AND any top-level `Bcc:`/`Resent-Bcc:`
+ * (including folded continuation lines) from the header block only. The body —
+ * everything from the first blank line on — is preserved byte-for-byte (latin1
+ * round-trip), so MIME part headers inside the body are never touched.
+ *
+ * Dropping Bcc is required of a submission agent (RFC 6409 §8.3): the ERP puts
+ * blind recipients on the SMTP envelope (RCPT TO) and often ALSO leaves a `Bcc:`
+ * header in DATA. On the untracked pass-through we forward DATA verbatim, so
+ * without this that header is delivered to every recipient, exposing the blind
+ * addresses. (The tracked-rebuild path never re-emits bccJson, so it is safe.)
  */
 export function stripSimplecrmHeaders(rfc822: Buffer): Buffer {
   const source = rfc822.toString('latin1');
@@ -720,7 +726,7 @@ export function stripSimplecrmHeaders(rfc822: Buffer): Buffer {
       if (!skippingFold) kept.push(line);
       continue;
     }
-    if (/^x-simplecrm-[^:]*:/i.test(line)) {
+    if (/^x-simplecrm-[^:]*:/i.test(line) || /^(?:bcc|resent-bcc)[ \t]*:/i.test(line)) {
       skippingFold = true;
       continue;
     }

@@ -2117,6 +2117,14 @@ export type EmailComposeSendResult =
     ok: false;
     error: string;
     workflowRunId?: number | null;
+    /**
+     * True when an SMTP failure occurred after message bytes were submitted —
+     * the delivery outcome is unknown and callers holding a durable send
+     * reservation must keep it. Absent/false for failures that provably
+     * happened before any delivery attempt (validation, auth, host, pre-DATA
+     * SMTP stages).
+     */
+    deliveryAmbiguous?: boolean;
   };
 
 export type EmailComposeSenderApiPort = {

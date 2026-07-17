@@ -26,6 +26,7 @@ import {
 import { toast } from "sonner"
 import { BarChart3, Loader2, Plus, Search, Settings, X } from "lucide-react"
 import { invokeRenderer } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 
 // Status + outcome enums mirror the server's column CHECK constraints.
 const STATUSES = [
@@ -136,6 +137,8 @@ type JtlLookupResult = {
 }
 
 export default function ReturnsPage() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === "owner" || user?.role === "admin"
   const [list, setList] = useState<ListResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<"all" | Status>("all")
@@ -192,12 +195,14 @@ export default function ReturnsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant={portalOpen ? "secondary" : "outline"}
-            onClick={() => setPortalOpen((v) => !v)}
-          >
-            <Settings className="mr-2 h-4 w-4" /> Portal
-          </Button>
+          {isAdmin ? (
+            <Button
+              variant={portalOpen ? "secondary" : "outline"}
+              onClick={() => setPortalOpen((v) => !v)}
+            >
+              <Settings className="mr-2 h-4 w-4" /> Portal
+            </Button>
+          ) : null}
           <Button
             variant={analyticsOpen ? "secondary" : "outline"}
             onClick={() => setAnalyticsOpen((v) => !v)}
@@ -210,7 +215,7 @@ export default function ReturnsPage() {
         </div>
       </div>
 
-      {portalOpen ? <PortalSettingsPanel /> : null}
+      {isAdmin && portalOpen ? <PortalSettingsPanel /> : null}
       {analyticsOpen ? <ReturnsAnalyticsPanel reasons={reasons} /> : null}
 
       <Card>

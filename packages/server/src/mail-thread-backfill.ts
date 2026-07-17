@@ -6,6 +6,7 @@ import { accountSyncAdvisoryLockKey } from './jobs/policy';
 import {
   resolveReferenceThreadForSync,
   refreshThreadAggregateAfterSync,
+  threadCorrespondentEmails,
 } from './db/postgres-mail-metadata-read-ports';
 import {
   withWorkspaceTransaction,
@@ -23,6 +24,7 @@ const TICKET_SUBJECT_PATTERN = '\\[[A-Za-z0-9]{1,12}-[A-Za-z0-9]{1,20}\\]';
 type UnthreadedRow = Pick<
   Selectable<EmailMessagesTable>,
   'id' | 'account_id' | 'message_id' | 'in_reply_to' | 'references_header' | 'subject'
+  | 'from_json' | 'to_json' | 'cc_json' | 'bcc_json' | 'folder_kind'
 >;
 
 export type PostgresMailThreadBackfillOptions = Readonly<{
@@ -49,6 +51,9 @@ export function createPostgresMailThreadBackfillPort(
       let scanned = 0;
       let threaded = 0;
       let cursor = 0;
+      // Account address per account id (for self-authored archived copies) —
+      // resolved lazily once per account and run.
+      const accountEmailCache = new Map<number, readonly string[]>();
 
       while (scanned < limit) {
         const rows = await withWorkspaceTransaction(
@@ -69,7 +74,7 @@ export function createPostgresMailThreadBackfillPort(
           const didThread = await withWorkspaceTransaction(
             options.db,
             { workspaceId: input.workspaceId, role: 'system' },
-            (trx) => threadOneRow(trx, input.workspaceId, Number(row.id), accountId, row, now),
+            (trx) => threadOneRow(trx, input.workspaceId, Number(row.id), accountId, row, now, accountEmailCache),
             { applySession: options.applyWorkspaceSession },
           );
           if (didThread) threaded += 1;
@@ -96,7 +101,19 @@ async function selectUnthreadedBatch(
 ): Promise<UnthreadedRow[]> {
   return trx
     .selectFrom('email_messages')
-    .select(['id', 'account_id', 'message_id', 'in_reply_to', 'references_header', 'subject'])
+    .select([
+      'id',
+      'account_id',
+      'message_id',
+      'in_reply_to',
+      'references_header',
+      'subject',
+      'from_json',
+      'to_json',
+      'cc_json',
+      'bcc_json',
+      'folder_kind',
+    ])
     .where('workspace_id', '=', workspaceId)
     .where('thread_id', 'is', null)
     // thread_resolver_version marks rows the resolver has already attempted; skip
@@ -127,6 +144,7 @@ async function threadOneRow(
   accountId: number,
   row: UnthreadedRow,
   now: Date,
+  accountEmailCache: Map<number, readonly string[]>,
 ): Promise<boolean> {
   // Take the SAME per-account advisory lock the live sync path holds, so a
   // backfill can't race a concurrent sync (or a second backfill) and mint a
@@ -144,6 +162,18 @@ async function threadOneRow(
     .executeTakeFirst();
   if (!current || current.thread_id) return false;
 
+  let accountEmails = accountEmailCache.get(accountId);
+  if (!accountEmails) {
+    const account = await trx
+      .selectFrom('email_accounts')
+      .select(['email_address'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    accountEmails = account?.email_address?.trim() ? [account.email_address.trim()] : [];
+    accountEmailCache.set(accountId, accountEmails);
+  }
+
   const resolved = await resolveReferenceThreadForSync(trx, {
     workspaceId,
     accountId,
@@ -151,6 +181,15 @@ async function threadOneRow(
     inReplyTo: row.in_reply_to,
     referencesHeader: row.references_header,
     subject: row.subject,
+    correspondentEmails: threadCorrespondentEmails({
+      folderKind: row.folder_kind,
+      fromJson: row.from_json,
+      toJson: row.to_json,
+      ccJson: row.cc_json,
+      bccJson: row.bcc_json,
+      accountEmails,
+    }),
+    accountEmails,
     now,
     excludeMessageId: id,
   });

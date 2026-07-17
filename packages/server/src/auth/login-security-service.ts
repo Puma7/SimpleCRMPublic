@@ -248,6 +248,7 @@ export function createLoginSecurityService(input: {
           smtp: input.authInvitationSmtp,
           user,
           now: now(),
+          applyWorkspaceSession: input.applyWorkspaceSession,
         });
         if (!sent) return { kind: 'mfa_delivery_failed' };
       }
@@ -286,6 +287,16 @@ export function createLoginSecurityService(input: {
       if (user.disabledAt) {
         return { ok: false, code: 'user_disabled' };
       }
+
+      // Feed MFA failures into the same (email,ip) lockout used by /login. The
+      // login route enforces that lock before it can mint another challenge.
+      // Do not enforce it again here: an already-issued challenge has its own
+      // attempt cap, and a legitimate user must be able to correct one typo.
+      const failIp = ip ?? '0.0.0.0';
+      const recordMfaFailure = async () => {
+        await input.auth.recordFailedLogin?.({ email, ip: failIp, userId: user.id });
+      };
+
       if (!(await challengeStore.registerAttempt({
         token: mfaChallengeToken,
         purpose: 'mfa',
@@ -293,6 +304,7 @@ export function createLoginSecurityService(input: {
         ttlMs: mfaChallengeTtlMs,
         now: now(),
       }))) {
+        await recordMfaFailure();
         return { ok: false, code: 'mfa_attempts_exceeded' };
       }
 
@@ -305,11 +317,16 @@ export function createLoginSecurityService(input: {
         })
         : await verifyEmailMfaCode({
           db: input.db,
+          workspaceId: claims.workspaceId,
           userId: user.id,
           code,
           now: now(),
+          applyWorkspaceSession: input.applyWorkspaceSession,
         });
-      if (!verified) return { ok: false, code: 'mfa_code_invalid' };
+      if (!verified) {
+        await recordMfaFailure();
+        return { ok: false, code: 'mfa_code_invalid' };
+      }
 
       const challengeTtlMs = 5 * 60 * 1000;
       if (!(await challengeStore.consume({
@@ -523,32 +540,174 @@ async function sendEmailMfaCode(input: {
   smtp?: AuthInvitationSmtpConfig;
   user: AuthUserRecord;
   now: Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): Promise<boolean> {
-  if (!input.smtp || input.user.mfaMethod !== 'email') return false;
-  const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
-  const codeHash = hashEmailCode(code);
-  const expiresAt = new Date(input.now.getTime() + 10 * 60 * 1000);
-  const inserted = await input.db.insertInto('auth_mfa_email_codes').values({
-    user_id: input.user.id,
-    code_hash: codeHash,
-    expires_at: expiresAt,
-  }).returning('id').executeTakeFirst();
+  const smtp = input.smtp;
+  if (!smtp || input.user.mfaMethod !== 'email') return false;
+  let reservation:
+    | { kind: 'existing' }
+    | { kind: 'new'; id: string; code: string; supersededIds: string[] };
+  try {
+    reservation = await withWorkspaceTransaction(
+      input.db,
+      { workspaceId: input.user.workspaceId, role: 'system' },
+      async (trx) => {
+        const lockedUser = await trx
+          .selectFrom('users')
+          .select('id')
+          .where('id', '=', input.user.id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!lockedUser) throw new Error('MFA-Benutzer wurde nicht gefunden');
+
+        const pending = await trx
+          .selectFrom('auth_mfa_email_codes')
+          .select('id')
+          .where('workspace_id', '=', input.user.workspaceId)
+          .where('user_id', '=', input.user.id)
+          .where('delivery_status', '=', 'pending')
+          .where('consumed_at', 'is', null)
+          .where('expires_at', '>', input.now)
+          .orderBy('created_at', 'desc')
+          .executeTakeFirst();
+        if (pending) return { kind: 'existing' } as const;
+
+        // A process crash can leave an expired pending reservation and its
+        // formerly-active codes held. Retire those holds before issuing again.
+        await trx
+          .updateTable('auth_mfa_email_codes')
+          .set({ consumed_at: input.now })
+          .where('workspace_id', '=', input.user.workspaceId)
+          .where('user_id', '=', input.user.id)
+          .where('delivery_status', '=', 'superseded')
+          .where('consumed_at', 'is', null)
+          .execute();
+
+        const previousCodes = await trx
+          .selectFrom('auth_mfa_email_codes')
+          .select('id')
+          .where('workspace_id', '=', input.user.workspaceId)
+          .where('user_id', '=', input.user.id)
+          .where('delivery_status', '=', 'sent')
+          .where('consumed_at', 'is', null)
+          .execute();
+        const supersededIds = previousCodes.map((row) => row.id);
+        if (supersededIds.length > 0) {
+          await trx
+            .updateTable('auth_mfa_email_codes')
+            .set({ delivery_status: 'superseded' })
+            .where('workspace_id', '=', input.user.workspaceId)
+            .where('user_id', '=', input.user.id)
+            .where('id', 'in', supersededIds)
+            .where('delivery_status', '=', 'sent')
+            .where('consumed_at', 'is', null)
+            .execute();
+        }
+
+        const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+        const expiresAt = new Date(input.now.getTime() + 10 * 60 * 1000);
+        const inserted = await trx
+          .insertInto('auth_mfa_email_codes')
+          .values({
+            workspace_id: input.user.workspaceId,
+            user_id: input.user.id,
+            code_hash: hashEmailCode(code),
+            delivery_status: 'pending',
+            expires_at: expiresAt,
+          })
+          .returning('id')
+          .executeTakeFirst();
+        if (!inserted) throw new Error('MFA-Code konnte nicht reserviert werden');
+        return { kind: 'new', id: inserted.id, code, supersededIds } as const;
+      },
+      { applySession: input.applyWorkspaceSession },
+    );
+  } catch {
+    return false;
+  }
+
+  // A concurrent request already owns delivery. Do not mint another challenge
+  // for the same eventual code: attempt limits are challenge-scoped.
+  if (reservation.kind === 'existing') return false;
 
   try {
     await sendMfaEmailCode({
-      smtp: input.smtp,
+      smtp,
       email: input.user.email,
       displayName: input.user.displayName,
-      code,
+      code: reservation.code,
       now: input.now,
     });
   } catch {
-    if (inserted?.id !== undefined) {
-      await input.db
-        .deleteFrom('auth_mfa_email_codes')
-        .where('id', '=', inserted.id)
-        .execute();
+    try {
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId: input.user.workspaceId, role: 'system' },
+        async (trx) => {
+          await trx
+            .updateTable('auth_mfa_email_codes')
+            .set({ delivery_status: 'failed', consumed_at: input.now })
+            .where('workspace_id', '=', input.user.workspaceId)
+            .where('user_id', '=', input.user.id)
+            .where('id', '=', reservation.id)
+            .where('delivery_status', '=', 'pending')
+            .execute();
+          if (reservation.supersededIds.length > 0) {
+            await trx
+              .updateTable('auth_mfa_email_codes')
+              .set({ delivery_status: 'sent', consumed_at: null })
+              .where('workspace_id', '=', input.user.workspaceId)
+              .where('user_id', '=', input.user.id)
+              .where('id', 'in', reservation.supersededIds)
+              .where('delivery_status', '=', 'superseded')
+              .execute();
+          }
+        },
+        { applySession: input.applyWorkspaceSession },
+      );
+    } catch {
+      // The login still fails closed; an expired pending reservation is ignored.
     }
+    return false;
+  }
+
+  try {
+    await withWorkspaceTransaction(
+      input.db,
+      { workspaceId: input.user.workspaceId, role: 'system' },
+      async (trx) => {
+        const lockedUser = await trx
+          .selectFrom('users')
+          .select('id')
+          .where('id', '=', input.user.id)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!lockedUser) throw new Error('MFA-Benutzer wurde nicht gefunden');
+
+        if (reservation.supersededIds.length > 0) {
+          await trx
+            .updateTable('auth_mfa_email_codes')
+            .set({ consumed_at: input.now })
+            .where('workspace_id', '=', input.user.workspaceId)
+            .where('user_id', '=', input.user.id)
+            .where('id', 'in', reservation.supersededIds)
+            .where('delivery_status', '=', 'superseded')
+            .where('consumed_at', 'is', null)
+            .execute();
+        }
+        await trx
+          .updateTable('auth_mfa_email_codes')
+          .set({ delivery_status: 'sent' })
+          .where('workspace_id', '=', input.user.workspaceId)
+          .where('user_id', '=', input.user.id)
+          .where('id', '=', reservation.id)
+          .where('delivery_status', '=', 'pending')
+          .where('consumed_at', 'is', null)
+          .execute();
+      },
+      { applySession: input.applyWorkspaceSession },
+    );
+  } catch {
     return false;
   }
   return true;
@@ -556,22 +715,31 @@ async function sendEmailMfaCode(input: {
 
 async function verifyEmailMfaCode(input: {
   db: Kysely<ServerDatabase>;
+  workspaceId: string;
   userId: string;
   code: string;
   now: Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): Promise<boolean> {
   const normalized = input.code.trim();
   if (!/^\d{6}$/.test(normalized)) return false;
   const codeHash = hashEmailCode(normalized);
-  const row = await input.db
-    .updateTable('auth_mfa_email_codes')
-    .set({ consumed_at: input.now })
-    .where('user_id', '=', input.userId)
-    .where('code_hash', '=', codeHash)
-    .where('consumed_at', 'is', null)
-    .where('expires_at', '>', input.now)
-    .returning(['id'])
-    .executeTakeFirst();
+  const row = await withWorkspaceTransaction(
+    input.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => trx
+      .updateTable('auth_mfa_email_codes')
+      .set({ consumed_at: input.now })
+      .where('workspace_id', '=', input.workspaceId)
+      .where('user_id', '=', input.userId)
+      .where('code_hash', '=', codeHash)
+      .where('delivery_status', '=', 'sent')
+      .where('consumed_at', 'is', null)
+      .where('expires_at', '>', input.now)
+      .returning(['id'])
+      .executeTakeFirst(),
+    { applySession: input.applyWorkspaceSession },
+  );
   return Boolean(row);
 }
 

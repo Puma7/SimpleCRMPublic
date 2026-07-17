@@ -17,7 +17,9 @@ export type WorkflowHttpMethod = 'GET' | 'POST';
 export type WorkflowHttpRequestContinuation = Readonly<{
   workflowId: number;
   triggerName?: string;
-  resumeNodeId: string;
+  resumeNodeId?: string;
+  errorResumeNodeId?: string;
+  completeOnSuccess?: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
 }>;
@@ -29,6 +31,7 @@ export type WorkflowHttpRequestJobPlan = Readonly<{
   method: WorkflowHttpMethod;
   url: string;
   body?: string;
+  idempotencyKey?: string;
   timeoutMs: number;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -72,28 +75,63 @@ export function createPostgresWorkflowHttpRequestPort(
         { applySession: options.applyWorkspaceSession },
       );
 
-      const response = await guardedFetch({
-        url: input.url,
-        allowlist,
-        lookup,
-        fetchImpl,
-        init: {
-          method: input.method,
-          headers: input.method === 'GET' ? {} : { 'Content-Type': 'application/json' },
-          ...(input.method === 'GET' || input.body === undefined ? {} : { body: input.body }),
-          timeoutMs: input.timeoutMs,
-        },
-      });
-      const body = (await response.text()).slice(0, HTTP_RESPONSE_BODY_MAX);
-      if (!response.ok) {
-        throw new Error(`workflow HTTP request failed with status ${response.status}: ${body.slice(0, 200)}`);
+      let status = 0;
+      let body = '';
+      let ok = false;
+      let errorMessage: string | null = null;
+      try {
+        const response = await guardedFetch({
+          url: input.url,
+          allowlist,
+          lookup,
+          fetchImpl,
+          init: {
+            method: input.method,
+            headers: input.method === 'GET'
+              ? {}
+              : {
+                'Content-Type': 'application/json',
+                ...(input.idempotencyKey ? { 'Idempotency-Key': input.idempotencyKey } : {}),
+              },
+            ...(input.method === 'GET' || input.body === undefined ? {} : { body: input.body }),
+            timeoutMs: input.timeoutMs,
+          },
+        });
+        status = response.status;
+        body = (await response.text()).slice(0, HTTP_RESPONSE_BODY_MAX);
+        ok = response.ok;
+        if (!ok) errorMessage = `HTTP ${status}`;
+      } catch (error) {
+        errorMessage = error instanceof Error ? error.message : String(error);
       }
 
-      if (input.continuation) {
+      const resumeNodeId = ok
+        ? input.continuation?.resumeNodeId
+        : input.continuation?.errorResumeNodeId;
+      const terminalSuccess = Boolean(
+        ok
+        && input.continuation?.completeOnSuccess
+        && !resumeNodeId,
+      );
+      // Fail closed: an HTTP error must never enter the normal successor path.
+      // Without an explicit error edge the job remains failed/retryable.
+      if (!ok && !resumeNodeId) {
+        throw new Error(`workflow HTTP request failed (${status || 'no response'}): ${errorMessage ?? ''}`);
+      }
+      if (input.continuation && (resumeNodeId || terminalSuccess)) {
         await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
-          async (trx) => enqueueWorkflowHttpContinuation(trx, input, response.status, body, now()),
+          async (trx) => enqueueWorkflowHttpContinuation(
+            trx,
+            input,
+            resumeNodeId,
+            status,
+            body,
+            now(),
+            ok,
+            errorMessage,
+          ),
           { applySession: options.applyWorkspaceSession },
         );
       }
@@ -117,9 +155,12 @@ async function readWorkflowHttpAllowlist(
 async function enqueueWorkflowHttpContinuation(
   trx: WorkspaceTransaction,
   input: WorkflowHttpRequestJobPlan,
+  resumeNodeId: string | undefined,
   status: number,
   body: string,
   now: Date,
+  ok: boolean,
+  error: string | null,
 ): Promise<void> {
   const continuation = input.continuation;
   if (!continuation) return;
@@ -134,12 +175,16 @@ async function enqueueWorkflowHttpContinuation(
         ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
         ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
         context: {
-          resumeNodeId: continuation.resumeNodeId,
+          ...(resumeNodeId
+            ? { resumeNodeId }
+            : { workflowTerminalSuccess: true }),
           eventStrings: continuation.eventStrings ?? {},
           eventVariables: {
             ...(continuation.eventVariables ?? {}),
             'http.status': status,
             'http.body': body,
+            'http.ok': ok,
+            ...(error ? { 'http.error': error } : {}),
           },
         },
       },

@@ -12,6 +12,7 @@
 | [**PRODUCT_REQUIREMENTS.md**](PRODUCT_REQUIREMENTS.md) | **Muss/Soll/Ist** — CRM, Mail, KI, Workflows, Backup |
 | [**LEARNINGS.md**](LEARNINGS.md) | Master learning index + cross-cutting rules |
 | [**LOGIN_SECURITY.md**](LOGIN_SECURITY.md) | **Server login** — CAPTCHA, PIN, MFA, Setup-Token, API |
+| [**PR_156_FOLLOWUP_AUDIT.md**](PR_156_FOLLOWUP_AUDIT.md) | Validierung und Aufloesung der dokumentierten Claude-/Bugbot-Follow-ups in PR 156 |
 | [**SECURITY_DEPENDENCY_EXCEPTIONS.md**](SECURITY_DEPENDENCY_EXCEPTIONS.md) | Time-bound dependency risk acceptances, owners and controls |
 | [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md) | Auth hardening pitfalls + audit learnings |
 | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) | E-mail / IMAP / POP3 / SQLite pitfalls |

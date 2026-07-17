@@ -442,6 +442,18 @@ describe('server edition repository boundaries', () => {
         role: 'user',
       },
     });
+    // Admin token for the endpoints that are (now) admin-gated, e.g. the
+    // automation API-key inventory (credential-scope recon for non-admins).
+    const adminAccessToken = createAccessToken({
+      signer,
+      issuedAt: new Date(),
+      expiresInSeconds: 60,
+      principal: {
+        userId: 'owner-a',
+        workspaceId: 'workspace-a',
+        role: 'owner',
+      },
+    });
     const customerListCalls: unknown[] = [];
     const productListCalls: unknown[] = [];
     const dealListCalls: unknown[] = [];
@@ -1534,7 +1546,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/automation/api-keys?revoked=false&search=Import',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(automationApiKeys.statusCode).toBe(200);
@@ -1871,6 +1883,24 @@ describe('server edition repository boundaries', () => {
       expect(denied.statusCode).toBe(403);
       expect(denied.headers['access-control-allow-origin']).toBeUndefined();
       expect((denied.json() as any).error.code).toBe('cors_origin_not_allowed');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('fastify adapter rejects unsigned principal headers by default', async () => {
+    const app = createFastifyServer({ ports: makeServerApiPorts() });
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/customers',
+        headers: {
+          'x-simplecrm-user-id': 'user-a',
+          'x-simplecrm-workspace-id': 'workspace-a',
+          'x-simplecrm-role': 'owner',
+        },
+      });
+      expect(response.statusCode).toBe(401);
     } finally {
       await app.close();
     }

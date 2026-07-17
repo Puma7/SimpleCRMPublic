@@ -24,6 +24,7 @@ import {
   type AttachmentTextKind,
 } from '@simplecrm/core';
 import type { Kysely } from 'kysely';
+import yauzl from 'yauzl';
 
 import {
   resolveAttachmentStoragePath,
@@ -37,6 +38,8 @@ const BACKFILL_POLL_INTERVAL_MS = 30_000;
 const BACKFILL_BUSY_PAUSE_MS = 2_000;
 /** Hard cap per parse — a hung pdf/docx parse must not stall the pipeline. */
 const EXTRACT_TIMEOUT_MS = 30_000;
+const MAX_DOCX_ARCHIVE_ENTRIES = 2_048;
+const MAX_DOCX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024;
 
 export type AttachmentTextExtractionOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -104,11 +107,49 @@ export async function extractAttachmentTextFromBuffer(
       }
     }
     case 'docx': {
+      await validateDocxArchive(buf);
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ buffer: buf });
       return capAttachmentText(result.value ?? '');
     }
   }
+}
+
+async function validateDocxArchive(buf: Buffer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    yauzl.fromBuffer(buf, { lazyEntries: true }, (openError, zip) => {
+      if (openError || !zip) {
+        reject(openError ?? new Error('DOCX archive could not be opened'));
+        return;
+      }
+      let entries = 0;
+      let uncompressedBytes = 0;
+      let settled = false;
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        zip.close();
+        callback();
+      };
+      const rejectUnsafe = () => finish(() => reject(new Error('DOCX archive exceeds safe expansion limit')));
+      zip.on('error', (error) => finish(() => reject(error)));
+      zip.on('end', () => finish(resolve));
+      zip.on('entry', (entry: yauzl.Entry) => {
+        entries += 1;
+        uncompressedBytes += entry.uncompressedSize;
+        if (
+          entries > MAX_DOCX_ARCHIVE_ENTRIES
+          || uncompressedBytes > MAX_DOCX_UNCOMPRESSED_BYTES
+          || (entry.generalPurposeBitFlag & 0x1) !== 0
+        ) {
+          rejectUnsafe();
+          return;
+        }
+        zip.readEntry();
+      });
+      zip.readEntry();
+    });
+  });
 }
 
 async function markExtracted(

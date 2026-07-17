@@ -52,6 +52,7 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('workspaces', ['app.can_access_workspace', 'id']),
   rlsPolicyTable('users'),
   rlsPolicyTable('auth_invitations'),
+  rlsPolicyTable('auth_mfa_email_codes'),
   rlsPolicyTable('user_account_access'),
   rlsPolicyTable('refresh_tokens'),
   rlsPolicyTable('job_queue'),

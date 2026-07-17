@@ -59,7 +59,35 @@ export type SmtpSendDiagnosticEvent = Readonly<{
 
 const DEFAULT_TIMEOUT_MS = 90_000;
 
+/**
+ * Failure before any part of the message body was transmitted (connect,
+ * EHLO, STARTTLS, AUTH, MAIL FROM, RCPT TO or the DATA command itself).
+ * The server cannot have delivered anything, so callers holding a
+ * durable send reservation may safely release it and retry.
+ */
+export class SmtpPreDataSendError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SmtpPreDataSendError';
+  }
+}
+
 export async function sendSmtpMessage(input: ServerSmtpSendInput): Promise<void> {
+  let bodySubmitted = false;
+  try {
+    await sendSmtpMessageAttempt(input, () => {
+      bodySubmitted = true;
+    });
+  } catch (error) {
+    if (bodySubmitted || error instanceof SmtpPreDataSendError) throw error;
+    throw new SmtpPreDataSendError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function sendSmtpMessageAttempt(
+  input: ServerSmtpSendInput,
+  markBodySubmitted: () => void,
+): Promise<void> {
   const unsafe = validateCommandValue(input.user, 'Benutzername')
     ?? (input.password === undefined ? null : validateCommandValue(input.password, 'Passwort'))
     ?? validatePathAddress(input.envelopeFrom, 'Absender')
@@ -132,6 +160,9 @@ export async function sendSmtpMessage(input: ServerSmtpSendInput): Promise<void>
 
     response = await smtpCommand(client, 'DATA');
     if (response.code !== 354) failWithResponse('DATA', response);
+    // From here on the outcome is ambiguous: body bytes reach the server, so
+    // a failure no longer proves nothing was delivered.
+    markBodySubmitted();
     client.writeData(input.rfc822);
     response = await readSmtpResponse(client);
     if (response.code !== 250) failWithResponse('DATA_FINAL', response);

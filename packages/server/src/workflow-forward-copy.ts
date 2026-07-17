@@ -4,8 +4,8 @@ import type { Kysely } from 'kysely';
 import {
   addressesFromRecipientJson,
   buildComposeRfc822,
+  emailAddressForDelivery,
   generateOutboundMessageId,
-  normalizeEmailAddress,
   resolveConfiguredSmtpHost,
   SMTP_HOST_MISSING_ERROR,
   type ComposeRfc822Attachment,
@@ -23,7 +23,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
-import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
+import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
 import type { JobPayload } from './jobs/types';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
@@ -133,6 +133,7 @@ type PreparedForwardCopy =
   | {
     ok: true;
     duplicate: boolean;
+    deliveryPending: boolean;
     workflowSourceSqliteId: number;
     message: ForwardCopyMessage;
     account: ForwardCopyAccount;
@@ -208,11 +209,21 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
+      if (prepared.deliveryPending) {
+        await failOrEnqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: 'Forward-Zustellstatus ist unklar; automatischer Neuversand wurde blockiert',
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
       // runOutboundReview=true: instead of sending direct via SMTP, materialise
       // the forward as a draft and hand it to composeSender.send. The outbound
       // review pipeline (reviewOutbound.review → email.release_outbound) then
-      // runs as if a human had typed and sent the mail. dedup is still recorded
-      // here so retries don't create duplicate drafts.
+      // runs as if a human had typed and sent the mail. Delivery is reserved
+      // before composeSender can hand the message to that pipeline.
       if (input.runOutboundReview === true) {
         if (!options.composeSender) {
           await failOrEnqueueForwardCopyContinuation(options, input, {
@@ -237,7 +248,7 @@ export function createPostgresWorkflowForwardCopyPort(
           await failOrEnqueueForwardCopyContinuation(options, input, {
             ok: false,
             error: reviewResult.error,
-            duplicate: false,
+            duplicate: reviewResult.duplicate,
             now: now(),
             reviewPending: reviewResult.reviewPending,
           });
@@ -246,7 +257,7 @@ export function createPostgresWorkflowForwardCopyPort(
         await enqueueForwardCopyContinuation(options, input, {
           ok: true,
           error: null,
-          duplicate: false,
+          duplicate: reviewResult.duplicate,
           now: now(),
           reviewPending: reviewResult.reviewPending,
         });
@@ -282,6 +293,31 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
+      const reservation = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => reserveForwardCopyDelivery(trx, input, prepared, now()),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (reservation !== 'reserved') {
+        if (reservation === 'sent') {
+          await enqueueForwardCopyContinuation(options, input, {
+            ok: true,
+            error: null,
+            duplicate: true,
+            now: now(),
+          });
+          return;
+        }
+        await failOrEnqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: 'Forward-Zustellstatus ist unklar; automatischer Neuversand wurde blockiert',
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
       try {
         await smtpSend({
           host: smtpHost,
@@ -306,6 +342,18 @@ export function createPostgresWorkflowForwardCopyPort(
           ...(auth.accessToken !== undefined ? { accessToken: auth.accessToken } : {}),
         });
       } catch (error) {
+        if (error instanceof SmtpPreDataSendError) {
+          // Nothing reached the DATA stage, so nothing can have been
+          // delivered — release the reservation so a later retry may send.
+          // Ambiguous failures (after body submission) keep the reservation
+          // and block automatic resend.
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => releaseForwardCopyReservation(trx, input, prepared),
+            { applySession: options.applyWorkspaceSession },
+          );
+        }
         await failOrEnqueueForwardCopyContinuation(options, input, {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
@@ -319,7 +367,7 @@ export function createPostgresWorkflowForwardCopyPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          await insertForwardCopyDedup(trx, input, prepared, now());
+          await markForwardCopyDelivered(trx, input, prepared, now());
           await enqueueForwardCopyContinuationInTransaction(trx, input, {
             ok: true,
             error: null,
@@ -354,15 +402,16 @@ async function prepareForwardCopy(
   const workflowSourceSqliteId = await loadWorkflowSourceSqliteId(trx, input.workspaceId, input.workflowId);
   if (workflowSourceSqliteId === null) return { ok: false, error: 'Workflow nicht gefunden' };
 
-  const duplicate = await hasForwardCopyDedup(trx, input.workspaceId, {
+  const deliveryStatus = await forwardCopyDeliveryStatus(trx, input.workspaceId, {
     messageSourceSqliteId: message.sourceSqliteId,
     workflowSourceSqliteId,
     destination,
   });
-  if (duplicate) {
+  if (deliveryStatus) {
     return {
       ok: true,
-      duplicate: true,
+      duplicate: deliveryStatus === 'sent',
+      deliveryPending: deliveryStatus === 'outbox',
       workflowSourceSqliteId,
       message,
       account,
@@ -396,6 +445,7 @@ async function prepareForwardCopy(
   return {
     ok: true,
     duplicate: false,
+    deliveryPending: false,
     workflowSourceSqliteId,
     message,
     account,
@@ -542,7 +592,7 @@ async function loadWorkflowSourceSqliteId(
   return row.source_sqlite_id === null ? -Number(row.id) : Number(row.source_sqlite_id);
 }
 
-async function hasForwardCopyDedup(
+async function forwardCopyDeliveryStatus(
   trx: WorkspaceTransaction,
   workspaceId: string,
   input: {
@@ -550,32 +600,26 @@ async function hasForwardCopyDedup(
     workflowSourceSqliteId: number;
     destination: string;
   },
-): Promise<boolean> {
+): Promise<'outbox' | 'sent' | null> {
   const row = await trx
     .selectFrom('email_workflow_forward_dedup')
-    .select('id')
+    .select(['id', 'delivery_status'])
     .where('workspace_id', '=', workspaceId)
     .where('message_source_sqlite_id', '=', input.messageSourceSqliteId)
     .where('workflow_source_sqlite_id', '=', input.workflowSourceSqliteId)
     .where('dest', '=', input.destination)
     .executeTakeFirst();
-  return Boolean(row);
+  if (!row) return null;
+  return row.delivery_status === 'outbox' ? 'outbox' : 'sent';
 }
 
-async function insertForwardCopyDedup(
+async function reserveForwardCopyDelivery(
   trx: WorkspaceTransaction,
   input: WorkflowForwardCopyJobPlan,
   prepared: Extract<PreparedForwardCopy, { ok: true }>,
   now: Date,
-): Promise<void> {
-  if (await hasForwardCopyDedup(trx, input.workspaceId, {
-    messageSourceSqliteId: prepared.message.sourceSqliteId,
-    workflowSourceSqliteId: prepared.workflowSourceSqliteId,
-    destination: prepared.destination,
-  })) {
-    return;
-  }
-  await trx
+): Promise<'reserved' | 'outbox' | 'sent'> {
+  const inserted = await trx
     .insertInto('email_workflow_forward_dedup')
     .values({
       workspace_id: input.workspaceId,
@@ -590,15 +634,64 @@ async function insertForwardCopyDedup(
       message_id: input.messageId,
       workflow_id: input.workflowId,
       dest: prepared.destination,
+      delivery_status: 'outbox',
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       created_at: now,
       updated_at: now,
     })
+    .onConflict((oc) => oc
+      .columns(['workspace_id', 'message_source_sqlite_id', 'workflow_source_sqlite_id', 'dest'])
+      .doNothing())
+    .returning('id')
+    .executeTakeFirst();
+  if (inserted) return 'reserved';
+  return await forwardCopyDeliveryStatus(trx, input.workspaceId, {
+    messageSourceSqliteId: prepared.message.sourceSqliteId,
+    workflowSourceSqliteId: prepared.workflowSourceSqliteId,
+    destination: prepared.destination,
+  }) ?? 'outbox';
+}
+
+/** Removes an unconsumed 'outbox' reservation after a provably pre-DATA SMTP
+ *  failure. Rows already marked 'sent' are never touched. */
+async function releaseForwardCopyReservation(
+  trx: WorkspaceTransaction,
+  input: WorkflowForwardCopyJobPlan,
+  prepared: Extract<PreparedForwardCopy, { ok: true }>,
+): Promise<void> {
+  await trx
+    .deleteFrom('email_workflow_forward_dedup')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_source_sqlite_id', '=', prepared.message.sourceSqliteId)
+    .where('workflow_source_sqlite_id', '=', prepared.workflowSourceSqliteId)
+    .where('dest', '=', prepared.destination)
+    .where('delivery_status', '=', 'outbox')
     .execute();
 }
 
-type ForwardReviewResult = { ok: boolean; error: string | null; reviewPending: boolean };
+async function markForwardCopyDelivered(
+  trx: WorkspaceTransaction,
+  input: WorkflowForwardCopyJobPlan,
+  prepared: Extract<PreparedForwardCopy, { ok: true }>,
+  now: Date,
+): Promise<void> {
+  await trx
+    .updateTable('email_workflow_forward_dedup')
+    .set({ delivery_status: 'sent', updated_at: now })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_source_sqlite_id', '=', prepared.message.sourceSqliteId)
+    .where('workflow_source_sqlite_id', '=', prepared.workflowSourceSqliteId)
+    .where('dest', '=', prepared.destination)
+    .execute();
+}
+
+type ForwardReviewResult = {
+  ok: boolean;
+  error: string | null;
+  reviewPending: boolean;
+  duplicate: boolean;
+};
 
 /** Materialises the forward as a draft and runs it through composeSender.send,
  *  so the existing outbound-review pipeline (reviewOutbound.review →
@@ -634,10 +727,8 @@ async function forwardViaOutboundReview(args: {
         .filter((p): p is string => typeof p === 'string' && p.length > 0)
     : [];
 
-  // (1) Create the draft FIRST (with attachment paths persisted). Dedup is
-  //     recorded only after we have at least handed the draft to composeSender
-  //     — otherwise a transient draft-create failure would mark the
-  //     (message, workflow, dest) as forwarded and block retries forever.
+  // (1) Create the draft before reserving delivery. A draft is local and safe to
+  // retry, while a reservation must exist before composeSender can send.
   const draftResult = await args.createDraft({
     workspaceId: input.workspaceId,
     accountId: prepared.account.id,
@@ -647,10 +738,36 @@ async function forwardViaOutboundReview(args: {
     attachmentPaths: forwardedAttachmentPaths,
   });
   if (!draftResult.ok) {
-    return { ok: false, error: `Entwurf konnte nicht erstellt werden: ${draftResult.reason}`, reviewPending: false };
+    return {
+      ok: false,
+      error: `Entwurf konnte nicht erstellt werden: ${draftResult.reason}`,
+      reviewPending: false,
+      duplicate: false,
+    };
   }
 
-  // (2) Call composeSender.send. It runs reviewOutbound.review which holds the
+  // (2) Reserve before the first operation that may deliver externally. If a
+  // previous attempt reached this point, its outcome is intentionally treated
+  // as unknown instead of risking another send.
+  const reservation = await withWorkspaceTransaction(
+    args.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => reserveForwardCopyDelivery(trx, input, prepared, args.now),
+    { applySession: args.applyWorkspaceSession },
+  );
+  if (reservation === 'sent') {
+    return { ok: true, error: null, reviewPending: false, duplicate: true };
+  }
+  if (reservation === 'outbox') {
+    return {
+      ok: false,
+      error: 'Forward-Zustellstatus ist unklar; automatischer Neuversand wurde blockiert',
+      reviewPending: false,
+      duplicate: false,
+    };
+  }
+
+  // (3) Call composeSender.send. It runs reviewOutbound.review which holds the
   //     draft if outbound workflows exist (workflowRunId set on the error
   //     result). The pipeline then drives approval + send.
   const sendResult = await args.composeSender.send({
@@ -673,14 +790,25 @@ async function forwardViaOutboundReview(args: {
     await withWorkspaceTransaction(
       args.db,
       { workspaceId: input.workspaceId, role: 'system' },
-      async (trx) => insertForwardCopyDedup(trx, input, prepared, args.now),
+      async (trx) => markForwardCopyDelivered(trx, input, prepared, args.now),
       { applySession: args.applyWorkspaceSession },
     );
   }
 
-  if (sent) return { ok: true, error: null, reviewPending: false };
-  if (queuedForReview) return { ok: true, error: null, reviewPending: true };
-  return { ok: false, error: sendResult.error, reviewPending: false };
+  if (sent) return { ok: true, error: null, reviewPending: false, duplicate: false };
+  if (queuedForReview) return { ok: true, error: null, reviewPending: true, duplicate: false };
+  if (!sendResult.deliveryAmbiguous) {
+    // The compose pipeline refused before any delivery attempt (validation,
+    // auth/host, pre-DATA SMTP, expired lock) — release the reservation so a
+    // job retry may send. Only ambiguous SMTP outcomes keep the block.
+    await withWorkspaceTransaction(
+      args.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => releaseForwardCopyReservation(trx, input, prepared),
+      { applySession: args.applyWorkspaceSession },
+    );
+  }
+  return { ok: false, error: sendResult.error, reviewPending: false, duplicate: false };
 }
 
 
@@ -857,14 +985,17 @@ function resolveSmtpUser(account: ForwardCopyAccount): string {
     : account.smtpUsername?.trim() || account.imapUsername;
 }
 
-function normalizeForwardCopyRecipients(value: string): string[] {
+export function normalizeForwardCopyRecipients(value: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const part of value.split(/[,;]+/).map((entry) => entry.trim()).filter(Boolean)) {
-    const angleMatch = part.match(/<([^>]+)>/);
+    const angleMatch = /<([^<>]+)>\s*$/.exec(part);
     const candidate = (angleMatch?.[1] ?? part).trim();
-    const normalized = candidate.toLowerCase();
-    if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) && !out.includes(normalized)) {
-      out.push(normalized);
+    const deliveryAddress = emailAddressForDelivery(candidate);
+    const identity = deliveryAddress.toLowerCase();
+    if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(deliveryAddress) && !seen.has(identity)) {
+      out.push(deliveryAddress);
+      seen.add(identity);
     }
   }
   return out.slice(0, 10);
@@ -893,7 +1024,7 @@ function emailAccountSecretIdentifier(
 
 
 function formatMailbox(displayName: string, emailAddress: string): string {
-  const cleanEmail = normalizeEmailAddress(emailAddress) ?? emailAddress.trim();
+  const cleanEmail = emailAddressForDelivery(emailAddress);
   const cleanName = sanitizeHeader(displayName);
   return cleanName ? `${encodeHeaderValue(cleanName)} <${cleanEmail}>` : cleanEmail;
 }

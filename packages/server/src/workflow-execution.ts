@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { sql, type Kysely, type Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
@@ -9,6 +11,7 @@ import {
   ensureTicketInSubject,
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
+  emailAddressForDelivery,
   generateTicketCode,
   interpolateWorkflowPlaceholders,
   isUnsafeAutoReplyTarget,
@@ -69,6 +72,10 @@ import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
 const MAX_WORKFLOW_LOOP_ITEMS = 500;
+/** Hard cap on chained workflow.subflow depth (cycle / runaway fan-out guard). */
+const MAX_SUBFLOW_DEPTH = 8;
+/** Reserved variable carrying the current subflow chain depth across child runs. */
+const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
 const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
@@ -390,6 +397,18 @@ export function createPostgresWorkflowExecutionJobPort(
             requestedRunId: input.runId,
             now,
           });
+
+          if (contextCompletesWorkflow(jobContext) && !resumeNodeId) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['continuation:terminal_success'],
+              now,
+            });
+            if (trigger === 'inbound' && message) {
+              await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+            }
+            return;
+          }
 
           if (!workflow.enabled) {
             await finishRun(trx, input.workspaceId, run.id, {
@@ -1183,7 +1202,15 @@ async function walkGraph(
       });
     }
 
-    if (result.variables) Object.assign(input.context.variables, result.variables);
+    if (result.variables) {
+      const subflowDepth = input.context.variables[SUBFLOW_DEPTH_VARIABLE];
+      Object.assign(input.context.variables, result.variables);
+      if (subflowDepth === undefined) {
+        delete input.context.variables[SUBFLOW_DEPTH_VARIABLE];
+      } else {
+        input.context.variables[SUBFLOW_DEPTH_VARIABLE] = subflowDepth;
+      }
+    }
     // Inbound gate: condition.yes, auto_reply.approved, threshold.yes oder
     // ein getroffener switch-Fall autorisieren nachgelagerte Side-Effect-
     // Knoten — gleiche harte (nodeType, port)-Liste wie die Desktop-Runtime
@@ -1359,6 +1386,9 @@ async function executeServerNode(
   }
   if (type === 'logic.set_variable') {
     const name = String(config.name ?? 'var').trim() || 'var';
+    if (name === SUBFLOW_DEPTH_VARIABLE) {
+      return { status: 'error', port: 'error', message: `Variable ${name} ist reserviert` };
+    }
     const value = config.value;
     return {
       status: 'ok',
@@ -1388,6 +1418,10 @@ async function executeServerNode(
         message: `delayed_until:${executeAt.toISOString()}`,
         variables: { 'workflow.delayed_until': executeAt.toISOString() },
       });
+    }
+    const continuationContextError = workflowContinuationContextError(context);
+    if (continuationContextError) {
+      return { status: 'error', port: 'error', message: continuationContextError };
     }
     const delayedJobId = await scheduleWorkflowDelay(trx, context, {
       resumeNodeId,
@@ -2304,6 +2338,12 @@ async function scheduleAiClassificationJob(
   if (!contextMode.ok) return { status: 'error', port: 'error', message: contextMode.message };
 
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  if (resumeNodeId) {
+    const continuationContextError = workflowContinuationContextError(context);
+    if (continuationContextError) {
+      return { status: 'error', port: 'error', message: continuationContextError };
+    }
+  }
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
@@ -2358,6 +2398,10 @@ async function scheduleAiReviewJob(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');
   if (!promptId.ok) return { status: 'error', port: 'error', message: promptId.message };
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
@@ -2429,6 +2473,10 @@ async function scheduleAiTransformTextJob(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');
   if (!promptId.ok) return { status: 'error', port: 'error', message: promptId.message };
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
@@ -2495,6 +2543,10 @@ async function scheduleAiAgentJob(
   createDraft: boolean,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
   if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
   const knowledgeBaseId = optionalPositiveIntegerConfig(config.knowledgeBaseId, 'knowledgeBaseId');
@@ -2561,6 +2613,10 @@ async function scheduleAiPickCannedJob(
   createDraft: boolean,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
   if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
 
@@ -2654,6 +2710,10 @@ async function scheduleWorkflowHttpRequestJob(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const url = workflowHttpUrl(config.url);
   if (!url.ok) return { status: 'error', port: 'error', message: url.message };
   if (!url.value) return { status: 'skipped', port: 'default', message: 'leere URL' };
@@ -2664,7 +2724,8 @@ async function scheduleWorkflowHttpRequestJob(
   const timeoutMs = workflowHttpTimeout(config.timeoutMs);
   if (!timeoutMs.ok) return { status: 'error', port: 'error', message: timeoutMs.message };
 
-  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const resumeNodeId = resolveHttpSuccessNodeAfter(doc, node.id);
+  const errorResumeNodeId = resolveHttpErrorNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     method: method.value,
@@ -2673,15 +2734,21 @@ async function scheduleWorkflowHttpRequestJob(
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
+  if (method.value === 'POST') {
+    payload.idempotencyKey = workflowHttpIdempotencyKey(context, node.id);
+  }
   if (method.value === 'POST' && body.value !== undefined) payload.body = body.value;
   if (context.messageId !== null) payload.messageId = context.messageId;
-  if (resumeNodeId) {
+  if (resumeNodeId || errorResumeNodeId) {
     payload.workflowId = context.workflowId;
-    payload.resumeNodeId = resumeNodeId;
+    if (resumeNodeId) payload.resumeNodeId = resumeNodeId;
+    if (errorResumeNodeId) payload.errorResumeNodeId = errorResumeNodeId;
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
-      resumeNodeId,
+      ...(resumeNodeId ? { resumeNodeId } : {}),
+      ...(errorResumeNodeId ? { errorResumeNodeId } : {}),
+      ...(!resumeNodeId && errorResumeNodeId ? { completeOnSuccess: true } : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
     };
@@ -2704,8 +2771,8 @@ async function scheduleWorkflowHttpRequestJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    stop: Boolean(resumeNodeId || errorResumeNodeId),
+    deferred: Boolean(resumeNodeId || errorResumeNodeId),
     message: `queued_http_request:${jobId}`,
     variables: {
       'http.status': 'pending',
@@ -2724,6 +2791,10 @@ async function scheduleWorkflowForwardCopyJob(
 ): Promise<NodeResult> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
   }
   const to = workflowForwardCopyRecipient(config.to);
   if (!to.ok) return { status: 'error', port: 'error', message: to.message };
@@ -2793,6 +2864,12 @@ async function scheduleWorkflowDmarcIngestJob(
   const attachmentNameFilter = String(config.attachmentNameFilter ?? '').trim();
 
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  if (resumeNodeId) {
+    const continuationContextError = workflowContinuationContextError(context);
+    if (continuationContextError) {
+      return { status: 'error', port: 'error', message: continuationContextError };
+    }
+  }
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     workflowId: context.workflowId,
@@ -4032,12 +4109,18 @@ function workflowForwardCopyRecipient(value: unknown): WorkflowForwardCopyRecipi
     return { ok: false, message: `Maximal ${MAX_FORWARD_COPY_RECIPIENTS} Forward-Empfaenger` };
   }
   const normalized: string[] = [];
+  const seen = new Set<string>();
   for (const part of parts) {
-    const address = normalizeEmailAddress(part);
+    const angleMatch = /<([^<>]+)>\s*$/.exec(part);
+    const address = emailAddressForDelivery(angleMatch?.[1] ?? part);
     if (!isSimpleWorkflowEmailAddress(address)) {
       return { ok: false, message: `Forward-Empfaenger ist ungueltig: ${part}` };
     }
-    if (!normalized.includes(address)) normalized.push(address);
+    const identity = address.toLowerCase();
+    if (!seen.has(identity)) {
+      normalized.push(address);
+      seen.add(identity);
+    }
   }
   return { ok: true, value: normalized.join(',') };
 }
@@ -4150,6 +4233,19 @@ function boundedDelayMs(value: unknown): number {
 function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   const outs = outgoing(doc.edges, nodeId);
   return pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
+}
+
+function resolveHttpSuccessNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
+  const outs = outgoing(doc.edges, nodeId);
+  const explicit = pickEdge(outs, 'default') ?? pickEdge(outs, 'yes');
+  if (explicit) return explicit.target;
+  const nonErrorEdges = outs.filter((edge) => !['no', 'nein', 'false', 'error']
+    .includes(String(edge.label ?? '').trim().toLowerCase()));
+  return nonErrorEdges.length === 1 ? nonErrorEdges[0]!.target : '';
+}
+
+function resolveHttpErrorNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
+  return pickEdge(outgoing(doc.edges, nodeId), 'no')?.target ?? '';
 }
 
 async function updateWorkflowMessage(
@@ -4818,11 +4914,34 @@ async function enqueueWorkflowSubflow(
   config: Record<string, unknown>,
   now: Date,
 ): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
   const configuredWorkflowId = optionalPositiveIntegerConfig(config.workflowId, 'workflowId');
   if (!configuredWorkflowId.ok) return { status: 'error', port: 'error', message: configuredWorkflowId.message };
   const workflowId = configuredWorkflowId.value;
   if (!workflowId || workflowId === context.workflowId) {
     return { status: 'error', port: 'error', message: 'Ungueltige Subflow-ID' };
+  }
+
+  // Depth guard: the direct self-reference check above does not stop an indirect
+  // cycle (A → B → A). For message-less / non-inbound subflows there is no
+  // applied-marker to break the loop, so without a depth cap the pair would
+  // enqueue each other forever and exhaust the job queue. Carry the depth in a
+  // reserved variable that rides along in eventVariables into each child run.
+  const rawDepth = context.variables[SUBFLOW_DEPTH_VARIABLE];
+  const subflowDepth = typeof rawDepth === 'number'
+    && Number.isInteger(rawDepth)
+    && rawDepth >= 0
+    ? rawDepth
+    : 0;
+  if (subflowDepth >= MAX_SUBFLOW_DEPTH) {
+    return {
+      status: 'error',
+      port: 'error',
+      message: `Subflow-Tiefe ${MAX_SUBFLOW_DEPTH} überschritten (mögliche Rekursion) — Subflow nicht eingereiht`,
+    };
   }
 
   const subflow = await loadWorkflow(trx, context.workspaceId, workflowId);
@@ -4836,7 +4955,7 @@ async function enqueueWorkflowSubflow(
     triggerName: normalizeWorkflowTrigger(subflow.trigger_name),
     context: {
       eventStrings: context.strings,
-      eventVariables: context.variables,
+      eventVariables: { ...context.variables, [SUBFLOW_DEPTH_VARIABLE]: subflowDepth + 1 },
       subflowParent: {
         workflowId: context.workflowId,
         runId: context.runId,
@@ -4904,8 +5023,8 @@ async function createWorkflowTask(
   const dueDate = workflowTaskDueDate(config.daysUntilDue, now);
   if (!dueDate) return { status: 'error', port: 'error', message: 'daysUntilDue ungueltig' };
   const description = String(context.strings.snippet ?? '').trim() || null;
-  // customerId 0 marks the customerless task in the idempotency key so re-runs
-  // of the same (workflow, run, message, node) dedup instead of duplicating.
+  // customerId 0 marks the customerless task in the idempotency key so retries
+  // of the same (workflow, message, node) dedup instead of duplicating.
   const sourceSqliteId = serverCreatedWorkflowTaskSourceSqliteId(context, node.id, customer?.id ?? 0);
 
   const existing = await trx
@@ -6337,6 +6456,10 @@ function contextForcesWorkflowReapply(value: Record<string, unknown>): boolean {
   return value.forceWorkflowReapply === true || value.workflowBackfill === true;
 }
 
+function contextCompletesWorkflow(value: Record<string, unknown>): boolean {
+  return value.workflowTerminalSuccess === true;
+}
+
 function contextSkipsSpamOrReview(value: Record<string, unknown>): boolean {
   return value.skipIfMessageSpamOrReview === true;
 }
@@ -6393,8 +6516,7 @@ function serverCreatedWorkflowTaskSourceSqliteId(
     'tasks',
     context.workspaceId,
     String(context.workflowSourceSqliteId),
-    String(context.runSourceSqliteId),
-    String(context.messageSourceSqliteId ?? context.messageId ?? 'none'),
+    workflowSideEffectExecutionIdentity(context),
     nodeId,
     String(customerId),
   );
@@ -6409,11 +6531,53 @@ function serverCreatedWorkflowActivityLogSourceSqliteId(
     'activity_log',
     context.workspaceId,
     String(context.workflowSourceSqliteId),
-    String(context.runSourceSqliteId),
-    String(context.messageSourceSqliteId ?? context.messageId ?? 'none'),
+    workflowSideEffectExecutionIdentity(context),
     nodeId,
     String(customerId),
   );
+}
+
+const MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH = 128 * 1024;
+
+function workflowContinuationContextError(context: ServerWorkflowContext): string | null {
+  if (
+    JSON.stringify(context.strings).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
+    || JSON.stringify(context.variables).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
+  ) {
+    return `Continuation-Kontext ueberschreitet ${MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH} JSON-Zeichen`;
+  }
+  return null;
+}
+
+function workflowHttpIdempotencyKey(context: ServerWorkflowContext, nodeId: string): string {
+  const hash = createHash('sha256')
+    .update(context.workspaceId)
+    .update('\0')
+    .update(String(context.workflowSourceSqliteId))
+    .update('\0')
+    .update(workflowSideEffectExecutionIdentity(context))
+    .update('\0')
+    .update(nodeId);
+  // Inside logic.loop each iteration is a distinct legitimate request, so the
+  // loop position joins the digest. Retries of the same queued job reuse the
+  // key stored in the job payload, so retry stability is unaffected.
+  const loopIndex = context.variables['loop.index'];
+  const loopItem = context.variables['loop.item'];
+  if (loopIndex !== undefined || loopItem !== undefined) {
+    hash
+      .update('\0')
+      .update(`loop:${String(loopIndex ?? '')}`)
+      .update('\0')
+      .update(String(loopItem ?? ''));
+  }
+  return `simplecrm-workflow-http-${hash.digest('hex')}`;
+}
+
+function workflowSideEffectExecutionIdentity(context: ServerWorkflowContext): string {
+  const messageIdentity = context.messageSourceSqliteId ?? context.messageId;
+  return messageIdentity === null
+    ? `run:${context.runSourceSqliteId}`
+    : `message:${messageIdentity}`;
 }
 
 function serverCreatedWorkflowDealStageActivitySourceSqliteId(

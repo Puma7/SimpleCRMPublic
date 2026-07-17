@@ -1,5 +1,10 @@
 import { render, screen, waitFor } from '@testing-library/react';
 
+const mockUseAuth = jest.fn();
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => mockUseAuth(),
+}));
+
 import SettingsPage from '@/app/settings/page';
 import {
   configureRendererTransport,
@@ -9,6 +14,10 @@ import {
 
 describe('SettingsPage server-client sync controls', () => {
   beforeEach(() => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'owner-1', role: 'owner' },
+      loading: false,
+    });
     resetRendererTransportForTests();
     (globalThis as any).ResizeObserver = class ResizeObserver {
       observe() {}
@@ -56,6 +65,32 @@ describe('SettingsPage server-client sync controls', () => {
     expect(screen.getByRole('button', { name: 'Synchronisation starten' })).toBeEnabled();
     expect(localInvoke).not.toHaveBeenCalledWith('sync:get-status');
     expect(localInvoke).not.toHaveBeenCalledWith('sync:run');
+  });
+
+  test('does not load or test MSSQL settings for a non-admin server user', async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-1', role: 'user' },
+      loading: false,
+    });
+    const fetchImpl = jest.fn((url: string) => Promise.resolve(jsonResponse({
+      data: url.endsWith('/api/v1/jtl/sync/status')
+        ? { status: 'Success', message: 'Server sync ok', timestamp: null }
+        : null,
+    })));
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText(/nur von Ownern und Admins/)).toBeTruthy();
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/jtl/sync/status',
+      expect.objectContaining({ method: 'GET' }),
+    ));
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('/api/v1/mssql/'))).toBe(false);
+    expect(screen.getByRole('button', { name: 'Synchronisation starten' })).toBeEnabled();
   });
 });
 

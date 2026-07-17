@@ -24,6 +24,7 @@ import {
   uidValidityAsOptionalNumber,
   uidValidityMismatch,
   InboundMessageTooLargeError,
+  MAX_INBOUND_RFC822_BYTES,
   type MailboxListEntry,
 } from '@simplecrm/core';
 import { mergeSeenLocalOnMailSync } from '@simplecrm/core';
@@ -36,6 +37,7 @@ import { resolveAttachmentStoragePath } from './db';
 import {
   refreshThreadAggregateAfterSync,
   resolveReferenceThreadForSync,
+  threadCorrespondentEmails,
 } from './db/postgres-mail-metadata-read-ports';
 import {
   MAX_SYNC_ATTACHMENT_BYTES,
@@ -110,6 +112,9 @@ export type ServerMailSyncAccount = Readonly<{
   id: number;
   sourceSqliteId: number;
   protocol: string;
+  /** Account mailbox address — used to detect self-authored archived copies
+   *  during reference threading. */
+  emailAddress: string | null;
   imapHost: string;
   imapPort: number;
   imapTls: boolean;
@@ -481,6 +486,13 @@ async function syncImapFolder(input: {
   let toProcess: number[] = [];
   const fetchedMessages: FetchedImapMessage[] = [];
   const skippedUids = new Set<number>();
+  const pendingUidKey = `email_imap_pending_uids:${input.account.id}:${folder.id}`;
+  // Messages over the hard RFC822 cap can never import; retrying them would
+  // refetch >cap bytes on every sync. They are skipped permanently via this
+  // persisted set (mirrors the POP3 oversized-UIDL handling).
+  const oversizedUidKey = `email_imap_oversized_uids:${input.account.id}:${folder.id}`;
+  let pendingUids = new Set<number>();
+  let oversizedUids = new Set<number>();
   let chainEnd = lastUid;
 
   const lock = await input.client.getMailboxLock(input.spec.path);
@@ -514,6 +526,13 @@ async function syncImapFolder(input: {
         uidvalidity: uidValidityNum ?? null,
         uidvalidityStr: uidValidityStr ?? null,
       };
+    } else {
+      const pendingValues = await input.store.getSyncInfo({
+        workspaceId: input.plan.workspaceId,
+        keys: [pendingUidKey, oversizedUidKey],
+      });
+      pendingUids = parsePendingImapUids(pendingValues.get(pendingUidKey));
+      oversizedUids = parsePendingImapUids(pendingValues.get(oversizedUidKey));
     }
 
     let uids: number[];
@@ -529,14 +548,40 @@ async function syncImapFolder(input: {
       uids = [...allUids].sort((a, b) => a - b).slice(-input.firstSyncMaxMessages);
     }
 
-    sorted = [...uids].sort((a, b) => a - b).filter((uid) => Number.isSafeInteger(uid) && uid > 0);
+    // Pending UIDs may refer to messages expunged or moved since the transient
+    // failure was recorded; without an existence check the retry list never
+    // drains (each failed refetch re-adds the UID). A failed probe (false)
+    // keeps the list untouched rather than dropping retries blindly.
+    if (pendingUids.size > 0) {
+      const pendingList = [...pendingUids].sort((a, b) => a - b);
+      const existing = await input.client.search(
+        { uid: pendingList.join(',') },
+        { uid: true },
+      );
+      if (existing !== false) {
+        const existingSet = new Set(existing);
+        for (const uid of pendingList) {
+          if (!existingSet.has(uid)) pendingUids.delete(uid);
+        }
+      }
+    }
+
+    sorted = [...new Set([...uids, ...pendingUids])]
+      .sort((a, b) => a - b)
+      .filter((uid) => Number.isSafeInteger(uid) && uid > 0);
     sortedSet = new Set(sorted);
     imapUidToId = new Map(await input.store.loadImapUidToId({
       workspaceId: input.plan.workspaceId,
       folderId: folder.id,
       uids: sorted,
     }));
-    toProcess = fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted;
+    // Known-oversized UIDs are never fetched again; marking them skipped lets
+    // the sync cursor advance past them so the search range shrinks.
+    for (const uid of sorted) {
+      if (oversizedUids.has(uid)) skippedUids.add(uid);
+    }
+    toProcess = (fullInbox ? sorted.filter((uid) => !imapUidToId.has(uid)) : sorted)
+      .filter((uid) => !oversizedUids.has(uid));
     chainEnd = lastUid;
 
     for (const uid of toProcess) {
@@ -557,6 +602,11 @@ async function syncImapFolder(input: {
         });
       } catch (error) {
         skippedUids.add(uid);
+        if (error instanceof InboundMessageTooLargeError) {
+          oversizedUids.add(uid);
+        } else {
+          pendingUids.add(uid);
+        }
         console.warn(
           `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -612,9 +662,18 @@ async function syncImapFolder(input: {
           automatedEvidenceMessageIds.push(upserted.id);
         }
       }
+      pendingUids.delete(item.uid);
       if (canAdvanceImapSyncCursor(chainEnd, item.uid, sortedSet, skippedUids)) chainEnd = item.uid;
     } catch (error) {
       skippedUids.add(item.uid);
+      if (error instanceof InboundMessageTooLargeError) {
+        // Decoded size exceeded the cap during parsing — permanent, like the
+        // raw-size check in the fetch loop.
+        oversizedUids.add(item.uid);
+        pendingUids.delete(item.uid);
+      } else {
+        pendingUids.add(item.uid);
+      }
       console.warn(
         `[mail-sync] skipped message UID ${item.uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -636,6 +695,14 @@ async function syncImapFolder(input: {
     }
   }
 
+  await input.store.setSyncInfo?.({
+    workspaceId: input.plan.workspaceId,
+    values: {
+      [pendingUidKey]: JSON.stringify([...pendingUids].sort((a, b) => a - b)),
+      [oversizedUidKey]: JSON.stringify([...oversizedUids].sort((a, b) => a - b)),
+    },
+  });
+
   await input.store.updateFolderSyncState({
     workspaceId: input.plan.workspaceId,
     folderId: folder.id,
@@ -649,6 +716,17 @@ async function syncImapFolder(input: {
     newMessageIds: fullInbox ? [] : newMessageIds,
     automatedEvidenceMessageIds,
   };
+}
+
+function parsePendingImapUids(value: string | null | undefined): Set<number> {
+  if (!value) return new Set();
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((uid): uid is number => Number.isSafeInteger(uid) && uid > 0));
+  } catch {
+    return new Set();
+  }
 }
 
 async function syncPop3Account(input: {
@@ -865,6 +943,7 @@ function createPostgresMailSyncStore(options: PostgresMailSyncJobPortOptions): S
             'id',
             'source_sqlite_id',
             'protocol',
+            'email_address',
             'imap_host',
             'imap_port',
             'imap_tls',
@@ -1610,6 +1689,9 @@ async function upsertPostgresMailSyncMessage(
   // Reference-thread the message (Message-ID / In-Reply-To / References) so it
   // joins its conversation. Runs in this sync transaction and backfills
   // thread-less siblings; standalone/headerless mail stays unthreaded.
+  const accountEmails = input.account.emailAddress?.trim()
+    ? [input.account.emailAddress.trim()]
+    : [];
   const resolvedThread = await resolveReferenceThreadForSync(trx, {
     workspaceId: input.workspaceId,
     accountId: input.account.id,
@@ -1617,6 +1699,15 @@ async function upsertPostgresMailSyncMessage(
     inReplyTo: input.inReplyTo,
     referencesHeader: input.referencesHeader,
     subject: input.subject,
+    correspondentEmails: threadCorrespondentEmails({
+      folderKind: input.folderKind,
+      fromJson: input.fromJson,
+      toJson: input.toJson,
+      ccJson: input.ccJson,
+      bccJson: input.bccJson,
+      accountEmails,
+    }),
+    accountEmails,
     now,
   });
   const row = await trx
@@ -2179,10 +2270,30 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
 
   private async readMultiline(): Promise<string[]> {
     const lines: string[] = [];
+    let totalBytes = 0;
+    let oversize = false;
     for (;;) {
       const line = await this.readLine();
-      if (line === '.') return lines;
-      lines.push(line.startsWith('..') ? line.slice(1) : line);
+      if (line === '.') {
+        if (oversize) throw new InboundMessageTooLargeError(totalBytes, MAX_INBOUND_RFC822_BYTES);
+        return lines;
+      }
+      const unstuffed = line.startsWith('..') ? line.slice(1) : line;
+      // Enforce the size cap DURING streaming, not after the whole message is
+      // resident: a multi-GB RETR would otherwise buffer in `lines` and OOM the
+      // worker before the post-download assertInboundRfc822Size check ever runs
+      // (and the OOM-crash-restart re-fetches the same UIDL → crash loop). Once
+      // over the limit we stop accumulating (bounding memory) but keep draining
+      // to the terminating '.' so the connection stays in sync for the next
+      // message, then throw the oversize error the POP3 loop already records.
+      totalBytes += unstuffed.length + 2; // + CRLF
+      if (oversize) continue;
+      if (totalBytes > MAX_INBOUND_RFC822_BYTES) {
+        oversize = true;
+        lines.length = 0;
+        continue;
+      }
+      lines.push(unstuffed);
     }
   }
 
@@ -2285,6 +2396,7 @@ function mapMailSyncAccount(row: Pick<EmailAccountRow,
   | 'id'
   | 'source_sqlite_id'
   | 'protocol'
+  | 'email_address'
   | 'imap_host'
   | 'imap_port'
   | 'imap_tls'
@@ -2304,6 +2416,7 @@ function mapMailSyncAccount(row: Pick<EmailAccountRow,
     id: Number(row.id),
     sourceSqliteId: Number(row.source_sqlite_id),
     protocol: row.protocol,
+    emailAddress: row.email_address ?? null,
     imapHost: row.imap_host,
     imapPort: Number(row.imap_port),
     imapTls: Boolean(row.imap_tls),

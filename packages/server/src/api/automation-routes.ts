@@ -41,6 +41,10 @@ async function handleApiKeyList(req: ApiRequest, ports: ServerApiPorts): Promise
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Admin-only, matching create/revoke: automation-key metadata (labels,
+  // privilege scopes, creator, last-use) is credential recon a non-admin
+  // should not be able to enumerate.
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
 
   const limit = parseLimit(req.query?.limit);
   if (limit === null) return error(400, 'invalid_limit', `limit muss zwischen 1 und ${MAX_LIMIT} liegen`);
@@ -69,6 +73,7 @@ async function handleApiKeyGet(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const id = parseUuid(rawId);
   if (id === null) return error(400, 'invalid_automation_api_key_id', 'automation api key id muss eine UUID sein');
   if (req.method === 'DELETE') return handleApiKeyRevoke(ports, principal, id);
