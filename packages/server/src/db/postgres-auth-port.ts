@@ -712,11 +712,29 @@ async function resolveAccessTokenPrincipal(
     return null;
   }
 
+  // Owners/admins hold every capability implicitly (requireCapability short-
+  // circuits on requireAdmin), so only the `user` role needs the group union.
+  let capabilities: readonly string[] | undefined;
+  if (existing.role === 'user') {
+    const permissionRows = await db
+      .selectFrom('user_group_members')
+      .innerJoin('user_group_permissions', (join) => join
+        .onRef('user_group_permissions.group_id', '=', 'user_group_members.group_id')
+        .onRef('user_group_permissions.workspace_id', '=', 'user_group_members.workspace_id'))
+      .select('user_group_permissions.permission as permission')
+      .where('user_group_members.workspace_id', '=', existing.workspace_id)
+      .where('user_group_members.user_id', '=', existing.user_id)
+      .execute();
+    const granted = [...new Set(permissionRows.map((row) => String(row.permission)))];
+    if (granted.length > 0) capabilities = granted;
+  }
+
   return {
     userId: existing.user_id,
     workspaceId: existing.workspace_id,
     role: existing.role,
     sessionId: existing.token_id,
+    ...(capabilities ? { capabilities } : {}),
   };
 }
 

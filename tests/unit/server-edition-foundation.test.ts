@@ -361,6 +361,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0034_pr156_final_audit',
   '0035_email_tracking_per_message',
   '0036_user_signatures',
+  '0037_user_group_permissions',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -15796,6 +15797,16 @@ describe('server edition foundation', () => {
     ];
     const db = {
       selectFrom(table: string) {
+        if (table === 'user_group_members') {
+          // Capability lookup for the 'user' role — no grants in this fixture.
+          const empty = {
+            innerJoin() { return empty; },
+            select() { return empty; },
+            where() { return empty; },
+            async execute() { return []; },
+          };
+          return empty;
+        }
         expect(table).toBe('refresh_tokens');
         return new FakePostgresAuthSessionSelect(rows);
       },

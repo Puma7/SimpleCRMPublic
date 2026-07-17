@@ -13,6 +13,7 @@ import {
   data,
   error,
   requireAdmin,
+  requireCapability,
   requirePrincipal,
 } from './http';
 
@@ -282,7 +283,7 @@ async function handleWorkflowAutomationSettings(
   // allowlist and auto-reply context to non-admin workflow authors.
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'workflows.manage')) return error(403, 'forbidden', 'Adminrechte oder Workflow-Berechtigung erforderlich');
   const parsed = parseWorkflowAutomationSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const saved = await saveSyncInfo(req, ports, parsed.values, 'workflow_settings.updated', 'workflow.settings.automation');
@@ -327,7 +328,7 @@ async function handleMailSecuritySettings(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'email_settings.manage')) return error(403, 'forbidden', 'Adminrechte oder E-Mail-Einstellungs-Berechtigung erforderlich');
 
   if (req.method === 'GET') {
     const loaded = await loadSyncInfo(req, ports, MAIL_SECURITY_KEYS);

@@ -26,6 +26,8 @@ export type AuthenticatedPrincipal = {
   sessionId?: string;
   automationApiKeyId?: string;
   automationScopes?: readonly string[];
+  /** Grant-only capabilities from the user's group memberships (union). */
+  capabilities?: readonly string[];
 };
 
 export type ApiRequest = {
@@ -692,6 +694,16 @@ export type UserGroupApiPort = {
     groupId: number;
     userId: string;
   }): Promise<UserGroupRemoveMemberResult>;
+  listPermissions(input: {
+    workspaceId: string;
+    groupId: number;
+  }): Promise<string[] | null>;
+  setPermissions(input: {
+    workspaceId: string;
+    actorUserId: string;
+    groupId: number;
+    permissions: readonly string[];
+  }): Promise<{ ok: true; permissions: string[] } | { ok: false; code: 'group_not_found' }>;
 };
 
 export type CustomerApiPort = {

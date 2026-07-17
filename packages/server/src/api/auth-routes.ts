@@ -12,6 +12,7 @@ import {
   error,
   getStringField,
   requireAdmin,
+  requireCapability,
   requirePrincipal,
 } from './http';
 import { timingSafeEqual } from 'node:crypto';
@@ -297,7 +298,7 @@ async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
 async function handleListUsers(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'users.manage')) return error(403, 'forbidden', 'Adminrechte oder Benutzerverwaltungs-Berechtigung erforderlich');
   if (!ports.auth.listUsers) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
   const rows = await ports.auth.listUsers({ workspaceId: principal.workspaceId });
   return data(200, rows.map(publicAdminUser));
@@ -310,7 +311,7 @@ async function handleSaveUser(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'users.manage')) return error(403, 'forbidden', 'Adminrechte oder Benutzerverwaltungs-Berechtigung erforderlich');
   if (!ports.auth.saveUser) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
 
   const parsed = parseUserSaveBody(req.body, pathUserId);
@@ -364,7 +365,7 @@ async function handleDeleteUser(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'users.manage')) return error(403, 'forbidden', 'Adminrechte oder Benutzerverwaltungs-Berechtigung erforderlich');
   if (!ports.auth.deleteUser) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
   if (id === principal.userId) return error(409, 'cannot_delete_self', 'Sie koennen sich nicht selbst loeschen');
 

@@ -13,7 +13,7 @@ import {
   EmailTrackingMessageNotFoundError,
   EmailTrackingPolicyValidationError,
 } from '../email-tracking';
-import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
+import { data, error, positiveIntFromPath, requireAdmin, requireCapability, requirePrincipal } from './http';
 
 const PUBLIC_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PUBLIC_OPERATION_TIMEOUT_MS = 1_500;
@@ -258,8 +258,8 @@ export async function handleEmailTrackingRoute(
 
   if (req.method === 'GET') {
     const includeSensitive = req.query?.includeSensitive === 'true';
-    if (includeSensitive && !requireAdmin(principal)) {
-      return error(403, 'forbidden', 'Adminrechte fuer sensible Metadaten erforderlich');
+    if (includeSensitive && !requireCapability(principal, 'tracking.view')) {
+      return error(403, 'forbidden', 'Adminrechte oder Tracking-Berechtigung fuer sensible Metadaten erforderlich');
     }
     const timeline = await ports.emailTracking.getTimeline({
       workspaceId: principal.workspaceId,

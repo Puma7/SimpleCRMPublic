@@ -1482,6 +1482,23 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: () => ({ success: true }),
     }
   }],
+  [IPCChannels.UserGroups.ListPermissions, ([groupId]) => ({
+    method: "GET",
+    path: `/api/v1/user-groups/${positiveId(groupId, "group id")}/permissions`,
+    transform: (body) => dataBody<{ permissions: string[] }>(body).permissions,
+  })],
+  [IPCChannels.UserGroups.SetPermissions, ([payload]) => {
+    const input = objectPayload(payload, "group permissions payload")
+    const permissions = Array.isArray(input.permissions)
+      ? input.permissions.map((entry) => stringPayloadField(entry, "permission"))
+      : []
+    return {
+      method: "PATCH",
+      path: `/api/v1/user-groups/${positiveId(input.groupId, "group id")}/permissions`,
+      body: { permissions },
+      transform: (body) => dataBody<{ permissions: string[] }>(body).permissions,
+    }
+  }],
 
   [IPCChannels.Diagnostics.GetServerLogs, ([payload]) => {
     const input = objectPayload(payload ?? {}, "server log query")

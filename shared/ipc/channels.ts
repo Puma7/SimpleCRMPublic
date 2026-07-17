@@ -96,6 +96,8 @@ const UserGroupChannels = literal({
   ListMembers: 'user-groups:list-members',
   AddMember: 'user-groups:add-member',
   RemoveMember: 'user-groups:remove-member',
+  ListPermissions: 'user-groups:list-permissions',
+  SetPermissions: 'user-groups:set-permissions',
 });
 
 const SyncChannels = literal({

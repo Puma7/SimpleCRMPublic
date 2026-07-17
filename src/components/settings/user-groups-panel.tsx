@@ -12,6 +12,8 @@ import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
+import { USER_GROUP_CAPABILITIES } from "@shared/user-capabilities"
 
 type AppUser = { id: string; display_name: string; username: string }
 
@@ -23,6 +25,7 @@ export function UserGroupsPanel() {
   const [description, setDescription] = useState("")
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
   const [members, setMembers] = useState<UserGroupMember[]>([])
+  const [permissions, setPermissions] = useState<string[]>([])
   const [addUserId, setAddUserId] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -33,6 +36,10 @@ export function UserGroupsPanel() {
 
   const loadMembers = useCallback(async (groupId: number) => {
     setMembers(await userGroupService.listMembers(groupId))
+  }, [])
+
+  const loadPermissions = useCallback(async (groupId: number) => {
+    setPermissions(await userGroupService.listPermissions(groupId))
   }, [])
 
   useEffect(() => {
@@ -88,7 +95,16 @@ export function UserGroupsPanel() {
     run(async () => {
       setSelectedGroupId(groupId)
       setAddUserId("")
-      await loadMembers(groupId)
+      await Promise.all([loadMembers(groupId), loadPermissions(groupId)])
+    })
+
+  const togglePermission = (permission: string, granted: boolean) =>
+    run(async () => {
+      if (selectedGroupId === null) return
+      const next = granted
+        ? [...new Set([...permissions, permission])]
+        : permissions.filter((p) => p !== permission)
+      setPermissions(await userGroupService.setPermissions(selectedGroupId, next))
     })
 
   const addMember = () =>
@@ -193,6 +209,29 @@ export function UserGroupsPanel() {
               <Button type="button" disabled={busy || !addUserId} onClick={() => void addMember()}>
                 {t("common.add")}
               </Button>
+            </div>
+
+            <div className="space-y-2 border-t pt-3">
+              <p className="text-sm font-medium">Berechtigungen</p>
+              <p className="text-xs text-muted-foreground">
+                Owner und Admins haben alle Rechte. Diese Freigaben erweitern die Rechte von
+                Mitgliedern mit der Rolle „Benutzer“.
+              </p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {USER_GROUP_CAPABILITIES.map((capability) => {
+                  const granted = permissions.includes(capability.key)
+                  return (
+                    <label key={capability.key} className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={granted}
+                        disabled={busy}
+                        onCheckedChange={(value) => void togglePermission(capability.key, value === true)}
+                      />
+                      {capability.label}
+                    </label>
+                  )
+                })}
+              </div>
             </div>
           </div>
         ) : null}

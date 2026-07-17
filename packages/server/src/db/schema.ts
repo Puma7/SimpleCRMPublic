@@ -24,6 +24,7 @@ export type ServerDatabase = {
   tasks: TasksTable;
   user_groups: UserGroupsTable;
   user_group_members: UserGroupMembersTable;
+  user_group_permissions: UserGroupPermissionsTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
   customer_custom_fields: CustomerCustomFieldsTable;
@@ -407,6 +408,13 @@ export type UserGroupMembersTable = {
   workspace_id: string;
   group_id: number;
   user_id: string;
+  created_at: TimestampColumn;
+};
+
+export type UserGroupPermissionsTable = {
+  workspace_id: string;
+  group_id: number;
+  permission: string;
   created_at: TimestampColumn;
 };
 
