@@ -16,6 +16,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './http';
 
@@ -458,6 +459,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function handlePortalSettings(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Admin-only: GET returns the public portal token (a secret) and POST can
+  // rotate/enable/revoke it. Every sibling settings mutation requires admin;
+  // without this gate any workspace user could read or hijack the portal token.
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   if (!ports.returnsPortalSettings) {
     return error(503, 'portal_settings_unavailable', 'Portal-Einstellungen nicht konfiguriert');
   }
