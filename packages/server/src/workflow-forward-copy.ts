@@ -797,6 +797,17 @@ async function forwardViaOutboundReview(args: {
 
   if (sent) return { ok: true, error: null, reviewPending: false, duplicate: false };
   if (queuedForReview) return { ok: true, error: null, reviewPending: true, duplicate: false };
+  if (!sendResult.deliveryAmbiguous) {
+    // The compose pipeline refused before any delivery attempt (validation,
+    // auth/host, pre-DATA SMTP, expired lock) — release the reservation so a
+    // job retry may send. Only ambiguous SMTP outcomes keep the block.
+    await withWorkspaceTransaction(
+      args.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => releaseForwardCopyReservation(trx, input, prepared),
+      { applySession: args.applyWorkspaceSession },
+    );
+  }
   return { ok: false, error: sendResult.error, reviewPending: false, duplicate: false };
 }
 

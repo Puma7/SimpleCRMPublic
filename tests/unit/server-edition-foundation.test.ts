@@ -6729,6 +6729,65 @@ describe('server edition foundation', () => {
     expect(new Set(rows.jobs.map((job) => (job.payload as any).idempotencyKey)).size).toBe(2);
   });
 
+  test('loop iterations get distinct HTTP idempotency keys', async () => {
+    const now = new Date('2026-07-04T10:29:20.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 352,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 3520,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'loop-1',
+              type: 'registry',
+              data: { nodeType: 'logic.loop', config: { items: 'alpha,beta' } },
+            },
+            {
+              id: 'http-1',
+              type: 'registry',
+              data: {
+                nodeType: 'http.request',
+                config: { method: 'POST', url: 'https://api.example.com/hook' },
+              },
+            },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'loop-1' },
+            { id: 'edge-2', source: 'loop-1', target: 'http-1', label: 'each' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 352,
+      triggerName: 'manual' as const,
+      context: {},
+    });
+
+    // Each loop iteration posts a distinct legitimate request — the
+    // Idempotency-Key must not collapse them at the receiving API.
+    expect(rows.jobs).toHaveLength(2);
+    const keys = rows.jobs.map((job) => (job.payload as any).idempotencyKey);
+    expect(new Set(keys).size).toBe(2);
+    for (const key of keys) {
+      expect(key).toMatch(/^simplecrm-workflow-http-[a-f0-9]{64}$/);
+    }
+  });
+
   test('postgres workflow execution job port updates CRM deals and logs stage changes', async () => {
     const now = new Date('2026-07-04T10:29:30.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
@@ -10678,7 +10737,8 @@ describe('server edition foundation', () => {
     });
     const composeSender = {
       async send() {
-        return { ok: false as const, error: 'compose transient failure' };
+        // Delivery outcome unknown (failure after SMTP body submission).
+        return { ok: false as const, error: 'compose transient failure', deliveryAmbiguous: true };
       },
     };
     const port = createPostgresWorkflowForwardCopyPort({
@@ -10712,6 +10772,77 @@ describe('server edition foundation', () => {
     expect(draftCreates).toBe(1);
     expect(rows.forwardDedup).toEqual([
       expect.objectContaining({ delivery_status: 'outbox' }),
+    ]);
+  });
+
+  test('postgres workflow forward-copy releases the review reservation after a clean pre-send refusal', async () => {
+    const now = new Date('2026-07-04T11:05:40.000Z');
+    let sendMode: 'refuse' | 'ok' = 'refuse';
+    let draftCreates = 0;
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{ id: 51, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 510, trigger_name: 'inbound', enabled: true, priority: 1 }],
+      messages: [{
+        id: 32,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 320,
+        account_id: 7,
+        subject: 'Review pre-send',
+        from_json: { value: [{ address: 'lieferant@example.com' }] },
+        snippet: 'Anbei',
+        body_text: 'Anbei die Rechnung.',
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        display_name: 'Agent',
+        email_address: 'agent@example.com',
+        imap_host: 'imap.example.com',
+        imap_username: 'imap-agent@example.com',
+        smtp_host: 'smtp.example.com',
+        smtp_port: 587,
+        smtp_tls: true,
+        smtp_username: 'smtp-agent@example.com',
+        smtp_use_imap_auth: false,
+        oauth_provider: null,
+      }],
+    });
+    const composeSender = {
+      async send() {
+        if (sendMode === 'refuse') {
+          // No deliveryAmbiguous: refused before any delivery attempt.
+          return { ok: false as const, error: 'Kein Passwort oder OAuth-Token verfuegbar' };
+        }
+        return { ok: true as const, messageId: 991, accountId: 7 };
+      },
+    };
+    const port = createPostgresWorkflowForwardCopyPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      composeSender,
+      createDraft: async () => {
+        draftCreates += 1;
+        return { ok: true as const, draftMessageId: 54322 };
+      },
+      smtpSend: async () => { throw new Error('smtpSend must not be called in review mode'); },
+    });
+    const plan = {
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 51,
+      messageId: 32,
+      to: 'audit@example.com',
+      runOutboundReview: true,
+    };
+
+    // Clean pre-send refusal: the reservation is released so the retry may send.
+    await expect(port.forwardCopy(plan)).rejects.toThrow(/Kein Passwort/);
+    expect(rows.forwardDedup).toEqual([]);
+
+    sendMode = 'ok';
+    await port.forwardCopy(plan);
+    expect(draftCreates).toBe(2);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({ delivery_status: 'sent' }),
     ]);
   });
 

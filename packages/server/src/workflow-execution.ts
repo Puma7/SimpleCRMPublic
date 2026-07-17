@@ -6550,16 +6550,27 @@ function workflowContinuationContextError(context: ServerWorkflowContext): strin
 }
 
 function workflowHttpIdempotencyKey(context: ServerWorkflowContext, nodeId: string): string {
-  const digest = createHash('sha256')
+  const hash = createHash('sha256')
     .update(context.workspaceId)
     .update('\0')
     .update(String(context.workflowSourceSqliteId))
     .update('\0')
     .update(workflowSideEffectExecutionIdentity(context))
     .update('\0')
-    .update(nodeId)
-    .digest('hex');
-  return `simplecrm-workflow-http-${digest}`;
+    .update(nodeId);
+  // Inside logic.loop each iteration is a distinct legitimate request, so the
+  // loop position joins the digest. Retries of the same queued job reuse the
+  // key stored in the job payload, so retry stability is unaffected.
+  const loopIndex = context.variables['loop.index'];
+  const loopItem = context.variables['loop.item'];
+  if (loopIndex !== undefined || loopItem !== undefined) {
+    hash
+      .update('\0')
+      .update(`loop:${String(loopIndex ?? '')}`)
+      .update('\0')
+      .update(String(loopItem ?? ''));
+  }
+  return `simplecrm-workflow-http-${hash.digest('hex')}`;
 }
 
 function workflowSideEffectExecutionIdentity(context: ServerWorkflowContext): string {

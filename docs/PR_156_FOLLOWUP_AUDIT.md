@@ -516,6 +516,40 @@ From der eigenen Adresse bleibt innerhalb der bereits dokumentierten
 Restgrenze (From-Spoofing ohne DKIM/DMARC-Evidenz) und eroeffnet keine neue
 Angriffsklasse.
 
+### 33a. (Nachtrag auf `5066f55c`) Zwei weitere Codex-Findings
+
+- `discussion_r3604076303`: Loop-Iterationen teilten denselben HTTP-Idempotency-Key
+- `discussion_r3604076306`: Review-Pfad liess Reservierung bei Pre-Send-Fehlern stehen
+
+| 34 | POSTs in `logic.loop` kollabierten am Ziel als Duplikate | Bestaetigt | Behoben: Loop-Position fliesst in den Key ein |
+| 35 | Review-Reservierung blockierte nach sauberem Pre-Send-Fehler | Bestaetigt | Behoben: `deliveryAmbiguous`-Signal aus dem Compose-Sender |
+
+### 34. Loop-Iterationen teilten denselben Idempotency-Key
+
+**Verifikation:** Der Key bestand aus Workspace, Workflow, Message-/Run-
+Identitaet und Node-ID. Ein POST-`http.request` in `logic.loop` erzeugte
+damit fuer jede Iteration denselben Header; ein Zielsystem, das
+`Idempotency-Key` honoriert, verwarf alle Folge-Iterationen als Duplikate.
+
+**Fix:** Steht `loop.index`/`loop.item` im Kontext, fliessen beide in den
+Digest ein. Retries desselben Queue-Jobs bleiben stabil, weil der Key beim
+Einreihen berechnet und im Payload gespeichert wird. Ein Test verifiziert
+distinkte Keys fuer zwei Loop-Iterationen.
+
+### 35. Review-Reservierung blockierte nach sauberem Pre-Send-Fehler
+
+**Verifikation:** Im `runOutboundReview`-Pfad blieb die vor
+`composeSender.send()` geschriebene Reservierung auch dann stehen, wenn der
+Compose-Sender den Versand nachweislich vor jedem Zustellversuch ablehnte
+(Validierung, fehlende Auth/Host, abgelaufener Send-Lock). Der Retry lief
+dauerhaft in „Zustellstatus unklar".
+
+**Fix:** Das Compose-Ergebnis traegt jetzt `deliveryAmbiguous` — gesetzt
+nur, wenn der SMTP-Fehler nach Body-Uebertragung auftrat (Abgrenzung ueber
+den typisierten `SmtpPreDataSendError` aus Finding 32). Ohne dieses Signal
+gibt der Forward-Worker die Reservierung frei und der Retry darf senden;
+ambige Ausgaenge blockieren weiterhin. Tests decken beide Pfade ab.
+
 ### 29. Uebergrosse IMAP-Nachrichten wurden endlos neu geladen
 
 **Verifikation:** Ueberschritt eine Nachricht den harten RFC822-Cap, warf
@@ -556,7 +590,9 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - Admin-Gate fuer den Automation-Settings-PATCH (HTTP-Allowlist),
 - Drain expungter Pending-IMAP-UIDs bei erhaltenem Retry existierender UIDs,
 - Freigabe der Forward-Reservierung nach Pre-DATA-SMTP-Fehlern,
-- Empfaenger-Korrespondenten fuer konto-authored Archivkopien.
+- Empfaenger-Korrespondenten fuer konto-authored Archivkopien,
+- distinkte HTTP-Idempotency-Keys pro Loop-Iteration,
+- Freigabe der Review-Reservierung nach eindeutigen Pre-Send-Fehlern.
 
 Vor Merge sind mindestens Unit-, Integration-, Build- und Lint-Laeufe auf dem
 vollstaendigen Branch auszufuehren. Die konkreten Ergebnisse stehen in PR 156.
