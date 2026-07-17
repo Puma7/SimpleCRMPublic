@@ -626,9 +626,9 @@ async function sendEmailMfaCode(input: {
     return false;
   }
 
-  // A concurrent request already owns delivery of this still-valid code. Its
-  // challenge can safely share the code once that owner marks it as sent.
-  if (reservation.kind === 'existing') return true;
+  // A concurrent request already owns delivery. Do not mint another challenge
+  // for the same eventual code: attempt limits are challenge-scoped.
+  if (reservation.kind === 'existing') return false;
 
   try {
     await sendMfaEmailCode({

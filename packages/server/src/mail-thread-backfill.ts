@@ -24,7 +24,7 @@ const TICKET_SUBJECT_PATTERN = '\\[[A-Za-z0-9]{1,12}-[A-Za-z0-9]{1,20}\\]';
 type UnthreadedRow = Pick<
   Selectable<EmailMessagesTable>,
   'id' | 'account_id' | 'message_id' | 'in_reply_to' | 'references_header' | 'subject'
-  | 'from_json' | 'to_json' | 'folder_kind'
+  | 'from_json' | 'to_json' | 'cc_json' | 'bcc_json' | 'folder_kind'
 >;
 
 export type PostgresMailThreadBackfillOptions = Readonly<{
@@ -107,6 +107,8 @@ async function selectUnthreadedBatch(
       'subject',
       'from_json',
       'to_json',
+      'cc_json',
+      'bcc_json',
       'folder_kind',
     ])
     .where('workspace_id', '=', workspaceId)
@@ -167,6 +169,8 @@ async function threadOneRow(
       folderKind: row.folder_kind,
       fromJson: row.from_json,
       toJson: row.to_json,
+      ccJson: row.cc_json,
+      bccJson: row.bcc_json,
     }),
     now,
     excludeMessageId: id,

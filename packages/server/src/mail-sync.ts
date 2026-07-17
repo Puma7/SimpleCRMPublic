@@ -1652,6 +1652,8 @@ async function upsertPostgresMailSyncMessage(
       folderKind: input.folderKind,
       fromJson: input.fromJson,
       toJson: input.toJson,
+      ccJson: input.ccJson,
+      bccJson: input.bccJson,
     }),
     now,
   });

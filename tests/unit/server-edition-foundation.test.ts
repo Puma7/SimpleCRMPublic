@@ -189,6 +189,7 @@ import {
   createPostgresWorkflowExecutionJobPort,
   createPostgresWorkflowInboundBackfillPort,
   createPostgresWorkflowForwardCopyPort,
+  normalizeForwardCopyRecipients,
   createPostgresWorkflowHttpRequestPort,
   listServerWorkflowNodeCatalog,
   isServerWorkflowNodeTypeSupported,
@@ -10078,7 +10079,10 @@ describe('server edition foundation', () => {
               type: 'registry',
               data: {
                 nodeType: 'email.forward_copy',
-                config: { to: ' audit@example.com ', runOnEveryInbound: true },
+                config: {
+                  to: 'Audit <old@example.com> <new@example.com>',
+                  runOnEveryInbound: true,
+                },
               },
             },
             {
@@ -10137,7 +10141,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       workflowId: 38,
       messageId: 26,
-      to: 'audit@example.com',
+      to: 'new@example.com',
       resumeNodeId: 'tag-ok',
       continuation: {
         workflowId: 38,
@@ -10148,6 +10152,12 @@ describe('server edition foundation', () => {
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
       ['forward-1', 'email.forward_copy', 'ok', 'default', 'queued_forward_copy:1'],
     ]);
+  });
+
+  test('postgres workflow forward-copy normalization uses the final addr-spec', () => {
+    expect(normalizeForwardCopyRecipients(
+      'Audit <old@example.com> <new@example.com>',
+    )).toEqual(['new@example.com']);
   });
 
   test('postgres workflow forward-copy port sends SMTP, dedupes, and resumes workflows', async () => {

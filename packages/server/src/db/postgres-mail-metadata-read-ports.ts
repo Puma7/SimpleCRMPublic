@@ -2965,6 +2965,8 @@ export async function resolveReferenceThreadForSync(
     thread_id: string | null;
     from_json: unknown;
     to_json: unknown;
+    cc_json: unknown;
+    bcc_json: unknown;
     folder_kind: string | null;
   }> = [];
   if (related.length > 0) {
@@ -2997,7 +2999,7 @@ export async function resolveReferenceThreadForSync(
       : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` OR `)})`;
     let siblingQuery = trx
       .selectFrom('email_messages')
-      .select(['id', 'thread_id', 'from_json', 'to_json', 'folder_kind'])
+      .select(['id', 'thread_id', 'from_json', 'to_json', 'cc_json', 'bcc_json', 'folder_kind'])
       .where('workspace_id', '=', args.workspaceId)
       .where('account_id', '=', args.accountId)
       .where(whereClause);
@@ -3019,6 +3021,8 @@ export async function resolveReferenceThreadForSync(
           folderKind: sibling.folder_kind,
           fromJson: sibling.from_json,
           toJson: sibling.to_json,
+          ccJson: sibling.cc_json,
+          bccJson: sibling.bcc_json,
         }),
       ))
       : [];
@@ -3129,6 +3133,8 @@ export function threadCorrespondentEmail(input: {
   folderKind: string | null | undefined;
   fromJson: unknown;
   toJson: unknown;
+  ccJson?: unknown;
+  bccJson?: unknown;
 }): string | null {
   return threadCorrespondentEmails(input)[0] ?? null;
 }
@@ -3137,9 +3143,17 @@ export function threadCorrespondentEmails(input: {
   folderKind: string | null | undefined;
   fromJson: unknown;
   toJson: unknown;
+  ccJson?: unknown;
+  bccJson?: unknown;
 }): string[] {
   const useRecipients = input.folderKind === 'sent' || input.folderKind === 'draft';
-  const addresses = recipientAddresses(useRecipients ? input.toJson : input.fromJson);
+  const addresses = useRecipients
+    ? [
+      ...recipientAddresses(input.toJson),
+      ...recipientAddresses(input.ccJson),
+      ...recipientAddresses(input.bccJson),
+    ]
+    : recipientAddresses(input.fromJson);
   const normalized = addresses
     .map((address) => normalizeEmailAddress(address))
     .filter((address) => address.includes('@'));
@@ -3200,7 +3214,7 @@ async function threadContainsCorrespondent(
 ): Promise<boolean> {
   const rows = await trx
     .selectFrom('email_messages')
-    .select(['from_json', 'to_json', 'folder_kind'])
+    .select(['from_json', 'to_json', 'cc_json', 'bcc_json', 'folder_kind'])
     .where('workspace_id', '=', workspaceId)
     .where('thread_id', '=', threadId)
     .limit(500)
@@ -3211,6 +3225,8 @@ async function threadContainsCorrespondent(
       folderKind: row.folder_kind,
       fromJson: row.from_json,
       toJson: row.to_json,
+      ccJson: row.cc_json,
+      bccJson: row.bcc_json,
     }),
   ));
 }

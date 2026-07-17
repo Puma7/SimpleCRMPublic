@@ -155,6 +155,7 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 - **MFA-Challenge** ist single-use (In-Memory-Store + Verbrauch bei Erfolg).
 - **E-Mail-MFA-Code** wird atomar per `UPDATE … RETURNING` konsumiert (Race-sicher).
 - **E-Mail-MFA-Zustellung** reserviert konkurrierende Anforderungen pro Benutzer und haelt waehrend SMTP keine DB-Transaktion offen.
+- **Pending-E-Mail-MFA** gibt nur dem reservierenden Login ein Challenge-Token; parallele Anfragen koennen das Versuchsbudget nicht vervielfachen.
 - **Login-Failure-Counter** (Brute-Force) in einer Transaktion inkrementiert.
 - **INITIAL_SETUP_TOKEN** verhindert unbemerktes Owner-Takeover bei exponiertem Setup-Endpunkt.
 

@@ -494,7 +494,7 @@ describe('login security service MFA gate', () => {
     expect(issueTokenPair).toHaveBeenCalledTimes(1);
   });
 
-  test('releases the MFA transaction before SMTP and shares a concurrent delivery', async () => {
+  test('releases the MFA transaction before SMTP and rejects a concurrent challenge', async () => {
     const rows: Array<{
       id: number;
       userId: string;
@@ -556,15 +556,13 @@ describe('login security service MFA gate', () => {
     expect(rows[0]?.active).toBe(false);
     expect(rows[1]?.deliveryStatus).toBe('superseded');
     const second = service.beginMfaIfRequired({ user: mfaUser, workspaceSettings: settings });
-    await expect(second).resolves.toEqual(
-      expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
-    );
+    await expect(second).resolves.toEqual({ kind: 'mfa_delivery_failed' });
     releaseSmtp();
     const results = await Promise.all([first, second]);
 
     expect(results).toEqual([
       expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
-      expect.objectContaining({ kind: 'mfa_required', mfaMethod: 'email' }),
+      { kind: 'mfa_delivery_failed' },
     ]);
     expect(rows.filter((row) => row.active)).toHaveLength(1);
     expect(rows.filter((row) => row.active && row.deliveryStatus === 'sent')).toHaveLength(1);

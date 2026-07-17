@@ -34,6 +34,12 @@ Randfaelle: SMTP-I/O innerhalb der MFA-Transaktion, einen fehlenden terminalen
 Workflow-Abschluss bei HTTP-Knoten mit reiner Fehlerkante und die weiterhin
 skalare Uebergabe der aktuellen Sent-/Draft-Korrespondentenmenge.
 
+Auf Head `662f2432` folgte ein weiteres Codex-Review:
+
+- `discussion_r3603143674`: mehrere Challenges fuer denselben Pending-MFA-Code
+- `discussion_r3603143678`: Cc fehlte in der Thread-Korrespondentenmenge
+- `discussion_r3603143682`: Forward-Parser waehlte den ersten statt finalen addr-spec
+
 ## Ergebnisuebersicht
 
 | Nr. | Finding | Ergebnis | Umsetzung in PR 156 |
@@ -62,6 +68,9 @@ skalare Uebergabe der aktuellen Sent-/Draft-Korrespondentenmenge.
 | 22 | Outbound-Review-Forward reserviert nach Sendepfad | Bestaetigt | Behoben: Reservierung vor Compose-Sendepfad |
 | 23 | E-Mail-MFA haelt DB-Transaktion waehrend SMTP | Bestaetigt | Behoben: kurze Reservierungs-/Aktivierungstransaktionen, Delivery-Status |
 | 24 | HTTP-Erfolg mit reiner Fehlerkante bleibt dauerhaft deferred | Bestaetigt | Behoben: terminaler Success-Continuation-Job markiert den Workflow angewendet |
+| 25 | Pending-MFA-Code erhaelt mehrere Challenge-Budgets | Bestaetigt | Behoben: konkurrierende Pending-Anfrage erhaelt kein Challenge-Token |
+| 26 | Threading ignoriert Cc/Bcc bei Sent/Draft | Bestaetigt | Behoben: Korrespondentenmenge ist To, Cc und gespeichertes Bcc |
+| 27 | Forward-Parser nimmt ersten geklammerten addr-spec | Bestaetigt | Behoben: finale vollstaendige Winkelklammer-Adresse ist autoritativ |
 
 ## Detailpruefung
 
@@ -306,6 +315,11 @@ nun die vollstaendige aktuelle Menge; Geschwister- und Ticket-Pruefung verwenden
 eine normalisierte Mengenueberschneidung. Der skalare Helfer bleibt nur fuer
 bestehende, nicht sicherheitskritische Aufrufer kompatibel.
 
+Das spaetere Review erweiterte diese Korrektur auf alle tatsaechlichen
+Sent-/Draft-Empfaenger: `To`, `Cc` und ein im Datensatz vorhandenes `Bcc` werden
+vereinigt und dedupliziert. Inbound-Nachrichten bleiben ausschliesslich
+senderbasiert.
+
 ### 20. Continuation-Limit blockierte lokale Knoten
 
 **Verifikation:** Das 128-KiB-Limit wurde vor jedem Nicht-Condition-Knoten
@@ -373,6 +387,41 @@ Status- und Body-Kontext; dieser beendet den Run erfolgreich und schreibt den
 Applied-Marker, ohne den HTTP-Knoten erneut auszufuehren. Der Fehlerfall folgt
 weiterhin ausschliesslich der expliziten Fehlerkante.
 
+### 25. Pending-MFA-Code vervielfachte das Versuchsbudget
+
+**Verifikation:** Eine zweite korrekte Passwortanmeldung konnte waehrend der
+SMTP-Zustellung dieselbe Pending-Code-Reservierung verwenden, erhielt aber ein
+neues Challenge-Token. Da der Versuchszahler am Token haengt, entstanden fuer
+denselben spaeteren E-Mail-Code mehrfach jeweils fuenf Versuche.
+
+**Fix:** Nur der Besitzer der neuen Pending-Reservierung setzt den Versand fort
+und erhaelt nach SMTP-Erfolg ein Challenge-Token. Jede konkurrierende Anfrage
+wird bis zum Zustellabschluss ohne Token als `mfa_delivery_failed` abgewiesen.
+Damit existiert pro Code genau ein Challenge-Budget.
+
+### 26. Sent-/Draft-Threading ignorierte Cc und Bcc
+
+**Verifikation:** Die Mengenpruefung war fuer Sent/Draft auf `to_json`
+beschraenkt. Antworten eines Cc- oder gespeicherten Bcc-Empfaengers wurden trotz
+gueltiger References nicht mit dem legitimen Vorgang verbunden.
+
+**Fix:** Live-Sync, historischer Backfill, Kandidatenabfrage und Ticket-Pruefung
+reichen `to_json`, `cc_json` und `bcc_json` durch denselben normalisierten
+Korrespondentenhelfer. Die Sicherheitsentscheidung bleibt eine echte
+Mengenueberschneidung; bei Inbound wird Cc/Bcc nicht als Identitaet gewertet.
+
+### 27. Forward-Parser waehlte den ersten addr-spec
+
+**Verifikation:** Sowohl die Workflow-Planung als auch der ausfuehrende
+Forward-Port nutzten den ersten Treffer von `<...>`. Ein mehrdeutiger Wert wie
+`Name <alt@example.com> <neu@example.com>` wurde dadurch an die alte Adresse
+gesendet, obwohl die abschliessende Mailbox-Syntax die letzte Adresse bindet.
+
+**Fix:** Beide Server-Stufen akzeptieren nur ein am Ende abgeschlossenes
+`<addr-spec>` als autoritative Winkelklammer-Adresse und verwenden damit
+`neu@example.com`. Die vorhandene strikte E-Mail-Validierung bleibt danach
+unveraendert aktiv.
+
 ## Verifikation
 
 Neu oder erweitert wurden insbesondere Tests fuer:
@@ -390,6 +439,9 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - MFA-Migration/RLS-Registrierung sowie SMTP-ausserhalb-der-Transaktion,
 - terminalen HTTP-Erfolg bei reiner Fehlerkante inklusive Queue-Payload-Parser,
 - Thread-Korrespondentenbestimmung fuer alle Sent-/Draft-Empfaenger,
+- genau ein Challenge-Budget pro Pending-MFA-Code,
+- To-/Cc-/Bcc-Korrespondenten auf beiden Thread-Seiten,
+- finalen addr-spec in Workflow-Planung und Forward-Worker,
 - Admin-Gates fuer Mail-Security, Rspamd-Test und MSSQL-Metadaten.
 
 Vor Merge sind mindestens Unit-, Integration-, Build- und Lint-Laeufe auf dem

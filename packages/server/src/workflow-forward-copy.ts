@@ -949,7 +949,7 @@ export function normalizeForwardCopyRecipients(value: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const part of value.split(/[,;]+/).map((entry) => entry.trim()).filter(Boolean)) {
-    const angleMatch = part.match(/<([^>]+)>/);
+    const angleMatch = /<([^<>]+)>\s*$/.exec(part);
     const candidate = (angleMatch?.[1] ?? part).trim();
     const deliveryAddress = emailAddressForDelivery(candidate);
     const identity = deliveryAddress.toLowerCase();

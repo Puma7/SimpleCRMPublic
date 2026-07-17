@@ -4111,7 +4111,7 @@ function workflowForwardCopyRecipient(value: unknown): WorkflowForwardCopyRecipi
   const normalized: string[] = [];
   const seen = new Set<string>();
   for (const part of parts) {
-    const angleMatch = part.match(/<([^>]+)>/);
+    const angleMatch = /<([^<>]+)>\s*$/.exec(part);
     const address = emailAddressForDelivery(angleMatch?.[1] ?? part);
     if (!isSimpleWorkflowEmailAddress(address)) {
       return { ok: false, message: `Forward-Empfaenger ist ungueltig: ${part}` };

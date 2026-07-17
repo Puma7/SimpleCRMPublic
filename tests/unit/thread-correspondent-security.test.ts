@@ -44,9 +44,16 @@ describe('reference-thread correspondent continuity', () => {
           { address: 'Second+case@Example.COM' },
         ],
       }),
+      ccJson: recipient('copy@example.com'),
+      bccJson: recipient('hidden@example.com'),
     });
 
-    expect(sentCorrespondents).toEqual(['first@example.com', 'second@example.com']);
+    expect(sentCorrespondents).toEqual([
+      'first@example.com',
+      'second@example.com',
+      'copy@example.com',
+      'hidden@example.com',
+    ]);
     expect(threadCorrespondentsOverlap(sentCorrespondents, ['second@example.com'])).toBe(true);
     expect(threadCorrespondentsOverlap(sentCorrespondents, ['attacker@example.net'])).toBe(false);
   });
