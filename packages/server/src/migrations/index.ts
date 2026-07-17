@@ -33,6 +33,7 @@ import { dmarcReportsMigration } from './0032_dmarc_reports';
 import { pr156FollowupHardeningMigration } from './0033_pr156_followup_hardening';
 import { pr156FinalAuditMigration } from './0034_pr156_final_audit';
 import { emailTrackingPerMessageMigration } from './0035_email_tracking_per_message';
+import { userSignaturesMigration } from './0036_user_signatures';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -72,6 +73,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   pr156FollowupHardeningMigration,
   pr156FinalAuditMigration,
   emailTrackingPerMessageMigration,
+  userSignaturesMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

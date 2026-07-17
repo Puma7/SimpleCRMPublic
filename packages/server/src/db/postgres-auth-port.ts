@@ -124,6 +124,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             'id',
             'email',
             'display_name',
+            'public_name',
             'role',
             'disabled_at',
             'login_pin_enabled',
@@ -159,6 +160,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
                 workspace_id: input.workspaceId,
                 email: input.email,
                 display_name: input.displayName,
+                public_name: input.publicName ?? null,
                 password_hash: await hashPassword(input.password),
                 role: input.role,
                 disabled_at: input.isActive === false ? now() : null,
@@ -168,6 +170,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
                 'id',
                 'email',
                 'display_name',
+                'public_name',
                 'role',
                 'disabled_at',
                 'created_at',
@@ -197,6 +200,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
               role: input.role,
               disabled_at: input.isActive === false ? now() : null,
               updated_at: now(),
+              ...(input.publicName === undefined ? {} : { public_name: input.publicName }),
               ...(input.password ? { password_hash: await hashPassword(input.password) } : {}),
             })
             .where('id', '=', input.id)
@@ -205,6 +209,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
               'id',
               'email',
               'display_name',
+              'public_name',
               'role',
               'disabled_at',
               'created_at',
@@ -542,6 +547,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             'users.workspace_id as workspace_id',
             'users.email as email',
             'users.display_name as display_name',
+            'users.public_name as public_name',
             'users.password_hash as password_hash',
             'users.role as role',
             'users.disabled_at as disabled_at',
@@ -577,6 +583,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           workspaceId: existing.workspace_id,
           email: existing.email,
           displayName: existing.display_name,
+          publicName: existing.public_name ?? null,
           role: existing.role,
           passwordHash: existing.password_hash,
           disabledAt: existing.disabled_at ? toDate(existing.disabled_at).toISOString() : null,
@@ -718,6 +725,7 @@ function mapUser(row: {
   workspace_id: string;
   email: string;
   display_name: string;
+  public_name?: string | null;
   role: UserRow['role'];
   password_hash: string;
   disabled_at: UserRow['disabled_at'];
@@ -732,6 +740,7 @@ function mapUser(row: {
     workspaceId: row.workspace_id,
     email: row.email,
     displayName: row.display_name,
+    publicName: row.public_name ?? null,
     role: row.role,
     passwordHash: row.password_hash,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
@@ -747,6 +756,7 @@ function mapAdminUser(row: {
   id: string;
   email: string;
   display_name: string;
+  public_name?: string | null;
   role: UserRow['role'];
   disabled_at: UserRow['disabled_at'];
   login_pin_enabled?: boolean;
@@ -759,6 +769,7 @@ function mapAdminUser(row: {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
+    publicName: row.public_name ?? null,
     role: row.role,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
     loginPinEnabled: Boolean(row.login_pin_enabled),

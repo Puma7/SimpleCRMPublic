@@ -24,6 +24,7 @@ export type AuthUser = {
   id: string
   username: string
   displayName: string
+  publicName?: string | null
   role: string
 }
 
@@ -217,6 +218,7 @@ function mapServerUser(user: ServerAuthUser): AuthUser {
     id: user.id,
     username: user.email,
     displayName: user.displayName,
+    publicName: user.publicName ?? null,
     role: user.role,
   }
 }

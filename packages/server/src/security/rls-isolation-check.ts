@@ -93,6 +93,7 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
   rlsPolicyTable('email_internal_notes'),
   rlsPolicyTable('email_canned_responses'),
   rlsPolicyTable('email_account_signatures'),
+  rlsPolicyTable('user_account_signatures'),
   rlsPolicyTable('email_account_mail_settings'),
   rlsPolicyTable('email_remote_content_allowlist'),
   rlsPolicyTable('email_read_receipt_log'),

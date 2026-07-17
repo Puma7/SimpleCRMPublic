@@ -625,6 +625,7 @@ function publicUser(user: {
   workspaceId: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: string;
 }) {
   return {
@@ -632,6 +633,7 @@ function publicUser(user: {
     workspaceId: user.workspaceId,
     email: user.email,
     displayName: user.displayName,
+    ...(user.publicName === undefined ? {} : { publicName: user.publicName }),
     role: user.role,
   };
 }
@@ -640,6 +642,7 @@ function publicAdminUser(user: {
   id: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: string;
   disabledAt: string | null;
   loginPinEnabled?: boolean;
@@ -652,6 +655,7 @@ function publicAdminUser(user: {
     id: user.id,
     email: user.email,
     displayName: user.displayName,
+    publicName: user.publicName ?? null,
     role: user.role,
     disabledAt: user.disabledAt,
     loginPinEnabled: Boolean(user.loginPinEnabled),
@@ -825,7 +829,7 @@ function normalizeOptionalInt(value: unknown, min: number, max: number): number 
 }
 
 function parseUserSaveBody(body: unknown, pathUserId?: string):
-  | { values: { id?: string; email: string; displayName: string; role: 'owner' | 'admin' | 'user'; password?: string; isActive?: boolean; loginPin?: string | null } }
+  | { values: { id?: string; email: string; displayName: string; publicName?: string | null; role: 'owner' | 'admin' | 'user'; password?: string; isActive?: boolean; loginPin?: string | null } }
   | { response: ApiResponse } {
   const bodyRecord = isRecord(body) ? body : null;
   const id = pathUserId || normalizeOptionalText(getStringField(body, 'id'), 120);
@@ -833,6 +837,10 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
   const displayName = normalizeOptionalText(getStringField(body, 'displayName') ?? getStringField(body, 'display_name'), 120)
     ?? email
     ?? '';
+  const publicNameRaw = getStringField(body, 'publicName') ?? getStringField(body, 'public_name');
+  const publicName = publicNameRaw === undefined
+    ? undefined
+    : (normalizeOptionalText(publicNameRaw, 120) ?? null);
   const role = normalizeServerUserRole(getStringField(body, 'role'));
   const password = getStringField(body, 'passphrase') ?? getStringField(body, 'password') ?? undefined;
   const isActive = normalizeOptionalBoolean(bodyRecord?.isActive ?? bodyRecord?.is_active);
@@ -867,6 +875,7 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
       ...(id ? { id } : {}),
       email,
       displayName,
+      ...(publicName === undefined ? {} : { publicName }),
       role,
       ...(password === undefined ? {} : { password }),
       ...(isActive === undefined ? {} : { isActive }),

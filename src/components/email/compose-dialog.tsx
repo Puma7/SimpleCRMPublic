@@ -252,6 +252,20 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const isOpen = composeIntent.mode !== "closed"
   const serverClientMode = getRendererTransport().kind === "http"
   const localAttachmentPickerAvailable = !serverClientMode && hasLocalIpc()
+  // The signed-in user's own signature for an account takes precedence over the
+  // shared account/team signature (server edition only).
+  const fetchOwnSignatureHtml = useCallback(async (accountId: number): Promise<string | null> => {
+    if (!serverClientMode) return null
+    try {
+      const res = (await invokeRenderer(IPCChannels.Email.ListUserSignatures)) as {
+        signatures?: Array<{ accountId: number; signatureHtml: string }>
+      }
+      const own = res.signatures?.find((s) => s.accountId === accountId)
+      return own?.signatureHtml?.trim() ? own.signatureHtml : null
+    } catch {
+      return null
+    }
+  }, [serverClientMode])
   const resendFinalizeDescription = serverClientMode
     ? "Die Mail wurde per SMTP versendet, die serverseitige Finalisierung (Gesendet-Ordner) ist ausstehend. Senden erneut klicken - es wird kein zweites Mal an SMTP gesendet."
     : "Die Mail wurde per SMTP versendet, die lokale Finalisierung (Gesendet-Ordner) ist ausstehend. Senden erneut klicken - es wird kein zweites Mal an SMTP gesendet."
@@ -563,6 +577,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             ...(initialTeamMemberId ? { teamMemberId: initialTeamMemberId } : {}),
           },
         ) as { html: string | null }
+        const ownSigHtml = await fetchOwnSignatureHtml(accountIdAtOpen)
+        const baseSigHtml = ownSigHtml ?? sigRes.html
         let customerForSig: CustomerOpt | null = null
         let customerSalutation: string | null = null
         if (sourceMsg?.customer_id) {
@@ -582,11 +598,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         const accountRow = accounts.find((a) => a.id === accountIdAtOpen)
         const selectedTeamMember = teamMembers.find((member) => member.id === initialTeamMemberId)
         const sigRaw =
-          sigRes.html && composeIntent.mode !== "forward"
-            ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
+          baseSigHtml && composeIntent.mode !== "forward"
+            ? interpolateSignatureTemplate(baseSigHtml, buildSignatureTemplateContext({
                 accountDisplayName: accountRow?.display_name ?? "",
                 accountEmail: accountRow?.email_address ?? "",
                 teamMemberDisplayName: selectedTeamMember?.display_name ?? null,
+                userPublicName: user?.publicName ?? null,
+                userDisplayName: user?.displayName ?? null,
                 customerName: customerForSig?.name ?? "",
                 customerFirstName: customerForSig?.firstName ?? "",
                 customerEmail: customerForSig?.email ?? "",
@@ -725,6 +743,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           ...(teamMemberId ? { teamMemberId } : {}),
         },
       ) as { html: string | null }
+      const ownSigHtml = await fetchOwnSignatureHtml(composeAccountId)
+      const baseSigHtml = ownSigHtml ?? sigRes.html
       const sourceMsg = getComposeSourceMessage(composeIntent)
       let customerForSig: CustomerOpt | null = null
       if (sourceMsg?.customer_id) {
@@ -740,11 +760,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       }
       const accountRow = accounts.find((a) => a.id === composeAccountId)
       const selectedTeamMember = teamMembers.find((member) => member.id === teamMemberId)
-      const sigRaw = sigRes.html
-        ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
+      const sigRaw = baseSigHtml
+        ? interpolateSignatureTemplate(baseSigHtml, buildSignatureTemplateContext({
           accountDisplayName: accountRow?.display_name ?? "",
           accountEmail: accountRow?.email_address ?? "",
           teamMemberDisplayName: selectedTeamMember?.display_name ?? null,
+          userPublicName: user?.publicName ?? null,
+          userDisplayName: user?.displayName ?? null,
           customerName: customerForSig?.name ?? "",
           customerFirstName: customerForSig?.firstName ?? "",
           customerEmail: customerForSig?.email ?? "",
@@ -756,7 +778,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     } catch {
       /* ignore */
     }
-  }, [isOpen, composeAccountId, composeIntent, accounts, teamMembers, composeTeamMemberId])
+  }, [isOpen, composeAccountId, composeIntent, accounts, teamMembers, composeTeamMemberId, fetchOwnSignatureHtml, user?.publicName, user?.displayName])
 
   useEffect(() => {
     if (accountsRevision === 0) return

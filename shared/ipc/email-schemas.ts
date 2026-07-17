@@ -1143,6 +1143,27 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     }),
     result: standardResult,
   });
+  set(IPCChannels.Email.ListUserSignatures, {
+    payload: voidPayload,
+    result: z.object({
+      user: z.object({
+        displayName: z.string(),
+        publicName: z.string().nullable(),
+      }),
+      signatures: z.array(z.object({
+        accountId: positiveInt,
+        signatureHtml: z.string(),
+        updatedAt: z.string().nullable(),
+      })),
+    }),
+  });
+  set(IPCChannels.Email.SaveUserSignature, {
+    payload: z.object({
+      accountId: positiveInt,
+      signatureHtml: z.string().nullable(),
+    }),
+    result: standardResult,
+  });
   set(IPCChannels.Email.PickComposeAttachments, {
     payload: voidPayload,
     result: z.object({ success: z.literal(true), paths: z.array(z.string()) }).passthrough(),

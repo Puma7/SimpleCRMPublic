@@ -291,6 +291,7 @@ describe('renderer transport', () => {
       id: 'auth-user-1',
       username: 'agent@example.com',
       display_name: 'Agent',
+      public_name: null,
       role: 'agent',
       is_active: 1,
       login_pin_enabled: false,

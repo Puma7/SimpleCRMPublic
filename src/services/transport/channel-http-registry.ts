@@ -45,6 +45,7 @@ type AuthUserRecord = {
   id: string
   email?: string | null
   displayName?: string | null
+  publicName?: string | null
   role?: string | null
   disabledAt?: string | null
   loginPinEnabled?: boolean | null
@@ -2986,6 +2987,25 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: () => ({ success: true }),
     }
   }],
+  [IPCChannels.Email.ListUserSignatures, () => ({
+    method: "GET",
+    path: "/api/v1/email/user-signatures",
+    transform: (body) => dataBody<{
+      user: { displayName: string; publicName: string | null }
+      signatures: Array<{ accountId: number; signatureHtml: string; updatedAt: string | null }>
+    }>(body),
+  })],
+  [IPCChannels.Email.SaveUserSignature, ([payload]) => {
+    const input = objectPayload(payload, "email user signature payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/user-signatures/by-account/${positiveId(input.accountId, "email account id")}/upsert`,
+      body: {
+        signatureHtml: accountSignatureHtmlValue(input.signatureHtml),
+      },
+      transform: () => ({ success: true }),
+    }
+  }],
 
   [IPCChannels.Email.GetWorkflowAutomationSettings, () => ({
     method: "GET",
@@ -4490,6 +4510,7 @@ function mapAuthUserRecord(record: AuthUserRecord) {
     id: record.id,
     username: record.email ?? "",
     display_name: record.displayName ?? record.email ?? "",
+    public_name: record.publicName ?? null,
     role: legacyAuthUserRole(record.role),
     is_active: record.disabledAt ? 0 : 1,
     login_pin_enabled: Boolean(record.loginPinEnabled),
@@ -4594,9 +4615,16 @@ function mapAuthUserPayload(input: Record<string, any>): Record<string, unknown>
       ? optionalAuthUserLoginPin(input.login_pin)
       : undefined
 
+  const publicName = Object.prototype.hasOwnProperty.call(input, "publicName")
+    ? authUserPublicNameValue(input.publicName, "auth user public name")
+    : Object.prototype.hasOwnProperty.call(input, "public_name")
+      ? authUserPublicNameValue(input.public_name, "auth user public name")
+      : undefined
+
   return pruneUndefined({
     email,
     displayName,
+    publicName,
     role: authUserRoleValue(input.role),
     password,
     isActive: authUserActiveValue(input.isActive ?? input.is_active),
@@ -4661,6 +4689,12 @@ function optionalAuthUserText(value: unknown, label: string, maxLength: number):
   if (value === undefined || value === null) return undefined
   const text = optionalTrimmedText(value, label, maxLength)
   return text || undefined
+}
+
+// Present-but-empty clears the alias (server maps '' → null); absent leaves it untouched.
+function authUserPublicNameValue(value: unknown, label: string): string {
+  if (value === undefined || value === null) return ""
+  return optionalTrimmedText(value, label, 120) || ""
 }
 
 function authUserActiveValue(value: unknown): boolean | undefined {

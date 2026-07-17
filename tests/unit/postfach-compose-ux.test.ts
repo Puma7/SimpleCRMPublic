@@ -269,6 +269,36 @@ describe('signature-template', () => {
       'Anna Agent <nord@example.com>',
     );
   });
+
+  it('prefers the explicit public name for {{user.publicName}}', () => {
+    const ctx = buildSignatureTemplateContext({
+      accountDisplayName: 'Shop Nord',
+      accountEmail: 'nord@example.com',
+      teamMemberDisplayName: 'Anna Agent',
+      userDisplayName: 'Anna Schmidt',
+      userPublicName: 'A. Schmidt (Kundenservice)',
+    });
+    expect(interpolateSignatureTemplate('{{user.publicName}}', ctx)).toBe('A. Schmidt (Kundenservice)');
+    // {{user.name}} keeps the existing team/account behaviour.
+    expect(interpolateSignatureTemplate('{{user.name}}', ctx)).toBe('Anna Agent');
+  });
+
+  it('falls back {{user.publicName}} to display name, then team/account', () => {
+    const viaDisplay = buildSignatureTemplateContext({
+      accountDisplayName: 'Shop Nord',
+      userDisplayName: 'Anna Schmidt',
+    });
+    expect(interpolateSignatureTemplate('{{user.publicName}}', viaDisplay)).toBe('Anna Schmidt');
+
+    const viaTeam = buildSignatureTemplateContext({
+      accountDisplayName: 'Shop Nord',
+      teamMemberDisplayName: 'Anna Agent',
+    });
+    expect(interpolateSignatureTemplate('{{user.publicName}}', viaTeam)).toBe('Anna Agent');
+
+    const viaAccount = buildSignatureTemplateContext({ accountDisplayName: 'Shop Nord' });
+    expect(interpolateSignatureTemplate('{{user.publicName}}', viaAccount)).toBe('Shop Nord');
+  });
 });
 
 describe('needsFullMessageBody', () => {

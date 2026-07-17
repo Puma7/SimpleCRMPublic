@@ -15,6 +15,7 @@ import { SmtpPanel } from "./smtp-panel"
 import { OAuthAccountLinkPanel } from "./oauth-account-link-panel"
 import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
 import { AccountSignaturesSection } from "./account-signatures-section"
+import { UserSignaturesSection } from "./user-signatures-section"
 import { AccountKnowledgeSlots } from "./account-knowledge-slots"
 import { AccountAdvancedPanel } from "./account-advanced-panel"
 import { AccountsShippingHint } from "./accounts-shipping-hint"
@@ -281,8 +282,11 @@ export function AccountsMasterDetailSettings() {
                     emailAddress={selected?.email_address}
                   />
                 ) : tab === "signature" && selectedId != null ? (
-                  <div className="max-w-3xl">
+                  <div className="max-w-3xl space-y-6">
                     <AccountSignaturesSection embeddedAccountId={selectedId} />
+                    <div className="border-t pt-5">
+                      <UserSignaturesSection embeddedAccountId={selectedId} />
+                    </div>
                   </div>
                 ) : tab === "ki" && selectedId != null ? (
                   <div className="max-w-3xl space-y-4">

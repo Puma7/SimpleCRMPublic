@@ -311,6 +311,8 @@ const EmailChannels = literal({
   GetComposeSignature: 'email:get-compose-signature',
   ListAccountSignatures: 'email:list-account-signatures',
   SaveAccountSignature: 'email:save-account-signature',
+  ListUserSignatures: 'email:list-user-signatures',
+  SaveUserSignature: 'email:save-user-signature',
   LinkCustomer: 'email:link-customer',
   SoftDeleteMessage: 'email:soft-delete-message',
   DeleteComposeDraft: 'email:delete-compose-draft',

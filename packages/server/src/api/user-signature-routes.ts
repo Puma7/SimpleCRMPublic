@@ -1,0 +1,54 @@
+import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import {
+  data,
+  error,
+  getStringField,
+  positiveIntFromPath,
+  requirePrincipal,
+} from './http';
+
+// Self-service per-user, per-account signatures. Every authenticated user
+// manages only their own rows (scoped by principal.userId), so no admin gate.
+export async function handleUserSignatureRoute(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+): Promise<ApiResponse | null> {
+  if (!req.path.startsWith('/api/v1/email/user-signatures')) return null;
+
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.emailUserSignatures) {
+    return error(503, 'email_user_signatures_unavailable', 'Nutzer-Signatur-API nicht konfiguriert');
+  }
+
+  if (req.path === '/api/v1/email/user-signatures') {
+    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    const result = await ports.emailUserSignatures.listForUser({
+      workspaceId: principal.workspaceId,
+      userId: principal.userId,
+    });
+    return data(200, result);
+  }
+
+  const upsertMatch = /^\/api\/v1\/email\/user-signatures\/by-account\/([^/]+)\/upsert$/.exec(req.path);
+  if (upsertMatch) {
+    if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    const accountId = positiveIntFromPath(upsertMatch[1]);
+    if (accountId === null) return error(400, 'invalid_account_id', 'account id muss eine positive Ganzzahl sein');
+    // null/absent clears the signature; a string saves it.
+    const signatureHtml = getStringField(req.body, 'signatureHtml');
+    if (signatureHtml !== null && signatureHtml.length > 20_000) {
+      return error(400, 'validation_error', 'signatureHtml darf maximal 20000 Zeichen haben');
+    }
+    const result = await ports.emailUserSignatures.upsert({
+      workspaceId: principal.workspaceId,
+      userId: principal.userId,
+      accountId,
+      signatureHtml,
+    });
+    if (!result.ok) return error(404, 'email_account_not_found', 'Konto nicht gefunden');
+    return data(200, { success: true });
+  }
+
+  return null;
+}

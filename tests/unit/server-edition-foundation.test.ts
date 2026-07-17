@@ -360,6 +360,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0033_pr156_followup_hardening',
   '0034_pr156_final_audit',
   '0035_email_tracking_per_message',
+  '0036_user_signatures',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

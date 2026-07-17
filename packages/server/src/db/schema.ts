@@ -46,6 +46,7 @@ export type ServerDatabase = {
   email_internal_notes: EmailInternalNotesTable;
   email_canned_responses: EmailCannedResponsesTable;
   email_account_signatures: EmailAccountSignaturesTable;
+  user_account_signatures: UserAccountSignaturesTable;
   email_account_mail_settings: EmailAccountMailSettingsTable;
   email_remote_content_allowlist: EmailRemoteContentAllowlistTable;
   email_read_receipt_log: EmailReadReceiptLogTable;
@@ -188,6 +189,7 @@ export type UsersTable = {
   workspace_id: string;
   email: string;
   display_name: string;
+  public_name: ColumnType<string | null, string | null | undefined, string | null>;
   password_hash: string;
   role: 'owner' | 'admin' | 'user';
   disabled_at: TimestampColumn | null;
@@ -978,6 +980,14 @@ export type EmailAccountSignaturesTable = {
   signature_html: string | null;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
+  updated_at: TimestampColumn;
+};
+
+export type UserAccountSignaturesTable = {
+  workspace_id: string;
+  user_id: string;
+  account_id: number;
+  signature_html: ColumnType<string, string | undefined, string>;
   updated_at: TimestampColumn;
 };
 

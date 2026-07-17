@@ -61,6 +61,7 @@ export type AuthUserRecord = {
   workspaceId: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: AuthenticatedPrincipal['role'];
   passwordHash: string;
   disabledAt?: string | null;
@@ -97,6 +98,7 @@ export type AuthUserAdminRecord = {
   id: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: AuthenticatedPrincipal['role'];
   disabledAt: string | null;
   loginPinEnabled: boolean;
@@ -125,6 +127,7 @@ export type AuthUserSaveInput = {
   id?: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: AuthenticatedPrincipal['role'];
   password?: string;
   isActive?: boolean;
@@ -3060,6 +3063,35 @@ export type EmailAccountSignatureApiPort = EmailNumericRecordApiPort<EmailAccoun
   }): Promise<EmailAccountSignatureRecord | null>;
 };
 
+export type EmailUserSignatureRecord = {
+  accountId: number;
+  signatureHtml: string;
+  updatedAt: string | null;
+};
+
+export type EmailUserSignatureContext = {
+  displayName: string;
+  publicName: string | null;
+};
+
+export type EmailUserSignatureListResult = {
+  user: EmailUserSignatureContext;
+  signatures: EmailUserSignatureRecord[];
+};
+
+export type EmailUserSignatureApiPort = {
+  listForUser(input: {
+    workspaceId: string;
+    userId: string;
+  }): Promise<EmailUserSignatureListResult>;
+  upsert(input: {
+    workspaceId: string;
+    userId: string;
+    accountId: number;
+    signatureHtml: string | null;
+  }): Promise<{ ok: true } | { ok: false; code: 'account_not_found' }>;
+};
+
 export type EmailRemoteContentAllowlistRecord = {
   id: number;
   sourceSqliteId: number;
@@ -4936,6 +4968,7 @@ export type ServerApiPorts = {
   emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailTracking?: EmailTrackingApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;
+  emailUserSignatures?: EmailUserSignatureApiPort;
   emailAttachmentContent?: EmailAttachmentContentApiPort;
   emailAttachments?: EmailAttachmentApiPort;
   emailAccounts?: EmailAccountApiPort;

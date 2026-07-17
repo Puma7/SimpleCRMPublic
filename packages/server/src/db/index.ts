@@ -29,6 +29,7 @@ export * from './postgres-sqlite-import-target';
 export * from './postgres-spam-read-ports';
 export * from './postgres-sync-info-port';
 export * from './postgres-user-group-port';
+export * from './postgres-user-signature-port';
 export * from './postgres-workflow-runtime-read-ports';
 export * from './postgres-workflow-read-ports';
 export * from './schema';
