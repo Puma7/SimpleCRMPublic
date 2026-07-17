@@ -17,7 +17,8 @@ export type WorkflowHttpMethod = 'GET' | 'POST';
 export type WorkflowHttpRequestContinuation = Readonly<{
   workflowId: number;
   triggerName?: string;
-  resumeNodeId: string;
+  resumeNodeId?: string;
+  errorResumeNodeId?: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
 }>;
@@ -29,6 +30,7 @@ export type WorkflowHttpRequestJobPlan = Readonly<{
   method: WorkflowHttpMethod;
   url: string;
   body?: string;
+  idempotencyKey?: string;
   timeoutMs: number;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -84,7 +86,12 @@ export function createPostgresWorkflowHttpRequestPort(
           fetchImpl,
           init: {
             method: input.method,
-            headers: input.method === 'GET' ? {} : { 'Content-Type': 'application/json' },
+            headers: input.method === 'GET'
+              ? {}
+              : {
+                'Content-Type': 'application/json',
+                ...(input.idempotencyKey ? { 'Idempotency-Key': input.idempotencyKey } : {}),
+              },
             ...(input.method === 'GET' || input.body === undefined ? {} : { body: input.body }),
             timeoutMs: input.timeoutMs,
           },
@@ -97,20 +104,28 @@ export function createPostgresWorkflowHttpRequestPort(
         errorMessage = error instanceof Error ? error.message : String(error);
       }
 
-      // A non-2xx response OR a fetch/SSRF-block/timeout error is an expected
-      // outcome, not a reason to strand a deferred workflow. When a continuation
-      // exists, resume the graph with http.ok=false (+ http.status/http.error)
-      // so downstream logic.switch/threshold can branch on the failure — the
-      // same fail-safe pattern as workflow-forward-copy / dmarc-ingest. Only when
-      // there is nothing to resume do we surface the failure to the job queue.
-      if (!ok && !input.continuation) {
+      const resumeNodeId = ok
+        ? input.continuation?.resumeNodeId
+        : input.continuation?.errorResumeNodeId;
+      // Fail closed: an HTTP error must never enter the normal successor path.
+      // Without an explicit error edge the job remains failed/retryable.
+      if (!ok && !resumeNodeId) {
         throw new Error(`workflow HTTP request failed (${status || 'no response'}): ${errorMessage ?? ''}`);
       }
-      if (input.continuation) {
+      if (input.continuation && resumeNodeId) {
         await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
-          async (trx) => enqueueWorkflowHttpContinuation(trx, input, status, body, now(), ok, errorMessage),
+          async (trx) => enqueueWorkflowHttpContinuation(
+            trx,
+            input,
+            resumeNodeId,
+            status,
+            body,
+            now(),
+            ok,
+            errorMessage,
+          ),
           { applySession: options.applyWorkspaceSession },
         );
       }
@@ -134,6 +149,7 @@ async function readWorkflowHttpAllowlist(
 async function enqueueWorkflowHttpContinuation(
   trx: WorkspaceTransaction,
   input: WorkflowHttpRequestJobPlan,
+  resumeNodeId: string,
   status: number,
   body: string,
   now: Date,
@@ -153,7 +169,7 @@ async function enqueueWorkflowHttpContinuation(
         ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
         ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
         context: {
-          resumeNodeId: continuation.resumeNodeId,
+          resumeNodeId,
           eventStrings: continuation.eventStrings ?? {},
           eventVariables: {
             ...(continuation.eventVariables ?? {}),

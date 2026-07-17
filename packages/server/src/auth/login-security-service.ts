@@ -317,9 +317,11 @@ export function createLoginSecurityService(input: {
         })
         : await verifyEmailMfaCode({
           db: input.db,
+          workspaceId: claims.workspaceId,
           userId: user.id,
           code,
           now: now(),
+          applyWorkspaceSession: input.applyWorkspaceSession,
         });
       if (!verified) {
         await recordMfaFailure();
@@ -561,12 +563,14 @@ async function sendEmailMfaCode(input: {
         await trx
           .updateTable('auth_mfa_email_codes')
           .set({ consumed_at: input.now })
+          .where('workspace_id', '=', input.user.workspaceId)
           .where('user_id', '=', input.user.id)
           .where('consumed_at', 'is', null)
           .execute();
         const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
         const expiresAt = new Date(input.now.getTime() + 10 * 60 * 1000);
         await trx.insertInto('auth_mfa_email_codes').values({
+          workspace_id: input.user.workspaceId,
           user_id: input.user.id,
           code_hash: hashEmailCode(code),
           expires_at: expiresAt,
@@ -590,22 +594,30 @@ async function sendEmailMfaCode(input: {
 
 async function verifyEmailMfaCode(input: {
   db: Kysely<ServerDatabase>;
+  workspaceId: string;
   userId: string;
   code: string;
   now: Date;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): Promise<boolean> {
   const normalized = input.code.trim();
   if (!/^\d{6}$/.test(normalized)) return false;
   const codeHash = hashEmailCode(normalized);
-  const row = await input.db
-    .updateTable('auth_mfa_email_codes')
-    .set({ consumed_at: input.now })
-    .where('user_id', '=', input.userId)
-    .where('code_hash', '=', codeHash)
-    .where('consumed_at', 'is', null)
-    .where('expires_at', '>', input.now)
-    .returning(['id'])
-    .executeTakeFirst();
+  const row = await withWorkspaceTransaction(
+    input.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => trx
+      .updateTable('auth_mfa_email_codes')
+      .set({ consumed_at: input.now })
+      .where('workspace_id', '=', input.workspaceId)
+      .where('user_id', '=', input.userId)
+      .where('code_hash', '=', codeHash)
+      .where('consumed_at', 'is', null)
+      .where('expires_at', '>', input.now)
+      .returning(['id'])
+      .executeTakeFirst(),
+    { applySession: input.applyWorkspaceSession },
+  );
   return Boolean(row);
 }
 

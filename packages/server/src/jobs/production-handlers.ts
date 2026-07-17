@@ -416,10 +416,11 @@ export function buildWorkflowHttpRequestJobPlan(
     method,
     url: requiredStringValue(payload, 'url', MAX_WORKFLOW_HTTP_URL_LENGTH),
     ...(method === 'GET' ? {} : optionalBody(payload, 'body', MAX_WORKFLOW_HTTP_BODY_LENGTH)),
+    ...(method === 'GET' ? {} : optionalString(payload, 'idempotencyKey', 256)),
     timeoutMs: optionalInteger(payload, 'timeoutMs', DEFAULT_WORKFLOW_HTTP_TIMEOUT_MS, 1000, MAX_WORKFLOW_HTTP_TIMEOUT_MS),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalWorkflowHttpContinuation(payload),
   };
 }
 
@@ -650,6 +651,30 @@ function optionalClassificationContinuation(
       resumeNodeId: requiredString(value as JobPayload, 'resumeNodeId'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(value as JobPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(value as JobPayload, 'eventVariables') }),
+    },
+  };
+}
+
+function optionalWorkflowHttpContinuation(
+  payload: JobPayload,
+): Pick<WorkflowHttpRequestJobPlan, 'continuation'> {
+  const value = payload.continuation;
+  if (value === undefined || value === null) return {};
+  if (!isPlainRecord(value)) throw new Error('continuation must be an object');
+  const continuationPayload = value as JobPayload;
+  const resumeNodeId = optionalString(continuationPayload, 'resumeNodeId');
+  const errorResumeNodeId = optionalString(continuationPayload, 'errorResumeNodeId');
+  if (!resumeNodeId.resumeNodeId && !errorResumeNodeId.errorResumeNodeId) {
+    throw new Error('continuation must define resumeNodeId or errorResumeNodeId');
+  }
+  return {
+    continuation: {
+      workflowId: requiredPositiveInteger(continuationPayload, 'workflowId'),
+      ...optionalString(continuationPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
+      ...resumeNodeId,
+      ...errorResumeNodeId,
+      ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(continuationPayload, 'eventStrings') }),
+      ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
     },
   };
 }

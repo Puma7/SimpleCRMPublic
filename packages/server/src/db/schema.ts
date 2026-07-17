@@ -202,6 +202,7 @@ export type UsersTable = {
 
 export type AuthMfaEmailCodesTable = {
   id: Generated<string>;
+  workspace_id: string;
   user_id: string;
   code_hash: string;
   expires_at: TimestampColumn;
@@ -1135,6 +1136,7 @@ export type EmailMessageWorkflowAppliedTable = SourceImportedTable & {
 
 export type EmailWorkflowForwardDedupTable = EmailMessageWorkflowAppliedTable & {
   dest: string;
+  delivery_status: Generated<'outbox' | 'sent'>;
   created_at: TimestampColumn | null;
 };
 

@@ -23,6 +23,10 @@ export type SecretRecord = Readonly<SecretIdentifier & {
 
 export type PostgresSecretPort = Readonly<{
   writeSecret(input: SecretIdentifier & { value: string | Buffer }): Promise<SecretRecord>;
+  writeSecretInTransaction?(
+    trx: WorkspaceTransaction,
+    input: SecretIdentifier & { value: string | Buffer },
+  ): Promise<SecretRecord>;
   readSecret(input: SecretIdentifier): Promise<Buffer | null>;
   deleteSecret(input: SecretIdentifier): Promise<boolean>;
   rotateSecret(input: SecretIdentifier & { nextKey: MasterKeyMaterial }): Promise<SecretRecord | null>;
@@ -39,38 +43,14 @@ export function createPostgresSecretPort(options: PostgresSecretPortOptions): Po
 
   return {
     async writeSecret(input) {
-      const envelope = await encryptSecretValue({
-        key: options.key,
-        value: input.value,
-        associatedData: input,
-      });
-
-      const row = await withWorkspaceTransaction(options.db, {
+      return withWorkspaceTransaction(options.db, {
         workspaceId: input.workspaceId,
         role: 'system',
-      }, (db) => db
-          .insertInto('secrets')
-          .values({
-            workspace_id: input.workspaceId,
-            kind: input.kind,
-            name: input.name,
-            ciphertext: envelope.ciphertext,
-            nonce: envelope.nonce,
-            key_id: envelope.keyId,
-            algorithm: envelope.algorithm,
-            updated_at: now(),
-          })
-          .onConflict((oc) => oc.columns(['workspace_id', 'kind', 'name']).doUpdateSet({
-            ciphertext: envelope.ciphertext,
-            nonce: envelope.nonce,
-            key_id: envelope.keyId,
-            algorithm: envelope.algorithm,
-            updated_at: now(),
-          }))
-          .returning(['id', 'workspace_id', 'kind', 'name', 'key_id', 'algorithm', 'updated_at'])
-          .executeTakeFirstOrThrow());
+      }, (trx) => writeSecretInTransaction(trx, options.key, now, input));
+    },
 
-      return mapSecretRecord(row);
+    async writeSecretInTransaction(trx, input) {
+      return writeSecretInTransaction(trx, options.key, now, input);
     },
 
     async readSecret(input) {
@@ -134,6 +114,42 @@ export function createPostgresSecretPort(options: PostgresSecretPortOptions): Po
       });
     },
   };
+}
+
+async function writeSecretInTransaction(
+  trx: WorkspaceTransaction,
+  key: MasterKeyMaterial,
+  now: () => Date,
+  input: SecretIdentifier & { value: string | Buffer },
+): Promise<SecretRecord> {
+  const envelope = await encryptSecretValue({
+    key,
+    value: input.value,
+    associatedData: input,
+  });
+  const timestamp = now();
+  const row = await trx
+    .insertInto('secrets')
+    .values({
+      workspace_id: input.workspaceId,
+      kind: input.kind,
+      name: input.name,
+      ciphertext: envelope.ciphertext,
+      nonce: envelope.nonce,
+      key_id: envelope.keyId,
+      algorithm: envelope.algorithm,
+      updated_at: timestamp,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'kind', 'name']).doUpdateSet({
+      ciphertext: envelope.ciphertext,
+      nonce: envelope.nonce,
+      key_id: envelope.keyId,
+      algorithm: envelope.algorithm,
+      updated_at: timestamp,
+    }))
+    .returning(['id', 'workspace_id', 'kind', 'name', 'key_id', 'algorithm', 'updated_at'])
+    .executeTakeFirstOrThrow();
+  return mapSecretRecord(row);
 }
 
 async function selectSecret(

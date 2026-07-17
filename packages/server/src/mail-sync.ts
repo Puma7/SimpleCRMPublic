@@ -37,6 +37,7 @@ import { resolveAttachmentStoragePath } from './db';
 import {
   refreshThreadAggregateAfterSync,
   resolveReferenceThreadForSync,
+  threadCorrespondentEmail,
 } from './db/postgres-mail-metadata-read-ports';
 import {
   MAX_SYNC_ATTACHMENT_BYTES,
@@ -482,6 +483,8 @@ async function syncImapFolder(input: {
   let toProcess: number[] = [];
   const fetchedMessages: FetchedImapMessage[] = [];
   const skippedUids = new Set<number>();
+  const pendingUidKey = `email_imap_pending_uids:${input.account.id}:${folder.id}`;
+  let pendingUids = new Set<number>();
   let chainEnd = lastUid;
 
   const lock = await input.client.getMailboxLock(input.spec.path);
@@ -515,6 +518,12 @@ async function syncImapFolder(input: {
         uidvalidity: uidValidityNum ?? null,
         uidvalidityStr: uidValidityStr ?? null,
       };
+    } else {
+      const pendingValues = await input.store.getSyncInfo({
+        workspaceId: input.plan.workspaceId,
+        keys: [pendingUidKey],
+      });
+      pendingUids = parsePendingImapUids(pendingValues.get(pendingUidKey));
     }
 
     let uids: number[];
@@ -530,7 +539,9 @@ async function syncImapFolder(input: {
       uids = [...allUids].sort((a, b) => a - b).slice(-input.firstSyncMaxMessages);
     }
 
-    sorted = [...uids].sort((a, b) => a - b).filter((uid) => Number.isSafeInteger(uid) && uid > 0);
+    sorted = [...new Set([...uids, ...pendingUids])]
+      .sort((a, b) => a - b)
+      .filter((uid) => Number.isSafeInteger(uid) && uid > 0);
     sortedSet = new Set(sorted);
     imapUidToId = new Map(await input.store.loadImapUidToId({
       workspaceId: input.plan.workspaceId,
@@ -558,6 +569,7 @@ async function syncImapFolder(input: {
         });
       } catch (error) {
         skippedUids.add(uid);
+        pendingUids.add(uid);
         console.warn(
           `[mail-sync] skipped message UID ${uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -613,9 +625,11 @@ async function syncImapFolder(input: {
           automatedEvidenceMessageIds.push(upserted.id);
         }
       }
+      pendingUids.delete(item.uid);
       if (canAdvanceImapSyncCursor(chainEnd, item.uid, sortedSet, skippedUids)) chainEnd = item.uid;
     } catch (error) {
       skippedUids.add(item.uid);
+      pendingUids.add(item.uid);
       console.warn(
         `[mail-sync] skipped message UID ${item.uid} in "${input.spec.path}" (account ${input.account.id}): ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -637,6 +651,11 @@ async function syncImapFolder(input: {
     }
   }
 
+  await input.store.setSyncInfo?.({
+    workspaceId: input.plan.workspaceId,
+    values: { [pendingUidKey]: JSON.stringify([...pendingUids].sort((a, b) => a - b)) },
+  });
+
   await input.store.updateFolderSyncState({
     workspaceId: input.plan.workspaceId,
     folderId: folder.id,
@@ -650,6 +669,17 @@ async function syncImapFolder(input: {
     newMessageIds: fullInbox ? [] : newMessageIds,
     automatedEvidenceMessageIds,
   };
+}
+
+function parsePendingImapUids(value: string | null | undefined): Set<number> {
+  if (!value) return new Set();
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((uid): uid is number => Number.isSafeInteger(uid) && uid > 0));
+  } catch {
+    return new Set();
+  }
 }
 
 async function syncPop3Account(input: {
@@ -1618,6 +1648,11 @@ async function upsertPostgresMailSyncMessage(
     inReplyTo: input.inReplyTo,
     referencesHeader: input.referencesHeader,
     subject: input.subject,
+    correspondentEmail: threadCorrespondentEmail({
+      folderKind: input.folderKind,
+      fromJson: input.fromJson,
+      toJson: input.toJson,
+    }),
     now,
   });
   const row = await trx

@@ -2,6 +2,7 @@ import {
   collectRelatedIds,
   extractTicketFromSubject,
   generateTicketCode,
+  normalizeEmailAddress,
   normalizeMessageId,
 } from '@simplecrm/core';
 import { randomBytes } from 'crypto';
@@ -2924,6 +2925,7 @@ export async function resolveReferenceThreadForSync(
     inReplyTo: string | null;
     referencesHeader: string | null;
     subject: string | null;
+    correspondentEmail: string | null;
     now: Date;
     /**
      * Exclude one message id from the sibling lookup. Used by the historical
@@ -2958,7 +2960,13 @@ export async function resolveReferenceThreadForSync(
   }
 
 
-  let siblings: { id: number; thread_id: string | null }[] = [];
+  let siblings: Array<{
+    id: number;
+    thread_id: string | null;
+    from_json: unknown;
+    to_json: unknown;
+    folder_kind: string | null;
+  }> = [];
   if (related.length > 0) {
     // Match siblings by NORMALIZED Message-ID / In-Reply-To (trim, strip a
     // single outer <> pair, lowercase). The expression comes from the SAME
@@ -2989,21 +2997,28 @@ export async function resolveReferenceThreadForSync(
       : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` OR `)})`;
     let siblingQuery = trx
       .selectFrom('email_messages')
-      .select(['id', 'thread_id'])
+      .select(['id', 'thread_id', 'from_json', 'to_json', 'folder_kind'])
       .where('workspace_id', '=', args.workspaceId)
       .where('account_id', '=', args.accountId)
       .where(whereClause);
     if (args.excludeMessageId != null) {
       siblingQuery = siblingQuery.where('id', '!=', args.excludeMessageId);
     }
-    siblings = (await siblingQuery
+    const candidateSiblings = (await siblingQuery
       // Prioritize siblings that already carry a `thread_id` before the cap so a
       // huge (>500 message) conversation can't drop its single threaded row and
       // mint a duplicate thread. `thread_id IS NULL` sorts `false` (non-null)
       // first under Postgres' default ASC ordering.
       .orderBy(kyselySql`(thread_id is null)`)
       .limit(500)
-      .execute()) as { id: number; thread_id: string | null }[];
+      .execute()) as typeof siblings;
+    siblings = args.correspondentEmail
+      ? candidateSiblings.filter((sibling) => threadCorrespondentEmail({
+        folderKind: sibling.folder_kind,
+        fromJson: sibling.from_json,
+        toJson: sibling.to_json,
+      }) === args.correspondentEmail)
+      : [];
   }
 
   const canonicalThreads: string[] = [];
@@ -3084,15 +3099,95 @@ export async function resolveReferenceThreadForSync(
     return { threadId: canonical, ticketCode: ticket };
   }
 
-  // (3) Subject carries a known ticket → attach to (or open) that account-scoped
-  // thread (matching how server compose creates ticket threads).
+  // (3) A subject ticket may join an EXISTING account-scoped thread only when
+  // the external correspondent already participates. Inbound mail must never
+  // create an attacker-chosen ticket thread from a guessable subject token.
   if (subjectTicket) {
-    const canonical = await getOrCreateThreadForTicket(trx, args.workspaceId, subjectTicket, args.accountId, args.now);
-    return { threadId: canonical, ticketCode: subjectTicket };
+    const canonical = await findExistingThreadForTicket(
+      trx,
+      args.workspaceId,
+      subjectTicket,
+      args.accountId,
+    );
+    if (
+      canonical
+      && args.correspondentEmail
+      && await threadContainsCorrespondent(trx, args.workspaceId, canonical, args.correspondentEmail)
+    ) {
+      return { threadId: canonical, ticketCode: subjectTicket };
+    }
   }
 
   // (4) Standalone / headerless mail → leave unthreaded, exactly as before.
   return { threadId: null, ticketCode: null };
+}
+
+export function threadCorrespondentEmail(input: {
+  folderKind: string | null | undefined;
+  fromJson: unknown;
+  toJson: unknown;
+}): string | null {
+  const useRecipients = input.folderKind === 'sent' || input.folderKind === 'draft';
+  const address = firstRecipientAddress(useRecipients ? input.toJson : input.fromJson);
+  if (!address) return null;
+  const normalized = normalizeEmailAddress(address);
+  return normalized.includes('@') ? normalized : null;
+}
+
+function firstRecipientAddress(value: unknown): string | null {
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const recipients = (parsed as { value?: unknown }).value;
+  if (!Array.isArray(recipients)) return null;
+  for (const recipient of recipients) {
+    if (!recipient || typeof recipient !== 'object') continue;
+    const address = (recipient as { address?: unknown }).address;
+    if (typeof address === 'string' && address.trim()) return address.trim();
+  }
+  return null;
+}
+
+async function findExistingThreadForTicket(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  ticketCode: string,
+  accountId: number,
+): Promise<string | null> {
+  const row = await trx
+    .selectFrom('email_threads')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('account_id', '=', accountId)
+    .where('ticket_code', '=', ticketCode)
+    .executeTakeFirst();
+  return row?.id ?? null;
+}
+
+async function threadContainsCorrespondent(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  threadId: string,
+  correspondentEmail: string,
+): Promise<boolean> {
+  const rows = await trx
+    .selectFrom('email_messages')
+    .select(['from_json', 'to_json', 'folder_kind'])
+    .where('workspace_id', '=', workspaceId)
+    .where('thread_id', '=', threadId)
+    .limit(500)
+    .execute();
+  return rows.some((row) => threadCorrespondentEmail({
+    folderKind: row.folder_kind,
+    fromJson: row.from_json,
+    toJson: row.to_json,
+  }) === correspondentEmail);
 }
 
 /**

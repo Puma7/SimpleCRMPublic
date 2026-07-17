@@ -6,6 +6,7 @@ import { accountSyncAdvisoryLockKey } from './jobs/policy';
 import {
   resolveReferenceThreadForSync,
   refreshThreadAggregateAfterSync,
+  threadCorrespondentEmail,
 } from './db/postgres-mail-metadata-read-ports';
 import {
   withWorkspaceTransaction,
@@ -23,6 +24,7 @@ const TICKET_SUBJECT_PATTERN = '\\[[A-Za-z0-9]{1,12}-[A-Za-z0-9]{1,20}\\]';
 type UnthreadedRow = Pick<
   Selectable<EmailMessagesTable>,
   'id' | 'account_id' | 'message_id' | 'in_reply_to' | 'references_header' | 'subject'
+  | 'from_json' | 'to_json' | 'folder_kind'
 >;
 
 export type PostgresMailThreadBackfillOptions = Readonly<{
@@ -96,7 +98,17 @@ async function selectUnthreadedBatch(
 ): Promise<UnthreadedRow[]> {
   return trx
     .selectFrom('email_messages')
-    .select(['id', 'account_id', 'message_id', 'in_reply_to', 'references_header', 'subject'])
+    .select([
+      'id',
+      'account_id',
+      'message_id',
+      'in_reply_to',
+      'references_header',
+      'subject',
+      'from_json',
+      'to_json',
+      'folder_kind',
+    ])
     .where('workspace_id', '=', workspaceId)
     .where('thread_id', 'is', null)
     // thread_resolver_version marks rows the resolver has already attempted; skip
@@ -151,6 +163,11 @@ async function threadOneRow(
     inReplyTo: row.in_reply_to,
     referencesHeader: row.references_header,
     subject: row.subject,
+    correspondentEmail: threadCorrespondentEmail({
+      folderKind: row.folder_kind,
+      fromJson: row.from_json,
+      toJson: row.to_json,
+    }),
     now,
     excludeMessageId: id,
   });

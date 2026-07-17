@@ -392,146 +392,99 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
     async create(input): Promise<EmailAccountMutationPortResult> {
       const writesSecret = passwordShouldBeStored(input.values.imapPassword)
         || passwordShouldBeStored(input.values.smtpPassword);
-      if (writesSecret && !options.secrets) {
+      if (writesSecret && !options.secrets?.writeSecretInTransaction) {
         return { ok: false, code: 'secret_port_unavailable' };
       }
 
-      let inserted: Pick<EmailAccountRow, typeof emailAccountSelectColumns[number]> | undefined;
-      let insertedId: number | undefined;
-      let imapSecretName: { workspaceId: string; kind: string; name: string } | undefined;
-      let smtpSecretName: { workspaceId: string; kind: string; name: string } | undefined;
-      try {
-        inserted = await withWorkspaceTransaction(
-          options.db,
-          {
-            workspaceId: input.workspaceId,
-            userId: input.actorUserId,
-            role: 'user',
-          },
-          async (trx) => {
-            const now = new Date();
-            return trx
-              .insertInto('email_accounts')
-              .values({
-                workspace_id: input.workspaceId,
-                source_sqlite_id: serverCreatedEmailAccountSourceSqliteId(),
-                display_name: input.values.displayName ?? '',
-                email_address: input.values.emailAddress ?? '',
-                imap_host: input.values.imapHost ?? '',
-                imap_port: input.values.imapPort ?? 993,
-                imap_tls: input.values.imapTls ?? true,
-                imap_username: input.values.imapUsername ?? '',
-                keytar_account_key: null,
-                imap_password_secret_id: null,
-                smtp_host: input.values.smtpHost ?? null,
-                smtp_port: input.values.smtpPort ?? 587,
-                smtp_tls: input.values.smtpTls ?? true,
-                smtp_username: input.values.smtpUsername ?? null,
-                smtp_use_imap_auth: input.values.smtpUseImapAuth ?? true,
-                smtp_keytar_account_key: null,
-                smtp_password_secret_id: null,
-                protocol: input.values.protocol ?? 'imap',
-                pop3_host: input.values.pop3Host ?? null,
-                pop3_port: input.values.pop3Port ?? 995,
-                pop3_tls: input.values.pop3Tls ?? true,
-                oauth_provider: null,
-                oauth_refresh_keytar_key: null,
-                oauth_refresh_secret_id: null,
-                sent_folder_path: input.values.sentFolderPath ?? 'Sent',
-                sync_spam_folder_path: input.values.syncSpamFolderPath ?? null,
-                sync_archive_folder_path: input.values.syncArchiveFolderPath ?? null,
-                imap_sync_sent: input.values.imapSyncSent ?? false,
-                imap_sync_archive: input.values.imapSyncArchive ?? false,
-                imap_sync_spam: input.values.imapSyncSpam ?? false,
-                imap_sync_seen_on_open: input.values.imapSyncSeenOnOpen ?? true,
-                vacation_enabled: input.values.vacationEnabled ?? false,
-                vacation_subject: input.values.vacationSubject ?? null,
-                vacation_body_text: input.values.vacationBodyText ?? null,
-                request_read_receipt: input.values.requestReadReceipt ?? false,
-                imap_delete_opt_in: input.values.imapDeleteOptIn ?? false,
-                default_remote_content_policy: 'blocked',
-                respond_to_read_receipts: 'never',
-                read_receipt_trusted_domains: null,
-                source_row: serverApiSourceRow(),
-                imported_in_run_id: null,
-                created_at: now,
-                updated_at: now,
-              })
-              .returning(emailAccountSelectColumns)
-              .executeTakeFirstOrThrow();
-          },
-          { applySession: options.applyWorkspaceSession },
-        );
-        const accountId = Number(inserted.id);
-        insertedId = accountId;
+      return withWorkspaceTransaction(
+        options.db,
+        {
+          workspaceId: input.workspaceId,
+          userId: input.actorUserId,
+          role: 'user',
+        },
+        async (trx) => {
+          const now = new Date();
+          const inserted = await trx
+            .insertInto('email_accounts')
+            .values({
+              workspace_id: input.workspaceId,
+              source_sqlite_id: serverCreatedEmailAccountSourceSqliteId(),
+              display_name: input.values.displayName ?? '',
+              email_address: input.values.emailAddress ?? '',
+              imap_host: input.values.imapHost ?? '',
+              imap_port: input.values.imapPort ?? 993,
+              imap_tls: input.values.imapTls ?? true,
+              imap_username: input.values.imapUsername ?? '',
+              keytar_account_key: null,
+              imap_password_secret_id: null,
+              smtp_host: input.values.smtpHost ?? null,
+              smtp_port: input.values.smtpPort ?? 587,
+              smtp_tls: input.values.smtpTls ?? true,
+              smtp_username: input.values.smtpUsername ?? null,
+              smtp_use_imap_auth: input.values.smtpUseImapAuth ?? true,
+              smtp_keytar_account_key: null,
+              smtp_password_secret_id: null,
+              protocol: input.values.protocol ?? 'imap',
+              pop3_host: input.values.pop3Host ?? null,
+              pop3_port: input.values.pop3Port ?? 995,
+              pop3_tls: input.values.pop3Tls ?? true,
+              oauth_provider: null,
+              oauth_refresh_keytar_key: null,
+              oauth_refresh_secret_id: null,
+              sent_folder_path: input.values.sentFolderPath ?? 'Sent',
+              sync_spam_folder_path: input.values.syncSpamFolderPath ?? null,
+              sync_archive_folder_path: input.values.syncArchiveFolderPath ?? null,
+              imap_sync_sent: input.values.imapSyncSent ?? false,
+              imap_sync_archive: input.values.imapSyncArchive ?? false,
+              imap_sync_spam: input.values.imapSyncSpam ?? false,
+              imap_sync_seen_on_open: input.values.imapSyncSeenOnOpen ?? true,
+              vacation_enabled: input.values.vacationEnabled ?? false,
+              vacation_subject: input.values.vacationSubject ?? null,
+              vacation_body_text: input.values.vacationBodyText ?? null,
+              request_read_receipt: input.values.requestReadReceipt ?? false,
+              imap_delete_opt_in: input.values.imapDeleteOptIn ?? false,
+              default_remote_content_policy: 'blocked',
+              respond_to_read_receipts: 'never',
+              read_receipt_trusted_domains: null,
+              source_row: serverApiSourceRow(),
+              imported_in_run_id: null,
+              created_at: now,
+              updated_at: now,
+            })
+            .returning(emailAccountSelectColumns)
+            .executeTakeFirstOrThrow();
+          const accountId = Number(inserted.id);
+          const writeSecret = options.secrets?.writeSecretInTransaction;
+          const imapSecret = passwordShouldBeStored(input.values.imapPassword)
+            ? await writeSecret?.(trx, {
+              ...emailAccountSecretIdentifier(input.workspaceId, accountId, 'imap'),
+              value: input.values.imapPassword as string,
+            })
+            : undefined;
+          const smtpSecret = passwordShouldBeStored(input.values.smtpPassword)
+            ? await writeSecret?.(trx, {
+              ...emailAccountSecretIdentifier(input.workspaceId, accountId, 'smtp'),
+              value: input.values.smtpPassword as string,
+            })
+            : undefined;
+          if (!imapSecret && !smtpSecret) return { ok: true, account: mapEmailAccountRow(inserted) };
 
-        let imapSecretId: string | undefined;
-        if (passwordShouldBeStored(input.values.imapPassword)) {
-          imapSecretName = emailAccountSecretIdentifier(input.workspaceId, accountId, 'imap');
-          const secret = await options.secrets?.writeSecret({
-            ...imapSecretName,
-            value: input.values.imapPassword as string,
-          });
-          imapSecretId = secret?.id;
-        }
-
-        let smtpSecretId: string | undefined;
-        if (passwordShouldBeStored(input.values.smtpPassword)) {
-          smtpSecretName = emailAccountSecretIdentifier(input.workspaceId, accountId, 'smtp');
-          const secret = await options.secrets?.writeSecret({
-            ...smtpSecretName,
-            value: input.values.smtpPassword as string,
-          });
-          smtpSecretId = secret?.id;
-        }
-
-        const account = await withWorkspaceTransaction(
-          options.db,
-          {
-            workspaceId: input.workspaceId,
-            userId: input.actorUserId,
-            role: 'user',
-          },
-          async (trx) => {
-            const row = await trx
-              .updateTable('email_accounts')
-              .set({
-                ...(imapSecretId === undefined ? {} : { imap_password_secret_id: imapSecretId }),
-                ...(smtpSecretId === undefined ? {} : { smtp_password_secret_id: smtpSecretId }),
-                updated_at: new Date(),
-              })
-              .where('workspace_id', '=', input.workspaceId)
-              .where('id', '=', accountId)
-              .returning(emailAccountSelectColumns)
-              .executeTakeFirstOrThrow();
-            return mapEmailAccountRow(row);
-          },
-          { applySession: options.applyWorkspaceSession },
-        );
-
-        return { ok: true, account };
-      } catch (cause) {
-        if (insertedId !== undefined) {
-          const accountId = insertedId;
-          await withWorkspaceTransaction(
-            options.db,
-            { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
-            async (trx) => {
-              await trx
-                .deleteFrom('email_accounts')
-                .where('workspace_id', '=', input.workspaceId)
-                .where('id', '=', accountId)
-                .executeTakeFirst();
-            },
-            { applySession: options.applyWorkspaceSession },
-          ).catch(() => undefined);
-        }
-        await Promise.all([
-          imapSecretName ? options.secrets?.deleteSecret(imapSecretName) : undefined,
-          smtpSecretName ? options.secrets?.deleteSecret(smtpSecretName) : undefined,
-        ].filter(Boolean).map((promise) => (promise as Promise<unknown>).catch(() => undefined)));
-        throw cause;
-      }
+          const row = await trx
+            .updateTable('email_accounts')
+            .set({
+              ...(imapSecret ? { imap_password_secret_id: imapSecret.id } : {}),
+              ...(smtpSecret ? { smtp_password_secret_id: smtpSecret.id } : {}),
+              updated_at: now,
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', accountId)
+            .returning(emailAccountSelectColumns)
+            .executeTakeFirstOrThrow();
+          return { ok: true, account: mapEmailAccountRow(row) };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
     },
     async update(input): Promise<EmailAccountMutationPortResult | null> {
       const current = await withWorkspaceTransaction(
@@ -4112,6 +4065,15 @@ async function nextLocalDraftUid(
   accountId: number,
   folderId: number,
 ): Promise<number> {
+  // Serialize all local UID allocations for this folder. The unique message
+  // constraint then remains a final guard instead of the concurrency control.
+  await trx
+    .selectFrom('email_folders')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', folderId)
+    .forUpdate()
+    .executeTakeFirstOrThrow();
   const row = await trx
     .selectFrom('email_messages')
     .select((eb) => eb.fn.min<number>('uid').as('min_uid'))

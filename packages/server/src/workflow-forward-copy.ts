@@ -4,8 +4,8 @@ import type { Kysely } from 'kysely';
 import {
   addressesFromRecipientJson,
   buildComposeRfc822,
+  emailAddressForDelivery,
   generateOutboundMessageId,
-  normalizeEmailAddress,
   resolveConfiguredSmtpHost,
   SMTP_HOST_MISSING_ERROR,
   type ComposeRfc822Attachment,
@@ -133,6 +133,7 @@ type PreparedForwardCopy =
   | {
     ok: true;
     duplicate: boolean;
+    deliveryPending: boolean;
     workflowSourceSqliteId: number;
     message: ForwardCopyMessage;
     account: ForwardCopyAccount;
@@ -203,6 +204,16 @@ export function createPostgresWorkflowForwardCopyPort(
           ok: true,
           error: null,
           duplicate: true,
+          now: now(),
+        });
+        return;
+      }
+
+      if (prepared.deliveryPending) {
+        await failOrEnqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: 'Forward-Zustellstatus ist unklar; automatischer Neuversand wurde blockiert',
+          duplicate: false,
           now: now(),
         });
         return;
@@ -282,6 +293,31 @@ export function createPostgresWorkflowForwardCopyPort(
         return;
       }
 
+      const reservation = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => reserveForwardCopyDelivery(trx, input, prepared, now()),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (reservation !== 'reserved') {
+        if (reservation === 'sent') {
+          await enqueueForwardCopyContinuation(options, input, {
+            ok: true,
+            error: null,
+            duplicate: true,
+            now: now(),
+          });
+          return;
+        }
+        await failOrEnqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: 'Forward-Zustellstatus ist unklar; automatischer Neuversand wurde blockiert',
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
       try {
         await smtpSend({
           host: smtpHost,
@@ -319,7 +355,7 @@ export function createPostgresWorkflowForwardCopyPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          await insertForwardCopyDedup(trx, input, prepared, now());
+          await markForwardCopyDelivered(trx, input, prepared, now());
           await enqueueForwardCopyContinuationInTransaction(trx, input, {
             ok: true,
             error: null,
@@ -354,15 +390,16 @@ async function prepareForwardCopy(
   const workflowSourceSqliteId = await loadWorkflowSourceSqliteId(trx, input.workspaceId, input.workflowId);
   if (workflowSourceSqliteId === null) return { ok: false, error: 'Workflow nicht gefunden' };
 
-  const duplicate = await hasForwardCopyDedup(trx, input.workspaceId, {
+  const deliveryStatus = await forwardCopyDeliveryStatus(trx, input.workspaceId, {
     messageSourceSqliteId: message.sourceSqliteId,
     workflowSourceSqliteId,
     destination,
   });
-  if (duplicate) {
+  if (deliveryStatus) {
     return {
       ok: true,
-      duplicate: true,
+      duplicate: deliveryStatus === 'sent',
+      deliveryPending: deliveryStatus === 'outbox',
       workflowSourceSqliteId,
       message,
       account,
@@ -396,6 +433,7 @@ async function prepareForwardCopy(
   return {
     ok: true,
     duplicate: false,
+    deliveryPending: false,
     workflowSourceSqliteId,
     message,
     account,
@@ -542,7 +580,7 @@ async function loadWorkflowSourceSqliteId(
   return row.source_sqlite_id === null ? -Number(row.id) : Number(row.source_sqlite_id);
 }
 
-async function hasForwardCopyDedup(
+async function forwardCopyDeliveryStatus(
   trx: WorkspaceTransaction,
   workspaceId: string,
   input: {
@@ -550,16 +588,17 @@ async function hasForwardCopyDedup(
     workflowSourceSqliteId: number;
     destination: string;
   },
-): Promise<boolean> {
+): Promise<'outbox' | 'sent' | null> {
   const row = await trx
     .selectFrom('email_workflow_forward_dedup')
-    .select('id')
+    .select(['id', 'delivery_status'])
     .where('workspace_id', '=', workspaceId)
     .where('message_source_sqlite_id', '=', input.messageSourceSqliteId)
     .where('workflow_source_sqlite_id', '=', input.workflowSourceSqliteId)
     .where('dest', '=', input.destination)
     .executeTakeFirst();
-  return Boolean(row);
+  if (!row) return null;
+  return row.delivery_status === 'outbox' ? 'outbox' : 'sent';
 }
 
 async function insertForwardCopyDedup(
@@ -568,7 +607,7 @@ async function insertForwardCopyDedup(
   prepared: Extract<PreparedForwardCopy, { ok: true }>,
   now: Date,
 ): Promise<void> {
-  if (await hasForwardCopyDedup(trx, input.workspaceId, {
+  if (await forwardCopyDeliveryStatus(trx, input.workspaceId, {
     messageSourceSqliteId: prepared.message.sourceSqliteId,
     workflowSourceSqliteId: prepared.workflowSourceSqliteId,
     destination: prepared.destination,
@@ -590,11 +629,68 @@ async function insertForwardCopyDedup(
       message_id: input.messageId,
       workflow_id: input.workflowId,
       dest: prepared.destination,
+      delivery_status: 'sent',
       source_row: serverWorkerSourceRow(),
       imported_in_run_id: null,
       created_at: now,
       updated_at: now,
     })
+    .execute();
+}
+
+async function reserveForwardCopyDelivery(
+  trx: WorkspaceTransaction,
+  input: WorkflowForwardCopyJobPlan,
+  prepared: Extract<PreparedForwardCopy, { ok: true }>,
+  now: Date,
+): Promise<'reserved' | 'outbox' | 'sent'> {
+  const inserted = await trx
+    .insertInto('email_workflow_forward_dedup')
+    .values({
+      workspace_id: input.workspaceId,
+      source_sqlite_id: serverCreatedWorkflowForwardDedupSourceSqliteId(
+        input.workspaceId,
+        prepared.message.sourceSqliteId,
+        prepared.workflowSourceSqliteId,
+        prepared.destination,
+      ),
+      message_source_sqlite_id: prepared.message.sourceSqliteId,
+      workflow_source_sqlite_id: prepared.workflowSourceSqliteId,
+      message_id: input.messageId,
+      workflow_id: input.workflowId,
+      dest: prepared.destination,
+      delivery_status: 'outbox',
+      source_row: serverWorkerSourceRow(),
+      imported_in_run_id: null,
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflict((oc) => oc
+      .columns(['workspace_id', 'message_source_sqlite_id', 'workflow_source_sqlite_id', 'dest'])
+      .doNothing())
+    .returning('id')
+    .executeTakeFirst();
+  if (inserted) return 'reserved';
+  return await forwardCopyDeliveryStatus(trx, input.workspaceId, {
+    messageSourceSqliteId: prepared.message.sourceSqliteId,
+    workflowSourceSqliteId: prepared.workflowSourceSqliteId,
+    destination: prepared.destination,
+  }) ?? 'outbox';
+}
+
+async function markForwardCopyDelivered(
+  trx: WorkspaceTransaction,
+  input: WorkflowForwardCopyJobPlan,
+  prepared: Extract<PreparedForwardCopy, { ok: true }>,
+  now: Date,
+): Promise<void> {
+  await trx
+    .updateTable('email_workflow_forward_dedup')
+    .set({ delivery_status: 'sent', updated_at: now })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_source_sqlite_id', '=', prepared.message.sourceSqliteId)
+    .where('workflow_source_sqlite_id', '=', prepared.workflowSourceSqliteId)
+    .where('dest', '=', prepared.destination)
     .execute();
 }
 
@@ -857,14 +953,17 @@ function resolveSmtpUser(account: ForwardCopyAccount): string {
     : account.smtpUsername?.trim() || account.imapUsername;
 }
 
-function normalizeForwardCopyRecipients(value: string): string[] {
+export function normalizeForwardCopyRecipients(value: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const part of value.split(/[,;]+/).map((entry) => entry.trim()).filter(Boolean)) {
     const angleMatch = part.match(/<([^>]+)>/);
     const candidate = (angleMatch?.[1] ?? part).trim();
-    const normalized = candidate.toLowerCase();
-    if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(normalized) && !out.includes(normalized)) {
-      out.push(normalized);
+    const deliveryAddress = emailAddressForDelivery(candidate);
+    const identity = deliveryAddress.toLowerCase();
+    if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(deliveryAddress) && !seen.has(identity)) {
+      out.push(deliveryAddress);
+      seen.add(identity);
     }
   }
   return out.slice(0, 10);
@@ -893,7 +992,7 @@ function emailAccountSecretIdentifier(
 
 
 function formatMailbox(displayName: string, emailAddress: string): string {
-  const cleanEmail = normalizeEmailAddress(emailAddress) ?? emailAddress.trim();
+  const cleanEmail = emailAddressForDelivery(emailAddress);
   const cleanName = sanitizeHeader(displayName);
   return cleanName ? `${encodeHeaderValue(cleanName)} <${cleanEmail}>` : cleanEmail;
 }

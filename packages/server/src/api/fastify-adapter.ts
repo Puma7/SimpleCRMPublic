@@ -39,6 +39,8 @@ export type FastifyServerOptions = Readonly<{
   logger?: boolean | (LoggerOptions & { stream?: { write(chunk: string): void } });
   resolvePrincipal?: FastifyPrincipalResolver;
   accessTokenSigner?: AccessTokenSigner;
+  /** Test/development-only compatibility for unsigned x-simplecrm-* headers. */
+  allowHeaderPrincipalFallback?: boolean;
   corsAllowedOrigins?: readonly string[];
   /**
    * Which peers' `X-Forwarded-For` to trust so `request.ip` is the real client
@@ -108,7 +110,9 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
         options.ports.auth.resolveAccessTokenPrincipal,
         createAutomationApiKeyPrincipalResolver(options.ports),
       )
-      : resolvePrincipalFromHeaders
+      : options.allowHeaderPrincipalFallback === true
+        ? resolvePrincipalFromHeaders
+        : () => undefined
   );
   const handler = createFastifyHandler(api, resolvePrincipal);
 

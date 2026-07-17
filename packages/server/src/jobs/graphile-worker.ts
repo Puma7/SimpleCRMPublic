@@ -279,7 +279,8 @@ export function graphileJobKeyForJob(
   }
   if (type === 'workflow.http_request') {
     const workflowId = graphileKeyScalar(payload.workflowId);
-    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId)
+      ?? graphileKeyScalar(payload.errorResumeNodeId);
     const messageId = graphileKeyScalar(payload.messageId);
     if (workspaceKey && workflowId && resumeNodeId) {
       return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;

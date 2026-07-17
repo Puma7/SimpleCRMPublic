@@ -19,3 +19,11 @@ export function normalizeEmailAddress(raw: string): string {
   const localBase = plus >= 0 ? local.slice(0, plus) : local;
   return `${localBase}@${domain}`;
 }
+
+/** Normalize only the domain for transport; the local part is delivery data. */
+export function emailAddressForDelivery(raw: string): string {
+  const trimmed = raw.trim();
+  const at = trimmed.lastIndexOf('@');
+  if (at <= 0) return trimmed;
+  return `${trimmed.slice(0, at)}@${normalizeEmailDomain(trimmed.slice(at + 1))}`;
+}

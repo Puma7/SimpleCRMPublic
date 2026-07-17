@@ -1888,6 +1888,24 @@ describe('server edition repository boundaries', () => {
     }
   });
 
+  test('fastify adapter rejects unsigned principal headers by default', async () => {
+    const app = createFastifyServer({ ports: makeServerApiPorts() });
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/v1/customers',
+        headers: {
+          'x-simplecrm-user-id': 'user-a',
+          'x-simplecrm-workspace-id': 'workspace-a',
+          'x-simplecrm-role': 'owner',
+        },
+      });
+      expect(response.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('fastify adapter allows public tracking resources from cross-origin mail clients', async () => {
     const emailTracking: EmailTrackingApiPort = {
       async getPolicy() { throw new Error('unused'); },

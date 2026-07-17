@@ -318,6 +318,10 @@ async function handleMailSecuritySettings(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+
   if (req.method === 'GET') {
     const loaded = await loadSyncInfo(req, ports, MAIL_SECURITY_KEYS);
     if ('status' in loaded) return loaded;
@@ -364,6 +368,7 @@ async function handleRspamdConnectionTest(req: ApiRequest): Promise<ApiResponse>
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
 
   const parsed = parseRspamdConnectionTestBody(req.body);
   if (!parsed.ok) return parsed.response;
@@ -554,6 +559,7 @@ async function handleMssqlSettings(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   if (!ports.mssqlSettings) return error(503, 'mssql_settings_unavailable', 'MSSQL Settings API nicht konfiguriert');
 
   if (req.method === 'GET') {
@@ -562,7 +568,6 @@ async function handleMssqlSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const parsed = parseMssqlSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const result = await ports.mssqlSettings.saveSettings({

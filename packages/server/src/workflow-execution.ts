@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { sql, type Kysely, type Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
@@ -9,6 +11,7 @@ import {
   ensureTicketInSubject,
   evaluateSenderFilterFromLists,
   extractDraftBodyForOutboundBlock,
+  emailAddressForDelivery,
   generateTicketCode,
   interpolateWorkflowPlaceholders,
   isUnsafeAutoReplyTarget,
@@ -1361,6 +1364,11 @@ async function executeServerNode(
     return { status: 'ok', port: match ? 'yes' : 'no' };
   }
 
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+
   const type = nodeRuntimeType(node);
   const config = interpolateServerSchemaFields(type, nodeConfig(node), context);
   if (type === 'logic.stop' || type === 'stop') {
@@ -2679,7 +2687,8 @@ async function scheduleWorkflowHttpRequestJob(
   const timeoutMs = workflowHttpTimeout(config.timeoutMs);
   if (!timeoutMs.ok) return { status: 'error', port: 'error', message: timeoutMs.message };
 
-  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const resumeNodeId = resolveHttpSuccessNodeAfter(doc, node.id);
+  const errorResumeNodeId = resolveHttpErrorNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     method: method.value,
@@ -2688,15 +2697,20 @@ async function scheduleWorkflowHttpRequestJob(
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
+  if (method.value === 'POST') {
+    payload.idempotencyKey = workflowHttpIdempotencyKey(context, node.id);
+  }
   if (method.value === 'POST' && body.value !== undefined) payload.body = body.value;
   if (context.messageId !== null) payload.messageId = context.messageId;
-  if (resumeNodeId) {
+  if (resumeNodeId || errorResumeNodeId) {
     payload.workflowId = context.workflowId;
-    payload.resumeNodeId = resumeNodeId;
+    if (resumeNodeId) payload.resumeNodeId = resumeNodeId;
+    if (errorResumeNodeId) payload.errorResumeNodeId = errorResumeNodeId;
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
-      resumeNodeId,
+      ...(resumeNodeId ? { resumeNodeId } : {}),
+      ...(errorResumeNodeId ? { errorResumeNodeId } : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
     };
@@ -2719,8 +2733,8 @@ async function scheduleWorkflowHttpRequestJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    stop: Boolean(resumeNodeId || errorResumeNodeId),
+    deferred: Boolean(resumeNodeId || errorResumeNodeId),
     message: `queued_http_request:${jobId}`,
     variables: {
       'http.status': 'pending',
@@ -4047,12 +4061,18 @@ function workflowForwardCopyRecipient(value: unknown): WorkflowForwardCopyRecipi
     return { ok: false, message: `Maximal ${MAX_FORWARD_COPY_RECIPIENTS} Forward-Empfaenger` };
   }
   const normalized: string[] = [];
+  const seen = new Set<string>();
   for (const part of parts) {
-    const address = normalizeEmailAddress(part);
+    const angleMatch = part.match(/<([^>]+)>/);
+    const address = emailAddressForDelivery(angleMatch?.[1] ?? part);
     if (!isSimpleWorkflowEmailAddress(address)) {
       return { ok: false, message: `Forward-Empfaenger ist ungueltig: ${part}` };
     }
-    if (!normalized.includes(address)) normalized.push(address);
+    const identity = address.toLowerCase();
+    if (!seen.has(identity)) {
+      normalized.push(address);
+      seen.add(identity);
+    }
   }
   return { ok: true, value: normalized.join(',') };
 }
@@ -4165,6 +4185,15 @@ function boundedDelayMs(value: unknown): number {
 function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   const outs = outgoing(doc.edges, nodeId);
   return pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
+}
+
+function resolveHttpSuccessNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
+  const outs = outgoing(doc.edges, nodeId);
+  return pickEdge(outs, 'default')?.target ?? pickEdge(outs, 'yes')?.target ?? '';
+}
+
+function resolveHttpErrorNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
+  return pickEdge(outgoing(doc.edges, nodeId), 'no')?.target ?? '';
 }
 
 async function updateWorkflowMessage(
@@ -4938,8 +4967,8 @@ async function createWorkflowTask(
   const dueDate = workflowTaskDueDate(config.daysUntilDue, now);
   if (!dueDate) return { status: 'error', port: 'error', message: 'daysUntilDue ungueltig' };
   const description = String(context.strings.snippet ?? '').trim() || null;
-  // customerId 0 marks the customerless task in the idempotency key so re-runs
-  // of the same (workflow, run, message, node) dedup instead of duplicating.
+  // customerId 0 marks the customerless task in the idempotency key so retries
+  // of the same (workflow, message, node) dedup instead of duplicating.
   const sourceSqliteId = serverCreatedWorkflowTaskSourceSqliteId(context, node.id, customer?.id ?? 0);
 
   const existing = await trx
@@ -6427,7 +6456,6 @@ function serverCreatedWorkflowTaskSourceSqliteId(
     'tasks',
     context.workspaceId,
     String(context.workflowSourceSqliteId),
-    String(context.runSourceSqliteId),
     String(context.messageSourceSqliteId ?? context.messageId ?? 'none'),
     nodeId,
     String(customerId),
@@ -6443,11 +6471,35 @@ function serverCreatedWorkflowActivityLogSourceSqliteId(
     'activity_log',
     context.workspaceId,
     String(context.workflowSourceSqliteId),
-    String(context.runSourceSqliteId),
     String(context.messageSourceSqliteId ?? context.messageId ?? 'none'),
     nodeId,
     String(customerId),
   );
+}
+
+const MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH = 128 * 1024;
+
+function workflowContinuationContextError(context: ServerWorkflowContext): string | null {
+  if (
+    JSON.stringify(context.strings).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
+    || JSON.stringify(context.variables).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
+  ) {
+    return `Continuation-Kontext ueberschreitet ${MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH} JSON-Zeichen`;
+  }
+  return null;
+}
+
+function workflowHttpIdempotencyKey(context: ServerWorkflowContext, nodeId: string): string {
+  const digest = createHash('sha256')
+    .update(context.workspaceId)
+    .update('\0')
+    .update(String(context.workflowSourceSqliteId))
+    .update('\0')
+    .update(String(context.messageSourceSqliteId ?? context.messageId ?? 'none'))
+    .update('\0')
+    .update(nodeId)
+    .digest('hex');
+  return `simplecrm-workflow-http-${digest}`;
 }
 
 function serverCreatedWorkflowDealStageActivitySourceSqliteId(

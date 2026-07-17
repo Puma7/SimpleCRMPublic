@@ -352,6 +352,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0030_email_evidence_classification_v2',
   '0031_smtp_relay',
   '0032_dmarc_reports',
+  '0033_pr156_followup_hardening',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -2055,6 +2056,8 @@ describe('server edition foundation', () => {
       .toBeUndefined();
     expect(graphileJobKeyForJob('workflow.http_request', { workflowId: 23, messageId: 11, resumeNodeId: 'tag-1' }, 'workspace-a'))
       .toBe('workflow.http_request:workspace-a:23:11:tag-1');
+    expect(graphileJobKeyForJob('workflow.http_request', { workflowId: 23, messageId: 11, errorResumeNodeId: 'notify-error' }, 'workspace-a'))
+      .toBe('workflow.http_request:workspace-a:23:11:notify-error');
     expect(graphileJobKeyForJob('workflow.forward_copy', { workflowId: 23, messageId: 11, to: 'audit@example.com' }, 'workspace-a'))
       .toBe('workflow.forward_copy:workspace-a:23:11:audit@example.com');
     expect(graphileJobKeyForJob('workflow.dmarc_ingest', { workflowId: 23, messageId: 11 }, 'workspace-a'))
@@ -2394,11 +2397,13 @@ describe('server edition foundation', () => {
       method: 'post',
       url: ' https://api.example.com/hook ',
       body: { ok: true },
+      idempotencyKey: ' simplecrm-workflow-http-stable ',
       timeoutMs: 5000,
       continuation: {
         workflowId: 23,
         triggerName: ' inbound ',
         resumeNodeId: 'tag-1',
+        errorResumeNodeId: 'notify-error',
       },
     }, WORKSPACE_A_ID)).toEqual({
       workspaceId: WORKSPACE_A_ID,
@@ -2406,11 +2411,13 @@ describe('server edition foundation', () => {
       method: 'POST',
       url: 'https://api.example.com/hook',
       body: '{"ok":true}',
+      idempotencyKey: 'simplecrm-workflow-http-stable',
       timeoutMs: 5000,
       continuation: {
         workflowId: 23,
         triggerName: 'inbound',
         resumeNodeId: 'tag-1',
+        errorResumeNodeId: 'notify-error',
       },
     });
     expect(buildWorkflowForwardCopyJobPlan({
@@ -2992,7 +2999,7 @@ describe('server edition foundation', () => {
     expect(inboundEvidence).toHaveLength(1);
   });
 
-  test('server mail sync skips a failing message and keeps advancing the cursor past it', async () => {
+  test('server mail sync persists and retries a failing UID after advancing the cursor', async () => {
     const now = new Date('2026-07-07T10:00:00.000Z');
     const account = makeServerMailSyncAccount({ protocol: 'imap' });
     const upserts: any[] = [];
@@ -3000,8 +3007,17 @@ describe('server edition foundation', () => {
     const folders = new Map<string, any>([
       ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5 })],
     ]);
-    const store = makeServerMailSyncStore({ account, folders, upserts, folderUpdates, messageIds: [301, 302] });
+    const syncInfo = new Map<string, string>();
+    const store = makeServerMailSyncStore({
+      account,
+      folders,
+      upserts,
+      folderUpdates,
+      messageIds: [301, 302, 303],
+      syncInfo,
+    });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let failUid7 = true;
     const client = {
       async connect() { return undefined; },
       async list() { return []; },
@@ -3023,10 +3039,9 @@ describe('server edition foundation', () => {
     const port = createServerMailSyncJobPort({
       store,
       now: () => now,
-      // UID 7 fails to parse; it must not block UID 8 or freeze the cursor.
       parser: async (source) => {
         const seed = source.toString('utf8');
-        if (seed.includes('Subject: 7')) throw new Error('boom parsing UID 7');
+        if (failUid7 && seed.includes('Subject: 7')) throw new Error('boom parsing UID 7');
         return makeParsedServerMailSyncMessage(seed);
       },
       imapClientFactory() { return client as any; },
@@ -3034,11 +3049,16 @@ describe('server edition foundation', () => {
 
     await port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap', actorUserId: USER_A_ID });
 
-    // 6 and 8 import; 7 is skipped (not upserted) but logged.
     expect(upserts.map((item) => item.uid)).toEqual([6, 8]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('UID 7'));
-    // Crucially the cursor advances PAST the failed UID 7 so newer mail is not blocked.
     expect(folderUpdates[0].lastUid).toBe(8);
+    expect([...syncInfo.values()]).toContain(JSON.stringify([7]));
+
+    failUid7 = false;
+    await port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap', actorUserId: USER_A_ID });
+
+    expect(upserts.map((item) => item.uid)).toEqual([6, 8, 7]);
+    expect([...syncInfo.values()]).toContain(JSON.stringify([]));
     warn.mockRestore();
   });
 
@@ -4464,6 +4484,7 @@ describe('server edition foundation', () => {
       url: 'https://api.example.com/hook',
       body: '{"ok":true}',
       timeoutMs: 5000,
+      idempotencyKey: 'workflow-http-stable-key',
       continuation: {
         workflowId: 23,
         triggerName: 'inbound',
@@ -4477,7 +4498,10 @@ describe('server edition foundation', () => {
       url: 'https://api.example.com/hook',
       init: {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'workflow-http-stable-key',
+        },
         body: '{"ok":true}',
       },
     });
@@ -4512,6 +4536,67 @@ describe('server edition foundation', () => {
       url: 'https://evil.example.net/hook',
       timeoutMs: 5000,
     })).rejects.toThrow('allowlist');
+  });
+
+  test('postgres workflow HTTP request port never follows the success path after a failed request', async () => {
+    const now = new Date('2026-06-03T12:41:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      syncInfo: [{
+        workspace_id: WORKSPACE_A_ID,
+        key: 'workflow_http_allowlist',
+        value: 'api.example.com',
+      }],
+    });
+    const port = createPostgresWorkflowHttpRequestPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      lookup: async () => [{ address: '93.184.216.34' }],
+      fetchImpl: async () => ({
+        ok: false,
+        status: 503,
+        async text() {
+          return 'unavailable';
+        },
+      }),
+    });
+
+    await expect(port.request({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 11,
+      method: 'POST',
+      url: 'https://api.example.com/hook',
+      timeoutMs: 5000,
+      continuation: {
+        workflowId: 23,
+        resumeNodeId: 'release-outbound',
+      },
+    })).rejects.toThrow('workflow HTTP request failed (503)');
+    expect(rows.jobs).toEqual([]);
+
+    await port.request({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 11,
+      method: 'POST',
+      url: 'https://api.example.com/hook',
+      timeoutMs: 5000,
+      continuation: {
+        workflowId: 23,
+        resumeNodeId: 'release-outbound',
+        errorResumeNodeId: 'notify-error',
+      },
+    });
+    expect(rows.jobs).toHaveLength(1);
+    expect(rows.jobs[0]?.payload).toMatchObject({
+      context: {
+        resumeNodeId: 'notify-error',
+        eventVariables: {
+          'http.status': 503,
+          'http.ok': false,
+          'http.error': 'HTTP 503',
+        },
+      },
+    });
   });
 
   test('postgres mail sync post-processor enqueues inbound reply suggestion jobs', async () => {
@@ -6039,6 +6124,13 @@ describe('server edition foundation', () => {
     await port.execute({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 34,
+      messageId: 22,
+      triggerName: 'manual',
+      context: {},
+    });
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 34,
       messageId: 23,
       triggerName: 'manual',
       context: {},
@@ -6063,6 +6155,7 @@ describe('server edition foundation', () => {
     ]);
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
       ['task-1', 'crm.create_task', 'ok', 'default', null],
+      ['task-1', 'crm.create_task', 'ok', 'default', 'task_exists:1'],
       ['task-1', 'crm.create_task', 'skipped', 'default', 'Kein Kunde verknuepft'],
     ]);
   });
@@ -6325,6 +6418,13 @@ describe('server edition foundation', () => {
     await port.execute({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 35,
+      messageId: 24,
+      triggerName: 'manual',
+      context: {},
+    });
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 35,
       messageId: 25,
       triggerName: 'manual',
       context: {},
@@ -6352,6 +6452,7 @@ describe('server edition foundation', () => {
     ]);
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
       ['activity-1', 'crm.log_activity', 'ok', 'default', null],
+      ['activity-1', 'crm.log_activity', 'ok', 'default', 'activity_log_exists:1'],
       ['activity-1', 'crm.log_activity', 'skipped', 'default', 'Kein Kunde verknuepft'],
     ]);
   });
@@ -9426,7 +9527,7 @@ describe('server edition foundation', () => {
 
   test('postgres workflow execution job port creates local compose drafts', async () => {
     const now = new Date('2026-07-04T11:01:50.000Z');
-    const { db, rows } = makeWorkflowExecutionDb({
+    const { db, rows, rowLocks } = makeWorkflowExecutionDb({
       workflows: [{
         id: 35,
         workspace_id: WORKSPACE_A_ID,
@@ -9510,6 +9611,7 @@ describe('server edition foundation', () => {
       subject: 'Re: Draft',
       body_text: expect.stringContaining('Antwortentwurf'),
     }));
+    expect(rowLocks).toContain('email_folders');
     expect(rows.tags.map((tag) => tag.tag)).toEqual(['draft-created']);
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
       ['draft-1', 'email.create_draft', 'ok', 'default'],
@@ -9555,11 +9657,17 @@ describe('server edition foundation', () => {
               type: 'registry',
               data: { nodeType: 'email.tag', config: { tag: 'http-ok', runOnEveryInbound: true } },
             },
+            {
+              id: 'tag-error',
+              type: 'registry',
+              data: { nodeType: 'email.tag', config: { tag: 'http-error', runOnEveryInbound: true } },
+            },
           ],
           edges: [
             { id: 'edge-1', source: 'trigger-1', target: 'http-1' },
             { id: 'edge-2', source: 'http-1', target: 'switch-1' },
             { id: 'edge-3', source: 'switch-1', target: 'tag-ok', label: '201' },
+            { id: 'edge-4', source: 'http-1', target: 'tag-error', label: 'error' },
           ],
         },
         execution_mode: 'graph',
@@ -9610,12 +9718,14 @@ describe('server edition foundation', () => {
       url: 'https://api.example.com/hook',
       body: '{"message":"ok"}',
       timeoutMs: 5000,
+      idempotencyKey: expect.stringMatching(/^simplecrm-workflow-http-[a-f0-9]{64}$/),
       workflowId: 36,
       resumeNodeId: 'switch-1',
       continuation: {
         workflowId: 36,
         triggerName: 'inbound',
         resumeNodeId: 'switch-1',
+        errorResumeNodeId: 'tag-error',
       },
     });
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
@@ -9644,6 +9754,23 @@ describe('server edition foundation', () => {
       ['switch-1', 'logic.switch', 'ok', '201'],
       ['tag-ok', 'email.tag', 'ok', 'default'],
     ]);
+
+    rows.jobs.length = 0;
+    rows.appliedWorkflows.length = 0;
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 36,
+      messageId: 24,
+      triggerName: 'inbound',
+      context: { eventStrings: { oversized: 'x'.repeat(128 * 1024) } },
+    });
+    expect(rows.jobs).toEqual([]);
+    expect(rows.steps.at(-1)).toMatchObject({
+      node_id: 'http-1',
+      status: 'error',
+      port: 'error',
+      message: expect.stringContaining('Continuation-Kontext'),
+    });
   });
 
   test('postgres workflow execution job port queues forward-copy continuations', async () => {
@@ -9853,6 +9980,7 @@ describe('server edition foundation', () => {
         message_id: 27,
         workflow_id: 39,
         dest: 'audit@example.com',
+        delivery_status: 'sent',
         created_at: now,
         updated_at: now,
       }),
@@ -9891,7 +10019,7 @@ describe('server edition foundation', () => {
     ]);
   });
 
-  test('postgres workflow forward-copy port leaves dedup empty when SMTP fails so retries can resend', async () => {
+  test('postgres workflow forward-copy port does not resend after an ambiguous SMTP failure', async () => {
     const now = new Date('2026-07-04T11:04:10.000Z');
     let smtpAttempts = 0;
     const smtpSends: unknown[] = [];
@@ -9960,23 +10088,22 @@ describe('server edition foundation', () => {
       messageId: 27,
       to: 'retry@example.com',
     })).rejects.toThrow('smtp transient');
-    expect(rows.forwardDedup).toEqual([]);
+    expect(rows.forwardDedup).toEqual([
+      expect.objectContaining({
+        dest: 'retry@example.com',
+        delivery_status: 'outbox',
+      }),
+    ]);
     expect(smtpSends).toHaveLength(0);
 
-    await port.forwardCopy({
+    await expect(port.forwardCopy({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 39,
       messageId: 27,
       to: 'retry@example.com',
-    });
-    expect(smtpSends).toHaveLength(1);
-    expect(rows.forwardDedup).toEqual([
-      expect.objectContaining({
-        dest: 'retry@example.com',
-        message_id: 27,
-        workflow_id: 39,
-      }),
-    ]);
+    })).rejects.toThrow(/Zustellstatus ist unklar/);
+    expect(smtpAttempts).toBe(1);
+    expect(smtpSends).toHaveLength(0);
   });
 
   test('postgres workflow forward-copy port routes through composeSender.send when runOutboundReview=true', async () => {
@@ -28460,10 +28587,17 @@ describe('server edition foundation', () => {
       maxAttachmentMb: '30',
     });
 
-    const security = await api.handle({
+    const securityDenied = await api.handle({
       method: 'GET',
       path: '/api/v1/email/settings/security',
       principal,
+    });
+    expect(securityDenied.status).toBe(403);
+
+    const security = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/security',
+      principal: adminPrincipal,
     });
     expect(security.status).toBe(200);
     expect((security.body as any).data).toMatchObject({
@@ -28528,7 +28662,7 @@ describe('server edition foundation', () => {
       },
     });
 
-    const securityPatch = await api.handle({
+    const securityPatchDenied = await api.handle({
       method: 'PATCH',
       path: '/api/v1/email/settings/security',
       body: {
@@ -28539,6 +28673,20 @@ describe('server edition foundation', () => {
         senderWhitelist: ' trusted@example.com ',
       },
       principal,
+    });
+    expect(securityPatchDenied.status).toBe(403);
+
+    const securityPatch = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/settings/security',
+      body: {
+        rspamdEnabled: false,
+        rspamdUrl: ' http://rspamd2.local/ ',
+        rspamdTimeoutMs: 999,
+        spamReviewThreshold: 47.9,
+        senderWhitelist: ' trusted@example.com ',
+      },
+      principal: adminPrincipal,
     });
     expect(securityPatch.status).toBe(200);
     expect(setCalls[2]).toEqual({
@@ -28769,6 +28917,7 @@ describe('server edition foundation', () => {
   test('server settings route tests rspamd connectivity', async () => {
     const api = createServerApi(makeServerApiPorts());
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
     const originalFetch = globalThis.fetch;
     const fetchMock = jest.fn()
       .mockResolvedValueOnce({ ok: true, status: 200 })
@@ -28780,6 +28929,17 @@ describe('server edition foundation', () => {
     });
 
     try {
+      const denied = await api.handle({
+        method: 'POST',
+        path: '/api/v1/email/settings/security/test-rspamd',
+        body: {
+          rspamdUrl: 'http://rspamd.local',
+        },
+        principal,
+      });
+      expect(denied.status).toBe(403);
+      expect(fetchMock).not.toHaveBeenCalled();
+
       const ok = await api.handle({
         method: 'POST',
         path: '/api/v1/email/settings/security/test-rspamd',
@@ -28787,7 +28947,7 @@ describe('server edition foundation', () => {
           rspamdUrl: ' http://rspamd.local/ ',
           rspamdTimeoutMs: 999,
         },
-        principal,
+        principal: adminPrincipal,
       });
       expect(ok.status).toBe(200);
       expect((ok.body as any).data).toEqual({
@@ -28806,7 +28966,7 @@ describe('server edition foundation', () => {
         body: {
           rspamdUrl: 'http://rspamd.local',
         },
-        principal,
+        principal: adminPrincipal,
       });
       expect(httpError.status).toBe(200);
       expect((httpError.body as any).data).toEqual({
@@ -28820,7 +28980,7 @@ describe('server edition foundation', () => {
         body: {
           rspamdUrl: 'ftp://rspamd.local',
         },
-        principal,
+        principal: adminPrincipal,
       });
       expect(invalid.status).toBe(400);
       expect((invalid.body as any).error.code).toBe('validation_error');
@@ -28871,10 +29031,17 @@ describe('server edition foundation', () => {
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
     const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
-    const loaded = await api.handle({
+    const loadDenied = await api.handle({
       method: 'GET',
       path: '/api/v1/mssql/settings',
       principal,
+    });
+    expect(loadDenied.status).toBe(403);
+
+    const loaded = await api.handle({
+      method: 'GET',
+      path: '/api/v1/mssql/settings',
+      principal: adminPrincipal,
     });
     expect(loaded.status).toBe(200);
     expect((loaded.body as any).data).toMatchObject({
@@ -29040,6 +29207,7 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const unavailable = await readOnlyApi.handle({
       method: 'GET',
@@ -29053,7 +29221,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/settings/security',
       body: [],
-      principal,
+      principal: adminPrincipal,
     });
     expect(invalidPayload.status).toBe(400);
     expect((invalidPayload.body as any).error.code).toBe('invalid_mail_security_settings_payload');
@@ -38862,6 +39030,10 @@ class FakeAiReplySuggestionSelect {
     return this;
   }
 
+  forUpdate() {
+    return this;
+  }
+
   async execute() {
     const rows = this.filteredRows();
     return this.rowLimit === null ? rows : rows.slice(0, this.rowLimit);
@@ -38869,6 +39041,12 @@ class FakeAiReplySuggestionSelect {
 
   async executeTakeFirst() {
     return this.filteredRows()[0];
+  }
+
+  async executeTakeFirstOrThrow() {
+    const row = await this.executeTakeFirst();
+    if (!row) throw new Error('AI reply suggestion select returned no row');
+    return row;
   }
 
   private filteredRows() {
@@ -39076,8 +39254,10 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
   db: Kysely<ServerDatabase>;
   rows: WorkflowExecutionFakeRows;
   messageLocks: string[];
+  rowLocks: string[];
 } {
   const messageLocks: string[] = [];
+  const rowLocks: string[] = [];
   const rows: WorkflowExecutionFakeRows = {
     workflows: input.workflows ?? [],
     messages: input.messages ?? [],
@@ -39200,7 +39380,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
       };
     },
     selectFrom(table: string) {
-      return new FakeWorkflowExecutionSelect(tableRows(table));
+      return new FakeWorkflowExecutionSelect(tableRows(table), () => rowLocks.push(table));
     },
     insertInto(table: string) {
       return new FakeWorkflowExecutionInsert(table, tableRows(table));
@@ -39217,7 +39397,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
       };
     },
   } as unknown as Kysely<ServerDatabase>;
-  return { db, rows, messageLocks };
+  return { db, rows, messageLocks, rowLocks };
 }
 
 class FakeWorkflowExecutionSelect {
@@ -39227,7 +39407,10 @@ class FakeWorkflowExecutionSelect {
 
   private rowLimit: number | null = null;
 
-  constructor(private readonly rows: Array<Record<string, unknown>>) {}
+  constructor(
+    private readonly rows: Array<Record<string, unknown>>,
+    private readonly recordForUpdate: () => void,
+  ) {}
 
   select() {
     return this;
@@ -39254,9 +39437,20 @@ class FakeWorkflowExecutionSelect {
     return this;
   }
 
+  forUpdate() {
+    this.recordForUpdate();
+    return this;
+  }
+
   async executeTakeFirst(): Promise<Record<string, unknown> | undefined> {
     const row = this.matchingRows()[0];
     return row ? { ...row } : undefined;
+  }
+
+  async executeTakeFirstOrThrow(): Promise<Record<string, unknown>> {
+    const row = await this.executeTakeFirst();
+    if (!row) throw new Error('workflow execution select returned no row');
+    return row;
   }
 
   async execute(): Promise<Array<Record<string, unknown>>> {
@@ -39686,6 +39880,7 @@ function makeServerMailSyncStore(options: {
   uidValidityRestores?: any[];
   pop3Known?: Map<string, number>;
   messageIds?: number[];
+  syncInfo?: Map<string, string>;
 } = {}): any {
   const account = options.account ?? makeServerMailSyncAccount();
   const folders = options.folders ?? new Map<string, any>([
@@ -39697,6 +39892,7 @@ function makeServerMailSyncStore(options: {
   const uidValidityResets = options.uidValidityResets ?? [];
   const uidValidityRestores = options.uidValidityRestores ?? [];
   const pop3Known = options.pop3Known ?? new Map<string, number>();
+  const syncInfo = options.syncInfo ?? new Map<string, string>();
   const messageIds = [...(options.messageIds ?? [9001, 9002, 9003])];
   return {
     async getAccount(input: { accountId: number }) {
@@ -39709,7 +39905,10 @@ function makeServerMailSyncStore(options: {
       return undefined;
     },
     async getSyncInfo(input: { keys: readonly string[] }) {
-      return new Map(input.keys.map((key) => [key, null]));
+      return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+    },
+    async setSyncInfo(input: { values: Readonly<Record<string, string>> }) {
+      for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
     },
     async getOrCreateFolder(input: { path: string }) {
       const existing = folders.get(input.path);
