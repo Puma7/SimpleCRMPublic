@@ -445,6 +445,41 @@ ein explizites Passwort oder Access-Token macht den Test wie bisher ad-hoc mit
 Request-Werten. Ein Test mit skriptetem SMTP-Dialog verifiziert die
 AUTH-PLAIN-Identitaet und die Secret-Auswahl auf beiden Pfaden.
 
+### 29a. (Nachtrag auf `b5698778`) Zwei weitere Codex-Findings
+
+- `discussion_r3603623782`: Workflow-HTTP-Allowlist ohne Admin-Gate schreibbar
+- `discussion_r3603623790`: geloeschte Pending-IMAP-UIDs liefen endlos weiter
+
+| 30 | Automation-PATCH liess Nicht-Admins die HTTP-Allowlist erweitern | Bestaetigt | Behoben: PATCH admin-only, GET bleibt fuer Workflow-Autoren |
+| 31 | Expungte Pending-UIDs drainten nie | Bestaetigt | Behoben: Existenzpruefung vor dem Retry |
+
+### 30. Workflow-HTTP-Allowlist war ohne Adminrechte schreibbar
+
+**Verifikation:** Das generische Sync-Info-Gate deckte den dedizierten Handler
+`/api/v1/workflow/settings/automation` nicht ab. Ein Nicht-Admin konnte per
+PATCH `workflow_http_allowlist` erweitern und anschliessend mit einem
+`http.request`-Workflow interne Ziele erreichen — die SSRF-Grenze blieb damit
+benutzerkontrolliert.
+
+**Fix:** Der PATCH-Zweig verlangt jetzt Adminrechte (vor der Payload-
+Validierung, analog zum Mail-Security-Handler). GET bleibt fuer
+authentifizierte Nutzer erreichbar, weil der Workflow-Editor Allowlist- und
+Auto-Reply-Kontext auch Nicht-Admin-Autoren anzeigt. Tests decken 403 fuer
+Nicht-Admin-PATCH und 200 fuer Admin-PATCH ab.
+
+### 31. Geloeschte Pending-IMAP-UIDs drainten nie
+
+**Verifikation:** Wurde eine Nachricht nach einem transienten Fetch-Fehler
+serverseitig expunged oder verschoben, blieb ihre UID in der persistenten
+Pending-Liste: Jeder Sync versuchte den Fetch erneut, der Catch-Zweig trug die
+UID wieder ein, und die Liste leerte sich nie.
+
+**Fix:** Vor dem Retry prueft eine gezielte UID-SEARCH, welche Pending-UIDs
+noch existieren; verschwundene UIDs werden endgueltig verworfen. Schlaegt die
+Probe selbst fehl, bleibt die Liste unangetastet (kein blindes Verwerfen von
+Retries). Ein Test verifiziert Drain der expungten UID bei gleichzeitigem
+Retry der noch vorhandenen.
+
 ### 29. Uebergrosse IMAP-Nachrichten wurden endlos neu geladen
 
 **Verifikation:** Ueberschritt eine Nachricht den harten RFC822-Cap, warf
@@ -481,7 +516,9 @@ Neu oder erweitert wurden insbesondere Tests fuer:
 - finalen addr-spec in Workflow-Planung und Forward-Worker,
 - Admin-Gates fuer Mail-Security, Rspamd-Test und MSSQL-Metadaten,
 - Stored-SMTP-Test mit konto-gebundener AUTH-Identitaet und Secret-Auswahl,
-- permanenten Skip uebergrosser IMAP-Nachrichten ueber zwei Sync-Laeufe.
+- permanenten Skip uebergrosser IMAP-Nachrichten ueber zwei Sync-Laeufe,
+- Admin-Gate fuer den Automation-Settings-PATCH (HTTP-Allowlist),
+- Drain expungter Pending-IMAP-UIDs bei erhaltenem Retry existierender UIDs.
 
 Vor Merge sind mindestens Unit-, Integration-, Build- und Lint-Laeufe auf dem
 vollstaendigen Branch auszufuehren. Die konkreten Ergebnisse stehen in PR 156.

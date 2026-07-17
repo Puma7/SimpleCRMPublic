@@ -545,6 +545,24 @@ async function syncImapFolder(input: {
       uids = [...allUids].sort((a, b) => a - b).slice(-input.firstSyncMaxMessages);
     }
 
+    // Pending UIDs may refer to messages expunged or moved since the transient
+    // failure was recorded; without an existence check the retry list never
+    // drains (each failed refetch re-adds the UID). A failed probe (false)
+    // keeps the list untouched rather than dropping retries blindly.
+    if (pendingUids.size > 0) {
+      const pendingList = [...pendingUids].sort((a, b) => a - b);
+      const existing = await input.client.search(
+        { uid: pendingList.join(',') },
+        { uid: true },
+      );
+      if (existing !== false) {
+        const existingSet = new Set(existing);
+        for (const uid of pendingList) {
+          if (!existingSet.has(uid)) pendingUids.delete(uid);
+        }
+      }
+    }
+
     sorted = [...new Set([...uids, ...pendingUids])]
       .sort((a, b) => a - b)
       .filter((uid) => Number.isSafeInteger(uid) && uid > 0);

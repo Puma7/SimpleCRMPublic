@@ -276,6 +276,13 @@ async function handleWorkflowAutomationSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  // Writes cover global automation config including the workflow HTTP
+  // allowlist (the SSRF boundary for http.request nodes) — admin only.
+  // GET stays open to authenticated users: the workflow editor shows the
+  // allowlist and auto-reply context to non-admin workflow authors.
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const parsed = parseWorkflowAutomationSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const saved = await saveSyncInfo(req, ports, parsed.values, 'workflow_settings.updated', 'workflow.settings.automation');

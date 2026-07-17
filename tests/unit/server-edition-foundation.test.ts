@@ -3003,6 +3003,60 @@ describe('server edition foundation', () => {
     expect(JSON.parse(syncInfo.get('email_imap_oversized_uids:7:71') ?? '[]')).toEqual([7]);
   });
 
+  test('server mail sync drops pending IMAP UIDs whose messages were expunged', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5, uidvalidity: 22 })],
+    ]);
+    const syncInfo = new Map<string, string>([
+      // 3 was expunged on the server since the transient failure; 4 still exists.
+      ['email_imap_pending_uids:7:71', '[3,4]'],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, upserts, syncInfo, messageIds: [401] });
+    const fetchedUids: string[] = [];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        if (query.uid === '6:*') return [];
+        if (query.uid === '3,4') return [4];
+        return [];
+      },
+      async fetchOne(uid: string) {
+        fetchedUids.push(uid);
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8').slice(0, 64)),
+      imapClientFactory: () => client as any,
+    });
+
+    await port.sync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap' as const,
+      actorUserId: USER_A_ID,
+    });
+
+    // The expunged UID is never refetched and leaves the retry list; the
+    // still-existing one is retried and imported.
+    expect(fetchedUids).toEqual(['4']);
+    expect(upserts.map((item) => item.uid)).toEqual([4]);
+    expect(JSON.parse(syncInfo.get('email_imap_pending_uids:7:71') ?? '[]')).toEqual([]);
+  });
+
   test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {
     const now = new Date('2026-07-06T10:00:00.000Z');
     const account = makeServerMailSyncAccount({ protocol: 'imap' });
@@ -3107,6 +3161,8 @@ describe('server edition foundation', () => {
       async getMailboxLock() { return { release: () => undefined }; },
       async search(query: any) {
         if (query.uid === '6:*') return [6, 7, 8];
+        // Existence probe for the persisted pending UID — 7 still exists.
+        if (query.uid === '7') return [7];
         return query.all ? [1, 2, 3, 4, 5, 6, 7, 8] : [];
       },
       async fetchOne(uid: string) {
@@ -28987,6 +29043,16 @@ describe('server edition foundation', () => {
       localLearningEnabled: true,
     });
 
+    // The automation PATCH covers the workflow HTTP allowlist (SSRF
+    // boundary) — non-admins must be rejected before any write happens.
+    const workflowPatchDenied = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow/settings/automation',
+      body: { httpAllowlist: ' internal.example ' },
+      principal,
+    });
+    expect(workflowPatchDenied.status).toBe(403);
+
     const workflowPatch = await api.handle({
       method: 'PATCH',
       path: '/api/v1/workflow/settings/automation',
@@ -28997,7 +29063,7 @@ describe('server edition foundation', () => {
         autoReplyEnabled: false,
         autoReplyMaxPerSenderPerDay: 4,
       },
-      principal,
+      principal: adminPrincipal,
     });
     expect(workflowPatch.status).toBe(200);
     expect(setCalls[0]).toEqual({
@@ -29612,7 +29678,7 @@ describe('server edition foundation', () => {
         imapDeleteOptIn: 'yes',
         spamScoreThreshold: 'bad',
       },
-      principal,
+      principal: adminPrincipal,
     });
     expect(unsafePayload.status).toBe(400);
     expect((unsafePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
