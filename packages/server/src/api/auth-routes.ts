@@ -321,12 +321,14 @@ async function handleSaveUser(
   const result = await ports.auth.saveUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
+    actorIsAdmin: requireAdmin(principal),
     ...saveValues,
   });
   if (!result.ok) {
     if (result.code === 'not_found') return error(404, 'auth_user_not_found', 'Benutzer nicht gefunden');
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
     if (result.code === 'password_required') return error(400, 'validation_error', 'Passwort ist fuer neue Benutzer erforderlich');
+    if (result.code === 'role_change_forbidden') return error(403, 'forbidden', 'Nur Owner/Admins dürfen Rollen vergeben oder ändern');
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 
@@ -838,10 +840,14 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
   const displayName = normalizeOptionalText(getStringField(body, 'displayName') ?? getStringField(body, 'display_name'), 120)
     ?? email
     ?? '';
-  const publicNameRaw = getStringField(body, 'publicName') ?? getStringField(body, 'public_name');
-  const publicName = publicNameRaw === undefined
-    ? undefined
-    : (normalizeOptionalText(publicNameRaw, 120) ?? null);
+  // getStringField returns null for an absent field, so distinguish "omitted"
+  // (leave unchanged) from "present but empty/null" (clear) via presence.
+  const publicNameProvided = bodyRecord != null
+    && (Object.prototype.hasOwnProperty.call(bodyRecord, 'publicName')
+      || Object.prototype.hasOwnProperty.call(bodyRecord, 'public_name'));
+  const publicName = publicNameProvided
+    ? (normalizeOptionalText(getStringField(body, 'publicName') ?? getStringField(body, 'public_name') ?? '', 120) ?? null)
+    : undefined;
   const role = normalizeServerUserRole(getStringField(body, 'role'));
   const password = getStringField(body, 'passphrase') ?? getStringField(body, 'password') ?? undefined;
   const isActive = normalizeOptionalBoolean(bodyRecord?.isActive ?? bodyRecord?.is_active);

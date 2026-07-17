@@ -291,6 +291,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   // default is known; the checkbox then reflects a concrete boolean.
   const [trackMail, setTrackMail] = useState<boolean | null>(null)
   const [trackingConfigured, setTrackingConfigured] = useState(false)
+  // The workspace default, so each new compose reseeds instead of leaking the
+  // previous message's per-mail choice (the dialog stays mounted between sends).
+  const trackingDefaultRef = useRef(false)
   const [recipientKeyHint, setRecipientKeyHint] = useState<string | null>(null)
   const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
@@ -395,6 +398,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       setSignatureEditing(false)
       setSignatureManuallyEdited(false)
       setAssigningIdentity(false)
+      // Reseed the per-mail tracking choice from the workspace default so it
+      // doesn't leak into the next compose (the dialog stays mounted).
+      setTrackMail(trackingDefaultRef.current)
       return
     }
     let messageAccountId: number | undefined
@@ -1074,6 +1080,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           && (policy.trackOpens || policy.trackLinks)
           && policy.defaultTrackNewMessages !== false,
         )
+        trackingDefaultRef.current = defaultOn
         setTrackMail((current) => (current === null ? defaultOn : current))
         setTrackingConfigured(true)
       } catch {

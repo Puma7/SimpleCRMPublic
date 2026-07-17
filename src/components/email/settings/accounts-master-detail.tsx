@@ -284,9 +284,14 @@ export function AccountsMasterDetailSettings() {
                 ) : tab === "signature" && selectedId != null ? (
                   <div className="max-w-3xl space-y-6">
                     <AccountSignaturesSection embeddedAccountId={selectedId} />
-                    <div className="border-t pt-5">
-                      <UserSignaturesSection embeddedAccountId={selectedId} />
-                    </div>
+                    {/* Per-user signatures are a server-edition feature — the
+                        ListUserSignatures/SaveUserSignature channels have no
+                        local Electron handler. */}
+                    {serverClientMode ? (
+                      <div className="border-t pt-5">
+                        <UserSignaturesSection embeddedAccountId={selectedId} />
+                      </div>
+                    ) : null}
                   </div>
                 ) : tab === "ki" && selectedId != null ? (
                   <div className="max-w-3xl space-y-4">

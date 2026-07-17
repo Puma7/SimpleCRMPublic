@@ -40,6 +40,7 @@ export function CannedPanel() {
   const [search, setSearch] = useState("")
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
   const [saveState, setSaveState] = useState<Record<number, SaveState>>({})
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   // Refs so the debounced/unmount flush always sees the latest values.
   const itemsRef = useRef<CannedResponse[]>(items)
@@ -51,19 +52,25 @@ export function CannedPanel() {
   const timersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
 
   const load = useCallback(async () => {
-    const rows = (await invokeRenderer(
-      IPCChannels.Email.ListCannedResponses,
-      listPayloadForScope(scope),
-    )) as CannedResponse[]
-    setItems(rows)
-    // Seed controlled drafts, preserving any that the user is mid-editing.
-    setDrafts((current) => {
-      const next: Record<number, Draft> = {}
-      for (const row of rows) {
-        next[row.id] = current[row.id] ?? { title: row.title, body: row.body }
-      }
-      return next
-    })
+    try {
+      const rows = (await invokeRenderer(
+        IPCChannels.Email.ListCannedResponses,
+        listPayloadForScope(scope),
+      )) as CannedResponse[]
+      setLoadError(null)
+      setItems(rows)
+      // Seed controlled drafts, preserving any that the user is mid-editing.
+      setDrafts((current) => {
+        const next: Record<number, Draft> = {}
+        for (const row of rows) {
+          next[row.id] = current[row.id] ?? { title: row.title, body: row.body }
+        }
+        return next
+      })
+    } catch (e) {
+      // Surface the failure instead of silently showing the "no entries" state.
+      setLoadError(e instanceof Error ? e.message : "Textbausteine konnten nicht geladen werden.")
+    }
   }, [scope])
 
   const persist = useCallback(async (id: number) => {
@@ -179,8 +186,17 @@ export function CannedPanel() {
         />
       </div>
 
+      {loadError ? (
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-destructive">{loadError}</span>
+          <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
+            Erneut versuchen
+          </Button>
+        </div>
+      ) : null}
+
       <div className="space-y-3">
-        {visible.length === 0 ? (
+        {!loadError && visible.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             {search.trim() ? "Keine Treffer." : "Noch keine Textbausteine angelegt."}
           </p>

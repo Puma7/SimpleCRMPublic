@@ -126,6 +126,8 @@ export type AuthInvitationRecord = {
 export type AuthUserSaveInput = {
   workspaceId: string;
   actorUserId: string;
+  /** Only owners/admins may assign or change roles; delegated managers cannot. */
+  actorIsAdmin: boolean;
   id?: string;
   email: string;
   displayName: string;
@@ -140,7 +142,7 @@ export type AuthUserSaveInput = {
 
 export type AuthUserSaveResult =
   | { ok: true; user: AuthUserAdminRecord }
-  | { ok: false; code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' };
+  | { ok: false; code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' | 'role_change_forbidden' };
 
 export type AuthInvitationCreateInput = {
   workspaceId: string;

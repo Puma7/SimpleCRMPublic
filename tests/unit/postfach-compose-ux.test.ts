@@ -283,21 +283,29 @@ describe('signature-template', () => {
     expect(interpolateSignatureTemplate('{{user.name}}', ctx)).toBe('Anna Agent');
   });
 
-  it('falls back {{user.publicName}} to display name, then team/account', () => {
+  it('falls back {{user.publicName}} to the display name when only the user context is given', () => {
     const viaDisplay = buildSignatureTemplateContext({
       accountDisplayName: 'Shop Nord',
       userDisplayName: 'Anna Schmidt',
     });
     expect(interpolateSignatureTemplate('{{user.publicName}}', viaDisplay)).toBe('Anna Schmidt');
+  });
 
-    const viaTeam = buildSignatureTemplateContext({
-      accountDisplayName: 'Shop Nord',
-      teamMemberDisplayName: 'Anna Agent',
-    });
-    expect(interpolateSignatureTemplate('{{user.publicName}}', viaTeam)).toBe('Anna Agent');
+  it('leaves {{user.publicName}} untouched without a sender context, then a client pass fills it', () => {
+    // Server pre-interpolation (account/team only) must NOT consume the token —
+    // otherwise a shared account signature shows the account name, not the sender.
+    const serverPass = interpolateSignatureTemplate(
+      'Mit freundlichen Grüßen<br/>{{user.publicName}}',
+      buildSignatureTemplateContext({ accountDisplayName: 'Shop Nord', teamMemberDisplayName: 'Anna Agent' }),
+    );
+    expect(serverPass).toBe('Mit freundlichen Grüßen<br/>{{user.publicName}}');
 
-    const viaAccount = buildSignatureTemplateContext({ accountDisplayName: 'Shop Nord' });
-    expect(interpolateSignatureTemplate('{{user.publicName}}', viaAccount)).toBe('Shop Nord');
+    // The client pass, which knows the sending user, resolves it.
+    const clientPass = interpolateSignatureTemplate(
+      serverPass,
+      buildSignatureTemplateContext({ userPublicName: 'A. Schmidt (Kundenservice)' }),
+    );
+    expect(clientPass).toBe('Mit freundlichen Grüßen<br/>A. Schmidt (Kundenservice)');
   });
 });
 

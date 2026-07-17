@@ -1,5 +1,9 @@
 import { requireCapability } from '../../packages/server/src/api/http';
-import { USER_GROUP_CAPABILITY_KEYS, isUserGroupCapability } from '../../packages/server/src/api/capabilities';
+import {
+  USER_GROUP_CAPABILITY_KEYS,
+  isRoleAssignmentForbidden,
+  isUserGroupCapability,
+} from '../../packages/server/src/api/capabilities';
 import { USER_GROUP_CAPABILITY_KEYS as SHARED_KEYS } from '../../shared/user-capabilities';
 import type { AuthenticatedPrincipal } from '../../packages/server/src/api/types';
 
@@ -36,5 +40,20 @@ describe('user group capabilities', () => {
     expect(requireCapability(granted, 'users.manage')).toBe(false);
     // No grants at all → nothing beyond the base role.
     expect(requireCapability(principal({ role: 'user' }), 'tracking.view')).toBe(false);
+  });
+
+  test('only admins may assign or change roles (users.manage cannot self-escalate)', () => {
+    // Admins may assign any role, on create or update.
+    expect(isRoleAssignmentForbidden(true, 'owner')).toBe(false);
+    expect(isRoleAssignmentForbidden(true, 'admin', 'user')).toBe(false);
+    // A delegated user manager may create ordinary users…
+    expect(isRoleAssignmentForbidden(false, 'user')).toBe(false);
+    // …but not privileged ones, and not change an existing role.
+    expect(isRoleAssignmentForbidden(false, 'owner')).toBe(true);
+    expect(isRoleAssignmentForbidden(false, 'admin')).toBe(true);
+    expect(isRoleAssignmentForbidden(false, 'owner', 'user')).toBe(true);
+    expect(isRoleAssignmentForbidden(false, 'admin', 'user')).toBe(true);
+    // Editing a user without touching the role is allowed.
+    expect(isRoleAssignmentForbidden(false, 'user', 'user')).toBe(false);
   });
 });

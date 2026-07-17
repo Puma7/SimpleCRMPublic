@@ -36,36 +36,54 @@ export function UserSignaturesSection({ embeddedAccountId }: Props = {}) {
   const [selectedId, setSelectedId] = useState<string>("")
   const [html, setHtml] = useState("")
   const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const effectiveId = embeddedAccountId != null ? String(embeddedAccountId) : selectedId
 
   const load = useCallback(async (keepAccountId?: string) => {
-    const [accountList, userList] = await Promise.all([
-      invokeRenderer(IPCChannels.Email.ListAccountSignatures) as Promise<AccountSignature[]>,
-      invokeRenderer(IPCChannels.Email.ListUserSignatures) as Promise<UserSignatureList>,
-    ])
-    setAccounts(accountList)
-    const own = new Map<number, string>()
-    for (const sig of userList.signatures) own.set(sig.accountId, sig.signatureHtml)
-    setOwnByAccount(own)
-    if (accountList.length === 0) {
-      setSelectedId("")
-      setHtml("")
-      return
+    try {
+      const [accountList, userList] = await Promise.all([
+        invokeRenderer(IPCChannels.Email.ListAccountSignatures) as Promise<AccountSignature[]>,
+        invokeRenderer(IPCChannels.Email.ListUserSignatures) as Promise<UserSignatureList>,
+      ])
+      setLoadError(null)
+      setAccounts(accountList)
+      const own = new Map<number, string>()
+      for (const sig of userList.signatures) own.set(sig.accountId, sig.signatureHtml)
+      setOwnByAccount(own)
+      if (accountList.length === 0) {
+        setSelectedId("")
+        setHtml("")
+        return
+      }
+      const preferred =
+        embeddedAccountId != null
+          ? String(embeddedAccountId)
+          : keepAccountId && accountList.some((r) => String(r.account_id) === keepAccountId)
+            ? keepAccountId
+            : String(accountList[0]!.account_id)
+      setSelectedId(preferred)
+      setHtml(sanitizeEmailHtml(own.get(Number(preferred)) ?? ""))
+    } catch (e) {
+      // Surface the failure instead of silently showing the "empty" state.
+      setLoadError(e instanceof Error ? e.message : "Signaturen konnten nicht geladen werden.")
     }
-    const preferred =
-      embeddedAccountId != null
-        ? String(embeddedAccountId)
-        : keepAccountId && accountList.some((r) => String(r.account_id) === keepAccountId)
-          ? keepAccountId
-          : String(accountList[0]!.account_id)
-    setSelectedId(preferred)
-    setHtml(sanitizeEmailHtml(own.get(Number(preferred)) ?? ""))
   }, [embeddedAccountId])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  if (loadError) {
+    return (
+      <div className="space-y-2 text-sm">
+        <p className="text-destructive">{loadError}</p>
+        <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
+          Erneut versuchen
+        </Button>
+      </div>
+    )
+  }
 
   const onSelectAccount = (id: string) => {
     setSelectedId(id)
