@@ -1524,7 +1524,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           ) : null}
           <div className="shrink-0 space-y-2 rounded-md border border-border/60 bg-muted/25 p-2">
             <p className="text-xs font-medium text-foreground">Text & Optionen</p>
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-end gap-x-5 gap-y-2">
             <div className="space-y-1">
               <div className="flex items-center gap-1">
                 <Label htmlFor="compose-canned" className="text-xs text-muted-foreground">
