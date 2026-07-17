@@ -121,6 +121,12 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
         const ids = rows.map((row) => row.id);
         if (ids.length === 0) return [];
 
+        // Re-apply the staleness predicate in the UPDATE (mirroring
+        // releaseAccountSyncLocks): between the SELECT and the UPDATE another
+        // worker may legitimately re-claim one of these jobs with a fresh
+        // locked_at. Without this guard we would null out that fresh lock,
+        // letting a third worker run the job concurrently (double execution)
+        // and orphaning the real owner's complete()/fail().
         const released = await db
           .updateTable('job_queue')
           .set({
@@ -129,6 +135,8 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
             updated_at: now(),
           })
           .where('id', 'in', ids)
+          .where('locked_at', 'is not', null)
+          .where('locked_at', '<', input.staleBefore)
           .returningAll()
           .execute();
 

@@ -1186,12 +1186,23 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           if (!row) return null;
           const result = await resolveRemoteContentPolicy(trx, input.workspaceId, row);
           if (result.policy === 'allowed_once' && result.allowRemote) {
-            await trx
+            // Atomic one-shot consume: a guarded UPDATE that only matches while
+            // the policy is still 'allowed_once'. Two concurrent opens would
+            // otherwise both read 'allowed_once' and both allow remote content,
+            // fetching the sender's tracking pixel more than the single intended
+            // time. Only the transaction whose UPDATE matches a row wins.
+            const consumed = await trx
               .updateTable('email_messages')
               .set({ remote_content_policy: 'blocked', updated_at: new Date() })
               .where('workspace_id', '=', input.workspaceId)
               .where('id', '=', input.messageId)
+              .where('remote_content_policy', '=', 'allowed_once')
+              .returning('id')
               .executeTakeFirst();
+            if (!consumed) {
+              // Lost the race — another open already consumed the one-shot grant.
+              return { policy: 'blocked', allowRemote: false };
+            }
           }
           return result;
         },
@@ -4101,6 +4112,15 @@ async function nextLocalDraftUid(
   accountId: number,
   folderId: number,
 ): Promise<number> {
+  // Serialize negative-UID allocation per (account, folder). Without this,
+  // two concurrent drafts from the same shared account both read the same
+  // min(uid) under READ COMMITTED and compute the identical UID, so the second
+  // insert violates UNIQUE(workspace_id, account_source_sqlite_id,
+  // folder_source_sqlite_id, uid) and the compose request 500s. The xact lock
+  // is held until commit, so the second allocation only proceeds once the
+  // first draft row is committed and visible.
+  await kyselySql`SELECT pg_advisory_xact_lock(hashtext(${`draft-uid:${workspaceId}:${accountId}:${folderId}`}))`
+    .execute(trx);
   const row = await trx
     .selectFrom('email_messages')
     .select((eb) => eb.fn.min<number>('uid').as('min_uid'))

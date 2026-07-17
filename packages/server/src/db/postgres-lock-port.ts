@@ -182,13 +182,12 @@ export function createPostgresConversationLockPort(
         userId: input.newUserId,
         role: 'admin',
       }, async (db) => {
-        const removed = await db
-          .deleteFrom('conversation_locks')
-          .where('message_id', '=', input.messageId)
-          .where('workspace_id', '=', input.workspaceId)
-          .returning(['takeover_count'])
-          .executeTakeFirst();
-
+        // Single atomic statement so a force-takeover always wins and never
+        // collides: a DELETE-then-INSERT races a concurrent acquire() (which
+        // inserts ON CONFLICT DO NOTHING) or a second forceTakeover — the plain
+        // INSERT would then hit the message_id PK and 500, and leaves a brief
+        // unlocked window between the two statements. ON CONFLICT DO UPDATE
+        // takes over in place and bumps takeover_count off the existing row.
         const row = await db
           .insertInto('conversation_locks')
           .values({
@@ -196,8 +195,18 @@ export function createPostgresConversationLockPort(
             user_id: input.newUserId,
             workspace_id: input.workspaceId,
             reason: input.reason,
-            takeover_count: (removed?.takeover_count ?? 0) + 1,
+            takeover_count: 1,
           })
+          .onConflict((oc) => oc
+            .column('message_id')
+            .doUpdateSet((eb) => ({
+              user_id: input.newUserId,
+              workspace_id: input.workspaceId,
+              reason: input.reason,
+              acquired_at: new Date(),
+              last_heartbeat_at: new Date(),
+              takeover_count: eb('conversation_locks.takeover_count', '+', 1),
+            })))
           .returning([
             'message_id',
             'user_id',
