@@ -9,6 +9,11 @@ jest.mock('@/services/transport', () => ({
   invokeRenderer: (...args: unknown[]) => invokeMock(...args),
 }));
 
+const mockUseAuth = jest.fn();
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => mockUseAuth(),
+}));
+
 // Toast — no-op in tests, but spy so we can assert on success/error toasts.
 const toastSuccess = jest.fn();
 const toastError = jest.fn();
@@ -58,6 +63,10 @@ function setMockResponses(map: Record<string, unknown[]>) {
 }
 
 beforeEach(() => {
+  mockUseAuth.mockReturnValue({
+    user: { id: 'owner-1', role: 'owner' },
+    loading: false,
+  });
   invokeMock.mockReset();
   toastSuccess.mockReset();
   toastError.mockReset();
@@ -65,6 +74,23 @@ beforeEach(() => {
 });
 
 describe('ReturnsPage', () => {
+  test('hides portal settings from non-admin users', async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-1', role: 'user' },
+      loading: false,
+    });
+    setMockResponses({
+      [IPCChannels.Returns.List]: [EMPTY_LIST],
+      [IPCChannels.Returns.ListReasons]: [REASONS],
+    });
+
+    render(<ReturnsPage />);
+
+    await screen.findByText(/Noch keine Retouren/);
+    expect(screen.queryByRole('button', { name: /Portal/ })).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith(IPCChannels.Returns.GetPortalSettings);
+  });
+
   test('loads reasons + list on mount and shows the empty state', async () => {
     setMockResponses({
       [IPCChannels.Returns.List]: [EMPTY_LIST],

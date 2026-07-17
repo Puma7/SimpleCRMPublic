@@ -1,11 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { Copy, KeyRound, Loader2, Trash2 } from "lucide-react"
+import { Copy, KeyRound, Loader2, ShieldAlert, Trash2 } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
 import type { AutomationApiSettings, AutomationScope } from "@shared/automation-api"
 import { AUTOMATION_SCOPES } from "@shared/automation-api"
 import { toast } from "sonner"
+import { useAuth } from "@/components/auth/auth-context"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -36,8 +38,10 @@ type ServerAutomationApiSettings = AutomationApiSettings & {
 }
 
 export function AutomationPanel() {
+  const { user } = useAuth()
   const rendererTransport = getRendererTransport()
   const serverClientMode = rendererTransport.kind === "http"
+  const isAdmin = user?.role === "owner" || user?.role === "admin"
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false)
@@ -79,7 +83,7 @@ export function AutomationPanel() {
           : null,
       )
 
-      if (serverClientMode) {
+      if (serverClientMode && isAdmin) {
         const api = await invokeRenderer(
           IPCChannels.Automation.GetSettings,
         ) as ServerAutomationApiSettings
@@ -87,7 +91,7 @@ export function AutomationPanel() {
         setServerKeys(api.keys ?? [])
         setApiEnabled(api.enabled)
         if (api.scopes.length) setApiScopes(api.scopes)
-      } else if (hasLocalIpc()) {
+      } else if (!serverClientMode && hasLocalIpc()) {
         const api = await invokeIpc<AutomationApiSettings>(IPCChannels.Automation.GetSettings)
         setApiSettings(api)
         setServerKeys([])
@@ -99,24 +103,26 @@ export function AutomationPanel() {
         setApiSettings(null)
         setServerKeys([])
       }
+    } catch (error) {
+      console.error("Automation settings load failed:", error)
     } finally {
       setLoading(false)
     }
-  }, [serverClientMode])
+  }, [isAdmin, serverClientMode])
 
   useEffect(() => {
     void load()
   }, [load])
 
   useEffect(() => {
-    if (!serverClientMode) return
+    if (!serverClientMode || !isAdmin) return
     const subscription = subscribeServerEvents({
       onEvent(event) {
         if (isAutomationApiKeyRefreshEvent(event)) void load()
       },
     })
     return () => subscription.unsubscribe()
-  }, [load, serverClientMode])
+  }, [isAdmin, load, serverClientMode])
 
   const saveWorkflowOpts = async () => {
     if (!serverClientMode && !hasLocalIpc()) return
@@ -237,6 +243,23 @@ export function AutomationPanel() {
 
   return (
     <div className="space-y-8">
+      {serverClientMode && !isAdmin ? (
+        <section className="space-y-4">
+          <div>
+            <h3 className="text-base font-semibold">Externe API (n8n, Make, Skripte)</h3>
+            <p className="text-sm text-muted-foreground">
+              Server-REST-API für externe Automationen.
+            </p>
+          </div>
+          <Alert>
+            <ShieldAlert className="h-4 w-4" />
+            <AlertTitle>Adminrechte erforderlich</AlertTitle>
+            <AlertDescription>
+              API-Keys können nur von Ownern und Admins verwaltet werden.
+            </AlertDescription>
+          </Alert>
+        </section>
+      ) : (
       <section className="space-y-4">
         <div>
           <h3 className="text-base font-semibold">Externe API (n8n, Make, Skripte)</h3>
@@ -433,6 +456,7 @@ export function AutomationPanel() {
           </div>
         ) : null}
       </section>
+      )}
 
       <section className="space-y-4 border-t pt-6">
         <div>

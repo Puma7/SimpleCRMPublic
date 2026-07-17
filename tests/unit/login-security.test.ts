@@ -272,14 +272,23 @@ describe('login security service MFA gate', () => {
     expect(issueTokenPair).not.toHaveBeenCalled();
   });
 
-  test('feeds MFA failures into the account lockout and refuses while locked', async () => {
+  test('feeds MFA failures into the login lockout without blocking the current challenge retry', async () => {
     const secret = generateTotpSecret();
     const validCode = generateSync({ secret });
     const invalidCode = validCode === '000000' ? '000001' : '000000';
     const user = { ...mfaUser, mfaMethod: 'totp' as const };
-    const recordFailedLogin = jest.fn(async () => 1);
     let locked = false;
+    const recordFailedLogin = jest.fn(async () => {
+      locked = true;
+      return 1;
+    });
     const checkLoginLock = jest.fn(async () => (locked ? { kind: 'permanent' as const } : { kind: 'none' as const }));
+    const recordSuccessfulLogin = jest.fn(async () => undefined);
+    const issueTokenPair = jest.fn(async () => ({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSeconds: 3600,
+    }));
     const workspaceDb = createWorkspaceLookupDb(user.email);
     const service = createLoginSecurityService({
       db: workspaceDb.db as never,
@@ -292,10 +301,10 @@ describe('login security service MFA gate', () => {
       } as never,
       auth: {
         findUserByEmail: async () => user,
-        recordSuccessfulLogin: async () => undefined,
+        recordSuccessfulLogin,
         recordFailedLogin,
         checkLoginLock,
-        issueTokenPair: jest.fn(),
+        issueTokenPair,
       } as never,
       accessTokenSigner: signer,
       config: {},
@@ -303,7 +312,7 @@ describe('login security service MFA gate', () => {
       applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
       now: () => new Date('2026-01-01T12:00:00.000Z'),
     });
-    const challenge = () => issueMfaChallengeToken({
+    const challenge = issueMfaChallengeToken({
       signer,
       userId: user.id,
       workspaceId: user.workspaceId,
@@ -315,7 +324,7 @@ describe('login security service MFA gate', () => {
     // this is what eventually locks the /login step and starves the attacker
     // of fresh challenge tokens.
     await expect(service.completeMfaLogin({
-      mfaChallengeToken: challenge(),
+      mfaChallengeToken: challenge,
       code: invalidCode,
       ip: '203.0.113.7',
     })).resolves.toEqual({ ok: false, code: 'mfa_code_invalid' });
@@ -323,13 +332,20 @@ describe('login security service MFA gate', () => {
       expect.objectContaining({ email: user.email, ip: '203.0.113.7' }),
     );
 
-    // Once the account is locked, verification is refused before any guess.
-    locked = true;
+    // The login endpoint is now throttled and cannot mint fresh challenges,
+    // but this challenge still owns its five-attempt budget. A corrected code
+    // must succeed and clear the login failure.
     await expect(service.completeMfaLogin({
-      mfaChallengeToken: challenge(),
+      mfaChallengeToken: challenge,
       code: validCode,
       ip: '203.0.113.7',
-    })).resolves.toEqual({ ok: false, code: 'mfa_attempts_exceeded' });
+    })).resolves.toMatchObject({ ok: true });
+    expect(checkLoginLock).not.toHaveBeenCalled();
+    expect(recordSuccessfulLogin).toHaveBeenCalledWith({
+      userId: user.id,
+      email: user.email,
+      ip: '203.0.113.7',
+    });
   });
 
   test('accepts a valid MFA code after one failed attempt and rejects replay', async () => {

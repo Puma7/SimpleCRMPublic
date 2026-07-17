@@ -22,9 +22,10 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog"
 import { toast } from "sonner"
-import { CheckCircle, XCircle, AlertCircle } from "lucide-react"
+import { CheckCircle, XCircle, AlertCircle, ShieldAlert } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 
 const settingsSchema = z.object({
   server: z.string().min(1, "Server ist erforderlich"),
@@ -47,7 +48,9 @@ const settingsSchema = z.object({
 type SettingsForm = z.infer<typeof settingsSchema>
 
 export default function SettingsPage() {
+  const { user } = useAuth()
   const serverClientMode = getRendererTransport().kind === "http"
+  const isAdmin = user?.role === "owner" || user?.role === "admin"
   const localSyncAvailable =
     !serverClientMode &&
     typeof window !== "undefined" &&
@@ -85,6 +88,10 @@ export default function SettingsPage() {
 
   // Fetch settings and connection status on load
   useEffect(() => {
+    if (serverClientMode && !isAdmin) {
+      setConnectionStatus('unknown')
+      return
+    }
     const fetchSettings = async () => {
       try {
         const settingsFromIPC = await invokeRenderer(IPCChannels.Mssql.GetSettings);
@@ -110,7 +117,7 @@ export default function SettingsPage() {
       }
     }
     fetchSettings()
-  }, [form, toast])
+  }, [form, isAdmin, serverClientMode, toast])
 
   // Fetch sync status
   useEffect(() => {
@@ -325,6 +332,51 @@ export default function SettingsPage() {
     } catch (error) {
       return timestamp
     }
+  }
+
+  if (serverClientMode && !isAdmin) {
+    return (
+      <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ShieldAlert className="h-5 w-5" />
+              MSSQL-Server & JTL
+            </CardTitle>
+            <CardDescription>
+              Verbindungseinstellungen können nur von Ownern und Admins verwaltet werden.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">JTL-Synchronisation</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleSync}
+              disabled={isSyncing || !syncAvailable}
+            >
+              {isSyncing ? "Synchronisiere..." : "Synchronisation starten"}
+            </Button>
+            {(syncStatusMessage || lastSyncTimestamp) && (
+              <div className="space-y-1">
+                {lastSyncTimestamp && (
+                  <p className="text-sm font-medium">
+                    Letzte erfolgreiche Synchronisation: {formatTimestamp(lastSyncTimestamp)}
+                  </p>
+                )}
+                {syncStatusMessage && (
+                  <p className="text-sm text-muted-foreground">{syncStatusMessage}</p>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
   return (

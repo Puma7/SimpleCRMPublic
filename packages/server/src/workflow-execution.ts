@@ -1187,7 +1187,15 @@ async function walkGraph(
       });
     }
 
-    if (result.variables) Object.assign(input.context.variables, result.variables);
+    if (result.variables) {
+      const subflowDepth = input.context.variables[SUBFLOW_DEPTH_VARIABLE];
+      Object.assign(input.context.variables, result.variables);
+      if (subflowDepth === undefined) {
+        delete input.context.variables[SUBFLOW_DEPTH_VARIABLE];
+      } else {
+        input.context.variables[SUBFLOW_DEPTH_VARIABLE] = subflowDepth;
+      }
+    }
     // Inbound gate: condition.yes, auto_reply.approved, threshold.yes oder
     // ein getroffener switch-Fall autorisieren nachgelagerte Side-Effect-
     // Knoten — gleiche harte (nodeType, port)-Liste wie die Desktop-Runtime
@@ -1363,6 +1371,9 @@ async function executeServerNode(
   }
   if (type === 'logic.set_variable') {
     const name = String(config.name ?? 'var').trim() || 'var';
+    if (name === SUBFLOW_DEPTH_VARIABLE) {
+      return { status: 'error', port: 'error', message: `Variable ${name} ist reserviert` };
+    }
     const value = config.value;
     return {
       status: 'ok',
@@ -4835,7 +4846,11 @@ async function enqueueWorkflowSubflow(
   // enqueue each other forever and exhaust the job queue. Carry the depth in a
   // reserved variable that rides along in eventVariables into each child run.
   const rawDepth = context.variables[SUBFLOW_DEPTH_VARIABLE];
-  const subflowDepth = typeof rawDepth === 'number' && Number.isFinite(rawDepth) ? rawDepth : 0;
+  const subflowDepth = typeof rawDepth === 'number'
+    && Number.isInteger(rawDepth)
+    && rawDepth >= 0
+    ? rawDepth
+    : 0;
   if (subflowDepth >= MAX_SUBFLOW_DEPTH) {
     return {
       status: 'error',

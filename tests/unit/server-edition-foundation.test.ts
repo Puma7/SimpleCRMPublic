@@ -7225,6 +7225,73 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('postgres workflow execution job port rejects writes to the reserved subflow depth', async () => {
+    const now = new Date('2026-07-04T10:34:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [
+        {
+          id: 44,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 440,
+          trigger_name: 'manual',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: {
+            version: 1,
+            nodes: [
+              { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+              {
+                id: 'reset-depth',
+                type: 'registry',
+                data: {
+                  nodeType: 'logic.set_variable',
+                  config: { name: '__subflow_depth', value: 0 },
+                },
+              },
+              {
+                id: 'subflow-1',
+                type: 'registry',
+                data: { nodeType: 'workflow.subflow', config: { workflowId: 45 } },
+              },
+            ],
+            edges: [
+              { id: 'edge-1', source: 'trigger-1', target: 'reset-depth' },
+              { id: 'edge-2', source: 'reset-depth', target: 'subflow-1' },
+            ],
+          },
+          execution_mode: 'graph',
+        },
+        {
+          id: 45,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 450,
+          trigger_name: 'manual',
+          enabled: true,
+          definition_json: { version: 1, rules: [] },
+          graph_json: { version: 1, nodes: [], edges: [] },
+          execution_mode: 'graph',
+        },
+      ],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 44,
+      triggerName: 'manual',
+      context: { eventVariables: { __subflow_depth: 7 } },
+    });
+
+    expect(rows.jobs).toEqual([]);
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
+      ['reset-depth', 'logic.set_variable', 'error', 'error', 'Variable __subflow_depth ist reserviert'],
+    ]);
+  });
+
   test('postgres workflow execution job port applies DB-only spam status nodes', async () => {
     const now = new Date('2026-07-04T10:40:00.000Z');
     const { db, rows } = makeWorkflowExecutionDb({

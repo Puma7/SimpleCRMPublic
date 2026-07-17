@@ -287,17 +287,11 @@ export function createLoginSecurityService(input: {
         return { ok: false, code: 'user_disabled' };
       }
 
-      // Account-level throttle. The per-challenge-token attempt cap resets every
-      // time /login mints a fresh token, so on its own it does NOT stop a
-      // password-in-hand attacker from brute-forcing the second factor. Feed MFA
-      // failures into the same (email,ip) lockout the password step uses, and
-      // refuse while locked — so accumulated failures lock the /login step and
-      // cut off the supply of fresh challenge tokens.
+      // Feed MFA failures into the same (email,ip) lockout used by /login. The
+      // login route enforces that lock before it can mint another challenge.
+      // Do not enforce it again here: an already-issued challenge has its own
+      // attempt cap, and a legitimate user must be able to correct one typo.
       const failIp = ip ?? '0.0.0.0';
-      const existingLock = await input.auth.checkLoginLock?.({ email, ip: failIp });
-      if (existingLock && existingLock.kind !== 'none') {
-        return { ok: false, code: 'mfa_attempts_exceeded' };
-      }
       const recordMfaFailure = async () => {
         await input.auth.recordFailedLogin?.({ email, ip: failIp, userId: user.id });
       };

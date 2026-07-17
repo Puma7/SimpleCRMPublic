@@ -182,7 +182,7 @@ async function resolveSmtpInput(
     value: {
       host,
       port: useStored ? (account?.smtpPort ?? 587) : (input.port || account?.smtpPort || 587),
-      tls: input.tls,
+      tls: useStored ? account!.smtpTls : input.tls,
       user,
       password: auth.password ?? '',
       ...(auth.accessToken ? { accessToken: auth.accessToken } : {}),
