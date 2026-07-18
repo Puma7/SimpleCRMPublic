@@ -15,7 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { invokeRenderer } from "@/services/transport"
-import type { AccountSignature } from "../types"
+import type { AccountSignature, EmailAccount } from "../types"
 import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
 
 type UserSignatureList = {
@@ -43,11 +43,19 @@ export function UserSignaturesSection({ embeddedAccountId }: Props = {}) {
   const load = useCallback(async (keepAccountId?: string) => {
     try {
       const [accountList, userList] = await Promise.all([
-        invokeRenderer(IPCChannels.Email.ListAccountSignatures) as Promise<AccountSignature[]>,
+        invokeRenderer(IPCChannels.Email.ListAccounts) as Promise<EmailAccount[]>,
         invokeRenderer(IPCChannels.Email.ListUserSignatures) as Promise<UserSignatureList>,
       ])
       setLoadError(null)
-      setAccounts(accountList)
+      // Use the real account list, not ListAccountSignatures (which only returns
+      // accounts that already have a *shared* signature row) — otherwise a user
+      // cannot create their first personal signature on an account without one.
+      setAccounts(accountList.map((a) => ({
+        account_id: a.id,
+        display_name: a.display_name,
+        email_address: a.email_address,
+        signature_html: null,
+      })))
       const own = new Map<number, string>()
       for (const sig of userList.signatures) own.set(sig.accountId, sig.signatureHtml)
       setOwnByAccount(own)
@@ -59,9 +67,9 @@ export function UserSignaturesSection({ embeddedAccountId }: Props = {}) {
       const preferred =
         embeddedAccountId != null
           ? String(embeddedAccountId)
-          : keepAccountId && accountList.some((r) => String(r.account_id) === keepAccountId)
+          : keepAccountId && accountList.some((r) => String(r.id) === keepAccountId)
             ? keepAccountId
-            : String(accountList[0]!.account_id)
+            : String(accountList[0]!.id)
       setSelectedId(preferred)
       setHtml(sanitizeEmailHtml(own.get(Number(preferred)) ?? ""))
     } catch (e) {

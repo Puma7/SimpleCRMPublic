@@ -124,6 +124,9 @@ export function UsersPanel() {
         await navigator.clipboard.writeText(link).catch(() => undefined)
       }
       setPassword("")
+      // Invitations don't carry the public name (set per-user after acceptance),
+      // so clear it instead of leaving a value that looks like it was applied.
+      setPublicName("")
     } catch (e) {
       setError(describeUserSaveError(e))
     } finally {
@@ -387,6 +390,9 @@ export function UsersPanel() {
                 placeholder="optional — z. B. für {{user.publicName}}"
                 onChange={(e) => setPublicName(e.target.value)}
               />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Gilt beim direkten Anlegen. Bei einer Einladung wird der öffentliche Name nicht übernommen — er lässt sich nach Annahme je Benutzer setzen.
+              </p>
             </div>
           ) : null}
           <div className="sm:col-span-2">

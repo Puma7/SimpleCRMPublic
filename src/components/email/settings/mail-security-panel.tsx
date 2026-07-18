@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import { useAuth } from "@/components/auth/auth-context"
 import { Plus, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -45,6 +46,11 @@ type SpamListEntry = {
 }
 
 export function MailSecurityPanel() {
+  // A delegated email_settings.manage holder may edit these settings, but the
+  // Rspamd connection test route stays admin-only (it fetches the URL — SSRF),
+  // so the test button is admin-only to avoid a guaranteed 403.
+  const { user } = useAuth()
+  const isAdmin = user?.role === "owner" || user?.role === "admin"
   const [s, setS] = useState<MailSecuritySettings | null>(null)
   const [entries, setEntries] = useState<SpamListEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -254,9 +260,11 @@ export function MailSecurityPanel() {
             />
           </div>
         </div>
-        <Button type="button" size="sm" variant="outline" disabled={testingRspamd} onClick={() => void testRspamd()}>
-          {testingRspamd ? "Teste..." : "Rspamd-Verbindung testen"}
-        </Button>
+        {isAdmin ? (
+          <Button type="button" size="sm" variant="outline" disabled={testingRspamd} onClick={() => void testRspamd()}>
+            {testingRspamd ? "Teste..." : "Rspamd-Verbindung testen"}
+          </Button>
+        ) : null}
       </div>
 
       <div className="space-y-3 rounded-lg border p-4">
