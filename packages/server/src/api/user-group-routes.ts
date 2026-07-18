@@ -42,6 +42,13 @@ export async function handleUserGroupRoute(
     return handleMemberRoute(req, ports, principal, groupId, memberMatch[2]);
   }
 
+  const permissionMatch = /^\/api\/v1\/user-groups\/([^/]+)\/permissions$/.exec(req.path);
+  if (permissionMatch) {
+    const groupId = positiveIntFromPath(permissionMatch[1]);
+    if (groupId === null) return error(400, 'invalid_group_id', 'group id muss eine positive Ganzzahl sein');
+    return handlePermissionRoute(req, ports, principal, groupId);
+  }
+
   const groupMatch = /^\/api\/v1\/user-groups\/([^/]+)$/.exec(req.path);
   if (groupMatch) {
     const groupId = positiveIntFromPath(groupMatch[1]);
@@ -190,6 +197,47 @@ async function handleMemberRoute(
     });
     if (!result.ok) return memberMutationError(result.code);
     return data(200, { removed: true });
+  }
+
+  return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+}
+
+async function handlePermissionRoute(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  groupId: number,
+): Promise<ApiResponse> {
+  if (req.method === 'GET') {
+    const permissions = await ports.userGroups!.listPermissions({ workspaceId: principal.workspaceId, groupId });
+    if (permissions === null) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
+    return data(200, { permissions });
+  }
+
+  if (req.method === 'PATCH') {
+    if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+    const raw = (req.body && typeof req.body === 'object')
+      ? (req.body as { permissions?: unknown }).permissions
+      : undefined;
+    if (!Array.isArray(raw) || !raw.every((entry) => typeof entry === 'string')) {
+      return error(400, 'validation_error', 'permissions muss ein String-Array sein');
+    }
+    const result = await ports.userGroups!.setPermissions({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      groupId,
+      permissions: raw as string[],
+    });
+    if (!result.ok) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action: 'user_group.permissions_updated',
+      entityType: 'user_group',
+      entityId: String(groupId),
+      metadata: { permissions: result.permissions },
+    });
+    return data(200, { permissions: result.permissions });
   }
 
   return error(405, 'method_not_allowed', 'Methode nicht erlaubt');

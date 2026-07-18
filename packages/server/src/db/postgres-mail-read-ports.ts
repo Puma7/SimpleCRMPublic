@@ -194,6 +194,7 @@ const emailMessageSummaryColumns = [
   'snoozed_until',
   'draft_attachment_paths_json',
   'reply_parent_message_id',
+  'tracking_override',
   'updated_at',
 ] as const;
 
@@ -296,7 +297,7 @@ const DEFAULT_RSPAMD_TIMEOUT_MS = 8000;
 type EmailMessageApiRow =
   & Pick<EmailMessageRow, typeof emailMessageSummaryColumns[number]>
   & Partial<Pick<EmailMessageRow, 'body_text' | 'body_html'>>
-  & { search_snippet?: string | null };
+  & { search_snippet?: string | null; thread_message_count?: number | string | null };
 
 type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
 
@@ -697,6 +698,15 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             let query = trx
               .selectFrom('email_messages')
               .select(emailMessageSummaryColumns)
+              // Authoritative per-thread message count so the list can show the
+              // expand chevron only for real multi-message threads (every row
+              // carries a thread_id since backfill). PK lookup per row — cheap.
+              .select((eb) => eb
+                .selectFrom('email_threads')
+                .select('email_threads.message_count')
+                .whereRef('email_threads.id', '=', 'email_messages.thread_id')
+                .where('email_threads.workspace_id', '=', input.workspaceId)
+                .as('thread_message_count'))
               .where('workspace_id', '=', input.workspaceId)
               .limit(page.limit);
 
@@ -925,6 +935,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               }),
               ...(input.values.replyParentMessageId === undefined ? {} : {
                 reply_parent_message_id: input.values.replyParentMessageId,
+              }),
+              ...(input.values.trackingOverride === undefined ? {} : {
+                tracking_override: input.values.trackingOverride,
               }),
               updated_at: new Date(),
             })
@@ -4516,6 +4529,12 @@ function mapEmailMessageRow(
     folderKind: row.folder_kind,
     threadId: row.thread_id,
     imapThreadId: row.imap_thread_id,
+    ...(row.thread_message_count === undefined || row.thread_message_count === null
+      ? {}
+      : { threadMessageCount: Number(row.thread_message_count) }),
+    // Per-message tracking choice, so a reopened draft re-seeds the compose
+    // checkbox from its saved value rather than the current workspace default.
+    trackingOverride: row.tracking_override ?? null,
     ticketCode: row.ticket_code,
     customerId: row.customer_id === null ? null : Number(row.customer_id),
     hasAttachments: row.has_attachments,

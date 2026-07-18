@@ -8,6 +8,7 @@ export type ServerAuthUser = {
   workspaceId: string
   email: string
   displayName: string
+  publicName?: string | null
   role: string
 }
 

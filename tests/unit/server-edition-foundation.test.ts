@@ -359,6 +359,9 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0032_dmarc_reports',
   '0033_pr156_followup_hardening',
   '0034_pr156_final_audit',
+  '0035_email_tracking_per_message',
+  '0036_user_signatures',
+  '0037_user_group_permissions',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -2305,6 +2308,25 @@ describe('server edition foundation', () => {
         resumeNodeId: 'tag-1',
       },
     });
+    // No explicit KB → the auto-knowledge flag and direction ride along so the
+    // executor can resolve account/direction knowledge bases.
+    expect(buildAiAgentJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 11,
+      systemPrompt: 'Agent',
+      autoKnowledge: true,
+      direction: 'inbound',
+      createDraft: true,
+    }, WORKSPACE_A_ID)).toMatchObject({
+      autoKnowledge: true,
+      direction: 'inbound',
+    });
+    // Absent auto-knowledge flag stays absent.
+    expect(buildAiAgentJobPlan({
+      workspaceId: WORKSPACE_A_ID,
+      systemPrompt: 'Agent',
+      createDraft: true,
+    }, WORKSPACE_A_ID)).not.toHaveProperty('autoKnowledge');
     expect(buildAiClassificationJobPlan({
       workspaceId: WORKSPACE_A_ID,
       messageId: 11,
@@ -12905,6 +12927,57 @@ describe('server edition foundation', () => {
     expect(syncInfo.get('scheduled_send_failures:104')).toBe('0');
   });
 
+  test('scheduled-send job port forwards the persisted per-message tracking override', async () => {
+    const composeCalls: Array<Record<string, unknown>> = [];
+    const claimedSendAt = new Date('2026-06-03T11:30:00.000Z');
+    const baseDraft = {
+      accountId: 7,
+      subject: 'Scheduled',
+      bodyText: 'Hello',
+      bodyHtml: null,
+      ccJson: null,
+      bccJson: null,
+      draftAttachmentPathsJson: null,
+      replyParentMessageId: null,
+      claimedSendAt,
+    };
+    const drafts = [
+      { ...baseDraft, id: 201, toJson: { value: [{ address: 'forced@example.com' }] }, trackingOverride: true },
+      { ...baseDraft, id: 202, toJson: { value: [{ address: 'suppressed@example.com' }] }, trackingOverride: false },
+      { ...baseDraft, id: 203, toJson: { value: [{ address: 'default@example.com' }] }, trackingOverride: null },
+    ];
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send(input) {
+          composeCalls.push(input.values as Record<string, unknown>);
+          return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+        },
+      },
+      store: {
+        async claimDueDrafts() { return drafts; },
+        async finalizeSentDraft() {},
+        async releaseClaimedDraft() {},
+        async restoreClaimedDraft() {},
+        async giveUpDraft() {},
+        async recordFailedAttempt() { return { failures: 1, gaveUp: false }; },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    // An explicit per-message choice (true/false) rides along; null follows the
+    // workspace default and is omitted so prepareOutbound reads the policy.
+    expect(composeCalls[0]).toMatchObject({ draftMessageId: 201, trackingOverride: true });
+    expect(composeCalls[1]).toMatchObject({ draftMessageId: 202, trackingOverride: false });
+    expect(composeCalls[2]!.draftMessageId).toBe(203);
+    expect(Object.prototype.hasOwnProperty.call(composeCalls[2]!, 'trackingOverride')).toBe(false);
+  });
+
   test('scheduled-send Postgres store atomically claims due drafts with SKIP LOCKED', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
     expect(source).toMatch(/FOR UPDATE SKIP LOCKED/);
@@ -12914,6 +12987,7 @@ describe('server edition foundation', () => {
     expect(source).toMatch(/scheduled_send_claimed_at:/);
     expect(source).toMatch(/recoverOrphanedScheduledClaims/);
     expect(source).toMatch(/persistScheduledSendClaims/);
+    expect(source).toMatch(/m\.tracking_override/);
   });
 
   test('thread list predicates align scheduled_send filters with message list', () => {
@@ -15723,6 +15797,16 @@ describe('server edition foundation', () => {
     ];
     const db = {
       selectFrom(table: string) {
+        if (table === 'user_group_members') {
+          // Capability lookup for the 'user' role — no grants in this fixture.
+          const empty = {
+            innerJoin() { return empty; },
+            select() { return empty; },
+            where() { return empty; },
+            async execute() { return []; },
+          };
+          return empty;
+        }
         expect(table).toBe('refresh_tokens');
         return new FakePostgresAuthSessionSelect(rows);
       },
@@ -20372,6 +20456,8 @@ describe('server edition foundation', () => {
           return {
             items: [withRuntimeLeaks({
               ...makeEmailMessageRecord(11, true),
+              threadMessageCount: 3,
+              trackingOverride: false,
               ...((input as { search?: string }).search ? { searchSnippet: 'Treffer: \uE000Hello\uE001' } : {}),
             })],
             nextCursor: 11,
@@ -20382,7 +20468,13 @@ describe('server edition foundation', () => {
         },
         async get(input) {
           messageGetCalls.push(input);
-          return input.id === 11 ? withRuntimeLeaks(makeEmailMessageRecord(11, input.includeBody)) : null;
+          return input.id === 11
+            ? withRuntimeLeaks({
+              ...makeEmailMessageRecord(11, input.includeBody),
+              threadMessageCount: 3,
+              trackingOverride: false,
+            })
+            : null;
         },
         async getSecurity(input) {
           messageSecurityCalls.push(input);
@@ -20556,6 +20648,10 @@ describe('server edition foundation', () => {
     expect((messages.body as any).data.searchMode).toBe('fts');
     expect((messages.body as any).data.hasMore).toBe(true);
     expect((messages.body as any).data.items[0].searchSnippet).toBe('Treffer: \uE000Hello\uE001');
+    // Regression: both must survive sanitizeEmailMessage (they were stripped,
+    // breaking the list thread chevron and draft tracking checkbox in server mode).
+    expect((messages.body as any).data.items[0].threadMessageCount).toBe(3);
+    expect((messages.body as any).data.items[0].trackingOverride).toBe(false);
 
     // Suche Phase 3: Broad-Scope + Relevanz-Sortierung laufen bis in den Port.
     const broadSearch = await api.handle({
@@ -20618,6 +20714,8 @@ describe('server edition foundation', () => {
     });
     expect(message.status).toBe(200);
     expect((message.body as any).data.bodyText).toBe('Body text 11');
+    expect((message.body as any).data.threadMessageCount).toBe(3);
+    expect((message.body as any).data.trackingOverride).toBe(false);
     expect(messageGetCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, id: 11, includeBody: true }]);
 
     const security = await api.handle({

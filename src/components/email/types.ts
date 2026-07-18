@@ -110,6 +110,9 @@ export type EmailMessage = {
   approval_reason?: string | null
   ticket_code?: string | null
   thread_id?: string | null
+  thread_message_count?: number | null
+  /** Per-message tracking choice; null follows the workspace default. */
+  tracking_override?: boolean | null
   customer_id?: number | null
   folder_kind?: string
   assigned_to?: string | null
@@ -349,8 +352,22 @@ export function isActivelySnoozedMessage(
   return Number.isFinite(ts) && ts > now.getTime()
 }
 
-export function applyCannedTemplate(body: string, customer?: CustomerOpt | null): string {
+export type CannedTemplateContext = {
+  accountDisplayName?: string | null
+  userName?: string | null
+  userEmail?: string | null
+  userPublicName?: string | null
+}
+
+/** Plain-text placeholder interpolation for canned responses (customer + account + user). */
+export function applyCannedTemplate(
+  body: string,
+  customer?: CustomerOpt | null,
+  context?: CannedTemplateContext,
+): string {
   const c = customer ?? undefined
+  const ctx = context ?? {}
+  const publicName = (ctx.userPublicName ?? "").trim() || (ctx.userName ?? "").trim()
   return body
     .replace(/\{\{customer\.name\}\}/g, c?.name ?? "")
     .replace(
@@ -358,4 +375,8 @@ export function applyCannedTemplate(body: string, customer?: CustomerOpt | null)
       (c?.firstName ?? "").trim() || (c?.name ?? "").split(/\s+/)[0] || "",
     )
     .replace(/\{\{customer\.email\}\}/g, c?.email ?? "")
+    .replace(/\{\{account\.display_name\}\}/g, (ctx.accountDisplayName ?? "").trim())
+    .replace(/\{\{user\.publicName\}\}/g, publicName)
+    .replace(/\{\{user\.name\}\}/g, (ctx.userName ?? "").trim())
+    .replace(/\{\{user\.email\}\}/g, (ctx.userEmail ?? "").trim())
 }

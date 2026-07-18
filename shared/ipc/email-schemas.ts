@@ -663,6 +663,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     enabled: z.boolean(),
     trackOpens: z.boolean(),
     trackLinks: z.boolean(),
+    defaultTrackNewMessages: z.boolean().default(true),
     collectDerivedMetadata: z.boolean(),
     collectRawMetadata: z.boolean(),
     ipInsightsEnabled: z.boolean().default(false),
@@ -679,6 +680,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     enabled: z.boolean().optional(),
     trackOpens: z.boolean().optional(),
     trackLinks: z.boolean().optional(),
+    defaultTrackNewMessages: z.boolean().optional(),
     collectDerivedMetadata: z.boolean().optional(),
     collectRawMetadata: z.boolean().optional(),
     ipInsightsEnabled: z.boolean().optional(),
@@ -978,6 +980,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       draftAttachmentPaths: z.array(z.string()).optional(),
       replyParentMessageId: z.number().int().positive().nullable().optional(),
       markReplyParentDone: z.boolean().optional(),
+      trackingOverride: z.boolean().nullable().optional(),
     }),
     result: standardResult,
   });
@@ -1015,6 +1018,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       pgpEncrypt: z.boolean().optional(),
       pgpSign: z.boolean().optional(),
       pgpPassphrase: z.string().optional(),
+      trackingOverride: z.boolean().nullable().optional(),
     }),
     result: z.union([
       z.object({
@@ -1133,6 +1137,27 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   });
   set(IPCChannels.Email.ListAccountSignatures, { payload: voidPayload, result: recordArray });
   set(IPCChannels.Email.SaveAccountSignature, {
+    payload: z.object({
+      accountId: positiveInt,
+      signatureHtml: z.string().nullable(),
+    }),
+    result: standardResult,
+  });
+  set(IPCChannels.Email.ListUserSignatures, {
+    payload: voidPayload,
+    result: z.object({
+      user: z.object({
+        displayName: z.string(),
+        publicName: z.string().nullable(),
+      }),
+      signatures: z.array(z.object({
+        accountId: positiveInt,
+        signatureHtml: z.string(),
+        updatedAt: z.string().nullable(),
+      })),
+    }),
+  });
+  set(IPCChannels.Email.SaveUserSignature, {
     payload: z.object({
       accountId: positiveInt,
       signatureHtml: z.string().nullable(),

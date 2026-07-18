@@ -196,6 +196,7 @@ export function normalizeEmailTrackingPolicy(input: {
     enabled: false,
     trackOpens: false,
     trackLinks: false,
+    defaultTrackNewMessages: true,
     collectDerivedMetadata: false,
     collectRawMetadata: false,
     ipInsightsEnabled: false,
@@ -211,6 +212,7 @@ export function normalizeEmailTrackingPolicy(input: {
     ...(input.values.enabled === undefined ? {} : { enabled: input.values.enabled }),
     ...(input.values.trackOpens === undefined ? {} : { trackOpens: input.values.trackOpens }),
     ...(input.values.trackLinks === undefined ? {} : { trackLinks: input.values.trackLinks }),
+    ...(input.values.defaultTrackNewMessages === undefined ? {} : { defaultTrackNewMessages: input.values.defaultTrackNewMessages }),
     ...(input.values.collectDerivedMetadata === undefined ? {} : { collectDerivedMetadata: input.values.collectDerivedMetadata }),
     ...(input.values.collectRawMetadata === undefined ? {} : { collectRawMetadata: input.values.collectRawMetadata }),
     ...(input.values.ipInsightsEnabled === undefined ? {} : { ipInsightsEnabled: input.values.ipInsightsEnabled }),
@@ -229,6 +231,10 @@ export function normalizeEmailTrackingPolicy(input: {
   const materialPolicyChanged = next.enabled !== current.enabled
     || next.trackOpens !== current.trackOpens
     || next.trackLinks !== current.trackLinks
+    // Flipping the "track new messages by default" toggle switches future sends
+    // from opt-in to tracked-by-default — a material change that must force a
+    // fresh compliance acknowledgement, not inherit the previous one.
+    || next.defaultTrackNewMessages !== current.defaultTrackNewMessages
     || next.collectDerivedMetadata !== current.collectDerivedMetadata
     || next.collectRawMetadata !== current.collectRawMetadata
     || next.ipInsightsEnabled !== current.ipInsightsEnabled
@@ -378,6 +384,13 @@ export type EmailTrackingService = EmailTrackingApiPort & Readonly<{
     html: string | null;
     pgpProtected: boolean;
     recovery?: boolean;
+    /**
+     * Per-message tracking choice from the compose dialog: true forces
+     * instrumentation (even when the workspace default is off), false
+     * suppresses it, undefined follows the workspace policy default. The
+     * technical exclusions (PGP, oversized) always win.
+     */
+    trackingOverride?: boolean | null;
   }): Promise<EmailTrackingPrepareResult>;
   recordSending(input: {
     workspaceId: string;
@@ -553,13 +566,26 @@ export function createPostgresEmailTrackingService(
           await lockTrackingPolicy(trx, input.workspaceId);
           const policyRow = await loadPolicyRowInTransaction(trx, input.workspaceId);
           const policy = policyRow ? mapPolicyRow(policyRow) : defaultTrackingPolicy();
-          if (!input.recovery && (!policy.enabled || (!policy.trackOpens && !policy.trackLinks))) {
+          const override = input.trackingOverride;
+          // Recovery resends re-instrument the exact message they prepared
+          // before, so they keep their own decision. For fresh sends: an
+          // explicit false suppresses; an explicit true forces tracking even
+          // when the workspace default is off (user's per-message choice);
+          // undefined follows the policy default (gated by
+          // defaultTrackNewMessages). PGP/oversized exclusions already returned
+          // above and always win.
+          const effectivePolicy = resolveOutboundTrackingPolicy(policy, override);
+          if (!input.recovery && override !== true
+            && (!effectivePolicy.enabled || (!effectivePolicy.trackOpens && !effectivePolicy.trackLinks))) {
+            return { html: input.html, trackingMessageId: null, warning: null };
+          }
+          if (!input.recovery && override === false) {
             return { html: input.html, trackingMessageId: null, warning: null };
           }
           return prepareTrackedHtmlInTransaction({
             trx,
             input,
-            policy,
+            policy: effectivePolicy,
             crypto,
             publicBaseUrl,
             now: now(),
@@ -1159,6 +1185,7 @@ type PolicyRowLike = {
   enabled: boolean;
   track_opens: boolean;
   track_links: boolean;
+  default_track_new_messages: boolean;
   collect_derived_metadata: boolean;
   collect_raw_metadata: boolean;
   ip_insights_enabled: boolean;
@@ -1186,7 +1213,8 @@ function loadPolicyRowInTransaction(
   return trx
     .selectFrom('email_tracking_policies')
     .select([
-      'enabled', 'track_opens', 'track_links', 'collect_derived_metadata', 'collect_raw_metadata', 'ip_insights_enabled',
+      'enabled', 'track_opens', 'track_links', 'default_track_new_messages',
+      'collect_derived_metadata', 'collect_raw_metadata', 'ip_insights_enabled',
       'raw_metadata_retention_days', 'event_retention_days', 'token_ttl_days', 'legal_basis',
       'privacy_notice_url', 'compliance_acknowledged_at', 'updated_at',
     ])
@@ -1207,6 +1235,7 @@ function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
     enabled: Boolean(row.enabled),
     trackOpens: Boolean(row.track_opens),
     trackLinks: Boolean(row.track_links),
+    defaultTrackNewMessages: row.default_track_new_messages == null ? true : Boolean(row.default_track_new_messages),
     collectDerivedMetadata: Boolean(row.collect_derived_metadata),
     collectRawMetadata: Boolean(row.collect_raw_metadata),
     ipInsightsEnabled: Boolean(row.ip_insights_enabled),
@@ -1219,11 +1248,40 @@ function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
   };
 }
 
+/**
+ * Applies the per-message override to the workspace policy for one outbound
+ * send. true forces tracking on (turning on both signals if the policy has
+ * none configured); false and the "default off for new messages" toggle both
+ * disable it; undefined without that toggle follows the policy unchanged.
+ */
+export function resolveOutboundTrackingPolicy(
+  policy: NormalizedEmailTrackingPolicy,
+  override: boolean | null | undefined,
+): NormalizedEmailTrackingPolicy {
+  if (override === true) {
+    const nothingGranular = !policy.trackOpens && !policy.trackLinks;
+    return {
+      ...policy,
+      enabled: true,
+      trackOpens: nothingGranular ? true : policy.trackOpens,
+      trackLinks: nothingGranular ? true : policy.trackLinks,
+    };
+  }
+  if (override === false) {
+    return { ...policy, enabled: false };
+  }
+  if (!policy.defaultTrackNewMessages) {
+    return { ...policy, enabled: false };
+  }
+  return policy;
+}
+
 function defaultTrackingPolicy(): NormalizedEmailTrackingPolicy {
   return {
     enabled: false,
     trackOpens: false,
     trackLinks: false,
+    defaultTrackNewMessages: true,
     collectDerivedMetadata: false,
     collectRawMetadata: false,
     ipInsightsEnabled: false,
@@ -1262,6 +1320,7 @@ function policyUpdateValues(actorUserId: string, policy: NormalizedEmailTracking
     enabled: policy.enabled,
     track_opens: policy.trackOpens,
     track_links: policy.trackLinks,
+    default_track_new_messages: policy.defaultTrackNewMessages,
     collect_derived_metadata: policy.collectDerivedMetadata,
     collect_raw_metadata: policy.collectRawMetadata,
     ip_insights_enabled: policy.ipInsightsEnabled,
@@ -1606,7 +1665,11 @@ async function insertTrackingEvent(
       classification_version: classification.version,
       actor_class: classification.actorClass,
       confidence: classification.confidence,
-      reasons_json: classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+      // Stringify so the jsonb column accepts it even on the all-primitive
+      // insert path (belt-and-suspenders alongside the jsonb-array plugin).
+      reasons_json: JSON.stringify(
+        classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+      ),
       classified_at: input.occurredAt,
     })
     .execute();
@@ -2051,9 +2114,9 @@ async function reclassifyTrackingMessage(input: Readonly<{
           classification_version: classification.version,
           actor_class: classification.actorClass,
           confidence: classification.confidence,
-          reasons_json: classification.reasons
-            .slice(0, 10)
-            .map((reason) => sanitizeMetadataLabel(reason)),
+          reasons_json: JSON.stringify(
+            classification.reasons.slice(0, 10).map((reason) => sanitizeMetadataLabel(reason)),
+          ),
           classified_at: input.now,
         };
       });

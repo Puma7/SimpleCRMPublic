@@ -26,6 +26,8 @@ export type AuthenticatedPrincipal = {
   sessionId?: string;
   automationApiKeyId?: string;
   automationScopes?: readonly string[];
+  /** Grant-only capabilities from the user's group memberships (union). */
+  capabilities?: readonly string[];
 };
 
 export type ApiRequest = {
@@ -61,6 +63,7 @@ export type AuthUserRecord = {
   workspaceId: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: AuthenticatedPrincipal['role'];
   passwordHash: string;
   disabledAt?: string | null;
@@ -97,6 +100,7 @@ export type AuthUserAdminRecord = {
   id: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: AuthenticatedPrincipal['role'];
   disabledAt: string | null;
   loginPinEnabled: boolean;
@@ -122,9 +126,12 @@ export type AuthInvitationRecord = {
 export type AuthUserSaveInput = {
   workspaceId: string;
   actorUserId: string;
+  /** Only owners/admins may assign or change roles; delegated managers cannot. */
+  actorIsAdmin: boolean;
   id?: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: AuthenticatedPrincipal['role'];
   password?: string;
   isActive?: boolean;
@@ -135,7 +142,7 @@ export type AuthUserSaveInput = {
 
 export type AuthUserSaveResult =
   | { ok: true; user: AuthUserAdminRecord }
-  | { ok: false; code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' };
+  | { ok: false; code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' | 'role_change_forbidden' };
 
 export type AuthInvitationCreateInput = {
   workspaceId: string;
@@ -257,8 +264,9 @@ export type AuthApiPort = {
   deleteUser?(input: {
     workspaceId: string;
     actorUserId: string;
+    actorIsAdmin: boolean;
     id: string;
-  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' }>;
+  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' }>;
   changePassword?(input: {
     workspaceId: string;
     userId: string;
@@ -689,6 +697,16 @@ export type UserGroupApiPort = {
     groupId: number;
     userId: string;
   }): Promise<UserGroupRemoveMemberResult>;
+  listPermissions(input: {
+    workspaceId: string;
+    groupId: number;
+  }): Promise<string[] | null>;
+  setPermissions(input: {
+    workspaceId: string;
+    actorUserId: string;
+    groupId: number;
+    permissions: readonly string[];
+  }): Promise<{ ok: true; permissions: string[] } | { ok: false; code: 'group_not_found' }>;
 };
 
 export type CustomerApiPort = {
@@ -1690,6 +1708,9 @@ export type EmailMessageRecord = {
   folderKind: string;
   threadId: string | null;
   imapThreadId: string | null;
+  threadMessageCount?: number | null;
+  /** Per-message tracking choice; null follows the workspace default. */
+  trackingOverride?: boolean | null;
   ticketCode: string | null;
   customerId: number | null;
   hasAttachments: boolean;
@@ -2066,6 +2087,7 @@ export type EmailComposeDraftUpdateInput = {
   bccJson?: unknown | null;
   draftAttachmentPaths?: readonly string[];
   replyParentMessageId?: number | null;
+  trackingOverride?: boolean | null;
 };
 
 export type EmailComposeDraftMutationResult =
@@ -2103,6 +2125,8 @@ export type EmailComposeSendInput = {
   pgpEncrypt?: boolean;
   pgpSign?: boolean;
   pgpPassphrase?: string;
+  /** Per-message tracking choice; null/undefined follows the workspace default. */
+  trackingOverride?: boolean | null;
 };
 
 export type EmailComposeSendResult =
@@ -2901,6 +2925,8 @@ export type EmailTrackingPolicyRecord = {
   enabled: boolean;
   trackOpens: boolean;
   trackLinks: boolean;
+  /** Default state of the per-message tracking checkbox for new messages. */
+  defaultTrackNewMessages: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
   ipInsightsEnabled: boolean;
@@ -2918,6 +2944,7 @@ export type EmailTrackingPolicyMutationInput = Partial<{
   enabled: boolean;
   trackOpens: boolean;
   trackLinks: boolean;
+  defaultTrackNewMessages: boolean;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
   ipInsightsEnabled: boolean;
@@ -3051,6 +3078,35 @@ export type EmailAccountSignatureApiPort = EmailNumericRecordApiPort<EmailAccoun
     actorUserId: string;
     id: number;
   }): Promise<EmailAccountSignatureRecord | null>;
+};
+
+export type EmailUserSignatureRecord = {
+  accountId: number;
+  signatureHtml: string;
+  updatedAt: string | null;
+};
+
+export type EmailUserSignatureContext = {
+  displayName: string;
+  publicName: string | null;
+};
+
+export type EmailUserSignatureListResult = {
+  user: EmailUserSignatureContext;
+  signatures: EmailUserSignatureRecord[];
+};
+
+export type EmailUserSignatureApiPort = {
+  listForUser(input: {
+    workspaceId: string;
+    userId: string;
+  }): Promise<EmailUserSignatureListResult>;
+  upsert(input: {
+    workspaceId: string;
+    userId: string;
+    accountId: number;
+    signatureHtml: string | null;
+  }): Promise<{ ok: true } | { ok: false; code: 'account_not_found' }>;
 };
 
 export type EmailRemoteContentAllowlistRecord = {
@@ -4929,6 +4985,7 @@ export type ServerApiPorts = {
   emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailTracking?: EmailTrackingApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;
+  emailUserSignatures?: EmailUserSignatureApiPort;
   emailAttachmentContent?: EmailAttachmentContentApiPort;
   emailAttachments?: EmailAttachmentApiPort;
   emailAccounts?: EmailAccountApiPort;

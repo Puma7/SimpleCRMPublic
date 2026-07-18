@@ -96,6 +96,8 @@ const UserGroupChannels = literal({
   ListMembers: 'user-groups:list-members',
   AddMember: 'user-groups:add-member',
   RemoveMember: 'user-groups:remove-member',
+  ListPermissions: 'user-groups:list-permissions',
+  SetPermissions: 'user-groups:set-permissions',
 });
 
 const SyncChannels = literal({
@@ -127,6 +129,7 @@ const AuthChannels = literal({
   ListUsers: 'auth:list-users',
   SaveUser: 'auth:save-user',
   DeleteUser: 'auth:delete-user',
+  ListCapabilities: 'auth:list-capabilities',
   ChangePassword: 'auth:change-password',
   CreateInvite: 'auth:create-invite',
   GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',
@@ -311,6 +314,8 @@ const EmailChannels = literal({
   GetComposeSignature: 'email:get-compose-signature',
   ListAccountSignatures: 'email:list-account-signatures',
   SaveAccountSignature: 'email:save-account-signature',
+  ListUserSignatures: 'email:list-user-signatures',
+  SaveUserSignature: 'email:save-user-signature',
   LinkCustomer: 'email:link-customer',
   SoftDeleteMessage: 'email:soft-delete-message',
   DeleteComposeDraft: 'email:delete-compose-draft',

@@ -41,4 +41,12 @@ export const userGroupService = {
   async removeMember(groupId: number, userId: string): Promise<void> {
     await invokeRenderer(IPCChannels.UserGroups.RemoveMember, { groupId, userId })
   },
+  async listPermissions(groupId: number): Promise<string[]> {
+    const permissions = (await invokeRenderer(IPCChannels.UserGroups.ListPermissions, groupId)) as string[]
+    return Array.isArray(permissions) ? permissions : []
+  },
+  async setPermissions(groupId: number, permissions: string[]): Promise<string[]> {
+    const saved = (await invokeRenderer(IPCChannels.UserGroups.SetPermissions, { groupId, permissions })) as string[]
+    return Array.isArray(saved) ? saved : []
+  },
 }

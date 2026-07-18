@@ -291,6 +291,7 @@ describe('renderer transport', () => {
       id: 'auth-user-1',
       username: 'agent@example.com',
       display_name: 'Agent',
+      public_name: null,
       role: 'agent',
       is_active: 1,
       login_pin_enabled: false,
@@ -3698,6 +3699,24 @@ describe('renderer transport', () => {
     );
   });
 
+  test('propagates status + code on a 503 IP insight error (GeoIP DB missing)', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse(
+      { error: { code: 'ip_insights_unavailable', message: 'Lokale IP-Insight-Datenbank ist nicht verfuegbar' } },
+      503,
+    ));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    // The dialog duck-types status/code off the rejection to show the specific
+    // GeoIP-setup message; both must survive the transport.
+    await expect(transport.invoke(IPCChannels.Email.GetMessageTrackingIpInsight, {
+      messageId: 41,
+      eventId: '13',
+    })).rejects.toMatchObject({ status: 503, code: 'ip_insights_unavailable' });
+  });
+
   test('maps email GDPR export to server ZIP download route', async () => {
     const blob = new Blob(['zip-bytes'], { type: 'application/zip' });
     const fetchImpl = jest.fn().mockResolvedValueOnce(blobResponse(blob, {
@@ -4309,6 +4328,7 @@ describe('renderer transport', () => {
       folderKind: 'inbox',
       threadId: 'thread/encoded',
       imapThreadId: 'imap-1',
+      threadMessageCount: 3,
       ticketCode: 'T-11',
       customerId: 42,
       hasAttachments: false,
@@ -4702,7 +4722,8 @@ describe('renderer transport', () => {
             doneLocal: false,
             archived: false,
             folderKind: 'inbox',
-            threadId: null,
+            threadId: 'th-abc',
+            threadMessageCount: 3,
             ticketCode: null,
             customerId: null,
             hasAttachments: false,
@@ -4741,6 +4762,9 @@ describe('renderer transport', () => {
         from_json: JSON.stringify({ value: [{ address: 'sender@example.com' }] }),
         seen_local: 1,
         snoozed_until: null,
+        // Server thread count is threaded onto the list row so the chevron
+        // only shows for real multi-message threads.
+        thread_message_count: 3,
       }),
     ]);
     expect(fetchImpl).toHaveBeenCalledWith(

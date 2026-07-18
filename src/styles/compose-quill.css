@@ -47,15 +47,18 @@
   color: hsl(var(--popover-foreground));
 }
 
-/* Fills remaining compose-dialog height; user can drag bottom edge to resize. */
+/* Fills remaining compose-dialog height; user can drag bottom edge to resize.
+   overflow-y: auto (not hidden) so on short viewports the signature/quote
+   blocks below the editor stay reachable by scrolling instead of being clipped.
+   resize: vertical still works with overflow: auto. */
 .compose-editor-fill {
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
-  min-height: 12rem;
+  min-height: min(12rem, 28vh);
   max-height: 100%;
   resize: vertical;
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .compose-editor-fill > div {
@@ -71,10 +74,19 @@
 
 .compose-editor-fill .ql-container.ql-snow {
   display: flex;
-  min-height: 16rem;
+  /* Soft floor: keeps the editor comfortable on normal screens but shrinks on
+     short viewports so the signature/quote fit before the outer scroll engages. */
+  min-height: min(16rem, 30vh);
   flex: 1 1 auto;
   flex-direction: column;
   overflow-y: auto;
+}
+
+/* The read-only signature and quote blocks keep their natural height and never
+   collapse — the container scrolls to reveal them on short viewports. */
+.compose-editor-fill > .compose-signature-readonly,
+.compose-editor-fill > .compose-quote-readonly {
+  flex: 0 0 auto;
 }
 
 .compose-editor-fill .ql-editor {

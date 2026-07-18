@@ -12,6 +12,7 @@ import {
   error,
   getStringField,
   requireAdmin,
+  requireCapability,
   requirePrincipal,
 } from './http';
 import { timingSafeEqual } from 'node:crypto';
@@ -67,6 +68,10 @@ export async function handleAuthRoute(
   if (req.path === '/api/v1/auth/change-password') {
     if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     return handleChangePassword(req, ports);
+  }
+  if (req.path === '/api/v1/auth/capabilities') {
+    if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    return handleGetCapabilities(req);
   }
   if (req.path === '/api/v1/auth/users') {
     if (req.method === 'GET') return handleListUsers(req, ports);
@@ -294,10 +299,21 @@ async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
   }, rotated.tokens);
 }
 
+function handleGetCapabilities(req: ApiRequest): ApiResponse {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  // Owners/admins hold every capability implicitly; the client mirrors that via
+  // its role, so only the group-granted union is returned here.
+  return data(200, {
+    role: principal.role,
+    capabilities: [...(principal.capabilities ?? [])],
+  });
+}
+
 async function handleListUsers(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'users.manage')) return error(403, 'forbidden', 'Adminrechte oder Benutzerverwaltungs-Berechtigung erforderlich');
   if (!ports.auth.listUsers) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
   const rows = await ports.auth.listUsers({ workspaceId: principal.workspaceId });
   return data(200, rows.map(publicAdminUser));
@@ -310,7 +326,7 @@ async function handleSaveUser(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'users.manage')) return error(403, 'forbidden', 'Adminrechte oder Benutzerverwaltungs-Berechtigung erforderlich');
   if (!ports.auth.saveUser) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
 
   const parsed = parseUserSaveBody(req.body, pathUserId);
@@ -320,12 +336,14 @@ async function handleSaveUser(
   const result = await ports.auth.saveUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
+    actorIsAdmin: requireAdmin(principal),
     ...saveValues,
   });
   if (!result.ok) {
     if (result.code === 'not_found') return error(404, 'auth_user_not_found', 'Benutzer nicht gefunden');
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
     if (result.code === 'password_required') return error(400, 'validation_error', 'Passwort ist fuer neue Benutzer erforderlich');
+    if (result.code === 'role_change_forbidden') return error(403, 'forbidden', 'Nur Owner/Admins dürfen Rollen vergeben oder ändern');
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 
@@ -364,17 +382,21 @@ async function handleDeleteUser(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'users.manage')) return error(403, 'forbidden', 'Adminrechte oder Benutzerverwaltungs-Berechtigung erforderlich');
   if (!ports.auth.deleteUser) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
   if (id === principal.userId) return error(409, 'cannot_delete_self', 'Sie koennen sich nicht selbst loeschen');
 
   const result = await ports.auth.deleteUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
+    actorIsAdmin: requireAdmin(principal),
     id,
   });
   if (!result.ok) {
     if (result.code === 'not_found') return error(404, 'auth_user_not_found', 'Benutzer nicht gefunden');
+    if (result.code === 'role_change_forbidden') {
+      return error(403, 'forbidden', 'Nur Administratoren dürfen privilegierte Konten löschen');
+    }
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 
@@ -625,6 +647,7 @@ function publicUser(user: {
   workspaceId: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: string;
 }) {
   return {
@@ -632,6 +655,7 @@ function publicUser(user: {
     workspaceId: user.workspaceId,
     email: user.email,
     displayName: user.displayName,
+    ...(user.publicName === undefined ? {} : { publicName: user.publicName }),
     role: user.role,
   };
 }
@@ -640,6 +664,7 @@ function publicAdminUser(user: {
   id: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: string;
   disabledAt: string | null;
   loginPinEnabled?: boolean;
@@ -652,6 +677,7 @@ function publicAdminUser(user: {
     id: user.id,
     email: user.email,
     displayName: user.displayName,
+    publicName: user.publicName ?? null,
     role: user.role,
     disabledAt: user.disabledAt,
     loginPinEnabled: Boolean(user.loginPinEnabled),
@@ -825,7 +851,7 @@ function normalizeOptionalInt(value: unknown, min: number, max: number): number 
 }
 
 function parseUserSaveBody(body: unknown, pathUserId?: string):
-  | { values: { id?: string; email: string; displayName: string; role: 'owner' | 'admin' | 'user'; password?: string; isActive?: boolean; loginPin?: string | null } }
+  | { values: { id?: string; email: string; displayName: string; publicName?: string | null; role: 'owner' | 'admin' | 'user'; password?: string; isActive?: boolean; loginPin?: string | null } }
   | { response: ApiResponse } {
   const bodyRecord = isRecord(body) ? body : null;
   const id = pathUserId || normalizeOptionalText(getStringField(body, 'id'), 120);
@@ -833,6 +859,14 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
   const displayName = normalizeOptionalText(getStringField(body, 'displayName') ?? getStringField(body, 'display_name'), 120)
     ?? email
     ?? '';
+  // getStringField returns null for an absent field, so distinguish "omitted"
+  // (leave unchanged) from "present but empty/null" (clear) via presence.
+  const publicNameProvided = bodyRecord != null
+    && (Object.prototype.hasOwnProperty.call(bodyRecord, 'publicName')
+      || Object.prototype.hasOwnProperty.call(bodyRecord, 'public_name'));
+  const publicName = publicNameProvided
+    ? (normalizeOptionalText(getStringField(body, 'publicName') ?? getStringField(body, 'public_name') ?? '', 120) ?? null)
+    : undefined;
   const role = normalizeServerUserRole(getStringField(body, 'role'));
   const password = getStringField(body, 'passphrase') ?? getStringField(body, 'password') ?? undefined;
   const isActive = normalizeOptionalBoolean(bodyRecord?.isActive ?? bodyRecord?.is_active);
@@ -867,6 +901,7 @@ function parseUserSaveBody(body: unknown, pathUserId?: string):
       ...(id ? { id } : {}),
       email,
       displayName,
+      ...(publicName === undefined ? {} : { publicName }),
       role,
       ...(password === undefined ? {} : { password }),
       ...(isActive === undefined ? {} : { isActive }),

@@ -448,6 +448,12 @@ export function createRelaySubmissionPipeline(
             recipientCount: recipients.length,
             html: parsed.bodyHtml,
             pgpProtected: false,
+            // The relay already made its own tracking decision (mode/subject
+            // rules + the X-SimpleCRM-Track header) and only reaches this branch
+            // when it decided to track. Pass an explicit override so the
+            // compose-only "default off for new messages" toggle can't silently
+            // suppress a relay send the operator configured to be tracked.
+            trackingOverride: true,
           });
           outboundHtml = tracked.html;
           trackingMessageId = tracked.trackingMessageId;

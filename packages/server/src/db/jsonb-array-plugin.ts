@@ -3,6 +3,7 @@ import type {
   OperationNodeTransformer,
   PluginTransformQueryArgs,
   PluginTransformResultArgs,
+  PrimitiveValueListNode,
   QueryId,
   QueryResult,
   RootOperationNode,
@@ -50,6 +51,23 @@ export function createJsonbArrayPlugin(
         kind: 'ValueNode',
         value: JSON.stringify(transformed.value),
         ...(transformed.immediate === undefined ? {} : { immediate: transformed.immediate }),
+      };
+    }
+
+    // Insert rows whose columns are all present with simple values are emitted
+    // by Kysely as a PrimitiveValueListNode, whose elements never pass through
+    // transformValue. Without this override an array value in such a row would
+    // reach node-postgres unserialised and hit the same 22P02. (Verified in
+    // kysely 0.28: the base transformer returns this node untouched.)
+    protected override transformPrimitiveValueList(
+      node: PrimitiveValueListNode,
+      queryId?: QueryId,
+    ): PrimitiveValueListNode {
+      const transformed = super.transformPrimitiveValueList(node, queryId);
+      if (!transformed.values.some(isJsonbUnsafeArray)) return transformed;
+      return {
+        kind: 'PrimitiveValueListNode',
+        values: transformed.values.map(serializeJsonbBoundValue),
       };
     }
   }

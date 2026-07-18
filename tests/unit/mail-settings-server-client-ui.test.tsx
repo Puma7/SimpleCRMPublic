@@ -21,6 +21,11 @@ jest.mock('sonner', () => ({
   },
 }));
 
+const mockUseAuth = jest.fn(() => ({ user: { id: 'admin-1', role: 'admin' }, loading: false }));
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => mockUseAuth(),
+}));
+
 jest.mock('@/components/email/settings/knowledge-markdown-editor', () => ({
   KnowledgeMarkdownEditor: ({
     value,
@@ -41,6 +46,7 @@ describe('mail settings server-client UI', () => {
   beforeEach(() => {
     resetRendererTransportForTests();
     jest.clearAllMocks();
+    mockUseAuth.mockReturnValue({ user: { id: 'admin-1', role: 'admin' }, loading: false });
   });
 
   afterEach(() => {
@@ -385,6 +391,31 @@ describe('mail settings server-client UI', () => {
     expect(screen.getByText('Rspamd-Score in SimpleCRM-Score einrechnen')).toBeInTheDocument();
     expect(screen.queryByText('Lokale Spam-Engine')).not.toBeInTheDocument();
     expect(screen.queryByText('Lokales Lernen aus Korrekturen')).not.toBeInTheDocument();
+    // Admin sees the Rspamd test action (its route is admin-only).
+    expect(screen.getByText('Rspamd-Verbindung testen')).toBeInTheDocument();
+  });
+
+  test('mail security panel hides the admin-only Rspamd test for delegated users', async () => {
+    mockUseAuth.mockReturnValue({ user: { id: 'user-1', role: 'user' }, loading: false });
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/v1/email/settings/security')) {
+        return jsonResponse({ data: mailSecuritySettings() });
+      }
+      if (url.includes('/api/v1/spam/list-entries')) return jsonResponse({ data: [] });
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<MailSecurityPanel />);
+
+    // The panel still renders for the delegated capability holder…
+    expect(await screen.findByText('SimpleCRM-Spam-Engine')).toBeInTheDocument();
+    // …but the admin-only Rspamd test button (which would 403) is hidden.
+    expect(screen.queryByText('Rspamd-Verbindung testen')).not.toBeInTheDocument();
   });
 
   test('mail security panel refreshes spam list entries after server events', async () => {

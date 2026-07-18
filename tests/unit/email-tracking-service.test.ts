@@ -13,7 +13,9 @@ import {
   clampInboundEvidenceAfterSmtpAccepted,
   normalizeEmailTrackingPolicy,
   normalizeInboundEvidenceOccurredAt,
+  resolveOutboundTrackingPolicy,
 } from '../../packages/server/src/email-tracking';
+import type { NormalizedEmailTrackingPolicy } from '../../packages/server/src/email-tracking';
 import type { Kysely } from 'kysely';
 import type { ServerDatabase } from '../../packages/server/src/db';
 import { emailTrackingNetworkContext } from '../../packages/server/src/email-tracking-network-rules';
@@ -165,6 +167,31 @@ describe('email tracking service security helpers', () => {
       now: new Date('2026-07-15T10:00:00.000Z'),
       encryptionAvailable: true,
     }).ipInsightsEnabled).toBe(true);
+  });
+
+  test('defaults new messages to tracked and roundtrips the per-message default flag', () => {
+    // Absent in the input → keeps the tracked-by-default stance.
+    expect(normalizeEmailTrackingPolicy({
+      current: null,
+      values: {},
+      now: new Date('2026-07-15T10:00:00.000Z'),
+      encryptionAvailable: true,
+    }).defaultTrackNewMessages).toBe(true);
+
+    // An explicit false is preserved and survives a later unrelated update.
+    const optedOut = normalizeEmailTrackingPolicy({
+      current: null,
+      values: { defaultTrackNewMessages: false },
+      now: new Date('2026-07-15T10:00:00.000Z'),
+      encryptionAvailable: true,
+    });
+    expect(optedOut.defaultTrackNewMessages).toBe(false);
+    expect(normalizeEmailTrackingPolicy({
+      current: optedOut,
+      values: { collectDerivedMetadata: true },
+      now: new Date('2026-07-16T10:00:00.000Z'),
+      encryptionAvailable: true,
+    }).defaultTrackNewMessages).toBe(false);
   });
 
   test('requires a fresh compliance acknowledgement after material policy changes', () => {
@@ -353,6 +380,61 @@ describe('email tracking service security helpers', () => {
     });
   });
 
+  test('per-message override decides outbound tracking on top of the workspace policy', () => {
+    const basePolicy = (overrides: Partial<NormalizedEmailTrackingPolicy> = {}): NormalizedEmailTrackingPolicy => ({
+      enabled: false,
+      trackOpens: false,
+      trackLinks: false,
+      defaultTrackNewMessages: true,
+      collectDerivedMetadata: false,
+      collectRawMetadata: false,
+      ipInsightsEnabled: false,
+      rawMetadataRetentionDays: 7,
+      eventRetentionDays: 365,
+      tokenTtlDays: 730,
+      legalBasis: null,
+      privacyNoticeUrl: null,
+      complianceAcknowledgedAt: null,
+      ...overrides,
+    });
+
+    // Explicit true instruments even when the workspace default is off, and
+    // turns on both signals when the policy configured none.
+    expect(resolveOutboundTrackingPolicy(basePolicy(), true)).toMatchObject({
+      enabled: true,
+      trackOpens: true,
+      trackLinks: true,
+    });
+    // Explicit true respects a narrower configured signal set.
+    expect(resolveOutboundTrackingPolicy(basePolicy({ trackOpens: true }), true)).toMatchObject({
+      enabled: true,
+      trackOpens: true,
+      trackLinks: false,
+    });
+    // Explicit false suppresses even when the policy is enabled.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true, trackLinks: true }),
+      false,
+    )).toMatchObject({ enabled: false });
+    // undefined follows an enabled policy that defaults new messages to tracked.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true }),
+      undefined,
+    )).toMatchObject({ enabled: true, trackOpens: true });
+    // undefined suppresses when the policy opts new messages out by default.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true, defaultTrackNewMessages: false }),
+      undefined,
+    )).toMatchObject({ enabled: false });
+    // undefined leaves a disabled policy disabled.
+    expect(resolveOutboundTrackingPolicy(basePolicy(), undefined)).toMatchObject({ enabled: false });
+    // null is treated like undefined — follow the workspace default.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackLinks: true, defaultTrackNewMessages: false }),
+      null,
+    )).toMatchObject({ enabled: false });
+  });
+
   test('the real revoke and public-open chain cannot reactivate revoked tracking', async () => {
     const token = 'A'.repeat(43);
     const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
@@ -504,6 +586,9 @@ describe('email tracking service security helpers', () => {
       reasons_json: ['immediate_infrastructure_fetch'],
       classified_at: new Date('2026-07-15T12:00:03.000Z'),
     }]);
+    // Regression guard for the 22P02 crash: reasons_json must reach the jsonb
+    // column as a JSON string, not a raw JS array.
+    expect(state.classificationBinds[0]!.reasons_json).toBe('["immediate_infrastructure_fetch"]');
     expect(state.operations).toEqual([
       'policy_read_initial',
       'capacity_precheck',
@@ -1908,6 +1993,8 @@ type PublicInteractionTestState = {
   operations: string[];
   eventRows: Array<Record<string, unknown>>;
   classificationRows: Array<Record<string, unknown>>;
+  /** Raw values as bound to .values() — reasons_json must be a JSON string. */
+  classificationBinds: Array<Record<string, unknown>>;
 };
 
 function publicInteractionDatabase(
@@ -1926,6 +2013,7 @@ function publicInteractionDatabase(
     policyReads: 0,
     policyLockHeld: false,
     eventInsertHeldPolicyLock: false,
+    classificationBinds: [],
     operations: [],
     eventRows: [],
     classificationRows: [],
@@ -2107,7 +2195,15 @@ class PublicInteractionInsert {
       throw new Error(`Unexpected public interaction insert table: ${this.table}`);
     }
     this.state.operations.push('classification_insert');
-    this.state.classificationRows.push(this.row);
+    // Capture the raw bind (reasons_json must be a JSON string post-fix), then
+    // normalize it back to an array like real Postgres jsonb does so the
+    // existing logical-value assertions keep working.
+    this.state.classificationBinds.push(this.row);
+    const normalized = { ...this.row };
+    if (typeof normalized.reasons_json === 'string') {
+      normalized.reasons_json = JSON.parse(normalized.reasons_json);
+    }
+    this.state.classificationRows.push(normalized);
   }
 }
 
@@ -2493,7 +2589,14 @@ class HistoricalReclassificationInsert {
       this.state.maxRowsInTransaction,
       this.state.currentRowsInTransaction,
     );
-    for (const row of this.rows) {
+    for (const rawRow of this.rows) {
+      // reasons_json reaches the jsonb column as a JSON string post-fix;
+      // normalize it back to an array like real Postgres so assertions on the
+      // logical value keep working.
+      const row = { ...rawRow };
+      if (typeof row.reasons_json === 'string') {
+        row.reasons_json = JSON.parse(row.reasons_json);
+      }
       const existing = this.state.classifications.findIndex((candidate) => (
         String(candidate.event_id) === String(row.event_id)
         && candidate.classification_version === row.classification_version

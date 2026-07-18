@@ -9,6 +9,7 @@ import type {
   UserGroupRemoveMemberResult,
 } from '../api/types';
 import type { ServerDatabase, UserGroupsTable } from './schema';
+import { isUserGroupCapability } from '../api/capabilities';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -215,6 +216,67 @@ export function createPostgresUserGroupPort(options: PostgresUserGroupPortOption
             .where('user_id', '=', input.userId)
             .execute();
           return { ok: true };
+        },
+        readSession,
+      );
+    },
+
+    async listPermissions(input): Promise<string[] | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const group = await trx
+            .selectFrom('user_groups')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.groupId)
+            .executeTakeFirst();
+          if (!group) return null;
+          const rows = await trx
+            .selectFrom('user_group_permissions')
+            .select('permission')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('group_id', '=', input.groupId)
+            .execute();
+          return rows.map((row) => String(row.permission)).sort();
+        },
+        readSession,
+      );
+    },
+
+    async setPermissions(input) {
+      // Grant-only: unknown keys are dropped, and the set fully replaces the row set.
+      const permissions = [...new Set(input.permissions.filter(isUserGroupCapability))].sort();
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
+        async (trx) => {
+          const group = await trx
+            .selectFrom('user_groups')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.groupId)
+            .executeTakeFirst();
+          if (!group) return { ok: false as const, code: 'group_not_found' as const };
+          await trx
+            .deleteFrom('user_group_permissions')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('group_id', '=', input.groupId)
+            .execute();
+          if (permissions.length > 0) {
+            await trx
+              .insertInto('user_group_permissions')
+              .values(permissions.map((permission) => ({
+                workspace_id: input.workspaceId,
+                group_id: input.groupId,
+                permission,
+                created_at: new Date(),
+              })))
+              .onConflict((oc) => oc.columns(['workspace_id', 'group_id', 'permission']).doNothing())
+              .execute();
+          }
+          return { ok: true as const, permissions };
         },
         readSession,
       );

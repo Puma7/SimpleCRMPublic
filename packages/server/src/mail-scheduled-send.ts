@@ -32,6 +32,7 @@ type ScheduledDraft = Readonly<{
   bccJson: unknown | null;
   draftAttachmentPathsJson: unknown | null;
   replyParentMessageId: number | null;
+  trackingOverride: boolean | null;
   claimedSendAt: Date | null;
 }>;
 
@@ -148,6 +149,7 @@ async function processScheduledDraft(input: {
       ...(recipientFieldFromJson(draft.ccJson) ? { cc: recipientFieldFromJson(draft.ccJson) } : {}),
       ...(recipientFieldFromJson(draft.bccJson) ? { bcc: recipientFieldFromJson(draft.bccJson) } : {}),
       ...(draft.replyParentMessageId === null ? {} : { inReplyToMessageId: draft.replyParentMessageId }),
+      ...(draft.trackingOverride === null ? {} : { trackingOverride: draft.trackingOverride }),
       ...scheduledAttachmentPathsPayload(draft.draftAttachmentPathsJson),
     },
   });
@@ -368,6 +370,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
             bcc_json: unknown | null;
             draft_attachment_paths_json: unknown | null;
             reply_parent_message_id: number | string | bigint | null;
+            tracking_override: boolean | null;
             claimed_send_at: Date | null;
           }>`
             WITH candidates AS (
@@ -401,6 +404,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
               m.bcc_json,
               m.draft_attachment_paths_json,
               m.reply_parent_message_id,
+              m.tracking_override,
               c.claimed_send_at
           `.execute(trx);
           const drafts = result.rows.map((row) => ({
@@ -414,6 +418,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
             bccJson: row.bcc_json,
             draftAttachmentPathsJson: row.draft_attachment_paths_json,
             replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
+            trackingOverride: row.tracking_override === null ? null : Boolean(row.tracking_override),
             claimedSendAt: row.claimed_send_at,
           }));
           await persistScheduledSendClaims(trx, input.workspaceId, drafts);

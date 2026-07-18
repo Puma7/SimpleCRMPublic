@@ -27,6 +27,7 @@ export type EmailTrackingPolicy = {
   enabled: boolean
   trackOpens: boolean
   trackLinks: boolean
+  defaultTrackNewMessages: boolean
   collectDerivedMetadata: boolean
   collectRawMetadata: boolean
   ipInsightsEnabled: boolean
@@ -129,6 +130,7 @@ export function TrackingSettingsPanel() {
         enabled: policy.enabled,
         trackOpens: policy.trackOpens,
         trackLinks: policy.trackLinks,
+        defaultTrackNewMessages: policy.defaultTrackNewMessages,
         collectDerivedMetadata: policy.collectDerivedMetadata,
         collectRawMetadata: policy.collectRawMetadata,
         ipInsightsEnabled: policy.ipInsightsEnabled,
@@ -223,6 +225,18 @@ export function TrackingSettingsPanel() {
         <p className="text-xs text-muted-foreground">
           Pixelabrufe können von Datenschutz-Proxys oder Sicherheits-Scannern stammen und gelten deshalb nur als Signal.
           PGP-verschlüsselte und reine Textnachrichten werden nicht instrumentiert.
+        </p>
+        <SettingSwitch
+          id="tracking-default-new"
+          label="Neue Nachrichten standardmäßig nachverfolgen"
+          checked={policy.defaultTrackNewMessages}
+          disabled={!isAdmin || !policy.enabled}
+          onCheckedChange={(defaultTrackNewMessages) => patch({ defaultTrackNewMessages })}
+        />
+        <p className="text-xs text-muted-foreground">
+          Legt den Vorzustand des Tracking-Hakens im Verfassen-Fenster fest. Jede Mail lässt sich dort einzeln
+          umstellen — der Haken kann Tracking auch für eine einzelne Nachricht aktivieren, wenn die
+          Rechtsgrundlagen-Prüfung des Betreibers das erlaubt.
         </p>
       </section>
 

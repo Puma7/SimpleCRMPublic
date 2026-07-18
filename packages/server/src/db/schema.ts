@@ -24,6 +24,7 @@ export type ServerDatabase = {
   tasks: TasksTable;
   user_groups: UserGroupsTable;
   user_group_members: UserGroupMembersTable;
+  user_group_permissions: UserGroupPermissionsTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
   customer_custom_fields: CustomerCustomFieldsTable;
@@ -46,6 +47,7 @@ export type ServerDatabase = {
   email_internal_notes: EmailInternalNotesTable;
   email_canned_responses: EmailCannedResponsesTable;
   email_account_signatures: EmailAccountSignaturesTable;
+  user_account_signatures: UserAccountSignaturesTable;
   email_account_mail_settings: EmailAccountMailSettingsTable;
   email_remote_content_allowlist: EmailRemoteContentAllowlistTable;
   email_read_receipt_log: EmailReadReceiptLogTable;
@@ -188,6 +190,7 @@ export type UsersTable = {
   workspace_id: string;
   email: string;
   display_name: string;
+  public_name: ColumnType<string | null, string | null | undefined, string | null>;
   password_hash: string;
   role: 'owner' | 'admin' | 'user';
   disabled_at: TimestampColumn | null;
@@ -405,6 +408,13 @@ export type UserGroupMembersTable = {
   workspace_id: string;
   group_id: number;
   user_id: string;
+  created_at: TimestampColumn;
+};
+
+export type UserGroupPermissionsTable = {
+  workspace_id: string;
+  group_id: number;
+  permission: string;
   created_at: TimestampColumn;
 };
 
@@ -656,6 +666,8 @@ export type EmailMessagesTable = {
   customer_id: number | null;
   folder_kind: string;
   imap_thread_id: string | null;
+  /** Per-message tracking choice: null follows the workspace policy default. */
+  tracking_override: ColumnType<boolean | null, boolean | null | undefined, boolean | null>;
   has_attachments: boolean;
   attachments_json: JsonColumn | null;
   auth_spf: string | null;
@@ -711,6 +723,7 @@ export type EmailTrackingPoliciesTable = {
   enabled: boolean;
   track_opens: boolean;
   track_links: boolean;
+  default_track_new_messages: ColumnType<boolean, boolean | undefined, boolean>;
   collect_derived_metadata: boolean;
   collect_raw_metadata: boolean;
   ip_insights_enabled: ColumnType<boolean, boolean | undefined, boolean>;
@@ -975,6 +988,14 @@ export type EmailAccountSignaturesTable = {
   signature_html: string | null;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
+  updated_at: TimestampColumn;
+};
+
+export type UserAccountSignaturesTable = {
+  workspace_id: string;
+  user_id: string;
+  account_id: number;
+  signature_html: ColumnType<string, string | undefined, string>;
   updated_at: TimestampColumn;
 };
 

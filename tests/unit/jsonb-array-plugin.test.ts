@@ -37,6 +37,11 @@ class FakeOperationNodeTransformer {
       if (record.kind === 'ValueNode') {
         return (this as unknown as { transformValue(n: unknown): unknown }).transformValue(record);
       }
+      if (record.kind === 'PrimitiveValueListNode') {
+        return (this as unknown as {
+          transformPrimitiveValueList(n: unknown): unknown;
+        }).transformPrimitiveValueList(record);
+      }
       const out: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(record)) out[key] = this.transformNode(value);
       return out;
@@ -45,6 +50,12 @@ class FakeOperationNodeTransformer {
   }
 
   protected transformValue(node: unknown): unknown {
+    return node;
+  }
+
+  // The real base class returns the PrimitiveValueListNode untouched — mirror
+  // that so the plugin's override is what does the work.
+  protected transformPrimitiveValueList(node: unknown): unknown {
     return node;
   }
 }
@@ -77,6 +88,52 @@ describe('createJsonbArrayPlugin', () => {
     expect(values[2]).toBe('plain');
     expect(values[3]).toBe(7);
     expect(values[4]).toBeNull();
+  });
+
+  test('rewrites array elements in an all-primitive insert row (PrimitiveValueListNode)', () => {
+    // Kysely emits this node for insert rows whose columns are all present with
+    // simple values — the path that previously bypassed the plugin and caused
+    // the tracking 22P02 crash.
+    const plugin = createJsonbArrayPlugin(FakeOperationNodeTransformer as never);
+    const node = {
+      kind: 'InsertQueryNode',
+      into: { kind: 'TableNode', table: 'email_tracking_event_classifications' },
+      values: {
+        kind: 'ValuesNode',
+        values: [
+          {
+            kind: 'PrimitiveValueListNode',
+            values: [['scanner', 'no_ua'], { origin: 'server' }, 'plain', 7, null],
+          },
+        ],
+      },
+    };
+
+    const result = plugin.transformQuery({ node, queryId: { queryId: 'q2' } } as never) as {
+      values: { values: Array<{ values: unknown[] }> };
+    };
+    const values = result.values.values[0]!.values;
+
+    expect(values[0]).toBe('["scanner","no_ua"]');
+    expect(values[1]).toEqual({ origin: 'server' });
+    expect(values[2]).toBe('plain');
+    expect(values[3]).toBe(7);
+    expect(values[4]).toBeNull();
+  });
+
+  test('leaves a PrimitiveValueListNode without arrays untouched', () => {
+    const plugin = createJsonbArrayPlugin(FakeOperationNodeTransformer as never);
+    const node = {
+      kind: 'InsertQueryNode',
+      values: {
+        kind: 'ValuesNode',
+        values: [{ kind: 'PrimitiveValueListNode', values: ['a', 2, null] }],
+      },
+    };
+    const result = plugin.transformQuery({ node, queryId: { queryId: 'q3' } } as never) as {
+      values: { values: Array<{ values: unknown[] }> };
+    };
+    expect(result.values.values[0]!.values).toEqual(['a', 2, null]);
   });
 
   test('transformResult passes the result through unchanged', async () => {

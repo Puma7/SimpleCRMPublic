@@ -18,6 +18,7 @@ import { handlePublicPortalRoute, handleReturnsRoute } from './returns-routes';
 import { handleSpamReadRoute } from './spam-routes';
 import { handleSettingsRoute } from './settings-routes';
 import { handleUserGroupRoute } from './user-group-routes';
+import { handleUserSignatureRoute } from './user-signature-routes';
 import { handleWorkflowReadRoute } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
 import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
@@ -92,6 +93,10 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
       // under the same /api/v1/email prefix.
       const smtpRelay = await handleSmtpRelayRoute(req, ports);
       if (smtpRelay) return smtpRelay;
+
+      // Also under /api/v1/email — dispatch before the generic mail routes.
+      const userSignatures = await handleUserSignatureRoute(req, ports);
+      if (userSignatures) return userSignatures;
 
       const customers = await handleCustomerRoute(req, ports);
       if (customers) return customers;

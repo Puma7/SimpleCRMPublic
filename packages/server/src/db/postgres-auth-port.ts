@@ -18,6 +18,7 @@ import type {
   AuthUserRecord,
   TokenPair,
 } from '../api';
+import { isForbiddenUserMutation } from '../api/capabilities';
 import type { AuthInvitationRow, ServerDatabase, UserRow } from './schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './workspace-context';
 
@@ -124,6 +125,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             'id',
             'email',
             'display_name',
+            'public_name',
             'role',
             'disabled_at',
             'login_pin_enabled',
@@ -153,12 +155,18 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
           if (!input.id) {
             if (!input.password) return { ok: false as const, code: 'password_required' as const };
+            // Only admins may create privileged accounts; delegated user
+            // managers (users.manage) can create ordinary users only.
+            if (isForbiddenUserMutation(input.actorIsAdmin, input.role)) {
+              return { ok: false as const, code: 'role_change_forbidden' as const };
+            }
             const created = await trx
               .insertInto('users')
               .values({
                 workspace_id: input.workspaceId,
                 email: input.email,
                 display_name: input.displayName,
+                public_name: input.publicName ?? null,
                 password_hash: await hashPassword(input.password),
                 role: input.role,
                 disabled_at: input.isActive === false ? now() : null,
@@ -168,6 +176,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
                 'id',
                 'email',
                 'display_name',
+                'public_name',
                 'role',
                 'disabled_at',
                 'created_at',
@@ -180,6 +189,13 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
           const existing = await selectUserById(trx, input.workspaceId, input.id);
           if (!existing) return { ok: false as const, code: 'not_found' as const };
+
+          // Delegated user managers may edit ordinary users only — never change
+          // a role, and never mutate an existing admin/owner account (e.g. reset
+          // its password or disable an owner).
+          if (isForbiddenUserMutation(input.actorIsAdmin, input.role, existing.role)) {
+            return { ok: false as const, code: 'role_change_forbidden' as const };
+          }
 
           const nextActive = input.isActive !== false;
           if (existing.role === 'owner' && (input.role !== 'owner' || !nextActive)) {
@@ -197,6 +213,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
               role: input.role,
               disabled_at: input.isActive === false ? now() : null,
               updated_at: now(),
+              ...(input.publicName === undefined ? {} : { public_name: input.publicName }),
               ...(input.password ? { password_hash: await hashPassword(input.password) } : {}),
             })
             .where('id', '=', input.id)
@@ -205,6 +222,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
               'id',
               'email',
               'display_name',
+              'public_name',
               'role',
               'disabled_at',
               'created_at',
@@ -225,6 +243,12 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         async (trx) => {
           const existing = await selectUserById(trx, input.workspaceId, input.id);
           if (!existing) return { ok: false as const, code: 'not_found' as const };
+          // Delegated user managers (users.manage but not admin) may only delete
+          // ordinary users — never an admin/owner account, whose deletion would
+          // revoke that principal's sessions. Mirrors the saveUser guard.
+          if (isForbiddenUserMutation(input.actorIsAdmin, existing.role, existing.role)) {
+            return { ok: false as const, code: 'role_change_forbidden' as const };
+          }
           if (existing.role === 'owner') {
             const otherOwnerCount = await countActiveOwners(trx, input.workspaceId, input.id);
             if (otherOwnerCount < 1) return { ok: false as const, code: 'last_owner_required' as const };
@@ -542,6 +566,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             'users.workspace_id as workspace_id',
             'users.email as email',
             'users.display_name as display_name',
+            'users.public_name as public_name',
             'users.password_hash as password_hash',
             'users.role as role',
             'users.disabled_at as disabled_at',
@@ -577,6 +602,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           workspaceId: existing.workspace_id,
           email: existing.email,
           displayName: existing.display_name,
+          publicName: existing.public_name ?? null,
           role: existing.role,
           passwordHash: existing.password_hash,
           disabledAt: existing.disabled_at ? toDate(existing.disabled_at).toISOString() : null,
@@ -705,11 +731,29 @@ async function resolveAccessTokenPrincipal(
     return null;
   }
 
+  // Owners/admins hold every capability implicitly (requireCapability short-
+  // circuits on requireAdmin), so only the `user` role needs the group union.
+  let capabilities: readonly string[] | undefined;
+  if (existing.role === 'user') {
+    const permissionRows = await db
+      .selectFrom('user_group_members')
+      .innerJoin('user_group_permissions', (join) => join
+        .onRef('user_group_permissions.group_id', '=', 'user_group_members.group_id')
+        .onRef('user_group_permissions.workspace_id', '=', 'user_group_members.workspace_id'))
+      .select('user_group_permissions.permission as permission')
+      .where('user_group_members.workspace_id', '=', existing.workspace_id)
+      .where('user_group_members.user_id', '=', existing.user_id)
+      .execute();
+    const granted = [...new Set(permissionRows.map((row) => String(row.permission)))];
+    if (granted.length > 0) capabilities = granted;
+  }
+
   return {
     userId: existing.user_id,
     workspaceId: existing.workspace_id,
     role: existing.role,
     sessionId: existing.token_id,
+    ...(capabilities ? { capabilities } : {}),
   };
 }
 
@@ -718,6 +762,7 @@ function mapUser(row: {
   workspace_id: string;
   email: string;
   display_name: string;
+  public_name?: string | null;
   role: UserRow['role'];
   password_hash: string;
   disabled_at: UserRow['disabled_at'];
@@ -732,6 +777,7 @@ function mapUser(row: {
     workspaceId: row.workspace_id,
     email: row.email,
     displayName: row.display_name,
+    publicName: row.public_name ?? null,
     role: row.role,
     passwordHash: row.password_hash,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
@@ -747,6 +793,7 @@ function mapAdminUser(row: {
   id: string;
   email: string;
   display_name: string;
+  public_name?: string | null;
   role: UserRow['role'];
   disabled_at: UserRow['disabled_at'];
   login_pin_enabled?: boolean;
@@ -759,6 +806,7 @@ function mapAdminUser(row: {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
+    publicName: row.public_name ?? null,
     role: row.role,
     disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
     loginPinEnabled: Boolean(row.login_pin_enabled),

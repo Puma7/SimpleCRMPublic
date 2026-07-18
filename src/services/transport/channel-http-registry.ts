@@ -45,6 +45,7 @@ type AuthUserRecord = {
   id: string
   email?: string | null
   displayName?: string | null
+  publicName?: string | null
   role?: string | null
   disabledAt?: string | null
   loginPinEnabled?: boolean | null
@@ -348,6 +349,8 @@ type EmailMessageRecord = {
   folderKind?: string | null
   threadId?: string | null
   imapThreadId?: string | null
+  threadMessageCount?: number | null
+  trackingOverride?: boolean | null
   ticketCode?: string | null
   customerId?: number | null
   hasAttachments?: boolean | number | null
@@ -942,6 +945,11 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: "/api/v1/auth/users",
     transform: (body) => listItems<AuthUserRecord>(body).map(mapAuthUserRecord),
   })],
+  [IPCChannels.Auth.ListCapabilities, () => ({
+    method: "GET",
+    path: "/api/v1/auth/capabilities",
+    transform: (body) => dataBody<{ role: string; capabilities: string[] }>(body),
+  })],
   [IPCChannels.Auth.SaveUser, ([payload]) => {
     const input = objectPayload(payload, "auth user payload")
     const id = optionalTextQueryValue(input.id, "auth user id", 120)
@@ -1478,6 +1486,23 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       method: "DELETE",
       path: `/api/v1/user-groups/${positiveId(input.groupId, "group id")}/members/${pathTextSegment(input.userId, "user id", 80)}`,
       transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.UserGroups.ListPermissions, ([groupId]) => ({
+    method: "GET",
+    path: `/api/v1/user-groups/${positiveId(groupId, "group id")}/permissions`,
+    transform: (body) => dataBody<{ permissions: string[] }>(body).permissions,
+  })],
+  [IPCChannels.UserGroups.SetPermissions, ([payload]) => {
+    const input = objectPayload(payload, "group permissions payload")
+    const permissions = Array.isArray(input.permissions)
+      ? input.permissions.map((entry) => stringPayloadField(entry, "permission"))
+      : []
+    return {
+      method: "PATCH",
+      path: `/api/v1/user-groups/${positiveId(input.groupId, "group id")}/permissions`,
+      body: { permissions },
+      transform: (body) => dataBody<{ permissions: string[] }>(body).permissions,
     }
   }],
 
@@ -2979,6 +3004,25 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     return {
       method: "POST",
       path: `/api/v1/email/account-signatures/by-account/${positiveId(input.accountId, "email account id")}/upsert`,
+      body: {
+        signatureHtml: accountSignatureHtmlValue(input.signatureHtml),
+      },
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.ListUserSignatures, () => ({
+    method: "GET",
+    path: "/api/v1/email/user-signatures",
+    transform: (body) => dataBody<{
+      user: { displayName: string; publicName: string | null }
+      signatures: Array<{ accountId: number; signatureHtml: string; updatedAt: string | null }>
+    }>(body),
+  })],
+  [IPCChannels.Email.SaveUserSignature, ([payload]) => {
+    const input = objectPayload(payload, "email user signature payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/user-signatures/by-account/${positiveId(input.accountId, "email account id")}/upsert`,
       body: {
         signatureHtml: accountSignatureHtmlValue(input.signatureHtml),
       },
@@ -4489,6 +4533,7 @@ function mapAuthUserRecord(record: AuthUserRecord) {
     id: record.id,
     username: record.email ?? "",
     display_name: record.displayName ?? record.email ?? "",
+    public_name: record.publicName ?? null,
     role: legacyAuthUserRole(record.role),
     is_active: record.disabledAt ? 0 : 1,
     login_pin_enabled: Boolean(record.loginPinEnabled),
@@ -4593,9 +4638,16 @@ function mapAuthUserPayload(input: Record<string, any>): Record<string, unknown>
       ? optionalAuthUserLoginPin(input.login_pin)
       : undefined
 
+  const publicName = Object.prototype.hasOwnProperty.call(input, "publicName")
+    ? authUserPublicNameValue(input.publicName, "auth user public name")
+    : Object.prototype.hasOwnProperty.call(input, "public_name")
+      ? authUserPublicNameValue(input.public_name, "auth user public name")
+      : undefined
+
   return pruneUndefined({
     email,
     displayName,
+    publicName,
     role: authUserRoleValue(input.role),
     password,
     isActive: authUserActiveValue(input.isActive ?? input.is_active),
@@ -4660,6 +4712,12 @@ function optionalAuthUserText(value: unknown, label: string, maxLength: number):
   if (value === undefined || value === null) return undefined
   const text = optionalTrimmedText(value, label, maxLength)
   return text || undefined
+}
+
+// Present-but-empty clears the alias (server maps '' → null); absent leaves it untouched.
+function authUserPublicNameValue(value: unknown, label: string): string {
+  if (value === undefined || value === null) return ""
+  return optionalTrimmedText(value, label, 120) || ""
 }
 
 function authUserActiveValue(value: unknown): boolean | undefined {
@@ -5222,6 +5280,9 @@ function mapComposeDraftUpdatePayload(value: Record<string, any>): Record<string
         ? null
         : positiveId(value.replyParentMessageId, "reply parent message id"),
     markReplyParentDone: optionalBoolean(value.markReplyParentDone, "mark reply parent done flag"),
+    trackingOverride: value.trackingOverride === undefined || value.trackingOverride === null
+      ? value.trackingOverride
+      : optionalBoolean(value.trackingOverride, "tracking override flag"),
   })
 }
 
@@ -5247,6 +5308,9 @@ function mapComposeSendPayload(value: Record<string, any>): Record<string, unkno
     requestReadReceipt: optionalBoolean(value.requestReadReceipt, "request read receipt flag"),
     pgpEncrypt: optionalBoolean(value.pgpEncrypt, "pgp encrypt flag"),
     pgpSign: optionalBoolean(value.pgpSign, "pgp sign flag"),
+    trackingOverride: value.trackingOverride === undefined || value.trackingOverride === null
+      ? value.trackingOverride
+      : optionalBoolean(value.trackingOverride, "tracking override flag"),
     pgpPassphrase: value.pgpPassphrase === undefined
       ? undefined
       : composeTextValue(value.pgpPassphrase, "pgp passphrase", 10_000),
@@ -5335,6 +5399,8 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     ticket_code: record.ticketCode ?? null,
     thread_id: record.threadId ?? null,
     imap_thread_id: record.imapThreadId ?? null,
+    thread_message_count: record.threadMessageCount ?? null,
+    tracking_override: record.trackingOverride ?? null,
     customer_id: record.customerId ?? null,
     folder_kind: record.folderKind ?? undefined,
     assigned_to: record.assignedTo ?? record.assignedToUserId ?? null,

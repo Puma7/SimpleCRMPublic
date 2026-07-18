@@ -1,4 +1,4 @@
-import { needsFullMessageBody } from '../../src/components/email/types';
+import { applyCannedTemplate, needsFullMessageBody } from '../../src/components/email/types';
 import {
   COMPOSE_BODY_MARKER,
   COMPOSE_QUOTE_MARKER,
@@ -268,6 +268,70 @@ describe('signature-template', () => {
     expect(interpolateSignatureTemplate('{{user.name}} <{{user.email}}>', ctx)).toBe(
       'Anna Agent <nord@example.com>',
     );
+  });
+
+  it('prefers the explicit public name for {{user.publicName}}', () => {
+    const ctx = buildSignatureTemplateContext({
+      accountDisplayName: 'Shop Nord',
+      accountEmail: 'nord@example.com',
+      teamMemberDisplayName: 'Anna Agent',
+      userDisplayName: 'Anna Schmidt',
+      userPublicName: 'A. Schmidt (Kundenservice)',
+    });
+    expect(interpolateSignatureTemplate('{{user.publicName}}', ctx)).toBe('A. Schmidt (Kundenservice)');
+    // {{user.name}} keeps the existing team/account behaviour.
+    expect(interpolateSignatureTemplate('{{user.name}}', ctx)).toBe('Anna Agent');
+  });
+
+  it('falls back {{user.publicName}} to the display name when only the user context is given', () => {
+    const viaDisplay = buildSignatureTemplateContext({
+      accountDisplayName: 'Shop Nord',
+      userDisplayName: 'Anna Schmidt',
+    });
+    expect(interpolateSignatureTemplate('{{user.publicName}}', viaDisplay)).toBe('Anna Schmidt');
+  });
+
+  it('leaves {{user.publicName}} untouched without a sender context, then a client pass fills it', () => {
+    // Server pre-interpolation (account/team only) must NOT consume the token —
+    // otherwise a shared account signature shows the account name, not the sender.
+    const serverPass = interpolateSignatureTemplate(
+      'Mit freundlichen Grüßen<br/>{{user.publicName}}',
+      buildSignatureTemplateContext({ accountDisplayName: 'Shop Nord', teamMemberDisplayName: 'Anna Agent' }),
+    );
+    expect(serverPass).toBe('Mit freundlichen Grüßen<br/>{{user.publicName}}');
+
+    // The client pass, which knows the sending user, resolves it.
+    const clientPass = interpolateSignatureTemplate(
+      serverPass,
+      buildSignatureTemplateContext({ userPublicName: 'A. Schmidt (Kundenservice)' }),
+    );
+    expect(clientPass).toBe('Mit freundlichen Grüßen<br/>A. Schmidt (Kundenservice)');
+  });
+});
+
+describe('applyCannedTemplate', () => {
+  it('fills customer, account and user placeholders', () => {
+    const out = applyCannedTemplate(
+      'Hallo {{customer.firstName}}, hier ist {{user.publicName}} von {{account.display_name}}.',
+      { id: 1, name: 'Anna Müller', firstName: 'Anna', email: 'a@example.com' },
+      {
+        accountDisplayName: 'Shop Nord',
+        userName: 'Bea Berater',
+        userEmail: 'bea@example.com',
+        userPublicName: 'Bea (Kundenservice)',
+      },
+    );
+    expect(out).toBe('Hallo Anna, hier ist Bea (Kundenservice) von Shop Nord.');
+  });
+
+  it('{{user.publicName}} falls back to the user name when no alias is set', () => {
+    const out = applyCannedTemplate('{{user.publicName}}', null, { userName: 'Bea Berater' });
+    expect(out).toBe('Bea Berater');
+  });
+
+  it('leaves account/user placeholders empty when no context is provided', () => {
+    const out = applyCannedTemplate('[{{account.display_name}}|{{user.name}}|{{customer.name}}]');
+    expect(out).toBe('[||]');
   });
 });
 

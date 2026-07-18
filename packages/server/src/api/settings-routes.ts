@@ -13,6 +13,7 @@ import {
   data,
   error,
   requireAdmin,
+  requireCapability,
   requirePrincipal,
 } from './http';
 
@@ -282,6 +283,8 @@ async function handleWorkflowAutomationSettings(
   // allowlist and auto-reply context to non-admin workflow authors.
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Stays admin-only: the payload includes the workflow HTTP allowlist, which is
+  // the SSRF boundary for http.request nodes — not safe to delegate.
   if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const parsed = parseWorkflowAutomationSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
@@ -327,7 +330,7 @@ async function handleMailSecuritySettings(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  if (!requireCapability(principal, 'email_settings.manage')) return error(403, 'forbidden', 'Adminrechte oder E-Mail-Einstellungs-Berechtigung erforderlich');
 
   if (req.method === 'GET') {
     const loaded = await loadSyncInfo(req, ports, MAIL_SECURITY_KEYS);
@@ -366,6 +369,20 @@ async function handleMailSecuritySettings(
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const parsed = parseMailSecuritySettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
+  // rspamdUrl is an SSRF boundary: checkMessageWithRspamd POSTs stored raw
+  // messages to `${rspamdUrl}/checkv2`, so repointing it can exfiltrate mail or
+  // probe internal hosts — exactly like the admin-only Rspamd test route. The
+  // client echoes the loaded URL on every save, so a delegated (non-admin)
+  // email_settings.manage holder must be able to change other fields while the
+  // URL rides along unchanged; only block an actual *change* to it.
+  if ('mail_security_rspamd_url' in parsed.values && !requireAdmin(principal)) {
+    const current = await loadSyncInfo(req, ports, ['mail_security_rspamd_url']);
+    if ('status' in current) return current;
+    const storedUrl = syncInfoUrl(current.values.get('mail_security_rspamd_url'), 'http://127.0.0.1:11333');
+    if (syncInfoUrl(parsed.values.mail_security_rspamd_url, 'http://127.0.0.1:11333') !== storedUrl) {
+      return error(403, 'forbidden', 'Die Rspamd-URL darf nur von Administratoren geändert werden');
+    }
+  }
   const saved = await saveSyncInfo(req, ports, parsed.values, 'email_settings.security.updated', 'email.settings.security');
   if ('status' in saved) return saved;
   return data(200, { success: true });

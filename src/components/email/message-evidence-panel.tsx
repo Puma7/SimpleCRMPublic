@@ -106,10 +106,13 @@ type EvidenceTimeline = {
 }
 
 export function MessageEvidencePanel(props: { messageId: number; folderKind?: string | null }) {
-  const { user, loading: authLoading } = useAuth()
+  const { user, hasCapability, loading: authLoading } = useAuth()
   const principalId = user?.id ?? null
   const hasUser = Boolean(user)
   const isAdmin = user?.role === "owner" || user?.role === "admin"
+  // Sensitive-metadata viewing is delegable via tracking.view; the reclassify/
+  // revoke/erase actions below stay admin-only (their routes still require it).
+  const canViewSensitive = isAdmin || hasCapability("tracking.view")
   const [timelineState, setTimelineState] = useState<{
     principalId: string
     messageId: number
@@ -216,12 +219,12 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
     const subscription = subscribeServerEvents({
       onEvent(event) {
         if (isMailTrackingRefreshEvent(event, props.messageId)) {
-          void load(includeSensitive && isAdmin)
+          void load(includeSensitive && canViewSensitive)
         }
       },
     })
     return () => subscription.unsubscribe()
-  }, [authLoading, hasUser, includeSensitive, isAdmin, load, props.folderKind, props.messageId])
+  }, [authLoading, hasUser, includeSensitive, canViewSensitive, load, props.folderKind, props.messageId])
 
   if (authLoading || !isServerClientMode() || props.folderKind !== "sent" || !available) return null
 
@@ -260,7 +263,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
       await invokeRenderer(channel, messageId)
       if (!canCommit()) return
       toast.success(successMessage)
-      await load(includeSensitiveRef.current && isAdmin)
+      await load(includeSensitiveRef.current && canViewSensitive)
       while (canCommit()) {
         const latest = latestLoadPromise.current
         if (!latest) break
@@ -339,7 +342,7 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                 </div>
                 {pixelFetchCount === 0 ? <p className="text-xs text-muted-foreground">Kein messbares Öffnungssignal. Bilder können blockiert oder aus einem Cache geladen worden sein.</p> : null}
 
-                {isAdmin ? (
+                {canViewSensitive ? (
                   <div className="flex items-center justify-between gap-3 border-y py-3">
                     <div>
                       <p id={sensitiveSwitchLabelId} className="text-xs font-medium">Sensible Rohdaten</p>
@@ -375,22 +378,31 @@ export function MessageEvidencePanel(props: { messageId: number; folderKind?: st
                           {eventContextLabel(event)}
                         </p>
                         <EvidenceMetadata event={event} infrastructure={isInfrastructureEvent(event)} />
-                        {isAdmin && includeSensitive && rawIpAddress(event.metadata) ? (
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="mt-1 h-7 gap-1 px-2 font-mono text-xs"
-                                aria-label={`IP-Insight für ${rawIpAddress(event.metadata)}`}
-                                onClick={() => {
-                                  if (principalId) setIpInsightState({ principalId, messageId: props.messageId, event })
-                                }}
-                              ><Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}</Button>
-                            </TooltipTrigger>
-                            <TooltipContent>IP-Insight für diese Infrastruktur öffnen</TooltipContent>
-                          </Tooltip>
+                        {canViewSensitive && includeSensitive && rawIpAddress(event.metadata) ? (
+                          isAdmin ? (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  className="mt-1 h-7 gap-1 px-2 font-mono text-xs"
+                                  aria-label={`IP-Insight für ${rawIpAddress(event.metadata)}`}
+                                  onClick={() => {
+                                    if (principalId) setIpInsightState({ principalId, messageId: props.messageId, event })
+                                  }}
+                                ><Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}</Button>
+                              </TooltipTrigger>
+                              <TooltipContent>IP-Insight für diese Infrastruktur öffnen</TooltipContent>
+                            </Tooltip>
+                          ) : (
+                            // tracking.view may read raw IPs, but the IP-Insight
+                            // drill-in route is admin-only — show the address
+                            // without the action that would always 403 for them.
+                            <span className="mt-1 inline-flex h-7 items-center gap-1 px-2 font-mono text-xs text-muted-foreground">
+                              <Network className="h-3.5 w-3.5" /><MapPin className="h-3.5 w-3.5" />{rawIpAddress(event.metadata)}
+                            </span>
+                          )
                         ) : null}
                       </div>
                     </li>

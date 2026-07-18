@@ -252,6 +252,20 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const isOpen = composeIntent.mode !== "closed"
   const serverClientMode = getRendererTransport().kind === "http"
   const localAttachmentPickerAvailable = !serverClientMode && hasLocalIpc()
+  // The signed-in user's own signature for an account takes precedence over the
+  // shared account/team signature (server edition only).
+  const fetchOwnSignatureHtml = useCallback(async (accountId: number): Promise<string | null> => {
+    if (!serverClientMode) return null
+    try {
+      const res = (await invokeRenderer(IPCChannels.Email.ListUserSignatures)) as {
+        signatures?: Array<{ accountId: number; signatureHtml: string }>
+      }
+      const own = res.signatures?.find((s) => s.accountId === accountId)
+      return own?.signatureHtml?.trim() ? own.signatureHtml : null
+    } catch {
+      return null
+    }
+  }, [serverClientMode])
   const resendFinalizeDescription = serverClientMode
     ? "Die Mail wurde per SMTP versendet, die serverseitige Finalisierung (Gesendet-Ordner) ist ausstehend. Senden erneut klicken - es wird kein zweites Mal an SMTP gesendet."
     : "Die Mail wurde per SMTP versendet, die lokale Finalisierung (Gesendet-Ordner) ist ausstehend. Senden erneut klicken - es wird kein zweites Mal an SMTP gesendet."
@@ -273,6 +287,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
   const [pgpPassphrase, setPgpPassphrase] = useState("")
+  // Per-message tracking choice (server edition only). null until the policy
+  // default is known; the checkbox then reflects a concrete boolean.
+  const [trackMail, setTrackMail] = useState<boolean | null>(null)
+  const [trackingConfigured, setTrackingConfigured] = useState(false)
+  // The workspace default, so each new compose reseeds instead of leaking the
+  // previous message's per-mail choice (the dialog stays mounted between sends).
+  const trackingDefaultRef = useRef(false)
   const [recipientKeyHint, setRecipientKeyHint] = useState<string | null>(null)
   const [checkingOutbound, setCheckingOutbound] = useState(false)
   const [attachmentPaths, setAttachmentPaths] = useState<string[]>([])
@@ -377,6 +398,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       setSignatureEditing(false)
       setSignatureManuallyEdited(false)
       setAssigningIdentity(false)
+      // Reseed the per-mail tracking choice from the workspace default so it
+      // doesn't leak into the next compose (the dialog stays mounted).
+      setTrackMail(trackingDefaultRef.current)
       return
     }
     let messageAccountId: number | undefined
@@ -443,6 +467,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           setSignatureHtml(hydrated.signatureHtml)
           setQuotedHtml(hydrated.quotedHtml)
           setAttachmentPaths(hydrated.attachmentPaths)
+          // Re-seed the per-message tracking choice from the saved draft so a
+          // later autosave/Send keeps an explicit opt-out (or opt-in) instead of
+          // flipping it to the workspace default. null → follow the default.
+          if (existing.tracking_override != null) setTrackMail(existing.tracking_override)
           setComposeSession(
             buildComposeSessionSnapshot(
               composeIntent,
@@ -490,6 +518,9 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             setSignatureHtml(hydrated.signatureHtml)
             setQuotedHtml(hydrated.quotedHtml)
             setAttachmentPaths(hydrated.attachmentPaths)
+            // See the draft-open branch: keep the saved per-message tracking
+            // choice rather than resetting it to the workspace default.
+            if (resumed.tracking_override != null) setTrackMail(resumed.tracking_override)
             if (session.keepReplyOpenInInbox != null) {
               setKeepReplyOpenInInbox(session.keepReplyOpenInInbox)
             }
@@ -559,6 +590,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             ...(initialTeamMemberId ? { teamMemberId: initialTeamMemberId } : {}),
           },
         ) as { html: string | null }
+        const ownSigHtml = await fetchOwnSignatureHtml(accountIdAtOpen)
+        const baseSigHtml = ownSigHtml ?? sigRes.html
         let customerForSig: CustomerOpt | null = null
         let customerSalutation: string | null = null
         if (sourceMsg?.customer_id) {
@@ -578,11 +611,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         const accountRow = accounts.find((a) => a.id === accountIdAtOpen)
         const selectedTeamMember = teamMembers.find((member) => member.id === initialTeamMemberId)
         const sigRaw =
-          sigRes.html && composeIntent.mode !== "forward"
-            ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
+          baseSigHtml && composeIntent.mode !== "forward"
+            ? interpolateSignatureTemplate(baseSigHtml, buildSignatureTemplateContext({
                 accountDisplayName: accountRow?.display_name ?? "",
                 accountEmail: accountRow?.email_address ?? "",
                 teamMemberDisplayName: selectedTeamMember?.display_name ?? null,
+                userPublicName: user?.publicName ?? null,
+                userDisplayName: user?.displayName ?? null,
                 customerName: customerForSig?.name ?? "",
                 customerFirstName: customerForSig?.firstName ?? "",
                 customerEmail: customerForSig?.email ?? "",
@@ -721,6 +756,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           ...(teamMemberId ? { teamMemberId } : {}),
         },
       ) as { html: string | null }
+      const ownSigHtml = await fetchOwnSignatureHtml(composeAccountId)
+      const baseSigHtml = ownSigHtml ?? sigRes.html
       const sourceMsg = getComposeSourceMessage(composeIntent)
       let customerForSig: CustomerOpt | null = null
       if (sourceMsg?.customer_id) {
@@ -736,11 +773,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       }
       const accountRow = accounts.find((a) => a.id === composeAccountId)
       const selectedTeamMember = teamMembers.find((member) => member.id === teamMemberId)
-      const sigRaw = sigRes.html
-        ? interpolateSignatureTemplate(sigRes.html, buildSignatureTemplateContext({
+      const sigRaw = baseSigHtml
+        ? interpolateSignatureTemplate(baseSigHtml, buildSignatureTemplateContext({
           accountDisplayName: accountRow?.display_name ?? "",
           accountEmail: accountRow?.email_address ?? "",
           teamMemberDisplayName: selectedTeamMember?.display_name ?? null,
+          userPublicName: user?.publicName ?? null,
+          userDisplayName: user?.displayName ?? null,
           customerName: customerForSig?.name ?? "",
           customerFirstName: customerForSig?.firstName ?? "",
           customerEmail: customerForSig?.email ?? "",
@@ -752,7 +791,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     } catch {
       /* ignore */
     }
-  }, [isOpen, composeAccountId, composeIntent, accounts, teamMembers, composeTeamMemberId])
+  }, [isOpen, composeAccountId, composeIntent, accounts, teamMembers, composeTeamMemberId, fetchOwnSignatureHtml, user?.publicName, user?.displayName])
 
   useEffect(() => {
     if (accountsRevision === 0) return
@@ -998,6 +1037,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           replyParentMessageId: replyToId,
           markReplyParentDone:
             isReplyCompose && replyToId != null ? !keepReplyOpenInInbox : undefined,
+          trackingOverride: serverClientMode && trackingConfigured ? trackMail : undefined,
         })
         return true
       } catch (e) {
@@ -1021,8 +1061,49 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       isReplyCompose,
       keepReplyOpenInInbox,
       replyToId,
+      serverClientMode,
+      trackingConfigured,
+      trackMail,
     ],
   )
+
+  // Load the workspace tracking policy to seed the per-message checkbox
+  // (server edition only). Default checked when tracking is enabled, has a
+  // signal configured, and defaults new messages to tracked.
+  useEffect(() => {
+    if (!serverClientMode) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const policy = (await invokeRenderer(IPCChannels.Email.GetEmailTrackingSettings)) as {
+          enabled?: boolean
+          trackOpens?: boolean
+          trackLinks?: boolean
+          defaultTrackNewMessages?: boolean
+        } | null
+        if (cancelled || !policy) return
+        const defaultOn = Boolean(
+          policy.enabled
+          && (policy.trackOpens || policy.trackLinks)
+          && policy.defaultTrackNewMessages !== false,
+        )
+        trackingDefaultRef.current = defaultOn
+        // Re-seed from the *current* policy: on first load, and whenever a new
+        // (non-draft) compose opens — so an admin's tracking-settings change is
+        // reflected without a full reload. Drafts keep the per-message override
+        // hydrated in the draft-open effect, so leave their value untouched.
+        setTrackMail((current) => {
+          if (current === null) return defaultOn
+          if (isOpen && composeIntent?.mode !== "draft") return defaultOn
+          return current
+        })
+        setTrackingConfigured(true)
+      } catch {
+        // Tracking settings unavailable — leave the checkbox hidden.
+      }
+    })()
+    return () => { cancelled = true }
+  }, [serverClientMode, isOpen, composeIntent?.mode])
 
   const handleServerAttachmentFiles = useCallback(
     async (files: FileList | readonly File[] | null) => {
@@ -1303,6 +1384,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         pgpEncrypt: pgpEncrypt || undefined,
         pgpSign: pgpSign || undefined,
         pgpPassphrase: pgpSign ? pgpPassphrase : undefined,
+        trackingOverride: serverClientMode && trackingConfigured ? trackMail : undefined,
       }) as {
         success: boolean
         error?: string
@@ -1524,7 +1606,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           ) : null}
           <div className="shrink-0 space-y-2 rounded-md border border-border/60 bg-muted/25 p-2">
             <p className="text-xs font-medium text-foreground">Text & Optionen</p>
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-end gap-x-5 gap-y-2">
             <div className="space-y-1">
               <div className="flex items-center gap-1">
                 <Label htmlFor="compose-canned" className="text-xs text-muted-foreground">
@@ -1542,7 +1624,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                   </TooltipTrigger>
                   <TooltipContent side="top" className="max-w-[260px] text-xs">
                     Fertigen Text aus Einstellungen → E-Mail → Textbausteine einfügen. Platzhalter
-                    wie Kundenname werden ersetzt, wenn ein Kunde verknüpft ist.
+                    für Kunde, Konto ({"{{account.display_name}}"}) und Absender ({"{{user.publicName}}"})
+                    werden beim Einfügen ersetzt.
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -1565,7 +1648,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                       logError("compose: load customer for template", e)
                     }
                   }
-                  const block = applyCannedTemplate(c.body, customer)
+                  const accountRow = accounts.find((a) => a.id === composeAccountId)
+                  const block = applyCannedTemplate(c.body, customer, {
+                    accountDisplayName: accountRow?.display_name ?? null,
+                    userName: user?.displayName ?? null,
+                    userEmail: user?.username ?? null,
+                    userPublicName: user?.publicName ?? null,
+                  })
                   const frag = sanitizeComposeHtml(
                     `<p>${block.replace(/\n/g, "<br/>")}</p>`,
                   )
@@ -1826,7 +1915,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           </div>
 
           <div
-            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col overflow-hidden rounded-md border bg-background shadow-sm [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-background"
+            className="compose-quill compose-editor-fill min-h-0 flex-1 flex flex-col rounded-md border bg-background shadow-sm [&_.ql-container]:rounded-b-md [&_.ql-container]:border-border [&_.ql-container]:bg-background [&_.ql-editor]:text-foreground [&_.ql-toolbar]:rounded-t-md [&_.ql-toolbar]:border-border [&_.ql-toolbar]:bg-background"
             title="Nachrichtenhöhe: an der unteren Kante des Feldes nach oben oder unten ziehen"
           >
             <ComposeQuillEditor
@@ -1975,6 +2064,23 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                   <Checkbox checked={pgpSign} onCheckedChange={(v) => setPgpSign(v === true)} />
                   PGP signieren
                 </label>
+                {serverClientMode && trackingConfigured ? (
+                  <label
+                    className="flex items-center gap-2"
+                    title={
+                      pgpEncrypt || pgpSign
+                        ? "PGP-geschützte Nachrichten werden nicht nachverfolgt."
+                        : "Sendet einen Tracking-Pixel mit dieser E-Mail."
+                    }
+                  >
+                    <Checkbox
+                      checked={!(pgpEncrypt || pgpSign) && trackMail === true}
+                      disabled={pgpEncrypt || pgpSign}
+                      onCheckedChange={(v) => setTrackMail(v === true)}
+                    />
+                    E-Mail-Tracking
+                  </label>
+                ) : null}
                 {pgpSign ? (
                   <Input
                     type="password"

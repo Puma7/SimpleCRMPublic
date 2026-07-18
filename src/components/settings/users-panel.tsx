@@ -31,6 +31,7 @@ type UserRow = {
   id: string
   username: string
   display_name: string
+  public_name?: string | null
   role: string
   is_active: number
   login_pin_enabled?: boolean
@@ -43,6 +44,7 @@ export function UsersPanel() {
   const [username, setUsername] = useState("")
   const [displayName, setDisplayName] = useState("")
   const [password, setPassword] = useState("")
+  const [publicName, setPublicName] = useState("")
   const [loginPin, setLoginPin] = useState("")
   const [inviteLink, setInviteLink] = useState("")
   const [inviteDelivery, setInviteDelivery] = useState("")
@@ -51,8 +53,10 @@ export function UsersPanel() {
   const [rowBusy, setRowBusy] = useState<string | null>(null)
   const [pwEditId, setPwEditId] = useState<string | null>(null)
   const [pwValue, setPwValue] = useState("")
+  const [pnEditId, setPnEditId] = useState<string | null>(null)
+  const [pnValue, setPnValue] = useState("")
   const serverClientMode = getRendererTransport().kind === "http"
-  const { user: currentUser } = useAuth()
+  const { user: currentUser, refresh } = useAuth()
 
   const strength = useMemo(() => evaluatePassword(password), [password])
 
@@ -81,12 +85,14 @@ export function UsersPanel() {
       await invokeRenderer(IPCChannels.Auth.SaveUser, {
         username: email,
         displayName: displayName.trim() || email,
+        ...(publicName.trim() ? { publicName: publicName.trim() } : {}),
         role: "agent",
         passphrase: password,
         ...(serverClientMode && loginPin.trim() ? { loginPin: loginPin.trim() } : {}),
       })
       setUsername("")
       setDisplayName("")
+      setPublicName("")
       setPassword("")
       setLoginPin("")
       await load()
@@ -118,6 +124,9 @@ export function UsersPanel() {
         await navigator.clipboard.writeText(link).catch(() => undefined)
       }
       setPassword("")
+      // Invitations don't carry the public name (set per-user after acceptance),
+      // so clear it instead of leaving a value that looks like it was applied.
+      setPublicName("")
     } catch (e) {
       setError(describeUserSaveError(e))
     } finally {
@@ -129,7 +138,7 @@ export function UsersPanel() {
   // server requires the full identity fields on update, so we pass the current
   // row plus the changed field(s).
   const applyUserUpdate = useCallback(
-    async (u: UserRow, changes: { isActive?: boolean; passphrase?: string }) => {
+    async (u: UserRow, changes: { isActive?: boolean; passphrase?: string; publicName?: string }) => {
       setError(null)
       setRowBusy(u.id)
       try {
@@ -145,13 +154,18 @@ export function UsersPanel() {
           ...changes,
         })
         await load()
+        // If the signed-in user edited their own row (notably the public name),
+        // force a fresh auth session so {{user.publicName}} interpolation in
+        // compose/signatures picks up the new value instead of the stale cached
+        // one (a plain refresh() reuses the cached session until near expiry).
+        if (u.id === currentUser?.id) await refresh({ force: true })
       } catch (e) {
         setError(describeUserSaveError(e))
       } finally {
         setRowBusy(null)
       }
     },
-    [load],
+    [load, refresh, currentUser?.id],
   )
 
   const submitNewPassword = async (u: UserRow) => {
@@ -162,6 +176,13 @@ export function UsersPanel() {
     await applyUserUpdate(u, { passphrase: pwValue })
     setPwEditId(null)
     setPwValue("")
+  }
+
+  const submitPublicName = async (u: UserRow) => {
+    // Empty string clears the alias (server maps '' → null).
+    await applyUserUpdate(u, { publicName: pnValue.trim() })
+    setPnEditId(null)
+    setPnValue("")
   }
 
   const deleteUser = useCallback(
@@ -244,6 +265,24 @@ export function UsersPanel() {
                 >
                   Passwort neu setzen
                 </Button>
+                {/* Public name is a server-edition concept: the local Electron
+                    auth store has no public_name column, so a desktop save would
+                    silently revert. Hide the control outside server mode. */}
+                {serverClientMode ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    disabled={rowBusy === u.id}
+                    onClick={() => {
+                      setPnEditId(pnEditId === u.id ? null : u.id)
+                      setPnValue(u.public_name ?? "")
+                    }}
+                  >
+                    Öffentl. Name
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   size="sm"
@@ -292,6 +331,41 @@ export function UsersPanel() {
                   </span>
                 </div>
               ) : null}
+              {serverClientMode && pnEditId === u.id ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Input
+                    className="h-8 max-w-[16rem]"
+                    placeholder="Öffentlicher Name (für Signaturen)"
+                    value={pnValue}
+                    maxLength={120}
+                    onChange={(e) => setPnValue(e.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-8"
+                    disabled={rowBusy === u.id}
+                    onClick={() => void submitPublicName(u)}
+                  >
+                    Speichern
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-8"
+                    onClick={() => {
+                      setPnEditId(null)
+                      setPnValue("")
+                    }}
+                  >
+                    Abbrechen
+                  </Button>
+                  <span className="w-full text-[11px] text-muted-foreground">
+                    Nutzbar in Signaturen über <code>{"{{user.publicName}}"}</code>. Leer lassen, um den Anzeigenamen zu verwenden.
+                  </span>
+                </div>
+              ) : null}
               {serverClientMode ? (
                 <UserSecurityActions user={u} disabled={busy} onChanged={() => void load()} />
               ) : null}
@@ -307,6 +381,20 @@ export function UsersPanel() {
             <Label>Anzeigename</Label>
             <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
           </div>
+          {serverClientMode ? (
+            <div className="sm:col-span-2">
+              <Label>Öffentlicher Name (für Signaturen)</Label>
+              <Input
+                value={publicName}
+                maxLength={120}
+                placeholder="optional — z. B. für {{user.publicName}}"
+                onChange={(e) => setPublicName(e.target.value)}
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Gilt beim direkten Anlegen. Bei einer Einladung wird der öffentliche Name nicht übernommen — er lässt sich nach Annahme je Benutzer setzen.
+              </p>
+            </div>
+          ) : null}
           <div className="sm:col-span-2">
             <div className="flex items-center gap-1.5">
               <Label htmlFor="new-user-password">Passwort</Label>

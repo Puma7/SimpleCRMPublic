@@ -2564,7 +2564,14 @@ async function scheduleAiAgentJob(
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
   if (profileId.value !== undefined) payload.profileId = profileId.value;
-  if (knowledgeBaseId.value !== undefined) payload.knowledgeBaseId = knowledgeBaseId.value;
+  if (knowledgeBaseId.value !== undefined) {
+    payload.knowledgeBaseId = knowledgeBaseId.value;
+  } else {
+    // No explicit knowledge base selected → honor the "Automatisch (passend
+    // zur Richtung)" contract: resolve the account/direction knowledge bases.
+    payload.autoKnowledge = true;
+    payload.direction = context.direction;
+  }
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;

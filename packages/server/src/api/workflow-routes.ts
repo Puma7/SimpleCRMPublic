@@ -31,7 +31,7 @@ import {
   data,
   error,
   positiveIntFromPath,
-  requireAdmin,
+  requireCapability,
   requirePrincipal,
 } from './http';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
@@ -434,8 +434,8 @@ async function handleWorkflowExecute(
   }
 
   const dryRun = parsed.values.dryRun !== false;
-  if (!dryRun && !requireAdmin(principal)) {
-    return error(403, 'forbidden', 'Live-Ausführung erfordert Adminrechte');
+  if (!dryRun && !requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Live-Ausführung erfordert Adminrechte oder Workflow-Berechtigung');
   }
 
   if (dryRun) {
