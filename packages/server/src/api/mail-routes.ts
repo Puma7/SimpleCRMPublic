@@ -2585,6 +2585,11 @@ function sanitizeEmailMessage(message: EmailMessageRecord, includeBody: boolean)
     snoozedUntil: message.snoozedUntil,
     draftAttachmentPathsJson: message.draftAttachmentPathsJson,
     replyParentMessageId: message.replyParentMessageId,
+    // Authoritative thread count (list chevron) and per-message tracking choice
+    // (draft-reopen checkbox) must survive the sanitizer, or the renderer never
+    // sees them in server mode and both fall back to stale/default behaviour.
+    ...(message.threadMessageCount === undefined ? {} : { threadMessageCount: message.threadMessageCount }),
+    ...(message.trackingOverride === undefined ? {} : { trackingOverride: message.trackingOverride }),
     ...(message.searchSnippet === undefined ? {} : { searchSnippet: message.searchSnippet }),
     ...(includeBody ? {
       bodyText: message.bodyText,

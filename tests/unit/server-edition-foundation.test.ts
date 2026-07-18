@@ -20456,6 +20456,8 @@ describe('server edition foundation', () => {
           return {
             items: [withRuntimeLeaks({
               ...makeEmailMessageRecord(11, true),
+              threadMessageCount: 3,
+              trackingOverride: false,
               ...((input as { search?: string }).search ? { searchSnippet: 'Treffer: \uE000Hello\uE001' } : {}),
             })],
             nextCursor: 11,
@@ -20466,7 +20468,13 @@ describe('server edition foundation', () => {
         },
         async get(input) {
           messageGetCalls.push(input);
-          return input.id === 11 ? withRuntimeLeaks(makeEmailMessageRecord(11, input.includeBody)) : null;
+          return input.id === 11
+            ? withRuntimeLeaks({
+              ...makeEmailMessageRecord(11, input.includeBody),
+              threadMessageCount: 3,
+              trackingOverride: false,
+            })
+            : null;
         },
         async getSecurity(input) {
           messageSecurityCalls.push(input);
@@ -20640,6 +20648,10 @@ describe('server edition foundation', () => {
     expect((messages.body as any).data.searchMode).toBe('fts');
     expect((messages.body as any).data.hasMore).toBe(true);
     expect((messages.body as any).data.items[0].searchSnippet).toBe('Treffer: \uE000Hello\uE001');
+    // Regression: both must survive sanitizeEmailMessage (they were stripped,
+    // breaking the list thread chevron and draft tracking checkbox in server mode).
+    expect((messages.body as any).data.items[0].threadMessageCount).toBe(3);
+    expect((messages.body as any).data.items[0].trackingOverride).toBe(false);
 
     // Suche Phase 3: Broad-Scope + Relevanz-Sortierung laufen bis in den Port.
     const broadSearch = await api.handle({
@@ -20702,6 +20714,8 @@ describe('server edition foundation', () => {
     });
     expect(message.status).toBe(200);
     expect((message.body as any).data.bodyText).toBe('Body text 11');
+    expect((message.body as any).data.threadMessageCount).toBe(3);
+    expect((message.body as any).data.trackingOverride).toBe(false);
     expect(messageGetCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, id: 11, includeBody: true }]);
 
     const security = await api.handle({

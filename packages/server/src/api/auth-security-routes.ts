@@ -317,6 +317,7 @@ function publicUser(user: {
   workspaceId: string;
   email: string;
   displayName: string;
+  publicName?: string | null;
   role: 'owner' | 'admin' | 'user';
 }) {
   return {
@@ -324,6 +325,9 @@ function publicUser(user: {
     workspaceId: user.workspaceId,
     email: user.email,
     displayName: user.displayName,
+    // Carry publicName so {{user.publicName}} resolves after an MFA login too,
+    // matching the password-login session (auth-routes publicUser).
+    ...(user.publicName === undefined ? {} : { publicName: user.publicName }),
     role: user.role,
   };
 }

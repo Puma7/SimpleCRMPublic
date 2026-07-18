@@ -1088,14 +1088,22 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           && policy.defaultTrackNewMessages !== false,
         )
         trackingDefaultRef.current = defaultOn
-        setTrackMail((current) => (current === null ? defaultOn : current))
+        // Re-seed from the *current* policy: on first load, and whenever a new
+        // (non-draft) compose opens — so an admin's tracking-settings change is
+        // reflected without a full reload. Drafts keep the per-message override
+        // hydrated in the draft-open effect, so leave their value untouched.
+        setTrackMail((current) => {
+          if (current === null) return defaultOn
+          if (isOpen && composeIntent?.mode !== "draft") return defaultOn
+          return current
+        })
         setTrackingConfigured(true)
       } catch {
         // Tracking settings unavailable — leave the checkbox hidden.
       }
     })()
     return () => { cancelled = true }
-  }, [serverClientMode])
+  }, [serverClientMode, isOpen, composeIntent?.mode])
 
   const handleServerAttachmentFiles = useCallback(
     async (files: FileList | readonly File[] | null) => {
