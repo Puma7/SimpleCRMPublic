@@ -38,7 +38,7 @@ type AuthState = {
   hasCapability: (capability: string) => boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
-  refresh: () => Promise<void>
+  refresh: (options?: { force?: boolean }) => Promise<void>
 }
 
 const AuthContext = createContext<AuthState | null>(null)
@@ -65,7 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options?: { force?: boolean }) => {
     const transport = getRendererTransport()
     const serverAuth = getServerAuthClient(transport)
     if (transport.kind === "http") {
@@ -75,8 +75,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return
       }
       try {
+        // force bypasses the cached session so callers that just changed
+        // server-side user data (e.g. the signed-in user's public name) get a
+        // fresh /auth/refresh instead of the stale cached publicName.
         const stored = serverAuth.getSession()
-        const session = stored && !isExpiring(stored)
+        const session = stored && !options?.force && !isExpiring(stored)
           ? stored
           : await serverAuth.refresh()
         applyServerSession(session)

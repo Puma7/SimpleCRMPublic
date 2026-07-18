@@ -152,9 +152,10 @@ export function UsersPanel() {
         })
         await load()
         // If the signed-in user edited their own row (notably the public name),
-        // refresh the auth session so {{user.publicName}} interpolation in
-        // compose/signatures picks up the new value instead of the stale one.
-        if (u.id === currentUser?.id) await refresh()
+        // force a fresh auth session so {{user.publicName}} interpolation in
+        // compose/signatures picks up the new value instead of the stale cached
+        // one (a plain refresh() reuses the cached session until near expiry).
+        if (u.id === currentUser?.id) await refresh({ force: true })
       } catch (e) {
         setError(describeUserSaveError(e))
       } finally {
