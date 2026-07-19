@@ -19,6 +19,19 @@ export type ServerMaintenanceApiPort = ServerMaintenancePort;
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
+export type CanonicalApiRoute = Readonly<{
+  source: string;
+  method: HttpMethod;
+  path: string;
+  pattern: RegExp;
+}>;
+
+export type CanonicalApiRouteRegistration = Readonly<{
+  path: string;
+  pattern: RegExp;
+  methods: readonly HttpMethod[];
+}>;
+
 export type AuthenticatedPrincipal = {
   userId: string;
   workspaceId: string;
@@ -320,113 +333,116 @@ export type ConversationLockRecord = {
   email?: string;
 };
 
-export type ServerEventType =
-  | 'conversation_lock.acquired'
-  | 'conversation_lock.heartbeat'
-  | 'conversation_lock.released'
-  | 'conversation_lock.force_takeover'
-  | 'customer.created'
-  | 'customer.updated'
-  | 'customer.deleted'
-  | 'product.created'
-  | 'product.updated'
-  | 'product.deleted'
-  | 'deal.created'
-  | 'deal.updated'
-  | 'deal.deleted'
-  | 'deal_product.created'
-  | 'deal_product.updated'
-  | 'deal_product.deleted'
-  | 'task.created'
-  | 'task.updated'
-  | 'task.deleted'
-  | 'calendar_event.created'
-  | 'calendar_event.updated'
-  | 'calendar_event.deleted'
-  | 'custom_field.created'
-  | 'custom_field.updated'
-  | 'custom_field.deleted'
-  | 'custom_field_value.created'
-  | 'custom_field_value.updated'
-  | 'custom_field_value.deleted'
-  | 'saved_view.created'
-  | 'saved_view.updated'
-  | 'saved_view.deleted'
-  | 'activity_log.created'
-  | 'jtl_reference.created'
-  | 'jtl_reference.updated'
-  | 'jtl_reference.deleted'
-  | 'jtl_order.created'
-  | 'spam_list_entry.created'
-  | 'spam_list_entry.updated'
-  | 'spam_list_entry.deleted'
-  | 'spam_learning_event.created'
-  | 'spam_decision.created'
-  | 'spam_decision.updated'
-  | 'spam_decision.deleted'
-  | 'pgp_identity.created'
-  | 'pgp_identity.updated'
-  | 'pgp_identity.deleted'
-  | 'pgp_peer_key.created'
-  | 'pgp_peer_key.updated'
-  | 'pgp_peer_key.deleted'
-  | 'ai_profile.created'
-  | 'ai_profile.updated'
-  | 'ai_profile.deleted'
-  | 'ai_prompt.created'
-  | 'ai_prompt.updated'
-  | 'ai_prompt.deleted'
-  | 'workflow.created'
-  | 'workflow.updated'
-  | 'workflow.deleted'
-  | 'workflow_version.created'
-  | 'workflow_version.updated'
-  | 'workflow_version.deleted'
-  | 'workflow_knowledge_base.created'
-  | 'workflow_knowledge_base.updated'
-  | 'workflow_knowledge_base.deleted'
-  | 'workflow_knowledge_chunk.created'
-  | 'workflow_knowledge_chunk.updated'
-  | 'workflow_knowledge_chunk.deleted'
-  | 'workflow_delayed_job.created'
-  | 'workflow_delayed_job.updated'
-  | 'workflow_delayed_job.deleted'
-  | 'automation_api_key.created'
-  | 'automation_api_key.revoked'
-  | 'email_account.created'
-  | 'email_account.updated'
-  | 'email_account.deleted'
-  | 'email_message.updated'
-  | 'email_message_tag.created'
-  | 'email_message_tag.deleted'
-  | 'email_category.created'
-  | 'email_category.updated'
-  | 'email_category.deleted'
-  | 'email_message_category.created'
-  | 'email_message_category.deleted'
-  | 'email_internal_note.created'
-  | 'email_internal_note.updated'
-  | 'email_internal_note.deleted'
-  | 'email_canned_response.created'
-  | 'email_canned_response.updated'
-  | 'email_canned_response.deleted'
-  | 'email_remote_content_allowlist.created'
-  | 'email_remote_content_allowlist.updated'
-  | 'email_remote_content_allowlist.deleted'
-  | 'email_team_member.created'
-  | 'email_team_member.updated'
-  | 'email_team_member.deleted'
-  | 'email_thread_edge.created'
-  | 'email_thread_edge.deleted'
-  | 'email_thread_alias.created'
-  | 'email_thread_alias.updated'
-  | 'email_thread_alias.deleted'
-  | 'email_thread.updated'
-  | 'email_tracking.updated'
-  | 'email_account_signature.created'
-  | 'email_account_signature.updated'
-  | 'email_account_signature.deleted'
-  | 'email_read_receipt.created';
+export const SERVER_EVENT_TYPES = Object.freeze([
+  'conversation_lock.acquired',
+  'conversation_lock.heartbeat',
+  'conversation_lock.released',
+  'conversation_lock.force_takeover',
+  'customer.created',
+  'customer.updated',
+  'customer.deleted',
+  'product.created',
+  'product.updated',
+  'product.deleted',
+  'deal.created',
+  'deal.updated',
+  'deal.deleted',
+  'deal_product.created',
+  'deal_product.updated',
+  'deal_product.deleted',
+  'task.created',
+  'task.updated',
+  'task.deleted',
+  'calendar_event.created',
+  'calendar_event.updated',
+  'calendar_event.deleted',
+  'custom_field.created',
+  'custom_field.updated',
+  'custom_field.deleted',
+  'custom_field_value.created',
+  'custom_field_value.updated',
+  'custom_field_value.deleted',
+  'saved_view.created',
+  'saved_view.updated',
+  'saved_view.deleted',
+  'activity_log.created',
+  'jtl_reference.created',
+  'jtl_reference.updated',
+  'jtl_reference.deleted',
+  'jtl_order.created',
+  'spam_list_entry.created',
+  'spam_list_entry.updated',
+  'spam_list_entry.deleted',
+  'spam_learning_event.created',
+  'spam_decision.created',
+  'spam_decision.updated',
+  'spam_decision.deleted',
+  'pgp_identity.created',
+  'pgp_identity.updated',
+  'pgp_identity.deleted',
+  'pgp_peer_key.created',
+  'pgp_peer_key.updated',
+  'pgp_peer_key.deleted',
+  'ai_profile.created',
+  'ai_profile.updated',
+  'ai_profile.deleted',
+  'ai_prompt.created',
+  'ai_prompt.updated',
+  'ai_prompt.deleted',
+  'workflow.created',
+  'workflow.updated',
+  'workflow.deleted',
+  'workflow_version.created',
+  'workflow_version.updated',
+  'workflow_version.deleted',
+  'workflow_knowledge_base.created',
+  'workflow_knowledge_base.updated',
+  'workflow_knowledge_base.deleted',
+  'workflow_knowledge_chunk.created',
+  'workflow_knowledge_chunk.updated',
+  'workflow_knowledge_chunk.deleted',
+  'workflow_delayed_job.created',
+  'workflow_delayed_job.updated',
+  'workflow_delayed_job.deleted',
+  'automation_api_key.created',
+  'automation_api_key.revoked',
+  'email_account.created',
+  'email_account.updated',
+  'email_account.deleted',
+  'email_message.updated',
+  'email_message_tag.created',
+  'email_message_tag.deleted',
+  'email_category.created',
+  'email_category.updated',
+  'email_category.deleted',
+  'email_message_category.created',
+  'email_message_category.deleted',
+  'email_internal_note.created',
+  'email_internal_note.updated',
+  'email_internal_note.deleted',
+  'email_canned_response.created',
+  'email_canned_response.updated',
+  'email_canned_response.deleted',
+  'email_remote_content_allowlist.created',
+  'email_remote_content_allowlist.updated',
+  'email_remote_content_allowlist.deleted',
+  'email_team_member.created',
+  'email_team_member.updated',
+  'email_team_member.deleted',
+  'email_thread_edge.created',
+  'email_thread_edge.deleted',
+  'email_thread_alias.created',
+  'email_thread_alias.updated',
+  'email_thread_alias.deleted',
+  'email_thread.updated',
+  'email_tracking.updated',
+  'email_account_signature.created',
+  'email_account_signature.updated',
+  'email_account_signature.deleted',
+  'email_read_receipt.created',
+] as const);
+
+export type ServerEventType = (typeof SERVER_EVENT_TYPES)[number];
 
 export type ServerEventEntityType =
   | 'email_message'

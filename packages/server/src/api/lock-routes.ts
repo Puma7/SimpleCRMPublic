@@ -1,5 +1,5 @@
 import type { ConversationLockReason } from '../locks';
-import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
 import {
   data,
   error,
@@ -11,6 +11,19 @@ import {
 
 const LOCK_RE = /^\/api\/v1\/locks\/(\d+)(?:\/(heartbeat|takeover))?$/;
 const LOCK_REASONS: readonly ConversationLockReason[] = ['reply', 'forward', 'edit'];
+
+export const MAIL_LOCK_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  lockRoute('GET', '/api/v1/locks', /^\/api\/v1\/locks$/),
+  lockRoute('GET', '/api/v1/locks/:messageId', /^\/api\/v1\/locks\/(\d+)$/),
+  lockRoute('POST', '/api/v1/locks/:messageId', /^\/api\/v1\/locks\/(\d+)$/),
+  lockRoute('DELETE', '/api/v1/locks/:messageId', /^\/api\/v1\/locks\/(\d+)$/),
+  lockRoute('PATCH', '/api/v1/locks/:messageId/heartbeat', /^\/api\/v1\/locks\/(\d+)\/heartbeat$/),
+  lockRoute('POST', '/api/v1/locks/:messageId/takeover', /^\/api\/v1\/locks\/(\d+)\/takeover$/),
+]);
+
+function lockRoute(method: ApiRequest['method'], path: string, pattern: RegExp): CanonicalApiRoute {
+  return { source: 'lock-routes', method, path, pattern };
+}
 
 export async function handleLockRoute(
   req: ApiRequest,

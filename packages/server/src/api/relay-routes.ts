@@ -13,6 +13,7 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
   ServerApiPorts,
   SmtpRelayAdminPort,
   SmtpRelayMutationInput,
@@ -31,6 +32,22 @@ const MAX_FROM_ADDRESS_LENGTH = 320;
 const MAX_INT4 = 2_147_483_647;
 const DEFAULT_SUBMISSIONS_LIMIT = 50;
 const MAX_SUBMISSIONS_LIMIT = 200;
+
+export const SMTP_RELAY_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  relayRoute('GET', BASE_PATH, /^\/api\/v1\/email\/relays$/),
+  relayRoute('POST', BASE_PATH, /^\/api\/v1\/email\/relays$/),
+  relayRoute('PATCH', `${BASE_PATH}/:relayId`, /^\/api\/v1\/email\/relays\/([^/]+)$/),
+  relayRoute('DELETE', `${BASE_PATH}/:relayId`, /^\/api\/v1\/email\/relays\/([^/]+)$/),
+  relayRoute('POST', `${BASE_PATH}/:relayId/accounts`, /^\/api\/v1\/email\/relays\/([^/]+)\/accounts$/),
+  relayRoute('DELETE', `${BASE_PATH}/:relayId/accounts/:accountId`, /^\/api\/v1\/email\/relays\/([^/]+)\/accounts\/([^/]+)$/),
+  relayRoute('POST', `${BASE_PATH}/:relayId/credentials`, /^\/api\/v1\/email\/relays\/([^/]+)\/credentials$/),
+  relayRoute('POST', `${BASE_PATH}/:relayId/credentials/:credentialId/revoke`, /^\/api\/v1\/email\/relays\/([^/]+)\/credentials\/([^/]+)\/revoke$/),
+  relayRoute('GET', `${BASE_PATH}/:relayId/submissions`, /^\/api\/v1\/email\/relays\/([^/]+)\/submissions$/),
+]);
+
+function relayRoute(method: ApiRequest['method'], path: string, pattern: RegExp): CanonicalApiRoute {
+  return { source: 'relay-routes', method, path, pattern };
+}
 
 type RelayMutationParseResult =
   | { ok: true; values: SmtpRelayMutationInput }

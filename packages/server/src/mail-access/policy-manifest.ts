@@ -1,0 +1,585 @@
+import type { MailPermission } from '@simplecrm/core';
+import { SERVER_MAIL_ROUTE_INVENTORY } from '../api/server-api';
+import { SERVER_EVENT_TYPES } from '../api/types';
+import type {
+  CanonicalApiRoute,
+  HttpMethod,
+  ServerEventType,
+} from '../api/types';
+
+export type PolicyValueSource = 'path' | 'query' | 'body' | 'event' | 'job';
+
+export type PolicyValueSelector = Readonly<{
+  source: PolicyValueSource;
+  field: string;
+}>;
+
+export type MailResourceResolution =
+  | Readonly<{ kind: 'mail_scope' }>
+  | Readonly<{ kind: 'account'; accountId: PolicyValueSelector }>
+  | Readonly<{ kind: 'folder_lookup'; folderId: PolicyValueSelector }>
+  | Readonly<{ kind: 'message_lookup'; messageId: PolicyValueSelector }>
+  | Readonly<{
+    kind: 'optional_message_lookup';
+    messageId: PolicyValueSelector;
+    whenAbsent: 'non_mail' | 'mail_scope';
+  }>
+  | Readonly<{ kind: 'attachment_lookup'; attachmentId: PolicyValueSelector }>
+  | Readonly<{ kind: 'thread_lookup'; threadId: PolicyValueSelector }>
+  | Readonly<{ kind: 'bulk_message_lookup'; messageIds: PolicyValueSelector }>
+  | Readonly<{
+    kind: 'metadata_lookup';
+    entity: 'message_tag'
+      | 'message_category'
+      | 'internal_note'
+      | 'read_receipt'
+      | 'thread_edge'
+      | 'thread_alias'
+      | 'account_signature'
+      | 'spam_decision'
+      | 'spam_learning_event';
+    id: PolicyValueSelector;
+  }>
+  | Readonly<{ kind: 'notice_lookup'; notice: 'uid_validity' | 'imap_auth' }>
+  | Readonly<{ kind: 'workspace_global' }>;
+
+export type MailRouteExemptionReason =
+  | 'signed_public_tracking'
+  | 'mail_auth_setup'
+  | 'workspace_admin_security'
+  | 'narrow_service_path';
+
+export type MailRoutePermissionPolicy = Readonly<{
+  kind: 'permission';
+  permission: MailPermission;
+  resource: MailResourceResolution;
+}>;
+
+export type MailRouteExemptPolicy = Readonly<{
+  kind: 'exempt';
+  reason: MailRouteExemptionReason;
+}>;
+
+export type MailRoutePolicyEntry =
+  | Readonly<{ route: CanonicalApiRoute; policy: MailRoutePermissionPolicy }>
+  | Readonly<{ route: CanonicalApiRoute; policy: MailRouteExemptPolicy }>;
+
+export type MailEventPolicyEntry = Readonly<{
+  type: ServerEventType;
+  permission: Extract<MailPermission, 'mail.metadata.read' | 'mail.content.read' | 'mail.attachment.read'>;
+  resource: MailResourceResolution;
+}>;
+
+const pathValue = (field: string): PolicyValueSelector => ({ source: 'path', field });
+const bodyValue = (field: string): PolicyValueSelector => ({ source: 'body', field });
+const queryValue = (field: string): PolicyValueSelector => ({ source: 'query', field });
+const eventValue = (field: string): PolicyValueSelector => ({ source: 'event', field });
+
+const mailScope = (): MailResourceResolution => ({ kind: 'mail_scope' });
+const accountPath = (): MailResourceResolution => ({ kind: 'account', accountId: pathValue('accountId') });
+const accountBody = (): MailResourceResolution => ({ kind: 'account', accountId: bodyValue('accountId') });
+const folderPath = (): MailResourceResolution => ({ kind: 'folder_lookup', folderId: pathValue('id') });
+const messagePath = (): MailResourceResolution => ({ kind: 'message_lookup', messageId: pathValue('messageId') });
+const messageBody = (field = 'messageId'): MailResourceResolution => ({
+  kind: 'message_lookup',
+  messageId: bodyValue(field),
+});
+const attachmentPath = (): MailResourceResolution => ({
+  kind: 'attachment_lookup',
+  attachmentId: pathValue('attachmentId'),
+});
+const threadPath = (field = 'threadId'): MailResourceResolution => ({
+  kind: 'thread_lookup',
+  threadId: pathValue(field),
+});
+const bulkMessages = (source: 'body' | 'query', field: string): MailResourceResolution => ({
+  kind: 'bulk_message_lookup',
+  messageIds: { source, field },
+});
+const metadataPath = (
+  entity: Extract<MailResourceResolution, { kind: 'metadata_lookup' }>['entity'],
+): MailResourceResolution => ({ kind: 'metadata_lookup', entity, id: pathValue('id') });
+
+const permissionPolicy = (
+  permission: MailPermission,
+  resource: MailResourceResolution,
+): MailRoutePermissionPolicy => ({ kind: 'permission', permission, resource });
+const exemptPolicy = (reason: MailRouteExemptionReason): MailRouteExemptPolicy => ({ kind: 'exempt', reason });
+
+export const MAIL_ROUTE_POLICY_MANIFEST: readonly MailRoutePolicyEntry[] = Object.freeze(
+  buildMailRoutePolicyManifest(),
+);
+export const MAIL_EVENT_POLICY_MANIFEST: readonly MailEventPolicyEntry[] = Object.freeze(
+  buildMailEventPolicyManifest(),
+);
+
+function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
+  const routeByKey = new Map(SERVER_MAIL_ROUTE_INVENTORY.map((route) => [mailRoutePolicyKey(route), route]));
+  const policies = new Map<string, MailRoutePermissionPolicy | MailRouteExemptPolicy>();
+  const assign = (
+    path: string,
+    byMethod: Partial<Record<HttpMethod, MailRoutePermissionPolicy | MailRouteExemptPolicy>>,
+  ): void => {
+    for (const [method, policy] of Object.entries(byMethod) as Array<[
+      HttpMethod,
+      MailRoutePermissionPolicy | MailRouteExemptPolicy,
+    ]>) {
+      const key = `${method} ${path}`;
+      if (!routeByKey.has(key)) throw new Error(`mail policy references unregistered route: ${key}`);
+      if (policies.has(key)) throw new Error(`duplicate mail route policy: ${key}`);
+      policies.set(key, policy);
+    }
+  };
+
+  const publicTracking = exemptPolicy('signed_public_tracking');
+  assign('/t/o/:token.gif', { GET: publicTracking });
+  assign('/t/c/:token', { GET: publicTracking });
+
+  const authSetup = exemptPolicy('mail_auth_setup');
+  assign('/api/v1/email/oauth/:provider/app', { GET: authSetup, PATCH: authSetup });
+  assign('/api/v1/email/oauth/:provider/authorize-url', { POST: authSetup });
+  assign('/api/v1/email/oauth/:provider/finish', { POST: authSetup });
+  assign('/api/v1/email/accounts/test-imap', { POST: authSetup });
+  assign('/api/v1/email/accounts/test-pop3', { POST: authSetup });
+  assign('/api/v1/email/accounts/test-smtp', { POST: authSetup });
+
+  const workspaceSecurity = exemptPolicy('workspace_admin_security');
+  assign('/api/v1/email/tracking/settings', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/messages/:messageId/tracking', { DELETE: workspaceSecurity });
+  assign('/api/v1/email/messages/:messageId/tracking/revoke', { POST: workspaceSecurity });
+  assign('/api/v1/email/messages/:messageId/tracking/reclassify', { POST: workspaceSecurity });
+  assign('/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight', { GET: workspaceSecurity });
+
+  assign('/api/v1/email/relays', { GET: workspaceSecurity, POST: workspaceSecurity });
+  assign('/api/v1/email/relays/:relayId', { PATCH: workspaceSecurity, DELETE: workspaceSecurity });
+  assign('/api/v1/email/relays/:relayId/accounts', { POST: workspaceSecurity });
+  assign('/api/v1/email/relays/:relayId/accounts/:accountId', { DELETE: workspaceSecurity });
+  assign('/api/v1/email/relays/:relayId/credentials', { POST: workspaceSecurity });
+  assign('/api/v1/email/relays/:relayId/credentials/:credentialId/revoke', { POST: workspaceSecurity });
+  assign('/api/v1/email/relays/:relayId/submissions', { GET: workspaceSecurity });
+
+  assign('/api/v1/email/settings/misc', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/settings/security', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/settings/security/test-rspamd', { POST: workspaceSecurity });
+  assign('/api/v1/email/settings/account-mail', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/settings/snooze', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/settings/reply-suggestion', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+
+  assign('/api/v1/email/accounts', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  assign('/api/v1/email/accounts/:accountId', {
+    GET: permissionPolicy('mail.metadata.read', accountPath()),
+    PATCH: permissionPolicy('mail.account.manage', accountPath()),
+    DELETE: permissionPolicy('mail.account.manage', accountPath()),
+  });
+  assign('/api/v1/email/accounts/:accountId/sync', { POST: permissionPolicy('mail.account.manage', accountPath()) });
+  assign('/api/v1/email/accounts/:accountId/sync-lock', { DELETE: permissionPolicy('mail.account.manage', accountPath()) });
+  assign('/api/v1/email/accounts/:accountId/vacation-test', { POST: permissionPolicy('mail.send', accountPath()) });
+  assign('/api/v1/email/accounts/:accountId/inbox-archive-recovery', {
+    GET: permissionPolicy('mail.metadata.read', accountPath()),
+    POST: permissionPolicy('mail.account.manage', accountPath()),
+  });
+
+  for (const path of [
+    '/api/v1/email/folder-counts',
+    '/api/v1/email/diagnostics',
+    '/api/v1/email/reporting',
+    '/api/v1/email/dmarc/stats',
+    '/api/v1/email/messages',
+    '/api/v1/email/messages/conversation',
+  ]) {
+    assign(path, { GET: permissionPolicy('mail.metadata.read', mailScope()) });
+  }
+  assign('/api/v1/email/gdpr-export', { GET: permissionPolicy('mail.export', mailScope()) });
+  assign('/api/v1/email/threads/backfill', { POST: permissionPolicy('mail.account.manage', mailScope()) });
+  assign('/api/v1/email/messages/backfill-customer-links', { POST: permissionPolicy('mail.triage', mailScope()) });
+
+  assign('/api/v1/email/messages/bulk/soft-delete', { PATCH: permissionPolicy('mail.delete', bulkMessages('body', 'messageIds')) });
+  assign('/api/v1/email/messages/bulk/archive', { PATCH: permissionPolicy('mail.triage', bulkMessages('body', 'messageIds')) });
+  assign('/api/v1/email/messages/bulk/done', { PATCH: permissionPolicy('mail.triage', bulkMessages('body', 'messageIds')) });
+  assign('/api/v1/email/messages/bulk/spam-status', { PATCH: permissionPolicy('mail.triage', bulkMessages('body', 'messageIds')) });
+  assign('/api/v1/email/messages/bulk/local-drafts', { DELETE: permissionPolicy('mail.delete', bulkMessages('body', 'messageIds')) });
+
+  assign('/api/v1/email/compose-drafts', { POST: permissionPolicy('mail.draft.create', accountBody()) });
+  assign('/api/v1/email/compose/send', { POST: permissionPolicy('mail.send', messageBody('draftMessageId')) });
+  assign('/api/v1/email/compose/validate-outbound', { POST: permissionPolicy('mail.draft.edit', messageBody()) });
+
+  assign('/api/v1/email/messages/:messageId/compose-attachments', { POST: permissionPolicy('mail.draft.edit', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/compose-draft', { PATCH: permissionPolicy('mail.draft.edit', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/scheduled-send-state', { GET: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/compose-draft-recovery-state', { GET: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/scheduled-send-failure', { DELETE: permissionPolicy('mail.send', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/scheduled-send/retry', { PATCH: permissionPolicy('mail.send', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/post-process/retry', { POST: permissionPolicy('mail.triage', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/scheduled-send', { PATCH: permissionPolicy('mail.send', messagePath()) });
+  assign('/api/v1/email/threads/:threadId/messages', { GET: permissionPolicy('mail.metadata.read', threadPath()) });
+
+  for (const path of [
+    '/api/v1/email/messages/:messageId/spam-decision',
+    '/api/v1/email/messages/:messageId/security/check',
+    '/api/v1/email/messages/:messageId/read-receipt-response',
+    '/api/v1/email/messages/:messageId/remote-content-policy/consume',
+    '/api/v1/email/messages/:messageId/actions',
+  ]) {
+    assign(path, { POST: permissionPolicy('mail.triage', messagePath()) });
+  }
+  for (const path of [
+    '/api/v1/email/messages/:messageId/spam-status',
+    '/api/v1/email/messages/:messageId/remote-content-policy',
+    '/api/v1/email/messages/:messageId/snooze',
+    '/api/v1/email/messages/:messageId/restore',
+    '/api/v1/email/messages/:messageId/customer-link',
+    '/api/v1/email/messages/:messageId/assignment',
+    '/api/v1/email/messages/:messageId/archive',
+    '/api/v1/email/messages/:messageId/seen',
+    '/api/v1/email/messages/:messageId/done',
+    '/api/v1/email/messages/:messageId/move',
+  ]) {
+    assign(path, { PATCH: permissionPolicy('mail.triage', messagePath()) });
+  }
+  assign('/api/v1/email/messages/:messageId/soft-delete', { PATCH: permissionPolicy('mail.delete', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/local-draft', { DELETE: permissionPolicy('mail.delete', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/security', { GET: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/raw-headers', { GET: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/read-receipt-state', { GET: permissionPolicy('mail.metadata.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/attachments', { GET: permissionPolicy('mail.attachment.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/reply-suggestion', { GET: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/reply-suggestion/ensure', { POST: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/reply-draft', { POST: permissionPolicy('mail.draft.create', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/tracking', { GET: permissionPolicy('mail.metadata.read', messagePath()) });
+  assign('/api/v1/email/messages/:messageId', { GET: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/email/attachments/:attachmentId', { GET: permissionPolicy('mail.attachment.read', attachmentPath()) });
+  assign('/api/v1/email/attachments/:attachmentId/content', { GET: permissionPolicy('mail.attachment.read', attachmentPath()) });
+
+  assignMetadataPolicies(assign);
+  assignSupplementalProtectedPolicies(assign);
+
+  const missing = SERVER_MAIL_ROUTE_INVENTORY
+    .map(mailRoutePolicyKey)
+    .filter((key) => !policies.has(key));
+  if (missing.length > 0) throw new Error(`unclassified canonical mail routes: ${missing.join(', ')}`);
+
+  return SERVER_MAIL_ROUTE_INVENTORY.map((route) => {
+    const policy = policies.get(mailRoutePolicyKey(route));
+    if (!policy) throw new Error(`unclassified mail route: ${mailRoutePolicyKey(route)}`);
+    return policy.kind === 'permission' ? { route, policy } : { route, policy };
+  });
+}
+
+type AssignRoutePolicy = (
+  path: string,
+  byMethod: Partial<Record<HttpMethod, MailRoutePermissionPolicy | MailRouteExemptPolicy>>,
+) => void;
+
+function assignMetadataPolicies(assign: AssignRoutePolicy): void {
+  assign('/api/v1/email/messages/:messageId/tags', {
+    GET: permissionPolicy('mail.metadata.read', messagePath()),
+    POST: permissionPolicy('mail.triage', messagePath()),
+    DELETE: permissionPolicy('mail.triage', messagePath()),
+  });
+  assign('/api/v1/email/messages/:messageId/categories', {
+    GET: permissionPolicy('mail.metadata.read', messagePath()),
+    POST: permissionPolicy('mail.triage', messagePath()),
+  });
+  assign('/api/v1/email/messages/:messageId/internal-notes', {
+    GET: permissionPolicy('mail.comment', messagePath()),
+    POST: permissionPolicy('mail.comment', messagePath()),
+  });
+
+  assign('/api/v1/email/folders', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
+  assign('/api/v1/email/folders/:id', { GET: permissionPolicy('mail.metadata.read', folderPath()) });
+  assign('/api/v1/email/tags', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', mailScope()),
+  });
+  assign('/api/v1/email/tags/:id', {
+    GET: permissionPolicy('mail.metadata.read', metadataPath('message_tag')),
+    DELETE: permissionPolicy('mail.triage', metadataPath('message_tag')),
+  });
+  assign('/api/v1/email/categories', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', mailScope()),
+  });
+  assign('/api/v1/email/categories/:id', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    PATCH: permissionPolicy('mail.triage', mailScope()),
+    DELETE: permissionPolicy('mail.triage', mailScope()),
+  });
+  assign('/api/v1/email/categories/reorder', { PATCH: permissionPolicy('mail.triage', mailScope()) });
+  assign('/api/v1/email/category-counts', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
+
+  assign('/api/v1/email/message-categories', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', messageBody()),
+  });
+  assign('/api/v1/email/message-categories/:id', {
+    GET: permissionPolicy('mail.metadata.read', metadataPath('message_category')),
+    DELETE: permissionPolicy('mail.triage', metadataPath('message_category')),
+  });
+  assign('/api/v1/email/internal-notes', {
+    GET: permissionPolicy('mail.comment', mailScope()),
+    POST: permissionPolicy('mail.comment', messageBody()),
+  });
+  assign('/api/v1/email/internal-notes/:id', {
+    GET: permissionPolicy('mail.comment', metadataPath('internal_note')),
+    PATCH: permissionPolicy('mail.comment', metadataPath('internal_note')),
+    DELETE: permissionPolicy('mail.comment', metadataPath('internal_note')),
+  });
+
+  assign('/api/v1/email/canned-responses', {
+    GET: permissionPolicy('mail.draft.create', mailScope()),
+    POST: permissionPolicy('mail.draft.create', mailScope()),
+  });
+  assign('/api/v1/email/canned-responses/:id', {
+    GET: permissionPolicy('mail.draft.create', mailScope()),
+    PATCH: permissionPolicy('mail.draft.create', mailScope()),
+    DELETE: permissionPolicy('mail.draft.create', mailScope()),
+  });
+  assign('/api/v1/email/account-signatures', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.account.manage', accountBody()),
+  });
+  assign('/api/v1/email/account-signatures/:id', {
+    GET: permissionPolicy('mail.metadata.read', metadataPath('account_signature')),
+    PATCH: permissionPolicy('mail.account.manage', metadataPath('account_signature')),
+    DELETE: permissionPolicy('mail.account.manage', metadataPath('account_signature')),
+  });
+  assign('/api/v1/email/account-signatures/by-account/:accountId/upsert', {
+    POST: permissionPolicy('mail.account.manage', accountPath()),
+  });
+
+  assign('/api/v1/email/remote-content-allowlist', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  assign('/api/v1/email/remote-content-allowlist/:id', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    PATCH: permissionPolicy('mail.account.manage', mailScope()),
+    DELETE: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  assign('/api/v1/email/read-receipts', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', messageBody()),
+  });
+  assign('/api/v1/email/read-receipts/:id', { GET: permissionPolicy('mail.metadata.read', metadataPath('read_receipt')) });
+
+  assign('/api/v1/email/team-members', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  assign('/api/v1/email/team-members/:id', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    PATCH: permissionPolicy('mail.account.manage', mailScope()),
+    DELETE: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  assign('/api/v1/email/team-members/:teamMemberId/upsert', { POST: permissionPolicy('mail.account.manage', mailScope()) });
+
+  assign('/api/v1/email/thread-edges', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', messageBody('parentMessageId')),
+  });
+  assign('/api/v1/email/thread-edges/:id', {
+    GET: permissionPolicy('mail.metadata.read', metadataPath('thread_edge')),
+    DELETE: permissionPolicy('mail.triage', metadataPath('thread_edge')),
+  });
+  assign('/api/v1/email/thread-aliases', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', accountBody()),
+  });
+  assign('/api/v1/email/thread-aliases/:id', {
+    GET: permissionPolicy('mail.metadata.read', metadataPath('thread_alias')),
+    PATCH: permissionPolicy('mail.triage', metadataPath('thread_alias')),
+    DELETE: permissionPolicy('mail.triage', metadataPath('thread_alias')),
+  });
+  assign('/api/v1/email/threads', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
+  assign('/api/v1/email/threads/:id', { GET: permissionPolicy('mail.metadata.read', threadPath('id')) });
+  assign('/api/v1/email/threads/split-message', { POST: permissionPolicy('mail.triage', messageBody()) });
+  assign('/api/v1/email/threads/merge', { POST: permissionPolicy('mail.triage', mailScope()) });
+  assign('/api/v1/email/thread-alias-warnings', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
+}
+
+function assignSupplementalProtectedPolicies(assign: AssignRoutePolicy): void {
+  assign('/api/v1/email/user-signatures', { GET: permissionPolicy('mail.draft.create', mailScope()) });
+  assign('/api/v1/email/user-signatures/by-account/:accountId/upsert', {
+    POST: permissionPolicy('mail.draft.create', accountPath()),
+  });
+  assign('/api/v1/email/notices/uid-validity', {
+    GET: permissionPolicy('mail.metadata.read', { kind: 'notice_lookup', notice: 'uid_validity' }),
+    DELETE: permissionPolicy('mail.metadata.read', { kind: 'notice_lookup', notice: 'uid_validity' }),
+  });
+  assign('/api/v1/email/notices/imap-auth', {
+    GET: permissionPolicy('mail.metadata.read', { kind: 'notice_lookup', notice: 'imap_auth' }),
+    DELETE: permissionPolicy('mail.metadata.read', { kind: 'account', accountId: queryValue('accountId') }),
+  });
+
+  assign('/api/v1/locks', { GET: permissionPolicy('mail.metadata.read', bulkMessages('query', 'messageIds')) });
+  assign('/api/v1/locks/:messageId', {
+    GET: permissionPolicy('mail.metadata.read', messagePath()),
+    POST: permissionPolicy('mail.draft.edit', messagePath()),
+    DELETE: permissionPolicy('mail.draft.edit', messagePath()),
+  });
+  assign('/api/v1/locks/:messageId/heartbeat', { PATCH: permissionPolicy('mail.draft.edit', messagePath()) });
+  assign('/api/v1/locks/:messageId/takeover', { POST: permissionPolicy('mail.draft.edit', messagePath()) });
+
+  assign('/api/v1/pgp/attachments/:attachmentId/decrypt', { POST: permissionPolicy('mail.attachment.read', attachmentPath()) });
+  assign('/api/v1/pgp/attachments/:attachmentId/verify', { POST: permissionPolicy('mail.attachment.read', attachmentPath()) });
+  assign('/api/v1/pgp/messages/:messageId/decrypt', { POST: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/pgp/messages/:messageId/detect', { POST: permissionPolicy('mail.content.read', messagePath()) });
+  assign('/api/v1/pgp/messages/:messageId/verify', { POST: permissionPolicy('mail.content.read', messagePath()) });
+
+  assign('/api/v1/pgp/identities/generate', { POST: permissionPolicy('mail.account.manage', mailScope()) });
+  assign('/api/v1/pgp/peer-keys/import', { POST: permissionPolicy('mail.account.manage', mailScope()) });
+  assign('/api/v1/pgp/recipient-key-status', { GET: permissionPolicy('mail.send', mailScope()) });
+  assign('/api/v1/pgp/messages/encrypt', { POST: permissionPolicy('mail.send', mailScope()) });
+  assign('/api/v1/pgp/messages/sign', { POST: permissionPolicy('mail.send', mailScope()) });
+  assign('/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase', {
+    POST: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  assign('/api/v1/pgp/identities/:identityId/private-key/passphrase', {
+    POST: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  for (const path of [
+    '/api/v1/pgp/identities/by-source/:sourceId',
+    '/api/v1/pgp/peer-keys/by-source/:sourceId',
+    '/api/v1/pgp/identities/:id',
+    '/api/v1/pgp/peer-keys/:id',
+  ]) {
+    assign(path, {
+      GET: permissionPolicy('mail.metadata.read', mailScope()),
+      PATCH: permissionPolicy('mail.account.manage', mailScope()),
+      DELETE: permissionPolicy('mail.account.manage', mailScope()),
+    });
+  }
+  assign('/api/v1/pgp/identities', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.account.manage', mailScope()),
+  });
+  assign('/api/v1/pgp/peer-keys', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.account.manage', mailScope()),
+  });
+
+  assign('/api/v1/spam/list-entries/upsert', { POST: permissionPolicy('mail.triage', mailScope()) });
+  assign('/api/v1/spam/list-entries', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', mailScope()),
+  });
+  assign('/api/v1/spam/list-entries/:id', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    PATCH: permissionPolicy('mail.triage', mailScope()),
+    DELETE: permissionPolicy('mail.triage', mailScope()),
+  });
+  assign('/api/v1/spam/feature-stats', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
+  assign('/api/v1/spam/feature-stats/:id', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
+
+  assign('/api/v1/spam/learning-events', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', messageBody()),
+  });
+  assign('/api/v1/spam/learning-events/:id', {
+    GET: permissionPolicy('mail.metadata.read', metadataPath('spam_learning_event')),
+  });
+  assign('/api/v1/spam/decisions', {
+    GET: permissionPolicy('mail.metadata.read', mailScope()),
+    POST: permissionPolicy('mail.triage', messageBody()),
+  });
+  assign('/api/v1/spam/decisions/:id', {
+    GET: permissionPolicy('mail.metadata.read', metadataPath('spam_decision')),
+    PATCH: permissionPolicy('mail.triage', metadataPath('spam_decision')),
+    DELETE: permissionPolicy('mail.triage', metadataPath('spam_decision')),
+  });
+}
+
+function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
+  const mailEventTypes = SERVER_EVENT_TYPES.filter((type) => (
+    type.startsWith('email_') || type.startsWith('conversation_lock.')
+  ));
+  return mailEventTypes.map((type) => ({
+    type,
+    permission: 'mail.metadata.read',
+    resource: eventResourceResolution(type),
+  }));
+}
+
+function eventResourceResolution(type: ServerEventType): MailResourceResolution {
+  if (type.startsWith('conversation_lock.') || type === 'email_message.updated' || type === 'email_tracking.updated') {
+    return { kind: 'message_lookup', messageId: eventValue('entityId') };
+  }
+  if (type.startsWith('email_account.')) {
+    return { kind: 'account', accountId: eventValue('entityId') };
+  }
+  if (type.startsWith('email_message_tag.')) return eventMetadataLookup('message_tag');
+  if (type.startsWith('email_message_category.')) return eventMetadataLookup('message_category');
+  if (type.startsWith('email_internal_note.')) return eventMetadataLookup('internal_note');
+  if (type.startsWith('email_account_signature.')) return eventMetadataLookup('account_signature');
+  if (type.startsWith('email_read_receipt.')) return eventMetadataLookup('read_receipt');
+  if (type.startsWith('email_thread_edge.')) return eventMetadataLookup('thread_edge');
+  if (type.startsWith('email_thread_alias.')) return eventMetadataLookup('thread_alias');
+  if (type === 'email_thread.updated') {
+    return { kind: 'thread_lookup', threadId: eventValue('entityId') };
+  }
+  if (
+    type.startsWith('email_category.')
+    || type.startsWith('email_canned_response.')
+    || type.startsWith('email_remote_content_allowlist.')
+    || type.startsWith('email_team_member.')
+  ) {
+    return { kind: 'workspace_global' };
+  }
+  throw new Error(`unclassified mail event resource: ${type}`);
+}
+
+function eventMetadataLookup(
+  entity: Extract<MailResourceResolution, { kind: 'metadata_lookup' }>['entity'],
+): MailResourceResolution {
+  return { kind: 'metadata_lookup', entity, id: eventValue('entityId') };
+}
+
+export function mailRoutePolicyKey(route: Pick<CanonicalApiRoute, 'method' | 'path'>): string {
+  return `${route.method} ${route.path}`;
+}
+
+export function createMailRoutePolicyIndex(
+  entries: readonly MailRoutePolicyEntry[],
+): ReadonlyMap<string, MailRoutePolicyEntry> {
+  return createUniqueIndex(entries, ({ route }) => mailRoutePolicyKey(route), 'mail route policy');
+}
+
+export function createMailEventPolicyIndex(
+  entries: readonly MailEventPolicyEntry[],
+): ReadonlyMap<string, MailEventPolicyEntry> {
+  return createUniqueIndex(entries, ({ type }) => type, 'mail event policy');
+}
+
+export function assertMailRoutePolicy(method: HttpMethod, path: string): MailRoutePolicyEntry {
+  const entry = MAIL_ROUTE_POLICY_MANIFEST.find(({ route }) => (
+    route.method === method && route.pattern.test(path)
+  ));
+  if (!entry) throw new Error(`unclassified mail route: ${method} ${path}`);
+  return entry;
+}
+
+export function assertMailEventPolicy(type: string): MailEventPolicyEntry {
+  const entry = MAIL_EVENT_POLICY_INDEX.get(type);
+  if (!entry) throw new Error(`unclassified mail event: ${type}`);
+  return entry;
+}
+
+function createUniqueIndex<T>(
+  entries: readonly T[],
+  keyOf: (entry: T) => string,
+  label: string,
+): ReadonlyMap<string, T> {
+  const index = new Map<string, T>();
+  for (const entry of entries) {
+    const key = keyOf(entry);
+    if (index.has(key)) throw new Error(`duplicate ${label}: ${key}`);
+    index.set(key, entry);
+  }
+  return index;
+}
+
+createMailRoutePolicyIndex(MAIL_ROUTE_POLICY_MANIFEST);
+const MAIL_EVENT_POLICY_INDEX = createMailEventPolicyIndex(MAIL_EVENT_POLICY_MANIFEST);

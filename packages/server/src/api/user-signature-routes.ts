@@ -1,4 +1,4 @@
-import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
 import {
   data,
   error,
@@ -6,6 +6,21 @@ import {
   positiveIntFromPath,
   requirePrincipal,
 } from './http';
+
+export const USER_SIGNATURE_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  {
+    source: 'user-signature-routes',
+    method: 'GET',
+    path: '/api/v1/email/user-signatures',
+    pattern: /^\/api\/v1\/email\/user-signatures$/,
+  },
+  {
+    source: 'user-signature-routes',
+    method: 'POST',
+    path: '/api/v1/email/user-signatures/by-account/:accountId/upsert',
+    pattern: /^\/api\/v1\/email\/user-signatures\/by-account\/([^/]+)\/upsert$/,
+  },
+]);
 
 // Self-service per-user, per-account signatures. Every authenticated user
 // manages only their own rows (scoped by principal.userId), so no admin gate.

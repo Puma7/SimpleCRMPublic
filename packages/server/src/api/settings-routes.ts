@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   ApiRequest,
   ApiResponse,
+  CanonicalApiRoute,
   EmailAccountMailSettingsMutationInput,
   EmailAccountRecord,
   MssqlSettingsInput,
@@ -146,6 +147,23 @@ const DEFAULT_REPLY_SUGGESTION_SETTINGS: ReplySuggestionSettings = {
   categoryMode: 'any',
   categoryIds: [],
 };
+
+export const MAIL_SETTINGS_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  ...mailSettingsRoute('/api/v1/email/settings/misc', ['GET', 'PATCH']),
+  ...mailSettingsRoute('/api/v1/email/settings/security', ['GET', 'PATCH']),
+  ...mailSettingsRoute('/api/v1/email/settings/security/test-rspamd', ['POST']),
+  ...mailSettingsRoute('/api/v1/email/settings/account-mail', ['GET', 'PATCH']),
+  ...mailSettingsRoute('/api/v1/email/settings/snooze', ['GET', 'PATCH']),
+  ...mailSettingsRoute('/api/v1/email/settings/reply-suggestion', ['GET', 'PATCH']),
+]);
+
+function mailSettingsRoute(
+  path: string,
+  methods: readonly ApiRequest['method'][],
+): CanonicalApiRoute[] {
+  const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  return methods.map((method) => ({ source: 'settings-routes', method, path, pattern }));
+}
 
 export async function handleSettingsRoute(
   req: ApiRequest,

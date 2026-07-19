@@ -3,6 +3,7 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
   EmailMessageRecord,
   PgpAttachmentDecryptFailureCode,
   PgpAttachmentVerifyFailureCode,
@@ -29,6 +30,45 @@ const MAX_LIMIT = 100;
 const MAX_PGP_MESSAGE_ATTACHMENTS = 20;
 const MAX_PGP_MESSAGE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_PGP_MESSAGE_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
+
+export const PGP_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  pgpRoute('POST', '/api/v1/pgp/identities/generate', /^\/api\/v1\/pgp\/identities\/generate$/),
+  pgpRoute('POST', '/api/v1/pgp/peer-keys/import', /^\/api\/v1\/pgp\/peer-keys\/import$/),
+  pgpRoute('GET', '/api/v1/pgp/recipient-key-status', /^\/api\/v1\/pgp\/recipient-key-status$/),
+  pgpRoute('POST', '/api/v1/pgp/messages/encrypt', /^\/api\/v1\/pgp\/messages\/encrypt$/),
+  pgpRoute('POST', '/api/v1/pgp/messages/sign', /^\/api\/v1\/pgp\/messages\/sign$/),
+  pgpRoute('POST', '/api/v1/pgp/attachments/:attachmentId/decrypt', /^\/api\/v1\/pgp\/attachments\/([^/]+)\/decrypt$/),
+  pgpRoute('POST', '/api/v1/pgp/attachments/:attachmentId/verify', /^\/api\/v1\/pgp\/attachments\/([^/]+)\/verify$/),
+  pgpRoute('POST', '/api/v1/pgp/messages/:messageId/decrypt', /^\/api\/v1\/pgp\/messages\/([^/]+)\/decrypt$/),
+  pgpRoute('POST', '/api/v1/pgp/messages/:messageId/detect', /^\/api\/v1\/pgp\/messages\/([^/]+)\/detect$/),
+  pgpRoute('POST', '/api/v1/pgp/messages/:messageId/verify', /^\/api\/v1\/pgp\/messages\/([^/]+)\/verify$/),
+  pgpRoute('POST', '/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase', /^\/api\/v1\/pgp\/identities\/by-source\/([^/]+)\/private-key\/passphrase$/),
+  pgpRoute('POST', '/api/v1/pgp/identities/:identityId/private-key/passphrase', /^\/api\/v1\/pgp\/identities\/([^/]+)\/private-key\/passphrase$/),
+  ...pgpResourceRoutes('/api/v1/pgp/identities/by-source/:sourceId', /^\/api\/v1\/pgp\/identities\/by-source\/([^/]+)$/),
+  ...pgpResourceRoutes('/api/v1/pgp/peer-keys/by-source/:sourceId', /^\/api\/v1\/pgp\/peer-keys\/by-source\/([^/]+)$/),
+  ...pgpCollectionRoutes('/api/v1/pgp/identities', /^\/api\/v1\/pgp\/identities$/, /^\/api\/v1\/pgp\/identities\/([^/]+)$/),
+  ...pgpCollectionRoutes('/api/v1/pgp/peer-keys', /^\/api\/v1\/pgp\/peer-keys$/, /^\/api\/v1\/pgp\/peer-keys\/([^/]+)$/),
+]);
+
+function pgpRoute(method: ApiRequest['method'], path: string, pattern: RegExp): CanonicalApiRoute {
+  return { source: 'pgp-routes', method, path, pattern };
+}
+
+function pgpResourceRoutes(path: string, pattern: RegExp): CanonicalApiRoute[] {
+  return (['GET', 'PATCH', 'DELETE'] as const).map((method) => pgpRoute(method, path, pattern));
+}
+
+function pgpCollectionRoutes(
+  collectionPath: string,
+  collectionPattern: RegExp,
+  itemPattern: RegExp,
+): CanonicalApiRoute[] {
+  return [
+    pgpRoute('GET', collectionPath, collectionPattern),
+    pgpRoute('POST', collectionPath, collectionPattern),
+    ...pgpResourceRoutes(`${collectionPath}/:id`, itemPattern),
+  ];
+}
 
 type PgpResource = 'identities' | 'peerKeys';
 

@@ -3,6 +3,7 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
   ServerApiPorts,
   SpamDecisionListResult,
   SpamDecisionMutationInput,
@@ -25,6 +26,33 @@ import {
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
+
+export const SPAM_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  spamRoute('POST', '/api/v1/spam/list-entries/upsert', /^\/api\/v1\/spam\/list-entries\/upsert$/),
+  ...spamCollectionRoutes('/api/v1/spam/list-entries', /^\/api\/v1\/spam\/list-entries$/, /^\/api\/v1\/spam\/list-entries\/([^/]+)$/, ['PATCH', 'DELETE']),
+  ...spamCollectionRoutes('/api/v1/spam/learning-events', /^\/api\/v1\/spam\/learning-events$/, /^\/api\/v1\/spam\/learning-events\/([^/]+)$/, []),
+  ...spamCollectionRoutes('/api/v1/spam/decisions', /^\/api\/v1\/spam\/decisions$/, /^\/api\/v1\/spam\/decisions\/([^/]+)$/, ['PATCH', 'DELETE']),
+  spamRoute('GET', '/api/v1/spam/feature-stats', /^\/api\/v1\/spam\/feature-stats$/),
+  spamRoute('GET', '/api/v1/spam/feature-stats/:id', /^\/api\/v1\/spam\/feature-stats\/([^/]+)$/),
+]);
+
+function spamRoute(method: ApiRequest['method'], path: string, pattern: RegExp): CanonicalApiRoute {
+  return { source: 'spam-routes', method, path, pattern };
+}
+
+function spamCollectionRoutes(
+  collectionPath: string,
+  collectionPattern: RegExp,
+  itemPattern: RegExp,
+  itemMutations: readonly ('PATCH' | 'DELETE')[],
+): CanonicalApiRoute[] {
+  return [
+    spamRoute('GET', collectionPath, collectionPattern),
+    spamRoute('POST', collectionPath, collectionPattern),
+    spamRoute('GET', `${collectionPath}/:id`, itemPattern),
+    ...itemMutations.map((method) => spamRoute(method, `${collectionPath}/:id`, itemPattern)),
+  ];
+}
 
 type SpamResource = 'listEntries' | 'learningEvents' | 'decisions' | 'featureStats';
 

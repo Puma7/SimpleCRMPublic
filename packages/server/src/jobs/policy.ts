@@ -1,3 +1,6 @@
+import type { MailPermission } from '@simplecrm/core';
+import type { MailResourceResolution } from '../mail-access/policy-manifest';
+
 export const JOB_DEFAULT_MAX_ATTEMPTS = 5;
 export const JOB_RETRY_BASE_DELAY_SECONDS = 30;
 export const JOB_RETRY_MAX_DELAY_SECONDS = 60 * 60;
@@ -26,6 +29,175 @@ export const SERVER_JOB_TYPES = [
 ] as const;
 
 export type ServerJobType = typeof SERVER_JOB_TYPES[number];
+
+export type ServerJobActorMode = 'initiating_user' | 'initiating_user_or_service' | 'service';
+
+export type ServerJobPolicyEntry =
+  | Readonly<{
+    type: ServerJobType;
+    kind: 'mail';
+    actorMode: ServerJobActorMode;
+    permission: MailPermission;
+    resource: MailResourceResolution;
+  }>
+  | Readonly<{
+    type: ServerJobType;
+    kind: 'non_mail';
+    actorMode: ServerJobActorMode;
+    classification: 'non_mail' | 'system_maintenance';
+  }>;
+
+const jobValue = (field: string) => ({ source: 'job' as const, field });
+const accountJobResource = { kind: 'account' as const, accountId: jobValue('accountId') };
+const messageJobResource = (field = 'messageId') => ({
+  kind: 'message_lookup' as const,
+  messageId: jobValue(field),
+});
+const optionalMessageJobResource = (whenAbsent: 'non_mail' | 'mail_scope' = 'non_mail') => ({
+  kind: 'optional_message_lookup' as const,
+  messageId: jobValue('messageId'),
+  whenAbsent,
+});
+
+export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freeze([
+  {
+    type: 'mail.sync.imap',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.account.manage',
+    resource: accountJobResource,
+  },
+  {
+    type: 'mail.sync.pop3',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.account.manage',
+    resource: accountJobResource,
+  },
+  {
+    type: 'mail.spam.score',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.triage',
+    resource: messageJobResource(),
+  },
+  {
+    type: 'mail.vacation.auto_reply',
+    kind: 'mail',
+    actorMode: 'service',
+    permission: 'mail.send',
+    resource: messageJobResource(),
+  },
+  {
+    type: 'mail.send.scheduled',
+    kind: 'mail',
+    actorMode: 'service',
+    permission: 'mail.send',
+    resource: { kind: 'optional_message_lookup', messageId: jobValue('draftId'), whenAbsent: 'mail_scope' },
+  },
+  {
+    type: 'ai.reply_suggestion',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.content.read',
+    resource: messageJobResource(),
+  },
+  {
+    type: 'ai.agent',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.content.read',
+    resource: optionalMessageJobResource(),
+  },
+  {
+    type: 'ai.classify',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.content.read',
+    resource: messageJobResource(),
+  },
+  {
+    type: 'ai.review',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.content.read',
+    resource: optionalMessageJobResource(),
+  },
+  {
+    type: 'ai.transform_text',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.content.read',
+    resource: optionalMessageJobResource(),
+  },
+  {
+    type: 'workflow.execute',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.metadata.read',
+    resource: optionalMessageJobResource(),
+  },
+  {
+    type: 'workflow.http_request',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.metadata.read',
+    resource: optionalMessageJobResource(),
+  },
+  {
+    type: 'workflow.forward_copy',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.export',
+    resource: messageJobResource(),
+  },
+  {
+    type: 'workflow.dmarc_ingest',
+    kind: 'mail',
+    actorMode: 'service',
+    permission: 'mail.attachment.read',
+    resource: messageJobResource(),
+  },
+  {
+    type: 'webhook.fire',
+    kind: 'non_mail',
+    actorMode: 'service',
+    classification: 'non_mail',
+  },
+  {
+    type: 'lock.cleanup',
+    kind: 'mail',
+    actorMode: 'service',
+    permission: 'mail.draft.edit',
+    resource: { kind: 'mail_scope' },
+  },
+  {
+    type: 'audit.retention',
+    kind: 'non_mail',
+    actorMode: 'service',
+    classification: 'system_maintenance',
+  },
+]);
+
+export function createServerJobPolicyIndex(
+  entries: readonly ServerJobPolicyEntry[],
+): ReadonlyMap<ServerJobType, ServerJobPolicyEntry> {
+  const index = new Map<ServerJobType, ServerJobPolicyEntry>();
+  for (const entry of entries) {
+    if (index.has(entry.type)) throw new Error(`duplicate server job policy: ${entry.type}`);
+    index.set(entry.type, entry);
+  }
+  return index;
+}
+
+const SERVER_JOB_POLICY_INDEX = createServerJobPolicyIndex(SERVER_JOB_POLICIES);
+
+export function assertServerJobPolicy(type: string): ServerJobPolicyEntry {
+  const serverJobType = assertServerJobType(type);
+  const policy = SERVER_JOB_POLICY_INDEX.get(serverJobType);
+  if (!policy) throw new Error(`unclassified server job type: ${serverJobType}`);
+  return policy;
+}
 
 export type JobSqlCommand = Readonly<{
   sql: string;

@@ -7,26 +7,42 @@ import { handleDashboardRoute } from './dashboard-routes';
 import { handleDiagnosticsRoute } from './diagnostics-routes';
 import { handleExtendedCrmReadRoute } from './extended-crm-routes';
 import { handleFollowUpRoute } from './follow-up-routes';
-import { handleEmailTrackingRoute, handlePublicEmailTrackingRoute } from './email-tracking-routes';
-import { handleSmtpRelayRoute } from './relay-routes';
-import { handleLockRoute } from './lock-routes';
-import { handleMailReadRoute } from './mail-routes';
+import {
+  EMAIL_TRACKING_ROUTE_INVENTORY,
+  handleEmailTrackingRoute,
+  handlePublicEmailTrackingRoute,
+} from './email-tracking-routes';
+import { handleSmtpRelayRoute, SMTP_RELAY_ROUTE_INVENTORY } from './relay-routes';
+import { handleLockRoute, MAIL_LOCK_ROUTE_INVENTORY } from './lock-routes';
+import { handleMailReadRoute, MAIL_ROUTE_INVENTORY } from './mail-routes';
 import { handleMaintenanceRoute } from './maintenance-routes';
-import { handleNoticeRoute } from './notice-routes';
-import { handlePgpReadRoute } from './pgp-routes';
+import { handleNoticeRoute, MAIL_NOTICE_ROUTE_INVENTORY } from './notice-routes';
+import { handlePgpReadRoute, PGP_MAIL_ROUTE_INVENTORY } from './pgp-routes';
 import { handlePublicPortalRoute, handleReturnsRoute } from './returns-routes';
-import { handleSpamReadRoute } from './spam-routes';
-import { handleSettingsRoute } from './settings-routes';
+import { handleSpamReadRoute, SPAM_MAIL_ROUTE_INVENTORY } from './spam-routes';
+import { handleSettingsRoute, MAIL_SETTINGS_ROUTE_INVENTORY } from './settings-routes';
 import { handleUserGroupRoute } from './user-group-routes';
-import { handleUserSignatureRoute } from './user-signature-routes';
+import { handleUserSignatureRoute, USER_SIGNATURE_ROUTE_INVENTORY } from './user-signature-routes';
 import { handleWorkflowReadRoute } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
-import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
 import { data, error } from './http';
 
 export type ServerApi = {
   handle(req: ApiRequest): Promise<ApiResponse>;
 };
+
+export const SERVER_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  ...EMAIL_TRACKING_ROUTE_INVENTORY,
+  ...SMTP_RELAY_ROUTE_INVENTORY,
+  ...USER_SIGNATURE_ROUTE_INVENTORY,
+  ...MAIL_SETTINGS_ROUTE_INVENTORY,
+  ...MAIL_ROUTE_INVENTORY,
+  ...MAIL_NOTICE_ROUTE_INVENTORY,
+  ...PGP_MAIL_ROUTE_INVENTORY,
+  ...SPAM_MAIL_ROUTE_INVENTORY,
+  ...MAIL_LOCK_ROUTE_INVENTORY,
+]);
 
 export function createServerApi(ports: ServerApiPorts): ServerApi {
   return {

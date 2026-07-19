@@ -3,6 +3,7 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
   EmailAccountSignatureMutationInput,
   EmailAccountSignatureRecord,
   EmailCannedResponseMutationInput,
@@ -327,6 +328,69 @@ const stringResourceRoutes: readonly StringResourceConfig<any>[] = [
     sanitize: sanitizeEmailThread,
   },
 ];
+
+const metadataSpecialRouteInventory: readonly CanonicalApiRoute[] = [
+  ...canonicalMetadataRoute('/api/v1/email/messages/:messageId/tags', /^\/api\/v1\/email\/messages\/([^/]+)\/tags$/, ['GET', 'POST', 'DELETE']),
+  ...canonicalMetadataRoute('/api/v1/email/messages/:messageId/categories', /^\/api\/v1\/email\/messages\/([^/]+)\/categories$/, ['GET', 'POST']),
+  ...canonicalMetadataRoute('/api/v1/email/messages/:messageId/internal-notes', /^\/api\/v1\/email\/messages\/([^/]+)\/internal-notes$/, ['GET', 'POST']),
+  ...canonicalMetadataRoute('/api/v1/email/categories/reorder', /^\/api\/v1\/email\/categories\/reorder$/, ['PATCH']),
+  ...canonicalMetadataRoute('/api/v1/email/team-members/:teamMemberId/upsert', /^\/api\/v1\/email\/team-members\/([^/]+)\/upsert$/, ['POST']),
+  ...canonicalMetadataRoute('/api/v1/email/threads/split-message', /^\/api\/v1\/email\/threads\/split-message$/, ['POST']),
+  ...canonicalMetadataRoute('/api/v1/email/threads/merge', /^\/api\/v1\/email\/threads\/merge$/, ['POST']),
+  ...canonicalMetadataRoute('/api/v1/email/thread-alias-warnings', /^\/api\/v1\/email\/thread-alias-warnings$/, ['GET']),
+  ...canonicalMetadataRoute('/api/v1/email/account-signatures/by-account/:accountId/upsert', /^\/api\/v1\/email\/account-signatures\/by-account\/([^/]+)\/upsert$/, ['POST']),
+  ...canonicalMetadataRoute('/api/v1/email/category-counts', /^\/api\/v1\/email\/category-counts$/, ['GET']),
+];
+
+const numericResourceRouteMethods: Readonly<Record<string, Readonly<{
+  collection: readonly ApiRequest['method'][];
+  item: readonly ApiRequest['method'][];
+}>>> = {
+  '/api/v1/email/folders': { collection: ['GET'], item: ['GET'] },
+  '/api/v1/email/tags': { collection: ['GET', 'POST'], item: ['GET', 'DELETE'] },
+  '/api/v1/email/categories': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
+  '/api/v1/email/message-categories': { collection: ['GET', 'POST'], item: ['GET', 'DELETE'] },
+  '/api/v1/email/internal-notes': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
+  '/api/v1/email/canned-responses': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
+  '/api/v1/email/account-signatures': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
+  '/api/v1/email/remote-content-allowlist': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
+  '/api/v1/email/read-receipts': { collection: ['GET', 'POST'], item: ['GET'] },
+  '/api/v1/email/thread-edges': { collection: ['GET', 'POST'], item: ['GET', 'DELETE'] },
+  '/api/v1/email/thread-aliases': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
+};
+
+export const MAIL_METADATA_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  ...metadataSpecialRouteInventory,
+  ...numericResourceRoutes.flatMap((route) => {
+    const methods = numericResourceRouteMethods[route.listPath];
+    if (!methods) throw new Error(`missing canonical methods for ${route.listPath}`);
+    return [
+      ...canonicalMetadataRoute(route.listPath, new RegExp(`^${escapeRegExp(route.listPath)}$`), methods.collection),
+      ...canonicalMetadataRoute(`${route.listPath}/:id`, route.idPattern, methods.item),
+    ];
+  }),
+  ...stringResourceRoutes.flatMap((route) => [
+    ...canonicalMetadataRoute(route.listPath, new RegExp(`^${escapeRegExp(route.listPath)}$`), route.listPath.endsWith('/team-members') ? ['GET', 'POST'] : ['GET']),
+    ...canonicalMetadataRoute(`${route.listPath}/:id`, route.idPattern, route.listPath.endsWith('/team-members') ? ['GET', 'PATCH', 'DELETE'] : ['GET']),
+  ]),
+]);
+
+function canonicalMetadataRoute(
+  path: string,
+  pattern: RegExp,
+  methods: readonly ApiRequest['method'][],
+): CanonicalApiRoute[] {
+  return methods.map((method) => ({
+    source: 'mail-metadata-routes',
+    method,
+    path,
+    pattern,
+  }));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 export async function handleMailMetadataReadRoute(
   req: ApiRequest,

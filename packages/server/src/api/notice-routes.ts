@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   ApiRequest,
   ApiResponse,
+  CanonicalApiRoute,
   ServerApiPorts,
   SyncInfoRecord,
 } from './types';
@@ -34,6 +35,21 @@ type ImapAuthNotice = {
 
 const UID_VALIDITY_NOTICE_PREFIX = 'uidvalidity_notice:';
 const IMAP_AUTH_NOTICE_PREFIX = 'imap_auth_notice:';
+
+export const MAIL_NOTICE_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
+  ...noticeRoute('/api/v1/email/notices/uid-validity'),
+  ...noticeRoute('/api/v1/email/notices/imap-auth'),
+]);
+
+function noticeRoute(path: string): CanonicalApiRoute[] {
+  const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  return (['GET', 'DELETE'] as const).map((method) => ({
+    source: 'notice-routes',
+    method,
+    path,
+    pattern,
+  }));
+}
 
 export async function handleNoticeRoute(
   req: ApiRequest,

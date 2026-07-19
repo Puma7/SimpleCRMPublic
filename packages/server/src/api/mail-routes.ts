@@ -3,6 +3,8 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   EmailAttachmentListResult,
   EmailAttachmentRecord,
   EmailAccountListResult,
@@ -47,7 +49,10 @@ import {
 } from './http';
 import { JOB_STALE_LOCK_SECONDS } from '../jobs';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
-import { handleMailMetadataReadRoute } from './mail-metadata-routes';
+import {
+  handleMailMetadataReadRoute,
+  MAIL_METADATA_ROUTE_INVENTORY,
+} from './mail-metadata-routes';
 
 const DEFAULT_MESSAGE_LIMIT = 50;
 const MAX_MESSAGE_LIMIT = 500;
@@ -216,8 +221,17 @@ type MailRouteHandler = (
 ) => Promise<ApiResponse>;
 
 type MailRouteEntry =
-  | { kind: 'route'; pattern: RegExp; handler: MailRouteHandler }
+  | { kind: 'route'; registration: CanonicalApiRouteRegistration; handler: MailRouteHandler }
   | { kind: 'delegate'; delegate: (req: ApiRequest, ports: ServerApiPorts) => Promise<ApiResponse | null> };
+
+function mailRoute(
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+  handler: MailRouteHandler,
+): MailRouteEntry {
+  return { kind: 'route', registration: { path, methods, pattern }, handler };
+}
 
 // Ordered mail read-route table. The array order IS the dispatch order: the
 // first matching `route` wins, a `delegate` returns its result if truthy and
@@ -227,73 +241,84 @@ type MailRouteEntry =
 // be shadowed by a broad `([^/]+)` capture (notably the generic
 // `…/messages/:id` at the end) MUST stay above it.
 const MAIL_ROUTES: readonly MailRouteEntry[] = [
-  { kind: 'route', pattern: /^\/api\/v1\/email\/oauth\/(google|microsoft)\/app$/, handler: (req, ports, params) => handleEmailOAuthApp(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/oauth\/(google|microsoft)\/authorize-url$/, handler: (req, ports, params) => handleEmailOAuthAuthorizeUrl(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/oauth\/(google|microsoft)\/finish$/, handler: (req, ports, params) => handleEmailOAuthFinish(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts$/, handler: (req, ports) => handleEmailAccountsCollection(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/test-imap$/, handler: (req, ports) => handleMailConnectionTest(req, ports, 'imap') },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/test-pop3$/, handler: (req, ports) => handleMailConnectionTest(req, ports, 'pop3') },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/test-smtp$/, handler: (req, ports) => handleMailConnectionTest(req, ports, 'smtp') },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/sync$/, handler: (req, ports, params) => handleEmailAccountSync(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/sync-lock$/, handler: (req, ports, params) => handleEmailAccountSyncLockClear(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/vacation-test$/, handler: (req, ports, params) => handleEmailAccountVacationTest(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)\/inbox-archive-recovery$/, handler: (req, ports, params) => handleEmailAccountInboxArchiveRecovery(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/accounts\/([^/]+)$/, handler: (req, ports, params) => handleEmailAccountItem(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/folder-counts$/, handler: (req, ports) => handleMailFolderCounts(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/diagnostics$/, handler: (req, ports) => handleMailDiagnostics(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/reporting$/, handler: (req, ports) => handleEmailReporting(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/dmarc\/stats$/, handler: (req, ports) => handleDmarcStats(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/gdpr-export$/, handler: (req, ports) => handleEmailGdprExport(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/threads\/backfill$/, handler: (req, ports) => handleMailThreadBackfill(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/backfill-customer-links$/, handler: (req, ports) => handleMessageCustomerLinkBackfill(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages$/, handler: (req, ports) => handleMessageList(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/conversation$/, handler: (req, ports) => handleConversationMessageList(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/soft-delete$/, handler: (req, ports) => handleMessageBulkSoftDelete(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/archive$/, handler: (req, ports) => handleMessageBulkSetArchived(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/done$/, handler: (req, ports) => handleMessageBulkSetDone(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/spam-status$/, handler: (req, ports) => handleMessageBulkSetSpamStatus(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/bulk\/local-drafts$/, handler: (req, ports) => handleMessageBulkDeleteLocalDrafts(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/compose-drafts$/, handler: (req, ports) => handleComposeDraftCreate(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/compose\/send$/, handler: (req, ports) => handleComposeSend(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/compose\/validate-outbound$/, handler: (req, ports) => handleComposeValidateOutbound(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/compose-attachments$/, handler: (req, ports, params) => handleComposeAttachmentUpload(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft$/, handler: (req, ports, params) => handleComposeDraftUpdate(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-state$/, handler: (req, ports, params) => handleScheduledSendDraftState(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft-recovery-state$/, handler: (req, ports, params) => handleComposeDraftRecoveryState(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-failure$/, handler: (req, ports, params) => handleScheduledSendDraftFailureClear(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send\/retry$/, handler: (req, ports, params) => handleScheduledSendDraftRetry(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/post-process\/retry$/, handler: (req, ports, params) => handleMessagePostProcessRetry(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send$/, handler: (req, ports, params) => handleScheduledSendDraftSchedule(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/threads\/([^/]+)\/messages$/, handler: (req, ports, params) => handleThreadMessageList(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/spam-decision$/, handler: (req, ports, params) => handleMessageSpamDecisionMutation(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/spam-status$/, handler: (req, ports, params) => handleMessageSpamStatusMutation(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/security\/check$/, handler: (req, ports, params) => handleMessageSecurityCheck(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/security$/, handler: (req, ports, params) => handleMessageSecurityGet(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/raw-headers$/, handler: (req, ports, params) => handleMessageRawHeadersGet(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-response$/, handler: (req, ports, params) => handleMessageReadReceiptResponse(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-state$/, handler: (req, ports, params) => handleMessageReadReceiptStateGet(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy\/consume$/, handler: (req, ports, params) => handleMessageRemoteContentPolicyConsume(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy$/, handler: (req, ports, params) => handleMessageRemoteContentPolicySet(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/snooze$/, handler: (req, ports, params) => handleMessageSnooze(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/soft-delete$/, handler: (req, ports, params) => handleMessageSoftDelete(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/restore$/, handler: (req, ports, params) => handleMessageRestore(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/local-draft$/, handler: (req, ports, params) => handleMessageDeleteLocalDraft(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/customer-link$/, handler: (req, ports, params) => handleMessageLinkCustomer(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/assignment$/, handler: (req, ports, params) => handleMessageAssign(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/archive$/, handler: (req, ports, params) => handleMessageSetArchived(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/seen$/, handler: (req, ports, params) => handleMessageSetSeen(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/done$/, handler: (req, ports, params) => handleMessageSetDone(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/move$/, handler: (req, ports, params) => handleMessageMove(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/actions$/, handler: (req, ports, params) => handleMessageAction(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/attachments$/, handler: (req, ports, params) => handleMessageAttachmentList(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion$/, handler: (req, ports, params) => handleMessageReplySuggestionGet(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion\/ensure$/, handler: (req, ports, params) => handleMessageReplySuggestionEnsure(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)\/reply-draft$/, handler: (req, ports, params) => handleMessageReplyDraftGenerate(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/attachments\/([^/]+)\/content$/, handler: (req, ports, params) => handleAttachmentContentGet(req, ports, params[0]) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/attachments\/([^/]+)$/, handler: (req, ports, params) => handleAttachmentGet(req, ports, params[0]) },
+  mailRoute('/api/v1/email/oauth/:provider/app', ['GET', 'PATCH'], /^\/api\/v1\/email\/oauth\/(google|microsoft)\/app$/, (req, ports, params) => handleEmailOAuthApp(req, ports, params[0])),
+  mailRoute('/api/v1/email/oauth/:provider/authorize-url', ['POST'], /^\/api\/v1\/email\/oauth\/(google|microsoft)\/authorize-url$/, (req, ports, params) => handleEmailOAuthAuthorizeUrl(req, ports, params[0])),
+  mailRoute('/api/v1/email/oauth/:provider/finish', ['POST'], /^\/api\/v1\/email\/oauth\/(google|microsoft)\/finish$/, (req, ports, params) => handleEmailOAuthFinish(req, ports, params[0])),
+  mailRoute('/api/v1/email/accounts', ['GET', 'POST'], /^\/api\/v1\/email\/accounts$/, (req, ports) => handleEmailAccountsCollection(req, ports)),
+  mailRoute('/api/v1/email/accounts/test-imap', ['POST'], /^\/api\/v1\/email\/accounts\/test-imap$/, (req, ports) => handleMailConnectionTest(req, ports, 'imap')),
+  mailRoute('/api/v1/email/accounts/test-pop3', ['POST'], /^\/api\/v1\/email\/accounts\/test-pop3$/, (req, ports) => handleMailConnectionTest(req, ports, 'pop3')),
+  mailRoute('/api/v1/email/accounts/test-smtp', ['POST'], /^\/api\/v1\/email\/accounts\/test-smtp$/, (req, ports) => handleMailConnectionTest(req, ports, 'smtp')),
+  mailRoute('/api/v1/email/accounts/:accountId/sync', ['POST'], /^\/api\/v1\/email\/accounts\/([^/]+)\/sync$/, (req, ports, params) => handleEmailAccountSync(req, ports, params[0])),
+  mailRoute('/api/v1/email/accounts/:accountId/sync-lock', ['DELETE'], /^\/api\/v1\/email\/accounts\/([^/]+)\/sync-lock$/, (req, ports, params) => handleEmailAccountSyncLockClear(req, ports, params[0])),
+  mailRoute('/api/v1/email/accounts/:accountId/vacation-test', ['POST'], /^\/api\/v1\/email\/accounts\/([^/]+)\/vacation-test$/, (req, ports, params) => handleEmailAccountVacationTest(req, ports, params[0])),
+  mailRoute('/api/v1/email/accounts/:accountId/inbox-archive-recovery', ['GET', 'POST'], /^\/api\/v1\/email\/accounts\/([^/]+)\/inbox-archive-recovery$/, (req, ports, params) => handleEmailAccountInboxArchiveRecovery(req, ports, params[0])),
+  mailRoute('/api/v1/email/accounts/:accountId', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/email\/accounts\/([^/]+)$/, (req, ports, params) => handleEmailAccountItem(req, ports, params[0])),
+  mailRoute('/api/v1/email/folder-counts', ['GET'], /^\/api\/v1\/email\/folder-counts$/, (req, ports) => handleMailFolderCounts(req, ports)),
+  mailRoute('/api/v1/email/diagnostics', ['GET'], /^\/api\/v1\/email\/diagnostics$/, (req, ports) => handleMailDiagnostics(req, ports)),
+  mailRoute('/api/v1/email/reporting', ['GET'], /^\/api\/v1\/email\/reporting$/, (req, ports) => handleEmailReporting(req, ports)),
+  mailRoute('/api/v1/email/dmarc/stats', ['GET'], /^\/api\/v1\/email\/dmarc\/stats$/, (req, ports) => handleDmarcStats(req, ports)),
+  mailRoute('/api/v1/email/gdpr-export', ['GET'], /^\/api\/v1\/email\/gdpr-export$/, (req, ports) => handleEmailGdprExport(req, ports)),
+  mailRoute('/api/v1/email/threads/backfill', ['POST'], /^\/api\/v1\/email\/threads\/backfill$/, (req, ports) => handleMailThreadBackfill(req, ports)),
+  mailRoute('/api/v1/email/messages/backfill-customer-links', ['POST'], /^\/api\/v1\/email\/messages\/backfill-customer-links$/, (req, ports) => handleMessageCustomerLinkBackfill(req, ports)),
+  mailRoute('/api/v1/email/messages', ['GET'], /^\/api\/v1\/email\/messages$/, (req, ports) => handleMessageList(req, ports)),
+  mailRoute('/api/v1/email/messages/conversation', ['GET'], /^\/api\/v1\/email\/messages\/conversation$/, (req, ports) => handleConversationMessageList(req, ports)),
+  mailRoute('/api/v1/email/messages/bulk/soft-delete', ['PATCH'], /^\/api\/v1\/email\/messages\/bulk\/soft-delete$/, (req, ports) => handleMessageBulkSoftDelete(req, ports)),
+  mailRoute('/api/v1/email/messages/bulk/archive', ['PATCH'], /^\/api\/v1\/email\/messages\/bulk\/archive$/, (req, ports) => handleMessageBulkSetArchived(req, ports)),
+  mailRoute('/api/v1/email/messages/bulk/done', ['PATCH'], /^\/api\/v1\/email\/messages\/bulk\/done$/, (req, ports) => handleMessageBulkSetDone(req, ports)),
+  mailRoute('/api/v1/email/messages/bulk/spam-status', ['PATCH'], /^\/api\/v1\/email\/messages\/bulk\/spam-status$/, (req, ports) => handleMessageBulkSetSpamStatus(req, ports)),
+  mailRoute('/api/v1/email/messages/bulk/local-drafts', ['DELETE'], /^\/api\/v1\/email\/messages\/bulk\/local-drafts$/, (req, ports) => handleMessageBulkDeleteLocalDrafts(req, ports)),
+  mailRoute('/api/v1/email/compose-drafts', ['POST'], /^\/api\/v1\/email\/compose-drafts$/, (req, ports) => handleComposeDraftCreate(req, ports)),
+  mailRoute('/api/v1/email/compose/send', ['POST'], /^\/api\/v1\/email\/compose\/send$/, (req, ports) => handleComposeSend(req, ports)),
+  mailRoute('/api/v1/email/compose/validate-outbound', ['POST'], /^\/api\/v1\/email\/compose\/validate-outbound$/, (req, ports) => handleComposeValidateOutbound(req, ports)),
+  mailRoute('/api/v1/email/messages/:messageId/compose-attachments', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/compose-attachments$/, (req, ports, params) => handleComposeAttachmentUpload(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/compose-draft', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft$/, (req, ports, params) => handleComposeDraftUpdate(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/scheduled-send-state', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-state$/, (req, ports, params) => handleScheduledSendDraftState(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/compose-draft-recovery-state', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/compose-draft-recovery-state$/, (req, ports, params) => handleComposeDraftRecoveryState(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/scheduled-send-failure', ['DELETE'], /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send-failure$/, (req, ports, params) => handleScheduledSendDraftFailureClear(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/scheduled-send/retry', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send\/retry$/, (req, ports, params) => handleScheduledSendDraftRetry(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/post-process/retry', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/post-process\/retry$/, (req, ports, params) => handleMessagePostProcessRetry(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/scheduled-send', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send$/, (req, ports, params) => handleScheduledSendDraftSchedule(req, ports, params[0])),
+  mailRoute('/api/v1/email/threads/:threadId/messages', ['GET'], /^\/api\/v1\/email\/threads\/([^/]+)\/messages$/, (req, ports, params) => handleThreadMessageList(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/spam-decision', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/spam-decision$/, (req, ports, params) => handleMessageSpamDecisionMutation(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/spam-status', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/spam-status$/, (req, ports, params) => handleMessageSpamStatusMutation(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/security/check', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/security\/check$/, (req, ports, params) => handleMessageSecurityCheck(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/security', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/security$/, (req, ports, params) => handleMessageSecurityGet(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/raw-headers', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/raw-headers$/, (req, ports, params) => handleMessageRawHeadersGet(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/read-receipt-response', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-response$/, (req, ports, params) => handleMessageReadReceiptResponse(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/read-receipt-state', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/read-receipt-state$/, (req, ports, params) => handleMessageReadReceiptStateGet(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/remote-content-policy/consume', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy\/consume$/, (req, ports, params) => handleMessageRemoteContentPolicyConsume(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/remote-content-policy', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/remote-content-policy$/, (req, ports, params) => handleMessageRemoteContentPolicySet(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/snooze', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/snooze$/, (req, ports, params) => handleMessageSnooze(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/soft-delete', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/soft-delete$/, (req, ports, params) => handleMessageSoftDelete(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/restore', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/restore$/, (req, ports, params) => handleMessageRestore(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/local-draft', ['DELETE'], /^\/api\/v1\/email\/messages\/([^/]+)\/local-draft$/, (req, ports, params) => handleMessageDeleteLocalDraft(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/customer-link', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/customer-link$/, (req, ports, params) => handleMessageLinkCustomer(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/assignment', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/assignment$/, (req, ports, params) => handleMessageAssign(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/archive', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/archive$/, (req, ports, params) => handleMessageSetArchived(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/seen', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/seen$/, (req, ports, params) => handleMessageSetSeen(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/done', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/done$/, (req, ports, params) => handleMessageSetDone(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/move', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/move$/, (req, ports, params) => handleMessageMove(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/actions', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/actions$/, (req, ports, params) => handleMessageAction(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/attachments', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/attachments$/, (req, ports, params) => handleMessageAttachmentList(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/reply-suggestion', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion$/, (req, ports, params) => handleMessageReplySuggestionGet(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/reply-suggestion/ensure', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/reply-suggestion\/ensure$/, (req, ports, params) => handleMessageReplySuggestionEnsure(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/reply-draft', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/reply-draft$/, (req, ports, params) => handleMessageReplyDraftGenerate(req, ports, params[0])),
+  mailRoute('/api/v1/email/attachments/:attachmentId/content', ['GET'], /^\/api\/v1\/email\/attachments\/([^/]+)\/content$/, (req, ports, params) => handleAttachmentContentGet(req, ports, params[0])),
+  mailRoute('/api/v1/email/attachments/:attachmentId', ['GET'], /^\/api\/v1\/email\/attachments\/([^/]+)$/, (req, ports, params) => handleAttachmentGet(req, ports, params[0])),
   { kind: 'delegate', delegate: (req, ports) => handleMailMetadataReadRoute(req, ports) },
-  { kind: 'route', pattern: /^\/api\/v1\/email\/messages\/([^/]+)$/, handler: (req, ports, params) => handleMessageGet(req, ports, params[0]) },
+  mailRoute('/api/v1/email/messages/:messageId', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)$/, (req, ports, params) => handleMessageGet(req, ports, params[0])),
 ];
+
+export const MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  MAIL_ROUTES.flatMap((entry) => entry.kind === 'delegate'
+    ? MAIL_METADATA_ROUTE_INVENTORY
+    : entry.registration.methods.map((method) => ({
+      source: 'mail-routes',
+      method,
+      path: entry.registration.path,
+      pattern: entry.registration.pattern,
+    }))),
+);
 
 export async function handleMailReadRoute(
   req: ApiRequest,
@@ -305,7 +330,7 @@ export async function handleMailReadRoute(
       if (result) return result;
       continue;
     }
-    const match = entry.pattern.exec(req.path);
+    const match = entry.registration.pattern.exec(req.path);
     if (match) return entry.handler(req, ports, match.slice(1));
   }
   return null;
