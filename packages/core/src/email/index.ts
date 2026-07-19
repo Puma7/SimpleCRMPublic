@@ -5,6 +5,7 @@ export * from './inbound-message-size';
 export * from './email-address-normalize';
 export * from './imap-mailbox-names';
 export * from './mail-host-hints';
+export * from './mail-permissions';
 export * from './mail-sync-seen';
 export * from './mail-rfc822-compose';
 export * from './mail-security-static';
