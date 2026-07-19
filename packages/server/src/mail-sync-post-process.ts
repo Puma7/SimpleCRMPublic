@@ -7,6 +7,7 @@ import {
   type WorkspaceSessionApplier,
 } from './db/workspace-context';
 import type { MailSyncJobResult, MailSyncPostProcessPort } from './jobs';
+import { buildTrustedServiceJobPayload } from './jobs/policy';
 
 const DEFAULT_POST_SYNC_LIMIT = 250;
 const MAX_POST_SYNC_LIMIT = 1000;
@@ -37,14 +38,13 @@ export function createPostgresMailSyncPostProcessor(
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.spam.score',
-          payload: {
+          payload: withPostSyncProvenance(input.actorUserId, {
             workspaceId: input.workspaceId,
             messageId,
-            ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
             applyStatus: true,
             runSecurityCheck: true,
             enqueueInboundWorkflows: !suppressed.has(messageId),
-          },
+          }),
           maxAttempts: 3,
         });
       }
@@ -54,13 +54,12 @@ export function createPostgresMailSyncPostProcessor(
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'ai.reply_suggestion',
-          payload: {
+          payload: withPostSyncProvenance(input.actorUserId, {
             workspaceId: input.workspaceId,
             messageId,
-            ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
             trigger: 'inbound',
             force: false,
-          },
+          }),
           runAfter: replySuggestionRunAfter,
           maxAttempts: 3,
         });
@@ -71,17 +70,20 @@ export function createPostgresMailSyncPostProcessor(
         await options.jobQueue.enqueue({
           workspaceId: input.workspaceId,
           type: 'mail.vacation.auto_reply',
-          payload: {
+          payload: withPostSyncProvenance(input.actorUserId, {
             workspaceId: input.workspaceId,
             messageId,
-            ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
-          },
+          }),
           runAfter: vacationRunAfter,
           maxAttempts: 3,
         });
       }
     },
   };
+}
+
+function withPostSyncProvenance(actorUserId: string | undefined, payload: Record<string, unknown>): Record<string, unknown> {
+  return actorUserId ? { ...payload, actorUserId } : buildTrustedServiceJobPayload(payload);
 }
 
 function inboundSpamScoringMessageIds(result: MailSyncJobResult | null): number[] {

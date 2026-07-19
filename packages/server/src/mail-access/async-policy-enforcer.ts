@@ -5,6 +5,7 @@ import type {
   ServerEvent,
   ServerEventPort,
 } from '../api/types';
+import { SERVER_EVENT_TYPES } from '../api/types';
 import {
   assertMailEventPolicy,
   MAIL_EVENT_POLICY_MANIFEST,
@@ -14,6 +15,7 @@ import {
 } from './policy-manifest';
 import {
   assertServerJobPolicy,
+  isTrustedServiceJobPayload,
   type ServerJobPolicyEntry,
 } from '../jobs/policy';
 import type { QueuedJob } from '../jobs/types';
@@ -58,8 +60,8 @@ type ResolvedResources =
   | Readonly<{ kind: 'scope' }>
   | Readonly<{ kind: 'resources'; resources: readonly MailResource[]; mode: 'all' | 'any' }>;
 
-const INTERNAL_SERVICE_PRINCIPAL = 'simplecrm:service';
 const MAIL_EVENT_POLICY_TYPES = new Set(MAIL_EVENT_POLICY_MANIFEST.map((entry) => entry.type));
+const SERVER_EVENT_TYPE_SET = new Set<string>(SERVER_EVENT_TYPES);
 
 const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({
   'email_account.created': ['accountId', 'state'],
@@ -135,7 +137,7 @@ export async function filterMailEventForPrincipal(
   context: MailEventFilterContext,
 ): Promise<ServerEvent | null> {
   const policy = mailEventPolicyOrNull(event.type);
-  if (!policy) return event;
+  if (!policy) return SERVER_EVENT_TYPE_SET.has(event.type) ? event : null;
   const sanitized = sanitizeMailEventPayload(event);
   if (!context.ports.mailAccess || !context.ports.mailResourceLookup) return null;
   const requiredPorts = {
@@ -150,8 +152,8 @@ export async function filterMailEventForPrincipal(
     isOwner: context.principal.role === 'owner',
     isAdmin: context.principal.role === 'admin',
   };
-  const resources = await resolveEventResources(sanitized, policy, requiredPorts);
   try {
+    const resources = await resolveEventResources(sanitized, policy, requiredPorts);
     await assertResolvedResources({
       workspaceId: sanitized.workspaceId,
       actor,
@@ -323,7 +325,9 @@ async function resolveResources(input: {
     target = {
       kind: 'metadata',
       entity: resolution.entity,
-      id: requirePositiveInt(input.select(resolution.id)),
+      id: resolution.entity === 'account_signature'
+        ? requireNonZeroInt(input.select(resolution.id))
+        : requirePositiveInt(input.select(resolution.id)),
     };
   }
   const result = await lookup(input, target);
@@ -405,14 +409,6 @@ export function sanitizeMailEventPayload(event: ServerEvent): ServerEvent {
   return { ...event, payload };
 }
 
-function isTrustedServiceJobPayload(payload: Record<string, unknown>): boolean {
-  return payload.principal === INTERNAL_SERVICE_PRINCIPAL;
-}
-
-function userActor(workspaceId: string, userId: string): MailAccessActor {
-  return { workspaceId, userId, isOwner: false, isAdmin: false };
-}
-
 function assertServiceResources(resources: ResolvedResources): void {
   if (resources.kind === 'resources' && resources.resources.length > 0) return;
   if (resources.kind === 'scope') return;
@@ -438,6 +434,16 @@ function requirePositiveInt(value: unknown): number {
       ? Number(value)
       : Number.NaN;
   if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new MailAsyncAuthorizationError();
+  return parsed;
+}
+
+function requireNonZeroInt(value: unknown): number {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^-?[1-9]\d*$/.test(value)
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isSafeInteger(parsed) || parsed === 0) throw new MailAsyncAuthorizationError();
   return parsed;
 }
 

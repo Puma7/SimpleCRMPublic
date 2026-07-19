@@ -83,6 +83,7 @@ const CORS_ALLOWED_HEADERS = [
   'X-SimpleCRM-Session-Migration',
 ].join(', ');
 const CORS_MAX_AGE_SECONDS = '600';
+export const EVENT_STREAM_DEDUPE_WINDOW_SIZE = 1024;
 // Response headers a cross-origin renderer's Fetch may read. `Retry-After` on a
 // 429 is non-safelisted, so without exposing it `response.headers.get()` returns
 // null cross-origin and the transport's 429 backoff never triggers.
@@ -255,7 +256,7 @@ async function handleEventSocket(
     return;
   }
 
-  const deliveredSequences = new Set<number>();
+  const deliveredSequences = createBoundedEventSequenceDedupe();
   let closed = false;
   let replaying = true;
   let liveQueue: ServerEvent[] = [];
@@ -306,7 +307,7 @@ async function handleEventSocket(
 async function sendFilteredEvent(
   socket: EventWebSocket,
   event: ServerEvent,
-  deliveredSequences: Set<number>,
+  deliveredSequences: BoundedEventSequenceDedupe,
   context: Parameters<typeof filterMailEventForPrincipal>[1],
   isClosed: () => boolean,
 ): Promise<void> {
@@ -322,14 +323,45 @@ function sendWebSocketJson(socket: EventWebSocket, event: ServerEvent): void {
   socket.send(JSON.stringify(event));
 }
 
-function markDelivered(deliveredSequences: Set<number>, event: ServerEvent): void {
+function markDelivered(deliveredSequences: BoundedEventSequenceDedupe, event: ServerEvent): void {
   if (typeof event.sequence === 'number') {
     deliveredSequences.add(event.sequence);
   }
 }
 
-function wasDelivered(deliveredSequences: Set<number>, event: ServerEvent): boolean {
+function wasDelivered(deliveredSequences: BoundedEventSequenceDedupe, event: ServerEvent): boolean {
   return typeof event.sequence === 'number' && deliveredSequences.has(event.sequence);
+}
+
+export type BoundedEventSequenceDedupe = Readonly<{
+  add(sequence: number): void;
+  has(sequence: number): boolean;
+  size(): number;
+}>;
+
+export function createBoundedEventSequenceDedupe(
+  maxSize = EVENT_STREAM_DEDUPE_WINDOW_SIZE,
+): BoundedEventSequenceDedupe {
+  const limit = Number.isInteger(maxSize) && maxSize > 0 ? maxSize : EVENT_STREAM_DEDUPE_WINDOW_SIZE;
+  const delivered = new Set<number>();
+  const order: number[] = [];
+  return {
+    add(sequence) {
+      if (!Number.isSafeInteger(sequence) || delivered.has(sequence)) return;
+      delivered.add(sequence);
+      order.push(sequence);
+      while (order.length > limit) {
+        const evicted = order.shift();
+        if (evicted !== undefined) delivered.delete(evicted);
+      }
+    },
+    has(sequence) {
+      return delivered.has(sequence);
+    },
+    size() {
+      return delivered.size;
+    },
+  };
 }
 
 function waitForWebSocketClient(): Promise<void> {

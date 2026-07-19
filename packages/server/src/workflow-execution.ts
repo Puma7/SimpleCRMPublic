@@ -40,6 +40,7 @@ import type {
   WorkflowExecutionJobPlan,
   WorkflowExecutionJobPort,
 } from './jobs';
+import { buildTrustedServiceJobPayload } from './jobs/policy';
 import {
   createAiReviewPreviewRunner,
   type AiReviewPreviewRunner,
@@ -179,6 +180,8 @@ type ServerWorkflowContext = {
   message: MessageRow | null;
   strings: WorkflowStringContext;
   variables: WorkflowVariableContext;
+  actorUserId?: string;
+  trustedService?: boolean;
   previewOutbound?: boolean;
 };
 
@@ -474,6 +477,8 @@ export function createPostgresWorkflowExecutionJobPort(
             trigger,
             direction,
             message,
+            actorUserId: input.actorUserId,
+            trustedService: input.trustedService,
             jobContext,
           });
           const result = await runServerWorkflowGraph(trx, {
@@ -553,6 +558,8 @@ export function createPostgresWorkflowExecutionJobPort(
             trigger: prepared.trigger,
             direction: prepared.direction,
             message: prepared.message,
+            actorUserId: input.actorUserId,
+            trustedService: input.trustedService,
             jobContext: prepared.jobContext,
           });
           const result = await runServerWorkflowGraph(trx, {
@@ -2246,6 +2253,7 @@ async function scheduleWorkflowDelay(
       payload: {
         workspaceId: context.workspaceId,
         workflowId: context.workflowId,
+        ...workflowJobProvenance(context),
         ...(context.messageId === null ? {} : { messageId: context.messageId }),
         delayedJobId,
         triggerName: context.trigger,
@@ -2259,6 +2267,11 @@ async function scheduleWorkflowDelay(
     .execute();
 
   return delayedJobId;
+}
+
+function workflowJobProvenance(context: ServerWorkflowContext): Record<string, unknown> {
+  if (context.actorUserId) return { actorUserId: context.actorUserId };
+  return context.trustedService ? buildTrustedServiceJobPayload({}) : {};
 }
 
 async function scheduleAiReplySuggestionJob(
@@ -2285,6 +2298,7 @@ async function scheduleAiReplySuggestionJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     force: force.value,
     skipIfReady: skipIfReady.value,
     trigger: trigger.value,
@@ -2347,6 +2361,7 @@ async function scheduleAiClassificationJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     labels,
     contextMode: contextMode.value,
   };
@@ -2413,6 +2428,7 @@ async function scheduleAiReviewJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     direction: context.direction,
+    ...workflowJobProvenance(context),
     blockKeyword: blockKeyword.value,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -2488,6 +2504,7 @@ async function scheduleAiTransformTextJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     targetVariable: targetVariable.value,
+    ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
@@ -2558,6 +2575,7 @@ async function scheduleAiAgentJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     systemPrompt: systemPrompt.value,
+    ...workflowJobProvenance(context),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -2630,6 +2648,7 @@ async function scheduleAiPickCannedJob(
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    ...workflowJobProvenance(context),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -2736,6 +2755,7 @@ async function scheduleWorkflowHttpRequestJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     method: method.value,
+    ...workflowJobProvenance(context),
     url: url.value,
     timeoutMs: timeoutMs.value,
     eventStrings: context.strings,
@@ -2812,6 +2832,7 @@ async function scheduleWorkflowForwardCopyJob(
     workspaceId: context.workspaceId,
     workflowId: context.workflowId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     to: to.value,
     includeAttachments: config.includeAttachments === true,
     runOutboundReview: config.runOutboundReview === true,
@@ -2881,6 +2902,7 @@ async function scheduleWorkflowDmarcIngestJob(
     workspaceId: context.workspaceId,
     workflowId: context.workflowId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     ...(attachmentNameFilter ? { attachmentNameFilter } : {}),
   };
   if (resumeNodeId) {
@@ -4892,6 +4914,7 @@ async function enqueueWorkflowSyncRun(
       payload: {
         workspaceId: context.workspaceId,
         accountId,
+        ...workflowJobProvenance(context),
       },
       run_after: now,
       max_attempts: 3,
@@ -4959,6 +4982,7 @@ async function enqueueWorkflowSubflow(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     workflowId,
+    ...workflowJobProvenance(context),
     triggerName: normalizeWorkflowTrigger(subflow.trigger_name),
     context: {
       eventStrings: context.strings,
@@ -5886,6 +5910,8 @@ function buildWorkflowContext(input: {
   trigger: WorkflowTriggerKind;
   direction: WorkflowDirection;
   message: MessageRow | null;
+  actorUserId?: string;
+  trustedService?: boolean;
   jobContext: Record<string, unknown>;
 }): ServerWorkflowContext {
   const eventStrings = stringRecord(input.jobContext.eventStrings);
@@ -5935,6 +5961,8 @@ function buildWorkflowContext(input: {
     message: input.message,
     strings,
     variables,
+    ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
+    ...(input.trustedService ? { trustedService: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
   };
 }

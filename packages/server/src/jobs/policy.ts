@@ -1,5 +1,6 @@
 import type { MailPermission } from '@simplecrm/core';
 import type { MailResourceResolution } from '../mail-access/policy-manifest';
+import type { JobPayload } from './types';
 
 export const JOB_DEFAULT_MAX_ATTEMPTS = 5;
 export const JOB_RETRY_BASE_DELAY_SECONDS = 30;
@@ -7,6 +8,8 @@ export const JOB_RETRY_MAX_DELAY_SECONDS = 60 * 60;
 export const JOB_STALE_LOCK_SECONDS = 5 * 60;
 export const JOB_AI_DEFAULT_CONCURRENCY = 5;
 export const JOB_AI_MAX_CONCURRENCY = 100;
+export const TRUSTED_SERVICE_JOB_MARKER_FIELD = '__simplecrmTrustedServicePrincipal';
+export const TRUSTED_SERVICE_JOB_MARKER_VALUE = 'simplecrm:trusted-service:v1';
 
 export const SERVER_JOB_TYPES = [
   'mail.sync.imap',
@@ -235,6 +238,30 @@ export function assertServerJobType(type: string): ServerJobType {
     throw new Error(`unsupported server job type: ${validType}`);
   }
   return validType;
+}
+
+/**
+ * Trust boundary: only server-side producer code may call this before writing to
+ * the PostgreSQL-backed queue. HTTP/API request bodies are never spread into a
+ * trusted payload; public producers must carry actorUserId instead. Workers
+ * still re-authorize against current DB/RLS-backed mailbox ACL before handling.
+ */
+export function buildTrustedServiceJobPayload(payload: JobPayload): JobPayload {
+  const {
+    actorKind: _actorKind,
+    actorUserId: _actorUserId,
+    principal: _principal,
+    [TRUSTED_SERVICE_JOB_MARKER_FIELD]: _marker,
+    ...trustedPayload
+  } = payload;
+  return {
+    ...trustedPayload,
+    [TRUSTED_SERVICE_JOB_MARKER_FIELD]: TRUSTED_SERVICE_JOB_MARKER_VALUE,
+  };
+}
+
+export function isTrustedServiceJobPayload(payload: JobPayload): boolean {
+  return payload[TRUSTED_SERVICE_JOB_MARKER_FIELD] === TRUSTED_SERVICE_JOB_MARKER_VALUE;
 }
 
 export function normalizeMaxAttempts(value: number | undefined): number {

@@ -128,6 +128,7 @@ import {
   buildMailVacationAutoReplyJobPlan,
   buildScheduledSendJobPlan,
   buildSpamScoringPlan,
+  buildTrustedServiceJobPayload,
   buildWorkflowExecutionJobPlan,
   buildWorkflowForwardCopyJobPlan,
   buildWorkflowDmarcIngestJobPlan,
@@ -2011,7 +2012,7 @@ describe('server edition foundation', () => {
       makeQueuedJob({
         id: 1,
         type: 'mail.sync.imap',
-        payload: { workspaceId: 'workspace-a', principal: 'simplecrm:service', accountId: 7 },
+        payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', accountId: 7 }),
       }),
       makeQueuedJob({ id: 2, type: 'mail.send.scheduled' }),
       makeQueuedJob({ id: 3, type: 'webhook.fire' }),

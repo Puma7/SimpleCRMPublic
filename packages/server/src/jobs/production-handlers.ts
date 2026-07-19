@@ -1,5 +1,6 @@
 import type { JobPayload } from './types';
 import type { JobHandlerRegistry } from './worker';
+import { isTrustedServiceJobPayload } from './policy';
 import type {
   AiClassificationContextMode,
   AiAgentJobPlan,
@@ -86,6 +87,7 @@ export type WorkflowExecutionJobPlan = Readonly<{
   delayedJobId?: number;
   triggerName?: string;
   actorUserId?: string;
+  trustedService?: boolean;
   context: JobPayload;
 }>;
 
@@ -308,7 +310,7 @@ export function buildAiClassificationJobPlan(
     ...optionalPositiveInteger(payload, 'profileId'),
     labels: requiredStringList(payload, 'labels', 20, 80),
     contextMode: optionalClassificationContextMode(payload, 'contextMode'),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -333,7 +335,7 @@ export function buildAiAgentJobPlan(
     createDraft: optionalBoolean(payload, 'createDraft', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -349,7 +351,7 @@ export function buildAiPickCannedJobPlan(
     createDraft: optionalBoolean(payload, 'createDraft', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -369,7 +371,7 @@ export function buildAiReviewJobPlan(
     ...optionalString(payload, 'fallbackUserTemplate', 20_000),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -386,7 +388,7 @@ export function buildAiTransformTextJobPlan(
     targetVariable: optionalStringValue(payload, 'targetVariable', 'ai.text', 120),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -402,6 +404,7 @@ export function buildWorkflowExecutionJobPlan(
     ...optionalPositiveInteger(payload, 'delayedJobId'),
     ...optionalString(payload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
     ...optionalString(payload, 'actorUserId'),
+    ...optionalTrustedService(payload),
     context: optionalContext(payload, 'context'),
   };
 }
@@ -422,7 +425,7 @@ export function buildWorkflowHttpRequestJobPlan(
     timeoutMs: optionalInteger(payload, 'timeoutMs', DEFAULT_WORKFLOW_HTTP_TIMEOUT_MS, 1000, MAX_WORKFLOW_HTTP_TIMEOUT_MS),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalWorkflowHttpContinuation(payload),
+    ...optionalWorkflowHttpContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -440,7 +443,7 @@ export function buildWorkflowForwardCopyJobPlan(
     runOutboundReview: optionalBoolean(payload, 'runOutboundReview', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -452,8 +455,9 @@ export function buildWorkflowDmarcIngestJobPlan(
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     workflowId: requiredPositiveInteger(payload, 'workflowId'),
     messageId: requiredPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'actorUserId'),
     ...optionalString(payload, 'attachmentNameFilter', MAX_DMARC_ATTACHMENT_FILTER_LENGTH),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -642,6 +646,8 @@ function requiredStringList(
 
 function optionalClassificationContinuation(
   payload: JobPayload,
+  actorUserId?: string,
+  trustedService = false,
 ): Pick<AiClassificationJobPlan, 'continuation'> {
   const value = payload.continuation;
   if (value === undefined || value === null) return {};
@@ -650,6 +656,8 @@ function optionalClassificationContinuation(
     continuation: {
       workflowId: requiredPositiveInteger(value as JobPayload, 'workflowId'),
       ...optionalString(value as JobPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
+      ...(actorUserId ? { actorUserId } : optionalString(value as JobPayload, 'actorUserId')),
+      ...(trustedService && !actorUserId ? { trustedService: true } : {}),
       resumeNodeId: requiredString(value as JobPayload, 'resumeNodeId'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(value as JobPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(value as JobPayload, 'eventVariables') }),
@@ -659,6 +667,8 @@ function optionalClassificationContinuation(
 
 function optionalWorkflowHttpContinuation(
   payload: JobPayload,
+  actorUserId?: string,
+  trustedService = false,
 ): Pick<WorkflowHttpRequestJobPlan, 'continuation'> {
   const value = payload.continuation;
   if (value === undefined || value === null) return {};
@@ -673,6 +683,8 @@ function optionalWorkflowHttpContinuation(
     continuation: {
       workflowId: requiredPositiveInteger(continuationPayload, 'workflowId'),
       ...optionalString(continuationPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
+      ...(actorUserId ? { actorUserId } : optionalString(continuationPayload, 'actorUserId')),
+      ...(trustedService && !actorUserId ? { trustedService: true } : {}),
       ...resumeNodeId,
       ...errorResumeNodeId,
       ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),
@@ -680,6 +692,10 @@ function optionalWorkflowHttpContinuation(
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
     },
   };
+}
+
+function optionalTrustedService(payload: JobPayload): { trustedService?: true } {
+  return isTrustedServiceJobPayload(payload) ? { trustedService: true } : {};
 }
 
 function optionalDate(payload: JobPayload, key: string, fallback: Date): Date {

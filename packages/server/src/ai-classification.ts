@@ -16,6 +16,7 @@ import type {
   WorkflowKnowledgeChunksTable,
 } from './db/schema';
 import type { AiTextTransformApiPort } from './api/types';
+import { buildTrustedServiceJobPayload } from './jobs/policy';
 import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
 import { evaluateAiBudgetSafe, readAiBudgetLimitsFromEnv } from './ai-budget';
 import { callAiChat } from './ai-providers';
@@ -56,6 +57,8 @@ export type AiClassificationContextMode = 'metadata' | 'full';
 export type AiClassificationContinuation = Readonly<{
   workflowId: number;
   triggerName?: string;
+  actorUserId?: string;
+  trustedService?: boolean;
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -1338,30 +1341,37 @@ async function enqueueContinuation(
     now: Date;
   },
 ): Promise<void> {
+  const payload = workflowContinuationPayload({
+    workspaceId: input.workspaceId,
+    workflowId: input.continuation.workflowId,
+    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+    ...(input.continuation.actorUserId ? { actorUserId: input.continuation.actorUserId } : {}),
+    ...(input.continuation.triggerName ? { triggerName: input.continuation.triggerName } : {}),
+    context: {
+      resumeNodeId: input.continuation.resumeNodeId,
+      eventStrings: input.continuation.eventStrings ?? {},
+      eventVariables: {
+        ...(input.continuation.eventVariables ?? {}),
+        ...input.variables,
+      },
+    },
+  }, input.continuation.trustedService === true);
+
   await trx
     .insertInto('job_queue')
     .values({
       type: 'workflow.execute',
-      payload: {
-        workspaceId: input.workspaceId,
-        workflowId: input.continuation.workflowId,
-        ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
-        ...(input.continuation.triggerName ? { triggerName: input.continuation.triggerName } : {}),
-        context: {
-          resumeNodeId: input.continuation.resumeNodeId,
-          eventStrings: input.continuation.eventStrings ?? {},
-          eventVariables: {
-            ...(input.continuation.eventVariables ?? {}),
-            ...input.variables,
-          },
-        },
-      },
+      payload,
       run_after: input.now,
       max_attempts: 3,
       workspace_id: input.workspaceId,
       updated_at: input.now,
     })
     .execute();
+}
+
+function workflowContinuationPayload(payload: Record<string, unknown>, trustedService: boolean): Record<string, unknown> {
+  return trustedService && !payload.actorUserId ? buildTrustedServiceJobPayload(payload) : payload;
 }
 
 async function readProfileApiKey(

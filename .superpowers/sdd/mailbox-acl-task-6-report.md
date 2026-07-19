@@ -119,3 +119,69 @@ WebSocket-Serialisierung minimiert.
   erzeugt aber keinen Graphile-`job:failed`-Event fuer Autorisierungsdeny.
 - Servicejobs sind nur so eng wie ihre Manifest-Ressource. Task 7/8 duerfen diese
   Semantik nicht durch Delegations- oder Rollout-Pfade aufweichen.
+
+## Review-Fix RED/GREEN vom 2026-07-19
+
+### RED
+
+- `pnpm exec jest tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-job-provenance.test.ts --runInBand`
+  lief RED: fehlender zentraler Service-Payload-Builder, forgebares
+  `principal: "simplecrm:service"` wurde akzeptiert, Post-Sync-/Inbound-System-
+  Producer setzten keinen trusted Marker, Workflow-AI/HTTP/Forward-Continuations
+  verloren `actorUserId`, unbekannte `email_*`-Runtime-Events wurden ungefiltert
+  durchgereicht und negative `email_account_signature`-IDs wurden verworfen.
+- Der nachgeschaerfte Source-Inventurtest lief zwischendurch gezielt RED auf
+  konkrete Producer-Bloecke (`mail.sync.*` variable `jobType`, danach
+  `ai.review`/`ai.pick_canned`-Extraktion), bis jeder echte Queue-Producerblock
+  fuer initiierende Jobtypen direkt Actor- oder trusted-Service-Provenienz
+  nachwies.
+- Breites Gate lief einmal RED in `tests/unit/server-edition-foundation.test.ts`,
+  weil eine bestehende Fixture noch das alte forgeable `principal`-Payload fuer
+  `mail.sync.imap` verwendete.
+
+### GREEN-Umsetzung
+
+- `packages/server/src/jobs/policy.ts` exportiert jetzt
+  `buildTrustedServiceJobPayload`, `isTrustedServiceJobPayload` und den
+  kanonischen Marker. Der Kommentar dokumentiert die Vertrauensgrenze:
+  ausschliesslich serverseitig konstruierte Queue-Payloads, keine ungeprueften
+  Request-Body-Spreads; Worker revalidieren weiter gegen DB/RLS-Mail-ACL.
+- Der Async-Enforcer akzeptiert fuer `initiating_user_or_service` nur diesen
+  kanonischen Marker. `actorKind` und das alte `principal: "simplecrm:service"`
+  sind deny; Public/API-Producer tragen weiter `actorUserId`.
+- `ServerWorkflowContext`, Workflow-Delay/Subflow/AI/HTTP/Forward/Sync-Producer
+  sowie AI/HTTP/Forward/DMARC-Continuation-Producer erhalten `actorUserId` oder
+  trusted-Service-Provenienz. Post-Sync, Inbound-Workflow-Enqueue und Relay-
+  Followup nutzen den zentralen Builder fuer echte Systemketten.
+- Mail-Event-Filter laesst nur kanonische `SERVER_EVENT_TYPES` als Non-Mail
+  passieren; nicht-kanonische Runtime-Typen fail-closed. Account-Signature-
+  Metadata verwendet dieselbe Non-Zero-ID-Semantik wie Task 5.
+- WebSocket-Dedupe verwendet ein begrenztes geordnetes Fenster
+  (`EVENT_STREAM_DEDUPE_WINDOW_SIZE`) statt eines unbegrenzten Sets.
+- Tests decken disabled-user, negative Signature-ID mit Accountgrant, alle
+  geforderten Event-Ressourcenarten, spam message->account->deny, canonical
+  Non-Mail vs unbekanntes Runtime-Event, bounded Dedupe sowie reale Post-Sync-,
+  Inbound- und Workflow-Producer-/Continuation-Ketten ab.
+
+### GREEN-Verifikation
+
+- Fokussierte Provenienz/Event/Inbound-Suite:
+  `pnpm exec jest tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-job-provenance.test.ts tests/unit/mail-inbound-workflow-enqueue.test.ts --runInBand`
+  -> PASS, 3 Suites, 17/17 Tests.
+- Workflow/AI/Sync-Produzenten plus Task-6-Suite:
+  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-job-provenance.test.ts tests/unit/mail-inbound-workflow-enqueue.test.ts tests/unit/workflow-execution-jsonb.test.ts tests/unit/email-workflow-graph-compile.test.ts tests/unit/workflow-ai-nodes.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  -> PASS, 8 Suites, 58/58 Tests.
+- Foundation/Manifest/Integration:
+  `pnpm exec jest tests/unit/server-mail-policy-manifest.test.ts tests/unit/server-edition-foundation.test.ts tests/unit/postgres-job-queue-worker.test.ts tests/integration/server-edition-foundation.test.ts tests/integration/server-mail-job-event-acl.test.ts tests/integration/server-mail-access-routes.test.ts --runInBand`
+  -> PASS, 6 Suites, 469/469 Tests.
+- ESLint: `pnpm run lint` -> PASS, Exit 0.
+- Server-Build: `pnpm --filter @simplecrm/server build` -> PASS, Exit 0.
+- Root-Typecheck: `pnpm run typecheck` -> PASS, Exit 0.
+- Diff-Check: `git diff --check` -> PASS, Exit 0.
+
+### Restbedenken Review-Fix
+
+- Keine neuen funktionalen Bedenken. Der Source-Inventurtest ist bewusst
+  blockbasiert und soll bei neuen unmarkierten Queue-Produzenten rot werden; bei
+  kuenftigen komplexeren Producer-Abstraktionen muss er zusammen mit der
+  Abstraktion erweitert werden.
