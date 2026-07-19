@@ -1,121 +1,112 @@
-# Task 6 Report: Enforce mailbox ACL for jobs and events
+# Task 6 Report: Interner IP-Insight-Endpunkt
 
 ## Status
 
-Abgeschlossen. Mail-Jobs werden in beiden Worker-Pfaden direkt vor dem
-fachlichen Handler zentral gegen `SERVER_JOB_POLICIES` revalidiert. Live- und
-Replay-Events werden pro authentifiziertem Principal ueber
-`MAIL_EVENT_POLICY_MANIFEST` gefiltert und Mail-Event-Payloads vor der
-WebSocket-Serialisierung minimiert.
+Abgeschlossen auf `codex/email-evidence-validity-v2`.
 
-`.superpowers/sdd/progress.md` wurde nicht geaendert.
+## RED
 
-## Dateien
+Die folgenden RED-Läufe wurden vor der Implementierung beobachtet:
 
-- `packages/server/src/mail-access/async-policy-enforcer.ts`
-- `packages/server/src/jobs/worker.ts`
-- `packages/server/src/jobs/postgres-job-queue-worker.ts`
-- `packages/server/src/jobs/graphile-worker.ts`
-- `packages/server/src/jobs/types.ts`
-- `packages/server/src/db/postgres-job-queue-port.ts`
-- `packages/server/src/api/fastify-adapter.ts`
-- `packages/server/src/api/mail-routes.ts`
-- `packages/server/src/server.ts`
-- `tests/unit/server-mail-job-event-acl.test.ts`
-- `tests/integration/server-mail-job-event-acl.test.ts`
-- `tests/unit/postgres-job-queue-worker.test.ts`
-- `tests/unit/server-edition-foundation.test.ts`
+```powershell
+pnpm exec jest --runInBand tests/unit/email-tracking-routes.test.ts tests/unit/renderer-transport.test.ts -t "IP insight|IP insight routes"
+```
+
+- Route-Suite: `EmailTrackingIpInsightNotFoundError is not a constructor`.
+- Renderer-Transport: kein Mapping für den noch nicht vorhandenen IPC-Kanal.
+
+```powershell
+pnpm exec jest --runInBand tests/unit/email-tracking-service.test.ts -t "local IP insight|logically expired raw IP"
+```
+
+- Service: `service.getIpInsight is not a function`.
+
+Ein zusätzlicher Regressionstest für die Reihenfolge ohne Tracking-Port schlug zunächst wie erwartet mit `503 email_tracking_unavailable` statt `403 forbidden` für einen Nicht-Admin fehl.
+
+Die Pre-Commit-Boundary-Regressionen schlugen ebenfalls vor der Umstrukturierung fehl: Der injizierte `openJson`-Wrapper wurde nicht verwendet, und ein Lookup innerhalb der offenen RLS-Transaktion wurde als `ip_insights_unavailable` sichtbar. Ein Policy-/Envelope-Race konnte ohne zweiten Snapshot noch eine Insight-Antwort passieren lassen.
+
+## GREEN
+
+Implementiert wurden:
+
+- `GET /api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight`.
+- Admin-only-Pruefung vor der Port-Verfuegbarkeit, kanonische positive Dezimal-Event-ID ohne Number-Konvertierung und 404 ohne Workspace-Offenlegung.
+- Admin-RLS-Transaktion mit expliziter Nachricht-, Tracking-Nachricht- und Ereignisbindung.
+- Aktuelle `ip_insights_enabled`-, Derived-/Raw-Collection-Policy, Message-Snapshot, logische Raw-Retention und Entschluesselung erst nach allen Pruefungen.
+- Zwei kurze RLS-Transaktionen umschliessen nur Autorisierung bzw. finale Revalidierung. Entschluesselung und lokaler MMDB-Lookup laufen dazwischen ohne offene DB-Transaktion; der finale Snapshot vergleicht die komplette Raw-Envelope-Identitaet und prueft Policy, Snapshot und Retention erneut.
+- Ausschliesslich lokaler Lookup; oeffentliche IPs mit fehlender/staler/ungueltiger MMDB ergeben 503, lokale Scopes benoetigen keinen Ready-Status.
+- Begrenzter Response ohne Stadt oder Koordinaten sowie sensible Success-/Denial-Audits ohne IP, UA, Geo, ASN, CIDR oder Secrets.
+- Erwartete Denials erhalten spezifische Audit-Outcomes; unerwartete interne Fehler werden als `internal_error` auditiert und weiterhin geworfen, niemals als `not_found` verschleiert.
+- Neuer HTTP-Renderer-Transport und IPC-Kanal mit `messageId` und `eventId`; eine IP erscheint nie in URL oder Query.
+
+Frische Verifikation:
+
+```powershell
+pnpm exec jest --runInBand tests/unit/email-tracking.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/email-tracking-migration.test.ts tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/renderer-transport.test.ts
+# 6/6 Suiten, 225/225 Tests bestanden
+
+pnpm run typecheck
+# bestanden
+
+pnpm exec eslint packages/server/src/api/types.ts packages/server/src/api/email-tracking-routes.ts packages/server/src/email-tracking.ts src/services/transport/channel-http-registry.ts shared/ipc/channels.ts tests/unit/email-tracking-routes.test.ts tests/unit/email-tracking-service.test.ts tests/unit/renderer-transport.test.ts --max-warnings 0
+# bestanden
+
+git diff --check
+# ohne Befund
+```
+
+Zusaetzlich bestanden die fokussierten Boundary-Regressionen fuer `transactionDepth === 0` waehrend `openJson` und MMDB-Lookup, fuer Policy-Deaktivierung und Ciphertext-Aenderung waehrend des Lookups sowie fuer den Audit-Outcome `internal_error`.
+
+## Review-Haertung (2026-07-16)
+
+### RED
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/renderer-transport.test.ts tests/unit/email-tracking-ip-intelligence.test.ts
+```
+
+- 4/4 Suiten fehlgeschlagen, 6 neue Regressionen rot, 199 bestehende Tests gruen.
+- Der finale Retention-Snapshot verwendete den vor dem Lookup eingefrorenen Zeitwert und gab nach einem Grenzuebertritt noch eine Insight zurueck.
+- Event-IDs oberhalb von `9223372036854775807` gelangten durch Route und Renderer; Nicht-Admins erhielten fuer erkannte Pfade vor dem Admin-Check `405`.
+- `192.2.1.1` wurde faelschlich als reserviert klassifiziert statt den MMDB-Pfad zu erreichen.
+- Ein Fehler des Success-Audit-Sinks loeste eine zweite Denial-Audit-Aufzeichnung aus.
+
+### GREEN
+
+- Der Service erhaelt den Clock-Provider und berechnet die Retention-Cutoffs in beiden kurzen Transaktionen separat. Der Lookup-Test verschiebt die Zeit ueber die Cutoff-Grenze und erhaelt final `410`.
+- Route und Renderer begrenzen Event-IDs vor jeder DB-Nutzung auf kanonische positive Dezimalstrings von `1` bis `9223372036854775807`, mit `BigInt` und ohne `Number`. Ueberlange IDs erhalten `400` und werden nie als Audit-`entityId` gespeichert; der Maximalwert wird akzeptiert.
+- Die IPv4-Sonderbereiche verwenden strukturelle CIDR-Pruefung. Dokumentationsnetze bleiben reserviert, ihre Nachbarn `192.2.1.1` und `198.51.1.1` erreichen den lokalen MMDB-Lookup als oeffentliche IPs.
+- Success-Audit steht nach dem Load-Try/Catch. Ein sink-Fehler bleibt fail-closed, ohne Denial- oder Doppel-Audit.
+- Bei erkannten Insight-Pfaden folgt nach Authentifizierung unmittelbar der Admin-Check. Nicht-Admins erhalten auch fuer falsche Methode, ungueltige IDs oder fehlenden Port genau ein `403`-Audit; Admins erhalten fuer ungueltige Message-/Event-IDs kontrolliert `400`.
+
+```powershell
+pnpm exec jest --selectProjects unit --runInBand tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/renderer-transport.test.ts tests/unit/ip-insight-dialog.test.tsx tests/unit/message-evidence-panel.test.tsx tests/unit/tracking-settings-panel.test.tsx
+# 7/7 Suiten, 219/219 Tests bestanden
+
+pnpm exec jest --selectProjects unit --runInBand tests/unit/email-tracking.test.ts tests/unit/email-tracking-migration.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/renderer-transport.test.ts tests/unit/ip-insight-dialog.test.tsx tests/unit/message-evidence-panel.test.tsx tests/unit/tracking-settings-panel.test.tsx
+# 9/9 Suiten, 247/247 Tests bestanden
+
+pnpm run typecheck
+# bestanden
+
+pnpm exec eslint packages/server/src/api/email-tracking-routes.ts packages/server/src/email-tracking.ts packages/server/src/email-tracking-ip-intelligence.ts src/services/transport/channel-http-registry.ts tests/unit/email-tracking-routes.test.ts tests/unit/email-tracking-service.test.ts tests/unit/email-tracking-ip-intelligence.test.ts tests/unit/renderer-transport.test.ts --max-warnings 0
+# bestanden
+```
+
+## Geaenderte Dateien
+
+- `packages/server/src/api/types.ts`
+- `packages/server/src/api/email-tracking-routes.ts`
+- `packages/server/src/email-tracking.ts`
+- `packages/server/src/email-tracking-ip-intelligence.ts`
+- `src/services/transport/channel-http-registry.ts`
+- `shared/ipc/channels.ts`
+- `tests/unit/email-tracking-routes.test.ts`
+- `tests/unit/email-tracking-service.test.ts`
+- `tests/unit/email-tracking-ip-intelligence.test.ts`
+- `tests/unit/renderer-transport.test.ts`
 - `.superpowers/sdd/task-6-report.md`
 
-## RED-Evidenz
+## Residual Risk
 
-- Fokussierter erster RED-Lauf:
-  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
-  -> FAIL, 3 Suites fehlgeschlagen. Produktluecken: Legacy-Runner completed den
-  `ai.reply_suggestion`-Job trotz widerrufener ACL; `JobQueuePort.failTerminal`
-  fehlte; Graphile-Tasklist resolved ohne Revalidierung; WebSocket lieferte nicht
-  die erwarteten per-Principal gefilterten Mail-Events.
-- Nach Testharness-Korrektur (direkter PG-Port-Import, Eventtest im
-  Integration-Projekt) derselbe Befehl -> FAIL, 4 Produktfehler: `failTerminal`
-  fehlte persistent, Legacy-Deny fuehrte Handler aus, Graphile-Deny war nicht
-  terminal, Event-Live/Replay war nicht per Principal gefiltert.
-- Review-REDs wurden vor GREEN als Tests ergaenzt:
-  Servicejobs ohne Mail-Grants muessen ueber erfolgreiche Policy-Ressourcen
-  erlaubt sein; forgebares `actorKind: "service"` muss deny sein; fehlender
-  `auth.listUsers` fuer nutzerinitiierte Jobs muss deny sein; Graphile-Deny muss
-  zweimal ohne Throw und ohne Handler zurueckkehren; echtes Non-Mail-Replay
-  (`customer.updated`) muss sichtbar bleiben.
-
-## Umsetzung
-
-- `async-policy-enforcer.ts` ist der zentrale Enforcer fuer asynchrone Pfade. Er
-  nutzt ausschliesslich `SERVER_JOB_POLICIES` und `MAIL_EVENT_POLICY_MANIFEST`
-  plus Task-5-Ports `MailAccessService` und `MailResourceLookupPort`.
-- Nutzerinitiierte Jobs benoetigen `actorUserId` und einen aktiven User aus
-  `auth.listUsers`. Fehlender Auth-Lookup, fehlender Actor, geloeschter oder
-  deaktivierter Actor und widerrufene ACL sind fail-closed.
-- `initiating_user_or_service` nimmt den Userpfad nur bei validem Actor. Der
-  Servicepfad akzeptiert ausschliesslich den kanonischen Marker
-  `principal: "simplecrm:service"`; `actorKind` oder fehlender Actor sind kein
-  Bypass.
-- Reine Servicejobs erhalten keinen Owner/Admin- oder erfundenen User-Grant.
-  Sie werden eng ueber die im Manifest aufgeloeste Ressource beziehungsweise den
-  manifestierten Scope und Workspacebindung erlaubt. Fehlende/missing Ressourcen
-  bleiben deny.
-- Legacy-Queue: `JobQueuePort.failTerminal()` setzt persistent
-  `attempts = max_attempts`, entfernt Lock und schreibt `last_error`. Der Test
-  belegt danach `claimNext(...) === null`.
-- Graphile Worker 0.17.3: `permanently_fail_jobs` ist fuer den aktuell gelockten
-  Job ungeeignet, weil die SQL-Funktion nur unlocked oder >4h gelockte Jobs
-  aktualisiert. Deshalb behandelt die Tasklist ACL-Deny als terminal successful
-  return: Handler wird nicht aufgerufen, kein Throw, Graphile completed/deleted
-  den Job normal und retryt nicht. Der Test fuehrt den Deny-Pfad zweimal aus und
-  erwartet beide Male keinen Throw, keinen Handler und keinen DB-Aufruf.
-- Live-WebSocket: Replay wird zuerst gefiltert und gesendet, Live-Events werden
-  waehrenddessen gepuffert. Danach laufen Live-Events seriell mit Dedupe,
-  Close-/Error-Unsubscribe und send-after-close-Guard.
-- Replay und Live verwenden denselben heutigen ACL-Stand des aktuellen
-  Principals. Persistierte Events werden nicht pro User kopiert; `server_events`
-  bleibt der kanonische Workspace-Log.
-- Mail-Event-Payloads werden auf harmlose ID/State-Felder minimiert. Canary-Tests
-  decken Subject, Body, Adresse, Filename, IP, User-Agent und Token ab.
-- Non-Mail-Events werden ueber einen statischen Set aus
-  `MAIL_EVENT_POLICY_MANIFEST` unterschieden. Bekannte CRM-Events wie
-  `customer.created` und `customer.updated` bleiben live und replay sichtbar.
-
-## Verifikation
-
-- Fokussierte Task-6-Suite:
-  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
-  -> PASS, 3 Suites, 8/8 Tests.
-- Unit-Foundation/Manifest:
-  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-policy-manifest.test.ts tests/unit/server-edition-foundation.test.ts --runInBand`
-  -> PASS, 3 Suites, 421/421 Tests. Der bestehende Oversize-Mail-`console.warn`
-  blieb sichtbar.
-- Integration-Foundation/Event:
-  `pnpm exec jest tests/integration/server-edition-foundation.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
-  -> PASS, 2 Suites, 26/26 Tests.
-- PostgreSQL-Mail-ACL-Integration:
-  `pnpm exec jest tests/integration/server-mail-access-routes.test.ts --runInBand`
-  -> PASS, 1 Suite, 22/22 Tests.
-- ESLint:
-  `pnpm run lint`
-  -> PASS, Exit 0.
-- Server-Build:
-  `pnpm --filter @simplecrm/server build`
-  -> PASS, Exit 0.
-- Root-Typecheck:
-  `pnpm run typecheck`
-  -> PASS, Exit 0.
-- Diff-Check:
-  `git diff --check`
-  -> PASS, Exit 0.
-
-## Restbedenken
-
-- Die Graphile-Terminalisierung ist bewusst ein successful return bei ACL-Deny,
-  nicht `permanently_fail_jobs`, weil die installierte 0.17.3-Funktion den
-  aktuell gelockten Job nicht atomar terminal markiert. Das vermeidet Retries,
-  erzeugt aber keinen Graphile-`job:failed`-Event fuer Autorisierungsdeny.
-- Servicejobs sind nur so eng wie ihre Manifest-Ressource. Task 7/8 duerfen diese
-  Semantik nicht durch Delegations- oder Rollout-Pfade aufweichen.
+- Die Service-Tests verwenden Kysely-/RLS-Fakes. Die reale PostgreSQL-RLS-Ausfuehrung und konkrete MMDB-Dateifehler bleiben durch die bestehende Integrations-/Dokumentationsarbeit abgesichert, sind aber nicht als neuer End-to-End-Test dieses Tasks ausgefuehrt.

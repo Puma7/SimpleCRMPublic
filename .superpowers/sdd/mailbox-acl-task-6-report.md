@@ -1,0 +1,121 @@
+# Task 6 Report: Enforce mailbox ACL for jobs and events
+
+## Status
+
+Abgeschlossen. Mail-Jobs werden in beiden Worker-Pfaden direkt vor dem
+fachlichen Handler zentral gegen `SERVER_JOB_POLICIES` revalidiert. Live- und
+Replay-Events werden pro authentifiziertem Principal ueber
+`MAIL_EVENT_POLICY_MANIFEST` gefiltert und Mail-Event-Payloads vor der
+WebSocket-Serialisierung minimiert.
+
+`.superpowers/sdd/progress.md` wurde nicht geaendert.
+
+## Dateien
+
+- `packages/server/src/mail-access/async-policy-enforcer.ts`
+- `packages/server/src/jobs/worker.ts`
+- `packages/server/src/jobs/postgres-job-queue-worker.ts`
+- `packages/server/src/jobs/graphile-worker.ts`
+- `packages/server/src/jobs/types.ts`
+- `packages/server/src/db/postgres-job-queue-port.ts`
+- `packages/server/src/api/fastify-adapter.ts`
+- `packages/server/src/api/mail-routes.ts`
+- `packages/server/src/server.ts`
+- `tests/unit/server-mail-job-event-acl.test.ts`
+- `tests/integration/server-mail-job-event-acl.test.ts`
+- `tests/unit/postgres-job-queue-worker.test.ts`
+- `tests/unit/server-edition-foundation.test.ts`
+- `.superpowers/sdd/mailbox-acl-task-6-report.md`
+
+## RED-Evidenz
+
+- Fokussierter erster RED-Lauf:
+  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  -> FAIL, 3 Suites fehlgeschlagen. Produktluecken: Legacy-Runner completed den
+  `ai.reply_suggestion`-Job trotz widerrufener ACL; `JobQueuePort.failTerminal`
+  fehlte; Graphile-Tasklist resolved ohne Revalidierung; WebSocket lieferte nicht
+  die erwarteten per-Principal gefilterten Mail-Events.
+- Nach Testharness-Korrektur (direkter PG-Port-Import, Eventtest im
+  Integration-Projekt) derselbe Befehl -> FAIL, 4 Produktfehler: `failTerminal`
+  fehlte persistent, Legacy-Deny fuehrte Handler aus, Graphile-Deny war nicht
+  terminal, Event-Live/Replay war nicht per Principal gefiltert.
+- Review-REDs wurden vor GREEN als Tests ergaenzt:
+  Servicejobs ohne Mail-Grants muessen ueber erfolgreiche Policy-Ressourcen
+  erlaubt sein; forgebares `actorKind: "service"` muss deny sein; fehlender
+  `auth.listUsers` fuer nutzerinitiierte Jobs muss deny sein; Graphile-Deny muss
+  zweimal ohne Throw und ohne Handler zurueckkehren; echtes Non-Mail-Replay
+  (`customer.updated`) muss sichtbar bleiben.
+
+## Umsetzung
+
+- `async-policy-enforcer.ts` ist der zentrale Enforcer fuer asynchrone Pfade. Er
+  nutzt ausschliesslich `SERVER_JOB_POLICIES` und `MAIL_EVENT_POLICY_MANIFEST`
+  plus Task-5-Ports `MailAccessService` und `MailResourceLookupPort`.
+- Nutzerinitiierte Jobs benoetigen `actorUserId` und einen aktiven User aus
+  `auth.listUsers`. Fehlender Auth-Lookup, fehlender Actor, geloeschter oder
+  deaktivierter Actor und widerrufene ACL sind fail-closed.
+- `initiating_user_or_service` nimmt den Userpfad nur bei validem Actor. Der
+  Servicepfad akzeptiert ausschliesslich den kanonischen Marker
+  `principal: "simplecrm:service"`; `actorKind` oder fehlender Actor sind kein
+  Bypass.
+- Reine Servicejobs erhalten keinen Owner/Admin- oder erfundenen User-Grant.
+  Sie werden eng ueber die im Manifest aufgeloeste Ressource beziehungsweise den
+  manifestierten Scope und Workspacebindung erlaubt. Fehlende/missing Ressourcen
+  bleiben deny.
+- Legacy-Queue: `JobQueuePort.failTerminal()` setzt persistent
+  `attempts = max_attempts`, entfernt Lock und schreibt `last_error`. Der Test
+  belegt danach `claimNext(...) === null`.
+- Graphile Worker 0.17.3: `permanently_fail_jobs` ist fuer den aktuell gelockten
+  Job ungeeignet, weil die SQL-Funktion nur unlocked oder >4h gelockte Jobs
+  aktualisiert. Deshalb behandelt die Tasklist ACL-Deny als terminal successful
+  return: Handler wird nicht aufgerufen, kein Throw, Graphile completed/deleted
+  den Job normal und retryt nicht. Der Test fuehrt den Deny-Pfad zweimal aus und
+  erwartet beide Male keinen Throw, keinen Handler und keinen DB-Aufruf.
+- Live-WebSocket: Replay wird zuerst gefiltert und gesendet, Live-Events werden
+  waehrenddessen gepuffert. Danach laufen Live-Events seriell mit Dedupe,
+  Close-/Error-Unsubscribe und send-after-close-Guard.
+- Replay und Live verwenden denselben heutigen ACL-Stand des aktuellen
+  Principals. Persistierte Events werden nicht pro User kopiert; `server_events`
+  bleibt der kanonische Workspace-Log.
+- Mail-Event-Payloads werden auf harmlose ID/State-Felder minimiert. Canary-Tests
+  decken Subject, Body, Adresse, Filename, IP, User-Agent und Token ab.
+- Non-Mail-Events werden ueber einen statischen Set aus
+  `MAIL_EVENT_POLICY_MANIFEST` unterschieden. Bekannte CRM-Events wie
+  `customer.created` und `customer.updated` bleiben live und replay sichtbar.
+
+## Verifikation
+
+- Fokussierte Task-6-Suite:
+  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  -> PASS, 3 Suites, 8/8 Tests.
+- Unit-Foundation/Manifest:
+  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-policy-manifest.test.ts tests/unit/server-edition-foundation.test.ts --runInBand`
+  -> PASS, 3 Suites, 421/421 Tests. Der bestehende Oversize-Mail-`console.warn`
+  blieb sichtbar.
+- Integration-Foundation/Event:
+  `pnpm exec jest tests/integration/server-edition-foundation.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  -> PASS, 2 Suites, 26/26 Tests.
+- PostgreSQL-Mail-ACL-Integration:
+  `pnpm exec jest tests/integration/server-mail-access-routes.test.ts --runInBand`
+  -> PASS, 1 Suite, 22/22 Tests.
+- ESLint:
+  `pnpm run lint`
+  -> PASS, Exit 0.
+- Server-Build:
+  `pnpm --filter @simplecrm/server build`
+  -> PASS, Exit 0.
+- Root-Typecheck:
+  `pnpm run typecheck`
+  -> PASS, Exit 0.
+- Diff-Check:
+  `git diff --check`
+  -> PASS, Exit 0.
+
+## Restbedenken
+
+- Die Graphile-Terminalisierung ist bewusst ein successful return bei ACL-Deny,
+  nicht `permanently_fail_jobs`, weil die installierte 0.17.3-Funktion den
+  aktuell gelockten Job nicht atomar terminal markiert. Das vermeidet Retries,
+  erzeugt aber keinen Graphile-`job:failed`-Event fuer Autorisierungsdeny.
+- Servicejobs sind nur so eng wie ihre Manifest-Ressource. Task 7/8 duerfen diese
+  Semantik nicht durch Delegations- oder Rollout-Pfade aufweichen.
