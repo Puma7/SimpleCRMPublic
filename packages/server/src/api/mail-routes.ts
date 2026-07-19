@@ -309,6 +309,10 @@ const MAIL_ROUTES: readonly MailRouteEntry[] = [
   mailRoute('/api/v1/email/messages/:messageId', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)$/, (req, ports, params) => handleMessageGet(req, ports, params[0])),
 ];
 
+export const MAIL_ROUTE_REGISTRATIONS = Object.freeze(
+  MAIL_ROUTES.filter((entry): entry is Extract<MailRouteEntry, { kind: 'route' }> => entry.kind === 'route'),
+);
+
 export const MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
   MAIL_ROUTES.flatMap((entry) => entry.kind === 'delegate'
     ? MAIL_METADATA_ROUTE_INVENTORY

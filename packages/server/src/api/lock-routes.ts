@@ -1,5 +1,11 @@
 import type { ConversationLockReason } from '../locks';
-import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
+import type {
+  ApiRequest,
+  ApiResponse,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
+  ServerApiPorts,
+} from './types';
 import {
   data,
   error,
@@ -9,27 +15,50 @@ import {
   requirePrincipal,
 } from './http';
 
-const LOCK_RE = /^\/api\/v1\/locks\/(\d+)(?:\/(heartbeat|takeover))?$/;
 const LOCK_REASONS: readonly ConversationLockReason[] = ['reply', 'forward', 'edit'];
 
-export const MAIL_LOCK_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
-  lockRoute('GET', '/api/v1/locks', /^\/api\/v1\/locks$/),
-  lockRoute('GET', '/api/v1/locks/:messageId', /^\/api\/v1\/locks\/(\d+)$/),
-  lockRoute('POST', '/api/v1/locks/:messageId', /^\/api\/v1\/locks\/(\d+)$/),
-  lockRoute('DELETE', '/api/v1/locks/:messageId', /^\/api\/v1\/locks\/(\d+)$/),
-  lockRoute('PATCH', '/api/v1/locks/:messageId/heartbeat', /^\/api\/v1\/locks\/(\d+)\/heartbeat$/),
-  lockRoute('POST', '/api/v1/locks/:messageId/takeover', /^\/api\/v1\/locks\/(\d+)\/takeover$/),
+type LockRouteKind = 'list' | 'item' | 'heartbeat' | 'takeover';
+
+type LockRouteRegistration = Readonly<{
+  kind: LockRouteKind;
+  registration: CanonicalApiRouteRegistration;
+}>;
+
+function lockRoute(
+  kind: LockRouteKind,
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+): LockRouteRegistration {
+  return { kind, registration: { path, methods, pattern } };
+}
+
+export const MAIL_LOCK_ROUTE_REGISTRATIONS: readonly LockRouteRegistration[] = Object.freeze([
+  lockRoute('list', '/api/v1/locks', ['GET'], /^\/api\/v1\/locks$/),
+  lockRoute('item', '/api/v1/locks/:messageId', ['GET', 'POST', 'DELETE'], /^\/api\/v1\/locks\/(\d+)$/),
+  lockRoute('heartbeat', '/api/v1/locks/:messageId/heartbeat', ['PATCH'], /^\/api\/v1\/locks\/(\d+)\/heartbeat$/),
+  lockRoute('takeover', '/api/v1/locks/:messageId/takeover', ['POST'], /^\/api\/v1\/locks\/(\d+)\/takeover$/),
 ]);
 
-function lockRoute(method: ApiRequest['method'], path: string, pattern: RegExp): CanonicalApiRoute {
-  return { source: 'lock-routes', method, path, pattern };
-}
+export const MAIL_LOCK_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  MAIL_LOCK_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'lock-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 export async function handleLockRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  if (req.path === '/api/v1/locks') {
+  const matchedRoute = MAIL_LOCK_ROUTE_REGISTRATIONS.find(({ registration }) => (
+    registration.pattern.test(req.path)
+  ));
+  if (!matchedRoute) return null;
+
+  if (matchedRoute.kind === 'list') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode fuer Lock-Route nicht erlaubt');
@@ -44,7 +73,7 @@ export async function handleLockRoute(
     return data(200, { locks });
   }
 
-  const match = LOCK_RE.exec(req.path);
+  const match = matchedRoute.registration.pattern.exec(req.path);
   if (!match) return null;
 
   const messageId = positiveIntFromPath(match[1]);
@@ -52,16 +81,15 @@ export async function handleLockRoute(
     return error(400, 'validation_error', 'messageId muss eine positive Ganzzahl sein');
   }
 
-  const suffix = match[2];
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
 
-  if (!suffix && req.method === 'GET') {
+  if (matchedRoute.kind === 'item' && req.method === 'GET') {
     const lock = await ports.locks.get({ messageId, workspaceId: principal.workspaceId });
     return data(200, { lock });
   }
 
-  if (!suffix && req.method === 'POST') {
+  if (matchedRoute.kind === 'item' && req.method === 'POST') {
     const reason = parseReason(getStringField(req.body, 'reason')) ?? 'reply';
     const result = await ports.locks.acquire({
       messageId,
@@ -78,7 +106,7 @@ export async function handleLockRoute(
     return data(201, { lock: result.lock });
   }
 
-  if (suffix === 'heartbeat' && req.method === 'PATCH') {
+  if (matchedRoute.kind === 'heartbeat' && req.method === 'PATCH') {
     const lock = await ports.locks.heartbeat({
       messageId,
       userId: principal.userId,
@@ -91,7 +119,7 @@ export async function handleLockRoute(
     return data(200, { lock });
   }
 
-  if (!suffix && req.method === 'DELETE') {
+  if (matchedRoute.kind === 'item' && req.method === 'DELETE') {
     const lock = await ports.locks.release({
       messageId,
       userId: principal.userId,
@@ -105,7 +133,7 @@ export async function handleLockRoute(
     return data(200, { released: true, lock });
   }
 
-  if (suffix === 'takeover' && req.method === 'POST') {
+  if (matchedRoute.kind === 'takeover' && req.method === 'POST') {
     if (!requireAdmin(principal)) {
       return error(403, 'forbidden', 'Nur Admins dürfen Sperren übernehmen');
     }

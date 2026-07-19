@@ -93,7 +93,12 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
     kind: 'mail',
     actorMode: 'service',
     permission: 'mail.send',
-    resource: { kind: 'optional_message_lookup', messageId: jobValue('draftId'), whenAbsent: 'mail_scope' },
+    resource: {
+      kind: 'message_or_account_lookup',
+      messageId: jobValue('draftId'),
+      accountId: jobValue('accountId'),
+      whenAbsent: 'mail_scope',
+    },
   },
   {
     type: 'ai.reply_suggestion',

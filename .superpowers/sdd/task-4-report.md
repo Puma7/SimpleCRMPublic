@@ -93,3 +93,54 @@ noch fuer den Task vorgemerkt.
 - Task 6 muss die Actor-Modi revalidieren. Insbesondere systemische bzw. optional
   nutzerinitiierte Jobs duerfen keinen allgemeinen Admin-Bypass erhalten; der bestehende
   Scheduled-Send-Payload traegt nicht in jedem Fall eine Initiator-ID.
+
+## Review-Fix
+
+### RED-Nachweise
+
+- Die neuen Semantiktests wurden zuerst ausgefuehrt:
+  `pnpm exec jest tests/unit/server-mail-policy-manifest.test.ts --runInBand`.
+  RED mit 5 fehlgeschlagenen und 6 bestandenen Tests: fehlende `spam_*`-/`pgp_*`-
+  Events, neun zusaetzliche Ausnahmen, eine falsche Tracking-Policy, die unvollstaendige
+  Scheduled-Send-Aufloesung und die fehlende Spam-Eventklassifikation.
+- Nach Ergaenzung des Dispatcher-Kopplungstests lief derselbe Befehl erneut RED mit
+  6 fehlgeschlagenen und 6 bestandenen Tests; zusaetzlich fehlte die aus dem echten
+  Dispatcher exportierte kanonische Registrierung.
+- Ein nachgelagerter Charakterisierungstest fuer Methoden-Fallthrough lief mit
+  `--testNamePattern "preserves method fallthrough"` RED (1/1 fehlgeschlagen,
+  unerwartete 503-Antwort statt `null`) und nach Korrektur GREEN (1/1 bestanden).
+
+### Korrekturen
+
+- Tracking-, Account-Mail-, Misc-, Snooze- und Reply-Suggestion-Routen besitzen jetzt
+  enge, methodenspezifische Permissions und reale Request-Selektoren. Globale oder
+  kontobezogene Reply-Settings verwenden eine typisierte optionale Account-Aufloesung;
+  Scheduled Send faellt von Draft- auf Account-Aufloesung zurueck.
+- Security- und Test-Rspamd-Ausnahmen bleiben nur an ihren vorhandenen Capability-
+  beziehungsweise Admin-Pruefungen bestehen. Die Exemption-Reason
+  `narrow_service_path` wurde entfernt.
+- Die echten API-Dispatcher und ihre Nebeninventare verwenden dieselben ausfuehrbaren,
+  geordneten Registrierungen. Die Dispatchreihenfolge, Methoden-Fallthroughs und
+  Antwortpfade werden durch Charakterisierungstests abgesichert.
+- `spam_*` und `pgp_*` sind mailrelevante Events mit `mail.metadata.read` und einer
+  expliziten workspace-globalen Ressourcenstrategie.
+- Der Manifest-Test prueft eine exakte Exemption-Allowlist, eine exakte riskante
+  Permission-/Selector-Matrix, reale Selector-Feldnamen sowie die Kopplung aller
+  Inventare an die ausgefuehrten Dispatcher-Registrierungen.
+
+### Verifikation des Review-Fixes
+
+- Manifest und fokussierte Routentests:
+  `pnpm exec jest tests/unit/server-mail-policy-manifest.test.ts tests/unit/mail-route-table.test.ts tests/unit/email-tracking-routes.test.ts tests/unit/relay-routes.test.ts tests/unit/reply-suggestion-settings.test.ts tests/unit/account-mail-settings.test.ts tests/unit/mail-security-settings.test.ts tests/unit/server-mail-security-timeout.test.ts --runInBand`:
+  PASS, 8 Suites, 75/75 Tests.
+- Betroffene Route-Charakterisierung:
+  `pnpm exec jest tests/unit/server-edition-foundation.test.ts --runInBand --testNamePattern "server (mail (message metadata|metadata)|email (tag|account signature|internal note)|settings route|notice routes|PGP|spam|lock routes)"`:
+  PASS, 1 Suite, 35/35 ausgefuehrte Tests (367 uebersprungen).
+- ESLint auf allen Fixdateien: PASS, Exit 0, keine Ausgabe.
+- Server-Build: `pnpm --filter @simplecrm/server build`: PASS, Exit 0.
+- Root-Typecheck: `pnpm exec tsc -p tsconfig.json --noEmit`: PASS, Exit 0.
+- Vollstaendiger `server-edition-foundation`-Lauf: 398/402 Tests bestanden. Die vier
+  nicht vom Review-Fix betroffenen Fehler erwarten eine Migrationsliste ohne die auf
+  dem Branch bereits vorhandene Migration `0038_mail_acl`; weder Migration noch
+  Erwartungstest wurden durch diesen Fix veraendert.
+- Diff-Check: `git diff --check`: PASS, Exit 0, keine Ausgabe.

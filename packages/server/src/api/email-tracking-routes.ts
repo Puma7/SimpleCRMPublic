@@ -3,6 +3,7 @@ import type {
   ApiRequest,
   ApiResponse,
   CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   EmailTrackingPolicyMutationInput,
   ServerApiPorts,
 } from './types';
@@ -20,6 +21,7 @@ const PUBLIC_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PUBLIC_OPEN_ROUTE_PATTERN = /^\/t\/o\/([^/]+)\.gif$/;
 const PUBLIC_CLICK_ROUTE_PATTERN = /^\/t\/c\/([^/]+)$/;
 const TRACKING_SETTINGS_PATH = '/api/v1/email/tracking/settings';
+const TRACKING_SETTINGS_PATTERN = /^\/api\/v1\/email\/tracking\/settings$/;
 const TRACKING_TIMELINE_PATTERN = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking$/;
 const TRACKING_REVOKE_PATTERN = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/revoke$/;
 const TRACKING_RECLASSIFY_PATTERN = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/reclassify$/;
@@ -80,25 +82,47 @@ const openTokenRateLimiter = createEmailTrackingRateLimiter({ limit: 120, window
 const clickIpRateLimiter = createEmailTrackingRateLimiter({ limit: 600, windowMs: 60_000 });
 const clickTokenRateLimiter = createEmailTrackingRateLimiter({ limit: 60, windowMs: 60_000 });
 
-export const EMAIL_TRACKING_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
-  trackingRoute('GET', '/t/o/:token.gif', PUBLIC_OPEN_ROUTE_PATTERN),
-  trackingRoute('GET', '/t/c/:token', PUBLIC_CLICK_ROUTE_PATTERN),
-  trackingRoute('GET', TRACKING_SETTINGS_PATH, /^\/api\/v1\/email\/tracking\/settings$/),
-  trackingRoute('PATCH', TRACKING_SETTINGS_PATH, /^\/api\/v1\/email\/tracking\/settings$/),
-  trackingRoute('GET', '/api/v1/email/messages/:messageId/tracking', TRACKING_TIMELINE_PATTERN),
-  trackingRoute('DELETE', '/api/v1/email/messages/:messageId/tracking', TRACKING_TIMELINE_PATTERN),
-  trackingRoute('POST', '/api/v1/email/messages/:messageId/tracking/revoke', TRACKING_REVOKE_PATTERN),
-  trackingRoute('POST', '/api/v1/email/messages/:messageId/tracking/reclassify', TRACKING_RECLASSIFY_PATTERN),
-  trackingRoute('GET', '/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight', TRACKING_IP_INSIGHT_PATTERN),
-]);
+type EmailTrackingRouteKind =
+  | 'public_open'
+  | 'public_click'
+  | 'settings'
+  | 'timeline'
+  | 'revoke'
+  | 'reclassify'
+  | 'ip_insight';
+
+type EmailTrackingRouteRegistration = Readonly<{
+  kind: EmailTrackingRouteKind;
+  registration: CanonicalApiRouteRegistration;
+}>;
 
 function trackingRoute(
-  method: ApiRequest['method'],
+  kind: EmailTrackingRouteKind,
   path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
   pattern: RegExp,
-): CanonicalApiRoute {
-  return { source: 'email-tracking-routes', method, path, pattern };
+): EmailTrackingRouteRegistration {
+  return { kind, registration: { path, methods, pattern } };
 }
+
+export const EMAIL_TRACKING_ROUTE_REGISTRATIONS: readonly EmailTrackingRouteRegistration[] = Object.freeze([
+  trackingRoute('public_open', '/t/o/:token.gif', ['GET'], PUBLIC_OPEN_ROUTE_PATTERN),
+  trackingRoute('public_click', '/t/c/:token', ['GET'], PUBLIC_CLICK_ROUTE_PATTERN),
+  trackingRoute('settings', TRACKING_SETTINGS_PATH, ['GET', 'PATCH'], TRACKING_SETTINGS_PATTERN),
+  trackingRoute('timeline', '/api/v1/email/messages/:messageId/tracking', ['GET', 'DELETE'], TRACKING_TIMELINE_PATTERN),
+  trackingRoute('revoke', '/api/v1/email/messages/:messageId/tracking/revoke', ['POST'], TRACKING_REVOKE_PATTERN),
+  trackingRoute('reclassify', '/api/v1/email/messages/:messageId/tracking/reclassify', ['POST'], TRACKING_RECLASSIFY_PATTERN),
+  trackingRoute('ip_insight', '/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight', ['GET'], TRACKING_IP_INSIGHT_PATTERN),
+]);
+
+export const EMAIL_TRACKING_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  EMAIL_TRACKING_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'email-tracking-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 export function resetEmailTrackingRateLimitersForTests(): void {
   openIpRateLimiter.reset();
@@ -111,10 +135,16 @@ export async function handlePublicEmailTrackingRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  const openMatch = PUBLIC_OPEN_ROUTE_PATTERN.exec(req.path);
-  if (openMatch) {
+  const matchedRoute = EMAIL_TRACKING_ROUTE_REGISTRATIONS.find(({ kind, registration }) => (
+    kind.startsWith('public_') && registration.pattern.test(req.path)
+  ));
+  if (!matchedRoute) return null;
+  const match = matchedRoute.registration.pattern.exec(req.path);
+  if (!match) return null;
+
+  if (matchedRoute.kind === 'public_open') {
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    const token = openMatch[1] ?? '';
+    const token = match[1] ?? '';
     const rateKey = `open:${req.ip ?? 'unknown'}`;
     if (
       ports.emailTracking
@@ -132,10 +162,8 @@ export async function handlePublicEmailTrackingRoute(
     return { status: 200, body: Uint8Array.from(PIXEL_BYTES), headers: { ...PIXEL_HEADERS } };
   }
 
-  const clickMatch = PUBLIC_CLICK_ROUTE_PATTERN.exec(req.path);
-  if (!clickMatch) return null;
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  const token = clickMatch[1] ?? '';
+  const token = match[1] ?? '';
   if (!ports.emailTracking || !PUBLIC_TOKEN_PATTERN.test(token)) return trackingNotFound();
   if (
     !clickTokenRateLimiter.check(`click-token:${token}`)
@@ -169,12 +197,17 @@ export async function handleEmailTrackingRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  const isSettings = req.path === TRACKING_SETTINGS_PATH;
-  const timelineMatch = TRACKING_TIMELINE_PATTERN.exec(req.path);
-  const revokeMatch = TRACKING_REVOKE_PATTERN.exec(req.path);
-  const reclassifyMatch = TRACKING_RECLASSIFY_PATTERN.exec(req.path);
-  const ipInsightMatch = TRACKING_IP_INSIGHT_PATTERN.exec(req.path);
-  if (!isSettings && !timelineMatch && !revokeMatch && !reclassifyMatch && !ipInsightMatch) return null;
+  const matchedRoute = EMAIL_TRACKING_ROUTE_REGISTRATIONS.find(({ kind, registration }) => (
+    !kind.startsWith('public_') && registration.pattern.test(req.path)
+  ));
+  if (!matchedRoute) return null;
+  const match = matchedRoute.registration.pattern.exec(req.path);
+  if (!match) return null;
+  const isSettings = matchedRoute.kind === 'settings';
+  const timelineMatch = matchedRoute.kind === 'timeline' ? match : null;
+  const revokeMatch = matchedRoute.kind === 'revoke' ? match : null;
+  const reclassifyMatch = matchedRoute.kind === 'reclassify' ? match : null;
+  const ipInsightMatch = matchedRoute.kind === 'ip_insight' ? match : null;
 
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;

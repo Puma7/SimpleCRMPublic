@@ -3,6 +3,7 @@ import type {
   ApiRequest,
   ApiResponse,
   CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   ServerApiPorts,
   SyncInfoRecord,
 } from './types';
@@ -36,31 +37,39 @@ type ImapAuthNotice = {
 const UID_VALIDITY_NOTICE_PREFIX = 'uidvalidity_notice:';
 const IMAP_AUTH_NOTICE_PREFIX = 'imap_auth_notice:';
 
-export const MAIL_NOTICE_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
-  ...noticeRoute('/api/v1/email/notices/uid-validity'),
-  ...noticeRoute('/api/v1/email/notices/imap-auth'),
+type NoticeRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration;
+  handler: (req: ApiRequest, ports: ServerApiPorts) => Promise<ApiResponse>;
+}>;
+
+function noticeRoute(
+  path: string,
+  handler: NoticeRouteRegistration['handler'],
+): NoticeRouteRegistration {
+  const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  return { registration: { path, pattern, methods: ['GET', 'DELETE'] }, handler };
+}
+
+export const MAIL_NOTICE_ROUTE_REGISTRATIONS: readonly NoticeRouteRegistration[] = Object.freeze([
+  noticeRoute('/api/v1/email/notices/uid-validity', handleUidValidityNotices),
+  noticeRoute('/api/v1/email/notices/imap-auth', handleImapAuthNotices),
 ]);
 
-function noticeRoute(path: string): CanonicalApiRoute[] {
-  const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
-  return (['GET', 'DELETE'] as const).map((method) => ({
+export const MAIL_NOTICE_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  MAIL_NOTICE_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
     source: 'notice-routes',
     method,
-    path,
-    pattern,
-  }));
-}
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 export async function handleNoticeRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  if (req.path === '/api/v1/email/notices/uid-validity') {
-    return handleUidValidityNotices(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/notices/imap-auth') {
-    return handleImapAuthNotices(req, ports);
+  for (const { registration, handler } of MAIL_NOTICE_ROUTE_REGISTRATIONS) {
+    if (registration.pattern.test(req.path)) return handler(req, ports);
   }
 
   return null;

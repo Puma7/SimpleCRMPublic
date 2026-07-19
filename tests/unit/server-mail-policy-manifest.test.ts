@@ -1,8 +1,24 @@
 import {
   SERVER_EVENT_TYPES,
+  SERVER_API_ROUTE_REGISTRATIONS,
   SERVER_MAIL_ROUTE_INVENTORY,
   type CanonicalApiRoute,
+  type CanonicalApiRouteRegistration,
+  type ServerApiPorts,
 } from '../../packages/server/src/api';
+import { EMAIL_TRACKING_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/email-tracking-routes';
+import { MAIL_LOCK_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/lock-routes';
+import {
+  MAIL_METADATA_ROUTE_REGISTRATIONS,
+  handleMailMetadataReadRoute,
+} from '../../packages/server/src/api/mail-metadata-routes';
+import { MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/mail-routes';
+import { MAIL_NOTICE_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/notice-routes';
+import { PGP_MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/pgp-routes';
+import { SMTP_RELAY_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/relay-routes';
+import { MAIL_SETTINGS_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/settings-routes';
+import { SPAM_MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/spam-routes';
+import { USER_SIGNATURE_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/user-signature-routes';
 import {
   MAIL_EVENT_POLICY_MANIFEST,
   MAIL_ROUTE_POLICY_MANIFEST,
@@ -26,6 +42,68 @@ describe('server mail policy manifest', () => {
 
     expect(new Set(registeredKeys).size).toBe(registeredKeys.length);
     expect(policyKeys.sort()).toEqual(registeredKeys.sort());
+  });
+
+  test('derives inventories from the registrations used by the real dispatchers', () => {
+    const centralInventory = SERVER_API_ROUTE_REGISTRATIONS.flatMap((registration) => (
+      registration.kind === 'mail' ? registration.routes : []
+    ));
+    expect(centralInventory).toEqual(SERVER_MAIL_ROUTE_INVENTORY);
+    expect(SERVER_API_ROUTE_REGISTRATIONS.map(({ source }) => source)).toEqual([
+      'auth-security-routes',
+      'auth-routes',
+      'automation-routes',
+      'email-tracking-routes',
+      'relay-routes',
+      'user-signature-routes',
+      'customer-routes',
+      'user-group-routes',
+      'diagnostics-routes',
+      'maintenance-routes',
+      'core-crm-routes',
+      'dashboard-routes',
+      'extended-crm-routes',
+      'follow-up-routes',
+      'settings-routes',
+      'mail-routes',
+      'notice-routes',
+      'workflow-routes',
+      'pgp-routes',
+      'spam-routes',
+      'returns-routes',
+      'lock-routes',
+    ]);
+
+    expectRegistrationInventory('email-tracking-routes', EMAIL_TRACKING_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('relay-routes', SMTP_RELAY_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('user-signature-routes', USER_SIGNATURE_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('settings-routes', MAIL_SETTINGS_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('mail-routes', MAIL_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('mail-metadata-routes', MAIL_METADATA_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('notice-routes', MAIL_NOTICE_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('pgp-routes', PGP_MAIL_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('spam-routes', SPAM_MAIL_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('lock-routes', MAIL_LOCK_ROUTE_REGISTRATIONS);
+  });
+
+  test('preserves method fallthrough for method-specific metadata upsert branches', async () => {
+    const principal = {
+      userId: 'user-1',
+      workspaceId: 'workspace-1',
+      role: 'user' as const,
+    };
+    const ports = {} as ServerApiPorts;
+
+    await expect(handleMailMetadataReadRoute({
+      method: 'GET',
+      path: '/api/v1/email/team-members/member-1/upsert',
+      principal,
+    }, ports)).resolves.toBeNull();
+    await expect(handleMailMetadataReadRoute({
+      method: 'GET',
+      path: '/api/v1/email/account-signatures/by-account/1/upsert',
+      principal,
+    }, ports)).resolves.toBeNull();
   });
 
   test('classifies every canonical job type exactly once', () => {
@@ -77,32 +155,40 @@ describe('server mail policy manifest', () => {
   });
 
   test('keeps public tracking and auth/setup exemptions explicit and narrow', () => {
-    const publicTracking = MAIL_ROUTE_POLICY_MANIFEST.filter(
-      ({ policy }) => policy.kind === 'exempt' && policy.reason === 'signed_public_tracking',
-    );
-    expect(publicTracking.map(({ route }) => `${route.method} ${route.path}`).sort()).toEqual([
-      'GET /t/c/:token',
-      'GET /t/o/:token.gif',
-    ]);
+    const exemptions = MAIL_ROUTE_POLICY_MANIFEST.flatMap(({ route, policy }) => (
+      policy.kind === 'exempt'
+        ? [`${policy.reason}: ${route.method} ${route.path}`]
+        : []
+    ));
 
-    const authSetup = MAIL_ROUTE_POLICY_MANIFEST.filter(
-      ({ policy }) => policy.kind === 'exempt' && policy.reason === 'mail_auth_setup',
-    );
-    expect(authSetup).not.toHaveLength(0);
-    expect(authSetup.every(({ route }) => (
-      route.path.startsWith('/api/v1/email/oauth/')
-      || route.path.startsWith('/api/v1/email/accounts/test-')
-    ))).toBe(true);
-
-    const workspaceAdmin = MAIL_ROUTE_POLICY_MANIFEST.filter(
-      ({ policy }) => policy.kind === 'exempt' && policy.reason === 'workspace_admin_security',
-    );
-    expect(workspaceAdmin).not.toHaveLength(0);
-    expect(workspaceAdmin.every(({ route }) => [
-      'email-tracking-routes',
-      'relay-routes',
-      'settings-routes',
-    ].includes(route.source))).toBe(true);
+    expect(exemptions.sort()).toEqual([
+      'mail_auth_setup: GET /api/v1/email/oauth/:provider/app',
+      'mail_auth_setup: PATCH /api/v1/email/oauth/:provider/app',
+      'mail_auth_setup: POST /api/v1/email/accounts/test-imap',
+      'mail_auth_setup: POST /api/v1/email/accounts/test-pop3',
+      'mail_auth_setup: POST /api/v1/email/accounts/test-smtp',
+      'mail_auth_setup: POST /api/v1/email/oauth/:provider/authorize-url',
+      'mail_auth_setup: POST /api/v1/email/oauth/:provider/finish',
+      'signed_public_tracking: GET /t/c/:token',
+      'signed_public_tracking: GET /t/o/:token.gif',
+      'workspace_admin_security: DELETE /api/v1/email/messages/:messageId/tracking',
+      'workspace_admin_security: DELETE /api/v1/email/relays/:relayId',
+      'workspace_admin_security: DELETE /api/v1/email/relays/:relayId/accounts/:accountId',
+      'workspace_admin_security: GET /api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight',
+      'workspace_admin_security: GET /api/v1/email/relays',
+      'workspace_admin_security: GET /api/v1/email/relays/:relayId/submissions',
+      'workspace_admin_security: GET /api/v1/email/settings/security',
+      'workspace_admin_security: PATCH /api/v1/email/relays/:relayId',
+      'workspace_admin_security: PATCH /api/v1/email/settings/security',
+      'workspace_admin_security: PATCH /api/v1/email/tracking/settings',
+      'workspace_admin_security: POST /api/v1/email/messages/:messageId/tracking/reclassify',
+      'workspace_admin_security: POST /api/v1/email/messages/:messageId/tracking/revoke',
+      'workspace_admin_security: POST /api/v1/email/relays',
+      'workspace_admin_security: POST /api/v1/email/relays/:relayId/accounts',
+      'workspace_admin_security: POST /api/v1/email/relays/:relayId/credentials',
+      'workspace_admin_security: POST /api/v1/email/relays/:relayId/credentials/:credentialId/revoke',
+      'workspace_admin_security: POST /api/v1/email/settings/security/test-rspamd',
+    ].sort());
   });
 
   test('protected routes declare one permission and a typed resource resolution', () => {
@@ -137,10 +223,107 @@ describe('server mail policy manifest', () => {
       resource: { kind: 'message_lookup', messageId: { source: 'body', field: 'draftMessageId' } },
     });
   });
+
+  test('uses exact permissions and selectors for risky route families', () => {
+    const matrix = [
+      ['GET', '/api/v1/email/tracking/settings', 'mail.metadata.read', { kind: 'workspace_global' }],
+      ['GET', '/api/v1/email/messages/42/tracking', 'mail.metadata.read', messagePath()],
+      ['GET', '/api/v1/email/settings/misc', 'mail.metadata.read', { kind: 'workspace_global' }],
+      ['PATCH', '/api/v1/email/settings/misc', 'mail.account.manage', { kind: 'workspace_global' }],
+      ['GET', '/api/v1/email/settings/account-mail', 'mail.metadata.read', account('query')],
+      ['PATCH', '/api/v1/email/settings/account-mail', 'mail.account.manage', account('body')],
+      ['GET', '/api/v1/email/settings/snooze', 'mail.metadata.read', { kind: 'workspace_global' }],
+      ['PATCH', '/api/v1/email/settings/snooze', 'mail.triage', { kind: 'workspace_global' }],
+      ['GET', '/api/v1/email/settings/reply-suggestion', 'mail.metadata.read', optionalAccount('query')],
+      ['PATCH', '/api/v1/email/settings/reply-suggestion', 'mail.account.manage', optionalAccount('body')],
+      ['POST', '/api/v1/email/compose/send', 'mail.send', messageBody('draftMessageId')],
+      ['GET', '/api/v1/email/attachments/7', 'mail.attachment.read', attachmentPath()],
+      ['GET', '/api/v1/email/attachments/7/content', 'mail.attachment.read', attachmentPath()],
+      ['GET', '/api/v1/email/messages/42/attachments', 'mail.attachment.read', messagePath()],
+      ['POST', '/api/v1/email/messages/42/compose-attachments', 'mail.draft.edit', messagePath()],
+      ['PATCH', '/api/v1/email/messages/bulk/soft-delete', 'mail.delete', bulkBody()],
+      ['PATCH', '/api/v1/email/messages/bulk/archive', 'mail.triage', bulkBody()],
+      ['GET', '/api/v1/locks', 'mail.metadata.read', bulkQuery()],
+      ['GET', '/api/v1/email/accounts', 'mail.metadata.read', { kind: 'mail_scope' }],
+      ['POST', '/api/v1/email/accounts', 'mail.account.manage', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/email/accounts/9', 'mail.metadata.read', account('path')],
+      ['PATCH', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
+      ['DELETE', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
+    ] as const;
+
+    for (const [method, path, permission, resource] of matrix) {
+      expect(assertMailRoutePolicy(method, path).policy).toEqual({
+        kind: 'permission',
+        permission,
+        resource,
+      });
+    }
+  });
+
+  test('uses the narrower account fallback for scheduled sends without a draft', () => {
+    expect(assertServerJobPolicy('mail.send.scheduled')).toMatchObject({
+      permission: 'mail.send',
+      resource: {
+        kind: 'message_or_account_lookup',
+        messageId: { source: 'job', field: 'draftId' },
+        accountId: { source: 'job', field: 'accountId' },
+        whenAbsent: 'mail_scope',
+      },
+    });
+  });
+
+  test('classifies spam and PGP events as workspace-global mail metadata', () => {
+    const eventTypes = SERVER_EVENT_TYPES.filter((type) => (
+      type.startsWith('spam_') || type.startsWith('pgp_')
+    ));
+    expect(eventTypes).not.toHaveLength(0);
+    for (const type of eventTypes) {
+      expect(assertMailEventPolicy(type)).toEqual({
+        type,
+        permission: 'mail.metadata.read',
+        resource: { kind: 'workspace_global' },
+      });
+    }
+  });
 });
 
 function isMailEventType(type: string): boolean {
-  return type.startsWith('email_') || type.startsWith('conversation_lock.');
+  return type.startsWith('email_')
+    || type.startsWith('conversation_lock.')
+    || type.startsWith('spam_')
+    || type.startsWith('pgp_');
+}
+
+function account(source: 'path' | 'query' | 'body') {
+  return { kind: 'account', accountId: { source, field: 'accountId' } } as const;
+}
+
+function optionalAccount(source: 'query' | 'body') {
+  return {
+    kind: 'optional_account',
+    accountId: { source, field: 'accountId' },
+    whenAbsent: 'workspace_global',
+  } as const;
+}
+
+function messagePath() {
+  return { kind: 'message_lookup', messageId: { source: 'path', field: 'messageId' } } as const;
+}
+
+function messageBody(field: string) {
+  return { kind: 'message_lookup', messageId: { source: 'body', field } } as const;
+}
+
+function attachmentPath() {
+  return { kind: 'attachment_lookup', attachmentId: { source: 'path', field: 'attachmentId' } } as const;
+}
+
+function bulkBody() {
+  return { kind: 'bulk_message_lookup', messageIds: { source: 'body', field: 'messageIds' } } as const;
+}
+
+function bulkQuery() {
+  return { kind: 'bulk_message_lookup', messageIds: { source: 'query', field: 'messageIds' } } as const;
 }
 
 function syntheticRoute(method: CanonicalApiRoute['method'], path: string): CanonicalApiRoute {
@@ -150,4 +333,24 @@ function syntheticRoute(method: CanonicalApiRoute['method'], path: string): Cano
     path,
     pattern: /^\/api\/v1\/email\/synthetic$/,
   };
+}
+
+function expectRegistrationInventory(
+  source: string,
+  registrations: readonly Readonly<{ registration: CanonicalApiRouteRegistration }>[],
+): void {
+  const inventory = SERVER_MAIL_ROUTE_INVENTORY.filter((route) => route.source === source);
+  const expected = registrations.flatMap(({ registration }) => registration.methods.map((method) => ({
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  })));
+
+  expect(inventory.map(({ method, path, pattern }) => ({ method, path, pattern }))).toEqual(expected);
+  for (const route of inventory) {
+    const registration = registrations.find(({ registration: candidate }) => (
+      candidate.path === route.path && candidate.methods.includes(route.method)
+    ));
+    expect(registration?.registration.pattern).toBe(route.pattern);
+  }
 }

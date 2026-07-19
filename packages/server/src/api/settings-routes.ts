@@ -3,6 +3,7 @@ import type {
   ApiRequest,
   ApiResponse,
   CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   EmailAccountMailSettingsMutationInput,
   EmailAccountRecord,
   MssqlSettingsInput,
@@ -148,70 +149,62 @@ const DEFAULT_REPLY_SUGGESTION_SETTINGS: ReplySuggestionSettings = {
   categoryIds: [],
 };
 
-export const MAIL_SETTINGS_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
-  ...mailSettingsRoute('/api/v1/email/settings/misc', ['GET', 'PATCH']),
-  ...mailSettingsRoute('/api/v1/email/settings/security', ['GET', 'PATCH']),
-  ...mailSettingsRoute('/api/v1/email/settings/security/test-rspamd', ['POST']),
-  ...mailSettingsRoute('/api/v1/email/settings/account-mail', ['GET', 'PATCH']),
-  ...mailSettingsRoute('/api/v1/email/settings/snooze', ['GET', 'PATCH']),
-  ...mailSettingsRoute('/api/v1/email/settings/reply-suggestion', ['GET', 'PATCH']),
+type SettingsRouteHandler = (
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  params: readonly string[],
+) => Promise<ApiResponse>;
+
+type SettingsRouteRegistration = Readonly<{
+  mail: boolean;
+  registration: CanonicalApiRouteRegistration;
+  handler: SettingsRouteHandler;
+}>;
+
+function settingsRoute(
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+  mail: boolean,
+  handler: SettingsRouteHandler,
+): SettingsRouteRegistration {
+  return { mail, registration: { path, methods, pattern }, handler };
+}
+
+const SETTINGS_ROUTE_REGISTRATIONS: readonly SettingsRouteRegistration[] = Object.freeze([
+  settingsRoute('/api/v1/sync-info/:key', ['GET', 'PATCH'], /^\/api\/v1\/sync-info\/([^/]+)$/, false, (req, ports, params) => handleGenericSyncInfo(req, ports, params[0] ?? '')),
+  settingsRoute('/api/v1/workflow/settings/automation', ['GET', 'PATCH'], /^\/api\/v1\/workflow\/settings\/automation$/, false, (req, ports) => handleWorkflowAutomationSettings(req, ports)),
+  settingsRoute('/api/v1/email/settings/misc', ['GET', 'PATCH'], /^\/api\/v1\/email\/settings\/misc$/, true, (req, ports) => handleEmailMiscSettings(req, ports)),
+  settingsRoute('/api/v1/email/settings/security', ['GET', 'PATCH'], /^\/api\/v1\/email\/settings\/security$/, true, (req, ports) => handleMailSecuritySettings(req, ports)),
+  settingsRoute('/api/v1/email/settings/security/test-rspamd', ['POST'], /^\/api\/v1\/email\/settings\/security\/test-rspamd$/, true, (req) => handleRspamdConnectionTest(req)),
+  settingsRoute('/api/v1/email/settings/account-mail', ['GET', 'PATCH'], /^\/api\/v1\/email\/settings\/account-mail$/, true, (req, ports) => handleAccountMailSettings(req, ports)),
+  settingsRoute('/api/v1/email/settings/snooze', ['GET', 'PATCH'], /^\/api\/v1\/email\/settings\/snooze$/, true, (req, ports) => handleSnoozeSettings(req, ports)),
+  settingsRoute('/api/v1/email/settings/reply-suggestion', ['GET', 'PATCH'], /^\/api\/v1\/email\/settings\/reply-suggestion$/, true, (req, ports) => handleReplySuggestionSettings(req, ports)),
+  settingsRoute('/api/v1/mssql/settings', ['GET', 'PATCH'], /^\/api\/v1\/mssql\/settings$/, false, (req, ports) => handleMssqlSettings(req, ports)),
+  settingsRoute('/api/v1/mssql/test-connection', ['POST'], /^\/api\/v1\/mssql\/test-connection$/, false, (req, ports) => handleMssqlConnectionTest(req, ports)),
+  settingsRoute('/api/v1/mssql/password', ['PATCH'], /^\/api\/v1\/mssql\/password$/, false, (req, ports) => handleMssqlPassword(req, ports)),
 ]);
 
-function mailSettingsRoute(
-  path: string,
-  methods: readonly ApiRequest['method'][],
-): CanonicalApiRoute[] {
-  const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
-  return methods.map((method) => ({ source: 'settings-routes', method, path, pattern }));
-}
+export const MAIL_SETTINGS_ROUTE_REGISTRATIONS: readonly SettingsRouteRegistration[] = Object.freeze(
+  SETTINGS_ROUTE_REGISTRATIONS.filter(({ mail }) => mail),
+);
+
+export const MAIL_SETTINGS_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  MAIL_SETTINGS_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'settings-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 export async function handleSettingsRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  const syncInfoMatch = /^\/api\/v1\/sync-info\/([^/]+)$/.exec(req.path);
-  if (syncInfoMatch) {
-    return handleGenericSyncInfo(req, ports, syncInfoMatch[1]);
-  }
-
-  if (req.path === '/api/v1/workflow/settings/automation') {
-    return handleWorkflowAutomationSettings(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/settings/misc') {
-    return handleEmailMiscSettings(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/settings/security') {
-    return handleMailSecuritySettings(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/settings/security/test-rspamd') {
-    return handleRspamdConnectionTest(req);
-  }
-
-  if (req.path === '/api/v1/email/settings/account-mail') {
-    return handleAccountMailSettings(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/settings/snooze') {
-    return handleSnoozeSettings(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/settings/reply-suggestion') {
-    return handleReplySuggestionSettings(req, ports);
-  }
-
-  if (req.path === '/api/v1/mssql/settings') {
-    return handleMssqlSettings(req, ports);
-  }
-
-  if (req.path === '/api/v1/mssql/test-connection') {
-    return handleMssqlConnectionTest(req, ports);
-  }
-
-  if (req.path === '/api/v1/mssql/password') {
-    return handleMssqlPassword(req, ports);
+  for (const { registration, handler } of SETTINGS_ROUTE_REGISTRATIONS) {
+    const match = registration.pattern.exec(req.path);
+    if (match) return handler(req, ports, match.slice(1));
   }
 
   return null;

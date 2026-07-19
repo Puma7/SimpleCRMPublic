@@ -4,6 +4,7 @@ import type {
   ApiResponse,
   AuthenticatedPrincipal,
   CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   EmailAccountSignatureMutationInput,
   EmailAccountSignatureRecord,
   EmailCannedResponseMutationInput,
@@ -329,248 +330,155 @@ const stringResourceRoutes: readonly StringResourceConfig<any>[] = [
   },
 ];
 
-const metadataSpecialRouteInventory: readonly CanonicalApiRoute[] = [
-  ...canonicalMetadataRoute('/api/v1/email/messages/:messageId/tags', /^\/api\/v1\/email\/messages\/([^/]+)\/tags$/, ['GET', 'POST', 'DELETE']),
-  ...canonicalMetadataRoute('/api/v1/email/messages/:messageId/categories', /^\/api\/v1\/email\/messages\/([^/]+)\/categories$/, ['GET', 'POST']),
-  ...canonicalMetadataRoute('/api/v1/email/messages/:messageId/internal-notes', /^\/api\/v1\/email\/messages\/([^/]+)\/internal-notes$/, ['GET', 'POST']),
-  ...canonicalMetadataRoute('/api/v1/email/categories/reorder', /^\/api\/v1\/email\/categories\/reorder$/, ['PATCH']),
-  ...canonicalMetadataRoute('/api/v1/email/team-members/:teamMemberId/upsert', /^\/api\/v1\/email\/team-members\/([^/]+)\/upsert$/, ['POST']),
-  ...canonicalMetadataRoute('/api/v1/email/threads/split-message', /^\/api\/v1\/email\/threads\/split-message$/, ['POST']),
-  ...canonicalMetadataRoute('/api/v1/email/threads/merge', /^\/api\/v1\/email\/threads\/merge$/, ['POST']),
-  ...canonicalMetadataRoute('/api/v1/email/thread-alias-warnings', /^\/api\/v1\/email\/thread-alias-warnings$/, ['GET']),
-  ...canonicalMetadataRoute('/api/v1/email/account-signatures/by-account/:accountId/upsert', /^\/api\/v1\/email\/account-signatures\/by-account\/([^/]+)\/upsert$/, ['POST']),
-  ...canonicalMetadataRoute('/api/v1/email/category-counts', /^\/api\/v1\/email\/category-counts$/, ['GET']),
-];
+type MailMetadataRouteHandler = (
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  params: readonly string[],
+) => Promise<ApiResponse>;
 
-const numericResourceRouteMethods: Readonly<Record<string, Readonly<{
-  collection: readonly ApiRequest['method'][];
-  item: readonly ApiRequest['method'][];
-}>>> = {
-  '/api/v1/email/folders': { collection: ['GET'], item: ['GET'] },
-  '/api/v1/email/tags': { collection: ['GET', 'POST'], item: ['GET', 'DELETE'] },
-  '/api/v1/email/categories': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
-  '/api/v1/email/message-categories': { collection: ['GET', 'POST'], item: ['GET', 'DELETE'] },
-  '/api/v1/email/internal-notes': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
-  '/api/v1/email/canned-responses': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
-  '/api/v1/email/account-signatures': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
-  '/api/v1/email/remote-content-allowlist': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
-  '/api/v1/email/read-receipts': { collection: ['GET', 'POST'], item: ['GET'] },
-  '/api/v1/email/thread-edges': { collection: ['GET', 'POST'], item: ['GET', 'DELETE'] },
-  '/api/v1/email/thread-aliases': { collection: ['GET', 'POST'], item: ['GET', 'PATCH', 'DELETE'] },
-};
+type MailMetadataRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration;
+  dispatchMethods?: readonly ApiRequest['method'][];
+  handler: MailMetadataRouteHandler;
+}>;
 
-export const MAIL_METADATA_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze([
-  ...metadataSpecialRouteInventory,
-  ...numericResourceRoutes.flatMap((route) => {
-    const methods = numericResourceRouteMethods[route.listPath];
-    if (!methods) throw new Error(`missing canonical methods for ${route.listPath}`);
-    return [
-      ...canonicalMetadataRoute(route.listPath, new RegExp(`^${escapeRegExp(route.listPath)}$`), methods.collection),
-      ...canonicalMetadataRoute(`${route.listPath}/:id`, route.idPattern, methods.item),
-    ];
-  }),
-  ...stringResourceRoutes.flatMap((route) => [
-    ...canonicalMetadataRoute(route.listPath, new RegExp(`^${escapeRegExp(route.listPath)}$`), route.listPath.endsWith('/team-members') ? ['GET', 'POST'] : ['GET']),
-    ...canonicalMetadataRoute(`${route.listPath}/:id`, route.idPattern, route.listPath.endsWith('/team-members') ? ['GET', 'PATCH', 'DELETE'] : ['GET']),
-  ]),
-]);
-
-function canonicalMetadataRoute(
+function metadataRoute(
   path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
   pattern: RegExp,
-  methods: readonly ApiRequest['method'][],
-): CanonicalApiRoute[] {
-  return methods.map((method) => ({
-    source: 'mail-metadata-routes',
-    method,
-    path,
-    pattern,
-  }));
+  handler: MailMetadataRouteHandler,
+  dispatchMethods?: readonly ApiRequest['method'][],
+): MailMetadataRouteRegistration {
+  return {
+    registration: { path, methods, pattern },
+    handler,
+    ...(dispatchMethods ? { dispatchMethods } : {}),
+  };
 }
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-export async function handleMailMetadataReadRoute(
-  req: ApiRequest,
-  ports: ServerApiPorts,
-): Promise<ApiResponse | null> {
-  const messageTagMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tags$/.exec(req.path);
-  if (messageTagMatch) {
-    if (req.method === 'DELETE') return handleDeleteEmailMessageTagForMessage(req, ports, messageTagMatch[1]);
-    if (req.method === 'POST') return handleCreateEmailMessageTag(req, ports, messageTagMatch[1]);
-    return handleMessageScopedNumericList(req, ports.emailMessageTags, messageTagMatch[1], {
+const metadataSpecialRouteRegistrations: readonly MailMetadataRouteRegistration[] = [
+  metadataRoute('/api/v1/email/messages/:messageId/tags', ['GET', 'POST', 'DELETE'], /^\/api\/v1\/email\/messages\/([^/]+)\/tags$/, (req, ports, params) => {
+    if (req.method === 'DELETE') return handleDeleteEmailMessageTagForMessage(req, ports, params[0]);
+    if (req.method === 'POST') return handleCreateEmailMessageTag(req, ports, params[0]);
+    return handleMessageScopedNumericList(req, ports.emailMessageTags, params[0], {
       unavailableCode: 'email_message_tags_unavailable',
       unavailableMessage: 'Email tag API nicht konfiguriert',
       sanitize: sanitizeEmailMessageTag,
     });
-  }
+  }),
+  metadataRoute('/api/v1/email/messages/:messageId/categories', ['GET', 'POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/categories$/, (req, ports, params) => (
+    req.method === 'POST'
+      ? handleCreateEmailMessageCategory(req, ports, params[0])
+      : handleMessageScopedNumericList(req, ports.emailMessageCategories, params[0], {
+        unavailableCode: 'email_message_categories_unavailable',
+        unavailableMessage: 'Email message category API nicht konfiguriert',
+        sanitize: sanitizeEmailMessageCategory,
+      })
+  )),
+  metadataRoute('/api/v1/email/messages/:messageId/internal-notes', ['GET', 'POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/internal-notes$/, (req, ports, params) => (
+    req.method === 'POST'
+      ? handleCreateEmailInternalNote(req, ports, params[0])
+      : handleMessageScopedNumericList(req, ports.emailInternalNotes, params[0], {
+        unavailableCode: 'email_internal_notes_unavailable',
+        unavailableMessage: 'Email internal note API nicht konfiguriert',
+        sanitize: sanitizeEmailInternalNote,
+      })
+  )),
+  metadataRoute('/api/v1/email/internal-notes', ['POST'], /^\/api\/v1\/email\/internal-notes$/, (req, ports) => handleCreateEmailInternalNote(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/internal-notes/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/internal-notes\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailInternalNote(req, ports, params[0])
+      : handleDeleteEmailInternalNote(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/tags', ['POST'], /^\/api\/v1\/email\/tags$/, (req, ports) => handleCreateEmailMessageTag(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/tags/:id', ['DELETE'], /^\/api\/v1\/email\/tags\/([^/]+)$/, (req, ports, params) => handleDeleteEmailMessageTag(req, ports, params[0]), ['DELETE']),
+  metadataRoute('/api/v1/email/categories', ['POST'], /^\/api\/v1\/email\/categories$/, (req, ports) => handleCreateEmailCategory(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/categories/reorder', ['PATCH'], /^\/api\/v1\/email\/categories\/reorder$/, (req, ports) => handleReorderEmailCategories(req, ports)),
+  metadataRoute('/api/v1/email/categories/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/categories\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailCategory(req, ports, params[0])
+      : handleDeleteEmailCategory(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/message-categories', ['POST'], /^\/api\/v1\/email\/message-categories$/, (req, ports) => handleCreateEmailMessageCategory(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/message-categories/:id', ['DELETE'], /^\/api\/v1\/email\/message-categories\/([^/]+)$/, (req, ports, params) => handleDeleteEmailMessageCategory(req, ports, params[0]), ['DELETE']),
+  metadataRoute('/api/v1/email/canned-responses', ['POST'], /^\/api\/v1\/email\/canned-responses$/, (req, ports) => handleCreateEmailCannedResponse(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/canned-responses/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/canned-responses\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailCannedResponse(req, ports, params[0])
+      : handleDeleteEmailCannedResponse(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/remote-content-allowlist', ['POST'], /^\/api\/v1\/email\/remote-content-allowlist$/, (req, ports) => handleCreateEmailRemoteContentAllowlist(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/remote-content-allowlist/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/remote-content-allowlist\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailRemoteContentAllowlist(req, ports, params[0])
+      : handleDeleteEmailRemoteContentAllowlist(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/team-members', ['POST'], /^\/api\/v1\/email\/team-members$/, (req, ports) => handleCreateEmailTeamMember(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/team-members/:teamMemberId/upsert', ['POST'], /^\/api\/v1\/email\/team-members\/([^/]+)\/upsert$/, (req, ports, params) => handleUpsertEmailTeamMember(req, ports, params[0]), ['POST']),
+  metadataRoute('/api/v1/email/team-members/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/team-members\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailTeamMember(req, ports, params[0])
+      : handleDeleteEmailTeamMember(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/thread-edges', ['POST'], /^\/api\/v1\/email\/thread-edges$/, (req, ports) => handleCreateEmailThreadEdge(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/thread-edges/:id', ['DELETE'], /^\/api\/v1\/email\/thread-edges\/([^/]+)$/, (req, ports, params) => handleDeleteEmailThreadEdge(req, ports, params[0]), ['DELETE']),
+  metadataRoute('/api/v1/email/thread-aliases', ['POST'], /^\/api\/v1\/email\/thread-aliases$/, (req, ports) => handleCreateEmailThreadAlias(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/thread-aliases/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/thread-aliases\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailThreadAlias(req, ports, params[0])
+      : handleDeleteEmailThreadAlias(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/threads/split-message', ['POST'], /^\/api\/v1\/email\/threads\/split-message$/, (req, ports) => handleSplitEmailMessageThread(req, ports)),
+  metadataRoute('/api/v1/email/threads/merge', ['POST'], /^\/api\/v1\/email\/threads\/merge$/, (req, ports) => handleMergeEmailThreads(req, ports)),
+  metadataRoute('/api/v1/email/thread-alias-warnings', ['GET'], /^\/api\/v1\/email\/thread-alias-warnings$/, (req, ports) => handleListEmailThreadAliasWarnings(req, ports)),
+  metadataRoute('/api/v1/email/account-signatures/by-account/:accountId/upsert', ['POST'], /^\/api\/v1\/email\/account-signatures\/by-account\/([^/]+)\/upsert$/, (req, ports, params) => handleUpsertEmailAccountSignatureByAccount(req, ports, params[0]), ['POST']),
+  metadataRoute('/api/v1/email/account-signatures', ['POST'], /^\/api\/v1\/email\/account-signatures$/, (req, ports) => handleCreateEmailAccountSignature(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/account-signatures/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/account-signatures\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailAccountSignature(req, ports, params[0])
+      : handleDeleteEmailAccountSignature(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/read-receipts', ['POST'], /^\/api\/v1\/email\/read-receipts$/, (req, ports) => handleCreateEmailReadReceipt(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/category-counts', ['GET'], /^\/api\/v1\/email\/category-counts$/, (req, ports) => handleListEmailCategoryCounts(req, ports)),
+];
 
-  const messageCategoryMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/categories$/.exec(req.path);
-  if (messageCategoryMatch) {
-    if (req.method === 'POST') return handleCreateEmailMessageCategory(req, ports, messageCategoryMatch[1]);
-    return handleMessageScopedNumericList(req, ports.emailMessageCategories, messageCategoryMatch[1], {
-      unavailableCode: 'email_message_categories_unavailable',
-      unavailableMessage: 'Email message category API nicht konfiguriert',
-      sanitize: sanitizeEmailMessageCategory,
-    });
-  }
+const metadataGenericRouteRegistrations: readonly MailMetadataRouteRegistration[] = [
+  ...numericResourceRoutes.flatMap((route) => [
+    metadataRoute(route.listPath, ['GET'], new RegExp(`^${escapeRegExp(route.listPath)}$`), (req, ports) => handleNumericList(req, ports, route)),
+    metadataRoute(`${route.listPath}/:id`, ['GET'], route.idPattern, (req, ports, params) => handleNumericGet(req, ports, route, params[0])),
+  ]),
+  ...stringResourceRoutes.flatMap((route) => [
+    metadataRoute(route.listPath, ['GET'], new RegExp(`^${escapeRegExp(route.listPath)}$`), (req, ports) => handleStringList(req, ports, route)),
+    metadataRoute(`${route.listPath}/:id`, ['GET'], route.idPattern, (req, ports, params) => handleStringGet(req, ports, route, params[0])),
+  ]),
+];
 
-  const messageInternalNoteMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/internal-notes$/.exec(req.path);
-  if (messageInternalNoteMatch) {
-    if (req.method === 'POST') return handleCreateEmailInternalNote(req, ports, messageInternalNoteMatch[1]);
-    return handleMessageScopedNumericList(req, ports.emailInternalNotes, messageInternalNoteMatch[1], {
-      unavailableCode: 'email_internal_notes_unavailable',
-      unavailableMessage: 'Email internal note API nicht konfiguriert',
-      sanitize: sanitizeEmailInternalNote,
-    });
-  }
+export const MAIL_METADATA_ROUTE_REGISTRATIONS: readonly MailMetadataRouteRegistration[] = Object.freeze([
+  ...metadataSpecialRouteRegistrations,
+  ...metadataGenericRouteRegistrations,
+]);
 
-  if (req.path === '/api/v1/email/internal-notes' && req.method === 'POST') {
-    return handleCreateEmailInternalNote(req, ports);
-  }
+export const MAIL_METADATA_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  MAIL_METADATA_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'mail-metadata-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
-  const internalNoteMutationMatch = /^\/api\/v1\/email\/internal-notes\/([^/]+)$/.exec(req.path);
-  if (internalNoteMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailInternalNote(req, ports, internalNoteMutationMatch[1]);
-  }
-  if (internalNoteMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailInternalNote(req, ports, internalNoteMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/tags' && req.method === 'POST') {
-    return handleCreateEmailMessageTag(req, ports);
-  }
-  const tagMutationMatch = /^\/api\/v1\/email\/tags\/([^/]+)$/.exec(req.path);
-  if (tagMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailMessageTag(req, ports, tagMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/categories' && req.method === 'POST') {
-    return handleCreateEmailCategory(req, ports);
-  }
-  if (req.path === '/api/v1/email/categories/reorder') {
-    return handleReorderEmailCategories(req, ports);
-  }
-  const categoryMutationMatch = /^\/api\/v1\/email\/categories\/([^/]+)$/.exec(req.path);
-  if (categoryMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailCategory(req, ports, categoryMutationMatch[1]);
-  }
-  if (categoryMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailCategory(req, ports, categoryMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/message-categories' && req.method === 'POST') {
-    return handleCreateEmailMessageCategory(req, ports);
-  }
-  const messageCategoryMutationMatch = /^\/api\/v1\/email\/message-categories\/([^/]+)$/.exec(req.path);
-  if (messageCategoryMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailMessageCategory(req, ports, messageCategoryMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/canned-responses' && req.method === 'POST') {
-    return handleCreateEmailCannedResponse(req, ports);
-  }
-  const cannedResponseMutationMatch = /^\/api\/v1\/email\/canned-responses\/([^/]+)$/.exec(req.path);
-  if (cannedResponseMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailCannedResponse(req, ports, cannedResponseMutationMatch[1]);
-  }
-  if (cannedResponseMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailCannedResponse(req, ports, cannedResponseMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/remote-content-allowlist' && req.method === 'POST') {
-    return handleCreateEmailRemoteContentAllowlist(req, ports);
-  }
-  const remoteContentAllowlistMutationMatch = /^\/api\/v1\/email\/remote-content-allowlist\/([^/]+)$/.exec(req.path);
-  if (remoteContentAllowlistMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailRemoteContentAllowlist(req, ports, remoteContentAllowlistMutationMatch[1]);
-  }
-  if (remoteContentAllowlistMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailRemoteContentAllowlist(req, ports, remoteContentAllowlistMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/team-members' && req.method === 'POST') {
-    return handleCreateEmailTeamMember(req, ports);
-  }
-  const teamMemberUpsertMatch = /^\/api\/v1\/email\/team-members\/([^/]+)\/upsert$/.exec(req.path);
-  if (teamMemberUpsertMatch && req.method === 'POST') {
-    return handleUpsertEmailTeamMember(req, ports, teamMemberUpsertMatch[1]);
-  }
-  const teamMemberMutationMatch = /^\/api\/v1\/email\/team-members\/([^/]+)$/.exec(req.path);
-  if (teamMemberMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailTeamMember(req, ports, teamMemberMutationMatch[1]);
-  }
-  if (teamMemberMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailTeamMember(req, ports, teamMemberMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/thread-edges' && req.method === 'POST') {
-    return handleCreateEmailThreadEdge(req, ports);
-  }
-  const threadEdgeMutationMatch = /^\/api\/v1\/email\/thread-edges\/([^/]+)$/.exec(req.path);
-  if (threadEdgeMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailThreadEdge(req, ports, threadEdgeMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/thread-aliases' && req.method === 'POST') {
-    return handleCreateEmailThreadAlias(req, ports);
-  }
-  const threadAliasMutationMatch = /^\/api\/v1\/email\/thread-aliases\/([^/]+)$/.exec(req.path);
-  if (threadAliasMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailThreadAlias(req, ports, threadAliasMutationMatch[1]);
-  }
-  if (threadAliasMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailThreadAlias(req, ports, threadAliasMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/threads/split-message') {
-    return handleSplitEmailMessageThread(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/threads/merge') {
-    return handleMergeEmailThreads(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/thread-alias-warnings') {
-    return handleListEmailThreadAliasWarnings(req, ports);
-  }
-
-  const accountSignatureUpsertMatch = /^\/api\/v1\/email\/account-signatures\/by-account\/([^/]+)\/upsert$/.exec(req.path);
-  if (accountSignatureUpsertMatch && req.method === 'POST') {
-    return handleUpsertEmailAccountSignatureByAccount(req, ports, accountSignatureUpsertMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/account-signatures' && req.method === 'POST') {
-    return handleCreateEmailAccountSignature(req, ports);
-  }
-  const accountSignatureMutationMatch = /^\/api\/v1\/email\/account-signatures\/([^/]+)$/.exec(req.path);
-  if (accountSignatureMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailAccountSignature(req, ports, accountSignatureMutationMatch[1]);
-  }
-  if (accountSignatureMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailAccountSignature(req, ports, accountSignatureMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/read-receipts' && req.method === 'POST') {
-    return handleCreateEmailReadReceipt(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/category-counts') {
-    return handleListEmailCategoryCounts(req, ports);
-  }
-
-  for (const route of numericResourceRoutes) {
-    if (req.path === route.listPath) return handleNumericList(req, ports, route);
-    const match = route.idPattern.exec(req.path);
-    if (match) return handleNumericGet(req, ports, route, match[1]);
-  }
-
-  for (const route of stringResourceRoutes) {
-    if (req.path === route.listPath) return handleStringList(req, ports, route);
-    const match = route.idPattern.exec(req.path);
-    if (match) return handleStringGet(req, ports, route, match[1]);
+export async function handleMailMetadataReadRoute(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+): Promise<ApiResponse | null> {
+  for (const { registration, dispatchMethods, handler } of MAIL_METADATA_ROUTE_REGISTRATIONS) {
+    if (dispatchMethods && !dispatchMethods.includes(req.method)) continue;
+    const match = registration.pattern.exec(req.path);
+    if (match) return handler(req, ports, match.slice(1));
   }
 
   return null;

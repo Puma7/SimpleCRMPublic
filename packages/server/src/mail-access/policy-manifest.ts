@@ -17,12 +17,23 @@ export type PolicyValueSelector = Readonly<{
 export type MailResourceResolution =
   | Readonly<{ kind: 'mail_scope' }>
   | Readonly<{ kind: 'account'; accountId: PolicyValueSelector }>
+  | Readonly<{
+    kind: 'optional_account';
+    accountId: PolicyValueSelector;
+    whenAbsent: 'workspace_global';
+  }>
   | Readonly<{ kind: 'folder_lookup'; folderId: PolicyValueSelector }>
   | Readonly<{ kind: 'message_lookup'; messageId: PolicyValueSelector }>
   | Readonly<{
     kind: 'optional_message_lookup';
     messageId: PolicyValueSelector;
     whenAbsent: 'non_mail' | 'mail_scope';
+  }>
+  | Readonly<{
+    kind: 'message_or_account_lookup';
+    messageId: PolicyValueSelector;
+    accountId: PolicyValueSelector;
+    whenAbsent: 'mail_scope';
   }>
   | Readonly<{ kind: 'attachment_lookup'; attachmentId: PolicyValueSelector }>
   | Readonly<{ kind: 'thread_lookup'; threadId: PolicyValueSelector }>
@@ -46,8 +57,7 @@ export type MailResourceResolution =
 export type MailRouteExemptionReason =
   | 'signed_public_tracking'
   | 'mail_auth_setup'
-  | 'workspace_admin_security'
-  | 'narrow_service_path';
+  | 'workspace_admin_security';
 
 export type MailRoutePermissionPolicy = Readonly<{
   kind: 'permission';
@@ -78,6 +88,12 @@ const eventValue = (field: string): PolicyValueSelector => ({ source: 'event', f
 const mailScope = (): MailResourceResolution => ({ kind: 'mail_scope' });
 const accountPath = (): MailResourceResolution => ({ kind: 'account', accountId: pathValue('accountId') });
 const accountBody = (): MailResourceResolution => ({ kind: 'account', accountId: bodyValue('accountId') });
+const accountQuery = (): MailResourceResolution => ({ kind: 'account', accountId: queryValue('accountId') });
+const optionalAccount = (source: 'query' | 'body'): MailResourceResolution => ({
+  kind: 'optional_account',
+  accountId: source === 'query' ? queryValue('accountId') : bodyValue('accountId'),
+  whenAbsent: 'workspace_global',
+});
 const folderPath = (): MailResourceResolution => ({ kind: 'folder_lookup', folderId: pathValue('id') });
 const messagePath = (): MailResourceResolution => ({ kind: 'message_lookup', messageId: pathValue('messageId') });
 const messageBody = (field = 'messageId'): MailResourceResolution => ({
@@ -144,7 +160,10 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/accounts/test-smtp', { POST: authSetup });
 
   const workspaceSecurity = exemptPolicy('workspace_admin_security');
-  assign('/api/v1/email/tracking/settings', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/tracking/settings', {
+    GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
+    PATCH: workspaceSecurity,
+  });
   assign('/api/v1/email/messages/:messageId/tracking', { DELETE: workspaceSecurity });
   assign('/api/v1/email/messages/:messageId/tracking/revoke', { POST: workspaceSecurity });
   assign('/api/v1/email/messages/:messageId/tracking/reclassify', { POST: workspaceSecurity });
@@ -158,12 +177,24 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/relays/:relayId/credentials/:credentialId/revoke', { POST: workspaceSecurity });
   assign('/api/v1/email/relays/:relayId/submissions', { GET: workspaceSecurity });
 
-  assign('/api/v1/email/settings/misc', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/settings/misc', {
+    GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
+    PATCH: permissionPolicy('mail.account.manage', { kind: 'workspace_global' }),
+  });
   assign('/api/v1/email/settings/security', { GET: workspaceSecurity, PATCH: workspaceSecurity });
   assign('/api/v1/email/settings/security/test-rspamd', { POST: workspaceSecurity });
-  assign('/api/v1/email/settings/account-mail', { GET: workspaceSecurity, PATCH: workspaceSecurity });
-  assign('/api/v1/email/settings/snooze', { GET: workspaceSecurity, PATCH: workspaceSecurity });
-  assign('/api/v1/email/settings/reply-suggestion', { GET: workspaceSecurity, PATCH: workspaceSecurity });
+  assign('/api/v1/email/settings/account-mail', {
+    GET: permissionPolicy('mail.metadata.read', accountQuery()),
+    PATCH: permissionPolicy('mail.account.manage', accountBody()),
+  });
+  assign('/api/v1/email/settings/snooze', {
+    GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
+    PATCH: permissionPolicy('mail.triage', { kind: 'workspace_global' }),
+  });
+  assign('/api/v1/email/settings/reply-suggestion', {
+    GET: permissionPolicy('mail.metadata.read', optionalAccount('query')),
+    PATCH: permissionPolicy('mail.account.manage', optionalAccount('body')),
+  });
 
   assign('/api/v1/email/accounts', {
     GET: permissionPolicy('mail.metadata.read', mailScope()),
@@ -494,7 +525,10 @@ function assignSupplementalProtectedPolicies(assign: AssignRoutePolicy): void {
 
 function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
   const mailEventTypes = SERVER_EVENT_TYPES.filter((type) => (
-    type.startsWith('email_') || type.startsWith('conversation_lock.')
+    type.startsWith('email_')
+    || type.startsWith('conversation_lock.')
+    || type.startsWith('spam_')
+    || type.startsWith('pgp_')
   ));
   return mailEventTypes.map((type) => ({
     type,
@@ -504,6 +538,9 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
 }
 
 function eventResourceResolution(type: ServerEventType): MailResourceResolution {
+  if (type.startsWith('spam_') || type.startsWith('pgp_')) {
+    return { kind: 'workspace_global' };
+  }
   if (type.startsWith('conversation_lock.') || type === 'email_message.updated' || type === 'email_tracking.updated') {
     return { kind: 'message_lookup', messageId: eventValue('entityId') };
   }
