@@ -29,6 +29,7 @@ export class MailAccessService implements MailAccessServiceContract {
   async assertPermission(
     input: Parameters<MailAccessServiceContract['assertPermission']>[0],
   ): Promise<void> {
+    if (input.actor.workspaceId !== input.workspaceId) throw new MailAccessDeniedError();
     const resource = normalizeResource(input.resource);
     if (!resource) throw new MailAccessDeniedError();
     if (input.actor.isOwner || input.actor.isAdmin) return;
@@ -46,6 +47,7 @@ export class MailAccessService implements MailAccessServiceContract {
   async resolveScope(
     input: Parameters<MailAccessServiceContract['resolveScope']>[0],
   ): Promise<MailSqlScope> {
+    if (input.actor.workspaceId !== input.workspaceId) return { kind: 'none' };
     if (input.actor.isOwner || input.actor.isAdmin) return { kind: 'all' };
 
     const grants = await this.port.resolveGrants({
@@ -94,25 +96,21 @@ function grantsToScope(grants: readonly MailAccessGrant[]): MailSqlScope {
       .filter((grant) => grant.resourceType === 'account')
       .map((grant) => grant.accountId),
   );
-  const uncoveredFolderGrants = grants.filter((grant) => (
-    grant.resourceType === 'folder'
-    && grant.folderId !== null
-    && !accountIds.has(grant.accountId)
-  ));
+  const uncoveredFolderGrants = grants
+    .filter((grant) => grant.resourceType === 'folder')
+    .filter((grant) => !accountIds.has(grant.accountId));
   const folderKeys = new Set(
     uncoveredFolderGrants.map((grant) => `${grant.accountId}:${grant.folderId}`),
   );
-  const folderIds = new Set(uncoveredFolderGrants.map((grant) => grant.folderId as number));
+  const folderIds = new Set(uncoveredFolderGrants.map((grant) => grant.folderId));
   const messageIds = new Set(
     grants
+      .filter((grant) => grant.resourceType === 'message')
       .filter((grant) => (
-        grant.resourceType === 'message'
-        && grant.folderId !== null
-        && grant.messageId !== null
-        && !accountIds.has(grant.accountId)
+        !accountIds.has(grant.accountId)
         && !folderKeys.has(`${grant.accountId}:${grant.folderId}`)
       ))
-      .map((grant) => grant.messageId as number),
+      .map((grant) => grant.messageId),
   );
 
   if (accountIds.size === 0 && folderIds.size === 0 && messageIds.size === 0) {

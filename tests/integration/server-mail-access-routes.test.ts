@@ -6,11 +6,15 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 
+import { Kysely, PostgresDialect } from '../../packages/server/node_modules/kysely';
+import { Pool } from '../../packages/server/node_modules/pg';
 import type { MailPermission } from '../../packages/core/src/email/mail-permissions';
 import type {
   MailAclBindingPermissionsTable,
   MailAclBindingsTable,
+  ServerDatabase,
 } from '../../packages/server/src/db/schema';
+import { createPostgresMailAccessPort } from '../../packages/server/src/mail-access/postgres-mail-access-port';
 import { serverMigrations } from '../../packages/server/src/migrations';
 
 jest.setTimeout(120_000);
@@ -60,6 +64,7 @@ const MESSAGE_A = 121;
 const MESSAGE_A_SECOND = 122;
 const MESSAGE_B = 221;
 const GROUP_A = 301;
+const GROUP_A_REMOVED = 302;
 const GROUP_B = 401;
 const MIGRATION_ROLE = 'simplecrm_mail_acl_migrator';
 const MIGRATION_ROLE_PASSWORD = 'mail-acl-migrator-password';
@@ -161,6 +166,7 @@ describe('server mailbox ACL migration', () => {
   let client: DatabaseClient;
   let postgresProcess: ChildProcessWithoutNullStreams;
   let postgresDir: string;
+  let postgresPort: number;
   let migrationDownApplied = false;
 
   async function applyStatements(statements: readonly string[]): Promise<void> {
@@ -233,15 +239,15 @@ describe('server mailbox ACL migration', () => {
 
   beforeAll(async () => {
     postgresDir = mkdtempSync(join(tmpdir(), 'simplecrm-mail-acl-'));
-    const port = await findAvailablePort();
-    postgresProcess = await startEmbeddedPostgres(postgresDir, port);
+    postgresPort = await findAvailablePort();
+    postgresProcess = await startEmbeddedPostgres(postgresDir, postgresPort);
     const requireFromServer = createRequire(join(__dirname, '..', '..', 'packages', 'server', 'package.json'));
     const { Client } = requireFromServer('pg') as {
       Client: new (options: Record<string, unknown>) => DatabaseClient;
     };
     adminClient = new Client({
       host: '127.0.0.1',
-      port,
+      port: postgresPort,
       user: 'postgres',
       password: 'mail-acl-test-password',
       database: 'postgres',
@@ -256,7 +262,7 @@ describe('server mailbox ACL migration', () => {
     await adminClient.query(`GRANT CREATE ON SCHEMA public TO ${MIGRATION_ROLE}`);
     client = new Client({
       host: '127.0.0.1',
-      port,
+      port: postgresPort,
       user: MIGRATION_ROLE,
       password: MIGRATION_ROLE_PASSWORD,
       database: 'postgres',
@@ -595,6 +601,111 @@ describe('server mailbox ACL migration', () => {
         AND account_id = ${ACCOUNT_A}
     `);
     expect(binding.rows).toEqual([{ workspace_id: WORKSPACE_A, created_by: null }]);
+  });
+
+  test('resolves only direct and current-group grants through the real RLS session', async () => {
+    await client.query('BEGIN');
+    try {
+      await client.query(`
+        SELECT set_config('app.role', 'system', true),
+               set_config('app.cross_workspace_access', 'on', true)
+      `);
+      await client.query(`
+        INSERT INTO user_groups (id, workspace_id, name)
+        VALUES (${GROUP_A_REMOVED}, '${WORKSPACE_A}', 'Removed Group')
+      `);
+      await client.query(`
+        INSERT INTO user_group_members (workspace_id, group_id, user_id) VALUES
+          ('${WORKSPACE_A}', ${GROUP_A}, '${USER_READ}'),
+          ('${WORKSPACE_A}', ${GROUP_A_REMOVED}, '${USER_READ}'),
+          ('${WORKSPACE_B}', ${GROUP_B}, '${USER_READ}')
+      `);
+      await client.query(`
+        DELETE FROM user_group_members
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND group_id = ${GROUP_A_REMOVED}
+          AND user_id = '${USER_READ}'
+      `);
+      await client.query(`
+        INSERT INTO mail_acl_bindings (
+          workspace_id, subject_type, subject_id, resource_type, account_id, folder_id, message_id
+        ) VALUES
+          ('${WORKSPACE_A}', 'group', '${GROUP_A}', 'folder', ${ACCOUNT_A_OTHER}, ${FOLDER_A_OTHER}, NULL),
+          ('${WORKSPACE_A}', 'group', '${GROUP_A_REMOVED}', 'message', ${ACCOUNT_A}, ${FOLDER_A_SECOND}, ${MESSAGE_A_SECOND}),
+          ('${WORKSPACE_B}', 'group', '${GROUP_B}', 'account', ${ACCOUNT_B}, NULL, NULL),
+          ('${WORKSPACE_B}', 'user', '${USER_WORKSPACE_B}', 'folder', ${ACCOUNT_B}, ${FOLDER_B}, NULL),
+          ('${WORKSPACE_A}', 'user', '${USER_READ}', 'folder', ${ACCOUNT_A}, ${FOLDER_A_SECOND}, NULL)
+      `);
+      await client.query(`
+        INSERT INTO mail_acl_binding_permissions (binding_id, permission_key)
+        SELECT id,
+          CASE
+            WHEN workspace_id = '${WORKSPACE_A}'
+              AND subject_type = 'user'
+              AND resource_type = 'folder'
+            THEN 'mail.send'
+            ELSE 'mail.content.read'
+          END
+        FROM mail_acl_bindings
+        WHERE (workspace_id = '${WORKSPACE_A}' AND subject_type = 'group' AND subject_id = '${GROUP_A}'
+          AND resource_type = 'folder' AND account_id = ${ACCOUNT_A_OTHER} AND folder_id = ${FOLDER_A_OTHER})
+          OR (workspace_id = '${WORKSPACE_A}' AND subject_type = 'group' AND subject_id = '${GROUP_A_REMOVED}'
+            AND resource_type = 'message' AND message_id = ${MESSAGE_A_SECOND})
+          OR (workspace_id = '${WORKSPACE_B}' AND subject_type = 'group' AND subject_id = '${GROUP_B}'
+            AND resource_type = 'account' AND account_id = ${ACCOUNT_B})
+          OR (workspace_id = '${WORKSPACE_B}' AND subject_type = 'user' AND subject_id = '${USER_WORKSPACE_B}'
+            AND resource_type = 'folder' AND folder_id = ${FOLDER_B})
+          OR (workspace_id = '${WORKSPACE_A}' AND subject_type = 'user' AND subject_id = '${USER_READ}'
+            AND resource_type = 'folder' AND folder_id = ${FOLDER_A_SECOND})
+      `);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+
+    const db = new Kysely<ServerDatabase>({
+      dialect: new PostgresDialect({
+        pool: new Pool({
+          host: '127.0.0.1',
+          port: postgresPort,
+          user: MIGRATION_ROLE,
+          password: MIGRATION_ROLE_PASSWORD,
+          database: 'postgres',
+          max: 1,
+        }),
+      }),
+    });
+    try {
+      const role = await client.query<{
+        is_superuser: boolean;
+        bypasses_rls: boolean;
+      }>(`
+        SELECT rolsuper AS is_superuser, rolbypassrls AS bypasses_rls
+        FROM pg_roles
+        WHERE rolname = current_user
+      `);
+      expect(role.rows).toEqual([{ is_superuser: false, bypasses_rls: false }]);
+
+      const port = createPostgresMailAccessPort({ db });
+      const grants = await port.resolveGrants({
+        workspaceId: WORKSPACE_A,
+        userId: USER_READ,
+        permission: 'mail.content.read',
+      });
+
+      expect(grants).toEqual([
+        { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+        {
+          resourceType: 'folder',
+          accountId: ACCOUNT_A_OTHER,
+          folderId: FOLDER_A_OTHER,
+          messageId: null,
+        },
+      ]);
+    } finally {
+      await db.destroy();
+    }
   });
 
   test('down removes only ACL objects and preserves the legacy table', async () => {

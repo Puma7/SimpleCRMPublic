@@ -14,7 +14,25 @@ const WORKSPACE_B = '22222222-2222-4222-8222-222222222222';
 const USER_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const USER_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 
-const USER_ACTOR = Object.freeze({ userId: USER_A, isOwner: false, isAdmin: false });
+const USER_ACTOR = Object.freeze({
+  workspaceId: WORKSPACE_A,
+  userId: USER_A,
+  isOwner: false,
+  isAdmin: false,
+});
+
+type Equal<Left, Right> = (
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2) ? true : false
+);
+
+type Assert<Value extends true> = Value;
+
+const grantTypeAssertion: Assert<Equal<MailAccessGrant,
+  | Readonly<{ resourceType: 'account'; accountId: number; folderId: null; messageId: null }>
+  | Readonly<{ resourceType: 'folder'; accountId: number; folderId: number; messageId: null }>
+  | Readonly<{ resourceType: 'message'; accountId: number; folderId: number; messageId: number }>
+>> = true;
 
 type GrantFixture = Readonly<{
   workspaceId: string;
@@ -77,9 +95,13 @@ const messageGrant = (
 });
 
 describe('MailAccessService', () => {
+  it('defines exact grant resource shapes', () => {
+    expect(grantTypeAssertion).toBe(true);
+  });
+
   it.each([
-    ['Owner', { userId: USER_A, isOwner: true, isAdmin: false }],
-    ['Admin', { userId: USER_A, isOwner: false, isAdmin: true }],
+    ['Owner', { workspaceId: WORKSPACE_A, userId: USER_A, isOwner: true, isAdmin: false }],
+    ['Admin', { workspaceId: WORKSPACE_A, userId: USER_A, isOwner: false, isAdmin: true }],
   ])('gives %s an explicit bypass', async (_label, actor) => {
     const port = createFixturePort([]);
     const service = new MailAccessService(port);
@@ -94,6 +116,29 @@ describe('MailAccessService', () => {
       resource: { type: 'message', accountId: '10', folderId: '20', messageId: '30' },
     })).resolves.toBeUndefined();
     await expect(service.resolveScope(input)).resolves.toEqual({ kind: 'all' });
+    expect(port.resolveGrants).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Owner', { workspaceId: WORKSPACE_B, userId: USER_B, isOwner: true, isAdmin: false }],
+    ['Admin', { workspaceId: WORKSPACE_B, userId: USER_B, isOwner: false, isAdmin: true }],
+    ['User', { workspaceId: WORKSPACE_B, userId: USER_B, isOwner: false, isAdmin: false }],
+  ])('denies a %s whose authenticated workspace differs from the input', async (_label, actor) => {
+    const port = createFixturePort([
+      fixture('mail.content.read', accountGrant(10), { userId: USER_B }),
+    ]);
+    const service = new MailAccessService(port);
+    const input = {
+      workspaceId: WORKSPACE_A,
+      actor,
+      permission: 'mail.content.read' as const,
+    };
+
+    await expect(service.assertPermission({
+      ...input,
+      resource: { type: 'account', accountId: '10' },
+    })).rejects.toBeInstanceOf(MailAccessDeniedError);
+    await expect(service.resolveScope(input)).resolves.toEqual({ kind: 'none' });
     expect(port.resolveGrants).not.toHaveBeenCalled();
   });
 
@@ -256,63 +301,6 @@ describe('MailAccessService', () => {
 });
 
 describe('createPostgresMailAccessPort', () => {
-  it('resolves direct and current-group grants in one workspace-scoped parameterized CTE', async () => {
-    const executed: Array<{ sql: string; parameters: readonly unknown[] }> = [];
-    const trx = {
-      getExecutor: () => ({
-        compileQuery: (node: {
-          sqlFragments: readonly string[];
-          parameters: readonly { value: unknown }[];
-        }) => ({
-          sql: node.sqlFragments
-            .map((fragment, index) => `${fragment}${index < node.parameters.length ? `$${index + 1}` : ''}`)
-            .join(''),
-          parameters: node.parameters.map((parameter) => parameter.value),
-        }),
-        executeQuery: async (compiled: { sql: string; parameters: readonly unknown[] }) => {
-          executed.push(compiled);
-          return {
-            rows: [
-              { resource_type: 'account', account_id: '10', folder_id: null, message_id: null },
-              { resource_type: 'folder', account_id: '11', folder_id: '20', message_id: null },
-            ],
-          };
-        },
-      }),
-    };
-    const db = {
-      transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
-    };
-    const applyWorkspaceSession = jest.fn(async () => undefined);
-    const port = createPostgresMailAccessPort({
-      db: db as never,
-      applyWorkspaceSession,
-    });
-
-    await expect(port.resolveGrants({
-      workspaceId: WORKSPACE_A,
-      userId: USER_A,
-      permission: 'mail.content.read',
-    })).resolves.toEqual([
-      accountGrant(10),
-      folderGrant(11, 20),
-    ]);
-
-    expect(applyWorkspaceSession).toHaveBeenCalledTimes(1);
-    expect(executed).toHaveLength(1);
-    expect(executed[0].sql).toMatch(/^\s*WITH active_subjects/);
-    expect(executed[0].sql).toContain('user_group_members');
-    expect(executed[0].sql).toContain('active_user.workspace_id');
-    expect(executed[0].sql).toContain('membership.workspace_id');
-    expect(executed[0].sql).toContain('binding.workspace_id');
-    expect(executed[0].sql).not.toContain(WORKSPACE_A);
-    expect(executed[0].sql).not.toContain(USER_A);
-    expect(executed[0].sql).not.toContain('mail.content.read');
-    expect(executed[0].parameters).toContain(WORKSPACE_A);
-    expect(executed[0].parameters).toContain(USER_A);
-    expect(executed[0].parameters).toContain('mail.content.read');
-  });
-
   it('keeps workspace and user identity in the transaction and query parameters', async () => {
     const queryParameters: unknown[][] = [];
     const contexts: unknown[] = [];

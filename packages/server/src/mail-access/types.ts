@@ -1,17 +1,21 @@
 import type { MailPermission, MailResource } from '@simplecrm/core';
 
 export type MailAccessActor = Readonly<{
+  workspaceId: string;
   userId: string;
   isOwner: boolean;
   isAdmin: boolean;
 }>;
 
-export type MailAccessGrant = Readonly<{
-  resourceType: 'account' | 'folder' | 'message';
-  accountId: number;
-  folderId: number | null;
-  messageId: number | null;
-}>;
+export type MailAccessGrant =
+  | Readonly<{ resourceType: 'account'; accountId: number; folderId: null; messageId: null }>
+  | Readonly<{ resourceType: 'folder'; accountId: number; folderId: number; messageId: null }>
+  | Readonly<{
+    resourceType: 'message';
+    accountId: number;
+    folderId: number;
+    messageId: number;
+  }>;
 
 export type MailSqlScope =
   | Readonly<{ kind: 'all' }>
