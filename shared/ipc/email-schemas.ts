@@ -68,6 +68,34 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
 
   // --- Accounts & sync ---
   set(IPCChannels.Email.ListAccounts, { payload: voidPayload, result: recordArray });
+  set(IPCChannels.Email.ListFolders, {
+    payload: z.object({ accountId: positiveInt.optional() }).optional(),
+    result: recordArray,
+  });
+  set(IPCChannels.Email.ListMailDelegationBindings, {
+    payload: z.object({
+      accountId: positiveInt.optional(),
+      folderId: positiveInt.optional(),
+    }).optional(),
+    result: recordArray,
+  });
+  set(IPCChannels.Email.SaveMailDelegationBinding, {
+    payload: z.object({
+      id: positiveInt.optional(),
+      subject: z.object({
+        type: z.enum(['user', 'group']),
+        id: z.union([positiveInt, nonEmptyString]),
+      }).optional(),
+      resource: z.union([
+        z.object({ type: z.literal('account'), accountId: positiveInt }),
+        z.object({ type: z.literal('folder'), accountId: positiveInt, folderId: positiveInt }),
+      ]).optional(),
+      profile: z.string().nullable().optional(),
+      permissions: z.array(nonEmptyString),
+    }),
+    result: z.union([z.object({ success: z.literal(true), id: positiveInt.optional() }).passthrough(), failResult]),
+  });
+  set(IPCChannels.Email.DeleteMailDelegationBinding, { payload: positiveInt, result: standardResult });
   set(IPCChannels.Email.CreateAccount, {
     payload: z.object({
       displayName: nonEmptyString,

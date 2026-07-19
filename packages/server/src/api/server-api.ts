@@ -14,6 +14,7 @@ import {
 } from './email-tracking-routes';
 import { handleSmtpRelayRoute, SMTP_RELAY_ROUTE_INVENTORY } from './relay-routes';
 import { handleLockRoute, MAIL_LOCK_ROUTE_INVENTORY } from './lock-routes';
+import { handleMailDelegationRoute } from './mail-delegation-routes';
 import { handleMailReadRoute, MAIL_ROUTE_INVENTORY } from './mail-routes';
 import { handleMaintenanceRoute } from './maintenance-routes';
 import { handleNoticeRoute, MAIL_NOTICE_ROUTE_INVENTORY } from './notice-routes';
@@ -67,6 +68,7 @@ export const SERVER_API_ROUTE_REGISTRATIONS: readonly ServerApiRouteRegistration
   mailRoutes('user-signature-routes', USER_SIGNATURE_ROUTE_INVENTORY, handleUserSignatureRoute),
   nonMailRoutes('customer-routes', handleCustomerRoute),
   nonMailRoutes('user-group-routes', handleUserGroupRoute),
+  nonMailRoutes('mail-delegation-routes', handleMailDelegationRoute),
   nonMailRoutes('diagnostics-routes', handleDiagnosticsRoute),
   nonMailRoutes('maintenance-routes', handleMaintenanceRoute),
   nonMailRoutes('core-crm-routes', handleCoreCrmReadRoute),

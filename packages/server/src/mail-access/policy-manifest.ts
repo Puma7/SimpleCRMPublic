@@ -537,10 +537,11 @@ function assignSupplementalProtectedPolicies(assign: AssignRoutePolicy): void {
 
 function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
   const mailEventTypes = SERVER_EVENT_TYPES.filter((type) => (
-    type.startsWith('email_')
+    type !== 'email_acl.changed'
+    && (type.startsWith('email_')
     || type.startsWith('conversation_lock.')
     || type.startsWith('spam_')
-    || type.startsWith('pgp_')
+    || type.startsWith('pgp_'))
   ));
   return mailEventTypes.map((type) => ({
     type,

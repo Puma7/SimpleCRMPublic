@@ -451,6 +451,7 @@ export const SERVER_EVENT_TYPES = Object.freeze([
   'email_account_signature.updated',
   'email_account_signature.deleted',
   'email_read_receipt.created',
+  'email_acl.changed',
 ] as const);
 
 export type ServerEventType = (typeof SERVER_EVENT_TYPES)[number];
@@ -494,7 +495,8 @@ export type ServerEventEntityType =
   | 'email_thread_alias'
   | 'email_thread'
   | 'email_account_signature'
-  | 'email_read_receipt';
+  | 'email_read_receipt'
+  | 'email_acl';
 
 export type ServerEvent = Readonly<{
   sequence?: number;
@@ -734,6 +736,69 @@ export type UserGroupApiPort = {
     groupId: number;
     permissions: readonly string[];
   }): Promise<{ ok: true; permissions: string[] } | { ok: false; code: 'group_not_found' }>;
+};
+
+export type MailDelegationSubject =
+  | { type: 'user'; id: string; label?: string }
+  | { type: 'group'; id: number; label?: string };
+
+export type MailDelegationResource =
+  | { type: 'account'; accountId: number; label?: string }
+  | { type: 'folder'; accountId: number; folderId: number; label?: string };
+
+export type MailDelegationBinding = {
+  id: number;
+  subject: MailDelegationSubject;
+  resource: MailDelegationResource;
+  permissions: readonly MailPermission[];
+  profile: string | null;
+  updatedAt: string;
+};
+
+export type MailDelegationActor = {
+  userId: string;
+  isOwner: boolean;
+  isAdmin: boolean;
+};
+
+export type MailDelegationMutationCode =
+  | 'binding_not_found'
+  | 'permission_denied'
+  | 'privilege_escalation'
+  | 'resource_not_found'
+  | 'subject_not_found'
+  | 'owner_admin_subject_forbidden';
+
+export type MailDelegationApiPort = {
+  listBindings(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    resource?: MailDelegationResource;
+  }): Promise<{ ok: true; bindings: readonly MailDelegationBinding[] } | { ok: false; code: 'permission_denied' | 'resource_not_found' }>;
+  replaceBinding(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    subject: MailDelegationSubject;
+    resource: MailDelegationResource;
+    permissions: readonly MailPermission[];
+  }): Promise<
+    | { ok: true; binding: MailDelegationBinding | null; affectedUserIds: readonly string[]; deleted?: boolean }
+    | { ok: false; code: MailDelegationMutationCode }
+  >;
+  replaceBindingById(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    bindingId: number;
+    permissions: readonly MailPermission[];
+  }): Promise<
+    | { ok: true; binding: MailDelegationBinding | null; affectedUserIds: readonly string[]; deleted: boolean }
+    | { ok: false; code: MailDelegationMutationCode }
+  >;
+  deleteBinding(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    bindingId: number;
+  }): Promise<{ ok: true; bindingId: number; affectedUserIds: readonly string[] } | { ok: false; code: MailDelegationMutationCode }>;
 };
 
 export type CustomerApiPort = {
@@ -5019,6 +5084,7 @@ export type ServerApiPorts = {
   customerCustomFieldValues?: CustomerCustomFieldValueApiPort;
   customers?: CustomerApiPort;
   userGroups?: UserGroupApiPort;
+  mailDelegation?: MailDelegationApiPort;
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;

@@ -64,6 +64,7 @@ const MAIL_EVENT_POLICY_TYPES = new Set(MAIL_EVENT_POLICY_MANIFEST.map((entry) =
 const SERVER_EVENT_TYPE_SET = new Set<string>(SERVER_EVENT_TYPES);
 
 const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  'email_acl.changed': ['bindingId', 'targetUserId', 'state'],
   'email_account.created': ['accountId', 'state'],
   'email_account.updated': ['accountId', 'state'],
   'email_account.deleted': ['accountId', 'state'],
@@ -136,6 +137,10 @@ export async function filterMailEventForPrincipal(
   event: ServerEvent,
   context: MailEventFilterContext,
 ): Promise<ServerEvent | null> {
+  if (event.type === 'email_acl.changed') {
+    const sanitized = sanitizeMailEventPayload(event);
+    return sanitized.payload.targetUserId === context.principal.userId ? sanitized : null;
+  }
   const policy = mailEventPolicyOrNull(event.type);
   if (!policy) return SERVER_EVENT_TYPE_SET.has(event.type) ? event : null;
   const sanitized = sanitizeMailEventPayload(event);
@@ -399,6 +404,14 @@ function mailEventPolicyOrNull(type: string): MailEventPolicyEntry | null {
 }
 
 export function sanitizeMailEventPayload(event: ServerEvent): ServerEvent {
+  if (event.type === 'email_acl.changed') {
+    const payload: Record<string, unknown> = {};
+    for (const key of EVENT_PAYLOAD_ALLOWLIST[event.type]) {
+      const value = event.payload[key];
+      if (isAllowedPayloadScalar(value)) payload[key] = value;
+    }
+    return { ...event, payload };
+  }
   if (!mailEventPolicyOrNull(event.type)) return event;
   const allowed = EVENT_PAYLOAD_ALLOWLIST[event.type] ?? [];
   const payload: Record<string, unknown> = {};

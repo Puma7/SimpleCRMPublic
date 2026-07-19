@@ -308,6 +308,14 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         delete: { summary: 'Dismiss IMAP auth notices' },
       },
       '/email/folders': { get: { summary: 'List mail folders' } },
+      '/email/access/bindings': {
+        get: { summary: 'List mailbox delegation bindings' },
+        post: { summary: 'Create or replace mailbox delegation binding' },
+      },
+      '/email/access/bindings/{id}': {
+        patch: { summary: 'Replace mailbox delegation binding permissions' },
+        delete: { summary: 'Delete mailbox delegation binding' },
+      },
       '/email/tags': {
         get: { summary: 'List mail tags' },
         post: { summary: 'Create mail tag' },

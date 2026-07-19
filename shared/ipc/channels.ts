@@ -209,6 +209,7 @@ const CustomFieldChannels = literal({
 
 const EmailChannels = literal({
   ListAccounts: 'email:list-accounts',
+  ListFolders: 'email:list-folders',
   CreateAccount: 'email:create-account',
   UpdateAccount: 'email:update-account',
   DeleteAccount: 'email:delete-account',
@@ -416,6 +417,9 @@ const EmailChannels = literal({
   HeartbeatConversationLock: 'email:heartbeat-conversation-lock',
   ReleaseConversationLock: 'email:release-conversation-lock',
   TakeoverConversationLock: 'email:takeover-conversation-lock',
+  ListMailDelegationBindings: 'email:list-mail-delegation-bindings',
+  SaveMailDelegationBinding: 'email:save-mail-delegation-binding',
+  DeleteMailDelegationBinding: 'email:delete-mail-delegation-binding',
 });
 
 export const IPCChannels = {
@@ -446,6 +450,10 @@ export const IPCChannels = {
 export const DesktopServerOnlyInvokeChannels = tuple(
   ...Object.values(UserGroupChannels),
   ...Object.values(ReturnsChannels),
+  EmailChannels.ListFolders,
+  EmailChannels.ListMailDelegationBindings,
+  EmailChannels.SaveMailDelegationBinding,
+  EmailChannels.DeleteMailDelegationBinding,
 );
 
 // Flattened invoke list for preload allow-listing

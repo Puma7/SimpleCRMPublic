@@ -1679,6 +1679,54 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: "/api/v1/email/accounts",
     transform: (body) => listItems<EmailAccountRecord>(body).map(mapEmailAccountRecord),
   })],
+  [IPCChannels.Email.ListFolders, ([payload]) => {
+    const input = payload === undefined ? {} : objectPayload(payload, "email folder list payload")
+    return {
+      method: "GET",
+      path: "/api/v1/email/folders",
+      query: pruneQueryUndefined({
+        accountId: optionalPositiveQueryId(input.accountId, "email account id"),
+      }),
+      transform: (body) => listItems<Record<string, unknown>>(body),
+    }
+  }],
+  [IPCChannels.Email.ListMailDelegationBindings, ([payload]) => {
+    const input = payload === undefined ? {} : objectPayload(payload, "mail delegation list payload")
+    return {
+      method: "GET",
+      path: "/api/v1/email/access/bindings",
+      query: pruneQueryUndefined({
+        accountId: optionalPositiveQueryId(input.accountId, "email account id"),
+        folderId: optionalPositiveQueryId(input.folderId, "email folder id"),
+      }),
+      transform: (body) => listItems<Record<string, unknown>>(body),
+    }
+  }],
+  [IPCChannels.Email.SaveMailDelegationBinding, ([payload]) => {
+    const input = objectPayload(payload, "mail delegation binding payload")
+    const id = input.id === undefined ? null : positiveId(input.id, "mail delegation binding id")
+    return {
+      method: id === null ? "POST" : "PATCH",
+      path: id === null
+        ? "/api/v1/email/access/bindings"
+        : `/api/v1/email/access/bindings/${id}`,
+      body: pruneUndefined({
+        subject: input.subject,
+        resource: input.resource,
+        profile: input.profile,
+        permissions: Array.isArray(input.permissions) ? input.permissions : [],
+      }),
+      transform: (body) => {
+        const result = dataBody<{ id?: number }>(body)
+        return { success: true, ...(result.id === undefined ? {} : { id: result.id }) }
+      },
+    }
+  }],
+  [IPCChannels.Email.DeleteMailDelegationBinding, ([id]) => ({
+    method: "DELETE",
+    path: `/api/v1/email/access/bindings/${positiveId(id, "mail delegation binding id")}`,
+    transform: () => ({ success: true }),
+  })],
   [IPCChannels.Email.CreateAccount, ([payload]) => {
     const input = objectPayload(payload, "email account payload")
     return {

@@ -19,13 +19,14 @@ export function useEmailAccounts() {
     try {
       const list = await invokeRenderer(IPCChannels.Email.ListAccounts) as EmailAccount[]
       setAccounts(list)
-      // Functional update avoids stale-closure: only initialise to list[0] when
-      // the user has not picked an account yet. Preserves existing selection
-      // on every subsequent reload (e.g. after adding an account in Settings).
+      // Functional update avoids stale-closure and drops selections that became
+      // invisible after a server-side ACL change.
       setSelectedAccountId((prev) => {
         if (list.length === 0) return null
+        const stillVisible = typeof prev === "number" && list.some((account) => account.id === prev)
         if (prev === "all" && list.length < 2) return list[0]!.id
-        if (prev !== null) return prev
+        if (prev === "all") return "all"
+        if (stillVisible) return prev
         if (list.length > 1) return "all"
         return list[0]!.id
       })

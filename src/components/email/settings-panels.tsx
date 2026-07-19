@@ -47,6 +47,7 @@ import { ThreadToolsPanel } from "./settings/thread-tools-panel"
 export { SETTINGS_TAB_IDS } from "./settings-tab-ids"
 import { TrackingSettingsPanel } from "./settings/tracking-settings-panel"
 import { RelaySettingsPanel } from "./settings/relay-settings-panel"
+import { MailDelegationPanel } from "./settings/mail-delegation-panel"
 
 type TabDef = {
   id: SettingsTab
@@ -102,6 +103,13 @@ const TAB_DEFS: TabDef[] = [
     serverOnly: true,
   },
   {
+    id: "delegation",
+    label: "Delegation",
+    icon: ShieldCheck,
+    render: () => <MailDelegationPanel />,
+    serverOnly: true,
+  },
+  {
     id: "automation",
     label: "Automatisierung",
     icon: Workflow,
@@ -144,7 +152,7 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
     label: "KI & Automation",
     tabIds: ["ai", "knowledge", "mailSecurity", "tracking", "automation", "prompts"],
   },
-  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "authSecurity", "userGroups", "canned"] },
+  { label: "Team & Vorlagen", tabIds: ["team", "appUsers", "authSecurity", "userGroups", "delegation", "canned"] },
   { label: "Datenschutz & Support", tabIds: ["export", "pgp", "auditLog", "threadTools", "diagnostics", "snooze"] },
   { label: "Sonstiges", tabIds: ["misc"] },
 ]

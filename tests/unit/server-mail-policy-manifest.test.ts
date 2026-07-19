@@ -62,6 +62,7 @@ describe('server mail policy manifest', () => {
       'user-signature-routes',
       'customer-routes',
       'user-group-routes',
+      'mail-delegation-routes',
       'diagnostics-routes',
       'maintenance-routes',
       'core-crm-routes',
@@ -149,7 +150,9 @@ describe('server mail policy manifest', () => {
   });
 
   test('classifies every mail event type exactly once', () => {
-    const mailEventTypes = SERVER_EVENT_TYPES.filter(isMailEventType);
+    const mailEventTypes = SERVER_EVENT_TYPES
+      .filter(isMailEventType)
+      .filter((type) => type !== 'email_acl.changed');
     expect(MAIL_EVENT_POLICY_MANIFEST.map(({ type }) => type).sort()).toEqual(mailEventTypes.sort());
     expect(MAIL_EVENT_POLICY_MANIFEST.every(({ permission }) => (
       permission === 'mail.metadata.read'

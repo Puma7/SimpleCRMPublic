@@ -150,6 +150,7 @@ import {
 import { createServerMailConnectionTestPort } from './mail-connection-test';
 import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
 import { createPostgresMailAccessPort } from './mail-access/postgres-mail-access-port';
+import { createPostgresMailDelegationPort } from './mail-access/postgres-mail-delegation-port';
 import { createPostgresMailResourceLookupPort } from './mail-access/postgres-mail-resource-lookup';
 import { MailAccessService } from './mail-access/service';
 import {
@@ -535,6 +536,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     : undefined;
   return {
     mailAccess: new MailAccessService(createPostgresMailAccessPort({ db: options.db })),
+    mailDelegation: createPostgresMailDelegationPort({ db: options.db }),
     mailResourceLookup: createPostgresMailResourceLookupPort({ db: options.db }),
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
     health: {

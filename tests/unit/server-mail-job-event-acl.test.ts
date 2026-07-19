@@ -232,6 +232,37 @@ describe('server mail job and event ACL', () => {
     expect(ports.lookups).toContainEqual({ kind: 'metadata', entity: 'account_signature', id: -71 });
   });
 
+  test('ACL invalidation events are target-user only and sanitized before live or replay delivery', async () => {
+    const ports = makePolicyPorts();
+    const aclEvent = event({
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      entityId: '901',
+      payload: {
+        bindingId: 901,
+        targetUserId: 'user-a',
+        state: 'deleted',
+        email: 'hidden@example.test',
+        body: 'hidden',
+        filename: 'hidden.pdf',
+      },
+    });
+
+    await expect(filterMailEventForPrincipal(aclEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    })).resolves.toMatchObject({
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      payload: { bindingId: 901, targetUserId: 'user-a', state: 'deleted' },
+    });
+
+    await expect(filterMailEventForPrincipal(aclEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'admin' as const },
+      ports,
+    })).resolves.toBeNull();
+  });
+
   test('event resource matrix covers account message metadata edge parents thread any spam fallback deny and workspace-global', async () => {
     const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
     const context = {

@@ -1,0 +1,90 @@
+tests/unit\api-rate-limit.test.ts:90:      { path: '/api/v1/email/settings/security/test-rspamd', method: 'POST' },
+tests/unit\auth-context-server-client.test.tsx:22:describe('AuthProvider server-client mode', () => {
+tests/unit\browser-deploy-config-same-origin.test.ts:23:  test('with the web-only flag, defaults to a same-origin server-client config', () => {
+tests/unit\browser-deploy-config-same-origin.test.ts:32:    expect(result.config.mode).toBe('server-client');
+tests/unit\automation-panel-admin-gate.test.tsx:24:import { AutomationPanel } from '@/components/email/settings/automation-panel';
+tests/unit\apply-workflow-menu-server-client.test.tsx:79:describe('ApplyWorkflowMenu server-client mode', () => {
+tests/unit\deploy-setup-gate.test.tsx:20:  test('shows browser setup wizard outside Electron and persists server-client choice', async () => {
+tests/unit\deploy-setup-gate.test.tsx:42:      mode: 'server-client',
+tests/unit\deploy-setup-gate.test.tsx:54:  test('bootstraps browser server-client mode from URL and persists it', async () => {
+tests/unit\deploy-setup-gate.test.tsx:69:      mode: 'server-client',
+tests/unit\deploy-setup-gate.test.tsx:81:  test('renders browser app immediately when a stored server-client config exists', async () => {
+tests/unit\deploy-setup-gate.test.tsx:84:      mode: 'server-client',
+tests/unit\deploy-setup-gate.test.tsx:129:  test('renders Electron server-client app once HTTP transport is configured', async () => {
+tests/unit\deploy-setup-gate.test.tsx:134:        mode: 'server-client',
+tests/unit\electron-deploy-config-security.test.ts:3:describe('Electron server-client transport security', () => {
+tests/unit\email-module-layout.test.tsx:39:  test('renders the email module in browser server-client mode without Electron IPC', () => {
+tests/unit\email-settings-navigation.test.ts:8:      path.resolve(__dirname, '../../src/components/email/settings-panels.tsx'),
+tests/unit\login-page-server-client.test.tsx:33:describe('LoginPage server-client mode', () => {
+tests/unit\login-page-server-client.test.tsx:111:  test('offers a confirmed deploy config reset when the configured server is unreachable', async () => {
+tests/unit\mail-delegation-panel.test.tsx:13:import { MailDelegationPanel } from '@/components/email/settings/mail-delegation-panel';
+tests/unit\mail-settings-server-client-ui.test.tsx:5:import { AccountForm } from '@/components/email/settings/account-form';
+tests/unit\mail-settings-server-client-ui.test.tsx:6:import { ExportPanel } from '@/components/email/settings/export-panel';
+tests/unit\mail-settings-server-client-ui.test.tsx:7:import { KnowledgePanel } from '@/components/email/settings/knowledge-panel';
+tests/unit\mail-settings-server-client-ui.test.tsx:8:import { MailSecurityPanel } from '@/components/email/settings/mail-security-panel';
+tests/unit\mail-settings-server-client-ui.test.tsx:9:import { MiscPanel, SnoozePanel } from '@/components/email/settings/misc-panel';
+tests/unit\mail-settings-server-client-ui.test.tsx:10:import { ArchiveRecoverySection } from '@/components/email/settings/archive-recovery-section';
+tests/unit\mail-settings-server-client-ui.test.tsx:29:jest.mock('@/components/email/settings/knowledge-markdown-editor', () => ({
+tests/unit\mail-settings-server-client-ui.test.tsx:45:describe('mail settings server-client UI', () => {
+tests/unit\mail-settings-server-client-ui.test.tsx:324:      if (url.includes('/api/v1/email/settings/snooze')) {
+tests/unit\mail-settings-server-client-ui.test.tsx:375:      if (url.includes('/api/v1/email/settings/security')) {
+tests/unit\mail-settings-server-client-ui.test.tsx:402:      if (url.includes('/api/v1/email/settings/security')) {
+tests/unit\mail-settings-server-client-ui.test.tsx:442:      if (url.includes('/api/v1/email/settings/security')) {
+tests/unit\message-evidence-panel.test.tsx:17:  isServerClientMode: () => true,
+tests/unit\relay-port.test.ts:740:    // In server-client mode ListAccounts exposes source_sqlite_id as the public
+tests/unit\relay-settings-panel.test.tsx:33:import { RelaySettingsPanel } from '@/components/email/settings/relay-settings-panel';
+tests/unit\renderer-transport.test.ts:494:    await expect(transport.invoke(IPCChannels.Email.ListMailDelegationBindings, {
+tests/unit\renderer-transport.test.ts:1816:  test('matches server-client settings refresh events for AI profiles, PGP keys, and automation keys', () => {
+tests/unit\renderer-transport.test.ts:4095:  test('uploads server-client compose attachments through the HTTP transport', async () => {
+tests/unit\renderer-transport.test.ts:4113:      mode: 'server-client',
+tests/unit\renderer-transport.test.ts:4140:  test('uses direct HTTP helpers for server-client PGP attachment actions', async () => {
+tests/unit\renderer-transport.test.ts:4171:      mode: 'server-client',
+tests/unit\renderer-transport.test.ts:5455:      'https://crm.example.com/api/v1/email/settings/misc',
+tests/unit\renderer-transport.test.ts:5460:      'https://crm.example.com/api/v1/email/settings/misc',
+tests/unit\renderer-transport.test.ts:5471:      'https://crm.example.com/api/v1/email/settings/security',
+tests/unit\renderer-transport.test.ts:5476:      'https://crm.example.com/api/v1/email/settings/security',
+tests/unit\renderer-transport.test.ts:5490:      'https://crm.example.com/api/v1/email/settings/snooze',
+tests/unit\renderer-transport.test.ts:5495:      'https://crm.example.com/api/v1/email/settings/snooze',
+tests/unit\renderer-transport.test.ts:5511:      'https://crm.example.com/api/v1/email/settings/reply-suggestion?accountId=7',
+tests/unit\renderer-transport.test.ts:5516:      'https://crm.example.com/api/v1/email/settings/reply-suggestion',
+tests/unit\renderer-transport.test.ts:5613:      'https://crm.example.com/api/v1/email/settings/security/test-rspamd',
+tests/unit\server-edition-foundation.test.ts:674:        mode: 'server-client',
+tests/unit\server-edition-foundation.test.ts:683:        mode: 'server-client',
+tests/unit\server-edition-foundation.test.ts:715:        mode: 'server-client',
+tests/unit\server-edition-foundation.test.ts:1086:    })).toBe('server-client');
+tests/unit\server-edition-foundation.test.ts:1090:      env: { [SIMPLECRM_DESKTOP_MODE_ENV]: 'server-client' },
+tests/unit\server-edition-foundation.test.ts:16203:    expect((spec.body as any).paths['/email/settings/security'].patch.summary).toContain('security');
+tests/unit\server-edition-foundation.test.ts:29361:      path: '/api/v1/email/settings/misc',
+tests/unit\server-edition-foundation.test.ts:29372:      path: '/api/v1/email/settings/security',
+tests/unit\server-edition-foundation.test.ts:29379:      path: '/api/v1/email/settings/security',
+tests/unit\server-edition-foundation.test.ts:29428:      path: '/api/v1/email/settings/misc',
+tests/unit\server-edition-foundation.test.ts:29439:      path: '/api/v1/email/settings/misc',
+tests/unit\server-edition-foundation.test.ts:29457:      path: '/api/v1/email/settings/security',
+tests/unit\server-edition-foundation.test.ts:29471:      path: '/api/v1/email/settings/security',
+tests/unit\server-edition-foundation.test.ts:29495:      path: '/api/v1/email/settings/snooze',
+tests/unit\server-edition-foundation.test.ts:29511:      path: '/api/v1/email/settings/snooze',
+tests/unit\server-edition-foundation.test.ts:29541:      path: '/api/v1/email/settings/reply-suggestion',
+tests/unit\server-edition-foundation.test.ts:29556:      path: '/api/v1/email/settings/reply-suggestion',
+tests/unit\server-edition-foundation.test.ts:29724:        path: '/api/v1/email/settings/security/test-rspamd',
+tests/unit\server-edition-foundation.test.ts:29735:        path: '/api/v1/email/settings/security/test-rspamd',
+tests/unit\server-edition-foundation.test.ts:29755:        path: '/api/v1/email/settings/security/test-rspamd',
+tests/unit\server-edition-foundation.test.ts:29769:        path: '/api/v1/email/settings/security/test-rspamd',
+tests/unit\server-edition-foundation.test.ts:30004:      path: '/api/v1/email/settings/misc',
+tests/unit\server-edition-foundation.test.ts:30012:      path: '/api/v1/email/settings/security',
+tests/unit\server-edition-foundation.test.ts:30038:      path: '/api/v1/email/settings/misc',
+tests/unit\server-edition-foundation.test.ts:30047:      path: '/api/v1/email/settings/reply-suggestion',
+tests/unit\server-edition-foundation.test.ts:30056:      path: '/api/v1/email/settings/snooze',
+tests/unit\server-mail-policy-manifest.test.ts:209:      'workspace_admin_security: GET /api/v1/email/settings/security',
+tests/unit\server-mail-policy-manifest.test.ts:211:      'workspace_admin_security: PATCH /api/v1/email/settings/security',
+tests/unit\server-mail-policy-manifest.test.ts:219:      'workspace_admin_security: POST /api/v1/email/settings/security/test-rspamd',
+tests/unit\server-mail-policy-manifest.test.ts:260:      ['GET', '/api/v1/email/settings/misc', 'mail.metadata.read', { kind: 'workspace_global' }],
+tests/unit\server-mail-policy-manifest.test.ts:261:      ['PATCH', '/api/v1/email/settings/misc', 'mail.account.manage', { kind: 'workspace_global' }],
+tests/unit\server-mail-policy-manifest.test.ts:262:      ['GET', '/api/v1/email/settings/account-mail', 'mail.metadata.read', account('query')],
+tests/unit\server-mail-policy-manifest.test.ts:263:      ['PATCH', '/api/v1/email/settings/account-mail', 'mail.account.manage', account('body')],
+tests/unit\server-mail-policy-manifest.test.ts:264:      ['GET', '/api/v1/email/settings/snooze', 'mail.metadata.read', { kind: 'workspace_global' }],
+tests/unit\server-mail-policy-manifest.test.ts:265:      ['PATCH', '/api/v1/email/settings/snooze', 'mail.triage', { kind: 'workspace_global' }],
+tests/unit\server-mail-policy-manifest.test.ts:266:      ['GET', '/api/v1/email/settings/reply-suggestion', 'mail.metadata.read', optionalAccount('query')],
+tests/unit\server-mail-policy-manifest.test.ts:267:      ['PATCH', '/api/v1/email/settings/reply-suggestion', 'mail.account.manage', optionalAccount('body')],
+tests/unit\settings-server-client-sync.test.tsx:15:describe('SettingsPage server-client sync controls', () => {
+tests/unit\sync-status-display-server-client.test.tsx:10:describe('SyncStatusDisplay server-client mode', () => {
+tests/unit\tracking-settings-panel.test.tsx:3:import { TrackingSettingsPanel } from '@/components/email/settings/tracking-settings-panel';

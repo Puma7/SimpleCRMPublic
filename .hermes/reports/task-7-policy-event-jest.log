@@ -1,0 +1,68 @@
+Running one project: unit
+FAIL unit tests/unit/server-mail-policy-manifest.test.ts
+  ● server mail policy manifest › derives inventories from the registrations used by the real dispatchers
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 0
+    + Received  + 1
+
+    @@ -5,10 +5,11 @@
+        "email-tracking-routes",
+        "relay-routes",
+        "user-signature-routes",
+        "customer-routes",
+        "user-group-routes",
+    +   "mail-delegation-routes",
+        "diagnostics-routes",
+        "maintenance-routes",
+        "core-crm-routes",
+        "dashboard-routes",
+        "extended-crm-routes",
+
+      54 |     ));
+      55 |     expect(centralInventory).toEqual(SERVER_MAIL_ROUTE_INVENTORY);
+    > 56 |     expect(SERVER_API_ROUTE_REGISTRATIONS.map(({ source }) => source)).toEqual([
+         |                                                                        ^
+      57 |       'auth-security-routes',
+      58 |       'auth-routes',
+      59 |       'automation-routes',
+
+      at Object.toEqual (tests/unit/server-mail-policy-manifest.test.ts:56:72)
+
+  ● server mail policy manifest › classifies every mail event type exactly once
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 1
+    + Received  + 0
+
+    @@ -7,11 +7,10 @@
+        "email_account.deleted",
+        "email_account.updated",
+        "email_account_signature.created",
+        "email_account_signature.deleted",
+        "email_account_signature.updated",
+    -   "email_acl.changed",
+        "email_canned_response.created",
+        "email_canned_response.deleted",
+        "email_canned_response.updated",
+        "email_category.created",
+        "email_category.deleted",
+
+      151 |   test('classifies every mail event type exactly once', () => {
+      152 |     const mailEventTypes = SERVER_EVENT_TYPES.filter(isMailEventType);
+    > 153 |     expect(MAIL_EVENT_POLICY_MANIFEST.map(({ type }) => type).sort()).toEqual(mailEventTypes.sort());
+          |                                                                       ^
+      154 |     expect(MAIL_EVENT_POLICY_MANIFEST.every(({ permission }) => (
+      155 |       permission === 'mail.metadata.read'
+      156 |       || permission === 'mail.content.read'
+
+      at Object.toEqual (tests/unit/server-mail-policy-manifest.test.ts:153:71)
+
+
+Test Suites: 1 failed, 1 passed, 2 total
+Tests:       2 failed, 23 passed, 25 total
+Snapshots:   0 total
+Time:        1.995 s, estimated 2 s
+Ran all test suites within paths "tests/unit/server-mail-policy-manifest.test.ts", "tests/unit/server-mail-job-event-acl.test.ts".

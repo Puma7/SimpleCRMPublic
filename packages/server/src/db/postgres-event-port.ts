@@ -365,6 +365,7 @@ function assertServerEventType(value: string): ServerEvent['type'] {
     || value === 'email_account_signature.deleted'
     || value === 'email_read_receipt.created'
     || value === 'email_tracking.updated'
+    || value === 'email_acl.changed'
   ) {
     return value;
   }
@@ -410,6 +411,7 @@ function assertServerEventEntityType(value: string): ServerEvent['entityType'] {
   if (value === 'email_thread') return value;
   if (value === 'email_account_signature') return value;
   if (value === 'email_read_receipt') return value;
+  if (value === 'email_acl') return value;
   throw new Error(`unsupported server event entity type: ${value}`);
 }
 

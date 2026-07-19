@@ -469,6 +469,67 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps mail delegation IPC calls to server HTTP routes', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{
+            id: 900,
+            subject: { type: 'user', id: 'user-1', label: 'Alice' },
+            resource: { type: 'account', accountId: 101, label: 'Support' },
+            permissions: ['mail.metadata.read'],
+            profile: 'custom',
+            updatedAt: '2026-07-19T10:00:00.000Z',
+          }],
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 901 } }, 201))
+      .mockResolvedValueOnce(jsonResponse({ data: { id: 901 } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { deleted: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.ListMailDelegationBindings, {
+      accountId: 101,
+      folderId: 202,
+    })).resolves.toEqual([expect.objectContaining({ id: 900 })]);
+    await expect(transport.invoke(IPCChannels.Email.SaveMailDelegationBinding, {
+      subject: { type: 'group', id: 55 },
+      resource: { type: 'folder', accountId: 101, folderId: 202 },
+      permissions: ['mail.metadata.read'],
+      profile: 'custom',
+    })).resolves.toEqual({ success: true, id: 901 });
+    await expect(transport.invoke(IPCChannels.Email.SaveMailDelegationBinding, {
+      id: 901,
+      permissions: ['mail.metadata.read', 'mail.triage'],
+    })).resolves.toEqual({ success: true, id: 901 });
+    await expect(transport.invoke(IPCChannels.Email.DeleteMailDelegationBinding, 901))
+      .resolves.toEqual({ success: true });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/email/access/bindings?accountId=101&folderId=202',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/email/access/bindings',
+      expect.objectContaining({ method: 'POST' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      3,
+      'https://crm.example.com/api/v1/email/access/bindings/901',
+      expect.objectContaining({ method: 'PATCH' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://crm.example.com/api/v1/email/access/bindings/901',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
   test('maps auth invite creation to server HTTP route', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {
