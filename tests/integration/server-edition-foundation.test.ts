@@ -2328,6 +2328,37 @@ function makeServerApiPorts(): ServerApiPorts {
   let lock: ConversationLockRecord | null = null;
 
   return {
+    mailAccess: {
+      async assertPermission() {
+        return undefined;
+      },
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    },
+    mailResourceLookup: {
+      async resolve(input) {
+        const target = input.target;
+        if (target.kind === 'account') {
+          return [{ type: 'account', accountId: String(target.id) }];
+        }
+        if (target.kind === 'folder') {
+          return [{ type: 'folder', accountId: '7', folderId: String(target.id) }];
+        }
+        if (target.kind === 'thread') {
+          return [{ type: 'message', accountId: '7', folderId: '7', messageId: '42' }];
+        }
+        if (target.kind === 'metadata' && target.entity === 'account_signature') {
+          return [{ type: 'account', accountId: '7' }];
+        }
+        return [{
+          type: 'message',
+          accountId: '7',
+          folderId: '7',
+          messageId: String(target.id),
+        }];
+      },
+    },
     auth: {
       async findUserByEmail(email) {
         return email === user.email ? user : null;

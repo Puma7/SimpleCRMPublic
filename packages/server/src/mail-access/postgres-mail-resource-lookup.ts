@@ -1,0 +1,311 @@
+import type { MailResource } from '@simplecrm/core';
+import type { Kysely } from 'kysely';
+
+import type { ServerDatabase } from '../db/schema';
+import { resolveEmailAccountReference } from '../db/resolve-email-account-reference';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from '../db/workspace-context';
+import type {
+  MailResourceLookupPort,
+  MailResourceLookupTarget,
+} from './types';
+
+export type PostgresMailResourceLookupOptions = Readonly<{
+  db: Kysely<ServerDatabase>;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
+}>;
+
+export function createPostgresMailResourceLookupPort(
+  options: PostgresMailResourceLookupOptions,
+): MailResourceLookupPort {
+  return {
+    async resolve(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => resolveTarget(trx, input.workspaceId, input.target),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+async function resolveTarget(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  target: MailResourceLookupTarget,
+): Promise<readonly MailResource[]> {
+  if (target.kind === 'account') {
+    const account = await resolveEmailAccountReference(trx, workspaceId, target.id);
+    return account ? [accountResource(account.id)] : [];
+  }
+  if (target.kind === 'folder') {
+    const row = await trx
+      .selectFrom('email_folders')
+      .select(['id', 'account_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', target.id)
+      .executeTakeFirst();
+    return row?.account_id === null || row?.account_id === undefined
+      ? []
+      : [folderResource(Number(row.account_id), Number(row.id))];
+  }
+  if (target.kind === 'message') {
+    const resource = await resolveMessageByIdOrSource(trx, workspaceId, target.id);
+    return resource ? [resource] : [];
+  }
+  if (target.kind === 'attachment') {
+    const row = await trx
+      .selectFrom('email_message_attachments as attachment')
+      .innerJoin('email_messages as message', (join) => join
+        .onRef('message.id', '=', 'attachment.message_id')
+        .onRef('message.workspace_id', '=', 'attachment.workspace_id'))
+      .select([
+        'message.id as message_id',
+        'message.account_id as account_id',
+        'message.folder_id as folder_id',
+      ])
+      .where('attachment.workspace_id', '=', workspaceId)
+      .where('attachment.id', '=', target.id)
+      .executeTakeFirst();
+    return row ? resourceFromMessageRow(row) : [];
+  }
+  if (target.kind === 'thread') {
+    const canonicalThreadId = await resolveCanonicalLookupThreadId(trx, workspaceId, target.id);
+    const rows = await trx
+      .selectFrom('email_messages')
+      .select(['id as message_id', 'account_id', 'folder_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where((eb) => eb.or([
+        eb('thread_id', '=', canonicalThreadId),
+        eb('thread_id', 'in', eb
+          .selectFrom('email_thread_aliases')
+          .select('alias_thread_id')
+          .where('workspace_id', '=', workspaceId)
+          .where('canonical_thread_id', '=', canonicalThreadId)),
+      ]))
+      .orderBy('id', 'asc')
+      .execute();
+    return rows.flatMap(resourceFromMessageRow);
+  }
+  return resolveMetadataTarget(trx, workspaceId, target);
+}
+
+async function resolveMetadataTarget(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  target: Extract<MailResourceLookupTarget, { kind: 'metadata' }>,
+): Promise<readonly MailResource[]> {
+  if (target.entity === 'thread_edge') {
+    const edge = await trx
+      .selectFrom('email_thread_edges')
+      .select([
+        'parent_message_id',
+        'parent_message_source_sqlite_id',
+        'child_message_id',
+        'child_message_source_sqlite_id',
+      ])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', target.id)
+      .executeTakeFirst();
+    if (!edge) return [];
+    const resources = await Promise.all([
+      resolveMessageByIdOrSource(
+        trx,
+        workspaceId,
+        Number(edge.parent_message_id ?? edge.parent_message_source_sqlite_id),
+      ),
+      resolveMessageByIdOrSource(
+        trx,
+        workspaceId,
+        Number(edge.child_message_id ?? edge.child_message_source_sqlite_id),
+      ),
+    ]);
+    return resources.every((resource) => resource !== null)
+      ? resources.flatMap((resource) => resource ? [resource] : [])
+      : [];
+  }
+
+  if (target.entity === 'thread_alias') {
+    const row = await trx
+      .selectFrom('email_thread_aliases')
+      .select(['account_id', 'account_source_sqlite_id', 'alias_thread_id', 'canonical_thread_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', target.id)
+      .executeTakeFirst();
+    if (!row) return [];
+    if (row.account_id !== null || row.account_source_sqlite_id !== null) {
+      return resolveAccountColumns(trx, workspaceId, row.account_id, row.account_source_sqlite_id);
+    }
+    const messages = await trx
+      .selectFrom('email_messages')
+      .select(['id as message_id', 'account_id', 'folder_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where('thread_id', 'in', [row.alias_thread_id, row.canonical_thread_id])
+      .orderBy('id', 'asc')
+      .execute();
+    return messages.flatMap(resourceFromMessageRow);
+  }
+
+  if (target.entity === 'account_signature') {
+    const row = await trx
+      .selectFrom('email_account_signatures')
+      .select(['account_id', 'account_source_sqlite_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where('source_sqlite_id', '=', target.id)
+      .executeTakeFirst();
+    return row ? resolveAccountColumns(trx, workspaceId, row.account_id, row.account_source_sqlite_id) : [];
+  }
+
+  if (target.entity === 'spam_decision' || target.entity === 'spam_learning_event') {
+    const row = target.entity === 'spam_decision'
+      ? await trx
+        .selectFrom('email_spam_decisions')
+        .select(['message_id', 'message_source_sqlite_id', 'account_id', 'account_source_sqlite_id'])
+        .where('workspace_id', '=', workspaceId)
+        .where('id', '=', target.id)
+        .executeTakeFirst()
+      : await trx
+        .selectFrom('email_spam_learning_events')
+        .select(['message_id', 'message_source_sqlite_id', 'account_id', 'account_source_sqlite_id'])
+        .where('workspace_id', '=', workspaceId)
+        .where('id', '=', target.id)
+        .executeTakeFirst();
+    if (!row) return [];
+    const message = await resolveMessageByIdOrSource(
+      trx,
+      workspaceId,
+      Number(row.message_id ?? row.message_source_sqlite_id),
+    );
+    return message ? [message] : resolveAccountColumns(
+      trx,
+      workspaceId,
+      row.account_id,
+      row.account_source_sqlite_id,
+    );
+  }
+
+  const row = target.entity === 'message_tag'
+    ? await trx
+      .selectFrom('email_message_tags')
+      .select(['message_id', 'message_source_sqlite_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', target.id)
+      .executeTakeFirst()
+    : target.entity === 'message_category'
+      ? await trx
+        .selectFrom('email_message_categories')
+        .select(['message_id', 'message_source_sqlite_id'])
+        .where('workspace_id', '=', workspaceId)
+        .where('id', '=', target.id)
+        .executeTakeFirst()
+      : target.entity === 'internal_note'
+        ? await trx
+          .selectFrom('email_internal_notes')
+          .select(['message_id', 'message_source_sqlite_id'])
+          .where('workspace_id', '=', workspaceId)
+          .where('id', '=', target.id)
+          .executeTakeFirst()
+        : target.entity === 'read_receipt'
+          ? await trx
+            .selectFrom('email_read_receipt_log')
+            .select(['message_id', 'message_source_sqlite_id'])
+            .where('workspace_id', '=', workspaceId)
+            .where('id', '=', target.id)
+            .executeTakeFirst()
+          : undefined;
+  if (!row) return [];
+  const message = await resolveMessageByIdOrSource(
+    trx,
+    workspaceId,
+    Number(row.message_id ?? row.message_source_sqlite_id),
+  );
+  return message ? [message] : [];
+}
+
+async function resolveMessageByIdOrSource(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  id: number,
+): Promise<Extract<MailResource, { type: 'message' }> | null> {
+  const byId = await trx
+    .selectFrom('email_messages')
+    .select(['id as message_id', 'account_id', 'folder_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', id)
+    .executeTakeFirst();
+  const row = byId ?? await trx
+    .selectFrom('email_messages')
+    .select(['id as message_id', 'account_id', 'folder_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('source_sqlite_id', '=', id)
+    .executeTakeFirst();
+  return resourceFromMessageRow(row)[0] ?? null;
+}
+
+async function resolveCanonicalLookupThreadId(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  threadId: string,
+): Promise<string> {
+  let current = threadId;
+  const seen = new Set<string>();
+  for (let depth = 0; depth < 20; depth += 1) {
+    if (seen.has(current)) return threadId;
+    seen.add(current);
+    const alias = await trx
+      .selectFrom('email_thread_aliases')
+      .select('canonical_thread_id')
+      .where('workspace_id', '=', workspaceId)
+      .where('alias_thread_id', '=', current)
+      .executeTakeFirst();
+    if (!alias?.canonical_thread_id) return current;
+    current = alias.canonical_thread_id;
+  }
+  return threadId;
+}
+
+async function resolveAccountColumns(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  accountId: number | null,
+  accountSourceSqliteId: number | null,
+): Promise<readonly MailResource[]> {
+  const reference = accountId ?? accountSourceSqliteId;
+  if (reference === null) return [];
+  const account = await resolveEmailAccountReference(trx, workspaceId, Number(reference));
+  return account ? [accountResource(account.id)] : [];
+}
+
+function resourceFromMessageRow(row: {
+  message_id: number | null;
+  account_id: number | null;
+  folder_id: number | null;
+} | undefined): Extract<MailResource, { type: 'message' }>[] {
+  if (!row || row.message_id === null || row.account_id === null || row.folder_id === null) return [];
+  return [messageResource(Number(row.account_id), Number(row.folder_id), Number(row.message_id))];
+}
+
+function accountResource(accountId: number): Extract<MailResource, { type: 'account' }> {
+  return { type: 'account', accountId: String(accountId) };
+}
+
+function folderResource(accountId: number, folderId: number): Extract<MailResource, { type: 'folder' }> {
+  return { type: 'folder', accountId: String(accountId), folderId: String(folderId) };
+}
+
+function messageResource(
+  accountId: number,
+  folderId: number,
+  messageId: number,
+): Extract<MailResource, { type: 'message' }> {
+  return {
+    type: 'message',
+    accountId: String(accountId),
+    folderId: String(folderId),
+    messageId: String(messageId),
+  };
+}

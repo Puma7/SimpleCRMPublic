@@ -139,7 +139,20 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
       }
 
       for (const registration of SERVER_API_ROUTE_REGISTRATIONS) {
-        const response = await registration.handler(req, ports);
+        let requestPorts = ports;
+        if (
+          registration.kind === 'mail'
+          && registration.routes.some((route) => route.method === req.method && route.pattern.test(req.path))
+        ) {
+          const {
+            enforceMailHttpPolicy,
+            portsWithMailAccessContext,
+          } = await import('../mail-access/http-policy-enforcer.js');
+          const enforcement = await enforceMailHttpPolicy(req, ports);
+          if (!enforcement.ok) return enforcement.response;
+          requestPorts = portsWithMailAccessContext(ports, enforcement.context);
+        }
+        const response = await registration.handler(req, requestPorts);
         if (response) return response;
       }
 

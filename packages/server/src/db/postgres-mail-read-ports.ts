@@ -92,6 +92,7 @@ import {
   type RspamdLearnLabel,
 } from '../mail-security-check';
 import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
+import { mailScopePredicate } from '../mail-access/sql-scope';
 
 export type PostgresMailReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -368,10 +369,13 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const rows = await trx
+          let query = trx
             .selectFrom('email_accounts')
             .select(emailAccountSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
+            .where('workspace_id', '=', input.workspaceId);
+          const scopePredicate = mailScopePredicate(input.mailScope, { accountId: 'email_accounts.id' });
+          if (scopePredicate) query = query.where(scopePredicate);
+          const rows = await query
             .orderBy('id', 'asc')
             .execute();
           return { items: rows.map(mapEmailAccountRow) };
@@ -693,6 +697,16 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             effectiveCursor !== undefined && input.sort === 'priority'
               ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)
               : undefined;
+          const messageScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          const threadCountScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'thread_count_message.account_id',
+            folderId: 'thread_count_message.folder_id',
+            messageId: 'thread_count_message.id',
+          });
 
           const buildQuery = (page: { limit: number; offset: number | undefined; withCursor?: boolean }) => {
             let query = trx
@@ -702,13 +716,18 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               // expand chevron only for real multi-message threads (every row
               // carries a thread_id since backfill). PK lookup per row — cheap.
               .select((eb) => eb
-                .selectFrom('email_threads')
-                .select('email_threads.message_count')
-                .whereRef('email_threads.id', '=', 'email_messages.thread_id')
-                .where('email_threads.workspace_id', '=', input.workspaceId)
+                .selectFrom('email_messages as thread_count_message')
+                .select(({ fn }) => fn.count<number>('thread_count_message.id').as('message_count'))
+                .whereRef('thread_count_message.thread_id', '=', 'email_messages.thread_id')
+                .where('thread_count_message.workspace_id', '=', input.workspaceId)
+                .$if(Boolean(threadCountScopePredicate), (threadQuery) => (
+                  threadQuery.where(threadCountScopePredicate!)
+                ))
                 .as('thread_message_count'))
-              .where('workspace_id', '=', input.workspaceId)
-              .limit(page.limit);
+              .where('workspace_id', '=', input.workspaceId);
+
+            if (messageScopePredicate) query = query.where(messageScopePredicate);
+            query = query.limit(page.limit);
 
             if (page.offset !== undefined) query = query.offset(page.offset);
             if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
@@ -1253,10 +1272,17 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const threadId = input.threadId.trim();
           if (!threadId) return { items: [], nextCursor: null };
           const canonicalThreadId = await resolveCanonicalThreadId(trx, input.workspaceId, threadId);
-          const rows = await trx
+          let query = trx
             .selectFrom('email_messages')
             .select(emailMessageSummaryColumns)
-            .where('workspace_id', '=', input.workspaceId)
+            .where('workspace_id', '=', input.workspaceId);
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
+          const rows = await query
             .where(kyselySql<boolean>`(
               thread_id = ${canonicalThreadId}
               OR thread_id IN (
@@ -2086,8 +2112,15 @@ async function selectConversationMessages(
     .selectFrom('email_messages')
     .select(emailMessageSummaryColumns)
     .where('workspace_id', '=', input.workspaceId)
-    .where('soft_deleted', '=', false)
-    .limit(limit);
+    .where('soft_deleted', '=', false);
+
+  const scopePredicate = mailScopePredicate(input.mailScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  if (scopePredicate) query = query.where(scopePredicate);
+  query = query.limit(limit);
 
   if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
 
@@ -2717,6 +2750,7 @@ async function selectMailFolderCounts(
   input: {
     workspaceId: string;
     accountId?: number;
+    mailScope?: Parameters<NonNullable<EmailMessageApiPort['getFolderCounts']>>[0]['mailScope'];
   },
 ): Promise<EmailMailFolderCounts> {
   let query = trx
@@ -2799,6 +2833,12 @@ async function selectMailFolderCounts(
     ])
     .where('workspace_id', '=', input.workspaceId);
 
+  const scopePredicate = mailScopePredicate(input.mailScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  if (scopePredicate) query = query.where(scopePredicate);
   if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
   const row = await query.executeTakeFirst();
   return mapEmailMailFolderCountsRow(row);

@@ -8,6 +8,8 @@ import {
 import { randomBytes } from 'crypto';
 
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { mailScopePredicate } from '../mail-access/sql-scope';
+import type { MailSqlScope } from '../mail-access/types';
 
 import type {
   EmailAccountMailSettingsApiPort,
@@ -311,9 +313,14 @@ export function createPostgresEmailFolderReadPort(options: PostgresMailMetadataR
           let query = trx
             .selectFrom('email_folders')
             .select(emailFolderSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_folders.account_id',
+            folderId: 'email_folders.id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
@@ -356,9 +363,10 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           let query = trx
             .selectFrom('email_team_members')
             .select(emailTeamMemberSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          if (input.mailScope?.kind === 'none') query = query.where(kyselySql<boolean>`false`);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.role !== undefined) query = query.where('role', '=', input.role);
@@ -497,9 +505,43 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
           let query = trx
             .selectFrom('email_threads')
             .select(emailThreadSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'm.account_id',
+            folderId: 'm.folder_id',
+            messageId: 'm.id',
+          });
+          if (scopePredicate) {
+            query = query
+              .where(kyselySql<boolean>`exists (
+                select 1 from email_messages m
+                where m.workspace_id = ${input.workspaceId}::uuid
+                  and m.thread_id = email_threads.id
+                  and ${scopePredicate}
+              )`)
+              .select([
+                kyselySql<number>`(
+                  select count(*)::integer from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                )`.as('message_count'),
+                kyselySql<boolean>`coalesce((
+                  select bool_or(not m.seen_local) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false)`.as('has_unread'),
+                kyselySql<boolean>`coalesce((
+                  select bool_or(m.has_attachments) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false)`.as('has_attachments'),
+              ]);
+          }
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.offset !== undefined) query = query.offset(input.offset);
@@ -529,12 +571,46 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .selectFrom('email_threads')
             .select(emailThreadSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'm.account_id',
+            folderId: 'm.folder_id',
+            messageId: 'm.id',
+          });
+          if (scopePredicate) {
+            query = query
+              .where(kyselySql<boolean>`exists (
+                select 1 from email_messages m
+                where m.workspace_id = ${input.workspaceId}::uuid
+                  and m.thread_id = email_threads.id
+                  and ${scopePredicate}
+              )`)
+              .select([
+                kyselySql<number>`(
+                  select count(*)::integer from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                )`.as('message_count'),
+                kyselySql<boolean>`coalesce((
+                  select bool_or(not m.seen_local) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false)`.as('has_unread'),
+                kyselySql<boolean>`coalesce((
+                  select bool_or(m.has_attachments) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false)`.as('has_attachments'),
+              ]);
+          }
+          const row = await query.executeTakeFirst();
           return row ? mapEmailThreadRow(row) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -624,6 +700,26 @@ function threadMessageExistsPredicate(
   )`;
 }
 
+function metadataMessageScopePredicate(
+  mailScope: MailSqlScope | undefined,
+  workspaceId: string,
+  outerMessageIdColumn: string,
+  messageAlias: string,
+): RawBuilder<boolean> | undefined {
+  const scopePredicate = mailScopePredicate(mailScope, {
+    accountId: `${messageAlias}.account_id`,
+    folderId: `${messageAlias}.folder_id`,
+    messageId: `${messageAlias}.id`,
+  });
+  if (!scopePredicate) return undefined;
+  return kyselySql<boolean>`exists (
+    select 1 from email_messages as ${kyselySql.ref(messageAlias)}
+    where ${kyselySql.ref(`${messageAlias}.workspace_id`)} = ${workspaceId}::uuid
+      and ${kyselySql.ref(`${messageAlias}.id`)} = ${kyselySql.ref(outerMessageIdColumn)}
+      and ${scopePredicate}
+  )`;
+}
+
 function threadMessageViewPredicate(
   view: Parameters<EmailThreadApiPort['list']>[0]['view'],
 ): RawBuilder<boolean> {
@@ -671,9 +767,16 @@ export function createPostgresEmailMessageTagReadPort(options: PostgresMailMetad
           let query = trx
             .selectFrom('email_message_tags')
             .select(emailMessageTagSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_message_tags.message_id',
+            'tag_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -766,9 +869,10 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
           let query = trx
             .selectFrom('email_categories')
             .select(emailCategorySelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          if (input.mailScope?.kind === 'none') query = query.where(kyselySql<boolean>`false`);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.parentId !== undefined) query = query.where('parent_id', '=', input.parentId);
@@ -968,9 +1072,16 @@ export function createPostgresEmailMessageCategoryReadPort(options: PostgresMail
           let query = trx
             .selectFrom('email_message_categories')
             .select(emailMessageCategorySelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_message_categories.message_id',
+            'category_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -1014,6 +1125,12 @@ export function createPostgresEmailMessageCategoryReadPort(options: PostgresMail
             .groupBy('mc.category_id')
             .orderBy('mc.category_id', 'asc');
 
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'm.account_id',
+            folderId: 'm.folder_id',
+            messageId: 'm.id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
           if (input.accountId !== undefined) query = query.where('m.account_id', '=', input.accountId);
           const rows = await query.execute();
           return rows.map(mapEmailCategoryCountRow);
@@ -1098,9 +1215,16 @@ export function createPostgresEmailInternalNoteReadPort(options: PostgresMailMet
           let query = trx
             .selectFrom('email_internal_notes')
             .select(emailInternalNoteSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_internal_notes.message_id',
+            'note_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -1215,9 +1339,17 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
           let query = trx
             .selectFrom('email_canned_responses')
             .select(emailCannedResponseSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_canned_responses.account_id',
+          });
+          if (scopePredicate) {
+            query = input.mailScope?.kind === 'restricted' && input.mailScope.accountIds.length > 0
+              ? query.where((eb) => eb.or([eb('account_id', 'is', null), scopePredicate]))
+              : query.where(scopePredicate);
+          }
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.accountId === undefined) {
@@ -1477,9 +1609,13 @@ export function createPostgresEmailAccountSignatureReadPort(options: PostgresMai
           let query = trx
             .selectFrom('email_account_signatures')
             .select(emailAccountSignatureSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('source_sqlite_id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_account_signatures.account_id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('source_sqlite_id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('source_sqlite_id', '>', input.cursor);
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
@@ -1630,9 +1766,10 @@ export function createPostgresEmailRemoteContentAllowlistReadPort(
           let query = trx
             .selectFrom('email_remote_content_allowlist')
             .select(emailRemoteContentAllowlistSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          if (input.mailScope?.kind === 'none') query = query.where(kyselySql<boolean>`false`);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.scope !== undefined) query = query.where('scope', '=', input.scope);
@@ -1781,9 +1918,16 @@ export function createPostgresEmailReadReceiptReadPort(options: PostgresMailMeta
           let query = trx
             .selectFrom('email_read_receipt_log')
             .select(emailReadReceiptSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_read_receipt_log.message_id',
+            'receipt_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -1846,9 +1990,23 @@ export function createPostgresEmailThreadEdgeReadPort(options: PostgresMailMetad
           let query = trx
             .selectFrom('email_thread_edges')
             .select(emailThreadEdgeSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const parentScopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_thread_edges.parent_message_id',
+            'edge_parent_scope_message',
+          );
+          const childScopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_thread_edges.child_message_id',
+            'edge_child_scope_message',
+          );
+          if (parentScopePredicate) query = query.where(parentScopePredicate);
+          if (childScopePredicate) query = query.where(childScopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.parentMessageId !== undefined) query = query.where('parent_message_id', '=', input.parentMessageId);
@@ -1940,9 +2098,31 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
           let query = trx
             .selectFrom('email_thread_aliases')
             .select(emailThreadAliasSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const accountScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_thread_aliases.account_id',
+          });
+          const messageScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'alias_scope_message.account_id',
+            folderId: 'alias_scope_message.folder_id',
+            messageId: 'alias_scope_message.id',
+          });
+          if (accountScopePredicate || messageScopePredicate) {
+            query = query.where(kyselySql<boolean>`(
+              ${accountScopePredicate ?? kyselySql<boolean>`false`}
+              or exists (
+                select 1 from email_messages alias_scope_message
+                where alias_scope_message.workspace_id = ${input.workspaceId}::uuid
+                  and alias_scope_message.thread_id in (
+                    email_thread_aliases.alias_thread_id,
+                    email_thread_aliases.canonical_thread_id
+                  )
+                  and ${messageScopePredicate ?? kyselySql<boolean>`false`}
+              )
+            )`);
+          }
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.aliasThreadId !== undefined) query = query.where('alias_thread_id', '=', input.aliasThreadId);
@@ -1965,7 +2145,7 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const rows = await trx
+          let query = trx
             .selectFrom('email_thread_aliases')
             .innerJoin('email_messages', (join) => join
               .onRef('email_messages.workspace_id', '=', 'email_thread_aliases.workspace_id')
@@ -1979,7 +2159,14 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
               'email_thread_aliases.confidence as confidence',
             ])
             .where('email_thread_aliases.workspace_id', '=', input.workspaceId)
-            .where('email_thread_aliases.source', 'like', 'cross_account%')
+            .where('email_thread_aliases.source', 'like', 'cross_account%');
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
+          const rows = await query
             .orderBy('email_thread_aliases.created_at', 'desc')
             .orderBy('email_thread_aliases.id', 'desc')
             .limit(limit)
@@ -2104,6 +2291,12 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
         },
         async (trx) => {
           if (values.aliasThreadId === values.canonicalThreadId) return { ok: false, code: 'invalid_alias' };
+          const account = values.accountId === undefined || values.accountId === null
+            ? null
+            : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            return { ok: false, code: 'invalid_alias' };
+          }
           const existing = await resolveThreadAliasConflict(
             trx,
             input.workspaceId,
@@ -2118,6 +2311,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             .values({
               workspace_id: input.workspaceId,
               source_sqlite_id: serverCreatedEmailThreadAliasSourceSqliteId(),
+              account_source_sqlite_id: account?.sourceSqliteId ?? null,
+              account_id: account?.id ?? null,
               alias_thread_id: values.aliasThreadId as string,
               canonical_thread_id: values.canonicalThreadId as string,
               confidence: values.confidence ?? 'high',
@@ -2328,6 +2523,13 @@ function normalizeEmailThreadAliasMutation(
   },
 ): EmailThreadAliasMutationInput {
   const normalized = { ...values };
+  if (
+    normalized.accountId !== undefined
+    && normalized.accountId !== null
+    && (!Number.isSafeInteger(normalized.accountId) || normalized.accountId <= 0)
+  ) {
+    throw new Error('email thread alias accountId must be a positive integer');
+  }
   if (normalized.aliasThreadId !== undefined) {
     normalized.aliasThreadId = normalized.aliasThreadId.trim();
     if (!normalized.aliasThreadId) throw new Error('email thread alias aliasThreadId must not be empty');

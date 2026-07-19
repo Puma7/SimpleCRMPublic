@@ -155,7 +155,7 @@ import {
   createWebhookJobHandlers,
   cleanupStaleConversationLocksCommand,
   createSecretEnvelopeMetadata,
-  createServerApi,
+  createServerApi as createAclServerApi,
   decryptPgpPrivateKeyWithPassphrase,
   decryptSecretValue,
   deserializePgpPrivateKeyEnvelope,
@@ -378,6 +378,47 @@ type CapturedAuditEvent = {
   entityId?: string | null;
   metadata?: Record<string, unknown>;
 };
+
+function createServerApi(ports: ServerApiPorts): ReturnType<typeof createAclServerApi> {
+  return createAclServerApi(withFoundationMailAcl(ports));
+}
+
+function withFoundationMailAcl(ports: ServerApiPorts): ServerApiPorts {
+  return {
+    ...ports,
+    mailAccess: {
+      async assertPermission() {
+        return undefined;
+      },
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    },
+    mailResourceLookup: {
+      async resolve(input) {
+        const target = input.target;
+        if (target.kind === 'account') {
+          return [{ type: 'account', accountId: String(target.id) }];
+        }
+        if (target.kind === 'folder') {
+          return [{ type: 'folder', accountId: '7', folderId: String(target.id) }];
+        }
+        if (target.kind === 'thread') {
+          return [{ type: 'message', accountId: '7', folderId: '7', messageId: '42' }];
+        }
+        if (target.kind === 'metadata' && target.entity === 'account_signature') {
+          return [{ type: 'account', accountId: '7' }];
+        }
+        return [{
+          type: 'message',
+          accountId: '7',
+          folderId: '7',
+          messageId: String(target.id),
+        }];
+      },
+    },
+  };
+}
 
 describe('server edition foundation', () => {
   test('pins the server-edition baseline to PostgreSQL 18 and Node 22', () => {
@@ -21507,11 +21548,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(invalid.status).toBe(400);
-    expect((invalid.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(invalid.status).toBe(404);
+    expect((invalid.body as any).error.code).toBe('mail_resource_not_found');
 
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
       method: 'POST',
@@ -21912,7 +21950,7 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/0/sync',
       principal,
     });
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(404);
 
     const wrongMethod = await api.handle({
       method: 'GET',
@@ -22042,7 +22080,7 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/0/sync-lock',
       principal,
     });
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(404);
 
     const wrongMethod = await api.handle({
       method: 'POST',
@@ -22129,7 +22167,7 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/0/vacation-test',
       principal,
     });
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(404);
 
     const wrongMethod = await api.handle({
       method: 'GET',
@@ -24574,32 +24612,32 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/nope',
       principal,
     });
-    expect(invalidAccountId.status).toBe(400);
-    expect((invalidAccountId.body as any).error.code).toBe('invalid_email_account_id');
+    expect(invalidAccountId.status).toBe(404);
+    expect((invalidAccountId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidMessageId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/messages/0',
       principal,
     });
-    expect(invalidMessageId.status).toBe(400);
-    expect((invalidMessageId.body as any).error.code).toBe('invalid_email_message_id');
+    expect(invalidMessageId.status).toBe(404);
+    expect((invalidMessageId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidAttachmentId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/attachments/nope',
       principal,
     });
-    expect(invalidAttachmentId.status).toBe(400);
-    expect((invalidAttachmentId.body as any).error.code).toBe('invalid_email_attachment_id');
+    expect(invalidAttachmentId.status).toBe(404);
+    expect((invalidAttachmentId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidAttachmentContentId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/attachments/nope/content',
       principal,
     });
-    expect(invalidAttachmentContentId.status).toBe(400);
-    expect((invalidAttachmentContentId.body as any).error.code).toBe('invalid_email_attachment_id');
+    expect(invalidAttachmentContentId.status).toBe(404);
+    expect((invalidAttachmentContentId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidSeen = await api.handle({
       method: 'GET',
@@ -25380,7 +25418,7 @@ describe('server edition foundation', () => {
       body: { status: 'spam' },
       principal,
     });
-    expect(invalidId.status).toBe(400);
+    expect(invalidId.status).toBe(404);
 
     const invalidPayload = await writableApi.handle({
       method: 'PATCH',
@@ -25811,7 +25849,7 @@ describe('server edition foundation', () => {
       body: {},
       principal,
     });
-    expect(invalidId.status).toBe(400);
+    expect(invalidId.status).toBe(404);
 
     const invalidPayload = await writableApi.handle({
       method: 'POST',
@@ -25874,7 +25912,7 @@ describe('server edition foundation', () => {
       body: {},
       principal,
     });
-    expect(invalidId.status).toBe(400);
+    expect(invalidId.status).toBe(404);
 
     const invalidPayload = await writableApi.handle({
       method: 'POST',
@@ -26287,16 +26325,16 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/folders/nope',
       principal,
     });
-    expect(invalidFolderId.status).toBe(400);
-    expect((invalidFolderId.body as any).error.code).toBe('invalid_email_folder_id');
+    expect(invalidFolderId.status).toBe(404);
+    expect((invalidFolderId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidMessageScopedId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/messages/nope/tags',
       principal,
     });
-    expect(invalidMessageScopedId.status).toBe(400);
-    expect((invalidMessageScopedId.body as any).error.code).toBe('invalid_email_message_id');
+    expect(invalidMessageScopedId.status).toBe(404);
+    expect((invalidMessageScopedId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidThreadFilter = await api.handle({
       method: 'GET',
@@ -27801,6 +27839,7 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
       body: {
+        accountId: 7,
         aliasThreadId: ' thread-alias ',
         canonicalThreadId: ' thread-root ',
         confidence: ' medium ',
@@ -27813,6 +27852,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       actorUserId: USER_A_ID,
       values: {
+        accountId: 7,
         aliasThreadId: 'thread-alias',
         canonicalThreadId: 'thread-root',
         confidence: 'medium',
@@ -28077,8 +28117,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidEdgePayload.status).toBe(400);
-    expect((invalidEdgePayload.body as any).error.code).toBe('invalid_email_thread_edge_payload');
+    expect(invalidEdgePayload.status).toBe(404);
+    expect((invalidEdgePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeEdgePayload = await writableApi.handle({
       method: 'POST',
@@ -28090,12 +28130,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeEdgePayload.status).toBe(400);
-    expect((unsafeEdgePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'parentMessageId', message: 'parentMessageId muss eine positive Ganzzahl sein' },
-      { field: 'childMessageId', message: 'childMessageId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeEdgePayload.status).toBe(404);
+    expect((unsafeEdgePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const selfEdge = await writableApi.handle({
       method: 'POST',
@@ -28136,7 +28172,7 @@ describe('server edition foundation', () => {
     const unavailableAlias = await readOnlyApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
-      body: { aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
+      body: { accountId: 1, aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
       principal,
     });
     expect(unavailableAlias.status).toBe(503);
@@ -28164,6 +28200,7 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
       body: {
+        accountId: 1,
         workspaceId: WORKSPACE_B_ID,
         aliasThreadId: ' ',
         canonicalThreadId: ' ',
@@ -28184,7 +28221,7 @@ describe('server edition foundation', () => {
     const sameAlias = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
-      body: { aliasThreadId: 'same-thread', canonicalThreadId: 'same-thread' },
+      body: { accountId: 1, aliasThreadId: 'same-thread', canonicalThreadId: 'same-thread' },
       principal,
     });
     expect(sameAlias.status).toBe(400);
@@ -28224,8 +28261,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidSplitPayload.status).toBe(400);
-    expect((invalidSplitPayload.body as any).error.code).toBe('invalid_email_thread_split_payload');
+    expect(invalidSplitPayload.status).toBe(404);
+    expect((invalidSplitPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeSplitPayload = await writableApi.handle({
       method: 'POST',
@@ -28236,11 +28273,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeSplitPayload.status).toBe(400);
-    expect((unsafeSplitPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeSplitPayload.status).toBe(404);
+    expect((unsafeSplitPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const sameMerge = await writableApi.handle({
       method: 'POST',
@@ -28281,7 +28315,7 @@ describe('server edition foundation', () => {
     const conflictingAlias = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
-      body: { aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
+      body: { accountId: 1, aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
       principal,
     });
     expect(conflictingAlias.status).toBe(409);
@@ -28858,8 +28892,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidSignaturePayload.status).toBe(400);
-    expect((invalidSignaturePayload.body as any).error.code).toBe('invalid_email_account_signature_payload');
+    expect(invalidSignaturePayload.status).toBe(404);
+    expect((invalidSignaturePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeSignaturePayload = await writableApi.handle({
       method: 'POST',
@@ -28871,12 +28905,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeSignaturePayload.status).toBe(400);
-    expect((unsafeSignaturePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-      { field: 'signatureHtml', message: 'signatureHtml muss ein String oder null sein' },
-    ]));
+    expect(unsafeSignaturePayload.status).toBe(404);
+    expect((unsafeSignaturePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingAccount = await writableApi.handle({
       method: 'POST',
@@ -28933,8 +28963,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidReceiptPayload.status).toBe(400);
-    expect((invalidReceiptPayload.body as any).error.code).toBe('invalid_email_read_receipt_payload');
+    expect(invalidReceiptPayload.status).toBe(404);
+    expect((invalidReceiptPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeReceiptPayload = await writableApi.handle({
       method: 'POST',
@@ -28948,14 +28978,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeReceiptPayload.status).toBe(400);
-    expect((unsafeReceiptPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'direction', message: 'Feld darf nicht leer sein' },
-      { field: 'recipient', message: 'recipient muss ein String oder null sein' },
-      { field: 'at', message: 'at muss ein valides Datum sein' },
-    ]));
+    expect(unsafeReceiptPayload.status).toBe(404);
+    expect((unsafeReceiptPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingMessage = await writableApi.handle({
       method: 'POST',
@@ -29132,8 +29156,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidPayload.status).toBe(400);
-    expect((invalidPayload.body as any).error.code).toBe('invalid_email_internal_note_payload');
+    expect(invalidPayload.status).toBe(404);
+    expect((invalidPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingBody = await writableApi.handle({
       method: 'POST',
@@ -29166,12 +29190,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafePayload.status).toBe(400);
-    expect((unsafePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'body', message: 'Feld darf nicht leer sein' },
-    ]));
+    expect(unsafePayload.status).toBe(404);
+    expect((unsafePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingMessage = await writableApi.handle({
       method: 'POST',
@@ -30008,7 +30028,8 @@ describe('server edition foundation', () => {
       query: { accountId: 'nope' },
       principal,
     });
-    expect(invalidReplyAccount.status).toBe(400);
+    expect(invalidReplyAccount.status).toBe(404);
+    expect((invalidReplyAccount.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidSnooze = await writableApi.handle({
       method: 'PATCH',
@@ -34757,8 +34778,8 @@ describe('server edition foundation', () => {
       body: { passphrase: 'passphrase' },
       principal,
     });
-    expect(invalidId.status).toBe(400);
-    expect((invalidId.body as any).error.code).toBe('invalid_pgp_message_id');
+    expect(invalidId.status).toBe(404);
+    expect((invalidId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidPayload = await api.handle({
       method: 'POST',
@@ -34840,12 +34861,12 @@ describe('server edition foundation', () => {
       api.handle({ method: 'POST', path: '/api/v1/pgp/messages/45/verify', principal }),
       api.handle({ method: 'POST', path: '/api/v1/pgp/messages/nope/verify', principal }),
     ]);
-    expect(failures.map((response) => response.status)).toEqual([200, 400, 400, 404, 400]);
+    expect(failures.map((response) => response.status)).toEqual([200, 400, 400, 404, 404]);
     expect((failures[0].body as any).data).toEqual({ valid: false, status: 'key_missing' });
     expect((failures[1].body as any).error.code).toBe('pgp_message_not_signed');
     expect((failures[2].body as any).error.message).toBe('bad signature armor');
     expect((failures[3].body as any).error.code).toBe('pgp_message_not_found');
-    expect((failures[4].body as any).error.code).toBe('invalid_pgp_message_id');
+    expect((failures[4].body as any).error.code).toBe('mail_resource_not_found');
 
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
       method: 'POST',
@@ -34906,11 +34927,11 @@ describe('server edition foundation', () => {
       api.handle({ method: 'POST', path: '/api/v1/pgp/messages/nope/detect', principal }),
       api.handle({ method: 'GET', path: '/api/v1/pgp/messages/41/detect', principal }),
     ]);
-    expect(results.map((response) => response.status)).toEqual([200, 200, 404, 400, 405]);
+    expect(results.map((response) => response.status)).toEqual([200, 200, 404, 404, 405]);
     expect((results[0].body as any).data).toEqual({ detected: true, status: 'signed_unknown_key' });
     expect((results[1].body as any).data).toEqual({ detected: false, status: null });
     expect((results[2].body as any).error.code).toBe('pgp_message_not_found');
-    expect((results[3].body as any).error.code).toBe('invalid_pgp_message_id');
+    expect((results[3].body as any).error.code).toBe('mail_resource_not_found');
     expect((results[4].body as any).error.code).toBe('method_not_allowed');
 
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
@@ -35717,8 +35738,8 @@ describe('server edition foundation', () => {
       path: '/api/v1/spam/decisions/nope',
       principal,
     });
-    expect(invalidId.status).toBe(400);
-    expect((invalidId.body as any).error.code).toBe('invalid_spam_decision_id');
+    expect(invalidId.status).toBe(404);
+    expect((invalidId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidFeatureKey = await api.handle({
       method: 'GET',
@@ -36331,7 +36352,7 @@ describe('server edition foundation', () => {
     const unavailableLearning = await readOnlyApi.handle({
       method: 'POST',
       path: '/api/v1/spam/learning-events',
-      body: { accountId: 1, label: 'spam' },
+      body: { accountId: 1, messageId: 1, label: 'spam' },
       principal,
     });
     expect(unavailableLearning.status).toBe(503);
@@ -36342,8 +36363,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidLearningPayload.status).toBe(400);
-    expect((invalidLearningPayload.body as any).error.code).toBe('invalid_spam_learning_event_payload');
+    expect(invalidLearningPayload.status).toBe(404);
+    expect((invalidLearningPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeLearningPayload = await writableApi.handle({
       method: 'POST',
@@ -36358,15 +36379,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeLearningPayload.status).toBe(400);
-    expect((unsafeLearningPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'label', message: 'label muss spam oder ham sein' },
-      { field: 'source', message: 'source darf nicht leer sein' },
-      { field: 'featureKeys', message: 'featureKeys muss JSON-kompatibel sein' },
-    ]));
+    expect(unsafeLearningPayload.status).toBe(404);
+    expect((unsafeLearningPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingLearningFields = await writableApi.handle({
       method: 'POST',
@@ -36374,12 +36388,12 @@ describe('server edition foundation', () => {
       body: { accountId: 1 },
       principal,
     });
-    expect(missingLearningFields.status).toBe(400);
+    expect(missingLearningFields.status).toBe(404);
 
     const missingLearningAccount = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/learning-events',
-      body: { accountId: 99, label: 'spam' },
+      body: { accountId: 99, messageId: 1, label: 'spam' },
       principal,
     });
     expect(missingLearningAccount.status).toBe(404);
@@ -36406,7 +36420,7 @@ describe('server edition foundation', () => {
     const unavailableDecision = await readOnlyApi.handle({
       method: 'POST',
       path: '/api/v1/spam/decisions',
-      body: { accountId: 1, score: 50, status: 'review', source: 'local' },
+      body: { accountId: 1, messageId: 1, score: 50, status: 'review', source: 'local' },
       principal,
     });
     expect(unavailableDecision.status).toBe(503);
@@ -36417,8 +36431,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidDecisionPayload.status).toBe(400);
-    expect((invalidDecisionPayload.body as any).error.code).toBe('invalid_spam_decision_payload');
+    expect(invalidDecisionPayload.status).toBe(404);
+    expect((invalidDecisionPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeDecisionPayload = await writableApi.handle({
       method: 'POST',
@@ -36435,17 +36449,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeDecisionPayload.status).toBe(400);
-    expect((unsafeDecisionPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'score', message: 'score muss eine Ganzzahl zwischen 0 und 100 sein' },
-      { field: 'status', message: 'status muss clean, review oder spam sein' },
-      { field: 'source', message: 'source darf nicht leer sein' },
-      { field: 'breakdown', message: 'breakdown muss ein JSON-Objekt, JSON-Array oder null sein' },
-      { field: 'modelVersion', message: 'modelVersion muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeDecisionPayload.status).toBe(404);
+    expect((unsafeDecisionPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingDecisionFields = await writableApi.handle({
       method: 'POST',
@@ -36453,12 +36458,12 @@ describe('server edition foundation', () => {
       body: { accountId: 1, score: 50, status: 'review' },
       principal,
     });
-    expect(missingDecisionFields.status).toBe(400);
+    expect(missingDecisionFields.status).toBe(404);
 
     const missingDecisionAccount = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/decisions',
-      body: { accountId: 99, score: 50, status: 'review', source: 'local' },
+      body: { accountId: 99, messageId: 1, score: 50, status: 'review', source: 'local' },
       principal,
     });
     expect(missingDecisionAccount.status).toBe(404);
@@ -36488,7 +36493,7 @@ describe('server edition foundation', () => {
       body: { score: 20 },
       principal,
     });
-    expect(invalidDecisionId.status).toBe(400);
+    expect(invalidDecisionId.status).toBe(404);
 
     const emptyDecisionPatch = await writableApi.handle({
       method: 'PATCH',

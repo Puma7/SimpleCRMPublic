@@ -51,3 +51,31 @@ export interface MailAccessService {
     permission: MailPermission;
   }>): Promise<MailSqlScope>;
 }
+
+export type MailResourceLookupTarget =
+  | Readonly<{ kind: 'account'; id: number }>
+  | Readonly<{ kind: 'folder'; id: number }>
+  | Readonly<{ kind: 'message'; id: number }>
+  | Readonly<{ kind: 'attachment'; id: number }>
+  | Readonly<{ kind: 'thread'; id: string }>
+  | Readonly<{
+    kind: 'metadata';
+    entity:
+      | 'message_tag'
+      | 'message_category'
+      | 'internal_note'
+      | 'read_receipt'
+      | 'thread_edge'
+      | 'thread_alias'
+      | 'account_signature'
+      | 'spam_decision'
+      | 'spam_learning_event';
+    id: number;
+  }>;
+
+export interface MailResourceLookupPort {
+  resolve(input: Readonly<{
+    workspaceId: string;
+    target: MailResourceLookupTarget;
+  }>): Promise<readonly MailResource[]>;
+}

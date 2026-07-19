@@ -1315,6 +1315,7 @@ async function handleCreateEmailThreadAlias(
   }
 
   const parsed = parseEmailThreadAliasMutationBody(req.body, {
+    allowAccountId: true,
     requireAliasThreadId: true,
     requireCanonicalThreadId: true,
     requireAny: false,
@@ -1351,6 +1352,7 @@ async function handleUpdateEmailThreadAlias(
   }
 
   const parsed = parseEmailThreadAliasMutationBody(req.body, {
+    allowAccountId: false,
     requireAliasThreadId: false,
     requireCanonicalThreadId: false,
     requireAny: true,
@@ -3018,6 +3020,7 @@ function parseEmailThreadEdgeMutationBody(body: unknown): EmailThreadEdgeMutatio
 function parseEmailThreadAliasMutationBody(
   body: unknown,
   options: {
+    allowAccountId: boolean;
     requireAliasThreadId: boolean;
     requireCanonicalThreadId: boolean;
     requireAny: boolean;
@@ -3032,10 +3035,21 @@ function parseEmailThreadAliasMutationBody(
 
   const values: EmailThreadAliasMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['aliasThreadId', 'canonicalThreadId', 'confidence', 'source']);
+  const allowedFields = new Set([
+    ...(options.allowAccountId ? ['accountId'] : []),
+    'aliasThreadId',
+    'canonicalThreadId',
+    'confidence',
+    'source',
+  ]);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+  }
+  if (options.allowAccountId && Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    const accountId = normalizePositiveBodyInt(body.accountId, 'accountId');
+    if (accountId.ok) values.accountId = accountId.value;
+    else errors.push({ field: 'accountId', message: accountId.message });
   }
   if (Object.prototype.hasOwnProperty.call(body, 'aliasThreadId')) {
     const aliasThreadId = normalizeRequiredBodyText(body.aliasThreadId, 300);

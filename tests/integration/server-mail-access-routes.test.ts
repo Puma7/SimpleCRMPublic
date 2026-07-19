@@ -2,20 +2,40 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import { createRequire } from 'module';
 import { createServer } from 'net';
+import { PassThrough, Readable } from 'stream';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-
-import { Kysely, PostgresDialect } from '../../packages/server/node_modules/kysely';
-import { Pool } from '../../packages/server/node_modules/pg';
+import { Kysely, PostgresDialect } from 'kysely';
+import { Pool } from 'pg';
 import type { MailPermission } from '../../packages/core/src/email/mail-permissions';
+import { createServerApi } from '../../packages/server/src/api/server-api';
+import type {
+  AuthenticatedPrincipal,
+  EmailMessageRecord,
+  ServerApiPorts,
+} from '../../packages/server/src/api/types';
+import {
+  createPostgresEmailMessageReadPort,
+} from '../../packages/server/src/db/postgres-mail-read-ports';
+import {
+  createPostgresEmailFolderReadPort,
+  createPostgresEmailMessageCategoryReadPort,
+  createPostgresEmailThreadReadPort,
+} from '../../packages/server/src/db/postgres-mail-metadata-read-ports';
+import { createPostgresEmailReportingPort } from '../../packages/server/src/db/postgres-email-reporting-port';
+import { createPostgresEmailGdprExportPort } from '../../packages/server/src/mail-gdpr-export';
 import type {
   MailAclBindingPermissionsTable,
   MailAclBindingsTable,
   ServerDatabase,
 } from '../../packages/server/src/db/schema';
 import { createPostgresMailAccessPort } from '../../packages/server/src/mail-access/postgres-mail-access-port';
+import { MailAccessService } from '../../packages/server/src/mail-access/service';
+import type { MailSqlScope } from '../../packages/server/src/mail-access/types';
 import { serverMigrations } from '../../packages/server/src/migrations';
+
+jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
 
 jest.setTimeout(120_000);
 
@@ -53,6 +73,9 @@ const USER_SEND = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const USER_BOTH = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const USER_WORKSPACE_B = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const USER_CREATOR = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const USER_FOLDER = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const USER_MESSAGE = '99999999-9999-4999-8999-999999999999';
+const USER_NONE = '88888888-8888-4888-8888-888888888888';
 const ACCOUNT_A = 101;
 const ACCOUNT_A_OTHER = 102;
 const ACCOUNT_B = 201;
@@ -63,6 +86,8 @@ const FOLDER_B = 211;
 const MESSAGE_A = 121;
 const MESSAGE_A_SECOND = 122;
 const MESSAGE_B = 221;
+const THREAD_A = 'thread-a';
+const CATEGORY_A = 501;
 const GROUP_A = 301;
 const GROUP_A_REMOVED = 302;
 const GROUP_B = 401;
@@ -84,6 +109,21 @@ const MIGRATION_0038_PERMISSION_KEYS = [
   'mail.account.manage',
   'mail.delegation.manage',
 ] as const;
+
+type TestMailResourceLookupTarget =
+  | Readonly<{ kind: 'account'; id: number }>
+  | Readonly<{ kind: 'folder'; id: number }>
+  | Readonly<{ kind: 'message'; id: number }>
+  | Readonly<{ kind: 'attachment'; id: number }>
+  | Readonly<{ kind: 'thread'; id: string }>
+  | Readonly<{ kind: 'metadata'; entity: string; id: number }>;
+
+type TestMailResourceLookupPort = Readonly<{
+  resolve(input: Readonly<{
+    workspaceId: string;
+    target: TestMailResourceLookupTarget;
+  }>): Promise<readonly import('../../packages/core/src/email/mail-permissions').MailResource[]>;
+}>;
 
 async function findAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -161,6 +201,16 @@ process.stdin.resume();
   return child;
 }
 
+function withMailScope<T extends object>(input: T, mailScope: MailSqlScope): T & { mailScope: MailSqlScope } {
+  return { ...input, mailScope };
+}
+
+async function readableToBuffer(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
 describe('server mailbox ACL migration', () => {
   let adminClient: DatabaseClient;
   let client: DatabaseClient;
@@ -196,6 +246,9 @@ describe('server mailbox ACL migration', () => {
         ('${USER_SEND}', '${WORKSPACE_A}', 'send@example.test', 'Send User', 'hash'),
         ('${USER_BOTH}', '${WORKSPACE_A}', 'both@example.test', 'Both User', 'hash'),
         ('${USER_CREATOR}', '${WORKSPACE_A}', 'creator@example.test', 'Creator User', 'hash'),
+        ('${USER_FOLDER}', '${WORKSPACE_A}', 'folder@example.test', 'Folder User', 'hash'),
+        ('${USER_MESSAGE}', '${WORKSPACE_A}', 'message@example.test', 'Message User', 'hash'),
+        ('${USER_NONE}', '${WORKSPACE_A}', 'none@example.test', 'No Grant User', 'hash'),
         ('${USER_WORKSPACE_B}', '${WORKSPACE_B}', 'other@example.test', 'Other User', 'hash')
     `);
     await client.query(`
@@ -223,11 +276,32 @@ describe('server mailbox ACL migration', () => {
     await client.query(`
       INSERT INTO email_messages (
         id, workspace_id, source_sqlite_id, account_source_sqlite_id,
-        folder_source_sqlite_id, account_id, folder_id, uid
+        folder_source_sqlite_id, account_id, folder_id, uid, subject, folder_kind, thread_id
       ) VALUES
-        (${MESSAGE_A}, '${WORKSPACE_A}', 31, 1, 11, ${ACCOUNT_A}, ${FOLDER_A}, 1),
-        (${MESSAGE_A_SECOND}, '${WORKSPACE_A}', 32, 1, 13, ${ACCOUNT_A}, ${FOLDER_A_SECOND}, 1),
-        (${MESSAGE_B}, '${WORKSPACE_B}', 41, 1, 21, ${ACCOUNT_B}, ${FOLDER_B}, 1)
+        (${MESSAGE_A}, '${WORKSPACE_A}', 31, 1, 11, ${ACCOUNT_A}, ${FOLDER_A}, 1, 'Allowed alpha', 'inbox', '${THREAD_A}'),
+        (${MESSAGE_A_SECOND}, '${WORKSPACE_A}', 32, 1, 13, ${ACCOUNT_A}, ${FOLDER_A_SECOND}, 1, 'Hidden alpha', 'inbox', '${THREAD_A}'),
+        (${MESSAGE_B}, '${WORKSPACE_B}', 41, 1, 21, ${ACCOUNT_B}, ${FOLDER_B}, 1, 'Workspace B', 'inbox', 'thread-b')
+    `);
+    await client.query(`
+      INSERT INTO email_threads (
+        id, workspace_id, ticket_code, account_source_sqlite_id, account_id,
+        root_message_source_sqlite_id, root_message_id, message_count, has_unread,
+        has_attachments, subject_normalized
+      ) VALUES
+        ('${THREAD_A}', '${WORKSPACE_A}', 'T-A', 1, ${ACCOUNT_A}, 31, ${MESSAGE_A}, 2, true, false, 'alpha'),
+        ('thread-b', '${WORKSPACE_B}', 'T-B', 1, ${ACCOUNT_B}, 41, ${MESSAGE_B}, 1, true, false, 'workspace b')
+    `);
+    await client.query(`
+      INSERT INTO email_categories (id, workspace_id, source_sqlite_id, name, sort_order)
+      VALUES (${CATEGORY_A}, '${WORKSPACE_A}', 51, 'Scoped', 0)
+    `);
+    await client.query(`
+      INSERT INTO email_message_categories (
+        id, workspace_id, source_sqlite_id, message_source_sqlite_id,
+        category_source_sqlite_id, message_id, category_id
+      ) VALUES
+        (511, '${WORKSPACE_A}', 61, 31, 51, ${MESSAGE_A}, ${CATEGORY_A}),
+        (512, '${WORKSPACE_A}', 62, 32, 51, ${MESSAGE_A_SECOND}, ${CATEGORY_A})
     `);
     await client.query(`
       INSERT INTO user_account_access (user_id, account_id, workspace_id, can_read, can_send) VALUES
@@ -235,6 +309,198 @@ describe('server mailbox ACL migration', () => {
         ('${USER_SEND}', ${ACCOUNT_A}, '${WORKSPACE_A}', false, true),
         ('${USER_BOTH}', ${ACCOUNT_A}, '${WORKSPACE_A}', true, true)
     `);
+  }
+
+  function createApplicationDb(): Kysely<ServerDatabase> {
+    return new Kysely<ServerDatabase>({
+      dialect: new PostgresDialect({
+        pool: new Pool({
+          host: '127.0.0.1',
+          port: postgresPort,
+          user: MIGRATION_ROLE,
+          password: MIGRATION_ROLE_PASSWORD,
+          database: 'postgres',
+          max: 1,
+        }),
+      }),
+    });
+  }
+
+  async function ensureScopedGrantFixtures(): Promise<void> {
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    await client.query(`
+      INSERT INTO mail_acl_bindings (
+        workspace_id, subject_type, subject_id, resource_type, account_id, folder_id, message_id
+      ) VALUES
+        ('${WORKSPACE_A}', 'user', '${USER_FOLDER}', 'folder', ${ACCOUNT_A}, ${FOLDER_A}, NULL),
+        ('${WORKSPACE_A}', 'user', '${USER_MESSAGE}', 'message', ${ACCOUNT_A}, ${FOLDER_A}, ${MESSAGE_A})
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query(`
+      INSERT INTO mail_acl_binding_permissions (binding_id, permission_key)
+      SELECT id, 'mail.metadata.read'
+      FROM mail_acl_bindings
+      WHERE workspace_id = '${WORKSPACE_A}'
+        AND subject_id IN ('${USER_FOLDER}', '${USER_MESSAGE}')
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query(`
+      INSERT INTO mail_acl_binding_permissions (binding_id, permission_key)
+      SELECT id, 'mail.export'
+      FROM mail_acl_bindings
+      WHERE workspace_id = '${WORKSPACE_A}'
+        AND subject_id = '${USER_FOLDER}'
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+  }
+
+  async function resolveMetadataScope(
+    db: Kysely<ServerDatabase>,
+    userId: string,
+  ): Promise<MailSqlScope> {
+    const service = new MailAccessService(createPostgresMailAccessPort({ db }));
+    return service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: {
+        workspaceId: WORKSPACE_A,
+        userId,
+        isOwner: false,
+        isAdmin: false,
+      },
+      permission: 'mail.metadata.read',
+    });
+  }
+
+  function makePrincipal(
+    role: AuthenticatedPrincipal['role'] = 'user',
+    workspaceId = WORKSPACE_A,
+  ): AuthenticatedPrincipal {
+    return {
+      userId: role === 'user' ? USER_NONE : USER_CREATOR,
+      workspaceId,
+      role,
+    };
+  }
+
+  function makeHttpResourceLookup(): TestMailResourceLookupPort {
+    return {
+      async resolve(input) {
+        if (input.workspaceId !== WORKSPACE_A) return [];
+        const target = input.target;
+        if (target.kind === 'account') {
+          if (target.id === ACCOUNT_A || target.id === ACCOUNT_A_OTHER) {
+            return [{ type: 'account', accountId: String(target.id) }];
+          }
+          return [];
+        }
+        if (target.kind === 'folder') {
+          if (target.id === FOLDER_A) {
+            return [{ type: 'folder', accountId: String(ACCOUNT_A), folderId: String(FOLDER_A) }];
+          }
+          return [];
+        }
+        if (target.kind === 'message') {
+          if (target.id === MESSAGE_A) {
+            return [{
+              type: 'message',
+              accountId: String(ACCOUNT_A),
+              folderId: String(FOLDER_A),
+              messageId: String(MESSAGE_A),
+            }];
+          }
+          if (target.id === MESSAGE_A_SECOND) {
+            return [{
+              type: 'message',
+              accountId: String(ACCOUNT_A),
+              folderId: String(FOLDER_A_SECOND),
+              messageId: String(MESSAGE_A_SECOND),
+            }];
+          }
+          return [];
+        }
+        if (target.kind === 'attachment' && target.id === 701) {
+          return [{
+            type: 'message',
+            accountId: String(ACCOUNT_A),
+            folderId: String(FOLDER_A),
+            messageId: String(MESSAGE_A),
+          }];
+        }
+        if (target.kind === 'thread' && target.id === THREAD_A) {
+          return [
+            {
+              type: 'message',
+              accountId: String(ACCOUNT_A),
+              folderId: String(FOLDER_A),
+              messageId: String(MESSAGE_A),
+            },
+            {
+              type: 'message',
+              accountId: String(ACCOUNT_A),
+              folderId: String(FOLDER_A_SECOND),
+              messageId: String(MESSAGE_A_SECOND),
+            },
+          ];
+        }
+        return [];
+      },
+    };
+  }
+
+  function makeHttpPorts(input: Readonly<{
+    grants?: ReadonlyMap<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>;
+    overrides?: Partial<ServerApiPorts>;
+  }> = {}): ServerApiPorts {
+    const mailAccess = new MailAccessService({
+      async resolveGrants(request) {
+        return input.grants?.get(request.permission) ?? [];
+      },
+    });
+    return {
+      auth: {} as ServerApiPorts['auth'],
+      locks: {} as ServerApiPorts['locks'],
+      mailAccess,
+      mailResourceLookup: makeHttpResourceLookup(),
+      ...input.overrides,
+    } as unknown as ServerApiPorts;
+  }
+
+  function makeMessageRecord(id: number): EmailMessageRecord {
+    return {
+      id,
+      sourceSqliteId: id,
+      accountId: ACCOUNT_A,
+      folderId: FOLDER_A,
+      uid: 1,
+      messageId: `message-${id}`,
+      subject: `Message ${id}`,
+      from: null,
+      to: null,
+      cc: null,
+      bcc: null,
+      dateReceived: null,
+      snippet: null,
+      seenLocal: false,
+      doneLocal: false,
+      archived: false,
+      softDeleted: false,
+      folderKind: 'inbox',
+      threadId: THREAD_A,
+      imapThreadId: null,
+      ticketCode: null,
+      customerId: null,
+      hasAttachments: false,
+      assignedTo: null,
+      assignedToUserId: null,
+      isSpam: false,
+      spamStatus: 'inbox',
+      pgpStatus: null,
+      remoteContentPolicy: 'blocked',
+      readReceiptRequested: false,
+      snoozedUntil: null,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    };
   }
 
   beforeAll(async () => {
@@ -703,6 +969,460 @@ describe('server mailbox ACL migration', () => {
           messageId: null,
         },
       ]);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('denies direct message, attachment, bulk, and account-settings HTTP side effects uniformly', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    const getAttachmentContent = jest.fn(async () => ({
+      ok: true as const,
+      record: {
+        id: 701,
+        filename: 'secret.txt',
+        contentType: 'text/plain',
+        sizeBytes: 6,
+        contentSha256: null,
+        content: new Uint8Array(Buffer.from('secret')),
+      },
+    }));
+    const bulkSetArchived = jest.fn(async () => ({ success: true, updated: 2 }));
+    const setAccountSettings = jest.fn(async () => ({
+      accountId: ACCOUNT_A,
+      ticketPrefix: 'ACL',
+      ticketNextNumber: 1,
+      ticketNumberPadding: 4,
+      threadNamespace: 'acl',
+      updatedAt: null,
+    }));
+    const ports = makeHttpPorts({
+      grants: new Map([
+        ['mail.triage', [{
+          resourceType: 'message' as const,
+          accountId: ACCOUNT_A,
+          folderId: FOLDER_A,
+          messageId: MESSAGE_A,
+        }]],
+      ]),
+      overrides: {
+        emailMessages: {
+          list: async () => ({ items: [], nextCursor: null }),
+          get: getMessage,
+          bulkSetArchived,
+        },
+        emailAttachmentContent: { get: getAttachmentContent },
+        emailAccounts: {
+          list: async () => ({ items: [] }),
+          get: async () => ({ id: ACCOUNT_A, sourceSqliteId: 1 }),
+        } as ServerApiPorts['emailAccounts'],
+        emailAccountMailSettings: {
+          get: async () => null,
+          set: setAccountSettings,
+        },
+      },
+    });
+    const api = createServerApi(ports);
+    const principal = makePrincipal();
+
+    const messageResponse = await api.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}`,
+      principal,
+    });
+    const attachmentResponse = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/attachments/701/content',
+      principal,
+    });
+    const bulkResponse = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/bulk/archive',
+      principal,
+      body: { messageIds: [MESSAGE_A, MESSAGE_A, MESSAGE_A_SECOND], archived: true },
+    });
+    const settingsResponse = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/settings/account-mail',
+      principal,
+      body: { accountId: ACCOUNT_A, ticketPrefix: 'ACL' },
+    });
+
+    const publicDenial = {
+      status: 404,
+      body: {
+        error: {
+          code: 'mail_resource_not_found',
+          message: 'Mail-Ressource nicht gefunden',
+        },
+      },
+    };
+    expect(messageResponse).toEqual(publicDenial);
+    expect(attachmentResponse).toEqual(publicDenial);
+    expect(bulkResponse).toEqual(publicDenial);
+    expect(settingsResponse).toEqual(publicDenial);
+    expect(getMessage).not.toHaveBeenCalled();
+    expect(getAttachmentContent).not.toHaveBeenCalled();
+    expect(bulkSetArchived).not.toHaveBeenCalled();
+    expect(setAccountSettings).not.toHaveBeenCalled();
+  });
+
+  test('passes one fail-closed scope to list, counts, thread, reporting, and export handlers', async () => {
+    const observedScopes: Array<MailSqlScope | undefined> = [];
+    const ports = makeHttpPorts({
+      overrides: {
+        emailMessages: {
+          async list(input) {
+            observedScopes.push((input as typeof input & { mailScope?: MailSqlScope }).mailScope);
+            return { items: [], nextCursor: null };
+          },
+          async get() { return null; },
+          async getFolderCounts(input) {
+            observedScopes.push((input as typeof input & { mailScope?: MailSqlScope }).mailScope);
+            return {
+              inbox: 0,
+              inboxUnread: 0,
+              sentFailed: 0,
+              drafts: 0,
+              scheduledSend: 0,
+              archived: 0,
+              spamReview: 0,
+              spam: 0,
+              trash: 0,
+              snoozed: 0,
+            };
+          },
+        },
+        emailThreads: {
+          async list(input) {
+            observedScopes.push((input as typeof input & { mailScope?: MailSqlScope }).mailScope);
+            return { items: [], nextCursor: null };
+          },
+          async get() { return null; },
+        },
+        emailMessageCategories: {
+          async list() { return { items: [], nextCursor: null }; },
+          async get() { return null; },
+          async listCounts(input) {
+            observedScopes.push((input as typeof input & { mailScope?: MailSqlScope }).mailScope);
+            return [];
+          },
+        },
+        emailReporting: {
+          async collect(input) {
+            observedScopes.push((input as typeof input & { mailScope?: MailSqlScope }).mailScope);
+            return { accounts: [], totals: { messages: 0, unread: 0, archived: 0, withCustomer: 0, withAssignment: 0, withAttachments: 0 }, perAccount: [], workflowRuns24h: [] };
+          },
+        },
+        emailGdprExport: {
+          async export(input) {
+            observedScopes.push((input as typeof input & { mailScope?: MailSqlScope }).mailScope);
+            return { ok: true, filename: 'empty.zip', stream: Readable.from([]) };
+          },
+        },
+      },
+    });
+    const api = createServerApi(ports);
+    const principal = makePrincipal();
+
+    await api.handle({ method: 'GET', path: '/api/v1/email/messages', query: { search: 'alpha' }, principal });
+    await api.handle({ method: 'GET', path: '/api/v1/email/folder-counts', principal });
+    await api.handle({ method: 'GET', path: '/api/v1/email/threads', principal });
+    await api.handle({ method: 'GET', path: '/api/v1/email/category-counts', principal });
+    await api.handle({ method: 'GET', path: '/api/v1/email/reporting', principal });
+    await api.handle({ method: 'GET', path: '/api/v1/email/gdpr-export', query: { skipAttachments: 'true' }, principal });
+
+    expect(observedScopes).toHaveLength(6);
+    expect(observedScopes).toEqual(Array.from({ length: 6 }, () => ({ kind: 'none' })));
+  });
+
+  test('keeps owner/admin workspace binding and attachment/send-as permissions independent', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    const getAttachmentContent = jest.fn(async () => ({
+      ok: true as const,
+      record: {
+        id: 701,
+        filename: 'allowed.txt',
+        contentType: 'text/plain',
+        sizeBytes: 2,
+        contentSha256: null,
+        content: new Uint8Array(Buffer.from('ok')),
+      },
+    }));
+    const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A_OTHER }));
+    const contentOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.content.read', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.send', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const contentApi = createServerApi(makeHttpPorts({
+      grants: contentOnly,
+      overrides: {
+        emailMessages: { list: async () => ({ items: [], nextCursor: null }), get: getMessage },
+        emailAttachmentContent: { get: getAttachmentContent },
+        emailComposeSender: { send },
+      },
+    }));
+
+    const ownerAllowed = await contentApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}`,
+      principal: makePrincipal('owner'),
+    });
+    const adminAllowed = await contentApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}`,
+      principal: makePrincipal('admin'),
+    });
+    const foreignOwnerDenied = await contentApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}`,
+      principal: makePrincipal('owner', WORKSPACE_B),
+    });
+    const attachmentDenied = await contentApi.handle({
+      method: 'GET',
+      path: '/api/v1/email/attachments/701/content',
+      principal: makePrincipal(),
+    });
+    const sendAsDenied = await contentApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: {
+        accountId: ACCOUNT_A_OTHER,
+        draftMessageId: MESSAGE_A,
+        subject: 'Cross-account',
+        bodyText: 'Body',
+        to: 'recipient@example.test',
+      },
+    });
+
+    expect(ownerAllowed.status).toBe(200);
+    expect(adminAllowed.status).toBe(200);
+    expect(foreignOwnerDenied.status).toBe(404);
+    expect(attachmentDenied.status).toBe(404);
+    expect(sendAsDenied.status).toBe(404);
+    expect(getAttachmentContent).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+
+    const attachmentAndSendAs = new Map(contentOnly);
+    attachmentAndSendAs.set('mail.attachment.read', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+    ]);
+    attachmentAndSendAs.set('mail.send_as', [
+      { resourceType: 'account', accountId: ACCOUNT_A_OTHER, folderId: null, messageId: null },
+    ]);
+    const elevatedApi = createServerApi(makeHttpPorts({
+      grants: attachmentAndSendAs,
+      overrides: {
+        emailMessages: { list: async () => ({ items: [], nextCursor: null }), get: getMessage },
+        emailAttachmentContent: { get: getAttachmentContent },
+        emailComposeSender: { send },
+      },
+    }));
+    const attachmentAllowed = await elevatedApi.handle({
+      method: 'GET',
+      path: '/api/v1/email/attachments/701/content',
+      principal: makePrincipal(),
+    });
+    const sendAsAllowed = await elevatedApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: {
+        accountId: ACCOUNT_A_OTHER,
+        draftMessageId: MESSAGE_A,
+        subject: 'Cross-account',
+        bodyText: 'Body',
+        to: 'recipient@example.test',
+      },
+    });
+    expect(attachmentAllowed.status).toBe(200);
+    expect(sendAsAllowed.status).toBe(200);
+  });
+
+  test('preserves exempt checks and non-mail dispatch', async () => {
+    const testImap = jest.fn(async () => ({ success: true as const }));
+    const api = createServerApi(makeHttpPorts({
+      overrides: {
+        mailConnectionTests: {
+          testImap,
+          async testPop3() { return { success: true }; },
+          async testSmtp() { return { success: true }; },
+        },
+      },
+    }));
+    const principal = makePrincipal();
+    const authSetup = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/test-imap',
+      principal,
+      body: {
+        imapHost: 'imap.example.test',
+        imapPort: 993,
+        imapTls: true,
+        imapUsername: 'user',
+        imapPassword: 'password',
+      },
+    });
+    const adminSecurity = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/security',
+      principal,
+    });
+    const health = await api.handle({ method: 'GET', path: '/health' });
+
+    expect(authSetup.status).toBe(200);
+    expect(testImap).toHaveBeenCalledTimes(1);
+    expect(adminSecurity).toMatchObject({ status: 403, body: { error: { code: 'forbidden' } } });
+    expect(health).toMatchObject({ status: 200, body: { data: { status: 'ok' } } });
+  });
+
+  test('applies none, folder, message, and account scopes before message search pagination', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      const port = createPostgresEmailMessageReadPort({ db });
+      const noneScope = await resolveMetadataScope(db, USER_NONE);
+      const folderScope = await resolveMetadataScope(db, USER_FOLDER);
+      const messageScope = await resolveMetadataScope(db, USER_MESSAGE);
+      const accountScope = await resolveMetadataScope(db, USER_READ);
+
+      const none = await port.list(withMailScope({ workspaceId: WORKSPACE_A, search: '/alpha/', limit: 10 }, noneScope));
+      const folderPage = await port.list(withMailScope({ workspaceId: WORKSPACE_A, search: '/alpha/', limit: 1 }, folderScope));
+      const messageOnly = await port.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, messageScope));
+      const accountWide = await port.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, accountScope));
+
+      expect(none.items).toEqual([]);
+      expect(folderPage.items.map((item) => item.id)).toEqual([MESSAGE_A]);
+      expect(folderPage.nextCursor).toBeNull();
+      expect(messageOnly.items.map((item) => item.id)).toEqual([MESSAGE_A]);
+      expect(accountWide.items.map((item) => item.id).sort((left, right) => left - right)).toEqual([
+        MESSAGE_A,
+        MESSAGE_A_SECOND,
+      ]);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('scopes folder/category counts and folder metadata before aggregation and cursoring', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      const folderScope = await resolveMetadataScope(db, USER_FOLDER);
+      const messageScope = await resolveMetadataScope(db, USER_MESSAGE);
+      const messagePort = createPostgresEmailMessageReadPort({ db });
+      const categoryPort = createPostgresEmailMessageCategoryReadPort({ db });
+      const folderPort = createPostgresEmailFolderReadPort({ db });
+
+      const counts = await messagePort.getFolderCounts?.(withMailScope({ workspaceId: WORKSPACE_A }, folderScope));
+      const categoryCounts = await categoryPort.listCounts?.(withMailScope({ workspaceId: WORKSPACE_A }, folderScope));
+      const folders = await folderPort.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, folderScope));
+      const messageOnlyFolders = await folderPort.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, messageScope));
+
+      expect(counts).toMatchObject({ inbox: 1, inboxUnread: 1 });
+      expect(categoryCounts).toEqual([{ categoryId: CATEGORY_A, count: 1 }]);
+      expect(folders.items.map((item) => item.id)).toEqual([FOLDER_A]);
+      expect(messageOnlyFolders.items).toEqual([]);
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('filters partial threads before message delivery and thread aggregation', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      const folderScope = await resolveMetadataScope(db, USER_FOLDER);
+      const messagePort = createPostgresEmailMessageReadPort({ db });
+      const threadPort = createPostgresEmailThreadReadPort({ db });
+      const messages = await messagePort.listThread?.(withMailScope({
+        workspaceId: WORKSPACE_A,
+        threadId: THREAD_A,
+        limit: 10,
+      }, folderScope));
+      const threads = await threadPort.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, folderScope));
+
+      expect(messages?.items.map((item) => item.id)).toEqual([MESSAGE_A]);
+      expect(threads.items).toHaveLength(1);
+      expect(threads.items[0]).toMatchObject({ id: THREAD_A, messageCount: 1, hasUnread: true });
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('scopes reporting totals, per-account output, and accounts', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      const folderScope = await resolveMetadataScope(db, USER_FOLDER);
+      const noneScope = await resolveMetadataScope(db, USER_NONE);
+      const reporting = createPostgresEmailReportingPort({ db });
+      const folderReport = await reporting.collect(withMailScope({ workspaceId: WORKSPACE_A }, folderScope));
+      const noneReport = await reporting.collect(withMailScope({ workspaceId: WORKSPACE_A }, noneScope));
+
+      expect(folderReport.totals).toMatchObject({ messages: 1, unread: 1 });
+      expect(folderReport.perAccount).toEqual([{ accountId: ACCOUNT_A, messages: 1, unread: 1, archived: 0 }]);
+      expect(folderReport.accounts.map((account) => account.id)).toEqual([ACCOUNT_A]);
+      expect(noneReport).toMatchObject({
+        accounts: [],
+        totals: { messages: 0, unread: 0 },
+        perAccount: [],
+        workflowRuns24h: [],
+      });
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('scopes PostgreSQL GDPR export before batching', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      const access = new MailAccessService(createPostgresMailAccessPort({ db }));
+      const folderScope = await access.resolveScope({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_FOLDER, isOwner: false, isAdmin: false },
+        permission: 'mail.export',
+      });
+      const entries = new Map<string, string>();
+      const pendingStreams: Array<{ name: string; stream: Readable }> = [];
+      let finalizeExport: (() => void) | undefined;
+      const finalized = new Promise<void>((resolve) => { finalizeExport = resolve; });
+      const archive = {
+        on() { return archive; },
+        pipe() { return archive; },
+        append(content: string | Buffer | Readable, options: { name: string }) {
+          if (content instanceof Readable) pendingStreams.push({ name: options.name, stream: content });
+          else entries.set(options.name, Buffer.isBuffer(content) ? content.toString('utf8') : content);
+          return archive;
+        },
+        async finalize() {
+          for (const pending of pendingStreams) {
+            entries.set(pending.name, (await readableToBuffer(pending.stream)).toString('utf8'));
+          }
+          finalizeExport?.();
+        },
+        abort() { finalizeExport?.(); },
+      };
+      const exportOptions = {
+        db,
+        attachmentsRoot: postgresDir,
+        archiveFactory: () => archive,
+        outputStreamFactory: () => new PassThrough(),
+      };
+      const exporter = createPostgresEmailGdprExportPort(exportOptions);
+      const result = await exporter.export(withMailScope({
+        workspaceId: WORKSPACE_A,
+        skipAttachments: true,
+      }, folderScope));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      await finalized;
+      const messageLines = (entries.get('messages_index.jsonl') ?? '').trim().split('\n').filter(Boolean);
+      const accounts = JSON.parse(entries.get('accounts_redacted.json') ?? '[]') as Array<{ id: number }>;
+      expect(messageLines.map((line) => (JSON.parse(line) as { id: number }).id)).toEqual([MESSAGE_A]);
+      expect(accounts.map((account) => Number(account.id))).toEqual([ACCOUNT_A]);
     } finally {
       await db.destroy();
     }

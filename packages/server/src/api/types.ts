@@ -3,6 +3,7 @@ import type {
   EmailEvidenceConfidence,
   EmailEvidenceEventType,
   EmailEvidenceSummary,
+  MailPermission,
   WorkflowNodeCatalogEntry,
   WorkflowTemplate,
 } from '@simplecrm/core';
@@ -14,6 +15,11 @@ import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
 import type { JtlOrderLookupApiPort } from '../jtl-order-lookup';
 import type { LoginPenalty } from '../auth';
 import type { ServerMaintenancePort } from '../maintenance/service';
+import type {
+  MailAccessService,
+  MailResourceLookupPort,
+  MailSqlScope,
+} from '../mail-access/types';
 
 export type ServerMaintenanceApiPort = ServerMaintenancePort;
 
@@ -66,6 +72,11 @@ export type ApiErrorBody = {
     details?: unknown;
   };
 };
+
+export type MailRouteAccessContext = Readonly<{
+  permission: MailPermission;
+  scope?: MailSqlScope;
+}>;
 
 export type ApiDataBody<T> = {
   data: T;
@@ -1639,6 +1650,7 @@ export type EmailAccountMutationPortResult =
 export type EmailAccountApiPort = {
   list(input: {
     workspaceId: string;
+    mailScope?: MailSqlScope;
   }): Promise<EmailAccountListResult>;
   get(input: {
     workspaceId: string;
@@ -1969,6 +1981,7 @@ export type EmailReportingApiPort = {
     workspaceId: string;
     accountId?: number;
     now?: Date;
+    mailScope?: MailSqlScope;
   }): Promise<EmailReportingSnapshot>;
 };
 
@@ -2269,6 +2282,7 @@ export type EmailRemoteContentPolicyMutationResult =
 export type EmailMessageApiPort = {
   list(input: {
     workspaceId: string;
+    mailScope?: MailSqlScope;
     accountId?: number;
     folderPath?: string;
     folderKind?: string;
@@ -2344,6 +2358,7 @@ export type EmailMessageApiPort = {
   getFolderCounts?(input: {
     workspaceId: string;
     accountId?: number;
+    mailScope?: MailSqlScope;
   }): Promise<EmailMailFolderCounts>;
   consumeRemoteContentPolicy?(input: {
     workspaceId: string;
@@ -2357,6 +2372,7 @@ export type EmailMessageApiPort = {
   }): Promise<EmailRemoteContentPolicyMutationResult>;
   listConversation?(input: {
     workspaceId: string;
+    mailScope?: MailSqlScope;
     accountId?: number;
     excludeMessageId?: number;
     ticketCode?: string;
@@ -2369,6 +2385,7 @@ export type EmailMessageApiPort = {
     threadId: string;
     offset?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<EmailMessageListResult>;
   bulkSoftDelete?(input: {
     workspaceId: string;
@@ -2532,6 +2549,7 @@ export type EmailGdprExportApiPort = {
     workspaceId: string;
     skipAttachments?: boolean;
     includeSensitiveTracking?: boolean;
+    mailScope?: MailSqlScope;
   }): Promise<EmailGdprExportResult>;
 };
 
@@ -2550,10 +2568,12 @@ export type EmailNumericRecordApiPort<TRecord, TListFilters extends object = obj
     workspaceId: string;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   } & TListFilters): Promise<EmailNumericCursorListResult<TRecord>>;
   get(input: {
     workspaceId: string;
     id: number;
+    mailScope?: MailSqlScope;
   }): Promise<TRecord | null>;
 };
 
@@ -2563,10 +2583,12 @@ export type EmailStringRecordApiPort<TRecord, TListFilters extends object = obje
     cursor?: string;
     offset?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   } & TListFilters): Promise<EmailStringCursorListResult<TRecord>>;
   get(input: {
     workspaceId: string;
     id: string;
+    mailScope?: MailSqlScope;
   }): Promise<TRecord | null>;
 };
 
@@ -2821,6 +2843,7 @@ export type EmailMessageCategoryApiPort = EmailNumericRecordApiPort<EmailMessage
   listCounts?(input: {
     workspaceId: string;
     accountId?: number;
+    mailScope?: MailSqlScope;
   }): Promise<readonly EmailCategoryCountRecord[]>;
 };
 
@@ -3317,6 +3340,7 @@ export type EmailThreadAliasApiPort = EmailNumericRecordApiPort<EmailThreadAlias
   listWarnings?(input: {
     workspaceId: string;
     limit?: number;
+    mailScope?: MailSqlScope;
   }): Promise<readonly EmailThreadAliasWarningRecord[]>;
   merge?(input: {
     workspaceId: string;
@@ -4998,6 +5022,8 @@ export type ServerApiPorts = {
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;
+  mailAccess?: MailAccessService;
+  mailResourceLookup?: MailResourceLookupPort;
   emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailTracking?: EmailTrackingApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;

@@ -4,6 +4,8 @@ import type {
   EmailReportingApiPort,
   EmailReportingSnapshot,
 } from '../api/types';
+import { mailScopePredicate } from '../mail-access/sql-scope';
+import type { MailSqlScope } from '../mail-access/types';
 import type { ServerDatabase } from './schema';
 import {
   withWorkspaceTransaction,
@@ -56,7 +58,7 @@ export function createPostgresEmailReportingPort(
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => collectReporting(trx, input.workspaceId, input.accountId, now),
+        async (trx) => collectReporting(trx, input.workspaceId, input.accountId, now, input.mailScope),
         { applySession: options.applyWorkspaceSession },
       );
     },
@@ -68,12 +70,13 @@ async function collectReporting(
   workspaceId: string,
   accountId: number | undefined,
   now: Date,
+  mailScope: MailSqlScope | undefined,
 ): Promise<EmailReportingSnapshot> {
   const [accounts, totals, perAccount, workflowRuns24h] = await Promise.all([
-    selectReportingAccounts(trx, workspaceId, accountId),
-    selectReportingTotals(trx, workspaceId, accountId),
-    selectReportingPerAccount(trx, workspaceId, accountId),
-    selectReportingWorkflowRuns24h(trx, workspaceId, now),
+    selectReportingAccounts(trx, workspaceId, accountId, mailScope),
+    selectReportingTotals(trx, workspaceId, accountId, mailScope),
+    selectReportingPerAccount(trx, workspaceId, accountId, mailScope),
+    selectReportingWorkflowRuns24h(trx, workspaceId, now, mailScope),
   ]);
 
   return {
@@ -88,6 +91,7 @@ async function selectReportingAccounts(
   trx: WorkspaceTransaction,
   workspaceId: string,
   accountId: number | undefined,
+  mailScope: MailSqlScope | undefined,
 ): Promise<EmailReportingSnapshot['accounts']> {
   let query = trx
     .selectFrom('email_accounts')
@@ -100,6 +104,23 @@ async function selectReportingAccounts(
     .where('workspace_id', '=', workspaceId)
     .orderBy('id', 'asc');
 
+  const accountScope = mailScopePredicate(mailScope, { accountId: 'email_accounts.id' });
+  const messageScope = mailScopePredicate(mailScope, {
+    accountId: 'report_message.account_id',
+    folderId: 'report_message.folder_id',
+    messageId: 'report_message.id',
+  });
+  if (accountScope || messageScope) {
+    query = query.where(kyselySql<boolean>`(
+      ${accountScope ?? kyselySql<boolean>`false`}
+      or exists (
+        select 1 from email_messages report_message
+        where report_message.workspace_id = ${workspaceId}::uuid
+          and report_message.account_id = email_accounts.id
+          and ${messageScope ?? kyselySql<boolean>`false`}
+      )
+    )`);
+  }
   if (accountId !== undefined) query = query.where('id', '=', accountId);
   const rows = await query.execute() as ReportingAccountRow[];
   return rows.map((row) => ({
@@ -114,6 +135,7 @@ async function selectReportingTotals(
   trx: WorkspaceTransaction,
   workspaceId: string,
   accountId: number | undefined,
+  mailScope: MailSqlScope | undefined,
 ): Promise<EmailReportingSnapshot['totals']> {
   let query = trx
     .selectFrom('email_messages')
@@ -138,6 +160,12 @@ async function selectReportingTotals(
     .where('workspace_id', '=', workspaceId)
     .where('soft_deleted', '=', false);
 
+  const scopePredicate = mailScopePredicate(mailScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  if (scopePredicate) query = query.where(scopePredicate);
   if (accountId !== undefined) query = query.where('account_id', '=', accountId);
   const row = await query.executeTakeFirst() as ReportingTotalsRow | undefined;
   return {
@@ -154,6 +182,7 @@ async function selectReportingPerAccount(
   trx: WorkspaceTransaction,
   workspaceId: string,
   accountId: number | undefined,
+  mailScope: MailSqlScope | undefined,
 ): Promise<EmailReportingSnapshot['perAccount']> {
   let query = trx
     .selectFrom('email_messages')
@@ -173,6 +202,12 @@ async function selectReportingPerAccount(
     .groupBy('account_id')
     .orderBy('account_id', 'asc');
 
+  const scopePredicate = mailScopePredicate(mailScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  if (scopePredicate) query = query.where(scopePredicate);
   if (accountId !== undefined) query = query.where('account_id', '=', accountId);
   const rows = await query.execute() as ReportingPerAccountRow[];
   return rows.map((row) => ({
@@ -187,10 +222,11 @@ async function selectReportingWorkflowRuns24h(
   trx: WorkspaceTransaction,
   workspaceId: string,
   now: Date,
+  mailScope: MailSqlScope | undefined,
 ): Promise<EmailReportingSnapshot['workflowRuns24h']> {
   const since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const workflowId = kyselySql<CountValue>`coalesce(workflow_source_sqlite_id, workflow_id, 0)`;
-  const rows = await trx
+  let query = trx
     .selectFrom('email_workflow_runs')
     .select([
       workflowId.as('workflowId'),
@@ -200,7 +236,21 @@ async function selectReportingWorkflowRuns24h(
       `.as('errors'),
     ])
     .where('workspace_id', '=', workspaceId)
-    .where('finished_at', '>=', since)
+    .where('finished_at', '>=', since);
+  const scopePredicate = mailScopePredicate(mailScope, {
+    accountId: 'report_message.account_id',
+    folderId: 'report_message.folder_id',
+    messageId: 'report_message.id',
+  });
+  if (scopePredicate) {
+    query = query.where(kyselySql<boolean>`exists (
+      select 1 from email_messages report_message
+      where report_message.workspace_id = ${workspaceId}::uuid
+        and report_message.id = email_workflow_runs.message_id
+        and ${scopePredicate}
+    )`);
+  }
+  const rows = await query
     .groupBy(workflowId)
     .orderBy('count', 'desc')
     .limit(30)
