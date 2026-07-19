@@ -20,6 +20,7 @@ import type {
   ServerEvent,
   ServerApiPorts,
 } from './types';
+import { filterMailEventForPrincipal } from '../mail-access/async-policy-enforcer';
 
 export type FastifyPrincipalResolver = (
   request: FastifyRequest,
@@ -92,6 +93,7 @@ type EventWebSocket = {
   send(data: string): void;
   close(code?: number, reason?: string): void;
   on(event: 'close', listener: () => void): void;
+  on(event: 'error', listener: () => void): void;
 };
 
 export function createFastifyServer(options: FastifyServerOptions): FastifyInstance {
@@ -254,11 +256,37 @@ async function handleEventSocket(
   }
 
   const deliveredSequences = new Set<number>();
-  const subscription = ports.events.subscribe((event) => {
+  let closed = false;
+  let replaying = true;
+  let liveQueue: ServerEvent[] = [];
+  let liveChain = Promise.resolve();
+  const context = {
+    principal,
+    ports: {
+      mailAccess: ports.mailAccess,
+      mailResourceLookup: ports.mailResourceLookup,
+    },
+  };
+  const enqueueLive = (event: ServerEvent) => {
     if (event.workspaceId !== principal.workspaceId) return;
-    markDelivered(deliveredSequences, event);
-    sendWebSocketJson(socket, event);
-  });
+    if (replaying) {
+      liveQueue.push(event);
+      return;
+    }
+    liveChain = liveChain
+      .then(async () => sendFilteredEvent(socket, event, deliveredSequences, context, () => closed))
+      .catch(() => {
+        if (!closed) socket.close(1011, 'event stream error');
+      });
+  };
+  const subscription = ports.events.subscribe(enqueueLive);
+  const cleanup = () => {
+    closed = true;
+    liveQueue = [];
+    subscription.unsubscribe();
+  };
+  socket.on('close', cleanup);
+  socket.on('error', cleanup);
   if (afterSequence !== undefined) {
     await waitForWebSocketClient();
     const replayEvents = await ports.events.replay?.({
@@ -266,14 +294,27 @@ async function handleEventSocket(
       afterSequence,
     }) ?? [];
     for (const event of replayEvents) {
-      if (wasDelivered(deliveredSequences, event)) continue;
-      markDelivered(deliveredSequences, event);
-      sendWebSocketJson(socket, event);
+      await sendFilteredEvent(socket, event, deliveredSequences, context, () => closed);
     }
   }
-  socket.on('close', () => {
-    subscription.unsubscribe();
-  });
+  replaying = false;
+  const queued = liveQueue;
+  liveQueue = [];
+  for (const event of queued) enqueueLive(event);
+}
+
+async function sendFilteredEvent(
+  socket: EventWebSocket,
+  event: ServerEvent,
+  deliveredSequences: Set<number>,
+  context: Parameters<typeof filterMailEventForPrincipal>[1],
+  isClosed: () => boolean,
+): Promise<void> {
+  if (isClosed() || wasDelivered(deliveredSequences, event)) return;
+  const filtered = await filterMailEventForPrincipal(event, context);
+  if (!filtered || isClosed() || wasDelivered(deliveredSequences, filtered)) return;
+  markDelivered(deliveredSequences, filtered);
+  sendWebSocketJson(socket, filtered);
 }
 
 function sendWebSocketJson(socket: EventWebSocket, event: ServerEvent): void {

@@ -47,7 +47,7 @@ import {
   requireAdmin,
   requirePrincipal,
 } from './http';
-import { JOB_STALE_LOCK_SECONDS } from '../jobs';
+import { JOB_STALE_LOCK_SECONDS } from '../jobs/policy';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
 import {
   handleMailMetadataReadRoute,

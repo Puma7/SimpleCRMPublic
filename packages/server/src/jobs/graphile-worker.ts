@@ -9,6 +9,11 @@ import {
 import type { EnqueueJobInput, JobPayload } from './types';
 import { scheduledSendDraftIdFromPayload, scheduledSendJobKey } from './scheduled-send-job-key';
 import type { JobHandlerRegistry } from './worker';
+import {
+  enforceMailJobPolicy,
+  MailAsyncAuthorizationError,
+  type MailAsyncPolicyPorts,
+} from '../mail-access/async-policy-enforcer';
 
 export type GraphileTaskSpec = Readonly<{
   queueName?: string;
@@ -34,8 +39,15 @@ export type GraphileWorkerRuntime = Readonly<{
 export type GraphileWorkerFactory = (options: {
   connectionString: string;
   concurrentJobs: number;
-  taskList: Record<string, (payload: unknown) => Promise<void>>;
+  taskList: Record<string, (payload: unknown, helpers?: GraphileJobHelpers) => Promise<void>>;
 }) => Promise<GraphileWorkerRuntime>;
+
+export type GraphileJobHelpers = Readonly<{
+  job?: Readonly<{ id?: string | number }>;
+  withPgClient?: (callback: (client: {
+    query: (sql: string, values?: readonly unknown[]) => Promise<unknown>;
+  }) => Promise<unknown>) => Promise<unknown>;
+}>;
 
 export type GraphileWorkerUtilsFactory = (options: {
   connectionString: string;
@@ -107,12 +119,19 @@ export async function startGraphileWorkerRuntime(input: {
   handlers: JobHandlerRegistry;
   concurrency: GraphileWorkerConcurrencyInput;
   createWorker?: GraphileWorkerFactory;
+  mailAccess?: MailAsyncPolicyPorts['mailAccess'];
+  mailResourceLookup?: MailAsyncPolicyPorts['mailResourceLookup'];
+  auth?: MailAsyncPolicyPorts['auth'];
 }): Promise<GraphileWorkerRuntime> {
   const plan = buildGraphileWorkerPlan({
     connectionString: input.connectionString,
     concurrency: input.concurrency,
   });
-  const taskList = buildGraphileTaskList(input.handlers);
+  const taskList = buildGraphileTaskList(input.handlers, {
+    mailAccess: input.mailAccess,
+    mailResourceLookup: input.mailResourceLookup,
+    auth: input.auth,
+  });
   return (input.createWorker ?? createDefaultGraphileWorkerRuntime)({
     connectionString: plan.connectionString,
     concurrentJobs: plan.concurrentJobs,
@@ -139,15 +158,16 @@ export function buildGraphileWorkerPlan(input: {
 
 export function buildGraphileTaskList(
   handlers: JobHandlerRegistry,
-): Record<string, (payload: unknown) => Promise<void>> {
+  mailPolicyPorts: MailAsyncPolicyPorts = {},
+): Record<string, (payload: unknown, helpers?: GraphileJobHelpers) => Promise<void>> {
   return Object.fromEntries(SERVER_JOB_TYPES.map((type) => [
     type,
-    async (payload: unknown) => {
+    async (payload: unknown, helpers?: GraphileJobHelpers) => {
       const handler = handlers[type];
       if (!handler) {
         throw new Error(`No handler registered for job type ${type}`);
       }
-      await handler({
+      const job = {
         id: 0,
         type,
         payload: normalizePayload(payload),
@@ -160,7 +180,14 @@ export function buildGraphileTaskList(
         workspaceId: workspaceIdFromPayload(payload),
         createdAt: new Date(0).toISOString(),
         updatedAt: new Date(0).toISOString(),
-      });
+      };
+      try {
+        await enforceMailJobPolicy(job, mailPolicyPorts);
+      } catch (error) {
+        if (error instanceof MailAsyncAuthorizationError) return;
+        throw error;
+      }
+      await handler(job);
     },
   ]));
 }
@@ -337,7 +364,7 @@ async function createDefaultGraphileWorkerUtils(options: {
 async function createDefaultGraphileWorkerRuntime(options: {
   connectionString: string;
   concurrentJobs: number;
-  taskList: Record<string, (payload: unknown) => Promise<void>>;
+  taskList: Record<string, (payload: unknown, helpers?: GraphileJobHelpers) => Promise<void>>;
 }): Promise<GraphileWorkerRuntime> {
   const { run } = require('graphile-worker') as typeof import('graphile-worker');
   const runner = await run({

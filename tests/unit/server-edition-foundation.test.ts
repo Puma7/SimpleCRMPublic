@@ -2008,7 +2008,11 @@ describe('server edition foundation', () => {
 
   test('job worker completes successful jobs and records failures for missing or throwing handlers', async () => {
     const queue = makeJobQueuePort([
-      makeQueuedJob({ id: 1, type: 'mail.sync.imap' }),
+      makeQueuedJob({
+        id: 1,
+        type: 'mail.sync.imap',
+        payload: { workspaceId: 'workspace-a', principal: 'simplecrm:service', accountId: 7 },
+      }),
       makeQueuedJob({ id: 2, type: 'mail.send.scheduled' }),
       makeQueuedJob({ id: 3, type: 'webhook.fire' }),
     ]);
@@ -2020,6 +2024,24 @@ describe('server edition foundation', () => {
       handlers: {
         'mail.sync.imap': async (job) => {
           handled.push(job.id);
+        },
+      },
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' };
+        },
+      },
+      mailResourceLookup: {
+        async resolve() {
+          return [{ type: 'account', accountId: '7' }];
+        },
+      },
+      auth: {
+        async listUsers() {
+          return [];
         },
       },
     })).resolves.toMatchObject({ status: 'completed' });
@@ -38581,6 +38603,16 @@ function makeJobQueuePort(initialJobs: QueuedJob[]): JobQueuePort & {
       return {
         ...input.job,
         attempts: input.job.attempts + 1,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: failures[failures.length - 1],
+      };
+    },
+    async failTerminal(input) {
+      failures.push(input.error instanceof Error ? input.error.message : String(input.error));
+      return {
+        ...input.job,
+        attempts: input.job.maxAttempts,
         lockedAt: null,
         lockedBy: null,
         lastError: failures[failures.length - 1],

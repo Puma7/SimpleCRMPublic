@@ -3,14 +3,15 @@ import { sql as kyselySql, type Kysely, type RawBuilder } from 'kysely';
 
 import {
   assertValidJobType,
-  formatJobError,
   nextRunAfterForFailure,
   normalizeMaxAttempts,
+} from '../jobs/policy';
+import {
   type EnqueueJobInput,
   type FailJobInput,
   type JobQueuePort,
   type QueuedJob,
-} from '../jobs';
+} from '../jobs/types';
 import { scheduledSendDraftIdFromPayload } from '../jobs/scheduled-send-job-key';
 import type { JobQueueRow, ServerDatabase } from './schema';
 import {
@@ -105,6 +106,13 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
         workspaceId: input.job.workspaceId,
         role: 'system',
       }, (db) => failJob(db, input, input.now ?? now()), { applySession: options.applyWorkspaceSession });
+    },
+
+    async failTerminal(input) {
+      return withWorkspaceTransaction(options.db, {
+        workspaceId: input.job.workspaceId,
+        role: 'system',
+      }, (db) => failJobTerminal(db, input, input.now ?? now()), { applySession: options.applyWorkspaceSession });
     },
 
     async releaseStaleLocks(input) {
@@ -268,6 +276,29 @@ async function failJob(
   return row ? mapJob(row) : null;
 }
 
+async function failJobTerminal(
+  db: WorkspaceTransaction,
+  input: FailJobInput,
+  now: Date,
+): Promise<QueuedJob | null> {
+  const row = await db
+    .updateTable('job_queue')
+    .set({
+      attempts: input.job.maxAttempts,
+      locked_at: null,
+      locked_by: null,
+      last_error: formatJobError(input.error),
+      run_after: now,
+      updated_at: now,
+    })
+    .where('id', '=', input.job.id)
+    .where('locked_by', '=', input.job.lockedBy)
+    .returningAll()
+    .executeTakeFirst();
+
+  return row ? mapJob(row) : null;
+}
+
 export function mapJob(row: JobQueueRow): QueuedJob {
   return {
     id: Number(row.id),
@@ -297,4 +328,9 @@ function accountSyncJobPayloadPredicate(accountId: number): RawBuilder<boolean> 
 
 function toDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
+}
+
+function formatJobError(error: unknown): string {
+  if (error instanceof Error) return error.message.slice(0, 4000);
+  return String(error).slice(0, 4000);
 }

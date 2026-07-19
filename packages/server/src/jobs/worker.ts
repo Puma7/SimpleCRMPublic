@@ -1,5 +1,10 @@
 import type { JobQueuePort, QueuedJob } from './types';
 import type { JobWorkerLogFn } from './job-worker-log';
+import {
+  enforceMailJobPolicy,
+  MailAsyncAuthorizationError,
+  type MailAsyncPolicyPorts,
+} from '../mail-access/async-policy-enforcer';
 
 export type JobHandler = (job: QueuedJob) => Promise<void>;
 
@@ -17,6 +22,9 @@ export async function runJobQueueOnce(input: {
   workerId: string;
   now?: Date;
   log?: JobWorkerLogFn;
+  mailAccess?: MailAsyncPolicyPorts['mailAccess'];
+  mailResourceLookup?: MailAsyncPolicyPorts['mailResourceLookup'];
+  auth?: MailAsyncPolicyPorts['auth'];
 }): Promise<JobWorkerRunResult> {
   const job = await input.queue.claimNext({
     workerId: input.workerId,
@@ -39,6 +47,11 @@ export async function runJobQueueOnce(input: {
   }
 
   try {
+    await enforceMailJobPolicy(job, {
+      mailAccess: input.mailAccess,
+      mailResourceLookup: input.mailResourceLookup,
+      auth: input.auth,
+    });
     await handler(job);
     await input.queue.complete(job);
     const durationMs = Date.now() - started;
@@ -49,7 +62,11 @@ export async function runJobQueueOnce(input: {
     return { status: 'completed', job, durationMs };
   } catch (error) {
     const message = formatJobError(error);
-    await input.queue.fail({ job, error, now: input.now });
+    if (error instanceof MailAsyncAuthorizationError) {
+      await input.queue.failTerminal({ job, error, now: input.now });
+    } else {
+      await input.queue.fail({ job, error, now: input.now });
+    }
     const durationMs = Date.now() - started;
     input.log?.({
       level: 'error',

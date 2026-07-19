@@ -4,6 +4,7 @@ import type { JobQueuePort } from './types';
 import type { JobWorkerLogFn } from './job-worker-log';
 import type { JobHandlerRegistry } from './worker';
 import { runJobQueueOnce } from './worker';
+import type { MailAsyncPolicyPorts } from '../mail-access/async-policy-enforcer';
 
 export type PostgresJobQueueWorkerRuntime = Readonly<{
   stop(): Promise<void>;
@@ -18,6 +19,9 @@ export type PostgresJobQueueWorkerOptions = Readonly<{
   staleLockAgeMs?: number;
   now?: () => Date;
   log?: JobWorkerLogFn;
+  mailAccess?: MailAsyncPolicyPorts['mailAccess'];
+  mailResourceLookup?: MailAsyncPolicyPorts['mailResourceLookup'];
+  auth?: MailAsyncPolicyPorts['auth'];
 }>;
 
 const DEFAULT_POLL_INTERVAL_MS = 750;
@@ -62,6 +66,9 @@ export function startPostgresJobQueueWorker(
           workerId,
           now: now(),
           log,
+          mailAccess: options.mailAccess,
+          mailResourceLookup: options.mailResourceLookup,
+          auth: options.auth,
         });
         if (result.status === 'idle') {
           await sleep(pollIntervalMs);

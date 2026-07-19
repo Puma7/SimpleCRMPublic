@@ -43,6 +43,7 @@ export type JobQueuePort = Readonly<{
   claimNext(input: ClaimJobInput): Promise<QueuedJob | null>;
   complete(job: QueuedJob): Promise<boolean>;
   fail(input: FailJobInput): Promise<QueuedJob | null>;
+  failTerminal(input: FailJobInput): Promise<QueuedJob | null>;
   releaseStaleLocks(input: {
     staleBefore: Date;
     limit?: number;

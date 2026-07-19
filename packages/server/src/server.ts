@@ -382,6 +382,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         queue: createPostgresJobQueuePort({ db }),
         handlers: jobHandlers,
         log: createJobWorkerLogger(serverLogStore),
+        mailAccess: ports.mailAccess,
+        mailResourceLookup: ports.mailResourceLookup,
+        auth: ports.auth,
       });
     }
 
@@ -390,6 +393,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       databaseUrl,
       options: options.jobWorker,
       handlers: jobHandlers,
+      mailAccess: ports.mailAccess,
+      mailResourceLookup: ports.mailResourceLookup,
+      auth: ports.auth,
       createGraphileQueue: options.createGraphileQueue,
       createJobWorker: options.createJobWorker,
     });
@@ -727,6 +733,9 @@ async function startConfiguredJobWorker(input: {
   databaseUrl?: string;
   options?: Partial<ServerJobWorkerConfig>;
   handlers: JobHandlerRegistry;
+  mailAccess: ServerApiPorts['mailAccess'];
+  mailResourceLookup: ServerApiPorts['mailResourceLookup'];
+  auth: ServerApiPorts['auth'];
   createGraphileQueue?: (options: { connectionString: string; migrateOnStart?: boolean }) => Promise<GraphileQueuePort>;
   createJobWorker?: typeof startGraphileWorkerRuntime;
 }): Promise<GraphileWorkerRuntime | undefined> {
@@ -761,6 +770,9 @@ async function startConfiguredJobWorker(input: {
       mailAccountCount: config.mailAccountCount,
       aiConcurrency: config.aiConcurrency,
     },
+    mailAccess: input.mailAccess,
+    mailResourceLookup: input.mailResourceLookup,
+    auth: input.auth,
   });
 }
 
