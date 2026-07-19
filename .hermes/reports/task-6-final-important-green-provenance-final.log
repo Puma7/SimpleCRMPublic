@@ -1,0 +1,5 @@
+Test Suites: 1 passed, 1 total
+Tests:       6 passed, 6 total
+Snapshots:   0 total
+Time:        1.781 s
+Ran all test suites matching tests/unit/server-mail-job-provenance.test.ts.

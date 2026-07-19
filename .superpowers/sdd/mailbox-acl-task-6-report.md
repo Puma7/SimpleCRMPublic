@@ -185,3 +185,76 @@ WebSocket-Serialisierung minimiert.
   blockbasiert und soll bei neuen unmarkierten Queue-Produzenten rot werden; bei
   kuenftigen komplexeren Producer-Abstraktionen muss er zusammen mit der
   Abstraktion erweitert werden.
+
+## Finaler Important-Fix vom 2026-07-19
+
+### RED
+
+- `pnpm exec jest tests/unit/server-mail-job-provenance.test.ts --runInBand`
+  lief nach der ersten Testaenderung RED: der Inventartest scannte nun
+  repo-weit `packages/server/src/**/*.ts` und fand dadurch den bislang
+  ausgelassenen Producer
+  `packages/server/src/mail-compose-send.ts:workflow.execute`. Die erwartete
+  Fehlermeldung war:
+  `Expected pattern: /actorUserId|workflowJobProvenance|with[A-Za-z]+Provenance|buildTrustedServiceJobPayload/`
+  gegen den neu entdeckten `mail-compose-send.ts`-Enqueue-Block.
+- Vollstaendiger RED-Output:
+  `.hermes/reports/task-6-final-important-red.log`.
+
+### GREEN-Umsetzung
+
+- `tests/unit/server-mail-job-provenance.test.ts` ersetzt die harte
+  `producerFiles`-Liste durch einen rekursiven Scan von
+  `packages/server/src/**/*.ts`.
+- Die Inventur wertet konkrete Queue-Producer-Vorkommen aus:
+  `insertInto('job_queue')` und `jobQueue.enqueue({`.
+- Die Assertion prueft jetzt sowohl fehlende initiierende Policy-Typen als auch
+  jeden einzelnen entdeckten Producer-Block. Mehrere `workflow.execute`-Producer
+  koennen sich nicht mehr gegenseitig verdecken.
+- Die Erkennung vermeidet Consumer-/Handler-/Typ-False-Positives, weil sie nur
+  echte Queue-Schreibstellen mit konkretem Literal-Typ oder dem bekannten
+  `mail.sync.imap`/`mail.sync.pop3`-`jobType`-Producer betrachtet. Der generische
+  PostgreSQL-Queue-Port traegt keinen konkreten Producer-Typ und wird daher nicht
+  als fachlicher Producer gewertet.
+- Provenienz zaehlt nur bei `actorUserId`, zentralem
+  `buildTrustedServiceJobPayload` oder dem zentralen Trusted-Service-Markerfeld.
+  Helpernamen wie `workflowJobProvenance` oder `with...Provenance` werden bis in
+  den Funktionskoerper verfolgt, statt als blosse Strings zu genuegen.
+- Es wurde keine Runtime-Produktionslogik geaendert. Der repo-weite Scan fand
+  keinen echten unprovenanzierten Producer; daher kein BLOCKED.
+
+### GREEN-Verifikation
+
+- Fokussierter Provenienztest:
+  `pnpm exec jest tests/unit/server-mail-job-provenance.test.ts --runInBand`
+  -> PASS, 1 Suite, 6/6 Tests.
+  Output: `.hermes/reports/task-6-final-important-green-provenance-final.log`.
+- Task-6 Provenienz-Regressionen:
+  `pnpm exec jest tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-job-provenance.test.ts tests/unit/mail-inbound-workflow-enqueue.test.ts --runInBand`
+  -> PASS, 3 Suites, 17/17 Tests.
+  Output: `.hermes/reports/task-6-final-important-green-provenance-regressions-final.log`.
+- Task-6 Policy-Regressionen:
+  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-mail-policy-manifest.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  -> PASS, 3 Suites, 20/20 Tests.
+  Output: `.hermes/reports/task-6-final-important-green-policy-regressions-final.log`.
+- Diff-Check:
+  `git diff --check`
+  -> PASS, Exit 0.
+  Output: `.hermes/reports/task-6-final-important-diff-check.log`.
+
+### Geaenderte Dateien und Commit
+
+- `tests/unit/server-mail-job-provenance.test.ts`
+- `.superpowers/sdd/mailbox-acl-task-6-report.md`
+- `.hermes/reports/task-6-final-important-*.log`
+- `.hermes/reports/task-6-final-important-producer-inventory-evidence.md`
+- Commit: `test(server): cover all mail job producers`
+
+### Self-Review
+
+- Scope eingehalten: keine Task-7/8-Dateien und keine Runtime-Produktionslogik.
+- Die vorher ausgelassenen Real-Producer in `mail-compose-send.ts`,
+  `mail-read-receipt-responder.ts` und `dmarc-ingest.ts` sind durch den
+  repo-weiten Scan abgedeckt.
+- Die Inventur ist weiter absichtlich auf Queue-Produzenten begrenzt, damit
+  Handler-, Consumer- und Typ-Code keine kuenstlichen Treffer erzeugen.

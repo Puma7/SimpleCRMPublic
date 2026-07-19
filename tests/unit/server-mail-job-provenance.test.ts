@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 
 import {
   buildAiAgentJobPlan,
@@ -231,48 +231,111 @@ describe('server mail job provenance', () => {
     const initiatingTypes = new Set(SERVER_JOB_POLICIES
       .filter((entry) => entry.actorMode === 'initiating_user' || entry.actorMode === 'initiating_user_or_service')
       .map((entry) => entry.type));
-    const producerFiles = [
-      'packages/server/src/workflow-execution.ts',
-      'packages/server/src/ai-classification.ts',
-      'packages/server/src/workflow-http-request.ts',
-      'packages/server/src/workflow-forward-copy.ts',
-      'packages/server/src/mail-sync-post-process.ts',
-      'packages/server/src/mail-inbound-workflow-enqueue.ts',
-      'packages/server/src/api/mail-routes.ts',
-      'packages/server/src/api/workflow-routes.ts',
-      'packages/server/src/workflow-backfill.ts',
-      'packages/server/src/relay-submission.ts',
-    ];
-    const producers = producerFiles.flatMap((file) => extractQueueProducerBlocks(file)
+    const producers = findServerSourceFiles('packages/server/src').flatMap((file) => extractQueueProducerBlocks(file)
       .filter((producer) => initiatingTypes.has(producer.type)));
+    const seenTypes = new Set(producers.map((producer) => producer.type));
+    const missingInitiatingTypes = [...initiatingTypes]
+      .filter((type) => !seenTypes.has(type))
+      .sort();
+    const unprovenanced = producers
+      .filter((producer) => !producerHasInitiatingProvenance(producer))
+      .map((producer) => ({
+        file: producer.file,
+        line: producer.line,
+        type: producer.type,
+        block: producer.block,
+      }));
 
-    expect(new Set(producers.map((producer) => producer.type))).toEqual(initiatingTypes);
-    for (const producer of producers) {
-      expect(`${producer.file}:${producer.type}\n${producer.block}`)
-        .toMatch(/actorUserId|workflowJobProvenance|with[A-Za-z]+Provenance|buildTrustedServiceJobPayload/);
-    }
+    expect({ missingInitiatingTypes, unprovenanced }).toEqual({
+      missingInitiatingTypes: [],
+      unprovenanced: [],
+    });
   });
 });
 
-function extractQueueProducerBlocks(file: string): Array<{ file: string; type: string; block: string }> {
+function findServerSourceFiles(root: string): string[] {
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${root}/${entry.name}`;
+    if (entry.isDirectory()) return findServerSourceFiles(path);
+    return entry.isFile() && entry.name.endsWith('.ts') ? [path] : [];
+  });
+}
+
+type QueueProducerBlock = {
+  file: string;
+  line: number;
+  type: string;
+  block: string;
+};
+
+function extractQueueProducerBlocks(file: string): QueueProducerBlock[] {
   const source = readFileSync(file, 'utf8');
-  const producers: Array<{ file: string; type: string; block: string }> = [];
+  const producers: QueueProducerBlock[] = [];
   for (const needle of ["insertInto('job_queue')", 'jobQueue.enqueue({']) {
     let index = 0;
     while ((index = source.indexOf(needle, index)) !== -1) {
+      const line = source.slice(0, index).split('\n').length;
       const block = source.slice(Math.max(0, index - 2000), Math.min(source.length, index + 1200));
       const afterQueueCall = source.slice(index, Math.min(source.length, index + 1200));
       const literalType = afterQueueCall.match(/type:\s*'([^']+)'/)?.[1];
-      if (literalType) producers.push({ file, type: literalType, block });
+      if (literalType) producers.push({ file, line, type: literalType, block });
       if (afterQueueCall.match(/type:\s*jobType\b/)) {
         for (const type of block.matchAll(/'((?:mail\.sync\.imap|mail\.sync\.pop3))'/g)) {
-          producers.push({ file, type: type[1]!, block });
+          producers.push({ file, line, type: type[1]!, block });
         }
       }
       index += needle.length;
     }
   }
   return producers;
+}
+
+function producerHasInitiatingProvenance(producer: QueueProducerBlock): boolean {
+  const source = readFileSync(producer.file, 'utf8');
+  if (hasProvenanceEvidence(producer.block, source)) return true;
+
+  const payloadFunctionName = producer.block.match(/payload:\s*([A-Za-z0-9_]+)\(/)?.[1];
+  if (!payloadFunctionName) return false;
+
+  const functionBlock = extractFunctionBlock(source, payloadFunctionName);
+  return functionBlock !== undefined && hasProvenanceEvidence(functionBlock, source);
+}
+
+function hasProvenanceEvidence(block: string, source: string): boolean {
+  if (/actorUserId|buildTrustedServiceJobPayload|TRUSTED_SERVICE_JOB_MARKER_FIELD/.test(block)) return true;
+  for (const match of block.matchAll(/\b(workflowJobProvenance|with[A-Za-z]+Provenance)\s*\(/g)) {
+    const helperBlock = extractFunctionBlock(source, match[1]!);
+    if (helperBlock && /actorUserId|buildTrustedServiceJobPayload|TRUSTED_SERVICE_JOB_MARKER_FIELD/.test(helperBlock)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function extractFunctionBlock(source: string, functionName: string): string | undefined {
+  const start = source.search(new RegExp(`function\\s+${escapeRegExp(functionName)}\\s*\\(`));
+  if (start === -1) return undefined;
+  const openBrace = source.indexOf('{', start);
+  if (openBrace === -1) return undefined;
+  const closeBrace = findMatchingBrace(source, openBrace);
+  return closeBrace === -1 ? undefined : source.slice(openBrace, closeBrace + 1);
+}
+
+function findMatchingBrace(source: string, openBrace: number): number {
+  let depth = 0;
+  for (let index = openBrace; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function makePostSyncDb(messageIds: readonly number[]) {

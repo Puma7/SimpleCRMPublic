@@ -1,0 +1,6 @@
+
+Test Suites: 3 passed, 3 total
+Tests:       17 passed, 17 total
+Snapshots:   0 total
+Time:        2.079 s
+Ran all test suites matching tests/unit/server-mail-job-event-acl.test.ts|tests/unit/server-mail-job-provenance.test.ts|tests/unit/mail-inbound-workflow-enqueue.test.ts.
