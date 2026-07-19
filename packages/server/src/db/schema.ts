@@ -1,3 +1,4 @@
+import type { MailPermission } from '@simplecrm/core';
 import type { ColumnType, Generated, Selectable } from 'kysely';
 
 export type TimestampColumn = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -25,6 +26,8 @@ export type ServerDatabase = {
   user_groups: UserGroupsTable;
   user_group_members: UserGroupMembersTable;
   user_group_permissions: UserGroupPermissionsTable;
+  mail_acl_bindings: MailAclBindingsTable;
+  mail_acl_binding_permissions: MailAclBindingPermissionsTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
   customer_custom_fields: CustomerCustomFieldsTable;
@@ -416,6 +419,27 @@ export type UserGroupPermissionsTable = {
   group_id: number;
   permission: string;
   created_at: TimestampColumn;
+};
+
+export type MailAclBindingsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  subject_type: 'user' | 'group';
+  subject_id: string;
+  resource_type: 'account' | 'folder' | 'message';
+  account_id: number;
+  folder_id: number | null;
+  message_id: number | null;
+  created_by: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+  subject_user_id: ColumnType<string | null, never, never>;
+  subject_group_id: ColumnType<number | null, never, never>;
+};
+
+export type MailAclBindingPermissionsTable = {
+  binding_id: number;
+  permission_key: MailPermission;
 };
 
 export type DealProductsTable = {
