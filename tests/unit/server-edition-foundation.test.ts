@@ -362,6 +362,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0035_email_tracking_per_message',
   '0036_user_signatures',
   '0037_user_group_permissions',
+  '0038_mail_acl',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1898,6 +1899,7 @@ describe('server edition foundation', () => {
       'mail.send.scheduled',
       'ai.reply_suggestion',
       'ai.agent',
+      'ai.pick_canned',
       'ai.classify',
       'ai.review',
       'ai.transform_text',

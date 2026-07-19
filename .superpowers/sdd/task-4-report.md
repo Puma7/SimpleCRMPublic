@@ -144,3 +144,67 @@ noch fuer den Task vorgemerkt.
   dem Branch bereits vorhandene Migration `0038_mail_acl`; weder Migration noch
   Erwartungstest wurden durch diesen Fix veraendert.
 - Diff-Check: `git diff --check`: PASS, Exit 0, keine Ausgabe.
+
+## Zweiter fokussierter Review-Fix
+
+### RED-Evidenz
+
+- Nach Korrektur zweier reiner Testharness-Probleme lief
+  `pnpm exec jest tests/unit/server-mail-policy-manifest.test.ts --runInBand`
+  erwartungsgemaess RED: 3 fehlgeschlagen, 13 bestanden, 16 gesamt. Die drei
+  Fehler belegten die fehlende Abdeckung des echten Production-Handler-/Workflow-
+  Enqueue-Typs `ai.pick_canned`, seine fehlende konkrete Policy und die zu breite
+  `workspace_global`-Aufloesung der vier Spam-Events.
+- Das gezielte Branch-Gate lief mit
+  `pnpm exec jest tests/unit/server-edition-foundation.test.ts --runInBand --testNamePattern "job queue retry policy validates types and caps exponential delay"`
+  RED: 1 fehlgeschlagen, 401 uebersprungen, 402 gesamt. Die exakte Erwartung
+  enthielt `ai.pick_canned`, die kanonische Jobtypenliste noch nicht.
+
+### Korrekturen
+
+- `ai.pick_canned` ist jetzt kanonischer `SERVER_JOB_TYPES`-Eintrag und besitzt
+  eine enge Mail-Policy: `initiating_user_or_service`, `mail.content.read` und
+  `optional_message_lookup` auf `job.messageId` mit `non_mail` nur bei fehlender
+  Message-ID.
+- Der Manifest-Test vergleicht die kanonische Inventur zusaetzlich mit den Keys
+  des echten `createProductionJobHandlers({})`-Registers. Ein SWC-AST-Lauf liest
+  die realen `insertInto('job_queue').values({ type: ... })`-Literale aus
+  `workflow-execution.ts`; beide Quellen und die konkrete `ai.pick_canned`-Policy
+  sind regressionsgeschuetzt.
+- `spam_learning_event.created` sowie `spam_decision.created`, `.updated` und
+  `.deleted` verwenden jetzt die typisierte Ressource
+  `event_message_then_account_lookup`: zuerst `event_payload.messageId`, danach
+  `event_payload.accountId`, bei beiden fehlend `deny`. Es wurde keine
+  Elternhierarchie ergaenzt; Spam-List-Entry- und PGP-Events bleiben unveraendert.
+- Das Foundation-Gate erwartet jetzt ausschliesslich zusaetzlich die bereits
+  vorhandene Migration `0038_mail_acl` und den kanonischen Jobtyp
+  `ai.pick_canned`; andere Erwartungen wurden nicht gelockert.
+
+### Verifikation
+
+- Manifest: `pnpm exec jest tests/unit/server-mail-policy-manifest.test.ts --runInBand`:
+  PASS, 1 Suite, 16/16 Tests, 0 Snapshots.
+- Gezieltes Foundation-Jobtypen-Gate: PASS, 1/1 ausgefuehrter Test,
+  401 uebersprungen, 402 gesamt.
+- Production-Handler-/Workflow-Tests:
+  `pnpm exec jest tests/unit/postgres-job-queue-worker.test.ts tests/unit/workflow-execution-jsonb.test.ts tests/unit/email-workflow-graph-compile.test.ts tests/unit/workflow-ai-nodes.test.ts --runInBand`:
+  PASS, 4 Suites, 39/39 Tests, 0 Snapshots.
+- Vollstaendiges Foundation-Gate:
+  `pnpm exec jest tests/unit/server-edition-foundation.test.ts --runInBand`:
+  PASS, 1 Suite, 402/402 Tests, 0 Snapshots. Der bestehende, erwartete
+  `console.warn` fuer den getesteten Oversize-Mail-Skip blieb sichtbar.
+- ESLint:
+  `pnpm exec eslint packages/server/src/jobs/policy.ts packages/server/src/mail-access/policy-manifest.ts tests/unit/server-mail-policy-manifest.test.ts tests/unit/server-edition-foundation.test.ts --max-warnings 0`:
+  PASS, Exit 0, keine Ausgabe.
+- Server-Build: `pnpm --filter @simplecrm/server build`: PASS, Exit 0
+  (`tsc -p tsconfig.json`).
+- Root-Typecheck: `pnpm exec tsc -p tsconfig.json --noEmit`: PASS, Exit 0,
+  keine Ausgabe.
+- Diff-Check vor Report-Ergaenzung: `git diff --check`: PASS, Exit 0,
+  keine Ausgabe.
+
+### Restbedenken
+
+- Keine neuen fachlichen Bedenken fuer Task 4. Task 6 muss den neuen
+  Event-Discriminator gemaess seiner kodierten Reihenfolge aufloesen und `deny`
+  bei zwei fehlenden IDs durchsetzen.

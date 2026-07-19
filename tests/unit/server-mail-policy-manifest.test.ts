@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseSync } from '@swc/core';
 import {
   SERVER_EVENT_TYPES,
   SERVER_API_ROUTE_REGISTRATIONS,
@@ -34,6 +37,7 @@ import {
   assertServerJobPolicy,
   createServerJobPolicyIndex,
 } from '../../packages/server/src/jobs/policy';
+import { createProductionJobHandlers } from '../../packages/server/src/jobs/production-handlers';
 
 describe('server mail policy manifest', () => {
   test('classifies every canonical mail route exactly once', () => {
@@ -117,6 +121,31 @@ describe('server mail policy manifest', () => {
         expect(['non_mail', 'system_maintenance']).toContain(policy.classification);
       }
     }
+  });
+
+  test('covers production handlers and workflow job enqueue literals with canonical policies', () => {
+    const productionHandlerTypes = Object.keys(createProductionJobHandlers({}));
+    const workflowEnqueueTypes = workflowJobQueueTypes();
+    const executableTypes = [...new Set([...productionHandlerTypes, ...workflowEnqueueTypes])];
+
+    expect(productionHandlerTypes).toContain('ai.pick_canned');
+    expect(workflowEnqueueTypes).toContain('ai.pick_canned');
+    expect(SERVER_JOB_TYPES).toEqual(expect.arrayContaining(executableTypes));
+    expect(SERVER_JOB_POLICIES.map(({ type }) => type)).toEqual(expect.arrayContaining(executableTypes));
+  });
+
+  test('classifies ai.pick_canned as optional message content access', () => {
+    expect(assertServerJobPolicy('ai.pick_canned')).toEqual({
+      type: 'ai.pick_canned',
+      kind: 'mail',
+      actorMode: 'initiating_user_or_service',
+      permission: 'mail.content.read',
+      resource: {
+        kind: 'optional_message_lookup',
+        messageId: { source: 'job', field: 'messageId' },
+        whenAbsent: 'non_mail',
+      },
+    });
   });
 
   test('classifies every mail event type exactly once', () => {
@@ -272,10 +301,32 @@ describe('server mail policy manifest', () => {
     });
   });
 
-  test('classifies spam and PGP events as workspace-global mail metadata', () => {
-    const eventTypes = SERVER_EVENT_TYPES.filter((type) => (
-      type.startsWith('spam_') || type.startsWith('pgp_')
-    ));
+  test('resolves every spam event by message then account and denies missing resources', () => {
+    const eventTypes = [
+      'spam_learning_event.created',
+      'spam_decision.created',
+      'spam_decision.updated',
+      'spam_decision.deleted',
+    ] as const;
+    expect(SERVER_EVENT_TYPES.filter((type) => (
+      type.startsWith('spam_learning_event.') || type.startsWith('spam_decision.')
+    ))).toEqual(eventTypes);
+    for (const type of eventTypes) {
+      expect(assertMailEventPolicy(type)).toEqual({
+        type,
+        permission: 'mail.metadata.read',
+        resource: {
+          kind: 'event_message_then_account_lookup',
+          messageId: { source: 'event_payload', field: 'messageId' },
+          accountId: { source: 'event_payload', field: 'accountId' },
+          whenAbsent: 'deny',
+        },
+      });
+    }
+  });
+
+  test('keeps PGP events explicitly workspace-global', () => {
+    const eventTypes = SERVER_EVENT_TYPES.filter((type) => type.startsWith('pgp_'));
     expect(eventTypes).not.toHaveLength(0);
     for (const type of eventTypes) {
       expect(assertMailEventPolicy(type)).toEqual({
@@ -286,6 +337,72 @@ describe('server mail policy manifest', () => {
     }
   });
 });
+
+function workflowJobQueueTypes(): string[] {
+  const path = join(process.cwd(), 'packages', 'server', 'src', 'workflow-execution.ts');
+  const sourceFile = parseSync(readFileSync(path, 'utf8'), { syntax: 'typescript' });
+  const types: string[] = [];
+
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    if (!isRecord(node)) return;
+
+    const type = jobQueueTypeFromValuesCall(node);
+    if (type) types.push(type);
+    for (const child of Object.values(node)) {
+      visit(child);
+    }
+  };
+  visit(sourceFile);
+  return types;
+}
+
+function jobQueueTypeFromValuesCall(node: Readonly<Record<string, unknown>>): string | null {
+  if (node.type !== 'CallExpression') return null;
+  const valuesMember = recordValue(node.callee);
+  if (valuesMember?.type !== 'MemberExpression' || identifierValue(valuesMember.property) !== 'values') return null;
+  const insertCall = recordValue(valuesMember.object);
+  if (insertCall?.type !== 'CallExpression') return null;
+  const insertMember = recordValue(insertCall.callee);
+  if (insertMember?.type !== 'MemberExpression' || identifierValue(insertMember.property) !== 'insertInto') return null;
+  if (argumentStringValue(insertCall.arguments, 0) !== 'job_queue') return null;
+
+  const valuesObject = argumentExpression(node.arguments, 0);
+  if (valuesObject?.type !== 'ObjectExpression' || !Array.isArray(valuesObject.properties)) return null;
+  for (const property of valuesObject.properties) {
+    const candidate = recordValue(property);
+    if (candidate?.type !== 'KeyValueProperty' || identifierValue(candidate.key) !== 'type') continue;
+    const value = recordValue(candidate.value);
+    return value?.type === 'StringLiteral' && typeof value.value === 'string' ? value.value : null;
+  }
+  return null;
+}
+
+function argumentStringValue(value: unknown, index: number): string | null {
+  const expression = argumentExpression(value, index);
+  return expression?.type === 'StringLiteral' && typeof expression.value === 'string' ? expression.value : null;
+}
+
+function argumentExpression(value: unknown, index: number): Readonly<Record<string, unknown>> | null {
+  if (!Array.isArray(value)) return null;
+  return recordValue(recordValue(value[index])?.expression);
+}
+
+function identifierValue(value: unknown): string | null {
+  const identifier = recordValue(value);
+  return identifier?.type === 'Identifier' && typeof identifier.value === 'string' ? identifier.value : null;
+}
+
+function recordValue(value: unknown): Readonly<Record<string, unknown>> | null {
+  return isRecord(value) ? value : null;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null;
+}
 
 function isMailEventType(type: string): boolean {
   return type.startsWith('email_')

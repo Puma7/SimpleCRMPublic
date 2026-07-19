@@ -7,7 +7,7 @@ import type {
   ServerEventType,
 } from '../api/types';
 
-export type PolicyValueSource = 'path' | 'query' | 'body' | 'event' | 'job';
+export type PolicyValueSource = 'path' | 'query' | 'body' | 'event' | 'event_payload' | 'job';
 
 export type PolicyValueSelector = Readonly<{
   source: PolicyValueSource;
@@ -34,6 +34,12 @@ export type MailResourceResolution =
     messageId: PolicyValueSelector;
     accountId: PolicyValueSelector;
     whenAbsent: 'mail_scope';
+  }>
+  | Readonly<{
+    kind: 'event_message_then_account_lookup';
+    messageId: Readonly<{ source: 'event_payload'; field: 'messageId' }>;
+    accountId: Readonly<{ source: 'event_payload'; field: 'accountId' }>;
+    whenAbsent: 'deny';
   }>
   | Readonly<{ kind: 'attachment_lookup'; attachmentId: PolicyValueSelector }>
   | Readonly<{ kind: 'thread_lookup'; threadId: PolicyValueSelector }>
@@ -84,6 +90,12 @@ const pathValue = (field: string): PolicyValueSelector => ({ source: 'path', fie
 const bodyValue = (field: string): PolicyValueSelector => ({ source: 'body', field });
 const queryValue = (field: string): PolicyValueSelector => ({ source: 'query', field });
 const eventValue = (field: string): PolicyValueSelector => ({ source: 'event', field });
+const spamEventResource = (): MailResourceResolution => ({
+  kind: 'event_message_then_account_lookup',
+  messageId: { source: 'event_payload', field: 'messageId' },
+  accountId: { source: 'event_payload', field: 'accountId' },
+  whenAbsent: 'deny',
+});
 
 const mailScope = (): MailResourceResolution => ({ kind: 'mail_scope' });
 const accountPath = (): MailResourceResolution => ({ kind: 'account', accountId: pathValue('accountId') });
@@ -538,6 +550,9 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
 }
 
 function eventResourceResolution(type: ServerEventType): MailResourceResolution {
+  if (type.startsWith('spam_learning_event.') || type.startsWith('spam_decision.')) {
+    return spamEventResource();
+  }
   if (type.startsWith('spam_') || type.startsWith('pgp_')) {
     return { kind: 'workspace_global' };
   }

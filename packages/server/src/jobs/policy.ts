@@ -16,6 +16,7 @@ export const SERVER_JOB_TYPES = [
   'mail.send.scheduled',
   'ai.reply_suggestion',
   'ai.agent',
+  'ai.pick_canned',
   'ai.classify',
   'ai.review',
   'ai.transform_text',
@@ -109,6 +110,13 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
   },
   {
     type: 'ai.agent',
+    kind: 'mail',
+    actorMode: 'initiating_user_or_service',
+    permission: 'mail.content.read',
+    resource: optionalMessageJobResource(),
+  },
+  {
+    type: 'ai.pick_canned',
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
     permission: 'mail.content.read',
