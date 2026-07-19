@@ -16332,7 +16332,8 @@ describe('server edition foundation', () => {
     );
 
     expect(listSection).toContain('const priorityCursor =');
-    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)');
+    expect(listSection).toContain('isMessageCursorVisible(trx, input.workspaceId, requestedCursor, cursorScopePredicate)');
+    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor, cursorScopePredicate)');
     expect(listSection).toContain('query = applyMessageCursor(');
     expect(source).toContain("if (view === 'snoozed')");
     expect(source).toContain("if (sort === 'date_asc')");
@@ -16367,7 +16368,8 @@ describe('server edition foundation', () => {
     // normale Cursor greifen (sonst haengt die Liste dauerhaft auf Seite 1,
     // weil der Cursor ignoriert wird und nextCursor null bleibt).
     expect(listSection).toContain("const relevanceSort = input.sort === 'relevance' && Boolean(search);");
-    expect(listSection).toContain('const effectiveCursor = relevanceSort ? undefined : input.cursor;');
+    expect(listSection).toContain('const requestedCursor = relevanceSort ? undefined : input.cursor;');
+    expect(listSection).toContain('const effectiveCursor =');
   });
 
   test('postgres mail search matches metadata-only attachment names via attachments_json', () => {
@@ -28233,8 +28235,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidMergePayload.status).toBe(400);
-    expect((invalidMergePayload.body as any).error.code).toBe('invalid_email_thread_merge_payload');
+    expect(invalidMergePayload.status).toBe(404);
+    expect((invalidMergePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeMergePayload = await writableApi.handle({
       method: 'POST',
@@ -28247,13 +28249,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeMergePayload.status).toBe(400);
-    expect((unsafeMergePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'aliasThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'canonicalThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeMergePayload.status).toBe(404);
+    expect((unsafeMergePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidSplitPayload = await writableApi.handle({
       method: 'POST',

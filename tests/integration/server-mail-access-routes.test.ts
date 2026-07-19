@@ -503,6 +503,20 @@ describe('server mailbox ACL migration', () => {
     };
   }
 
+  function makeThreadAliasRecord(id = 9001): NonNullable<Awaited<ReturnType<NonNullable<ServerApiPorts['emailThreadAliases']>['get']>>> {
+    return {
+      id,
+      sourceSqliteId: id,
+      accountId: ACCOUNT_A,
+      aliasThreadId: 'alias-thread',
+      canonicalThreadId: THREAD_A,
+      confidence: 'high',
+      source: 'manual_merge',
+      createdAt: '2026-07-19T12:00:00.000Z',
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    };
+  }
+
   beforeAll(async () => {
     postgresDir = mkdtempSync(join(tmpdir(), 'simplecrm-mail-acl-'));
     postgresPort = await findAvailablePort();
@@ -1136,6 +1150,197 @@ describe('server mailbox ACL migration', () => {
     expect(observedScopes).toEqual(Array.from({ length: 6 }, () => ({ kind: 'none' })));
   });
 
+  test('denies non-GET mail-scope writes for restricted account, folder, and message grants', async () => {
+    const restrictedGrantCases: Array<readonly [
+      string,
+      import('../../packages/server/src/mail-access/types').MailAccessGrant,
+    ]> = [
+      ['account', { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }],
+      ['folder', { resourceType: 'folder', accountId: ACCOUNT_A, folderId: FOLDER_A, messageId: null }],
+      ['message', {
+        resourceType: 'message',
+        accountId: ACCOUNT_A,
+        folderId: FOLDER_A,
+        messageId: MESSAGE_A,
+      }],
+    ];
+
+    for (const [, grant] of restrictedGrantCases) {
+      const createCategory = jest.fn(async () => ({
+        ok: true as const,
+        category: {
+          id: 801,
+          sourceSqliteId: 801,
+          parentSourceSqliteId: null,
+          parentId: null,
+          name: 'ACL Test',
+          sortOrder: 0,
+          createdAt: null,
+          updatedAt: '2026-07-19T12:00:00.000Z',
+        },
+      }));
+      const api = createServerApi(makeHttpPorts({
+        grants: new Map([
+          ['mail.triage', [grant]],
+        ]),
+        overrides: {
+          emailCategories: {
+            list: async () => ({ items: [], nextCursor: null }),
+            get: async () => null,
+            create: createCategory,
+          },
+        },
+      }));
+
+      const response = await api.handle({
+        method: 'POST',
+        path: '/api/v1/email/categories',
+        principal: makePrincipal(),
+        body: { name: 'ACL Test' },
+      });
+
+      expect(response.status).toBe(404);
+      expect(createCategory).not.toHaveBeenCalled();
+    }
+
+    const ownerCreateCategory = jest.fn(async () => ({
+      ok: true as const,
+      category: {
+        id: 802,
+        sourceSqliteId: 802,
+        parentSourceSqliteId: null,
+        parentId: null,
+        name: 'Owner ACL Test',
+        sortOrder: 0,
+        createdAt: null,
+        updatedAt: '2026-07-19T12:00:00.000Z',
+      },
+    }));
+    const ownerApi = createServerApi(makeHttpPorts({
+      overrides: {
+        emailCategories: {
+          list: async () => ({ items: [], nextCursor: null }),
+          get: async () => null,
+          create: ownerCreateCategory,
+        },
+      },
+    }));
+    const ownerResponse = await ownerApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/categories',
+      principal: makePrincipal('owner'),
+      body: { name: 'Owner ACL Test' },
+    });
+
+    expect(ownerResponse.status).toBe(201);
+    expect(ownerCreateCategory).toHaveBeenCalledTimes(1);
+  });
+
+  test('authorizes thread merge by the target account and keeps restricted non-account grants denied', async () => {
+    const publicDenial = {
+      status: 404,
+      body: {
+        error: {
+          code: 'mail_resource_not_found',
+          message: 'Mail-Ressource nicht gefunden',
+        },
+      },
+    };
+    const mergeBody = {
+      accountId: ACCOUNT_A,
+      aliasThreadId: 'alias-thread',
+      canonicalThreadId: THREAD_A,
+    };
+    const folderMerge = jest.fn(async () => ({
+      ok: true as const,
+      alias: makeThreadAliasRecord(),
+      movedMessageCount: 2,
+      orphanThreadDeleted: false,
+    }));
+    const folderApi = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.triage', [{
+          resourceType: 'folder' as const,
+          accountId: ACCOUNT_A,
+          folderId: FOLDER_A,
+          messageId: null,
+        }]],
+      ]),
+      overrides: {
+        emailThreadAliases: {
+          list: async () => ({ items: [], nextCursor: null }),
+          get: async () => null,
+          merge: folderMerge,
+        },
+      },
+    }));
+    const folderResponse = await folderApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/threads/merge',
+      principal: makePrincipal(),
+      body: mergeBody,
+    });
+
+    const accountMerge = jest.fn(async () => ({
+      ok: true as const,
+      alias: makeThreadAliasRecord(9002),
+      movedMessageCount: 2,
+      orphanThreadDeleted: false,
+    }));
+    const accountApi = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.triage', [{
+          resourceType: 'account' as const,
+          accountId: ACCOUNT_A,
+          folderId: null,
+          messageId: null,
+        }]],
+      ]),
+      overrides: {
+        emailThreadAliases: {
+          list: async () => ({ items: [], nextCursor: null }),
+          get: async () => null,
+          merge: accountMerge,
+        },
+      },
+    }));
+    const accountResponse = await accountApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/threads/merge',
+      principal: makePrincipal(),
+      body: mergeBody,
+    });
+
+    const ownerMerge = jest.fn(async () => ({
+      ok: true as const,
+      alias: makeThreadAliasRecord(9003),
+      movedMessageCount: 2,
+      orphanThreadDeleted: false,
+    }));
+    const ownerApi = createServerApi(makeHttpPorts({
+      overrides: {
+        emailThreadAliases: {
+          list: async () => ({ items: [], nextCursor: null }),
+          get: async () => null,
+          merge: ownerMerge,
+        },
+      },
+    }));
+    const ownerResponse = await ownerApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/threads/merge',
+      principal: makePrincipal('owner'),
+      body: mergeBody,
+    });
+
+    expect(folderResponse).toEqual(publicDenial);
+    expect(folderMerge).not.toHaveBeenCalled();
+    expect(accountResponse.status).toBe(200);
+    expect(accountMerge).toHaveBeenCalledTimes(1);
+    expect(ownerResponse.status).toBe(200);
+    expect(ownerMerge).toHaveBeenCalledTimes(1);
+  });
+
   test('keeps owner/admin workspace binding and attachment/send-as permissions independent', async () => {
     const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
     const getAttachmentContent = jest.fn(async () => ({
@@ -1305,6 +1510,81 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('ignores hidden message cursors before normal, priority, and snoozed pagination', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      await client.query(`
+        UPDATE email_messages
+        SET date_received = CASE
+          WHEN id = ${MESSAGE_A} THEN '2026-07-19T10:00:00Z'::timestamptz
+          WHEN id = ${MESSAGE_A_SECOND} THEN '2026-07-19T12:00:00Z'::timestamptz
+          ELSE date_received
+        END,
+        snoozed_until = CASE
+          WHEN id = ${MESSAGE_A} THEN '2026-07-20T12:00:00Z'::timestamptz
+          WHEN id = ${MESSAGE_A_SECOND} THEN '2026-07-20T10:00:00Z'::timestamptz
+          ELSE snoozed_until
+        END
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND id IN (${MESSAGE_A}, ${MESSAGE_A_SECOND})
+      `);
+      await client.query(`
+        INSERT INTO email_message_tags (
+          id, workspace_id, source_sqlite_id, message_source_sqlite_id, message_id, tag
+        ) VALUES
+          (621, '${WORKSPACE_A}', 621, 31, ${MESSAGE_A}, 'priority:niedrig'),
+          (622, '${WORKSPACE_A}', 622, 32, ${MESSAGE_A_SECOND}, 'priority:hoch')
+        ON CONFLICT DO NOTHING
+      `);
+      const port = createPostgresEmailMessageReadPort({ db });
+      const folderScope = await resolveMetadataScope(db, USER_FOLDER);
+
+      const defaultPage = await port.list(withMailScope({
+        workspaceId: WORKSPACE_A,
+        cursor: MESSAGE_A_SECOND,
+        limit: 10,
+      }, folderScope));
+      const dateAscPage = await port.list(withMailScope({
+        workspaceId: WORKSPACE_A,
+        cursor: MESSAGE_A_SECOND,
+        sort: 'date_asc',
+        limit: 10,
+      }, folderScope));
+      const priorityPage = await port.list(withMailScope({
+        workspaceId: WORKSPACE_A,
+        cursor: MESSAGE_A_SECOND,
+        sort: 'priority',
+        limit: 10,
+      }, folderScope));
+      const snoozedPage = await port.list(withMailScope({
+        workspaceId: WORKSPACE_A,
+        cursor: MESSAGE_A_SECOND,
+        view: 'snoozed',
+        limit: 10,
+      }, folderScope));
+
+      expect(defaultPage.items.map((item) => item.id)).toEqual([MESSAGE_A]);
+      expect(dateAscPage.items.map((item) => item.id)).toEqual([MESSAGE_A]);
+      expect(priorityPage.items.map((item) => item.id)).toEqual([MESSAGE_A]);
+      expect(snoozedPage.items.map((item) => item.id)).toEqual([MESSAGE_A]);
+    } finally {
+      await client.query(`
+        UPDATE email_messages
+        SET date_received = NULL,
+            snoozed_until = NULL
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND id IN (${MESSAGE_A}, ${MESSAGE_A_SECOND})
+      `);
+      await client.query(`
+        DELETE FROM email_message_tags
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND id IN (621, 622)
+      `);
+      await db.destroy();
+    }
+  });
+
   test('scopes folder/category counts and folder metadata before aggregation and cursoring', async () => {
     await ensureScopedGrantFixtures();
     const db = createApplicationDb();
@@ -1347,6 +1627,77 @@ describe('server mailbox ACL migration', () => {
       expect(threads.items).toHaveLength(1);
       expect(threads.items[0]).toMatchObject({ id: THREAD_A, messageCount: 1, hasUnread: true });
     } finally {
+      await db.destroy();
+    }
+  });
+
+  test('applies thread view and account filters only to visible sibling messages', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      await client.query(`
+        INSERT INTO email_messages (
+          id, workspace_id, source_sqlite_id, account_source_sqlite_id,
+          folder_source_sqlite_id, account_id, folder_id, uid, subject, folder_kind, thread_id
+        ) VALUES
+          (123, '${WORKSPACE_A}', 33, 2, 12, ${ACCOUNT_A_OTHER}, ${FOLDER_A_OTHER}, 1, 'Hidden other account', 'inbox', 'thread-filter')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO email_threads (
+          id, workspace_id, ticket_code, account_source_sqlite_id, account_id,
+          root_message_source_sqlite_id, root_message_id, message_count, has_unread,
+          has_attachments, subject_normalized
+        ) VALUES
+          ('thread-filter', '${WORKSPACE_A}', 'T-F', 1, ${ACCOUNT_A}, 31, ${MESSAGE_A}, 2, true, false, 'filter')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        UPDATE email_messages
+        SET folder_kind = 'archive',
+            thread_id = 'thread-filter'
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND id = ${MESSAGE_A}
+      `);
+      const threadPort = createPostgresEmailThreadReadPort({ db });
+      const folderScope = await resolveMetadataScope(db, USER_FOLDER);
+      const inboxThreads = await threadPort.list(withMailScope({
+        workspaceId: WORKSPACE_A,
+        view: 'inbox',
+        limit: 10,
+      }, folderScope));
+      const otherAccountThreads = await threadPort.list(withMailScope({
+        workspaceId: WORKSPACE_A,
+        accountId: ACCOUNT_A_OTHER,
+        limit: 10,
+      }, folderScope));
+      const visibleAccountThreads = await threadPort.list(withMailScope({
+        workspaceId: WORKSPACE_A,
+        accountId: ACCOUNT_A,
+        limit: 10,
+      }, folderScope));
+
+      expect(inboxThreads.items).toEqual([]);
+      expect(otherAccountThreads.items).toEqual([]);
+      expect(visibleAccountThreads.items.map((item) => item.id)).toEqual(['thread-filter']);
+    } finally {
+      await client.query(`
+        UPDATE email_messages
+        SET folder_kind = 'inbox',
+            thread_id = '${THREAD_A}'
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND id = ${MESSAGE_A}
+      `);
+      await client.query(`
+        DELETE FROM email_messages
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND id = 123
+      `);
+      await client.query(`
+        DELETE FROM email_threads
+        WHERE workspace_id = '${WORKSPACE_A}'
+          AND id = 'thread-filter'
+      `);
       await db.destroy();
     }
   });

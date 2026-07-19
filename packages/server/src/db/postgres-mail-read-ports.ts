@@ -29,7 +29,7 @@ import {
   type SpamScoreBreakdown,
   type SenderFilterResult,
 } from '@simplecrm/core';
-import { sql as kyselySql, type Kysely, type Selectable, type Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
 import {
   addressIlikePattern,
@@ -691,22 +691,32 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           // Suche wirksam: ohne search gilt die Default-Sortierung samt
           // normalem Cursor, sonst bliebe eine normale Liste auf Seite 1
           // haengen (Cursor ignoriert + nextCursor null).
-          const relevanceSort = input.sort === 'relevance' && Boolean(search);
-          const effectiveCursor = relevanceSort ? undefined : input.cursor;
-          const priorityCursor =
-            effectiveCursor !== undefined && input.sort === 'priority'
-              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)
-              : undefined;
           const messageScopePredicate = mailScopePredicate(input.mailScope, {
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+          });
+          const cursorScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'cursor_message.account_id',
+            folderId: 'cursor_message.folder_id',
+            messageId: 'cursor_message.id',
           });
           const threadCountScopePredicate = mailScopePredicate(input.mailScope, {
             accountId: 'thread_count_message.account_id',
             folderId: 'thread_count_message.folder_id',
             messageId: 'thread_count_message.id',
           });
+          const relevanceSort = input.sort === 'relevance' && Boolean(search);
+          const requestedCursor = relevanceSort ? undefined : input.cursor;
+          const effectiveCursor =
+            requestedCursor !== undefined
+              && await isMessageCursorVisible(trx, input.workspaceId, requestedCursor, cursorScopePredicate)
+              ? requestedCursor
+              : undefined;
+          const priorityCursor =
+            effectiveCursor !== undefined && input.sort === 'priority'
+              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor, cursorScopePredicate)
+              : undefined;
 
           const buildQuery = (page: { limit: number; offset: number | undefined; withCursor?: boolean }) => {
             let query = trx
@@ -760,6 +770,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 effectiveCursor,
                 input.sort,
                 effectiveListView,
+                cursorScopePredicate,
                 priorityCursor,
               );
             }
@@ -2964,12 +2975,28 @@ type PriorityCursorAnchor = Readonly<{
   sortDate: Date | null;
 }>;
 
+async function isMessageCursorVisible(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  cursor: number,
+  cursorScopePredicate: RawBuilder<boolean> | undefined,
+): Promise<boolean> {
+  let query = trx
+    .selectFrom('email_messages as cursor_message')
+    .select('cursor_message.id')
+    .where('cursor_message.workspace_id', '=', workspaceId)
+    .where('cursor_message.id', '=', cursor);
+  if (cursorScopePredicate) query = query.where(cursorScopePredicate);
+  return Boolean(await query.executeTakeFirst());
+}
+
 async function fetchPriorityCursorAnchor(
   trx: WorkspaceTransaction,
   workspaceId: string,
   cursor: number,
+  cursorScopePredicate: RawBuilder<boolean> | undefined,
 ): Promise<PriorityCursorAnchor | null> {
-  const row = await trx
+  let query = trx
     .selectFrom('email_messages')
     .select([
       'id',
@@ -2977,8 +3004,17 @@ async function fetchPriorityCursorAnchor(
       messagePriorityRankSql.as('priority_rank'),
     ])
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', cursor)
-    .executeTakeFirst();
+    .where('id', '=', cursor);
+  if (cursorScopePredicate) {
+    query = query.where(kyselySql<boolean>`exists (
+      select 1
+      from email_messages cursor_message
+      where cursor_message.workspace_id = ${workspaceId}::uuid
+        and cursor_message.id = email_messages.id
+        and ${cursorScopePredicate}
+    )`);
+  }
+  const row = await query.executeTakeFirst();
   if (!row) return null;
   return {
     id: row.id,
@@ -2993,9 +3029,11 @@ function applyMessageCursor(
   cursor: number | undefined,
   sort: Parameters<EmailMessageApiPort['list']>[0]['sort'],
   view: Parameters<EmailMessageApiPort['list']>[0]['view'],
+  cursorScopePredicate: RawBuilder<boolean> | undefined,
   priorityCursor?: PriorityCursorAnchor | null,
 ): any {
   if (cursor === undefined) return query;
+  const scopedCursor = cursorScopePredicate ?? kyselySql<boolean>`true`;
   if (view === 'snoozed') {
     // Must stay aligned with applyMessageListOrder: snoozed_until ASC, id DESC tie-break.
     return query.where(kyselySql<boolean>`EXISTS (
@@ -3003,6 +3041,7 @@ function applyMessageCursor(
       FROM email_messages cursor_message
       WHERE cursor_message.workspace_id = ${workspaceId}::uuid
         AND cursor_message.id = ${cursor}
+        AND ${scopedCursor}
         AND (
           email_messages.snoozed_until > cursor_message.snoozed_until
           OR (
@@ -3018,6 +3057,7 @@ function applyMessageCursor(
       FROM email_messages cursor_message
       WHERE cursor_message.workspace_id = ${workspaceId}::uuid
         AND cursor_message.id = ${cursor}
+        AND ${scopedCursor}
         AND (
           (${cursorMessageSortDateSql} IS NOT NULL AND ${messageSortDateSql} IS NULL)
           OR (
@@ -3071,6 +3111,7 @@ function applyMessageCursor(
     FROM email_messages cursor_message
     WHERE cursor_message.workspace_id = ${workspaceId}::uuid
       AND cursor_message.id = ${cursor}
+      AND ${scopedCursor}
       AND (
         (${cursorMessageSortDateSql} IS NULL AND ${messageSortDateSql} IS NOT NULL)
         OR (

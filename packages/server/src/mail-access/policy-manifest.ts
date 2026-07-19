@@ -439,7 +439,7 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
   assign('/api/v1/email/threads', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
   assign('/api/v1/email/threads/:id', { GET: permissionPolicy('mail.metadata.read', threadPath('id')) });
   assign('/api/v1/email/threads/split-message', { POST: permissionPolicy('mail.triage', messageBody()) });
-  assign('/api/v1/email/threads/merge', { POST: permissionPolicy('mail.triage', mailScope()) });
+  assign('/api/v1/email/threads/merge', { POST: permissionPolicy('mail.triage', accountBody()) });
   assign('/api/v1/email/thread-alias-warnings', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
 }
 

@@ -548,7 +548,12 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
           if (input.hasUnread !== undefined) query = query.where('has_unread', '=', input.hasUnread);
           if (input.hasAttachments !== undefined) query = query.where('has_attachments', '=', input.hasAttachments);
           if (input.accountId !== undefined || input.view !== undefined) {
-            query = query.where(threadMessageExistsPredicate(input.workspaceId, input.accountId, input.view));
+            query = query.where(threadMessageExistsPredicate(
+              input.workspaceId,
+              input.accountId,
+              input.view,
+              input.mailScope,
+            ));
           }
           const search = input.search?.trim();
           if (search) {
@@ -686,16 +691,23 @@ function threadMessageExistsPredicate(
   workspaceId: string,
   accountId: number | undefined,
   view: Parameters<EmailThreadApiPort['list']>[0]['view'],
+  mailScope: MailSqlScope | undefined,
 ): RawBuilder<boolean> {
   const accountPredicate = accountId === undefined
     ? kyselySql<boolean>`true`
     : kyselySql<boolean>`m.account_id = ${accountId}`;
+  const scopePredicate = mailScopePredicate(mailScope, {
+    accountId: 'm.account_id',
+    folderId: 'm.folder_id',
+    messageId: 'm.id',
+  }) ?? kyselySql<boolean>`true`;
   return kyselySql<boolean>`exists (
     select 1
     from email_messages m
     where m.workspace_id = ${workspaceId}::uuid
       and m.thread_id = email_threads.id
       and ${accountPredicate}
+      and ${scopePredicate}
       and ${threadMessageViewPredicate(view)}
   )`;
 }

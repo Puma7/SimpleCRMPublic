@@ -55,6 +55,23 @@ Task-6/7/8-Code wurden nicht geaendert.
   Message. Eine zweite verweigerte Message verhindert den Handler vollstaendig;
   doppelte IDs werden vor den Assertions dedupliziert.
 
+### Review-Fix RED/GREEN vom 2026-07-19
+
+- RED fuer die drei validierten Reviewbefunde:
+  `pnpm exec jest tests/integration/server-mail-access-routes.test.ts --runInBand`:
+  FAIL, 4 fehlgeschlagen, 18 bestanden, 22 gesamt. Die Fehler belegten:
+  restricted Account-/Folder-/Message-Grants konnten non-GET `mail_scope`-Writes
+  (`POST /api/v1/email/categories`) ausfuehren; `POST /api/v1/email/threads/merge`
+  wurde mit Folder-Grant autorisiert; hidden Message-Cursor beeinflussten
+  normale, Priority- und Snoozed-Pagination; Thread-View-/Account-Filter wurden
+  durch hidden Siblings erfuellt.
+- GREEN nach minimalem Fix:
+  `pnpm exec jest tests/integration/server-mail-access-routes.test.ts --runInBand`:
+  PASS, 1 Suite, 22/22 Tests.
+- Manifest-/Service-Regression:
+  `pnpm exec jest tests/unit/server-mail-policy-manifest.test.ts tests/unit/server-mail-access-service.test.ts --runInBand`:
+  PASS, 2 Suites, 43/43 Tests.
+
 ## HTTP-Durchsetzung
 
 - Der kanonische Mail-Dispatcher matched Methode plus Runtime-Pattern und ruft
@@ -80,6 +97,14 @@ Task-6/7/8-Code wurden nicht geaendert.
 - `resolveScope()` wird pro Scope-Request/Permission memoisiert und maximal einmal
   ausgefuehrt. Restricted/none werden ueber request-lokal geklonte Ports an die
   SQL-Reader gegeben; `{kind:'all'}` laesst die bestehenden Portaufrufe unveraendert.
+- Non-GET `mail_scope` ist jetzt zentral fail-closed fuer `none` und `restricted`;
+  nur `{kind:'all'}` erreicht diese workspace-/globalen Schreibhandler. Das
+  Manifest enthaelt danach noch 38 non-GET `mail_scope`-Routen, alle unter dieser
+  zentralen All-Scope-Regel.
+- `POST /api/v1/email/threads/merge` ist aus `mail_scope` herausgenommen und
+  autorisiert `mail.triage` gegen das echte `accountId` aus dem Body. Folder- und
+  Message-only-Grants bleiben verweigert; Account-Grant und Owner/Admin bleiben
+  erlaubt.
 - `event_message_then_account_lookup` wird im HTTP-Enforcer immer verweigert.
   Bulk-Ziele werden komplett aufgeloest und autorisiert, bevor ein Handler laeuft.
 - Attachment- und Content-Rechte sowie Send und Send-as werden separat geprueft.
@@ -95,12 +120,18 @@ Task-6/7/8-Code wurden nicht geaendert.
 - Message-Liste: Scope nach Workspace und vor Limit/Offset; gilt fuer Regex,
   FTS/ILIKE, Cursor, Account/Folder/View und Retry-Query. Der korrelierte
   `thread_message_count` zaehlt nur sichtbare Messages.
+- Cursor-Anker fuer normale Date-Order, `date_asc`, `priority` und `snoozed`
+  werden vor der Keyset-Ableitung mit demselben `mailScopePredicate` wie die
+  Hauptquery geprueft; hidden Cursor verhalten sich wie ein nicht gesetzter Cursor.
 - Folder-/Category-Counts: Scope steht in der Message-Query vor `sum`, `count` und
   `group by`. Folder-Metadata wird vor Cursor/Limit auf Account-/Folder-Grants
   beschraenkt; ein Message-only-Grant exponiert keinen Parent-Folder.
 - Conversation und Thread-Message-Liste filtern vor Limit/Offset. Thread-Listen
   verlangen mindestens eine sichtbare Message und berechnen Count, Unread und
   Attachment-Aggregate nur aus sichtbaren Messages.
+- Thread-Listen wenden denselben Message-Scope auch im sekundaren
+  View-/Account-`EXISTS` an; hidden Siblings koennen eine sichtbare Thread-Zeile
+  nicht mehr in `view=inbox` oder fremde Account-Filter ziehen.
 - Reporting scoped Accounts, Totals, Per-Account und Workflow-Runs vor Aggregation
   beziehungsweise Limit. Accounts werden bei Folder-/Message-Ausnahmen nur ueber
   eine tatsaechlich sichtbare Message aufgenommen.
@@ -127,10 +158,15 @@ Task-6/7/8-Code wurden nicht geaendert.
 - Positive Vererbung: Account-Grant auf Messages; Folder-only nur eigener Folder;
   Message-only ohne Geschwister/Parent-Folder; eigener Owner/Admin erlaubt,
   fremder Workspace verweigert.
+- Review-Fix-Regressionen: restricted Account-/Folder-/Message-Grants duerfen
+  keine non-GET `mail_scope`-Writes ausfuehren; Thread-Merge verlangt Account-
+  bzw. All-Scope; hidden Cursor und hidden Thread-Siblings beeinflussen keine
+  scoped Message-/Thread-Listen.
 
 ## Verifikation
 
-- Fokussierter Task-5-Test: PASS, 1 Suite, 18/18 Tests.
+- Fokussierter Task-5-Test: PASS, 1 Suite, 22/22 Tests.
+- Manifest/Access-Service: PASS, 2 Suites, 43/43 Tests.
 - Vollstaendiges `server-edition-foundation`: PASS, 2 Suites, 427/427 Tests.
 - ESLint: `pnpm run lint`: PASS, Exit 0, keine Warnungen.
 - Server-Build: `pnpm --filter @simplecrm/server build`: PASS, Exit 0.

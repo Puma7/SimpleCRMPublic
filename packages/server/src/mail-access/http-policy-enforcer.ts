@@ -113,6 +113,9 @@ export async function enforceMailHttpPolicy(
       ) {
         return denied();
       }
+      if (req.method !== 'GET' && scope.kind !== 'all') {
+        return denied();
+      }
       return { ok: true, context: { permission: entry.policy.permission, scope } };
     }
 

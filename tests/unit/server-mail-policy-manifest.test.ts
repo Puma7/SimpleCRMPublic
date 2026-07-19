@@ -278,6 +278,7 @@ describe('server mail policy manifest', () => {
       ['GET', '/api/v1/email/accounts/9', 'mail.metadata.read', account('path')],
       ['PATCH', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
       ['DELETE', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
+      ['POST', '/api/v1/email/threads/merge', 'mail.triage', account('body')],
     ] as const;
 
     for (const [method, path, permission, resource] of matrix) {
