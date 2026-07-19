@@ -17,6 +17,7 @@ jest.setTimeout(120_000);
 
 type DatabaseQueryResult<Row extends Record<string, unknown>> = Readonly<{
   rows: readonly Row[];
+  rowCount?: number | null;
 }>;
 
 type DatabaseClient = Readonly<{
@@ -53,11 +54,15 @@ const ACCOUNT_A_OTHER = 102;
 const ACCOUNT_B = 201;
 const FOLDER_A = 111;
 const FOLDER_A_OTHER = 112;
+const FOLDER_A_SECOND = 113;
 const FOLDER_B = 211;
 const MESSAGE_A = 121;
+const MESSAGE_A_SECOND = 122;
 const MESSAGE_B = 221;
 const GROUP_A = 301;
 const GROUP_B = 401;
+const MIGRATION_ROLE = 'simplecrm_mail_acl_migrator';
+const MIGRATION_ROLE_PASSWORD = 'mail-acl-migrator-password';
 const MIGRATION_0038_PERMISSION_KEYS = [
   'mail.metadata.read',
   'mail.content.read',
@@ -152,6 +157,7 @@ process.stdin.resume();
 }
 
 describe('server mailbox ACL migration', () => {
+  let adminClient: DatabaseClient;
   let client: DatabaseClient;
   let postgresProcess: ChildProcessWithoutNullStreams;
   let postgresDir: string;
@@ -159,6 +165,17 @@ describe('server mailbox ACL migration', () => {
 
   async function applyStatements(statements: readonly string[]): Promise<void> {
     for (const statement of statements) await client.query(statement);
+  }
+
+  async function applyStatementsInTransaction(statements: readonly string[]): Promise<void> {
+    await client.query('BEGIN');
+    try {
+      await applyStatements(statements);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
   }
 
   async function seedLegacyMailAccess(): Promise<void> {
@@ -194,6 +211,7 @@ describe('server mailbox ACL migration', () => {
       ) VALUES
         (${FOLDER_A}, '${WORKSPACE_A}', 11, 1, ${ACCOUNT_A}, 'INBOX'),
         (${FOLDER_A_OTHER}, '${WORKSPACE_A}', 12, 2, ${ACCOUNT_A_OTHER}, 'INBOX'),
+        (${FOLDER_A_SECOND}, '${WORKSPACE_A}', 13, 1, ${ACCOUNT_A}, 'Archive'),
         (${FOLDER_B}, '${WORKSPACE_B}', 21, 1, ${ACCOUNT_B}, 'INBOX')
     `);
     await client.query(`
@@ -202,6 +220,7 @@ describe('server mailbox ACL migration', () => {
         folder_source_sqlite_id, account_id, folder_id, uid
       ) VALUES
         (${MESSAGE_A}, '${WORKSPACE_A}', 31, 1, 11, ${ACCOUNT_A}, ${FOLDER_A}, 1),
+        (${MESSAGE_A_SECOND}, '${WORKSPACE_A}', 32, 1, 13, ${ACCOUNT_A}, ${FOLDER_A_SECOND}, 1),
         (${MESSAGE_B}, '${WORKSPACE_B}', 41, 1, 21, ${ACCOUNT_B}, ${FOLDER_B}, 1)
     `);
     await client.query(`
@@ -220,20 +239,35 @@ describe('server mailbox ACL migration', () => {
     const { Client } = requireFromServer('pg') as {
       Client: new (options: Record<string, unknown>) => DatabaseClient;
     };
-    client = new Client({
+    adminClient = new Client({
       host: '127.0.0.1',
       port,
       user: 'postgres',
       password: 'mail-acl-test-password',
       database: 'postgres',
     });
+    await adminClient.connect();
+    await adminClient.query(`
+      CREATE ROLE ${MIGRATION_ROLE}
+      LOGIN PASSWORD '${MIGRATION_ROLE_PASSWORD}'
+      NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS
+    `);
+    await adminClient.query(`GRANT CREATE ON DATABASE postgres TO ${MIGRATION_ROLE}`);
+    await adminClient.query(`GRANT CREATE ON SCHEMA public TO ${MIGRATION_ROLE}`);
+    client = new Client({
+      host: '127.0.0.1',
+      port,
+      user: MIGRATION_ROLE,
+      password: MIGRATION_ROLE_PASSWORD,
+      database: 'postgres',
+    });
     await client.connect();
     for (const migration of serverMigrations.filter((candidate) => candidate.id < '0038_mail_acl')) {
       await applyStatements(migration.upSql);
     }
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     await seedLegacyMailAccess();
-    const mailAclMigration = serverMigrations.find((candidate) => candidate.id === '0038_mail_acl');
-    if (mailAclMigration) await applyStatements(mailAclMigration.upSql);
+    await client.query('RESET app.role; RESET app.cross_workspace_access');
   });
 
   afterAll(async () => {
@@ -242,6 +276,7 @@ describe('server mailbox ACL migration', () => {
       if (mailAclMigration && !migrationDownApplied) await applyStatements(mailAclMigration.downSql);
       await client.end();
     }
+    if (adminClient) await adminClient.end();
     if (postgresProcess) {
       postgresProcess.stdin.write('stop\n');
       await new Promise<void>((resolve) => postgresProcess.once('exit', () => resolve()));
@@ -249,9 +284,68 @@ describe('server mailbox ACL migration', () => {
     if (postgresDir) rmSync(postgresDir, { recursive: true, force: true });
   });
 
-  test('registers the migration and creates ACL tables with required indexes and RLS', async () => {
+  test('runs the backfill in one non-superuser transaction with transaction-local RLS context', async () => {
     const migrationIds = serverMigrations.map((migration) => migration.id);
     const mailAclMigrationIndex = migrationIds.indexOf('0038_mail_acl');
+    const mailAclMigration = serverMigrations[mailAclMigrationIndex];
+    const systemContextIndex = mailAclMigration?.upSql.findIndex((statement) => (
+      statement.includes("set_config('app.role', 'system', true)")
+      && statement.includes("set_config('app.cross_workspace_access', 'on', true)")
+    )) ?? -1;
+    const legacyBackfillIndex = mailAclMigration?.upSql.findIndex((statement) => (
+      statement.includes('INSERT INTO mail_acl_bindings')
+    )) ?? -1;
+    const migrationRole = await client.query<{
+      role_name: string;
+      is_superuser: boolean;
+      bypasses_rls: boolean;
+    }>(`
+      SELECT current_user AS role_name, rolsuper AS is_superuser, rolbypassrls AS bypasses_rls
+      FROM pg_roles
+      WHERE rolname = current_user
+    `);
+
+    expect(mailAclMigration).toBeDefined();
+    expect(systemContextIndex).toBeGreaterThan(-1);
+    expect(legacyBackfillIndex).toBeGreaterThan(systemContextIndex);
+    expect(migrationRole.rows).toEqual([{
+      role_name: MIGRATION_ROLE,
+      is_superuser: false,
+      bypasses_rls: false,
+    }]);
+
+    await client.query('BEGIN');
+    try {
+      await applyStatements(mailAclMigration!.upSql.slice(0, systemContextIndex));
+      await client.query('SAVEPOINT without_system_context');
+      await expect(client.query(`
+        INSERT INTO mail_acl_bindings (workspace_id, subject_type, subject_id, resource_type, account_id)
+        VALUES ('${WORKSPACE_A}', 'group', '${GROUP_A}', 'account', ${ACCOUNT_A})
+      `)).rejects.toMatchObject({ code: '42501' });
+      await client.query('ROLLBACK TO SAVEPOINT without_system_context');
+      await client.query('RELEASE SAVEPOINT without_system_context');
+      const blockedBackfill = await client.query(mailAclMigration!.upSql[legacyBackfillIndex]!);
+      expect(blockedBackfill.rowCount).toBe(0);
+      await applyStatements(mailAclMigration!.upSql.slice(systemContextIndex));
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    }
+
+    const localContextAfterCommit = await client.query<{ role: string | null; cross_workspace_access: string | null }>(`
+      SELECT
+        current_setting('app.role', true) AS role,
+        current_setting('app.cross_workspace_access', true) AS cross_workspace_access
+    `);
+    expect(localContextAfterCommit.rows[0]?.role).not.toBe('system');
+    expect(localContextAfterCommit.rows[0]?.cross_workspace_access).not.toBe('on');
+    await expect(client.query(`
+      INSERT INTO mail_acl_bindings (workspace_id, subject_type, subject_id, resource_type, account_id)
+      VALUES ('${WORKSPACE_A}', 'group', '${GROUP_A}', 'account', ${ACCOUNT_A})
+    `)).rejects.toMatchObject({ code: '42501' });
+
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     const bindings = await client.query<{ count: string }>('SELECT count(*) FROM mail_acl_bindings');
     const permissions = await client.query<{ count: string }>('SELECT count(*) FROM mail_acl_binding_permissions');
     const indexes = await client.query<{ indexname: string }>(`
@@ -265,8 +359,17 @@ describe('server mailbox ACL migration', () => {
       WHERE relname IN ('mail_acl_bindings', 'mail_acl_binding_permissions')
       ORDER BY relname
     `);
-    const policies = await client.query<{ tablename: string; policyname: string }>(`
-      SELECT tablename, policyname
+    const policies = await client.query<{
+      tablename: string;
+      policyname: string;
+      using_expression: string;
+      with_check_expression: string;
+    }>(`
+      SELECT
+        tablename,
+        policyname,
+        qual AS using_expression,
+        with_check AS with_check_expression
       FROM pg_policies
       WHERE schemaname = 'public'
         AND tablename IN ('mail_acl_bindings', 'mail_acl_binding_permissions')
@@ -281,20 +384,9 @@ describe('server mailbox ACL migration', () => {
       permissionConstraint.rows[0]?.definition.matchAll(/'([^']+)'::text/g) ?? [],
       (match) => match[1],
     );
-    const mailAclMigration = serverMigrations[mailAclMigrationIndex];
-    const systemContextIndex = mailAclMigration?.upSql.findIndex((statement) => (
-      statement.includes("set_config('app.role', 'system', true)")
-      && statement.includes("set_config('app.cross_workspace_access', 'on', true)")
-    ));
-    const legacyBackfillIndex = mailAclMigration?.upSql.findIndex((statement) => (
-      statement.includes('INSERT INTO mail_acl_bindings')
-    ));
-
     expect(migrationIds.filter((id) => id === '0038_mail_acl')).toHaveLength(1);
     expect(mailAclMigrationIndex).toBeGreaterThan(0);
     expect(migrationIds[mailAclMigrationIndex - 1]).toBe('0037_user_group_permissions');
-    expect(systemContextIndex).toBeGreaterThan(-1);
-    expect(systemContextIndex).toBeLessThan(legacyBackfillIndex ?? -1);
     expect(Number(bindings.rows[0]?.count)).toBe(3);
     expect(Number(permissions.rows[0]?.count)).toBe(12);
     expect(indexes.rows.map((row) => row.indexname)).toEqual(expect.arrayContaining([
@@ -308,13 +400,23 @@ describe('server mailbox ACL migration', () => {
       { relname: 'mail_acl_binding_permissions', relrowsecurity: true, relforcerowsecurity: true },
       { relname: 'mail_acl_bindings', relrowsecurity: true, relforcerowsecurity: true },
     ]);
-    expect(policies.rows).toEqual([
+    expect(policies.rows.map(({ tablename, policyname }) => ({ tablename, policyname }))).toEqual([
       {
         tablename: 'mail_acl_binding_permissions',
         policyname: 'mail_acl_binding_permissions_workspace_isolation',
       },
       { tablename: 'mail_acl_bindings', policyname: 'mail_acl_bindings_workspace_isolation' },
     ]);
+    const bindingsPolicy = policies.rows.find((policy) => policy.tablename === 'mail_acl_bindings');
+    const permissionsPolicy = policies.rows.find((policy) => policy.tablename === 'mail_acl_binding_permissions');
+    for (const expression of [bindingsPolicy?.using_expression, bindingsPolicy?.with_check_expression]) {
+      expect(expression).toContain('app.can_access_workspace(workspace_id)');
+    }
+    for (const expression of [permissionsPolicy?.using_expression, permissionsPolicy?.with_check_expression]) {
+      expect(expression).toContain('mail_acl_bindings');
+      expect(expression).toContain('binding.id = mail_acl_binding_permissions.binding_id');
+      expect(expression).toContain('app.can_access_workspace(binding.workspace_id)');
+    }
     expect(checkedPermissionKeys).toEqual(MIGRATION_0038_PERMISSION_KEYS);
     expect(schemaTypeAssertions).toEqual([true, true, true]);
   });
@@ -332,7 +434,7 @@ describe('server mailbox ACL migration', () => {
     `);
     const mailAclMigration = serverMigrations.find((candidate) => candidate.id === '0038_mail_acl');
     expect(mailAclMigration).toBeDefined();
-    await applyStatements(mailAclMigration!.upSql);
+    await applyStatementsInTransaction(mailAclMigration!.upSql);
     const permissionsAfter = await client.query<{
       subject_id: string;
       created_by: string | null;
@@ -445,7 +547,7 @@ describe('server mailbox ACL migration', () => {
       INSERT INTO mail_acl_bindings (
         workspace_id, subject_type, subject_id, resource_type, account_id, folder_id, message_id
       ) VALUES (
-        '${WORKSPACE_A}', 'user', '${USER_READ}', 'message', ${ACCOUNT_A}, ${FOLDER_A_OTHER}, ${MESSAGE_A}
+        '${WORKSPACE_A}', 'user', '${USER_READ}', 'message', ${ACCOUNT_A}, ${FOLDER_A_SECOND}, ${MESSAGE_A}
       )
     `)).rejects.toMatchObject({ code: '23503' });
   });
@@ -512,11 +614,23 @@ describe('server mailbox ACL migration', () => {
         to_regclass('public.user_account_access')::text AS legacy,
         (SELECT count(*)::text FROM user_account_access) AS legacy_count
     `);
+    const helperIndexes = await client.query<{ index_name: string; relation: string | null }>(`
+      SELECT index_name, to_regclass('public.' || index_name)::text AS relation
+      FROM (VALUES
+        ('users_workspace_id_unique_idx'),
+        ('user_groups_workspace_id_unique_idx'),
+        ('email_accounts_workspace_id_unique_idx'),
+        ('email_folders_workspace_account_id_unique_idx'),
+        ('email_messages_workspace_account_folder_id_unique_idx')
+      ) AS helper_indexes(index_name)
+      ORDER BY index_name
+    `);
     expect(relations.rows[0]).toEqual({
       bindings: null,
       permissions: null,
       legacy: 'user_account_access',
       legacy_count: '3',
     });
+    expect(helperIndexes.rows.every((index) => index.relation === null)).toBe(true);
   });
 });
