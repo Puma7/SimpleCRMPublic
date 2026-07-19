@@ -105,6 +105,8 @@ src/.DS_Store
 !docs/SPIKE_JTL_CONTEXT_INJECTION.md
 !docs/superpowers/specs/
 !docs/superpowers/specs/**/*.md
+!docs/superpowers/plans/
+!docs/superpowers/plans/**/*.md
 !AGENTS.md
 
 coverage/
