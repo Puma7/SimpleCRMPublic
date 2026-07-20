@@ -16,7 +16,9 @@ import {
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
 } from './db/workspace-context';
-import { mailScopePredicate } from './mail-access/sql-scope';
+import { isPotentiallyDangerousAttachment } from '@simplecrm/core';
+
+import { effectiveMailScope, mailScopePredicate } from './mail-access/sql-scope';
 import type { MailSqlScope } from './mail-access/types';
 
 const MESSAGE_BATCH = 2000;
@@ -43,7 +45,7 @@ type AttachmentExportEntry = {
   sizeBytes: number;
   contentSha256: string | null;
   resolvedPath: string | null;
-  status: 'ok' | 'missing' | 'unsafe_path';
+  status: 'ok' | 'missing' | 'unsafe_path' | 'blocked_suspicious';
 };
 
 type PostgresEmailGdprExportPortOptions = Readonly<{
@@ -140,9 +142,15 @@ async function prepareAttachments(
         .orderBy('id', 'asc')
         .execute();
 
+      // A scoped export (mailScope defined ⇒ a restricted delegate; owner/admin
+      // bypass the scoped port and get mailScope undefined) must not deliver
+      // executable/script attachment bytes, which the dedicated download and
+      // raw-EML paths gate behind mail.attachment.suspicious_download. Record such
+      // files in the manifest as blocked without writing their bytes; the delegate
+      // can still fetch a specific one through the gated attachment route.
+      const gateSuspicious = mailScope !== undefined;
       const entries: AttachmentExportEntry[] = [];
       for (const row of rows) {
-        const resolvedPath = resolveAttachmentStoragePath(options.attachmentsRoot, row.storage_path);
         const base = {
           id: Number(row.id),
           filename: row.filename_display,
@@ -150,6 +158,11 @@ async function prepareAttachments(
           sizeBytes: Number(row.size_bytes) || 0,
           contentSha256: row.content_sha256,
         };
+        if (gateSuspicious && isPotentiallyDangerousAttachment(row.filename_display)) {
+          entries.push({ ...base, resolvedPath: null, status: 'blocked_suspicious' });
+          continue;
+        }
+        const resolvedPath = resolveAttachmentStoragePath(options.attachmentsRoot, row.storage_path);
         if (!resolvedPath) {
           entries.push({ ...base, resolvedPath: null, status: 'unsafe_path' });
           continue;
@@ -280,7 +293,33 @@ async function appendAccounts(
   const rows = await query
     .orderBy('id', 'asc')
     .execute();
-  archive.append(JSON.stringify(rows, null, 2), { name: 'accounts_redacted.json' });
+  // An account reached ONLY through a folder/message export grant (the exists
+  // branch above) must expose just its identity — matching redactParentOnlyAccountRow
+  // on the account-list path — not its connection config. Keep full config only for
+  // accounts named by a direct account-level grant; owner/admin (scope undefined/all)
+  // keep everything.
+  const effective = effectiveMailScope(mailScope);
+  const directAccountIds = effective.kind === 'restricted' ? new Set(effective.accountIds) : null;
+  const exported = directAccountIds
+    ? rows.map((row) => (
+      directAccountIds.has(Number(row.id))
+        ? row
+        : {
+          id: row.id,
+          source_sqlite_id: row.source_sqlite_id,
+          display_name: row.display_name,
+          email_address: row.email_address,
+          imap_host: '',
+          imap_port: 0,
+          protocol: 'imap',
+          smtp_host: null,
+          smtp_port: null,
+          oauth_provider: null,
+          created_at: row.created_at,
+        }
+    ))
+    : rows;
+  archive.append(JSON.stringify(exported, null, 2), { name: 'accounts_redacted.json' });
 }
 
 async function appendMessageIndex(

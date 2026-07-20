@@ -3278,9 +3278,14 @@ describe('server mailbox ACL migration', () => {
       if (!result.ok) return;
       await finalized;
       const messageLines = (entries.get('messages_index.jsonl') ?? '').trim().split('\n').filter(Boolean);
-      const accounts = JSON.parse(entries.get('accounts_redacted.json') ?? '[]') as Array<{ id: number }>;
+      const accounts = JSON.parse(entries.get('accounts_redacted.json') ?? '[]') as Array<{ id: number; imap_host?: string; oauth_provider?: string | null }>;
       expect(messageLines.map((line) => (JSON.parse(line) as { id: number }).id)).toEqual([MESSAGE_A]);
       expect(accounts.map((account) => Number(account.id))).toEqual([ACCOUNT_A]);
+      // ACCOUNT_A is reached only through the folder grant, so its connection
+      // config must be redacted to identity-only (imap_host seeded as
+      // 'imap.example.test' → '').
+      expect(accounts[0]?.imap_host).toBe('');
+      expect(accounts[0]?.oauth_provider).toBeNull();
     } finally {
       await db.destroy();
     }

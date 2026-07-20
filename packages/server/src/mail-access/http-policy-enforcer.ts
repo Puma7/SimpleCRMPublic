@@ -87,6 +87,13 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set([
   // endpoints, so they must also be able to check whether their recipients have
   // usable keys. Read-only, no account/message resource; scope 'none' still 404s.
   '/api/v1/pgp/recipient-key-status',
+  // Read-only operational workspace settings the compose/triage UI needs: the
+  // tracking policy drives the per-message tracking checkbox and snooze presets
+  // drive every snooze action. A sender/triage delegate is authorized to use those
+  // controls, so a nonempty restricted scope must read them; their PATCH mutations
+  // stay separately protected (admin / mail.triage), and scope 'none' still 404s.
+  '/api/v1/email/tracking/settings',
+  '/api/v1/email/settings/snooze',
 ]);
 
 // Stateless PGP crypto helpers: they transform client-supplied plaintext —
@@ -899,21 +906,35 @@ async function assertSupplementalHttpPermissions(
 
   // A thread-alias PATCH may repoint the alias to replacement aliasThreadId /
   // canonicalThreadId that the handler applies workspace-wide, while the base
-  // metadata policy only authorizes the alias's CURRENT account. Authorize every
-  // replacement thread the same way alias creation does. Fields are optional on
-  // update, so only check those actually supplied and non-empty (the handler
-  // validates format otherwise).
-  if (req.method === 'PATCH' && canonicalPath === '/api/v1/email/thread-aliases/:id') {
+  // metadata policy only authorizes the alias's CURRENT account. The resulting
+  // relationship spans the EFFECTIVE pair — the request value where supplied, the
+  // stored value otherwise — so authorizing only the supplied field would let a
+  // delegate repoint one side of a cross-account alias without holding triage on
+  // the unchanged (possibly inaccessible) other side. Require mail.triage on every
+  // message in both effective threads. The planting guard (empty resolution) is
+  // applied only to a NEW supplied thread; a stored side that is now empty is not
+  // a planting vector.
+  if (
+    req.method === 'PATCH'
+    && canonicalPath === '/api/v1/email/thread-aliases/:id'
+    && ports.mailResourceLookup!.resolveThreadAliasThreadIds
+  ) {
+    const aliasId = optionalPositiveInt(
+      selectorValue(req, canonicalPath, { source: 'path', field: 'id' }),
+    );
+    const stored = aliasId !== undefined
+      ? await ports.mailResourceLookup!.resolveThreadAliasThreadIds({ workspaceId, aliasId })
+      : null;
     for (const field of ['aliasThreadId', 'canonicalThreadId'] as const) {
       const raw = bodyField(req.body, field);
-      if (typeof raw !== 'string' || !raw.trim()) continue;
+      const supplied = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+      const effective = supplied ?? stored?.[field];
+      if (effective === undefined) continue;
       const messages = await ports.mailResourceLookup!.resolve({
         workspaceId,
-        target: { kind: 'thread', id: raw.trim() },
+        target: { kind: 'thread', id: effective },
       });
-      // Same planting guard as creation: repointing to an empty thread lets a
-      // restricted delegate seed an alias for a thread they cannot yet access.
-      if (messages.length === 0 && !actor.isOwner && !actor.isAdmin) {
+      if (supplied !== undefined && messages.length === 0 && !actor.isOwner && !actor.isAdmin) {
         throw new MailAccessDeniedError();
       }
       for (const resource of messages) {

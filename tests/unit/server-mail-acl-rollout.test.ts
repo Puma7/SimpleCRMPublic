@@ -645,6 +645,94 @@ describe('mail ACL rollout central use', () => {
     expect(deleteAlias).toHaveBeenCalledTimes(1);
   });
 
+  test('thread-alias PATCH authorizes the unchanged stored thread, not just the replacement', async () => {
+    const deniedMessages = new Set<string>();
+    const mailAccess: MailAccessService = {
+      async assertPermission(input) {
+        if (input.resource.type === 'message' && deniedMessages.has(input.resource.messageId)) {
+          throw new MailAccessDeniedError();
+        }
+      },
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    };
+    const updated = jest.fn(async () => ({
+      ok: true as const,
+      alias: {
+        id: 9600,
+        sourceSqliteId: 9600,
+        accountSourceSqliteId: null,
+        accountId: ACCOUNT_A,
+        aliasThreadId: 'thread-alias-new',
+        canonicalThreadId: 'thread-canonical-b',
+        confidence: 'high',
+        source: 'manual_merge',
+        createdAt: null,
+        updatedAt: '2026-07-20T10:00:00.000Z',
+      },
+    }));
+    const ports: ServerApiPorts = {
+      ...makeCentralPorts(mailAccess),
+      mailResourceLookup: {
+        async resolve(input) {
+          const target = input.target;
+          if (target.kind === 'metadata' && target.entity === 'thread_alias') {
+            return [{ type: 'account', accountId: String(ACCOUNT_A) }];
+          }
+          // The replacement alias thread is accessible; the UNCHANGED stored
+          // canonical thread spans account B.
+          if (target.kind === 'thread' && target.id === 'thread-alias-new') {
+            return [messageResource(ACCOUNT_A, FOLDER_A, 601)];
+          }
+          if (target.kind === 'thread' && target.id === 'thread-canonical-b') {
+            return [messageResource(ACCOUNT_B, 505, 602)];
+          }
+          return [];
+        },
+        async resolveThreadAliasThreadIds(input) {
+          return input.aliasId === 9600
+            ? { aliasThreadId: 'thread-alias-old', canonicalThreadId: 'thread-canonical-b' }
+            : null;
+        },
+      },
+      emailThreadAliases: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async update() {
+          return updated();
+        },
+      } as unknown as ServerApiPorts['emailThreadAliases'],
+    };
+    const api = createServerApi(ports);
+    const body = { aliasThreadId: 'thread-alias-new' };
+
+    // Only aliasThreadId is repointed, but the stored canonical thread (account B)
+    // is part of the resulting relationship and inaccessible → denied.
+    deniedMessages.add('602');
+    await expect(api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/thread-aliases/9600',
+      principal: principal(),
+      body,
+    })).resolves.toMatchObject({ status: 404 });
+    expect(updated).not.toHaveBeenCalled();
+
+    // With triage on the stored canonical thread too, the repoint proceeds.
+    deniedMessages.clear();
+    await expect(api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/thread-aliases/9600',
+      principal: principal(),
+      body,
+    })).resolves.toMatchObject({ status: 200 });
+    expect(updated).toHaveBeenCalledTimes(1);
+  });
+
   test('thread-alias creation denies a restricted delegate seeding an empty thread', async () => {
     const created = jest.fn(async () => ({
       ok: true as const,
