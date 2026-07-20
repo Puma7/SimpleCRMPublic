@@ -33892,7 +33892,8 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Delayed-job PATCH/DELETE now require the workflows.manage capability.
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -34025,7 +34026,9 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Delayed-job PATCH/DELETE now require the workflows.manage capability, so
+    // grant it here to exercise the payload-validation paths below.
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',

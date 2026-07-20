@@ -1117,7 +1117,15 @@ function workflowMessageVisibilityPredicate(
 ): RawBuilder<boolean> | undefined {
   if (!scope || scope.kind === 'all') return undefined;
   const messageRef = kyselySql.ref(messageColumn);
-  if (scope.kind === 'none') return kyselySql<boolean>`${messageRef} is null`;
+  // A row bypasses mail scope only when it is genuinely non-mail — BOTH message
+  // references absent. An orphaned mail row (message deleted → message_id null,
+  // message_source_sqlite_id still set, or the same shape from an import) must
+  // stay behind mail scope, otherwise a scope-'none' user could read it and its
+  // log/steps. The exists() below never matches a null message_id, so such rows
+  // fail closed.
+  const sourceRef = kyselySql.ref(messageColumn.replace(/\.message_id$/, '.message_source_sqlite_id'));
+  const nonMail = kyselySql<boolean>`(${messageRef} is null and ${sourceRef} is null)`;
+  if (scope.kind === 'none') return nonMail;
 
   const branches: RawBuilder<boolean>[] = [];
   if (scope.accountIds.length > 0) {
@@ -1129,10 +1137,10 @@ function workflowMessageVisibilityPredicate(
   if (scope.messageIds.length > 0) {
     branches.push(kyselySql<boolean>`workflow_scope_message.id in (${kyselySql.join(scope.messageIds)})`);
   }
-  if (branches.length === 0) return kyselySql<boolean>`${messageRef} is null`;
+  if (branches.length === 0) return nonMail;
 
   return kyselySql<boolean>`(
-    ${messageRef} is null
+    ${nonMail}
     or exists (
       select 1
       from email_messages as workflow_scope_message

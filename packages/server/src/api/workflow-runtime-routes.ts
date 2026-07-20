@@ -30,6 +30,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireCapability,
   requirePrincipal,
 } from './http';
 
@@ -943,6 +944,12 @@ async function handleDelayedJobUpdate(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  // Mutating a delayed job can redirect or cancel a queued workflow.execute
+  // (resume node, context, workflow, status) — a workflow-management operation,
+  // not something mail.content.read alone should allow.
+  if (!requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Workflow-Berechtigung erforderlich');
+  }
   if (!ports.workflowDelayedJobs?.update) return unavailable('workflow_delayed_jobs_unavailable', 'Workflow delayed job API nicht konfiguriert');
 
   const parsed = parseDelayedJobMutationBody(req.body, {
@@ -974,6 +981,11 @@ async function handleDelayedJobDelete(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  // Deleting a delayed job removes the row backing a queued workflow.execute —
+  // a workflow-management operation, not something mail.content.read allows.
+  if (!requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Workflow-Berechtigung erforderlich');
+  }
   if (!ports.workflowDelayedJobs?.delete) return unavailable('workflow_delayed_jobs_unavailable', 'Workflow delayed job API nicht konfiguriert');
 
   const job = await ports.workflowDelayedJobs.delete({
