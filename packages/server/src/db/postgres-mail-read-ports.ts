@@ -94,6 +94,7 @@ import {
 } from '../mail-security-check';
 import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { mailScopePredicate } from '../mail-access/sql-scope';
+import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
 
 export type PostgresMailReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -982,40 +983,6 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
       );
     },
     async scheduleDraftSend(input) {
-      if (input.sendAt && options.outboundValidation) {
-        const draftForValidation = await withWorkspaceTransaction(
-          options.db,
-          { workspaceId: input.workspaceId, role: 'system' },
-          async (trx) => selectLocalDraftForMutation(trx, input.workspaceId, input.messageId),
-          { applySession: options.applyWorkspaceSession },
-        );
-        if (!draftForValidation) return { ok: false as const, reason: 'not_found' as const };
-        if (!isSchedulableLocalDraft(draftForValidation)) {
-          return { ok: false as const, reason: 'not_local_draft' as const };
-        }
-        const validation = await options.outboundValidation.validate({
-          workspaceId: input.workspaceId,
-          actorUserId: input.actorUserId,
-          values: {
-            messageId: input.messageId,
-            subject: draftForValidation.subject?.trim() || '(Ohne Betreff)',
-            bodyText: draftForValidation.body_text ?? '',
-            bodyHtml: draftForValidation.body_html,
-            to: recipientFieldFromStoredJson(draftForValidation.to_json),
-            cc: recipientFieldFromStoredJson(draftForValidation.cc_json) || undefined,
-            bcc: recipientFieldFromStoredJson(draftForValidation.bcc_json) || undefined,
-            attachmentCount: countDraftAttachmentPaths(draftForValidation.draft_attachment_paths_json),
-          },
-        });
-        if (!validation.allowed) {
-          return {
-            ok: false as const,
-            reason: 'outbound_blocked' as const,
-            message: validation.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
-          };
-        }
-      }
-
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -1025,6 +992,44 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           if (!isSchedulableLocalDraft(current)) return { ok: false as const, reason: 'not_local_draft' as const };
           const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
           if (claimedConflict) return claimedConflict;
+          if (input.sendAt && options.outboundValidation) {
+            const validationValues = {
+              messageId: input.messageId,
+              subject: current.subject?.trim() || '(Ohne Betreff)',
+              bodyText: current.body_text ?? '',
+              bodyHtml: current.body_html,
+              to: recipientFieldFromStoredJson(current.to_json),
+              cc: recipientFieldFromStoredJson(current.cc_json) || undefined,
+              bcc: recipientFieldFromStoredJson(current.bcc_json) || undefined,
+              attachmentCount: countDraftAttachmentPaths(current.draft_attachment_paths_json),
+            };
+            const validation = await options.outboundValidation.validate({
+              workspaceId: input.workspaceId,
+              actorUserId: input.actorUserId,
+              persistence: 'none',
+              values: validationValues,
+            });
+            if (!validation.allowed) {
+              return {
+                ok: false as const,
+                reason: 'outbound_blocked' as const,
+                message: validation.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
+              };
+            }
+            if (validation.manualApprovalPersistenceRequired) {
+              await persistManualOutboundApproval(trx, {
+                workspaceId: input.workspaceId,
+                draftId: input.messageId,
+                subject: validationValues.subject,
+                bodyText: validationValues.bodyText,
+                bodyHtml: validationValues.bodyHtml ?? null,
+                to: validationValues.to,
+                cc: validationValues.cc ?? null,
+                bcc: validationValues.bcc ?? null,
+                draftSnapshot: current,
+              });
+            }
+          }
           const row = await trx
             .updateTable('email_messages')
             .set({

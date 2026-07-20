@@ -13315,6 +13315,20 @@ describe('server edition foundation', () => {
     expect(helperBlock).toMatch(/reason: 'scheduled_send_claimed'/);
   });
 
+  test('scheduled-send schedule validation runs non-persistently after claim check and persists approval in the locked transaction', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-read-ports.ts'), 'utf8');
+    const scheduleStart = source.indexOf('async scheduleDraftSend(input)');
+    const scheduleEnd = source.indexOf('async getScheduledSendDraftState(input)');
+    const scheduleBlock = source.slice(scheduleStart, scheduleEnd);
+
+    expect(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx')).toBeGreaterThan(scheduleBlock.indexOf('selectLocalDraftForMutation'));
+    expect(scheduleBlock.indexOf('options.outboundValidation.validate')).toBeGreaterThan(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+    expect(scheduleBlock).toMatch(/persistence:\s*'none'/);
+    expect(scheduleBlock.indexOf('persistManualOutboundApproval')).toBeGreaterThan(scheduleBlock.indexOf('options.outboundValidation.validate'));
+    expect(scheduleBlock.indexOf('updateTable')).toBeGreaterThan(scheduleBlock.indexOf('persistManualOutboundApproval'));
+    expect(scheduleBlock).toMatch(/manualApprovalPersistenceRequired/);
+  });
+
   test('thread list predicates align scheduled_send filters with message list', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-metadata-read-ports.ts'), 'utf8');
     expect(source).toMatch(/view === 'scheduled_send'[\s\S]*m\.scheduled_send_at IS NOT NULL/);

@@ -20,6 +20,10 @@ import {
   createPostgresEmailMessageReadPort,
 } from '../../packages/server/src/db/postgres-mail-read-ports';
 import {
+  createPostgresEmailOutboundValidationPort,
+  outboundReviewApprovedKey,
+} from '../../packages/server/src/mail-compose-send';
+import {
   createPostgresEmailFolderReadPort,
   createPostgresEmailMessageCategoryReadPort,
   createPostgresEmailThreadReadPort,
@@ -278,6 +282,12 @@ describe('server mailbox ACL migration', () => {
       await client.query('ROLLBACK');
       throw error;
     }
+  }
+
+  async function ensureScheduledSendProvenanceSchema(): Promise<void> {
+    const migration = serverMigrations.find((candidate) => candidate.id === '0040_scheduled_send_provenance');
+    expect(migration).toBeDefined();
+    await applyStatements(migration!.upSql);
   }
 
   async function seedLegacyMailAccess(): Promise<void> {
@@ -1986,6 +1996,210 @@ describe('server mailbox ACL migration', () => {
         WHERE workspace_id = '${WORKSPACE_A}'
           AND id = 'thread-filter'
       `);
+      await db.destroy();
+    }
+  });
+
+  test('claimed scheduled-send draft rejects before outbound validation side effects', async () => {
+    await ensureScheduledSendProvenanceSchema();
+    const db = createApplicationDb();
+    const draftId = 88101;
+    const claimedKey = `scheduled_send_claimed_at:${draftId}`;
+    const approvalKey = outboundReviewApprovedKey(draftId);
+    const validationCalls: unknown[] = [];
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_messages (
+          id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+          account_id, folder_id, uid, subject, body_text, to_json, folder_kind,
+          scheduled_send_at, scheduled_send_actor_user_id, scheduled_send_trusted_service_principal
+        ) VALUES (
+          ${draftId}, '${WORKSPACE_A}', ${draftId}, 1, 11,
+          ${ACCOUNT_A}, ${FOLDER_A}, -${draftId}, 'Original claimed draft', 'Plain body',
+          '{"value":[{"address":"kunde@example.test"}]}'::jsonb, 'draft',
+          NULL, '${USER_SEND}', NULL
+        )
+      `);
+      await client.query(`
+        INSERT INTO sync_info (workspace_id, key, value, source_row)
+        VALUES ('${WORKSPACE_A}', '${claimedKey}', '2026-08-01T10:00:00.000Z', '{}'::jsonb)
+      `);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`);
+
+      const port = createPostgresEmailMessageReadPort({
+        db,
+        outboundValidation: {
+          async validate(input) {
+            validationCalls.push(input);
+            await client.query(`
+              UPDATE email_messages
+              SET subject = 'validation side effect'
+              WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}
+            `);
+            await client.query(`
+              INSERT INTO sync_info (workspace_id, key, value, source_row)
+              VALUES ('${WORKSPACE_A}', '${approvalKey}', 'validation-side-effect', '{}'::jsonb)
+            `);
+            return { allowed: true as const, reason: null, manualApprovalPersistenceRequired: true };
+          },
+        },
+      });
+
+      const result = await port.scheduleDraftSend?.({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_SEND,
+        messageId: draftId,
+        sendAt: '2026-08-02T10:00:00.000Z',
+      });
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const row = await client.query<{
+        subject: string;
+        scheduled_send_at: Date | null;
+        scheduled_send_actor_user_id: string | null;
+      }>(`
+        SELECT subject, scheduled_send_at, scheduled_send_actor_user_id
+        FROM email_messages
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}
+      `);
+      const approval = await client.query(`
+        SELECT value FROM sync_info
+        WHERE workspace_id = '${WORKSPACE_A}' AND key = '${approvalKey}'
+      `);
+
+      expect(result).toMatchObject({ ok: false, reason: 'scheduled_send_claimed' });
+      expect(validationCalls).toEqual([]);
+      expect(row.rows).toEqual([{
+        subject: 'Original claimed draft',
+        scheduled_send_at: null,
+        scheduled_send_actor_user_id: USER_SEND,
+      }]);
+      expect(approval.rows).toEqual([]);
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`DELETE FROM sync_info WHERE workspace_id = '${WORKSPACE_A}' AND key IN ('${claimedKey}', '${approvalKey}')`).catch(() => undefined);
+      await client.query(`DELETE FROM email_messages WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}`).catch(() => undefined);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('scheduled-send approval validates non-persistently then persists with schedule atomically', async () => {
+    await ensureScheduledSendProvenanceSchema();
+    const db = createApplicationDb({ maxConnections: 2 });
+    const draftId = 88102;
+    const workflowId = 88103;
+    const approvalKey = outboundReviewApprovedKey(draftId);
+    const validationCalls: unknown[] = [];
+    const workflowDryRuns: unknown[] = [];
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_workflows (
+          id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
+          definition_json, graph_json, execution_mode, engine_version
+        ) VALUES (
+          ${workflowId}, '${WORKSPACE_A}', ${workflowId}, 'Outbound schedule approval', 'outbound', true, 1,
+          '{}'::jsonb, '{}'::jsonb, 'graph', 1
+        )
+      `);
+      await client.query(`
+        INSERT INTO email_messages (
+          id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+          account_id, folder_id, uid, subject, body_text, body_html, to_json, folder_kind,
+          scheduled_send_at, scheduled_send_actor_user_id, scheduled_send_trusted_service_principal
+        ) VALUES (
+          ${draftId}, '${WORKSPACE_A}', ${draftId}, 1, 11,
+          ${ACCOUNT_A}, ${FOLDER_A}, -${draftId}, 'Needs approval', 'Plain body', '<p>Plain body</p>',
+          '{"value":[{"address":"kunde@example.test"}]}'::jsonb, 'draft',
+          NULL, NULL, NULL
+        )
+      `);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`);
+
+      const realOutboundValidation = createPostgresEmailOutboundValidationPort({
+        db,
+        workflowDryRun: async (input) => {
+          workflowDryRuns.push(input);
+          return {
+            success: true,
+            dryRun: true,
+            workflowId: Number(input.workflowId),
+            messageId: input.messageId,
+            status: 'ok',
+            blocked: false,
+          };
+        },
+      });
+      const port = createPostgresEmailMessageReadPort({
+        db,
+        outboundValidation: {
+          async validate(input) {
+            validationCalls.push(input);
+            return realOutboundValidation.validate(input);
+          },
+        },
+      });
+      const sendAt = '2026-08-02T12:00:00.000Z';
+
+      const result = await port.scheduleDraftSend?.({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_SEND,
+        messageId: draftId,
+        sendAt,
+      });
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const row = await client.query<{
+        subject: string;
+        scheduled_send_at: Date | null;
+        scheduled_send_actor_user_id: string | null;
+        outbound_hold: boolean;
+        outbound_block_reason: string | null;
+      }>(`
+        SELECT subject, scheduled_send_at, scheduled_send_actor_user_id, outbound_hold, outbound_block_reason
+        FROM email_messages
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}
+      `);
+      const approval = await client.query<{ value: string }>(`
+        SELECT value FROM sync_info
+        WHERE workspace_id = '${WORKSPACE_A}' AND key = '${approvalKey}'
+      `);
+
+      expect(result).toMatchObject({ ok: true });
+      expect(validationCalls).toEqual([expect.objectContaining({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_SEND,
+        persistence: 'none',
+        values: expect.objectContaining({
+          messageId: draftId,
+          subject: 'Needs approval',
+          bodyText: 'Plain body',
+          bodyHtml: '<p>Plain body</p>',
+          to: 'kunde@example.test',
+        }),
+      })]);
+      expect(workflowDryRuns).toEqual([expect.objectContaining({
+        workspaceId: WORKSPACE_A,
+        workflowId,
+        messageId: draftId,
+        triggerName: 'outbound',
+        actorUserId: USER_SEND,
+      })]);
+      expect(row.rows).toHaveLength(1);
+      expect(row.rows[0]).toMatchObject({
+        scheduled_send_actor_user_id: USER_SEND,
+        outbound_hold: false,
+        outbound_block_reason: null,
+      });
+      expect(row.rows[0]?.scheduled_send_at?.toISOString()).toBe(sendAt);
+      expect(row.rows[0]?.subject).toMatch(/Needs approval/);
+      expect(approval.rows[0]?.value).toMatch(/^.+\|[0-9a-f]{32}$/);
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`DELETE FROM sync_info WHERE workspace_id = '${WORKSPACE_A}' AND key = '${approvalKey}'`).catch(() => undefined);
+      await client.query(`DELETE FROM email_messages WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflows WHERE workspace_id = '${WORKSPACE_A}' AND id = ${workflowId}`).catch(() => undefined);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`).catch(() => undefined);
       await db.destroy();
     }
   });

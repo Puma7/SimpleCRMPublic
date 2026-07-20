@@ -31,3 +31,13 @@
 - The row lock orders mutations against `claimDueDrafts`: a mutation that starts first makes the claim path skip the locked row; a claim that starts first commits the claim marker before the mutation can proceed, so schedule/cancel/retry fail closed.
 - Regression evidence added to `.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`: RED showed missing lock/check and wrong 404 mapping; GREEN focused suite passed with `3 passed, 430 tests`.
 - Follow-up gates run: focused scheduled/provenance suite passed, lint passed, typecheck passed after missing import fix, integration passed, and `git diff --check` passed.
+
+## Follow-up: scheduled-send approval serialization
+
+- Root cause fixed: `scheduleDraftSend` no longer validates outbound workflows before the locked mutation. It now locks the draft row, checks the active scheduled-send claim marker, then performs schedule validation with `persistence: 'none'`.
+- The outbound validation API now has an explicit persistence mode. Existing callers keep the default persisting behavior; schedule-time validation receives an allowed result with `manualApprovalPersistenceRequired` only when enabled outbound workflows existed and passed.
+- Manual outbound approval persistence moved to `mail-outbound-approval-store` so schedule can write the approval marker using the same locked transaction and draft snapshot before setting `scheduled_send_at`/provenance.
+- Cancellation (`sendAt: null`) still skips outbound validation and approval persistence, and active claims still return `scheduled_send_claimed` before any validation call or queue side effect.
+- Regression evidence added to `.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`: RED source-order test proved validation was before claim checking; GREEN integration proved claimed drafts do not validate/mutate and successful schedules use the real validation port non-persistently before atomic approval persistence.
+- Gates run: focused scheduled/provenance suite, targeted integration file, full integration, lint, typecheck, full unit, mail coverage, build, and `git diff --check` all passed.
+- Self-review: no implicit `system` fallback was added; the only new `system`-role activity is the existing workspace transaction context. The approval marker can only be written after a successful dry-run validation in the locked schedule transaction or by the existing default outbound validation path.

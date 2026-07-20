@@ -2331,6 +2331,7 @@ export type EmailOutboundValidationResult =
   | {
     allowed: true;
     reason: null;
+    manualApprovalPersistenceRequired?: boolean;
   }
   | {
     allowed: false;
@@ -2338,10 +2339,13 @@ export type EmailOutboundValidationResult =
     workflowRunId?: number | null;
   };
 
+export type EmailOutboundValidationPersistenceMode = 'persist' | 'none';
+
 export type EmailOutboundValidationApiPort = {
   validate(input: {
     workspaceId: string;
     actorUserId: string;
+    persistence?: EmailOutboundValidationPersistenceMode;
     values: EmailOutboundValidationInput;
   }): Promise<EmailOutboundValidationResult>;
 };

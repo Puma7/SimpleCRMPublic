@@ -273,3 +273,132 @@ Binary observable:
 Captured artifact path:
 
 `.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`
+
+## RED - scheduled-send approval serialization
+
+Scenario: schedule-time outbound validation was still outside the locked scheduled-send mutation, so an active claim could be detected only after validation side effects.
+
+Invocation:
+
+`pnpm exec jest tests/unit/server-edition-foundation.test.ts --runInBand`
+
+Exit code: `1`
+
+Binary observable:
+
+- Failing test: `scheduled-send schedule validation runs non-persistently after claim check and persists approval in the locked transaction`.
+- Assertion showed `options.outboundValidation.validate` appeared before `assertNoActiveScheduledSendClaimTx` in `scheduleDraftSend` (`Received: 679`, `Expected: > 2194`).
+
+Scenario: integration regression was added for claimed-draft side effects and atomic approval persistence.
+
+Invocation:
+
+`pnpm exec jest tests/integration/server-mail-access-routes.test.ts --runInBand --runTestsByPath`
+
+Exit code: `1`
+
+Binary observable:
+
+- Both new scheduled-send approval tests failed before the fixture schema was corrected because the ACL migration fixture intentionally bootstrapped only migrations before `0038_mail_acl`.
+- PostgreSQL reported `column "scheduled_send_actor_user_id" of relation "email_messages" does not exist`, confirming the new tests needed the current `0040_scheduled_send_provenance` schema before they could exercise the intended behavior.
+
+Captured artifact path:
+
+`.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`
+
+## GREEN - scheduled-send approval serialization
+
+Scenario: claimed draft rejects before outbound validation can persist approval or mutate draft state.
+
+Invocation:
+
+`pnpm exec jest tests/integration/server-mail-access-routes.test.ts --runInBand --runTestsByPath`
+
+Exit code: `0`
+
+Binary observable:
+
+- `Test Suites: 1 passed, 1 total`.
+- `Tests: 47 passed, 47 total`.
+- Regression `claimed scheduled-send draft rejects before outbound validation side effects` observed `scheduled_send_claimed`, zero validation calls, unchanged draft subject/schedule actor, and no `outbound_review_approved:<draftId>` marker.
+
+Scenario: successful schedule validates non-persistently with a real outbound validation port, then persists manual approval in the locked mutation transaction before scheduling.
+
+Invocation:
+
+`pnpm exec jest tests/integration/server-mail-access-routes.test.ts --runInBand --runTestsByPath`
+
+Exit code: `0`
+
+Binary observable:
+
+- Regression `scheduled-send approval validates non-persistently then persists with schedule atomically` observed validation input with `persistence: 'none'`.
+- The real `createPostgresEmailOutboundValidationPort` ran the enabled outbound workflow dry-run and returned a persistence-required allowed result.
+- The same scheduled-send mutation committed `scheduled_send_at`, `scheduled_send_actor_user_id`, cleared outbound hold/block state, and wrote an approval marker matching `^.+\|[0-9a-f]{32}$`.
+
+Scenario: source-order guard for locked schedule transaction.
+
+Invocation:
+
+`pnpm exec jest tests/unit/server-edition-foundation.test.ts --runInBand`
+
+Exit code: `0`
+
+Binary observable:
+
+- `Test Suites: 1 passed, 1 total`.
+- `Tests: 410 passed, 410 total`.
+- Guard confirms `scheduleDraftSend` selects the draft `FOR UPDATE`, checks `assertNoActiveScheduledSendClaimTx`, calls validation with `persistence: 'none'`, then calls `persistManualOutboundApproval` before the schedule `updateTable`.
+
+Scenario: focused provenance and scheduled-send policy suite after approval serialization.
+
+Invocation:
+
+`pnpm exec jest tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-job-provenance.test.ts tests/unit/server-edition-foundation.test.ts --runInBand`
+
+Exit code: `0`
+
+Binary observable:
+
+- `Test Suites: 3 passed, 3 total`.
+- `Tests: 431 passed, 431 total`.
+
+Scenario: full integration gate after approval serialization.
+
+Invocation:
+
+`pnpm run test:integration`
+
+Exit code: `0`
+
+Binary observable:
+
+- `Test Suites: 25 passed, 25 total`.
+- `Tests: 354 passed, 354 total`.
+
+Scenario: lint and typecheck after final test adjustment.
+
+Invocations:
+
+- `pnpm run typecheck`
+- `pnpm run lint`
+
+Exit codes: both `0`
+
+Binary observable:
+
+- Typecheck completed `tsc -b packages/core packages/server packages/desktop && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit`.
+- ESLint completed with `--max-warnings 0`.
+
+Scenario: broader regression gates retained after production change.
+
+Invocations and binary observables:
+
+- `pnpm run test:unit`: exit `0`, `Test Suites: 265 passed, 265 total`, `Tests: 2417 passed, 2417 total`, `Snapshots: 1 passed, 1 total`.
+- `pnpm run test:mail:coverage`: exit `0`, `Test Suites: 179 passed, 179 total`, `Tests: 1 skipped, 1166 passed, 1167 total`, coverage summary `All files` statements `91.91`, branches `80.08`, functions `93.66`, lines `91.91`.
+- `pnpm run build`: exit `0`, `build:packages`, `build:web`, and `build:electron:main` completed; Vite emitted existing browser-externalization/chunk-size warnings.
+- `git diff --check`: exit `0`, no output.
+
+Captured artifact path:
+
+`.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`
