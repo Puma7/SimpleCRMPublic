@@ -299,7 +299,7 @@ async function resolveResources(input: {
   if (resolution.kind === 'notice_lookup') return { kind: 'scope' };
   if (resolution.kind === 'optional_account') {
     const raw = input.select(resolution.accountId);
-    return raw === undefined
+    return raw === undefined || raw === null
       ? { kind: 'scope' }
       : lookup(input, { kind: 'account', id: requirePositiveInt(raw) });
   }
@@ -317,17 +317,22 @@ async function resolveResources(input: {
     return (await resolveWorkflowExecuteResources(input, resolution)).resources;
   }
   if (resolution.kind === 'message_or_account_lookup') {
+    // An account-only record carries messageId absent OR explicitly null; treat
+    // both the same and fall back to the account.
     const message = input.select(resolution.messageId);
-    if (message !== undefined) return lookup(input, { kind: 'message', id: requirePositiveInt(message) });
+    if (message !== undefined && message !== null) return lookup(input, { kind: 'message', id: requirePositiveInt(message) });
     const account = input.select(resolution.accountId);
-    if (account !== undefined) return lookup(input, { kind: 'account', id: requirePositiveInt(account) });
+    if (account !== undefined && account !== null) return lookup(input, { kind: 'account', id: requirePositiveInt(account) });
+    if (resolution.whenAbsent === 'deny') throw new MailAsyncAuthorizationError();
     return { kind: 'scope' };
   }
   if (resolution.kind === 'event_message_then_account_lookup') {
+    // Account-only spam events publish messageId: null with a valid accountId;
+    // null must fall back to the account, not throw requirePositiveInt(null).
     const message = input.select(resolution.messageId);
-    if (message !== undefined) return lookup(input, { kind: 'message', id: requirePositiveInt(message) });
+    if (message !== undefined && message !== null) return lookup(input, { kind: 'message', id: requirePositiveInt(message) });
     const account = input.select(resolution.accountId);
-    if (account !== undefined) return lookup(input, { kind: 'account', id: requirePositiveInt(account) });
+    if (account !== undefined && account !== null) return lookup(input, { kind: 'account', id: requirePositiveInt(account) });
     throw new MailAsyncAuthorizationError();
   }
   if (resolution.kind === 'bulk_message_lookup') {

@@ -701,6 +701,31 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // A thread-alias PATCH may repoint the alias to replacement aliasThreadId /
+  // canonicalThreadId that the handler applies workspace-wide, while the base
+  // metadata policy only authorizes the alias's CURRENT account. Authorize every
+  // replacement thread the same way alias creation does. Fields are optional on
+  // update, so only check those actually supplied and non-empty (the handler
+  // validates format otherwise).
+  if (req.method === 'PATCH' && canonicalPath === '/api/v1/email/thread-aliases/:id') {
+    for (const field of ['aliasThreadId', 'canonicalThreadId'] as const) {
+      const raw = bodyField(req.body, field);
+      if (typeof raw !== 'string' || !raw.trim()) continue;
+      const messages = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'thread', id: raw.trim() },
+      });
+      for (const resource of messages) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission: 'mail.triage',
+          resource,
+        });
+      }
+    }
+  }
+
   // Responding to a read-receipt request with action "send" loads the account's
   // SMTP credentials and transmits an outbound MDN to the sender — an outbound
   // send the base mail.triage policy doesn't cover. Require mail.send when
@@ -719,6 +744,28 @@ async function assertSupplementalHttpPermissions(
           resource,
         });
       }
+    }
+  }
+
+  // Verifying a detached signature loads a SECOND attachment (signatureAttachmentId)
+  // whose bytes reveal whether an otherwise-inaccessible file is a valid PGP
+  // signature (and its fingerprint). The base policy only authorizes the path
+  // attachment, so require mail.attachment.read on the supplied signature
+  // attachment too.
+  if (req.method === 'POST' && canonicalPath === '/api/v1/pgp/attachments/:attachmentId/verify') {
+    const sigId = bodyField(req.body, 'signatureAttachmentId');
+    if (sigId !== undefined && sigId !== null) {
+      const signature = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'attachment', id: requirePositiveInt(sigId) },
+      });
+      if (signature.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.attachment.read',
+        resource: signature[0]!,
+      });
     }
   }
 }
