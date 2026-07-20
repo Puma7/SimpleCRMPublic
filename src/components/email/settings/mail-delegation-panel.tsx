@@ -7,7 +7,7 @@ import {
   type MailPermission,
   type MailPermissionProfile,
 } from "@simplecrm/core"
-import { IPCChannels } from "@shared/ipc/channels"
+import { IPCChannels, type InvokeChannel } from "@shared/ipc/channels"
 import { RefreshCw, Save, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -17,35 +17,17 @@ import {
 } from "@/services/transport"
 import { cn } from "@/lib/utils"
 
-type AccountRow = {
-  id: number
-  display_name?: string | null
-  displayName?: string | null
-  email_address?: string | null
-}
+type DelegationResource =
+  | { type: "account"; accountId: number }
+  | { type: "folder"; accountId: number; folderId: number }
 
-type FolderRow = {
-  id: number
-  account_id?: number | null
-  accountId?: number | null
-  path?: string | null
-}
+type ResourceOption =
+  | { type: "account"; accountId: number; label: string }
+  | { type: "folder"; accountId: number; folderId: number; accountLabel: string; label: string }
 
-type UserRow = {
-  id: string
-  display_name?: string | null
-  displayName?: string | null
-  username?: string | null
-  role?: string | null
-  is_active?: number | boolean | null
-  disabledAt?: string | null
-}
-
-type GroupRow = {
-  id: number
-  name: string
-  memberCount?: number | null
-}
+type SubjectOption =
+  | { type: "user"; id: string; label: string }
+  | { type: "group"; id: number; label: string }
 
 type DelegationBinding = {
   id: number
@@ -56,9 +38,14 @@ type DelegationBinding = {
   updatedAt: string
 }
 
-type DelegationBindingPage = {
-  items: DelegationBinding[]
-  nextCursor: number | null
+type NumericPage<T> = { items: T[]; nextCursor: number | null }
+type SubjectPage = { items: SubjectOption[]; nextCursor: string | null }
+type FormSnapshot = {
+  accountId: string
+  folderId: string
+  resourceType: "account" | "folder"
+  subjectId: string
+  subjectType: "user" | "group"
 }
 
 const DELEGATION_PAGE_SIZE = 100
@@ -99,13 +86,12 @@ const PERMISSION_LABELS: Record<MailPermission, string> = {
 }
 
 export function MailDelegationPanel() {
-  const [accounts, setAccounts] = useState<AccountRow[]>([])
-  const [folders, setFolders] = useState<FolderRow[]>([])
-  const [users, setUsers] = useState<UserRow[]>([])
-  const [groups, setGroups] = useState<GroupRow[]>([])
+  const [resources, setResources] = useState<ResourceOption[]>([])
+  const [subjects, setSubjects] = useState<SubjectOption[]>([])
   const [bindings, setBindings] = useState<DelegationBinding[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [authorizationReady, setAuthorizationReady] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -115,92 +101,132 @@ export function MailDelegationPanel() {
   const [accountId, setAccountId] = useState("")
   const [folderId, setFolderId] = useState("")
   const [profile, setProfile] = useState<MailPermissionProfile | "custom">("viewer")
-  const [permissions, setPermissions] = useState<MailPermission[]>([...MAIL_PERMISSION_PROFILES.viewer])
+  const [permissions, setPermissions] = useState<MailPermission[]>([])
+
   const mountedRef = useRef(true)
   const loadGenerationRef = useRef(0)
+  const subjectGenerationRef = useRef(0)
   const loadingRef = useRef(true)
-  const formRef = useRef({ accountId, folderId, resourceType, subjectId, subjectType, editingId })
-  formRef.current = { accountId, folderId, resourceType, subjectId, subjectType, editingId }
+  const authorizationReadyRef = useRef(false)
+  const formRef = useRef<FormSnapshot>({ accountId, folderId, resourceType, subjectId, subjectType })
+  formRef.current = { accountId, folderId, resourceType, subjectId, subjectType }
 
-  const activeUsers = useMemo(() => users.filter(isActiveUser), [users])
+  const accounts = useMemo(() => accountOptions(resources), [resources])
+  const visibleFolders = useMemo(() => resources.filter((resource): resource is Extract<ResourceOption, { type: "folder" }> => (
+    resource.type === "folder" && String(resource.accountId) === accountId
+  )), [resources, accountId])
+  const canManageSelectedAccount = resources.some((resource) => (
+    resource.type === "account" && String(resource.accountId) === accountId
+  ))
+  const subjectOptions = useMemo(() => subjects.filter((subject) => subject.type === subjectType), [subjects, subjectType])
 
-  const visibleFolders = useMemo(() => {
-    const selected = Number(accountId)
-    return folders.filter((folder) => (folder.account_id ?? folder.accountId) === selected)
-  }, [folders, accountId])
+  const clearAuthorizedState = useCallback(() => {
+    authorizationReadyRef.current = false
+    loadingRef.current = true
+    setAuthorizationReady(false)
+    setLoading(true)
+    setResources([])
+    setSubjects([])
+    setBindings([])
+    setAccountId("")
+    setFolderId("")
+    setResourceType("account")
+    setSubjectType("user")
+    setSubjectId("")
+    setEditingId(null)
+    setProfile("viewer")
+    setPermissions([])
+  }, [])
 
   const load = useCallback(async () => {
+    const preferred = formRef.current
     const generation = ++loadGenerationRef.current
-    loadingRef.current = true
-    if (mountedRef.current) {
-      setLoading(true)
-      setError(null)
-    }
+    subjectGenerationRef.current += 1
+    clearAuthorizedState()
+    if (mountedRef.current) setError(null)
     try {
-      const [accountRows, folderRows, userRows, groupRows, bindingRows] = await Promise.all([
-        invokeRenderer(IPCChannels.Email.ListAccounts) as Promise<AccountRow[]>,
-        invokeRenderer(IPCChannels.Email.ListFolders) as Promise<FolderRow[]>,
-        invokeRenderer(IPCChannels.Auth.ListUsers) as Promise<UserRow[]>,
-        invokeRenderer(IPCChannels.UserGroups.List) as Promise<GroupRow[]>,
+      const [accountResources, folderResources, bindingRows] = await Promise.all([
+        listAllDelegationResources("account"),
+        listAllDelegationResources("folder"),
         listAllDelegationBindings(),
       ])
       if (!mountedRef.current || generation !== loadGenerationRef.current) return
+      const resourceRows = [...accountResources, ...folderResources]
+      const selected = chooseResource(resourceRows, preferred)
+      const subjectRows = selected
+        ? await listAllDelegationSubjects(selected)
+        : []
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return
 
-      const current = formRef.current
-      const nextAccountId = accountRows.some((account) => String(account.id) === current.accountId)
-        ? current.accountId
-        : accountRows[0] ? String(accountRows[0].id) : ""
-      const foldersForAccount = folderRows.filter((folder) => (
-        String(folder.account_id ?? folder.accountId ?? "") === nextAccountId
-      ))
-      const nextFolderId = current.resourceType === "folder"
-        ? foldersForAccount.some((folder) => String(folder.id) === current.folderId)
-          ? current.folderId
-          : foldersForAccount[0] ? String(foldersForAccount[0].id) : ""
-        : ""
-      const activeUserRows = userRows.filter(isActiveUser)
-      const currentSubjectVisible = current.subjectType === "user"
-        ? activeUserRows.some((user) => user.id === current.subjectId)
-        : groupRows.some((group) => String(group.id) === current.subjectId)
-      const nextSubjectType = currentSubjectVisible
-        ? current.subjectType
-        : activeUserRows.length > 0 ? "user" : "group"
-      const nextSubjectId = currentSubjectVisible
-        ? current.subjectId
-        : nextSubjectType === "user"
-          ? activeUserRows[0]?.id ?? ""
-          : String(groupRows[0]?.id ?? "")
-      const editedBinding = current.editingId === null
-        ? null
-        : bindingRows.find((binding) => binding.id === current.editingId) ?? null
-      const selectedResourceChanged = nextAccountId !== current.accountId
-        || (current.resourceType === "folder" && nextFolderId !== current.folderId)
-      const editedResourceVisible = editedBinding !== null
-        && resourceIsVisible(editedBinding.resource, accountRows, folderRows)
-
-      setAccounts(accountRows)
-      setFolders(folderRows)
-      setUsers(userRows)
-      setGroups(groupRows)
+      const nextSubject = chooseSubject(subjectRows, preferred)
+      setResources(resourceRows)
+      setSubjects(subjectRows)
       setBindings(bindingRows)
-      setAccountId(nextAccountId)
-      setFolderId(nextFolderId)
-      setSubjectType(nextSubjectType)
-      setSubjectId(nextSubjectId)
-      if (current.editingId !== null && (selectedResourceChanged || !editedResourceVisible)) {
-        setEditingId(null)
-        setProfile("viewer")
-        setPermissions([...MAIL_PERMISSION_PROFILES.viewer])
-      }
+      setAccountId(selected ? String(selected.accountId) : "")
+      setResourceType(selected?.type ?? "account")
+      setFolderId(selected?.type === "folder" ? String(selected.folderId) : "")
+      setSubjectType(nextSubject?.type ?? "user")
+      setSubjectId(nextSubject ? String(nextSubject.id) : "")
+      setProfile("viewer")
+      setPermissions(selected && nextSubject ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
+      authorizationReadyRef.current = true
+      loadingRef.current = false
+      setAuthorizationReady(true)
+      setLoading(false)
     } catch {
-      if (mountedRef.current && generation === loadGenerationRef.current) {
-        setError("Delegationen konnten nicht geladen werden.")
+      if (!mountedRef.current || generation !== loadGenerationRef.current) return
+      loadingRef.current = false
+      setLoading(false)
+      setError("Delegationen konnten nicht geladen werden.")
+    }
+  }, [clearAuthorizedState])
+
+  const selectResource = useCallback(async (
+    resource: DelegationResource,
+    preferredSubject?: DelegationBinding["subject"],
+    editingBinding?: DelegationBinding,
+  ) => {
+    const generation = ++subjectGenerationRef.current
+    authorizationReadyRef.current = false
+    loadingRef.current = true
+    setAuthorizationReady(false)
+    setLoading(true)
+    setError(null)
+    setSubjects([])
+    setSubjectId("")
+    setEditingId(null)
+    setProfile("viewer")
+    setPermissions([])
+    setAccountId(String(resource.accountId))
+    setResourceType(resource.type)
+    setFolderId(resource.type === "folder" ? String(resource.folderId) : "")
+    try {
+      const subjectRows = await listAllDelegationSubjects(resource)
+      if (!mountedRef.current || generation !== subjectGenerationRef.current) return
+      const preferred = preferredSubject
+        ? { subjectType: preferredSubject.type, subjectId: String(preferredSubject.id) }
+        : formRef.current
+      const nextSubject = chooseSubject(subjectRows, preferred)
+      setSubjects(subjectRows)
+      setSubjectType(nextSubject?.type ?? "user")
+      setSubjectId(nextSubject ? String(nextSubject.id) : "")
+      if (editingBinding && nextSubject && sameSubject(nextSubject, editingBinding.subject)) {
+        setEditingId(editingBinding.id)
+        setProfile("custom")
+        setPermissions([...editingBinding.permissions])
+      } else {
+        setProfile("viewer")
+        setPermissions(nextSubject ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
       }
-    } finally {
-      if (mountedRef.current && generation === loadGenerationRef.current) {
-        loadingRef.current = false
-        setLoading(false)
-      }
+      authorizationReadyRef.current = true
+      loadingRef.current = false
+      setAuthorizationReady(true)
+      setLoading(false)
+    } catch {
+      if (!mountedRef.current || generation !== subjectGenerationRef.current) return
+      loadingRef.current = false
+      setLoading(false)
+      setError("Delegationen konnten nicht geladen werden.")
     }
   }, [])
 
@@ -209,6 +235,7 @@ export function MailDelegationPanel() {
     return () => {
       mountedRef.current = false
       loadGenerationRef.current += 1
+      subjectGenerationRef.current += 1
     }
   }, [])
 
@@ -225,77 +252,56 @@ export function MailDelegationPanel() {
     return () => subscription.unsubscribe()
   }, [load])
 
-  useEffect(() => {
-    if (resourceType === "folder" && visibleFolders.length > 0 && !visibleFolders.some((folder) => String(folder.id) === folderId)) {
-      setFolderId(String(visibleFolders[0]!.id))
-    }
-  }, [folderId, resourceType, visibleFolders])
-
-  const applyProfile = (value: MailPermissionProfile | "custom") => {
-    setProfile(value)
-    if (value !== "custom") setPermissions([...MAIL_PERMISSION_PROFILES[value]])
+  const applyProfile = (next: MailPermissionProfile | "custom") => {
+    setProfile(next)
+    if (next !== "custom") setPermissions([...MAIL_PERMISSION_PROFILES[next]])
   }
 
   const togglePermission = (permission: MailPermission, checked: boolean) => {
     setProfile("custom")
-    setPermissions((current) => {
-      if (checked) return current.includes(permission) ? current : [...current, permission]
-      return current.filter((entry) => entry !== permission)
-    })
+    setPermissions((current) => checked
+      ? [...new Set([...current, permission])]
+      : current.filter((entry) => entry !== permission))
   }
 
   const resetForm = () => {
     setEditingId(null)
     setProfile("viewer")
-    setPermissions([...MAIL_PERMISSION_PROFILES.viewer])
-  }
-
-  const editBinding = (binding: DelegationBinding) => {
-    setEditingId(binding.id)
-    setSubjectType(binding.subject.type)
-    setSubjectId(String(binding.subject.id))
-    setResourceType(binding.resource.type)
-    setAccountId(String(binding.resource.accountId))
-    setFolderId(binding.resource.type === "folder" ? String(binding.resource.folderId) : "")
-    setProfile(binding.profile && PROFILE_OPTIONS.includes(binding.profile as MailPermissionProfile) ? binding.profile as MailPermissionProfile : "custom")
-    setPermissions(binding.permissions)
+    setPermissions(subjectId ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
   }
 
   const save = async () => {
-    if (loadingRef.current) return
-    const numericAccountId = Number(accountId)
-    const accountVisible = accounts.some((account) => account.id === numericAccountId)
-    const numericFolderId = Number(folderId)
-    const folderVisible = resourceType === "account" || folders.some((folder) => (
-      folder.id === numericFolderId
-      && (folder.account_id ?? folder.accountId) === numericAccountId
-    ))
-    if (!accountVisible || !folderVisible) {
-      setError("Die ausgewählte Mail-Ressource ist nicht mehr verfügbar.")
+    if (loadingRef.current || !authorizationReadyRef.current) return
+    const resource = selectedResource(resources, resourceType, accountId, folderId)
+    const subject = subjects.find((option) => option.type === subjectType && String(option.id) === subjectId)
+    if (!resource || !subject) {
+      clearAuthorizedState()
+      setLoading(false)
+      loadingRef.current = false
+      setError("Die ausgewählte Delegation ist nicht mehr verfügbar.")
       return
     }
     setSaving(true)
     setError(null)
     try {
-      const payload = {
+      const result = await invokeRenderer(IPCChannels.Email.SaveMailDelegationBinding, {
         ...(editingId === null ? {} : { id: editingId }),
-        subject: subjectType === "user"
-          ? { type: "user" as const, id: subjectId }
-          : { type: "group" as const, id: Number(subjectId) },
-        resource: resourceType === "account"
-          ? { type: "account" as const, accountId: numericAccountId }
-          : { type: "folder" as const, accountId: numericAccountId, folderId: numericFolderId },
+        subject: subject.type === "user"
+          ? { type: "user" as const, id: subject.id }
+          : { type: "group" as const, id: subject.id },
+        resource,
         profile,
         permissions: [...permissions].sort(),
-      }
-      const result = await invokeRenderer(IPCChannels.Email.SaveMailDelegationBinding, payload) as { success?: boolean; error?: string }
+      }) as { success?: boolean; error?: string }
       if (result.success === false) throw new Error(result.error ?? "save_failed")
-      if (mountedRef.current) {
-        resetForm()
-        await load()
-      }
+      if (mountedRef.current) await load()
     } catch {
-      if (mountedRef.current) setError("Delegation konnte nicht gespeichert werden.")
+      if (mountedRef.current) {
+        clearAuthorizedState()
+        loadingRef.current = false
+        setLoading(false)
+        setError("Delegation konnte nicht gespeichert werden.")
+      }
     } finally {
       if (mountedRef.current) setSaving(false)
     }
@@ -306,20 +312,51 @@ export function MailDelegationPanel() {
     setError(null)
     try {
       await invokeRenderer(IPCChannels.Email.DeleteMailDelegationBinding, bindingId)
-      if (mountedRef.current) {
-        if (editingId === bindingId) resetForm()
-        await load()
-      }
+      if (mountedRef.current) await load()
     } catch {
-      if (mountedRef.current) setError("Delegation konnte nicht gelöscht werden.")
+      if (mountedRef.current) {
+        clearAuthorizedState()
+        loadingRef.current = false
+        setLoading(false)
+        setError("Delegation konnte nicht gelöscht werden.")
+      }
     } finally {
       if (mountedRef.current) setSaving(false)
     }
   }
 
-  const subjectOptions = subjectType === "user"
-    ? activeUsers.map((user) => ({ id: user.id, label: user.display_name ?? user.displayName ?? user.username ?? user.id }))
-    : groups.map((group) => ({ id: String(group.id), label: group.name }))
+  const editBinding = (binding: DelegationBinding) => {
+    if (!resourceIsVisible(binding.resource, resources)) {
+      clearAuthorizedState()
+      setLoading(false)
+      loadingRef.current = false
+      return
+    }
+    void selectResource(binding.resource, binding.subject, binding)
+  }
+
+  const changeAccount = (value: string) => {
+    const accountResource = resources.find((resource): resource is Extract<ResourceOption, { type: "account" }> => (
+      resource.type === "account" && String(resource.accountId) === value
+    ))
+    const folderResource = resources.find((resource): resource is Extract<ResourceOption, { type: "folder" }> => (
+      resource.type === "folder" && String(resource.accountId) === value
+    ))
+    const next = accountResource ?? folderResource
+    if (next) void selectResource(next)
+  }
+
+  const changeResourceType = (nextType: "account" | "folder") => {
+    const next = nextType === "account"
+      ? resources.find((resource) => resource.type === "account" && String(resource.accountId) === accountId)
+      : visibleFolders[0]
+    if (next) void selectResource(next)
+  }
+
+  const changeFolder = (value: string) => {
+    const next = visibleFolders.find((folder) => String(folder.folderId) === value)
+    if (next) void selectResource(next)
+  }
 
   return (
     <section className="space-y-6">
@@ -335,13 +372,11 @@ export function MailDelegationPanel() {
             <select
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={accountId}
-              onChange={(event) => setAccountId(event.target.value)}
+              onChange={(event) => changeAccount(event.target.value)}
+              disabled={!authorizationReady || loading}
             >
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>
-                  {account.display_name ?? account.displayName ?? `Konto ${account.id}`}
-                </option>
-              ))}
+              {accounts.length === 0 ? <option value="">Keine autorisierte Ressource</option> : null}
+              {accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}
             </select>
           </label>
           <label className="space-y-1 text-sm font-medium">
@@ -349,10 +384,11 @@ export function MailDelegationPanel() {
             <select
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={resourceType}
-              onChange={(event) => setResourceType(event.target.value as "account" | "folder")}
+              onChange={(event) => changeResourceType(event.target.value as "account" | "folder")}
+              disabled={!authorizationReady || loading}
             >
-              <option value="account">Ganzes Konto</option>
-              <option value="folder">Ordner</option>
+              <option value="account" disabled={!canManageSelectedAccount}>Ganzes Konto</option>
+              <option value="folder" disabled={visibleFolders.length === 0}>Ordner</option>
             </select>
           </label>
           {resourceType === "folder" ? (
@@ -361,11 +397,11 @@ export function MailDelegationPanel() {
               <select
                 className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                 value={folderId}
-                onChange={(event) => setFolderId(event.target.value)}
+                onChange={(event) => changeFolder(event.target.value)}
+                disabled={!authorizationReady || loading}
               >
-                {visibleFolders.map((folder) => (
-                  <option key={folder.id} value={folder.id}>{folder.path ?? `Ordner ${folder.id}`}</option>
-                ))}
+                {visibleFolders.length === 0 ? <option value="">Kein autorisierter Ordner</option> : null}
+                {visibleFolders.map((folder) => <option key={folder.folderId} value={folder.folderId}>{folder.label}</option>)}
               </select>
             </label>
           ) : null}
@@ -374,10 +410,11 @@ export function MailDelegationPanel() {
             <select
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={subjectType}
+              disabled={!authorizationReady || loading}
               onChange={(event) => {
                 const next = event.target.value as "user" | "group"
                 setSubjectType(next)
-                setSubjectId(next === "user" ? activeUsers[0]?.id ?? "" : String(groups[0]?.id ?? ""))
+                setSubjectId(String(subjects.find((subject) => subject.type === next)?.id ?? ""))
               }}
             >
               <option value="user">Benutzer</option>
@@ -390,10 +427,10 @@ export function MailDelegationPanel() {
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={subjectId}
               onChange={(event) => setSubjectId(event.target.value)}
+              disabled={!authorizationReady || loading}
             >
-              {subjectOptions.map((option) => (
-                <option key={option.id} value={option.id}>{option.label}</option>
-              ))}
+              {subjectOptions.length === 0 ? <option value="">Kein auswählbares Subjekt</option> : null}
+              {subjectOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
           </label>
         </div>
@@ -405,10 +442,9 @@ export function MailDelegationPanel() {
             className="h-9 w-full rounded-md border bg-background px-3 text-sm"
             value={profile}
             onChange={(event) => applyProfile(event.target.value as MailPermissionProfile | "custom")}
+            disabled={!authorizationReady || loading}
           >
-            {PROFILE_OPTIONS.map((option) => (
-              <option key={option} value={option}>{PROFILE_LABELS[option]}</option>
-            ))}
+            {PROFILE_OPTIONS.map((option) => <option key={option} value={option}>{PROFILE_LABELS[option]}</option>)}
           </select>
         </label>
 
@@ -419,6 +455,7 @@ export function MailDelegationPanel() {
                 type="checkbox"
                 checked={permissions.includes(permission)}
                 onChange={(event) => togglePermission(permission, event.target.checked)}
+                disabled={!authorizationReady || loading}
               />
               <span>{PERMISSION_LABELS[permission]}</span>
             </label>
@@ -429,15 +466,13 @@ export function MailDelegationPanel() {
           <Button
             type="button"
             onClick={save}
-            disabled={loading || saving || !accountId || !subjectId || permissions.length === 0 || (resourceType === "folder" && !folderId)}
+            disabled={!authorizationReady || loading || saving || !accountId || !subjectId || permissions.length === 0 || (resourceType === "folder" && !folderId)}
           >
             <Save className="mr-2 h-4 w-4" />
             Berechtigung speichern
           </Button>
           {editingId !== null ? (
-            <Button type="button" variant="outline" onClick={resetForm} disabled={saving}>
-              Abbrechen
-            </Button>
+            <Button type="button" variant="outline" onClick={resetForm} disabled={saving}>Abbrechen</Button>
           ) : null}
           <Button type="button" variant="ghost" onClick={() => void load()} disabled={loading}>
             <RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />
@@ -478,47 +513,125 @@ export function MailDelegationPanel() {
   )
 }
 
+async function listAllDelegationResources(resourceType: "account" | "folder"): Promise<ResourceOption[]> {
+  return listAllNumericPages<ResourceOption>(IPCChannels.Email.ListMailDelegationResources, { resourceType })
+}
+
 async function listAllDelegationBindings(): Promise<DelegationBinding[]> {
-  const bindings: DelegationBinding[] = []
-  const seenCursors = new Set<number>()
+  return listAllNumericPages<DelegationBinding>(IPCChannels.Email.ListMailDelegationBindings, {})
+}
+
+async function listAllNumericPages<T>(channel: InvokeChannel, payload: Record<string, unknown>): Promise<T[]> {
+  const items: T[] = []
+  const seen = new Set<number>()
   let cursor: number | undefined
   do {
-    const page = await invokeRenderer(IPCChannels.Email.ListMailDelegationBindings, {
+    const page = await invokeRenderer(channel, {
+      ...payload,
       ...(cursor === undefined ? {} : { cursor }),
       limit: DELEGATION_PAGE_SIZE,
-    }) as DelegationBindingPage
-    bindings.push(...page.items)
-    if (page.nextCursor === null) return bindings
-    if (
-      !Number.isSafeInteger(page.nextCursor)
-      || page.nextCursor <= 0
-      || (cursor !== undefined && page.nextCursor <= cursor)
-      || seenCursors.has(page.nextCursor)
-    ) {
+    }) as NumericPage<T>
+    items.push(...page.items)
+    if (page.nextCursor === null) return items
+    if (!Number.isSafeInteger(page.nextCursor) || page.nextCursor <= 0 || seen.has(page.nextCursor)) {
       throw new Error("invalid_mail_delegation_cursor")
     }
-    seenCursors.add(page.nextCursor)
+    if (cursor !== undefined && page.nextCursor <= cursor) throw new Error("non_progressing_mail_delegation_cursor")
+    seen.add(page.nextCursor)
     cursor = page.nextCursor
   } while (true)
 }
 
-function isActiveUser(user: UserRow): boolean {
-  if (user.disabledAt) return false
-  return user.is_active === undefined
-    || user.is_active === null
-    || user.is_active === true
-    || user.is_active === 1
+async function listAllDelegationSubjects(resource: DelegationResource): Promise<SubjectOption[]> {
+  const [users, groups] = await Promise.all([
+    listSubjectType(resource, "user"),
+    listSubjectType(resource, "group"),
+  ])
+  return [...users, ...groups]
 }
 
-function resourceIsVisible(
-  resource: DelegationBinding["resource"],
-  accounts: readonly AccountRow[],
-  folders: readonly FolderRow[],
-): boolean {
-  if (!accounts.some((account) => account.id === resource.accountId)) return false
-  if (resource.type === "account") return true
-  return folders.some((folder) => (
-    folder.id === resource.folderId
-    && (folder.account_id ?? folder.accountId) === resource.accountId
+async function listSubjectType(
+  resource: DelegationResource,
+  subjectType: "user" | "group",
+): Promise<SubjectOption[]> {
+  const items: SubjectOption[] = []
+  const seen = new Set<string>()
+  let cursor: string | undefined
+  do {
+    const page = await invokeRenderer(IPCChannels.Email.ListMailDelegationSubjects, {
+      resource,
+      subjectType,
+      ...(cursor === undefined ? {} : { cursor }),
+      limit: DELEGATION_PAGE_SIZE,
+    }) as SubjectPage
+    items.push(...page.items)
+    if (page.nextCursor === null) return items
+    if (!page.nextCursor || seen.has(page.nextCursor)) throw new Error("invalid_mail_delegation_subject_cursor")
+    if (cursor !== undefined && compareSubjectCursor(subjectType, page.nextCursor, cursor) <= 0) {
+      throw new Error("non_progressing_mail_delegation_subject_cursor")
+    }
+    seen.add(page.nextCursor)
+    cursor = page.nextCursor
+  } while (true)
+}
+
+function compareSubjectCursor(subjectType: "user" | "group", left: string, right: string): number {
+  return subjectType === "group" ? Number(left) - Number(right) : left.localeCompare(right)
+}
+
+function accountOptions(resources: readonly ResourceOption[]): Array<{ id: number; label: string }> {
+  const accounts = new Map<number, string>()
+  for (const resource of resources) {
+    accounts.set(resource.accountId, resource.type === "account" ? resource.label : resource.accountLabel)
+  }
+  return [...accounts].map(([id, label]) => ({ id, label })).sort((left, right) => left.id - right.id)
+}
+
+function chooseResource(resources: readonly ResourceOption[], preferred: Pick<FormSnapshot, "accountId" | "folderId" | "resourceType">): DelegationResource | null {
+  const preferredResource = selectedResource(resources, preferred.resourceType, preferred.accountId, preferred.folderId)
+  if (preferredResource) return preferredResource
+  const first = resources[0]
+  return first ? resourceValue(first) : null
+}
+
+function chooseSubject(
+  subjects: readonly SubjectOption[],
+  preferred: Pick<FormSnapshot, "subjectId" | "subjectType">,
+): SubjectOption | null {
+  return subjects.find((subject) => subject.type === preferred.subjectType && String(subject.id) === preferred.subjectId)
+    ?? subjects.find((subject) => subject.type === "user")
+    ?? subjects[0]
+    ?? null
+}
+
+function selectedResource(
+  resources: readonly ResourceOption[],
+  type: "account" | "folder",
+  accountId: string,
+  folderId: string,
+): DelegationResource | null {
+  const option = resources.find((resource) => (
+    resource.type === type
+    && String(resource.accountId) === accountId
+    && (resource.type === "account" || String(resource.folderId) === folderId)
   ))
+  return option ? resourceValue(option) : null
+}
+
+function resourceValue(resource: ResourceOption): DelegationResource {
+  return resource.type === "account"
+    ? { type: "account", accountId: resource.accountId }
+    : { type: "folder", accountId: resource.accountId, folderId: resource.folderId }
+}
+
+function resourceIsVisible(resource: DelegationBinding["resource"], resources: readonly ResourceOption[]): boolean {
+  return resources.some((option) => {
+    if (option.type !== resource.type || option.accountId !== resource.accountId) return false
+    if (option.type === "account" && resource.type === "account") return true
+    return option.type === "folder" && resource.type === "folder" && option.folderId === resource.folderId
+  })
+}
+
+function sameSubject(left: SubjectOption, right: DelegationBinding["subject"]): boolean {
+  return left.type === right.type && String(left.id) === String(right.id)
 }

@@ -31,9 +31,11 @@ import type {
   ServerDatabase,
 } from '../../packages/server/src/db/schema';
 import { createPostgresMailAccessPort } from '../../packages/server/src/mail-access/postgres-mail-access-port';
+import { createPostgresMailDelegationPort } from '../../packages/server/src/mail-access/postgres-mail-delegation-port';
 import { MailAccessService } from '../../packages/server/src/mail-access/service';
 import type { MailSqlScope } from '../../packages/server/src/mail-access/types';
 import { serverMigrations } from '../../packages/server/src/migrations';
+import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
 
@@ -91,6 +93,22 @@ const CATEGORY_A = 501;
 const GROUP_A = 301;
 const GROUP_A_REMOVED = 302;
 const GROUP_B = 401;
+const DELEGATION_WORKSPACE = '33333333-3333-4333-8333-333333333333';
+const DELEGATION_OTHER_WORKSPACE = '44444444-4444-4444-8444-444444444444';
+const DELEGATION_OWNER = '30000000-0000-4000-8000-000000000001';
+const DELEGATION_ADMIN = '30000000-0000-4000-8000-000000000002';
+const DELEGATION_MANAGER = '30000000-0000-4000-8000-000000000003';
+const DELEGATION_TARGET = '30000000-0000-4000-8000-000000000004';
+const DELEGATION_DISABLED = '30000000-0000-4000-8000-000000000005';
+const DELEGATION_CONCURRENT_TARGET = '30000000-0000-4000-8000-000000000006';
+const DELEGATION_OTHER_USER = '40000000-0000-4000-8000-000000000001';
+const DELEGATION_ACCOUNT = 9101;
+const DELEGATION_UNMANAGED_ACCOUNT = 9102;
+const DELEGATION_OTHER_ACCOUNT = 9103;
+const DELEGATION_FOLDER = 9201;
+const DELEGATION_UNMANAGED_FOLDER = 9202;
+const DELEGATION_OTHER_FOLDER = 9203;
+const DELEGATION_GROUP = 9301;
 const MIGRATION_ROLE = 'simplecrm_mail_acl_migrator';
 const MIGRATION_ROLE_PASSWORD = 'mail-acl-migrator-password';
 const MIGRATION_0038_PERMISSION_KEYS = [
@@ -211,6 +229,13 @@ async function readableToBuffer(stream: Readable): Promise<Buffer> {
   return Buffer.concat(chunks);
 }
 
+function delegationSelectCount(queries: readonly string[]): number {
+  return queries.filter((query) => (
+    /^\s*select\b/i.test(query)
+    && !query.includes('set_config')
+  )).length;
+}
+
 describe('server mailbox ACL migration', () => {
   let adminClient: DatabaseClient;
   let client: DatabaseClient;
@@ -311,7 +336,10 @@ describe('server mailbox ACL migration', () => {
     `);
   }
 
-  function createApplicationDb(): Kysely<ServerDatabase> {
+  function createApplicationDb(options: Readonly<{
+    maxConnections?: number;
+    onQuery?: (sqlText: string) => void;
+  }> = {}): Kysely<ServerDatabase> {
     return new Kysely<ServerDatabase>({
       dialect: new PostgresDialect({
         pool: new Pool({
@@ -320,9 +348,12 @@ describe('server mailbox ACL migration', () => {
           user: MIGRATION_ROLE,
           password: MIGRATION_ROLE_PASSWORD,
           database: 'postgres',
-          max: 1,
+          max: options.maxConnections ?? 1,
         }),
       }),
+      log(event) {
+        if (event.level === 'query') options.onQuery?.(event.query.sql);
+      },
     });
   }
 
@@ -1777,6 +1808,336 @@ describe('server mailbox ACL migration', () => {
     } finally {
       await db.destroy();
     }
+  });
+
+  describe('PostgreSQL mail delegation port', () => {
+    const pageUserIds = Array.from({ length: 10 }, (_, index) => (
+      `30000000-0000-4000-8000-${String(100 + index).padStart(12, '0')}`
+    ));
+    const pageGroupIds = Array.from({ length: 10 }, (_, index) => 9310 + index);
+
+    beforeAll(async () => {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO workspaces (id, name) VALUES
+          ('${DELEGATION_WORKSPACE}', 'Delegation Workspace'),
+          ('${DELEGATION_OTHER_WORKSPACE}', 'Delegation Other Workspace')
+        ON CONFLICT DO NOTHING
+      `);
+      const fixedUsers = [
+        [DELEGATION_OWNER, DELEGATION_WORKSPACE, 'delegation-owner@example.test', 'Delegation Owner', 'owner', 'NULL'],
+        [DELEGATION_ADMIN, DELEGATION_WORKSPACE, 'delegation-admin@example.test', 'Delegation Admin', 'admin', 'NULL'],
+        [DELEGATION_MANAGER, DELEGATION_WORKSPACE, 'delegation-manager@example.test', 'Delegation Manager', 'user', 'NULL'],
+        [DELEGATION_TARGET, DELEGATION_WORKSPACE, 'delegation-target@example.test', 'Delegation Target', 'user', 'NULL'],
+        [DELEGATION_CONCURRENT_TARGET, DELEGATION_WORKSPACE, 'delegation-concurrent@example.test', 'Concurrent Target', 'user', 'NULL'],
+        [DELEGATION_DISABLED, DELEGATION_WORKSPACE, 'delegation-disabled@example.test', 'Disabled Target', 'user', "'2026-07-20T10:00:00.000Z'"],
+        [DELEGATION_OTHER_USER, DELEGATION_OTHER_WORKSPACE, 'delegation-other@example.test', 'Other Workspace Target', 'user', 'NULL'],
+      ].map(([id, workspaceId, email, name, role, disabledAt]) => (
+        `('${id}', '${workspaceId}', '${email}', '${name}', 'hash', '${role}', ${disabledAt})`
+      ));
+      const pageUsers = pageUserIds.map((id, index) => (
+        `('${id}', '${DELEGATION_WORKSPACE}', 'delegation-page-${index}@example.test', 'Page User ${index}', 'hash', 'user', NULL)`
+      ));
+      await client.query(`
+        INSERT INTO users (id, workspace_id, email, display_name, password_hash, role, disabled_at)
+        VALUES ${[...fixedUsers, ...pageUsers].join(',\n')}
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO user_groups (id, workspace_id, name) VALUES
+          (${DELEGATION_GROUP}, '${DELEGATION_WORKSPACE}', 'Delegation Group'),
+          ${pageGroupIds.map((id, index) => `(${id}, '${DELEGATION_WORKSPACE}', 'Page Group ${index}')`).join(',\n')},
+          (9399, '${DELEGATION_OTHER_WORKSPACE}', 'Other Workspace Group')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO email_accounts (
+          id, workspace_id, source_sqlite_id, display_name, email_address, imap_host, imap_username
+        ) VALUES
+          (${DELEGATION_ACCOUNT}, '${DELEGATION_WORKSPACE}', 9101, 'Managed Account', 'managed@example.test', 'imap.example.test', 'managed'),
+          (${DELEGATION_UNMANAGED_ACCOUNT}, '${DELEGATION_WORKSPACE}', 9102, 'Unmanaged Account', 'unmanaged@example.test', 'imap.example.test', 'unmanaged'),
+          (${DELEGATION_OTHER_ACCOUNT}, '${DELEGATION_OTHER_WORKSPACE}', 9103, 'Other Account', 'other-delegation@example.test', 'imap.example.test', 'other')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO email_folders (
+          id, workspace_id, source_sqlite_id, account_source_sqlite_id, account_id, path
+        ) VALUES
+          (${DELEGATION_FOLDER}, '${DELEGATION_WORKSPACE}', 9201, 9101, ${DELEGATION_ACCOUNT}, 'Managed Folder'),
+          (${DELEGATION_UNMANAGED_FOLDER}, '${DELEGATION_WORKSPACE}', 9202, 9102, ${DELEGATION_UNMANAGED_ACCOUNT}, 'Unmanaged Folder'),
+          (${DELEGATION_OTHER_FOLDER}, '${DELEGATION_OTHER_WORKSPACE}', 9203, 9103, ${DELEGATION_OTHER_ACCOUNT}, 'Other Folder')
+        ON CONFLICT DO NOTHING
+      `);
+      const unauthorizedBindings = [
+        `(9401, '${DELEGATION_WORKSPACE}', 'user', '${DELEGATION_TARGET}', 'account', ${DELEGATION_UNMANAGED_ACCOUNT}, NULL, NULL, '${DELEGATION_OWNER}')`,
+        `(9402, '${DELEGATION_WORKSPACE}', 'group', '${DELEGATION_GROUP}', 'folder', ${DELEGATION_UNMANAGED_ACCOUNT}, ${DELEGATION_UNMANAGED_FOLDER}, NULL, '${DELEGATION_OWNER}')`,
+      ];
+      const pageBindings = Array.from({ length: 20 }, (_, index) => {
+        const id = 9501 + index;
+        if (index % 2 === 0) {
+          return `(${id}, '${DELEGATION_WORKSPACE}', 'user', '${pageUserIds[index / 2]}', 'account', ${DELEGATION_ACCOUNT}, NULL, NULL, '${DELEGATION_OWNER}')`;
+        }
+        return `(${id}, '${DELEGATION_WORKSPACE}', 'group', '${pageGroupIds[(index - 1) / 2]}', 'folder', ${DELEGATION_ACCOUNT}, ${DELEGATION_FOLDER}, NULL, '${DELEGATION_OWNER}')`;
+      });
+      await client.query(`
+        INSERT INTO mail_acl_bindings (
+          id, workspace_id, subject_type, subject_id, resource_type,
+          account_id, folder_id, message_id, created_by
+        ) VALUES
+          ${[...unauthorizedBindings, ...pageBindings,
+            `(9590, '${DELEGATION_WORKSPACE}', 'user', '${DELEGATION_MANAGER}', 'account', ${DELEGATION_ACCOUNT}, NULL, NULL, '${DELEGATION_OWNER}')`,
+            `(9600, '${DELEGATION_OTHER_WORKSPACE}', 'user', '${DELEGATION_OTHER_USER}', 'account', ${DELEGATION_OTHER_ACCOUNT}, NULL, NULL, '${DELEGATION_OTHER_USER}')`,
+          ].join(',\n')}
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO mail_acl_binding_permissions (binding_id, permission_key)
+        SELECT id,
+          CASE WHEN id = 9590 THEN 'mail.delegation.manage' ELSE 'mail.metadata.read' END
+        FROM mail_acl_bindings
+        WHERE id BETWEEN 9401 AND 9600
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+    });
+
+    afterAll(async () => {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    });
+
+    test('uses a constant real query count for small and large pages and filters authorization before limit', async () => {
+      const queries: string[] = [];
+      const db = createApplicationDb({ maxConnections: 4, onQuery: (query) => queries.push(query) });
+      const port = createPostgresMailDelegationPort({ db });
+      const ownerActor = { userId: DELEGATION_OWNER, isOwner: true, isAdmin: false };
+      try {
+        queries.length = 0;
+        const small = await port.listBindings({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor: ownerActor,
+          cursor: 9500,
+          limit: 2,
+        });
+        const smallSelects = delegationSelectCount(queries);
+
+        queries.length = 0;
+        const large = await port.listBindings({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor: ownerActor,
+          cursor: 9500,
+          limit: 20,
+        });
+        const largeSelects = delegationSelectCount(queries);
+        const managerPage = await port.listBindings({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor: { userId: DELEGATION_MANAGER, isOwner: false, isAdmin: false },
+          limit: 1,
+        });
+
+        expect(small).toMatchObject({ ok: true, bindings: [{ id: 9501 }, { id: 9502 }], nextCursor: 9502 });
+        expect(large).toMatchObject({ ok: true, nextCursor: 9520 });
+        expect(smallSelects).toBe(6);
+        expect(largeSelects).toBe(6);
+        expect(managerPage).toMatchObject({ ok: true, bindings: [{ id: 9501 }] });
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    test('lists only manageable resources and minimized same-workspace active subjects without metadata grants', async () => {
+      const db = createApplicationDb({ maxConnections: 4 });
+      const basePort = createPostgresMailDelegationPort({ db });
+      const port = basePort as typeof basePort & {
+        listResourceOptions(input: Record<string, unknown>): Promise<any>;
+        listSubjectOptions(input: Record<string, unknown>): Promise<any>;
+      };
+      const actor = { userId: DELEGATION_MANAGER, isOwner: false, isAdmin: false };
+      try {
+        const accounts = await port.listResourceOptions({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          resourceType: 'account',
+          limit: 100,
+        });
+        const folders = await port.listResourceOptions({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          resourceType: 'folder',
+          limit: 100,
+        });
+        const users = await port.listSubjectOptions({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          resource: { type: 'account', accountId: DELEGATION_ACCOUNT },
+          subjectType: 'user',
+          limit: 100,
+        });
+        const groups = await port.listSubjectOptions({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          resource: { type: 'account', accountId: DELEGATION_ACCOUNT },
+          subjectType: 'group',
+          limit: 100,
+        });
+
+        expect(accounts).toEqual({
+          ok: true,
+          resources: [{ type: 'account', accountId: DELEGATION_ACCOUNT, label: 'Managed Account' }],
+          nextCursor: null,
+        });
+        expect(folders).toEqual({
+          ok: true,
+          resources: [{
+            type: 'folder',
+            accountId: DELEGATION_ACCOUNT,
+            folderId: DELEGATION_FOLDER,
+            accountLabel: 'Managed Account',
+            label: 'Managed Folder',
+          }],
+          nextCursor: null,
+        });
+        expect(users.subjects).toContainEqual({ type: 'user', id: DELEGATION_TARGET, label: 'Delegation Target' });
+        expect(users.subjects).not.toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: DELEGATION_OWNER }),
+          expect.objectContaining({ id: DELEGATION_ADMIN }),
+          expect.objectContaining({ id: DELEGATION_DISABLED }),
+          expect.objectContaining({ id: DELEGATION_OTHER_USER }),
+        ]));
+        expect(groups.subjects).toContainEqual({ type: 'group', id: DELEGATION_GROUP, label: 'Delegation Group' });
+        expect(groups.subjects).not.toContainEqual(expect.objectContaining({ id: 9399 }));
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    test('enforces workspace RLS for raw and hydrated delegation reads', async () => {
+      const db = createApplicationDb({ maxConnections: 2 });
+      const port = createPostgresMailDelegationPort({ db });
+      try {
+        const rawRows = await withWorkspaceTransaction(
+          db,
+          { workspaceId: DELEGATION_WORKSPACE, userId: DELEGATION_OWNER, role: 'owner' },
+          (trx) => trx.selectFrom('mail_acl_bindings').select(['workspace_id']).execute(),
+        );
+        const hydrated = await port.listBindings({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor: { userId: DELEGATION_OWNER, isOwner: true, isAdmin: false },
+          limit: 100,
+        });
+
+        expect(new Set(rawRows.map((row) => row.workspace_id))).toEqual(new Set([DELEGATION_WORKSPACE]));
+        expect(hydrated.ok).toBe(true);
+        if (hydrated.ok) {
+          expect(hydrated.bindings.some((binding) => binding.resource.accountId === DELEGATION_OTHER_ACCOUNT)).toBe(false);
+        }
+      } finally {
+        await db.destroy();
+      }
+    });
+
+    test('serializes parallel creates into one full binding without duplicate or 500', async () => {
+      const db = createApplicationDb({ maxConnections: 4 });
+      const port = createPostgresMailDelegationPort({ db });
+      const actor = { userId: DELEGATION_OWNER, isOwner: true, isAdmin: false };
+      const input = {
+        workspaceId: DELEGATION_WORKSPACE,
+        actor,
+        subject: { type: 'user' as const, id: DELEGATION_CONCURRENT_TARGET },
+        resource: { type: 'account' as const, accountId: DELEGATION_UNMANAGED_ACCOUNT },
+      };
+      try {
+        await port.replaceBinding({ ...input, permissions: [] });
+        await client.query(`
+          CREATE OR REPLACE FUNCTION task7_delay_parallel_binding_insert()
+          RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.subject_id = '${DELEGATION_CONCURRENT_TARGET}'
+              AND NEW.resource_type = 'account'
+              AND NEW.account_id = ${DELEGATION_UNMANAGED_ACCOUNT}
+            THEN
+              PERFORM pg_sleep(0.25);
+            END IF;
+            RETURN NEW;
+          END $$
+        `);
+        await client.query(`
+          CREATE TRIGGER task7_delay_parallel_binding_insert
+          BEFORE INSERT ON mail_acl_bindings
+          FOR EACH ROW EXECUTE FUNCTION task7_delay_parallel_binding_insert()
+        `);
+        const results = await Promise.allSettled([
+          port.replaceBinding({ ...input, permissions: ['mail.metadata.read'] }),
+          port.replaceBinding({ ...input, permissions: ['mail.send'] }),
+        ]);
+        const stored = await withWorkspaceTransaction(
+          db,
+          { workspaceId: DELEGATION_WORKSPACE, userId: DELEGATION_OWNER, role: 'owner' },
+          async (trx) => {
+            const rows = await trx
+              .selectFrom('mail_acl_bindings')
+              .innerJoin('mail_acl_binding_permissions', 'mail_acl_binding_permissions.binding_id', 'mail_acl_bindings.id')
+              .select(['mail_acl_bindings.id', 'mail_acl_binding_permissions.permission_key'])
+              .where('mail_acl_bindings.subject_id', '=', DELEGATION_CONCURRENT_TARGET)
+              .where('mail_acl_bindings.resource_type', '=', 'account')
+              .where('mail_acl_bindings.account_id', '=', DELEGATION_UNMANAGED_ACCOUNT)
+              .execute();
+            return rows;
+          },
+        );
+
+        expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+        expect(new Set(stored.map((row) => row.id)).size).toBe(1);
+        expect([['mail.metadata.read'], ['mail.send']]).toContainEqual(stored.map((row) => row.permission_key));
+      } finally {
+        await client.query('DROP TRIGGER IF EXISTS task7_delay_parallel_binding_insert ON mail_acl_bindings');
+        await client.query('DROP FUNCTION IF EXISTS task7_delay_parallel_binding_insert()');
+        await db.destroy();
+      }
+    });
+
+    test('resolves parallel patch and delete as serialized success or binding_not_found without throwing', async () => {
+      const db = createApplicationDb({ maxConnections: 4 });
+      const port = createPostgresMailDelegationPort({ db });
+      const actor = { userId: DELEGATION_OWNER, isOwner: true, isAdmin: false };
+      try {
+        const created = await port.replaceBinding({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          subject: { type: 'user', id: DELEGATION_CONCURRENT_TARGET },
+          resource: { type: 'folder', accountId: DELEGATION_UNMANAGED_ACCOUNT, folderId: DELEGATION_UNMANAGED_FOLDER },
+          permissions: ['mail.metadata.read'],
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok || !created.binding) return;
+
+        const results = await Promise.allSettled([
+          port.deleteBinding({
+            workspaceId: DELEGATION_WORKSPACE,
+            actor,
+            bindingId: created.binding.id,
+          }),
+          port.replaceBindingById({
+            workspaceId: DELEGATION_WORKSPACE,
+            actor,
+            bindingId: created.binding.id,
+            permissions: ['mail.send'],
+          }),
+        ]);
+
+        expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+        const values = results.map((result) => result.status === 'fulfilled' ? result.value : null);
+        expect(values[0]).toMatchObject({ ok: true });
+        const patchValue = values[1];
+        expect(
+          typeof patchValue === 'object'
+          && patchValue !== null
+          && 'ok' in patchValue
+          && ((patchValue as { ok: boolean }).ok || (patchValue as { code?: string }).code === 'binding_not_found'),
+        ).toBe(true);
+      } finally {
+        await db.destroy();
+      }
+    });
   });
 
   test('down removes only ACL objects and preserves the legacy table', async () => {

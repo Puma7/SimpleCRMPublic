@@ -1,0 +1,6 @@
+Running one project: integration
+Test Suites: 1 passed, 1 total
+Tests:       27 passed, 27 total
+Snapshots:   0 total
+Time:        15.249 s
+Ran all test suites within paths "tests/integration/server-mail-access-routes.test.ts".

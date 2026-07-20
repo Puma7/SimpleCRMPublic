@@ -72,6 +72,44 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({ accountId: positiveInt.optional() }).optional(),
     result: recordArray,
   });
+  set(IPCChannels.Email.ListMailDelegationResources, {
+    payload: z.object({
+      resourceType: z.enum(['account', 'folder']),
+      cursor: positiveInt.optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    result: z.object({
+      items: z.array(z.discriminatedUnion('type', [
+        z.object({ type: z.literal('account'), accountId: positiveInt, label: nonEmptyString }),
+        z.object({
+          type: z.literal('folder'),
+          accountId: positiveInt,
+          folderId: positiveInt,
+          accountLabel: nonEmptyString,
+          label: nonEmptyString,
+        }),
+      ])),
+      nextCursor: positiveInt.nullable(),
+    }),
+  });
+  set(IPCChannels.Email.ListMailDelegationSubjects, {
+    payload: z.object({
+      resource: z.union([
+        z.object({ type: z.literal('account'), accountId: positiveInt }),
+        z.object({ type: z.literal('folder'), accountId: positiveInt, folderId: positiveInt }),
+      ]),
+      subjectType: z.enum(['user', 'group']),
+      cursor: nonEmptyString.optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+    result: z.object({
+      items: z.array(z.discriminatedUnion('type', [
+        z.object({ type: z.literal('user'), id: nonEmptyString, label: nonEmptyString }),
+        z.object({ type: z.literal('group'), id: positiveInt, label: nonEmptyString }),
+      ])),
+      nextCursor: nonEmptyString.nullable(),
+    }),
+  });
   set(IPCChannels.Email.ListMailDelegationBindings, {
     payload: z.object({
       accountId: positiveInt.optional(),

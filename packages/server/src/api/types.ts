@@ -746,6 +746,14 @@ export type MailDelegationResource =
   | { type: 'account'; accountId: number; label?: string }
   | { type: 'folder'; accountId: number; folderId: number; label?: string };
 
+export type MailDelegationResourceOption =
+  | { type: 'account'; accountId: number; label: string }
+  | { type: 'folder'; accountId: number; folderId: number; accountLabel: string; label: string };
+
+export type MailDelegationSubjectOption =
+  | { type: 'user'; id: string; label: string }
+  | { type: 'group'; id: number; label: string };
+
 export type MailDelegationBinding = {
   id: number;
   subject: MailDelegationSubject;
@@ -763,6 +771,7 @@ export type MailDelegationActor = {
 
 export type MailDelegationMutationCode =
   | 'binding_not_found'
+  | 'binding_conflict'
   | 'permission_denied'
   | 'privilege_escalation'
   | 'resource_not_found'
@@ -770,6 +779,28 @@ export type MailDelegationMutationCode =
   | 'owner_admin_subject_forbidden';
 
 export type MailDelegationApiPort = {
+  listResourceOptions(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    resourceType: MailDelegationResource['type'];
+    cursor?: number;
+    limit: number;
+  }): Promise<{
+    ok: true;
+    resources: readonly MailDelegationResourceOption[];
+    nextCursor: number | null;
+  }>;
+  listSubjectOptions(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    resource: MailDelegationResource;
+    subjectType: MailDelegationSubject['type'];
+    cursor?: string;
+    limit: number;
+  }): Promise<
+    | { ok: true; subjects: readonly MailDelegationSubjectOption[]; nextCursor: string | null }
+    | { ok: false; code: 'permission_denied' | 'resource_not_found' }
+  >;
   listBindings(input: {
     workspaceId: string;
     actor: MailDelegationActor;

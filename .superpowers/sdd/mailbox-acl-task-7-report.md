@@ -166,3 +166,134 @@ Base: `b247869`
 ### Restbedenken Review-Fix
 
 - Keine bestaetigten offenen Task-7-Blocker. Der Browser-E2E verwendet echte API-/HTTP-/WebSocket-Komposition mit deterministischen In-Memory-Ports; die PostgreSQL-Queryform wird separat durch Port-/Query-Count-Tests und Server-Build abgedeckt.
+
+---
+
+## Zweite Review-Fix-Welle 2026-07-20
+
+Base: `e850251`
+
+### Bestaetigte Important Findings
+
+1. Das Panel benoetigte globale User-/Mail-Listen und funktionierte fuer delegierte Manager ohne `users.manage` bzw. `mail.metadata.read` nicht.
+2. Ein fehlgeschlagener ACL-Refetch konnte veralteten autorisierungsabhaengigen UI-State erhalten oder wiederherstellen.
+3. Query-Bounds, RLS und Parallelmutationen waren noch nicht gegen echtes PostgreSQL belegt.
+4. Der Browser-Test belegte weder alle Revoke-Refetches noch Live-/Replay-Isolation gegen einen zweiten Principal.
+5. Parallele Creates sowie PATCH gegen DELETE hatten keine explizit verifizierte konfliktfeste Replace-Semantik.
+
+### RED
+
+- Delegations-API und Validierung:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/server-mail-delegation-api.test.ts --runInBand`
+  - Ergebnis: 2 Tests fehlgeschlagen; policy-scoped Resource-/Subject-Routes waren `404` und die neue Cursor-/Resource-Validierung fehlte.
+  - Evidence: `.hermes/reports/task-7-review2-api-red.log`
+- Shared-/HTTP-Transport:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/renderer-transport.test.ts --runInBand`
+  - Ergebnis: neue Delegations-Options-Channels hatten kein HTTP-Mapping.
+  - Evidence: `.hermes/reports/task-7-review2-transport-red.log`
+- Row-Locking:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/server-mail-delegation-port.test.ts --runInBand`
+  - Ergebnis: PATCH und DELETE fuehrten kein `FOR UPDATE` auf der Binding-Zeile aus.
+  - Evidence: `.hermes/reports/task-7-review2-locking-red.log`
+- Echtes PostgreSQL:
+  - Befehl: `pnpm exec jest --selectProjects integration --runTestsByPath tests/integration/server-mail-access-routes.test.ts --runInBand`
+  - Ergebnis: 3 Tests fehlgeschlagen; `int8`-IDs waren nicht normalisiert, Resource-Optionen fehlten und ein erzwungenes paralleles Create lief in den Unique-Konflikt.
+  - Evidence: `.hermes/reports/task-7-review2-postgres-red.log`
+- Fail-closed UI:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/mail-delegation-panel.test.tsx --runInBand`
+  - Ergebnis: 4 Tests fehlgeschlagen; das Panel verwendete weiterhin globale User-/Account-/Folder-Listen und invalidierte den State nicht fail-closed.
+  - Evidence: `.hermes/reports/task-7-review2-panel-red.log`
+- Server-Client Playwright:
+  - Befehl: `pnpm exec playwright test --config tests/e2e/playwright.server-client.config.ts`
+  - Ergebnis: echter Browser/HTTP-RED mit `500` auf beiden Resource-Options-Routes, da dem Harness-Port die neuen policy-scoped Methoden noch fehlten.
+  - Evidence: `.hermes/reports/task-7-review2-e2e-red.log`
+
+### GREEN
+
+- API, Port und Transport:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/server-mail-delegation-api.test.ts tests/unit/server-mail-delegation-port.test.ts tests/unit/renderer-transport.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 3 passed, 3 total`; `Tests: 152 passed, 152 total`.
+  - Evidence: `.hermes/reports/task-7-review2-api-port-transport-green.log`
+- Fail-closed Panel:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/mail-delegation-panel.test.tsx --runInBand`
+  - Ergebnis: `Test Suites: 1 passed`; `Tests: 4 passed`; umfasst bounded Pagination, transienten Fehler, invertierte Responses, Retry, StrictMode und Unmount.
+  - Evidence: `.hermes/reports/task-7-review2-panel-green.log`
+- Reales PostgreSQL:
+  - Befehl: `pnpm exec jest --selectProjects integration --runTestsByPath tests/integration/server-mail-access-routes.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 1 passed`; `Tests: 27 passed`; echte Migration, Kysely/pg-Queries, RLS und Paralleltransaktionen.
+  - Evidence: `.hermes/reports/task-7-review2-postgres-green.log`
+- Fokussierte Unit-Komposition:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/server-mail-delegation-api.test.ts tests/unit/server-mail-delegation-port.test.ts tests/unit/renderer-transport.test.ts tests/unit/mail-delegation-panel.test.tsx tests/unit/server-mail-job-event-acl.test.ts tests/unit/mail-settings-server-client-ui.test.tsx tests/unit/email-settings-navigation.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 7 passed, 7 total`; `Tests: 182 passed, 182 total`.
+  - Evidence: `.hermes/reports/task-7-review2-focused-unit-attempt.log`
+- Fokussierte Integration:
+  - Befehl: `pnpm exec jest --selectProjects integration --runTestsByPath tests/integration/server-mail-access-routes.test.ts tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 2 passed, 2 total`; `Tests: 28 passed, 28 total`.
+  - Evidence: `.hermes/reports/task-7-review2-focused-integration-attempt.log`
+- Vollstaendiger Server-Client Playwright:
+  - Befehl: `pnpm exec playwright test --config tests/e2e/playwright.server-client.config.ts`
+  - Ergebnis: `1 passed (4.5s)`; Profil `triage`, individuelles `mail.send`, echte HTTP-Mutation, Owner-Revoke, zielgefiltertes Live-Event, Account-/Folder-/Binding-Options-Refetch, sichtbares Entfernen und Replay-Isolation.
+  - Evidence: `.hermes/reports/task-7-review2-e2e-green.log`
+- Lint:
+  - Befehl: `pnpm run lint`
+  - Ergebnis: Exit `0`, `eslint . --ext ts,tsx --max-warnings 0`.
+  - Evidence: `.hermes/reports/task-7-review2-lint-attempt.log`
+- Server-Build:
+  - Befehl: `pnpm --filter @simplecrm/server build`
+  - Ergebnis: Exit `0`, `tsc -p tsconfig.json`.
+  - Evidence: `.hermes/reports/task-7-review2-server-build-green.log`
+- Root-Typecheck:
+  - Befehl: `pnpm run typecheck`
+  - Ergebnis: Exit `0`, vollstaendige Root-TS-Kette.
+  - Evidence: `.hermes/reports/task-7-review2-root-typecheck-attempt.log`
+- Whitespace:
+  - Befehl: `git diff --check`
+  - Ergebnis: Exit `0`, keine Beanstandung.
+  - Evidence: `.hermes/reports/task-7-review2-git-diff-check.log`
+
+### Implementierte Dateien
+
+- Backend: `packages/server/src/api/types.ts`, `packages/server/src/api/mail-delegation-routes.ts`, `packages/server/src/api/openapi.ts`, `packages/server/src/mail-access/postgres-mail-delegation-port.ts`.
+- Shared/Transport: `shared/ipc/channels.ts`, `shared/ipc/email-schemas.ts`, `src/services/transport/channel-http-registry.ts`.
+- UI: `src/components/email/settings/mail-delegation-panel.tsx`.
+- Tests: `tests/unit/server-mail-delegation-api.test.ts`, `tests/unit/server-mail-delegation-port.test.ts`, `tests/unit/renderer-transport.test.ts`, `tests/unit/mail-delegation-panel.test.tsx`, `tests/integration/server-mail-access-routes.test.ts`, `tests/e2e/mail-delegation-server-client.spec.ts`.
+
+### Architekturentscheidungen
+
+- `GET /api/v1/email/access/resources` liefert getrennt paginierte Account- oder Folder-Optionen. Delegierte Manager sehen nur Ressourcen mit effektivem `mail.delegation.manage`; Account-Grants decken Folder ab, Folder-Grants nur den exakten Folder. Labels enthalten nur Account-Anzeigename bzw. Folder-Pfad.
+- `GET /api/v1/email/access/subjects` ist an eine konkrete, zuvor validierte Ressource gebunden. Erst nach `mail.delegation.manage` werden aktive same-workspace User mit Rolle `user` als `id + display_name` oder same-workspace Gruppen als `id + name` geliefert. Globale `/auth/users`, Account- und Folder-Listen sind aus dem Panel entfernt.
+- Alle drei Listenfamilien verwenden deterministische ID-Cursor, Default `50`, Maximum `100`, `limit + 1` und Fortschritts-/Wiederholungsschutz im Renderer. Das Panel laedt jede Seite kontrolliert bis `nextCursor: null`.
+- Binding-Hydration bleibt bei hoechstens sechs Selects pro Seite: Binding, Permissions, Users, Groups, Accounts und Folders. Reale kleine und grosse Seiten benoetigen jeweils genau sechs Selects; alle `IN`-Mengen sind durch Page-Limit `100` begrenzt.
+- Bei `email_acl.changed` leert das Panel synchron Ressourcen, Subjects, Bindings, Account-/Folder-/Subject-/Edit-ID, Profil und Permissions und sperrt Save. Nur die neueste vollstaendig erfolgreiche Resource-/Binding-/Subject-Generation aktiviert Save wieder; Fehler, spaete Responses und Unmount koennen keinen State zurueckspielen.
+- Create nutzt den bestehenden NULLS-NOT-DISTINCT-Unique-Key per `ON CONFLICT ... DO UPDATE`; bestehende Zeilen werden mit `FOR UPDATE` serialisiert. Der danach ausgefuehrte Delete/Insert der vollstaendigen Permission-Menge liegt in derselben workspace-gebundenen Transaktion. PATCH/DELETE laden ebenfalls mit `FOR UPDATE` und geben bei verschwundener Zeile `binding_not_found` statt eines Throws zurueck.
+- PostgreSQL-`int8`-Werte werden an der Port-Grenze auf sichere positive JavaScript-Integer normalisiert. Unzulaessige/null Werte fuer Pflicht-IDs brechen fail-closed ab.
+
+### PostgreSQL-Fixture und Beweise
+
+- Die bestehende Integration startet ein ephemeres lokales PostgreSQL, erzeugt eine nichtprivilegierte Rolle ohne `BYPASSRLS`, wendet die Repo-Migrationen bis einschliesslich `0038_mail_acl` an und instrumentiert reale Kysely-Queries ueber `log(event.level === 'query')`.
+- Kleine Seite (`limit 2`) und grosse Seite (`limit 20`) verwenden jeweils sechs Selects. Vor den erlaubten Rows liegende nicht verwaltbare Bindings beweisen, dass die Manager-Autorisierung vor `LIMIT` im SQL-`WHERE EXISTS` erfolgt.
+- Raw-RLS und hydratisierte Port-Antworten enthalten ausschliesslich die Session-Workspace. Options-Tests schliessen fremde Workspace-User, Gruppen und Ressourcen sowie Owner/Admin/disabled User aus.
+- Ein temporaerer PostgreSQL-Trigger synchronisiert parallele Inserts derselben Subject-/Resource-Bindung und erzwingt die Unique-Race. Beide Aufrufe erfuellen sich, es bleibt genau eine Binding-ID mit einem vollstaendigen Grant-Satz.
+- Paralleles PATCH/DELETE endet fuer beide Promises definiert als Erfolg oder `binding_not_found`; keine Operation wirft und kein `executeTakeFirstOrThrow` ist im Pfad verblieben. Trigger/Funktion, DB-Pools und der PostgreSQL-Kindprozess werden im `finally`/`afterAll` entfernt bzw. beendet.
+
+### Playwright Start, Fixture und Cleanup
+
+- Vite-Middleware und Fastify binden weiterhin ausschliesslich OS-Ports `0`. Der echte Renderer verwendet `createHttpRendererTransport`; Fastify verwendet echte Task-7-Routes, Event-WebSocket, Replay und denselben `filterMailEventForPrincipal` fuer live und replay.
+- Der Manager-Principal hat Rolle `user`, keine Capabilities und nur den vom Delegations-Port modellierten `mail.delegation.manage`-Zugriff. Globale User-/Account-/Folder-Ports werfen bei Benutzung und blieben mit Zaehler `0` unberuehrt.
+- Nach Revoke werden Account-Resource-, Folder-Resource- und Binding-Listenaufrufe separat als gestiegen beobachtet. Ohne verbleibende Ressource wird kein Subject-Options-IDOR ausgefuehrt; Account, Binding und Save verschwinden bzw. werden gesperrt.
+- Ein zweiter gleichzeitig verbundener same-workspace Principal sammelt Browser-WebSocket-Nachrichten. Er erhaelt das zielgerichtete `email_acl.changed` weder live noch bei neuer Verbindung mit `since=0` aus dem Replay.
+- Der Test schliesst beide beobachteten Sockets und die Panel-Seite und wartet auf `activeEventSubscriptions === 0`; `afterAll` schliesst Fastify, HTTP-Verbindungen, Node-HTTP-Server und Vite. Nach dem finalen Lauf blieb kein Harness-Listener. Der sichtbare Listener `127.0.0.1:5173` gehoert seit 2026-07-18 zu einem fremden Workspace und wurde nicht angefasst.
+
+### Self-Review
+
+- Subject-Leakage: Subject-Listen werden nie ohne konkrete same-workspace Ressource und erfolgreiche Manage-Pruefung ausgefuehrt; Responses enthalten keine Mailadresse, Rolle, Aktivstatus oder sonstige Userattribute.
+- Resource-Option-IDOR: Nicht-Admin-Queries binden Workspace, Actor-User bzw. aktive Gruppenmitgliedschaft, `mail.delegation.manage` und Account-/Folder-Coverage im SQL. Unmanaged und cross-workspace IDs liefern keine Labels.
+- SQL-Bounds/N+1: jede Route erzwingt `1..100`; Autorisierungsfilter und Cursor liegen vor `LIMIT`; Hydrierung arbeitet ausschliesslich mit page-bounded Bulk-IDs und ohne per-Binding Query.
+- Deadlocks/Lost Updates: gleiche Bindings folgen einem Zeilenlock bzw. Unique-Index-Konflikt; die Permission-Replacement-Reihenfolge wird durch den Binding-Lock serialisiert. Es gibt keine gegenseitige Mehrzeilen-Lock-Reihenfolge im neuen Pfad; Transaktionen bleiben kurz und fuehren keine externen Calls aus.
+- Event Live/Replay: ACL-Events bleiben serverseitig auf exakt `payload.targetUserId` gefiltert; der zweite Principal belegt dieselbe Filterung live und replay. Der letzte Grant-Entzug erreicht weiterhin den betroffenen Zielprincipal ueber die vor Delete expandierten aktiven User-IDs.
+- Fail-closed UI: Event-Invalidierung ist synchron vor jedem Request, Generationen verwerfen spaete Ergebnisse, ein beliebiger Teilausfall laesst IDs/Edit/Permissions leer und Save gesperrt, Retry startet aus leerem State. Save validiert Resource und Subject nochmals gegen die zuletzt vollstaendig autorisierte Optionsmenge.
+- Scope: keine Migration und keine Task-8-Datei wurde geaendert. `.superpowers/sdd/task-7-report.md` blieb unveraendert.
+
+### Restbedenken Zweite Review-Fix-Welle
+
+- Keine bestaetigten offenen Task-7-Findings. Der Browser-Harness verwendet deterministische In-Memory-Fachdaten-Ports, aber echten Browser-, HTTP-, API-, Live-/Replay- und UI-Code; die produktive Datenbanksemantik wird separat gegen das migrierte echte PostgreSQL-Harness belegt.

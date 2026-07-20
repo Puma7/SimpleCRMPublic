@@ -1690,6 +1690,66 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => listItems<Record<string, unknown>>(body),
     }
   }],
+  [IPCChannels.Email.ListMailDelegationResources, ([payload]) => {
+    const input = objectPayload(payload, "mail delegation resource options payload")
+    const resourceType = input.resourceType
+    if (resourceType !== "account" && resourceType !== "folder") {
+      throw new Error("Invalid mail delegation resource type")
+    }
+    return {
+      method: "GET",
+      path: "/api/v1/email/access/resources",
+      query: pruneQueryUndefined({
+        resourceType,
+        cursor: optionalPositiveQueryId(input.cursor, "mail delegation resource cursor"),
+        limit: optionalPositiveQueryId(input.limit, "mail delegation resource limit"),
+      }),
+      transform: (body) => {
+        const result = dataBody<{ items: Record<string, unknown>[]; nextCursor: number | null }>(body)
+        if (!Array.isArray(result.items)) throw new Error("Invalid mail delegation resource page items")
+        return {
+          items: result.items,
+          nextCursor: result.nextCursor === null
+            ? null
+            : positiveId(result.nextCursor, "mail delegation resource next cursor"),
+        }
+      },
+    }
+  }],
+  [IPCChannels.Email.ListMailDelegationSubjects, ([payload]) => {
+    const input = objectPayload(payload, "mail delegation subject options payload")
+    const resource = objectPayload(input.resource, "mail delegation subject resource")
+    const resourceType = resource.type
+    if (resourceType !== "account" && resourceType !== "folder") {
+      throw new Error("Invalid mail delegation subject resource type")
+    }
+    const subjectType = input.subjectType
+    if (subjectType !== "user" && subjectType !== "group") {
+      throw new Error("Invalid mail delegation subject type")
+    }
+    return {
+      method: "GET",
+      path: "/api/v1/email/access/subjects",
+      query: pruneQueryUndefined({
+        resourceType,
+        accountId: positiveId(resource.accountId, "mail delegation subject account id"),
+        folderId: resourceType === "folder"
+          ? positiveId(resource.folderId, "mail delegation subject folder id")
+          : undefined,
+        subjectType,
+        cursor: optionalTextQueryValue(input.cursor, "mail delegation subject cursor", 64),
+        limit: optionalPositiveQueryId(input.limit, "mail delegation subject limit"),
+      }),
+      transform: (body) => {
+        const result = dataBody<{ items: Record<string, unknown>[]; nextCursor: string | null }>(body)
+        if (!Array.isArray(result.items)) throw new Error("Invalid mail delegation subject page items")
+        if (result.nextCursor !== null && (typeof result.nextCursor !== "string" || !result.nextCursor.trim())) {
+          throw new Error("Invalid mail delegation subject next cursor")
+        }
+        return { items: result.items, nextCursor: result.nextCursor }
+      },
+    }
+  }],
   [IPCChannels.Email.ListMailDelegationBindings, ([payload]) => {
     const input = payload === undefined ? {} : objectPayload(payload, "mail delegation list payload")
     return {

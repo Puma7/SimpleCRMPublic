@@ -18,15 +18,20 @@ const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
 const MANAGER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const OWNER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const AGENT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const UNRELATED_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const MANAGER_TOKEN = 'task-7-manager-token';
 const OWNER_TOKEN = 'task-7-owner-token';
+const UNRELATED_TOKEN = 'task-7-unrelated-token';
 const ACCESS_BINDING_ID = 700;
 const ACCOUNT_ID = 101;
 const FOLDER_ID = 202;
 
 type HarnessState = {
   managerHasAccess: boolean;
-  accountListCalls: number;
+  resourceOptionCalls: { account: number; folder: number };
+  subjectOptionCalls: number;
+  bindingListCalls: number;
+  forbiddenGlobalListCalls: number;
   activeEventSubscriptions: number;
   bindings: MailDelegationBinding[];
   lastSaved: { permissions: readonly string[] } | null;
@@ -42,7 +47,10 @@ let state: HarnessState;
 test.beforeAll(async () => {
   state = {
     managerHasAccess: true,
-    accountListCalls: 0,
+    resourceOptionCalls: { account: 0, folder: 0 },
+    subjectOptionCalls: 0,
+    bindingListCalls: 0,
+    forbiddenGlobalListCalls: 0,
     activeEventSubscriptions: 0,
     bindings: [],
     lastSaved: null,
@@ -77,11 +85,13 @@ test.beforeAll(async () => {
           workspaceId: WORKSPACE_ID,
           userId: MANAGER_ID,
           role: 'user',
-          capabilities: ['users.manage'],
         };
       }
       if (credentials.includes(OWNER_TOKEN)) {
         return { workspaceId: WORKSPACE_ID, userId: OWNER_ID, role: 'owner' };
+      }
+      if (credentials.includes(UNRELATED_TOKEN)) {
+        return { workspaceId: WORKSPACE_ID, userId: UNRELATED_ID, role: 'user' };
       }
       return undefined;
     },
@@ -117,6 +127,10 @@ test('profile, individual grant, and revoke travel through HTTP and the live ACL
   if (await page.getByText('Delegationen konnten nicht geladen werden.').count()) {
     throw new Error(JSON.stringify({ apiResponses, browserErrors }, null, 2));
   }
+  expect(state.forbiddenGlobalListCalls).toBe(0);
+
+  await openObservedSocket(page, apiOrigin, UNRELATED_TOKEN, 'live');
+  await expect.poll(() => state.activeEventSubscriptions).toBe(2);
 
   await page.getByLabel('Profil').selectOption('triage');
   await page.getByRole('checkbox', { name: 'Senden', exact: true }).check();
@@ -134,21 +148,80 @@ test('profile, individual grant, and revoke travel through HTTP and the live ACL
   });
   await expect(page.getByRole('button', { name: 'Löschen Agent' })).toBeVisible();
 
-  const accountCallsBeforeRevoke = state.accountListCalls;
+  const callsBeforeRevoke = {
+    account: state.resourceOptionCalls.account,
+    folder: state.resourceOptionCalls.folder,
+    bindings: state.bindingListCalls,
+    subjects: state.subjectOptionCalls,
+  };
   const revoke = await request.delete(`${apiOrigin}/api/v1/email/access/bindings/${ACCESS_BINDING_ID}`, {
     headers: { Authorization: `Bearer ${OWNER_TOKEN}` },
   });
   expect(revoke.ok()).toBe(true);
 
-  await expect.poll(() => state.accountListCalls).toBeGreaterThan(accountCallsBeforeRevoke);
+  await expect.poll(() => state.resourceOptionCalls.account).toBeGreaterThan(callsBeforeRevoke.account);
+  await expect.poll(() => state.resourceOptionCalls.folder).toBeGreaterThan(callsBeforeRevoke.folder);
+  await expect.poll(() => state.bindingListCalls).toBeGreaterThan(callsBeforeRevoke.bindings);
+  expect(state.subjectOptionCalls).toBe(callsBeforeRevoke.subjects);
   await expect(page.getByRole('option', { name: 'Support' })).toHaveCount(0);
-  await expect(page.getByLabel('Konto', { exact: true })).toHaveValue('');
+  await expect(page.getByRole('combobox', { name: 'Konto', exact: true })).toHaveValue('');
   await expect(page.getByRole('button', { name: 'Löschen Agent' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Berechtigung speichern' })).toBeDisabled();
+  await page.waitForTimeout(250);
+  expect(await observedAclEvents(page, 'live')).toEqual([]);
 
+  await closeObservedSocket(page, 'live');
+  await expect.poll(() => state.activeEventSubscriptions).toBe(1);
+  await openObservedSocket(page, apiOrigin, UNRELATED_TOKEN, 'replay', 0);
+  await expect.poll(() => state.activeEventSubscriptions).toBe(2);
+  await page.waitForTimeout(250);
+  expect(await observedAclEvents(page, 'replay')).toEqual([]);
+  expect(state.forbiddenGlobalListCalls).toBe(0);
+
+  await closeObservedSocket(page, 'replay');
   await page.close();
   await expect.poll(() => state.activeEventSubscriptions).toBe(0);
 });
+
+async function openObservedSocket(
+  page: import('@playwright/test').Page,
+  baseUrl: string,
+  token: string,
+  key: string,
+  since?: number,
+): Promise<void> {
+  await page.evaluate(({ baseUrl: inputBaseUrl, token: inputToken, key: inputKey, since: inputSince }) => (
+    new Promise<void>((resolve, reject) => {
+      const url = new URL(inputBaseUrl);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      url.pathname = '/api/v1/events';
+      url.search = '';
+      if (inputSince !== undefined) url.searchParams.set('since', String(inputSince));
+      const socket = new WebSocket(url, [`simplecrm.access-token.${inputToken}`]);
+      const observed = window as typeof window & { __task7Sockets?: Record<string, { socket: WebSocket; events: unknown[] }> };
+      observed.__task7Sockets ??= {};
+      observed.__task7Sockets[inputKey] = { socket, events: [] };
+      socket.onmessage = (message) => observed.__task7Sockets?.[inputKey]?.events.push(JSON.parse(String(message.data)));
+      socket.onerror = () => reject(new Error(`WebSocket ${inputKey} failed`));
+      socket.onopen = () => resolve();
+    })
+  ), { baseUrl, token, key, since });
+}
+
+async function observedAclEvents(page: import('@playwright/test').Page, key: string): Promise<unknown[]> {
+  return page.evaluate((inputKey) => {
+    const observed = window as typeof window & { __task7Sockets?: Record<string, { events: Array<{ type?: string }> }> };
+    return (observed.__task7Sockets?.[inputKey]?.events ?? []).filter((event) => event.type === 'email_acl.changed');
+  }, key);
+}
+
+async function closeObservedSocket(page: import('@playwright/test').Page, key: string): Promise<void> {
+  await page.evaluate((inputKey) => {
+    const observed = window as typeof window & { __task7Sockets?: Record<string, { socket: WebSocket }> };
+    observed.__task7Sockets?.[inputKey]?.socket.close();
+    if (observed.__task7Sockets) delete observed.__task7Sockets[inputKey];
+  }, key);
+}
 
 function trackedEventPort(input: HarnessState): ServerEventPort {
   const bus = createInMemoryServerEventBus();
@@ -176,18 +249,8 @@ function createHarnessPorts(input: HarnessState, events: ServerEventPort): Serve
   return {
     auth: {
       async listUsers() {
-        return [{
-          id: AGENT_ID,
-          email: 'agent@example.test',
-          displayName: 'Agent',
-          role: 'user',
-          disabledAt: null,
-          loginPinEnabled: false,
-          mfaEnabled: false,
-          mfaMethod: null,
-          createdAt: now,
-          updatedAt: now,
-        }];
+        input.forbiddenGlobalListCalls += 1;
+        throw new Error('delegation panel must not list global users');
       },
       async findUserByEmail() { return null; },
       async verifyPassword() { return false; },
@@ -218,14 +281,15 @@ function createHarnessPorts(input: HarnessState, events: ServerEventPort): Serve
     },
     emailAccounts: {
       async list() {
-        input.accountListCalls += 1;
-        return { items: input.managerHasAccess ? [emailAccount(now)] : [] };
+        input.forbiddenGlobalListCalls += 1;
+        throw new Error('delegation panel must not list general mail accounts');
       },
       async get() { return null; },
     },
     emailFolders: {
       async list() {
-        return { items: input.managerHasAccess ? [emailFolder(now)] : [], nextCursor: null };
+        input.forbiddenGlobalListCalls += 1;
+        throw new Error('delegation panel must not list general mail folders');
       },
       async get() { return null; },
     },
@@ -241,7 +305,43 @@ function createHarnessPorts(input: HarnessState, events: ServerEventPort): Serve
       async resolve() { return []; },
     },
     mailDelegation: {
+      async listResourceOptions(request) {
+        input.resourceOptionCalls[request.resourceType] += 1;
+        if (!input.managerHasAccess && !request.actor.isOwner) {
+          return { ok: true, resources: [], nextCursor: null };
+        }
+        return request.resourceType === 'account'
+          ? {
+              ok: true,
+              resources: [{ type: 'account' as const, accountId: ACCOUNT_ID, label: 'Support' }],
+              nextCursor: null,
+            }
+          : {
+              ok: true,
+              resources: [{
+                type: 'folder' as const,
+                accountId: ACCOUNT_ID,
+                folderId: FOLDER_ID,
+                accountLabel: 'Support',
+                label: 'INBOX',
+              }],
+              nextCursor: null,
+            };
+      },
+      async listSubjectOptions(request) {
+        input.subjectOptionCalls += 1;
+        if (!input.managerHasAccess && !request.actor.isOwner) return { ok: false, code: 'permission_denied' };
+        if (request.resource.accountId !== ACCOUNT_ID) return { ok: false, code: 'resource_not_found' };
+        return request.subjectType === 'user'
+          ? {
+              ok: true,
+              subjects: [{ type: 'user' as const, id: AGENT_ID, label: 'Agent' }],
+              nextCursor: null,
+            }
+          : { ok: true, subjects: [], nextCursor: null };
+      },
       async listBindings(request) {
+        input.bindingListCalls += 1;
         if (!input.managerHasAccess && !request.actor.isOwner) {
           return { ok: true, bindings: [], nextCursor: null };
         }

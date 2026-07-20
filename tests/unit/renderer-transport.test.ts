@@ -536,6 +536,53 @@ describe('renderer transport', () => {
     );
   });
 
+  test('maps bounded delegation resource and subject options without auth user routes', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ type: 'folder', accountId: 101, folderId: 202, accountLabel: 'Support', label: 'INBOX' }],
+          nextCursor: 202,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ type: 'user', id: 'user-1', label: 'Alice' }], nextCursor: null },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke('email:list-mail-delegation-resources' as never, {
+      resourceType: 'folder',
+      cursor: 200,
+      limit: 25,
+    })).resolves.toEqual({
+      items: [{ type: 'folder', accountId: 101, folderId: 202, accountLabel: 'Support', label: 'INBOX' }],
+      nextCursor: 202,
+    });
+    await expect(transport.invoke('email:list-mail-delegation-subjects' as never, {
+      resource: { type: 'folder', accountId: 101, folderId: 202 },
+      subjectType: 'user',
+      cursor: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      limit: 25,
+    })).resolves.toEqual({
+      items: [{ type: 'user', id: 'user-1', label: 'Alice' }],
+      nextCursor: null,
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      'https://crm.example.com/api/v1/email/access/resources?resourceType=folder&cursor=200&limit=25',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      'https://crm.example.com/api/v1/email/access/subjects?resourceType=folder&accountId=101&folderId=202&subjectType=user&cursor=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa&limit=25',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(fetchImpl.mock.calls.flat().join(' ')).not.toContain('/api/v1/auth/users');
+  });
+
   test('maps auth invite creation to server HTTP route', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {

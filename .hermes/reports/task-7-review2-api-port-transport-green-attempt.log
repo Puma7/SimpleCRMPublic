@@ -1,0 +1,49 @@
+Running one project: unit
+FAIL unit tests/unit/server-mail-delegation-port.test.ts
+  ● createPostgresMailDelegationPort › uses a workspace-bound transaction for binding replacement
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 4
+    + Received  + 1
+
+      Object {
+    -   "affectedUserIds": Array [
+    -     "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    -   ],
+    -   "ok": true,
+    +   "ok": false,
+      }
+
+      37 |     });
+      38 |
+    > 39 |     expect(result).toMatchObject({ ok: true, affectedUserIds: [AGENT] });
+         |                    ^
+      40 |     expect(contexts).toEqual([[WORKSPACE, ACTOR, 'admin', 'off']]);
+      41 |     expect(trx.calls).toEqual(expect.arrayContaining([
+      42 |       ['deleteFrom', 'mail_acl_binding_permissions'],
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-port.test.ts:39:20)
+
+  ● createPostgresMailDelegationPort › locks an existing binding row before patch and delete replacement semantics
+
+    Invalid mail ACL permission binding id
+
+      791 | function dbInteger(value: number | string, label: string): number {
+      792 |   const numeric = typeof value === 'number' ? value : Number(value);
+    > 793 |   if (!Number.isSafeInteger(numeric) || numeric <= 0) throw new Error(`Invalid ${label}`);
+          |                                                             ^
+      794 |   return numeric;
+      795 | }
+      796 |
+
+      at dbInteger (packages/server/src/mail-access/postgres-mail-delegation-port.ts:793:61)
+      at dbInteger (packages/server/src/mail-access/postgres-mail-delegation-port.ts:689:23)
+      at replaceBySubjectResource (packages/server/src/mail-access/postgres-mail-delegation-port.ts:422:17)
+      at Object.<anonymous> (tests/unit/server-mail-delegation-port.test.ts:182:5)
+
+Test Suites: 1 failed, 2 passed, 3 total
+Tests:       2 failed, 150 passed, 152 total
+Snapshots:   0 total
+Time:        2.936 s, estimated 3 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-api.test.ts", "tests/unit/server-mail-delegation-port.test.ts", "tests/unit/renderer-transport.test.ts".

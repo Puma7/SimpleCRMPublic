@@ -1,0 +1,254 @@
+Running one project: unit
+FAIL unit tests/unit/mail-delegation-panel.test.tsx
+  ● MailDelegationPanel › loads every bounded resource, subject, and binding page
+
+    Found multiple elements with the text: Bob
+
+    Here are the matching elements:
+
+    Ignored nodes: comments, script, style
+    <option
+      value="user-2"
+    >
+      Bob
+    </option>
+
+    Ignored nodes: comments, script, style
+    <p
+      class="truncate text-sm font-medium"
+    >
+      Bob
+    </p>
+
+    (If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+    Ignored nodes: comments, script, style
+    <body>
+      <div>
+        <section
+          class="space-y-6"
+        >
+          <div
+            class="space-y-1"
+          >
+            <h2
+              class="text-lg font-semibold tracking-tight"
+            >
+              Mailbox-Delegation
+            </h2>
+            <p
+              class="text-sm text-muted-foreground"
+            >
+              Serverseitige Konten- und Ordnerrechte für Benutzer und Gruppen.
+            </p>
+          </div>
+          <div
+            class="space-y-4 rounded-md border p-4"
+          >
+            <div
+              class="grid gap-3 sm:grid-cols-2"
+            >
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Konto
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="101"
+                  >
+                    Support
+                  </option>
+                  <option
+                    value="102"
+                  >
+                    Sales
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Ressource
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="account"
+                  >
+                    Ganzes Konto
+                  </option>
+                  <option
+                    value="folder"
+                  >
+                    Ordner
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Subjekt
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="user"
+                  >
+                    Benutzer
+                  </option>
+                  <option
+                    value="group"
+                  >
+                    Gruppe
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Auswahl
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="user-1"
+                  >
+                    Alice
+                  </option>
+                  <option
+                    value="user-2"
+                  >
+                    Bob
+                  </option>
+                </select>
+              </label>
+            </div>
+            <label
+              class="block space-y-1 text-sm font-medium"
+            >
+              Profil
+              <select
+                aria-label="Profil"
+                class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              >
+                <option
+                  value="viewer"
+                >
+                  Lesen
+                </option>
+                <option
+                  value="triage"
+                >
+                  Triage
+                </option>
+                <option
+                  value="editor"
+                >
+                  Bearbeiten
+                </option>
+                <option
+                  value="sender"
+                >
+                  Senden
+                </option>
+                <option
+                  value="manager"
+                >
+                  Verwalten
+                </option>
+                <option
+                  value="custom"
+                >
+                  Benutzerdefiniert
+                </option>
+              </select>
+            </label>
+            <div
+              class="grid gap-2 sm:grid-cols-2"
+            >
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Metadaten lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Inhalt lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Anhänge lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Verdächtige Anhänge laden
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                ...
+
+      76 |     render(<MailDelegationPanel />);
+      77 |
+    > 78 |     expect(await screen.findByText('Bob')).toBeTruthy();
+         |                         ^
+      79 |     expect(mockInvoke).toHaveBeenCalledWith('email:list-mail-delegation-resources', {
+      80 |       resourceType: 'account',
+      81 |       cursor: 101,
+
+      at waitForWrapper (node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27)
+      at node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+      at Object.findByText (tests/unit/mail-delegation-panel.test.tsx:78:25)
+
+  ● MailDelegationPanel › fails closed on ACL refresh errors, ignores late responses, and recovers only after full retry
+
+    expect(element).toHaveValue()
+
+    Expected the element to have value:
+
+    Received:
+      undefined
+
+      118 |     act(() => subscription.onEvent({ type: 'email_acl.changed', payload: { targetUserId: 'manager' } }));
+      119 |
+    > 120 |     expect(screen.getByLabelText('Konto')).toHaveValue('');
+          |                                            ^
+      121 |     expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
+      122 |     expect(screen.getByRole('button', { name: 'Berechtigung speichern' })).toBeDisabled();
+      123 |     for (const checkbox of screen.getAllByRole('checkbox')) expect(checkbox).not.toBeChecked();
+
+      at Object.toHaveValue (tests/unit/mail-delegation-panel.test.tsx:120:44)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 2 passed, 4 total
+Snapshots:   0 total
+Time:        3.06 s, estimated 5 s
+Ran all test suites within paths "tests/unit/mail-delegation-panel.test.tsx".

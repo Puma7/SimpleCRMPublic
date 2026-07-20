@@ -23,6 +23,52 @@ const admin = principal(ADMIN, 'admin');
 const manager = principal(MANAGER, 'user');
 
 describe('server mail delegation API', () => {
+  test('lists bounded policy resources and data-minimized subjects for delegated managers', async () => {
+    const mailDelegation = delegationPort();
+    const api = createServerApi(ports({ mailDelegation }));
+
+    const resources = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/access/resources?resourceType=folder&cursor=200&limit=25',
+      principal: manager,
+    });
+    const subjects = await api.handle({
+      method: 'GET',
+      path: `/api/v1/email/access/subjects?resourceType=folder&accountId=${ACCOUNT}&folderId=${FOLDER}&subjectType=user&cursor=${OWNER}&limit=25`,
+      principal: manager,
+    });
+
+    expect(resources).toMatchObject({
+      status: 200,
+      body: {
+        data: {
+          items: [{ type: 'folder', accountId: ACCOUNT, folderId: FOLDER, accountLabel: 'Support', label: 'INBOX' }],
+          nextCursor: null,
+        },
+      },
+    });
+    expect(subjects).toMatchObject({
+      status: 200,
+      body: { data: { items: [{ type: 'user', id: AGENT, label: 'Agent' }], nextCursor: null } },
+    });
+    expect(JSON.stringify(subjects.body)).not.toMatch(/email|role|disabled/i);
+    expect(mailDelegation.listResourceOptions).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE,
+      actor: expect.objectContaining({ userId: MANAGER, isOwner: false, isAdmin: false }),
+      resourceType: 'folder',
+      cursor: 200,
+      limit: 25,
+    });
+    expect(mailDelegation.listSubjectOptions).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE,
+      actor: expect.objectContaining({ userId: MANAGER, isOwner: false, isAdmin: false }),
+      resource: { type: 'folder', accountId: ACCOUNT, folderId: FOLDER },
+      subjectType: 'user',
+      cursor: OWNER,
+      limit: 25,
+    });
+  });
+
   test('lists, creates, replaces, and deletes user and group bindings', async () => {
     const mailDelegation = delegationPort();
     const api = createServerApi(ports({ mailDelegation }));
@@ -157,6 +203,40 @@ describe('server mail delegation API', () => {
     expect(mailDelegation.listBindings).not.toHaveBeenCalled();
   });
 
+  test('validates option resource/cursors and maps policy denial and write conflicts', async () => {
+    const mailDelegation = delegationPort();
+    const api = createServerApi(ports({ mailDelegation }));
+
+    const invalidResourceType = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/access/resources?resourceType=message',
+      principal: manager,
+    });
+    const invalidSubjectCursor = await api.handle({
+      method: 'GET',
+      path: `/api/v1/email/access/subjects?resourceType=folder&accountId=${ACCOUNT}&folderId=${FOLDER}&subjectType=user&cursor=not-a-uuid`,
+      principal: manager,
+    });
+    mailDelegation.listSubjectOptions.mockResolvedValueOnce({ ok: false, code: 'permission_denied' });
+    const denied = await api.handle({
+      method: 'GET',
+      path: `/api/v1/email/access/subjects?resourceType=account&accountId=${ACCOUNT}&subjectType=group`,
+      principal: manager,
+    });
+    mailDelegation.replaceBindingById.mockResolvedValueOnce({ ok: false, code: 'binding_conflict' } as never);
+    const conflict = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/access/bindings/900',
+      principal: owner,
+      body: { permissions: ['mail.metadata.read'] },
+    });
+
+    expect(invalidResourceType).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
+    expect(invalidSubjectCursor).toMatchObject({ status: 400, body: { error: { code: 'invalid_cursor' } } });
+    expect(denied).toMatchObject({ status: 403, body: { error: { code: 'mail_delegation_denied' } } });
+    expect(conflict).toMatchObject({ status: 409, body: { error: { code: 'mail_delegation_conflict' } } });
+  });
+
   test('prevents privilege escalation for delegated managers while owner/admin retain bypass', async () => {
     const grants = new Map<MailPermission, readonly MailAccessGrant[]>([
       ['mail.delegation.manage', [accountGrant(ACCOUNT)]],
@@ -284,11 +364,30 @@ function binding(id: number, permissions: readonly MailPermission[]): MailDelega
 
 function delegationPort(
   overrides: Partial<jest.Mocked<MailDelegationApiPort>> & Partial<MailDelegationApiPort> = {},
-): jest.Mocked<MailDelegationApiPort> {
+): jest.Mocked<MailDelegationApiPort> & {
+  listResourceOptions: jest.Mock;
+  listSubjectOptions: jest.Mock;
+} {
   return {
     listBindings: jest.fn(async () => ({
       ok: true as const,
       bindings: [binding(900, ['mail.metadata.read'])],
+      nextCursor: null,
+    })),
+    listResourceOptions: jest.fn(async () => ({
+      ok: true as const,
+      resources: [{
+        type: 'folder' as const,
+        accountId: ACCOUNT,
+        folderId: FOLDER,
+        accountLabel: 'Support',
+        label: 'INBOX',
+      }],
+      nextCursor: null,
+    })),
+    listSubjectOptions: jest.fn(async () => ({
+      ok: true as const,
+      subjects: [{ type: 'user' as const, id: AGENT, label: 'Agent' }],
       nextCursor: null,
     })),
     replaceBinding: jest.fn(async (input) => ({
@@ -304,7 +403,10 @@ function delegationPort(
     })),
     deleteBinding: jest.fn(async () => ({ ok: true as const, bindingId: 900, affectedUserIds: [AGENT] })),
     ...overrides,
-  } as jest.Mocked<MailDelegationApiPort>;
+  } as unknown as jest.Mocked<MailDelegationApiPort> & {
+    listResourceOptions: jest.Mock;
+    listSubjectOptions: jest.Mock;
+  };
 }
 
 function ports(input: {

@@ -8,7 +8,9 @@ import type {
   MailDelegationBinding,
   MailDelegationMutationCode,
   MailDelegationResource,
+  MailDelegationResourceOption,
   MailDelegationSubject,
+  MailDelegationSubjectOption,
 } from '../api/types';
 import type { ServerDatabase } from '../db/schema';
 import {
@@ -57,6 +59,151 @@ export function createPostgresMailDelegationPort(
   const sessionOptions = { applySession: options.applyWorkspaceSession } as const;
 
   return {
+    async listResourceOptions(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
+        async (trx) => {
+          if (input.resourceType === 'account') {
+            let query = trx
+              .selectFrom('email_accounts')
+              .select(['id', 'display_name'])
+              .where('workspace_id', '=', input.workspaceId);
+            if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+            if (!input.actor.isOwner && !input.actor.isAdmin) {
+              query = query.where(sql<boolean>`exists (
+                select 1
+                from mail_acl_bindings actor_binding
+                inner join mail_acl_binding_permissions actor_permission
+                  on actor_permission.binding_id = actor_binding.id
+                where actor_binding.workspace_id = ${input.workspaceId}
+                  and actor_permission.permission_key = ${MANAGE_PERMISSION}
+                  and ${actorSubjectSql(input.workspaceId, input.actor.userId)}
+                  and actor_binding.resource_type = 'account'
+                  and actor_binding.account_id = email_accounts.id
+              )`);
+            }
+            const rows = await query.orderBy('id', 'asc').limit(input.limit + 1).execute();
+            const hasMore = rows.length > input.limit;
+            const page = (hasMore ? rows.slice(0, input.limit) : rows).map((row) => ({
+              type: 'account' as const,
+              accountId: dbInteger(row.id, 'email account id'),
+              label: row.display_name,
+            }));
+            return {
+              ok: true as const,
+              resources: page satisfies MailDelegationResourceOption[],
+              nextCursor: hasMore ? page.at(-1)?.accountId ?? null : null,
+            };
+          }
+
+          let query = trx
+            .selectFrom('email_folders')
+            .innerJoin('email_accounts', (join) => join
+              .onRef('email_accounts.id', '=', 'email_folders.account_id')
+              .onRef('email_accounts.workspace_id', '=', 'email_folders.workspace_id'))
+            .select([
+              'email_folders.id',
+              'email_folders.account_id',
+              'email_folders.path',
+              'email_accounts.display_name as account_label',
+            ])
+            .where('email_folders.workspace_id', '=', input.workspaceId);
+          if (input.cursor !== undefined) query = query.where('email_folders.id', '>', input.cursor);
+          if (!input.actor.isOwner && !input.actor.isAdmin) {
+            query = query.where(sql<boolean>`exists (
+              select 1
+              from mail_acl_bindings actor_binding
+              inner join mail_acl_binding_permissions actor_permission
+                on actor_permission.binding_id = actor_binding.id
+              where actor_binding.workspace_id = ${input.workspaceId}
+                and actor_permission.permission_key = ${MANAGE_PERMISSION}
+                and ${actorSubjectSql(input.workspaceId, input.actor.userId)}
+                and actor_binding.account_id = email_folders.account_id
+                and (
+                  actor_binding.resource_type = 'account'
+                  or (
+                    actor_binding.resource_type = 'folder'
+                    and actor_binding.folder_id = email_folders.id
+                  )
+                )
+            )`);
+          }
+          const rows = await query.orderBy('email_folders.id', 'asc').limit(input.limit + 1).execute();
+          const hasMore = rows.length > input.limit;
+          const page = (hasMore ? rows.slice(0, input.limit) : rows).map((row) => ({
+            type: 'folder' as const,
+            accountId: dbInteger(row.account_id, 'email folder account id'),
+            folderId: dbInteger(row.id, 'email folder id'),
+            accountLabel: row.account_label,
+            label: row.path,
+          }));
+          return {
+            ok: true as const,
+            resources: page satisfies MailDelegationResourceOption[],
+            nextCursor: hasMore ? page.at(-1)?.folderId ?? null : null,
+          };
+        },
+        sessionOptions,
+      );
+    },
+
+    async listSubjectOptions(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
+        async (trx) => {
+          const resource = await validateResource(trx, input.workspaceId, input.resource);
+          if (!resource.ok) return resource;
+          if (!await canManageResource(trx, input.workspaceId, input.actor, input.resource, [])) {
+            return { ok: false as const, code: 'permission_denied' as const };
+          }
+
+          if (input.subjectType === 'user') {
+            let query = trx
+              .selectFrom('users')
+              .select(['id', 'display_name'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('role', '=', 'user')
+              .where('disabled_at', 'is', null);
+            if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+            const rows = await query.orderBy('id', 'asc').limit(input.limit + 1).execute();
+            const hasMore = rows.length > input.limit;
+            const page = (hasMore ? rows.slice(0, input.limit) : rows).map((row) => ({
+              type: 'user' as const,
+              id: row.id,
+              label: row.display_name,
+            }));
+            return {
+              ok: true as const,
+              subjects: page satisfies MailDelegationSubjectOption[],
+              nextCursor: hasMore ? page.at(-1)?.id ?? null : null,
+            };
+          }
+
+          const numericCursor = input.cursor === undefined ? undefined : dbInteger(input.cursor, 'group cursor');
+          let query = trx
+            .selectFrom('user_groups')
+            .select(['id', 'name'])
+            .where('workspace_id', '=', input.workspaceId);
+          if (numericCursor !== undefined) query = query.where('id', '>', numericCursor);
+          const rows = await query.orderBy('id', 'asc').limit(input.limit + 1).execute();
+          const hasMore = rows.length > input.limit;
+          const page = (hasMore ? rows.slice(0, input.limit) : rows).map((row) => ({
+            type: 'group' as const,
+            id: dbInteger(row.id, 'user group id'),
+            label: row.name,
+          }));
+          return {
+            ok: true as const,
+            subjects: page satisfies MailDelegationSubjectOption[],
+            nextCursor: hasMore ? String(page.at(-1)?.id) : null,
+          };
+        },
+        sessionOptions,
+      );
+    },
+
     async listBindings(input) {
       return withWorkspaceTransaction(
         options.db,
@@ -117,10 +264,10 @@ export function createPostgresMailDelegationPort(
             )`);
           }
 
-          const rows = await query
+          const rows = (await query
             .orderBy('id', 'asc')
             .limit(input.limit + 1)
-            .execute() as BindingRow[];
+            .execute()).map((row) => normalizeBindingRow(row));
           const hasMore = rows.length > input.limit;
           const pageRows = hasMore ? rows.slice(0, input.limit) : rows;
           return {
@@ -220,16 +367,17 @@ export function createPostgresMailDelegationPort(
     }
 
     const now = options.now?.() ?? new Date();
-    let bindingRow: BindingRow;
+    let bindingRow: BindingRow | null;
     if (existing) {
-      bindingRow = await trx
+      const updated = await trx
         .updateTable('mail_acl_bindings')
         .set({ updated_at: now })
         .where('id', '=', existing.id)
         .returningAll()
-        .executeTakeFirstOrThrow() as BindingRow;
+        .executeTakeFirst();
+      bindingRow = updated ? normalizeBindingRow(updated) : null;
     } else {
-      bindingRow = await trx
+      const upserted = await trx
         .insertInto('mail_acl_bindings')
         .values({
           workspace_id: workspaceId,
@@ -243,9 +391,22 @@ export function createPostgresMailDelegationPort(
           created_at: now,
           updated_at: now,
         })
+        .onConflict((conflict) => conflict
+          .columns([
+            'workspace_id',
+            'subject_type',
+            'subject_id',
+            'resource_type',
+            'account_id',
+            'folder_id',
+            'message_id',
+          ])
+          .doUpdateSet({ updated_at: now }))
         .returningAll()
-        .executeTakeFirstOrThrow() as BindingRow;
+        .executeTakeFirst();
+      bindingRow = upserted ? normalizeBindingRow(upserted) : null;
     }
+    if (!bindingRow) return { ok: false as const, code: 'binding_conflict' as const };
 
     await trx.deleteFrom('mail_acl_binding_permissions').where('binding_id', '=', bindingRow.id).execute();
     await trx
@@ -381,15 +542,21 @@ async function heldGrantRowsForActor(
         ]),
       ]);
     })
-    .execute() as Array<{
+    .execute() as unknown as Array<{
       subject_type: 'user' | 'group';
       subject_id: string;
       resource_type: 'account' | 'folder' | 'message';
-      account_id: number;
-      folder_id: number | null;
+      account_id: number | string;
+      folder_id: number | string | null;
       permission_key: MailPermission;
     }>;
-  return rows.filter((row) => subjectIds.has(row.subject_id));
+  return rows
+    .filter((row) => subjectIds.has(row.subject_id))
+    .map((row) => ({
+      ...row,
+      account_id: dbInteger(row.account_id, 'mail ACL grant account id'),
+      folder_id: row.folder_id === null ? null : dbInteger(row.folder_id, 'mail ACL grant folder id'),
+    }));
 }
 
 function heldPermissionsFromRows(
@@ -418,8 +585,9 @@ async function findBindingById(
     .selectAll()
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', bindingId)
-    .executeTakeFirst() as BindingRow | undefined;
-  return row ?? null;
+    .forUpdate()
+    .executeTakeFirst();
+  return row ? normalizeBindingRow(row) : null;
 }
 
 async function findBinding(
@@ -441,8 +609,8 @@ async function findBinding(
   } else {
     query = query.where('folder_id', '=', resource.folderId).where('message_id', 'is', null);
   }
-  const row = await query.executeTakeFirst() as BindingRow | undefined;
-  return row ?? null;
+  const row = await query.forUpdate().executeTakeFirst();
+  return row ? normalizeBindingRow(row) : null;
 }
 
 async function affectedUsersForSubject(
@@ -496,7 +664,7 @@ async function hydrateBindings(
     .where('binding_id', 'in', bindingIds)
     .orderBy('binding_id', 'asc')
     .orderBy('permission_key', 'asc')
-    .execute() as Array<{ binding_id: number; permission_key: MailPermission }>;
+    .execute() as unknown as Array<{ binding_id: number | string; permission_key: MailPermission }>;
   const users = userIds.length === 0 ? [] : await trx
     .selectFrom('users')
     .select(['id', 'display_name'])
@@ -508,30 +676,31 @@ async function hydrateBindings(
       .select(['id', 'name'])
       .where('workspace_id', '=', workspaceId)
       .where('id', 'in', groupIds)
-      .execute() as Array<{ id: number; name: string }>;
+      .execute() as unknown as Array<{ id: number | string; name: string }>;
   const accounts = accountIds.length === 0 ? [] : await trx
     .selectFrom('email_accounts')
     .select(['id', 'display_name'])
     .where('workspace_id', '=', workspaceId)
     .where('id', 'in', accountIds)
-    .execute() as Array<{ id: number; display_name: string }>;
+    .execute() as unknown as Array<{ id: number | string; display_name: string }>;
   const folders = folderIds.length === 0 ? [] : await trx
       .selectFrom('email_folders')
       .select(['id', 'path'])
       .where('workspace_id', '=', workspaceId)
       .where('id', 'in', folderIds)
-      .execute() as Array<{ id: number; path: string }>;
+      .execute() as unknown as Array<{ id: number | string; path: string }>;
 
   const permissionMap = new Map<number, MailPermission[]>();
   for (const permission of permissionRows) {
-    const entries = permissionMap.get(permission.binding_id) ?? [];
+    const bindingId = dbInteger(permission.binding_id, 'mail ACL permission binding id');
+    const entries = permissionMap.get(bindingId) ?? [];
     entries.push(permission.permission_key);
-    permissionMap.set(permission.binding_id, entries);
+    permissionMap.set(bindingId, entries);
   }
   const userLabels = new Map(users.map((user) => [user.id, user.display_name]));
-  const groupLabels = new Map(groups.map((group) => [group.id, group.name]));
-  const accountLabels = new Map(accounts.map((account) => [account.id, account.display_name]));
-  const folderLabels = new Map(folders.map((folder) => [folder.id, folder.path]));
+  const groupLabels = new Map(groups.map((group) => [dbInteger(group.id, 'user group id'), group.name]));
+  const accountLabels = new Map(accounts.map((account) => [dbInteger(account.id, 'email account id'), account.display_name]));
+  const folderLabels = new Map(folders.map((folder) => [dbInteger(folder.id, 'email folder id'), folder.path]));
 
   return rows.map((row) => ({
     id: row.id,
@@ -587,6 +756,49 @@ function uniquePermissions(input: readonly MailPermission[]): readonly MailPermi
 
 function unique<T>(input: readonly T[]): T[] {
   return [...new Set(input)];
+}
+
+function actorSubjectSql(workspaceId: string, userId: string) {
+  return sql<boolean>`(
+    (actor_binding.subject_type = 'user' and actor_binding.subject_id = ${userId})
+    or (
+      actor_binding.subject_type = 'group'
+      and exists (
+        select 1
+        from user_group_members actor_membership
+        where actor_membership.workspace_id = ${workspaceId}
+          and actor_membership.user_id = ${userId}
+          and actor_binding.subject_id = cast(actor_membership.group_id as text)
+      )
+    )
+  )`;
+}
+
+function normalizeBindingRow(row: {
+  id: number | string;
+  workspace_id: string;
+  subject_type: 'user' | 'group';
+  subject_id: string;
+  resource_type: 'account' | 'folder' | 'message';
+  account_id: number | string;
+  folder_id: number | string | null;
+  message_id: number | string | null;
+  updated_at: Date | string;
+}): BindingRow {
+  return {
+    ...row,
+    id: dbInteger(row.id, 'mail ACL binding id'),
+    account_id: dbInteger(row.account_id, 'mail ACL account id'),
+    folder_id: row.folder_id === null ? null : dbInteger(row.folder_id, 'mail ACL folder id'),
+    message_id: row.message_id === null ? null : dbInteger(row.message_id, 'mail ACL message id'),
+  };
+}
+
+function dbInteger(value: number | string | null, label: string): number {
+  if (value === null) throw new Error(`Invalid ${label}`);
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isSafeInteger(numeric) || numeric <= 0) throw new Error(`Invalid ${label}`);
+  return numeric;
 }
 
 function formatTimestamp(value: Date | string): string {

@@ -308,6 +308,29 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         delete: { summary: 'Dismiss IMAP auth notices' },
       },
       '/email/folders': { get: { summary: 'List mail folders' } },
+      '/email/access/resources': {
+        get: {
+          summary: 'List mailbox resources manageable by the delegation actor',
+          parameters: [
+            { name: 'resourceType', in: 'query', required: true, schema: { type: 'string', enum: ['account', 'folder'] } },
+            { name: 'cursor', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+          ],
+        },
+      },
+      '/email/access/subjects': {
+        get: {
+          summary: 'List minimized delegation subjects for one manageable mailbox resource',
+          parameters: [
+            { name: 'resourceType', in: 'query', required: true, schema: { type: 'string', enum: ['account', 'folder'] } },
+            { name: 'accountId', in: 'query', required: true, schema: { type: 'integer', minimum: 1 } },
+            { name: 'folderId', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'subjectType', in: 'query', required: true, schema: { type: 'string', enum: ['user', 'group'] } },
+            { name: 'cursor', in: 'query', schema: { type: 'string' } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+          ],
+        },
+      },
       '/email/access/bindings': {
         get: {
           summary: 'List mailbox delegation bindings',

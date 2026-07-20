@@ -1,0 +1,25 @@
+Running one project: integration
+FAIL integration tests/integration/server-mail-access-routes.test.ts (14.872 s)
+  ● server mailbox ACL migration › PostgreSQL mail delegation port › lists only manageable resources and minimized same-workspace active subjects without metadata grants
+
+    expect(received).toContainEqual(expected) // deep equality
+
+    Matcher error: received value must not be null nor undefined
+
+    Received has value: undefined
+
+      1997 |           nextCursor: null,
+      1998 |         });
+    > 1999 |         expect(users.subjects).toContainEqual({ type: 'user', id: DELEGATION_TARGET, label: 'Delegation Target' });
+           |                                ^
+      2000 |         expect(users.subjects).not.toEqual(expect.arrayContaining([
+      2001 |           expect.objectContaining({ id: DELEGATION_OWNER }),
+      2002 |           expect.objectContaining({ id: DELEGATION_ADMIN }),
+
+      at Object.toContainEqual (tests/integration/server-mail-access-routes.test.ts:1999:32)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 26 passed, 27 total
+Snapshots:   0 total
+Time:        14.965 s
+Ran all test suites within paths "tests/integration/server-mail-access-routes.test.ts".

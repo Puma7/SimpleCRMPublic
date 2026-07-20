@@ -416,8 +416,10 @@ const EmailChannels = literal({
   AcquireConversationLock: 'email:acquire-conversation-lock',
   HeartbeatConversationLock: 'email:heartbeat-conversation-lock',
   ReleaseConversationLock: 'email:release-conversation-lock',
-  TakeoverConversationLock: 'email:takeover-conversation-lock',
-  ListMailDelegationBindings: 'email:list-mail-delegation-bindings',
+    TakeoverConversationLock: 'email:takeover-conversation-lock',
+    ListMailDelegationResources: 'email:list-mail-delegation-resources',
+    ListMailDelegationSubjects: 'email:list-mail-delegation-subjects',
+    ListMailDelegationBindings: 'email:list-mail-delegation-bindings',
   SaveMailDelegationBinding: 'email:save-mail-delegation-binding',
   DeleteMailDelegationBinding: 'email:delete-mail-delegation-binding',
 });
@@ -450,8 +452,10 @@ export const IPCChannels = {
 export const DesktopServerOnlyInvokeChannels = tuple(
   ...Object.values(UserGroupChannels),
   ...Object.values(ReturnsChannels),
-  EmailChannels.ListFolders,
-  EmailChannels.ListMailDelegationBindings,
+    EmailChannels.ListFolders,
+    EmailChannels.ListMailDelegationResources,
+    EmailChannels.ListMailDelegationSubjects,
+    EmailChannels.ListMailDelegationBindings,
   EmailChannels.SaveMailDelegationBinding,
   EmailChannels.DeleteMailDelegationBinding,
 );

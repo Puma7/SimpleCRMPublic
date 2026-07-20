@@ -143,6 +143,57 @@ describe('createPostgresMailDelegationPort', () => {
       nextCursor: 4,
     });
   });
+
+  test('locks an existing binding row before patch and delete replacement semantics', async () => {
+    const existingBinding = {
+      id: 901,
+      workspace_id: WORKSPACE,
+      subject_type: 'user' as const,
+      subject_id: AGENT,
+      resource_type: 'account' as const,
+      account_id: 101,
+      folder_id: null,
+      message_id: null,
+      updated_at: '2026-07-20T10:00:00.000Z',
+    };
+    const patchTrx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'admin', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+    });
+    const deleteTrx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'admin', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+    });
+    const createPort = (trx: typeof patchTrx) => createPostgresMailDelegationPort({
+      db: {
+        transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
+      } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    await createPort(patchTrx).replaceBindingById({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      bindingId: 901,
+      permissions: ['mail.metadata.read'],
+    });
+    await createPort(deleteTrx).deleteBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      bindingId: 901,
+    });
+
+    expect(patchTrx.calls.filter(([operation]) => operation === 'forUpdate')).toHaveLength(1);
+    expect(deleteTrx.calls.filter(([operation]) => operation === 'forUpdate')).toHaveLength(1);
+  });
 });
 
 function selectQueryCount(trx: { calls: unknown[][] }): number {
@@ -271,10 +322,12 @@ function createDelegationTransaction(fixtures: {
       }));
     }
     if (table === 'mail_acl_bindings') return fixtures.existingBinding ? [fixtures.existingBinding] : [];
-    if (table === 'mail_acl_binding_permissions') return [{ permission_key: 'mail.metadata.read' }];
+    if (table === 'mail_acl_binding_permissions') {
+      return [{ binding_id: (fixtures.existingBinding as { id?: number } | null)?.id ?? 901, permission_key: 'mail.metadata.read' }];
+    }
     return [];
   };
-  const createBuilder = (table: string) => {
+  const createBuilder = (table: string, operation: 'select' | 'insert' | 'update' | 'delete') => {
     const joined: string[] = [];
     const builder = {
     select: () => builder,
@@ -287,13 +340,32 @@ function createDelegationTransaction(fixtures: {
     },
     leftJoin: () => builder,
     orderBy: () => builder,
+    forUpdate: () => {
+      calls.push(['forUpdate', table]);
+      return builder;
+    },
     values: () => builder,
     returning: () => builder,
     returningAll: () => builder,
     onConflict: () => builder,
     set: () => builder,
     execute: async () => rowsFor(table, joined),
-    executeTakeFirst: async () => rowsFor(table, joined)[0] ?? undefined,
+    executeTakeFirst: async () => {
+      if (table === 'mail_acl_bindings' && operation === 'insert') {
+        return {
+          id: 901,
+          workspace_id: WORKSPACE,
+          subject_type: 'user',
+          subject_id: AGENT,
+          resource_type: 'account',
+          account_id: 101,
+          folder_id: null,
+          message_id: null,
+          updated_at: new Date('2026-07-19T12:00:00.000Z'),
+        };
+      }
+      return rowsFor(table, joined)[0] ?? undefined;
+    },
     executeTakeFirstOrThrow: async () => ({ id: 901, updated_at: new Date('2026-07-19T12:00:00.000Z') }),
   };
     return builder;
@@ -302,19 +374,19 @@ function createDelegationTransaction(fixtures: {
     calls,
     selectFrom(table: string) {
       calls.push(['selectFrom', table]);
-      return createBuilder(table);
+      return createBuilder(table, 'select');
     },
     insertInto(table: string) {
       calls.push(['insertInto', table]);
-      return createBuilder(table);
+      return createBuilder(table, 'insert');
     },
     deleteFrom(table: string) {
       calls.push(['deleteFrom', table]);
-      return createBuilder(table);
+      return createBuilder(table, 'delete');
     },
     updateTable(table: string) {
       calls.push(['updateTable', table]);
-      return createBuilder(table);
+      return createBuilder(table, 'update');
     },
   };
 }
