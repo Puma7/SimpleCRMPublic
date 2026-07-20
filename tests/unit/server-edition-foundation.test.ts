@@ -24937,7 +24937,8 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // OAuth app credentials and account linking are admin-only.
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const empty = await api.handle({
       method: 'GET',

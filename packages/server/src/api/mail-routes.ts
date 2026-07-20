@@ -564,6 +564,10 @@ async function handleEmailOAuthApp(
   if (!provider) return error(400, 'invalid_email_oauth_provider', 'OAuth provider ist ungueltig');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Workspace-wide OAuth application credentials (plaintext client secret on GET,
+  // client id + secret on PATCH) are admin-only. The route is ACL-exempt for
+  // setup, so the admin gate has to live here.
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   const loaded = await loadEmailOAuthAppSettings(ports, principal, provider);
   if ('status' in loaded) return loaded;
 
@@ -644,6 +648,10 @@ async function handleEmailOAuthFinish(
   if (!provider) return error(400, 'invalid_email_oauth_provider', 'OAuth provider ist ungueltig');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Linking an OAuth refresh token to an account is an account-credential write;
+  // restrict it to admins (the route is ACL-exempt for setup, so the gate lives
+  // here). Previously any workspace user could target an arbitrary account id.
+  if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
   if (!ports.emailOAuth) return error(503, 'email_oauth_unavailable', 'Email OAuth API nicht konfiguriert');
   if (!ports.emailAccounts?.setOAuthRefreshToken) {
     return error(503, 'email_accounts_unavailable', 'Email account OAuth API nicht konfiguriert');

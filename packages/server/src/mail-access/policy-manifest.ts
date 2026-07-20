@@ -190,7 +190,12 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/t/c/:token', { GET: publicTracking });
 
   const authSetup = exemptPolicy('mail_auth_setup');
-  assign('/api/v1/email/oauth/:provider/app', { GET: authSetup, PATCH: authSetup });
+  // authorize-url returns only a redirect URL (no secret) and the connection
+  // tests run before any account exists, so these stay open to an authenticated
+  // principal. finish writes a refresh token to an account, so its handler
+  // enforces requireAdmin (OAuth account setup is an admin operation, matching
+  // the admin-only app credentials below); it stays exempt so it works before a
+  // mail grant exists.
   assign('/api/v1/email/oauth/:provider/authorize-url', { POST: authSetup });
   assign('/api/v1/email/oauth/:provider/finish', { POST: authSetup });
   assign('/api/v1/email/accounts/test-imap', { POST: authSetup });
@@ -198,6 +203,10 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/accounts/test-smtp', { POST: authSetup });
 
   const workspaceSecurity = exemptPolicy('workspace_admin_security');
+  // Reading (plaintext client secret) or writing the workspace-wide OAuth
+  // application credentials is admin-only; handleEmailOAuthApp enforces
+  // requireAdmin. Exempt from the mail ACL so it works before any mail grant.
+  assign('/api/v1/email/oauth/:provider/app', { GET: workspaceSecurity, PATCH: workspaceSecurity });
   assign('/api/v1/email/tracking/settings', {
     GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
     PATCH: workspaceSecurity,

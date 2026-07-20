@@ -238,8 +238,8 @@ describe('server mail policy manifest', () => {
     ));
 
     expect(exemptions.sort()).toEqual([
-      'mail_auth_setup: GET /api/v1/email/oauth/:provider/app',
-      'mail_auth_setup: PATCH /api/v1/email/oauth/:provider/app',
+      // .../oauth/:provider/app moved to admin-only (workspace_admin_security);
+      // .../finish stays exempt but its handler now enforces requireAdmin.
       'mail_auth_setup: POST /api/v1/email/accounts/test-imap',
       'mail_auth_setup: POST /api/v1/email/accounts/test-pop3',
       'mail_auth_setup: POST /api/v1/email/accounts/test-smtp',
@@ -248,6 +248,8 @@ describe('server mail policy manifest', () => {
       'signed_public_tracking: GET /t/c/:token',
       'signed_public_tracking: GET /t/o/:token.gif',
       'workspace_admin_security: DELETE /api/v1/email/messages/:messageId/tracking',
+      'workspace_admin_security: GET /api/v1/email/oauth/:provider/app',
+      'workspace_admin_security: PATCH /api/v1/email/oauth/:provider/app',
       'workspace_admin_security: DELETE /api/v1/email/relays/:relayId',
       'workspace_admin_security: DELETE /api/v1/email/relays/:relayId/accounts/:accountId',
       'workspace_admin_security: GET /api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight',
