@@ -85,7 +85,10 @@ describe('startPostgresJobQueueWorker', () => {
       },
       auth: {
         async listUsers() {
-          return [{ id: 'user-a', role: 'user', disabledAt: null }];
+          // workflow.forward_copy is a workflow side-effect child; only an
+          // owner/admin can legitimately have queued it (a non-admin initiator
+          // is denied at workflow.execute), so the happy-path actor is owner.
+          return [{ id: 'user-a', role: 'owner', disabledAt: null }];
         },
       },
     });
