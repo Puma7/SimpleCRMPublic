@@ -197,6 +197,52 @@ const emailThreadSelectColumns = [
   'updated_at',
 ] as const;
 
+/** Scoped clause: the messages of email_threads.id the caller may see. */
+function scopedThreadMessages(workspaceId: string, scopePredicate: RawBuilder<boolean>): RawBuilder<unknown> {
+  return kyselySql`from email_messages m
+    where m.workspace_id = ${workspaceId}::uuid
+      and m.thread_id = email_threads.id
+      and ${scopePredicate}`;
+}
+
+/** True when the thread has at least one message visible under the scope. */
+function scopedThreadExistsPredicate(workspaceId: string, scopePredicate: RawBuilder<boolean>): RawBuilder<boolean> {
+  return kyselySql<boolean>`exists (select 1 ${scopedThreadMessages(workspaceId, scopePredicate)})`;
+}
+
+/**
+ * Under a restricted scope every representative/aggregate thread field must be
+ * recomputed from ONLY the scope-visible messages — the base email_threads row
+ * aggregates the whole thread, so its last_message_at, root message, account,
+ * subject and ticket code can be derived from messages in folders/accounts the
+ * caller cannot see. These aliases intentionally shadow the base columns of the
+ * same name selected alongside them; the later select wins. scopedThreadExists
+ * guarantees ≥1 visible message, so the representative (earliest-visible)
+ * subqueries always resolve.
+ */
+function scopedThreadAggregateSelects(workspaceId: string, scopePredicate: RawBuilder<boolean>) {
+  const scoped = scopedThreadMessages(workspaceId, scopePredicate);
+  const representative = <T>(
+    column: 'id' | 'source_sqlite_id' | 'account_id' | 'account_source_sqlite_id' | 'subject' | 'ticket_code',
+  ) => kyselySql<T>`(
+    select m.${kyselySql.ref(column)} ${scoped}
+    order by m.date_received asc nulls last, m.id asc
+    limit 1
+  )`;
+  return [
+    kyselySql<number>`(select count(*)::integer ${scoped})`.as('message_count'),
+    kyselySql<boolean>`coalesce((select bool_or(not m.seen_local) ${scoped}), false)`.as('has_unread'),
+    kyselySql<boolean>`coalesce((select bool_or(m.has_attachments) ${scoped}), false)`.as('has_attachments'),
+    kyselySql<EmailThreadRow['last_message_at']>`(select max(m.date_received) ${scoped})`.as('last_message_at'),
+    representative<EmailThreadRow['root_message_id']>('id').as('root_message_id'),
+    representative<EmailThreadRow['root_message_source_sqlite_id']>('source_sqlite_id').as('root_message_source_sqlite_id'),
+    representative<EmailThreadRow['account_id']>('account_id').as('account_id'),
+    representative<EmailThreadRow['account_source_sqlite_id']>('account_source_sqlite_id').as('account_source_sqlite_id'),
+    representative<EmailThreadRow['subject_normalized']>('subject').as('subject_normalized'),
+    representative<EmailThreadRow['ticket_code']>('ticket_code').as('ticket_code'),
+  ] as const;
+}
+
 const emailMessageTagSelectColumns = [
   'id',
   'source_sqlite_id',
@@ -514,32 +560,8 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
           });
           if (scopePredicate) {
             query = query
-              .where(kyselySql<boolean>`exists (
-                select 1 from email_messages m
-                where m.workspace_id = ${input.workspaceId}::uuid
-                  and m.thread_id = email_threads.id
-                  and ${scopePredicate}
-              )`)
-              .select([
-                kyselySql<number>`(
-                  select count(*)::integer from email_messages m
-                  where m.workspace_id = ${input.workspaceId}::uuid
-                    and m.thread_id = email_threads.id
-                    and ${scopePredicate}
-                )`.as('message_count'),
-                kyselySql<boolean>`coalesce((
-                  select bool_or(not m.seen_local) from email_messages m
-                  where m.workspace_id = ${input.workspaceId}::uuid
-                    and m.thread_id = email_threads.id
-                    and ${scopePredicate}
-                ), false)`.as('has_unread'),
-                kyselySql<boolean>`coalesce((
-                  select bool_or(m.has_attachments) from email_messages m
-                  where m.workspace_id = ${input.workspaceId}::uuid
-                    and m.thread_id = email_threads.id
-                    and ${scopePredicate}
-                ), false)`.as('has_attachments'),
-              ]);
+              .where(scopedThreadExistsPredicate(input.workspaceId, scopePredicate))
+              .select(scopedThreadAggregateSelects(input.workspaceId, scopePredicate));
           }
           query = query.orderBy('id', 'asc').limit(limit + 1);
 
@@ -580,11 +602,25 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
           const search = input.search?.trim();
           if (search) {
             const pattern = `%${search}%`;
-            query = query.where((eb) => eb.or([
-              eb('id', 'ilike', pattern),
-              eb('ticket_code', 'ilike', pattern),
-              eb('subject_normalized', 'ilike', pattern),
-            ]));
+            // Under a restricted scope, match ticket/subject only against
+            // scope-visible messages so search can't surface a thread by a hidden
+            // message's subject or ticket code. The thread id is not sensitive.
+            query = scopePredicate
+              ? query.where((eb) => eb.or([
+                eb('id', 'ilike', pattern),
+                kyselySql<boolean>`exists (
+                  select 1 from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                    and (m.subject ilike ${pattern} or m.ticket_code ilike ${pattern})
+                )`,
+              ]))
+              : query.where((eb) => eb.or([
+                eb('id', 'ilike', pattern),
+                eb('ticket_code', 'ilike', pattern),
+                eb('subject_normalized', 'ilike', pattern),
+              ]));
           }
 
           const rows = await query.execute();
@@ -610,32 +646,8 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
           });
           if (scopePredicate) {
             query = query
-              .where(kyselySql<boolean>`exists (
-                select 1 from email_messages m
-                where m.workspace_id = ${input.workspaceId}::uuid
-                  and m.thread_id = email_threads.id
-                  and ${scopePredicate}
-              )`)
-              .select([
-                kyselySql<number>`(
-                  select count(*)::integer from email_messages m
-                  where m.workspace_id = ${input.workspaceId}::uuid
-                    and m.thread_id = email_threads.id
-                    and ${scopePredicate}
-                )`.as('message_count'),
-                kyselySql<boolean>`coalesce((
-                  select bool_or(not m.seen_local) from email_messages m
-                  where m.workspace_id = ${input.workspaceId}::uuid
-                    and m.thread_id = email_threads.id
-                    and ${scopePredicate}
-                ), false)`.as('has_unread'),
-                kyselySql<boolean>`coalesce((
-                  select bool_or(m.has_attachments) from email_messages m
-                  where m.workspace_id = ${input.workspaceId}::uuid
-                    and m.thread_id = email_threads.id
-                    and ${scopePredicate}
-                ), false)`.as('has_attachments'),
-              ]);
+              .where(scopedThreadExistsPredicate(input.workspaceId, scopePredicate))
+              .select(scopedThreadAggregateSelects(input.workspaceId, scopePredicate));
           }
           const row = await query.executeTakeFirst();
           return row ? mapEmailThreadRow(row) : null;
