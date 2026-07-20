@@ -64,7 +64,10 @@ export type MailResourceResolution =
     id: PolicyValueSelector;
   }>
   | Readonly<{ kind: 'notice_lookup'; notice: 'uid_validity' | 'imap_auth' }>
-  | Readonly<{ kind: 'workspace_global' }>;
+  | Readonly<{ kind: 'workspace_global' }>
+  // Event-only: the underlying entity no longer exists (e.g. account deletion),
+  // so there is nothing to authorize against — deliver to owners/admins only.
+  | Readonly<{ kind: 'owner_admin_only' }>;
 
 export type MailRouteExemptionReason =
   | 'signed_public_tracking'
@@ -662,6 +665,30 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
 }
 
 function eventResourceResolution(type: ServerEventType): MailResourceResolution {
+  // Deletion events are published AFTER the row is gone, so resolving the
+  // vanished entity by its own id finds nothing and the event is dropped for
+  // EVERY subscriber (including owners). Authorize instead against the parent
+  // identity carried in the deletion payload (a tombstone), which still exists.
+  if (type === 'email_account.deleted') {
+    // The account itself is gone — nothing to authorize against. Deliver to
+    // owners/admins only so other clients can drop it from their UI.
+    return { kind: 'owner_admin_only' };
+  }
+  if (
+    type === 'email_message_tag.deleted'
+    || type === 'email_message_category.deleted'
+    || type === 'email_internal_note.deleted'
+  ) {
+    return { kind: 'message_lookup', messageId: eventPayloadValue('messageId') };
+  }
+  if (type === 'email_thread_edge.deleted') {
+    // Authorize the parent message; the child id is in the (allowlisted) payload.
+    return { kind: 'message_lookup', messageId: eventPayloadValue('parentMessageId') };
+  }
+  if (type === 'email_account_signature.deleted' || type === 'email_thread_alias.deleted') {
+    return { kind: 'account', accountId: eventPayloadValue('accountId') };
+  }
+
   if (type.startsWith('spam_learning_event.') || type.startsWith('spam_decision.')) {
     return spamEventResource();
   }

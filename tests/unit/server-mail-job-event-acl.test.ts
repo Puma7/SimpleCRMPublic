@@ -491,6 +491,59 @@ describe('server mail job and event ACL', () => {
     expect(ports.scopePermissions).toContain('mail.metadata.read');
   });
 
+  test('deletion events authorize against the payload tombstone, not the vanished row', async () => {
+    const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    // Metadata deletions resolve the still-present parent from the payload.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_message_tag.deleted',
+      entityType: 'email_message_tag',
+      entityId: '999',
+      payload: { messageId: 12, tagId: 3 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_message_tag.deleted' });
+    // ...but stay denied when the payload parent is inaccessible.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_internal_note.deleted',
+      entityType: 'email_internal_note',
+      entityId: '998',
+      payload: { messageId: 101, noteId: 4 },
+    }), userContext)).resolves.toBeNull();
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account_signature.deleted',
+      entityType: 'email_account_signature',
+      entityId: '997',
+      payload: { accountId: 7, signatureId: 2 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_account_signature.deleted' });
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_edge.deleted',
+      entityType: 'email_thread_edge',
+      entityId: '996',
+      payload: { parentMessageId: 12, childMessageId: 13 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_thread_edge.deleted' });
+
+    // The account itself is gone → owners/admins only.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account.deleted',
+      entityType: 'email_account',
+      entityId: '7',
+      payload: { accountId: 7 },
+    }), userContext)).resolves.toBeNull();
+    const adminContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' as const },
+      ports,
+    };
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account.deleted',
+      entityType: 'email_account',
+      entityId: '7',
+      payload: { accountId: 7 },
+    }), adminContext)).resolves.toMatchObject({ type: 'email_account.deleted' });
+  });
+
   test('websocket replay/live dedupe keeps a bounded ordered window', () => {
     const dedupe = createBoundedEventSequenceDedupe(3);
 

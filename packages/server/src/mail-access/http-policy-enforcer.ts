@@ -394,6 +394,9 @@ async function resolveHttpResources(
   ) {
     return { kind: 'scope' };
   }
+  // owner_admin_only is an event-stream resolution (tombstone for a deleted
+  // entity); no HTTP route uses it, so fail closed if one ever does.
+  if (resolution.kind === 'owner_admin_only') throw new MailAccessDeniedError();
   if (resolution.kind === 'event_message_then_account_lookup') return { kind: 'resources', resources: [], mode: 'all' };
 
   if (resolution.kind === 'optional_account') {

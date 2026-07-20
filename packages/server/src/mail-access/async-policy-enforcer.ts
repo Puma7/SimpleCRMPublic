@@ -58,6 +58,7 @@ export type MailEventFilterContext = Readonly<{
 type ResolvedResources =
   | Readonly<{ kind: 'non_mail' }>
   | Readonly<{ kind: 'scope' }>
+  | Readonly<{ kind: 'owner_admin' }>
   | Readonly<{ kind: 'resources'; resources: readonly MailResource[]; mode: 'all' | 'any' }>;
 
 type ResolvedJobResources = Readonly<{
@@ -296,6 +297,7 @@ async function resolveResources(input: {
   if (resolution.kind === 'mail_scope' || resolution.kind === 'workspace_global') {
     return { kind: 'scope' };
   }
+  if (resolution.kind === 'owner_admin_only') return { kind: 'owner_admin' };
   if (resolution.kind === 'notice_lookup') return { kind: 'scope' };
   if (resolution.kind === 'optional_account') {
     const raw = input.select(resolution.accountId);
@@ -439,6 +441,10 @@ async function assertResolvedResources(input: {
   ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess'>>;
 }): Promise<void> {
   if (input.resources.kind === 'non_mail') return;
+  if (input.resources.kind === 'owner_admin') {
+    if (!input.actor.isOwner && !input.actor.isAdmin) throw new MailAsyncAuthorizationError();
+    return;
+  }
   if (input.resources.kind === 'scope') {
     const scope = await input.ports.mailAccess.resolveScope({
       workspaceId: input.workspaceId,
