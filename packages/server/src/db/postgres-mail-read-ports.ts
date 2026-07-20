@@ -93,7 +93,7 @@ import {
   type RspamdLearnLabel,
 } from '../mail-security-check';
 import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
-import { mailScopePredicate } from '../mail-access/sql-scope';
+import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
 
 export type PostgresMailReadPortOptions = Readonly<{
@@ -371,16 +371,31 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          const scope = effectiveMailScope(input.mailScope);
+          if (scope.kind === 'none') return { items: [] };
           let query = trx
             .selectFrom('email_accounts')
             .select(emailAccountSelectColumns)
             .where('workspace_id', '=', input.workspaceId);
-          const scopePredicate = mailScopePredicate(input.mailScope, { accountId: 'email_accounts.id' });
-          if (scopePredicate) query = query.where(scopePredicate);
+          // A folder-/message-only delegate has an empty accountIds but must still
+          // see the PARENT account (otherwise the mailbox tree can't render the
+          // authorized folder). Include accounts that own a scoped folder/message,
+          // and redact any account the delegate reaches ONLY as a parent to a
+          // minimal record so connection config never leaks.
+          const directAccountIds = scope.kind === 'restricted' ? new Set(scope.accountIds) : null;
+          if (scope.kind === 'restricted') {
+            query = query.where(parentAwareAccountVisibility(input.workspaceId, scope));
+          }
           const rows = await query
             .orderBy('id', 'asc')
             .execute();
-          return { items: rows.map(mapEmailAccountRow) };
+          return {
+            items: rows.map((row) => (
+              directAccountIds && !directAccountIds.has(Number(row.id))
+                ? redactParentOnlyAccountRow(row)
+                : mapEmailAccountRow(row)
+            )),
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -4601,6 +4616,62 @@ function emailAccountSecretIdentifier(
     workspaceId,
     kind: 'email.account.oauth_refresh_token',
     name: `email_account:${accountId}:oauth_refresh`,
+  };
+}
+
+/**
+ * Account is visible under a restricted scope if the delegate holds it directly
+ * OR owns a scoped folder/message on it (so the parent shows up for folder-only
+ * grants). Falls back to `false` when the scope names nothing.
+ */
+function parentAwareAccountVisibility(
+  workspaceId: string,
+  scope: { accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] },
+): RawBuilder<boolean> {
+  const branches: RawBuilder<boolean>[] = [];
+  if (scope.accountIds.length > 0) {
+    branches.push(kyselySql<boolean>`email_accounts.id in (${kyselySql.join(scope.accountIds)})`);
+  }
+  if (scope.folderIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_folders f
+      where f.workspace_id = ${workspaceId}::uuid
+        and f.account_id = email_accounts.id
+        and f.id in (${kyselySql.join(scope.folderIds)})
+    )`);
+  }
+  if (scope.messageIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_messages m
+      where m.workspace_id = ${workspaceId}::uuid
+        and m.account_id = email_accounts.id
+        and m.id in (${kyselySql.join(scope.messageIds)})
+    )`);
+  }
+  if (branches.length === 0) return kyselySql<boolean>`false`;
+  return kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` or `)})`;
+}
+
+/**
+ * Minimal parent-account record for an account the delegate can only reach via a
+ * folder/message grant: enough to render the mailbox tree (id, name, address)
+ * without exposing connection config (hosts, usernames, OAuth provider, or which
+ * secrets are configured) or vacation content.
+ */
+function redactParentOnlyAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelectColumns[number]>): EmailAccountRecord {
+  return {
+    ...mapEmailAccountRow(row),
+    imapHost: '',
+    imapUsername: '',
+    smtpHost: '',
+    smtpUsername: '',
+    pop3Host: '',
+    oauthProvider: null,
+    vacationSubject: '',
+    vacationBodyText: '',
+    imapPasswordConfigured: false,
+    smtpPasswordConfigured: false,
+    oauthRefreshConfigured: false,
   };
 }
 
