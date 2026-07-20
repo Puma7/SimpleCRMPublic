@@ -347,9 +347,10 @@ describe('server mail job and event ACL', () => {
     }
 
     // Message-scoped side-effect children (forward_copy = SMTP send, ai.classify =
-    // message tag) are also gated (R13-1): the per-message check verifies
-    // mail.export/mail.triage, not the admin the graph required.
-    for (const type of ['workflow.forward_copy', 'ai.classify'] as const) {
+    // message tag, dmarc_ingest = persists parsed DMARC reports) are also gated:
+    // the per-message check verifies mail.export/mail.triage/mail.attachment.read,
+    // not the admin the graph required.
+    for (const type of ['workflow.forward_copy', 'ai.classify', 'workflow.dmarc_ingest'] as const) {
       await expect(enforceMailJobPolicy(job({
         type,
         payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
@@ -466,9 +467,11 @@ describe('server mail job and event ACL', () => {
       type: 'mail.vacation.auto_reply',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
     }), ports)).resolves.toBeUndefined();
+    // dmarc_ingest is a workflow side-effect child (R16-1), so a plain user actor
+    // is denied; an owner initiator passes the gate and still rechecks the grant.
     await expect(enforceMailJobPolicy(job({
       type: 'workflow.dmarc_ingest',
-      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, workflowId: 7 },
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12, workflowId: 7 },
     }), ports)).resolves.toBeUndefined();
 
     expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([

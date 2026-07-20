@@ -185,9 +185,11 @@ export async function enforceMailJobPolicy(
 // actor. There is no direct user producer for any of them, so gating on job.type is
 // safe. The message-optional ones (http_request + AI children) resolve to non_mail
 // when the node has no message and skip every check; the message-scoped ones
-// (forward_copy = SMTP send, ai.classify = message tag) DO get a per-message ACL
-// check, but that verifies only mail.export / mail.triage — NOT the admin the graph
-// required — so a demoted admin who retains those grants would still run the effect.
+// (forward_copy = SMTP send, ai.classify = message tag, dmarc_ingest = persists
+// parsed DMARC reports under the system role) DO get a per-message ACL check, but
+// that verifies only mail.export / mail.triage / mail.attachment.read — NOT the
+// admin the graph required — so a demoted admin who retains those grants would
+// still run the effect.
 // (ai.reply_suggestion is excluded: it has a direct user route and is read-only.)
 const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'workflow.http_request',
@@ -197,6 +199,7 @@ const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'ai.transform_text',
   'workflow.forward_copy',
   'ai.classify',
+  'workflow.dmarc_ingest',
 ]);
 
 // R12-2/R13-1: re-deny a non-owner/admin actor for any workflow side-effect child —
