@@ -570,6 +570,83 @@ async function assertSupplementalHttpPermissions(
       resource: child[0]!,
     });
   }
+
+  // Moving an account signature to a new account rewrites both account-reference
+  // columns; the base policy only checks the current account, so require
+  // mail.account.manage on the destination account too.
+  if (req.method === 'PATCH' && canonicalPath === '/api/v1/email/account-signatures/:id') {
+    const raw = bodyField(req.body, 'accountId');
+    if (raw !== undefined) {
+      const dest = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'account', id: requirePositiveInt(raw) },
+      });
+      if (dest.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.account.manage',
+        resource: dest[0]!,
+      });
+    }
+  }
+
+  // A spam-decision PATCH may reparent the decision to a different message and/or
+  // account; the base policy only authorizes the current one, so authorize each
+  // replacement resource too (mirrors the workflow-delayed-job messageId block).
+  if (req.method === 'PATCH' && canonicalPath === '/api/v1/spam/decisions/:id' && isBodyObject(req.body)) {
+    const rawMessageId = req.body.messageId;
+    if (rawMessageId !== undefined && rawMessageId !== null) {
+      const message = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'message', id: requirePositiveInt(rawMessageId) },
+      });
+      if (message.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.triage',
+        resource: message[0]!,
+      });
+    }
+    const rawAccountId = req.body.accountId;
+    if (rawAccountId !== undefined) {
+      const account = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'account', id: requirePositiveInt(rawAccountId) },
+      });
+      if (account.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.triage',
+        resource: account[0]!,
+      });
+    }
+  }
+
+  // A thread merge rebuilds edges and the aggregate across the WHOLE canonical
+  // thread (which can span accounts), while the base policy only checks the
+  // submitted accountId. Require mail.triage on every message in both the alias
+  // and canonical threads (mode 'all', unlike the read path's 'any').
+  if (req.method === 'POST' && canonicalPath === '/api/v1/email/threads/merge') {
+    for (const field of ['aliasThreadId', 'canonicalThreadId'] as const) {
+      const raw = bodyField(req.body, field);
+      if (typeof raw !== 'string' || !raw.trim()) throw new MailAccessDeniedError();
+      const messages = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'thread', id: raw.trim() },
+      });
+      for (const resource of messages) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission: 'mail.triage',
+          resource,
+        });
+      }
+    }
+  }
 }
 
 function isScopedWorkflowDelayedJobMutation(method: string, canonicalPath: string): boolean {
