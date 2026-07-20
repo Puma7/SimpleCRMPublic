@@ -1,3 +1,4 @@
+import { isPotentiallyDangerousAttachment } from '@simplecrm/core';
 import type { MailPermission, MailResource } from '@simplecrm/core';
 
 import type {
@@ -741,6 +742,33 @@ async function assertSupplementalHttpPermissions(
           workspaceId,
           actor,
           permission: 'mail.send',
+          resource,
+        });
+      }
+    }
+  }
+
+  // Downloading raw attachment bytes — or PGP-decrypting them — for a filename
+  // whose extension is an executable/script type requires the extra
+  // mail.attachment.suspicious_download grant on top of mail.attachment.read, so
+  // the "Verdächtige Anhänge laden" delegation actually gates risky downloads.
+  if (
+    ports.emailAttachments
+    && (
+      (req.method === 'GET' && canonicalPath === '/api/v1/email/attachments/:attachmentId/content')
+      || (req.method === 'POST' && canonicalPath === '/api/v1/pgp/attachments/:attachmentId/decrypt')
+    )
+  ) {
+    const attachmentId = requirePositiveInt(
+      selectorValue(req, canonicalPath, { source: 'path', field: 'attachmentId' }),
+    );
+    const attachment = await ports.emailAttachments.get({ workspaceId, id: attachmentId });
+    if (attachment && isPotentiallyDangerousAttachment(attachment.filename)) {
+      for (const resource of baseResources) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission: 'mail.attachment.suspicious_download',
           resource,
         });
       }

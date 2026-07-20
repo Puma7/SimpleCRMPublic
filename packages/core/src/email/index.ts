@@ -1,3 +1,4 @@
+export * from './attachment-safety';
 export * from './attachment-text';
 export * from './automation-headers';
 export * from './imap-sync-cursor';
