@@ -73,6 +73,19 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set(
   ].includes(path)),
 );
 
+// Stateless PGP crypto helpers: they transform client-supplied plaintext —
+// encrypting to recipient public keys, or signing with the workspace identity
+// plus a supplied passphrase — and read/mutate no stored account or message
+// resource. A delegate who holds mail.send on any account (restricted scope)
+// must be able to prepare a PGP-protected outgoing body; the subsequent send is
+// authorized per-account by the compose-send policy. Scope 'none' is still
+// denied by the empty-scope check above, so only a genuine mail.send holder
+// reaches these.
+const RESTRICTED_SCOPE_WRITE_PATHS = new Set<string>([
+  '/api/v1/pgp/messages/encrypt',
+  '/api/v1/pgp/messages/sign',
+]);
+
 export async function enforceMailHttpPolicy(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -133,7 +146,11 @@ export async function enforceMailHttpPolicy(
         ) {
           return denied();
         }
-        if (req.method !== 'GET' && scope.kind !== 'all') {
+        if (
+          req.method !== 'GET'
+          && scope.kind !== 'all'
+          && !RESTRICTED_SCOPE_WRITE_PATHS.has(entry.route.path)
+        ) {
           return denied();
         }
       }
