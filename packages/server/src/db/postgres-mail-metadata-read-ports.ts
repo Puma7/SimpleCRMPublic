@@ -8,7 +8,7 @@ import {
 import { randomBytes } from 'crypto';
 
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
-import { mailScopePredicate } from '../mail-access/sql-scope';
+import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
 
 import type {
@@ -196,6 +196,38 @@ const emailThreadSelectColumns = [
   'created_at',
   'updated_at',
 ] as const;
+
+/**
+ * A canned response is visible under a restricted scope when it is global
+ * (account_id null) or belongs to an account the delegate can reach directly or
+ * as the parent of a scope-visible folder/message.
+ */
+function cannedResponseVisibilityPredicate(
+  workspaceId: string,
+  scope: { accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] },
+): RawBuilder<boolean> {
+  const branches: RawBuilder<boolean>[] = [kyselySql<boolean>`email_canned_responses.account_id is null`];
+  if (scope.accountIds.length > 0) {
+    branches.push(kyselySql<boolean>`email_canned_responses.account_id in (${kyselySql.join(scope.accountIds)})`);
+  }
+  if (scope.folderIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_folders f
+      where f.workspace_id = ${workspaceId}::uuid
+        and f.account_id = email_canned_responses.account_id
+        and f.id in (${kyselySql.join(scope.folderIds)})
+    )`);
+  }
+  if (scope.messageIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_messages m
+      where m.workspace_id = ${workspaceId}::uuid
+        and m.account_id = email_canned_responses.account_id
+        and m.id in (${kyselySql.join(scope.messageIds)})
+    )`);
+  }
+  return kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` or `)})`;
+}
 
 /** Scoped clause: the messages of email_threads.id the caller may see. */
 function scopedThreadMessages(workspaceId: string, scopePredicate: RawBuilder<boolean>): RawBuilder<unknown> {
@@ -1387,13 +1419,15 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
             .select(emailCannedResponseSelectColumns)
             .where('workspace_id', '=', input.workspaceId);
 
-          const scopePredicate = mailScopePredicate(input.mailScope, {
-            accountId: 'email_canned_responses.account_id',
-          });
-          if (scopePredicate) {
-            query = input.mailScope?.kind === 'restricted' && input.mailScope.accountIds.length > 0
-              ? query.where((eb) => eb.or([eb('account_id', 'is', null), scopePredicate]))
-              : query.where(scopePredicate);
+          // Canned responses are global (account_id null) or account-scoped. A
+          // restricted delegate must see globals PLUS responses for any account
+          // they can reach directly or as the parent of a scope-visible
+          // folder/message — otherwise a folder-scoped editor gets no templates.
+          const cannedScope = effectiveMailScope(input.mailScope);
+          if (cannedScope.kind === 'none') {
+            query = query.where(kyselySql<boolean>`false`);
+          } else if (cannedScope.kind === 'restricted') {
+            query = query.where(cannedResponseVisibilityPredicate(input.workspaceId, cannedScope));
           }
           query = query.orderBy('id', 'asc').limit(limit + 1);
 
