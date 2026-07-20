@@ -99,7 +99,7 @@ export type MailRoutePolicyEntry =
 
 export type MailEventPolicyEntry = Readonly<{
   type: ServerEventType;
-  permission: Extract<MailPermission, 'mail.metadata.read' | 'mail.content.read' | 'mail.attachment.read' | 'mail.comment'>;
+  permission: Extract<MailPermission, 'mail.metadata.read' | 'mail.content.read' | 'mail.attachment.read' | 'mail.comment' | 'mail.draft.create'>;
   resource: MailResourceResolution;
 }>;
 
@@ -650,8 +650,14 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
     // Internal-note events carry note existence + message/note id + state; the
     // HTTP note routes gate that behind the independent mail.comment permission,
     // so the event stream must too — otherwise a viewer denied comments still
-    // learns of every note over the stream.
-    permission: type.startsWith('email_internal_note.') ? 'mail.comment' : 'mail.metadata.read',
+    // learns of every note over the stream. Canned-response events likewise match
+    // their read route (mail.draft.create) so an account-level draft delegate that
+    // lacks mail.metadata.read still receives compose-template refreshes.
+    permission: type.startsWith('email_internal_note.')
+      ? 'mail.comment'
+      : type.startsWith('email_canned_response.')
+        ? 'mail.draft.create'
+        : 'mail.metadata.read',
     resource: eventResourceResolution(type),
   }));
   const workflowDelayedJobPolicies: MailEventPolicyEntry[] = [

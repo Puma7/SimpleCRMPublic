@@ -196,6 +196,7 @@ describe('server mail policy manifest', () => {
       || permission === 'mail.content.read'
       || permission === 'mail.attachment.read'
       || permission === 'mail.comment'
+      || permission === 'mail.draft.create'
     ))).toBe(true);
   });
 
@@ -203,6 +204,12 @@ describe('server mail policy manifest', () => {
     const noteEvents = MAIL_EVENT_POLICY_MANIFEST.filter(({ type }) => type.startsWith('email_internal_note.'));
     expect(noteEvents.length).toBeGreaterThan(0);
     expect(noteEvents.every(({ permission }) => permission === 'mail.comment')).toBe(true);
+  });
+
+  test('canned-response events require mail.draft.create, matching the read route', () => {
+    const cannedEvents = MAIL_EVENT_POLICY_MANIFEST.filter(({ type }) => type.startsWith('email_canned_response.'));
+    expect(cannedEvents.length).toBeGreaterThan(0);
+    expect(cannedEvents.every(({ permission }) => permission === 'mail.draft.create')).toBe(true);
   });
 
   test('rejects duplicate route, job and event policy keys', () => {
