@@ -22,7 +22,10 @@ import { SMTP_RELAY_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/re
 import { MAIL_SETTINGS_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/settings-routes';
 import { SPAM_MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/spam-routes';
 import { USER_SIGNATURE_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/user-signature-routes';
-import { WORKFLOW_MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/workflow-routes';
+import {
+  WORKFLOW_MAIL_ROUTE_REGISTRATIONS,
+  handleWorkflowReadRoute,
+} from '../../packages/server/src/api/workflow-routes';
 import {
   MAIL_EVENT_POLICY_MANIFEST,
   MAIL_ROUTE_POLICY_MANIFEST,
@@ -93,6 +96,36 @@ describe('server mail policy manifest', () => {
     expectRegistrationInventory('pgp-routes', PGP_MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('spam-routes', SPAM_MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('lock-routes', MAIL_LOCK_ROUTE_REGISTRATIONS);
+  });
+
+  test('independently inventories every delayed-job method accepted by the workflow handler', async () => {
+    const principal = {
+      userId: 'user-1',
+      workspaceId: 'workspace-1',
+      role: 'user' as const,
+    };
+    const accepted = [
+      ['GET', '/api/v1/workflow-delayed-jobs'],
+      ['POST', '/api/v1/workflow-delayed-jobs'],
+      ['GET', '/api/v1/workflow-delayed-jobs/87'],
+      ['PATCH', '/api/v1/workflow-delayed-jobs/87'],
+      ['DELETE', '/api/v1/workflow-delayed-jobs/87'],
+    ] as const;
+
+    for (const [method, path] of accepted) {
+      const response = await handleWorkflowReadRoute({ method, path, principal }, {} as ServerApiPorts);
+      expect(response?.status).not.toBe(405);
+      expect(WORKFLOW_MAIL_ROUTE_REGISTRATIONS.some(({ registration }) => (
+        registration.methods.includes(method)
+        && registration.pattern.test(path)
+      ))).toBe(true);
+    }
+
+    await expect(handleWorkflowReadRoute({
+      method: 'PUT',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      principal,
+    }, {} as ServerApiPorts)).resolves.toMatchObject({ status: 405 });
   });
 
   test('preserves method fallthrough for method-specific metadata upsert branches', async () => {
@@ -302,6 +335,9 @@ describe('server mail policy manifest', () => {
       ['GET', '/api/v1/workflow-forward-dedup/83', 'mail.content.read', { kind: 'mail_scope' }],
       ['GET', '/api/v1/workflow-delayed-jobs', 'mail.content.read', { kind: 'mail_scope' }],
       ['GET', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
+      ['POST', '/api/v1/workflow-delayed-jobs', 'mail.content.read', optionalMessageBody({ allowNull: true })],
+      ['PATCH', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
+      ['DELETE', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
     ] as const;
 
     for (const [method, path, permission, resource] of matrix) {
@@ -332,9 +368,9 @@ describe('server mail policy manifest', () => {
       actorMode: 'initiating_user_or_service',
       permission: 'mail.content.read',
       resource: {
-        kind: 'optional_message_lookup',
+        kind: 'workflow_execute_message_lookup',
         messageId: { source: 'job', field: 'messageId' },
-        whenAbsent: 'non_mail',
+        delayedJobId: { source: 'job', field: 'delayedJobId' },
       },
     });
   });
@@ -351,7 +387,8 @@ describe('server mail policy manifest', () => {
         resource: {
           kind: 'optional_message_lookup',
           messageId: { source: 'event_payload', field: 'messageId' },
-          whenAbsent: 'non_mail',
+          whenAbsent: 'deny',
+          whenNull: 'non_mail',
         },
       });
     }
@@ -488,11 +525,12 @@ function messageBody(field: string) {
   return { kind: 'message_lookup', messageId: { source: 'body', field } } as const;
 }
 
-function optionalMessageBody() {
+function optionalMessageBody(options: { allowNull?: boolean } = {}) {
   return {
     kind: 'optional_message_lookup',
     messageId: { source: 'body', field: 'messageId' },
     whenAbsent: 'non_mail',
+    ...(options.allowNull ? { whenNull: 'non_mail' as const } : {}),
   } as const;
 }
 

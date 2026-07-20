@@ -11,6 +11,7 @@ import {
 import type {
   MailResourceLookupPort,
   MailResourceLookupTarget,
+  WorkflowDelayedJobMailClassification,
 } from './types';
 
 export type PostgresMailResourceLookupOptions = Readonly<{
@@ -30,7 +31,44 @@ export function createPostgresMailResourceLookupPort(
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async classifyWorkflowDelayedJob(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => classifyWorkflowDelayedJob(
+          trx,
+          input.workspaceId,
+          input.delayedJobId,
+        ),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
   };
+}
+
+async function classifyWorkflowDelayedJob(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  delayedJobId: number,
+): Promise<WorkflowDelayedJobMailClassification> {
+  const row = await trx
+    .selectFrom('workflow_delayed_jobs as delayed_job')
+    .leftJoin('email_messages as message', (join) => join
+      .onRef('message.workspace_id', '=', 'delayed_job.workspace_id')
+      .onRef('message.id', '=', 'delayed_job.message_id'))
+    .select([
+      'delayed_job.message_id as delayed_message_id',
+      'message.id as message_id',
+      'message.account_id as account_id',
+      'message.folder_id as folder_id',
+    ])
+    .where('delayed_job.workspace_id', '=', workspaceId)
+    .where('delayed_job.id', '=', delayedJobId)
+    .executeTakeFirst();
+  if (!row) return { kind: 'missing' };
+  if (row.delayed_message_id === null) return { kind: 'non_mail' };
+  const resource = resourceFromMessageRow(row)[0];
+  return resource ? { kind: 'message', resource } : { kind: 'invalid' };
 }
 
 async function resolveTarget(

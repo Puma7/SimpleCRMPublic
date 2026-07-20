@@ -38,5 +38,47 @@ Validated and fixed the reviewed server-side mailbox ACL bypass paths:
 
 ## Concerns
 
-- Full `pnpm run test:integration` is not green because concurrent Task-8 rollout/audit edits in `tests/integration/server-mail-access-routes.test.ts` currently fail four assertions/unhandled connection paths. These files are outside this ACL assignment and were not corrected here.
-- The shared worktree contains unrelated Task-8 changes. Stage/commit selection must remain partial and scoped to the ACL changes and evidence.
+- The integration and shared-worktree concerns above applied to the first review-fix wave. The delayed-job follow-up below started from clean HEAD `28a04f7c5940a8e9803d52230d934b3acc496387`; all repository-wide gates are green.
+
+## Delayed-Job Follow-Up Wave
+
+### Validated Findings
+
+- Delayed-job POST/PATCH/DELETE were accepted by the workflow handler but absent from the canonical mail inventory. This was real.
+- Delayed-job mutation ports selected and mutated rows without `MailSqlScope`. An ordinary user could mutate hidden mail-linked jobs or relink an accessible/non-mail job to hidden mail. This was real.
+- `workflow.execute` treated an omitted direct `messageId` as non-mail even when `delayedJobId` resolved to a mail-linked row. Missing rows and direct/delayed mismatches were not represented as distinct typed classifications. This was real.
+- Delayed-job events treated missing/malformed message IDs like non-mail. This was real for live and replay filtering.
+- The initial worker classifier fix had a TOCTOU gap because classification and execution used separate transactions while PATCH could change `message_id`. This was real.
+- `runId` alone does not cause workflow execution to load message content. No run lookup was added.
+
+### Implemented Contract
+
+- Canonical workflow mail routes now include delayed-job POST/PATCH/DELETE, with an independent accepted method/path matrix test against the handler.
+- POST authorizes a present source message with `mail.content.read`; genuine absence and parser-supported `null` create a non-mail job. Other present malformed values fail closed.
+- PATCH/DELETE authorize the current row through SQL scope before locking/mutating. PATCH separately authorizes and SQL-scopes a replacement message. `null` detach remains supported and mutation failure is atomic.
+- The PostgreSQL worker lookup classifies delayed jobs as `missing`, `invalid`, `non_mail`, or `message`; it never uses a sentinel resource and never conflates a missing row with non-mail.
+- Worker authorization produces a typed, transient `MailJobAuthorization` outside the payload. Both legacy and Graphile workers pass it to the workflow handler only after actor/service provenance and mailbox permission checks.
+- Workflow execution compares the authorized delayed-job ID/message linkage with the delayed row selected inside its execution transaction before loading message content or running nodes. A relink committed before that select is denied; a relink committed after it cannot change the selected effective message ID used by that execution.
+- Direct and delayed message IDs must agree, including null/non-null mismatches. Missing/malformed delayed IDs fail closed; an explicit delayed row with `message_id IS NULL` remains a genuine non-mail execution.
+- Delayed-job events accept only a positive integer message ID or explicit `null`; missing, empty, zero, object, and malformed values are filtered from both live and replay streams.
+
+### Follow-Up Evidence Matrix
+
+| Scenario | Invocation | Binary observable | Artifact |
+|---|---|---|---|
+| RED: delayed mutation inventory, SQL scope, worker lookup, strict events | `pnpm exec jest --runTestsByPath tests/unit/server-mail-policy-manifest.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/unit/postgres-job-queue-worker.test.ts tests/integration/server-mail-access-routes.test.ts --runInBand -t "runs the backfill|independently inventories every delayed-job method|classifies message workflow execution jobs|classifies delayed-job events|workflow execution resolves delayed-job mail|delayed-job events require|delayed-job live and replay|legacy worker resolves a delayed workflow|authorizes delayed-job HTTP mutations"` | Failed with the expected missing route/policy/classifier/filter protections | `.superpowers/sdd/mail-acl-delayed-job-followup-red-20260720.log` |
+| RED: deterministic relink between authorization and execution | `pnpm exec jest --runTestsByPath tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-edition-foundation.test.ts --runInBand -t "carries the authorized delayed message linkage|production job handlers validate payloads|schedules and resumes delay nodes"` | Three failures: worker did not carry authorization, builder discarded it, execution ran the relinked row and marked it done | `.superpowers/sdd/mail-acl-delayed-job-toctou-red-20260720.log` |
+| Focused policy/worker/event/handler/execution suites | `pnpm exec jest --runTestsByPath tests/unit/server-mail-policy-manifest.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/unit/postgres-job-queue-worker.test.ts tests/unit/server-edition-foundation.test.ts --runInBand` | Passed: 4 suites, 439 tests | `.superpowers/sdd/mail-acl-delayed-job-followup-focused-unit-green-20260720.log` |
+| Real PostgreSQL ACL mutations and classifier | `pnpm exec jest --runTestsByPath tests/integration/server-mail-access-routes.test.ts --runInBand` | Passed: 1 suite, 44 tests; includes denied/allowed, existence hiding, current+replacement authorization, null detach, cross-workspace and atomic no-change assertions | `.superpowers/sdd/mail-acl-delayed-job-followup-postgres-green-20260720.log` |
+| Lint | `pnpm run lint` | Passed | `.superpowers/sdd/mail-acl-delayed-job-followup-lint-20260720.log` |
+| Typecheck | `pnpm run typecheck` | Passed | `.superpowers/sdd/mail-acl-delayed-job-followup-typecheck-20260720.log` |
+| Unit suite | `pnpm run test:unit` | Passed: 265 suites, 2407 tests, 1 snapshot | `.superpowers/sdd/mail-acl-delayed-job-followup-test-unit-20260720.log` |
+| Integration suite | `pnpm run test:integration` | Passed: 25 suites, 351 tests | `.superpowers/sdd/mail-acl-delayed-job-followup-test-integration-20260720.log` |
+| Mail coverage | `pnpm run test:mail:coverage` | Passed: 179 suites, 1166 passed, 1 skipped; 91.91% statements/lines and 80.08% branches | `.superpowers/sdd/mail-acl-delayed-job-followup-test-mail-coverage-20260720.log` |
+| Build | `pnpm run build` | Passed with existing Vite externalization and chunk-size warnings | `.superpowers/sdd/mail-acl-delayed-job-followup-build-20260720.log` |
+| Whitespace diff check | `git diff --check` | Passed: clean | `.superpowers/sdd/mail-acl-delayed-job-followup-git-diff-check-20260720.log` |
+
+### Remaining Concerns
+
+- Delayed-job message linkage remains intentionally mutable through the authorized PATCH API. Correctness therefore depends on all production workflow execution entering through a policy-enforcing worker, which now supplies the non-payload authorization result; the execution port also fails closed for an existing delayed row when that result is absent.
+- Build output retains the pre-existing Vite browser externalization and large-chunk warnings; neither is introduced by this server-only ACL change.

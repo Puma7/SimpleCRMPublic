@@ -18,7 +18,7 @@ import {
   isTrustedServiceJobPayload,
   type ServerJobPolicyEntry,
 } from '../jobs/policy';
-import type { QueuedJob } from '../jobs/types';
+import type { MailJobAuthorization, QueuedJob } from '../jobs/types';
 import { MailAccessDeniedError } from './service';
 import type {
   MailAccessActor,
@@ -59,6 +59,11 @@ type ResolvedResources =
   | Readonly<{ kind: 'non_mail' }>
   | Readonly<{ kind: 'scope' }>
   | Readonly<{ kind: 'resources'; resources: readonly MailResource[]; mode: 'all' | 'any' }>;
+
+type ResolvedJobResources = Readonly<{
+  resources: ResolvedResources;
+  authorization?: MailJobAuthorization;
+}>;
 
 const MAIL_EVENT_POLICY_TYPES = new Set(MAIL_EVENT_POLICY_MANIFEST.map((entry) => entry.type));
 const SERVER_EVENT_TYPE_SET = new Set<string>(SERVER_EVENT_TYPES);
@@ -103,9 +108,9 @@ const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Obj
 export async function enforceMailJobPolicy(
   job: QueuedJob,
   ports: MailAsyncPolicyPorts | undefined,
-): Promise<void> {
+): Promise<MailJobAuthorization | undefined> {
   const policy = assertServerJobPolicy(job.type);
-  if (policy.kind === 'non_mail') return;
+  if (policy.kind === 'non_mail') return undefined;
   if (!ports?.mailAccess || !ports.mailResourceLookup) {
     throw new MailAsyncAuthorizationError();
   }
@@ -115,21 +120,22 @@ export async function enforceMailJobPolicy(
     mailResourceLookup: ports.mailResourceLookup,
   };
 
-  const resources = await resolveJobResources(job, policy, requiredPorts);
-  if (resources.kind === 'non_mail') return;
   const actor = await resolveJobActor(job, policy, ports);
+  const resolved = await resolveJobResources(job, policy, requiredPorts);
+  if (resolved.resources.kind === 'non_mail') return resolved.authorization;
   if (actor.kind === 'service') {
-    assertServiceResources(resources);
-    return;
+    assertServiceResources(resolved.resources);
+    return resolved.authorization;
   }
   try {
     await assertResolvedResources({
       workspaceId: job.workspaceId,
       actor: actor.actor,
       permission: policy.permission,
-      resources,
+      resources: resolved.resources,
       ports: requiredPorts,
     });
+    return resolved.authorization;
   } catch (error) {
     if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);
     throw error;
@@ -250,13 +256,17 @@ async function resolveJobResources(
   job: QueuedJob,
   policy: Extract<ServerJobPolicyEntry, { kind: 'mail' }>,
   ports: Required<Pick<MailAsyncPolicyPorts, 'mailResourceLookup'>>,
-): Promise<ResolvedResources> {
-  return resolveResources({
+): Promise<ResolvedJobResources> {
+  const input = {
     resolution: policy.resource,
     workspaceId: job.workspaceId,
     ports,
     select: (selector) => selector.source === 'job' ? job.payload[selector.field] : undefined,
-  });
+  } satisfies Parameters<typeof resolveResources>[0];
+  if (policy.resource.kind === 'workflow_execute_message_lookup') {
+    return resolveWorkflowExecuteResources(input, policy.resource);
+  }
+  return { resources: await resolveResources(input) };
 }
 
 async function resolveEventResources(
@@ -295,10 +305,16 @@ async function resolveResources(input: {
   }
   if (resolution.kind === 'optional_message_lookup') {
     const raw = input.select(resolution.messageId);
-    if (raw === undefined || raw === null || raw === '') {
-      return resolution.whenAbsent === 'non_mail' ? { kind: 'non_mail' } : { kind: 'scope' };
+    if (raw === undefined) {
+      if (resolution.whenAbsent === 'non_mail') return { kind: 'non_mail' };
+      if (resolution.whenAbsent === 'mail_scope') return { kind: 'scope' };
+      throw new MailAsyncAuthorizationError();
     }
+    if (raw === null && resolution.whenNull === 'non_mail') return { kind: 'non_mail' };
     return lookup(input, { kind: 'message', id: requirePositiveInt(raw) });
+  }
+  if (resolution.kind === 'workflow_execute_message_lookup') {
+    return (await resolveWorkflowExecuteResources(input, resolution)).resources;
   }
   if (resolution.kind === 'message_or_account_lookup') {
     const message = input.select(resolution.messageId);
@@ -340,6 +356,62 @@ async function resolveResources(input: {
   }
   const result = await lookup(input, target);
   return resolution.kind === 'thread_lookup' ? { ...result, mode: 'any' } : result;
+}
+
+async function resolveWorkflowExecuteResources(
+  input: {
+    workspaceId: string;
+    ports: Required<Pick<MailAsyncPolicyPorts, 'mailResourceLookup'>>;
+    select(selector: PolicyValueSelector): unknown;
+  },
+  resolution: Extract<MailResourceResolution, { kind: 'workflow_execute_message_lookup' }>,
+): Promise<ResolvedJobResources> {
+  const rawMessageId = input.select(resolution.messageId);
+  const messageId = rawMessageId === undefined ? undefined : requirePositiveInt(rawMessageId);
+  const rawDelayedJobId = input.select(resolution.delayedJobId);
+  if (rawDelayedJobId === undefined) {
+    return {
+      resources: messageId === undefined
+        ? { kind: 'non_mail' }
+        : await lookup(input, { kind: 'message', id: messageId }),
+    };
+  }
+
+  const delayedJobId = requirePositiveInt(rawDelayedJobId);
+  const classify = input.ports.mailResourceLookup.classifyWorkflowDelayedJob;
+  if (!classify) throw new MailAsyncAuthorizationError();
+  const classification = await classify({
+    workspaceId: input.workspaceId,
+    delayedJobId,
+  });
+  if (classification.kind === 'missing' || classification.kind === 'invalid') {
+    throw new MailAsyncAuthorizationError();
+  }
+  if (classification.kind === 'non_mail') {
+    if (messageId !== undefined) throw new MailAsyncAuthorizationError();
+    return {
+      resources: { kind: 'non_mail' },
+      authorization: {
+        kind: 'workflow_execute_delayed_message',
+        delayedJobId,
+        messageId: null,
+      },
+    };
+  }
+  if (
+    messageId !== undefined
+    && classification.resource.messageId !== String(messageId)
+  ) {
+    throw new MailAsyncAuthorizationError();
+  }
+  return {
+    resources: { kind: 'resources', resources: [classification.resource], mode: 'all' },
+    authorization: {
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId,
+      messageId: requirePositiveInt(classification.resource.messageId),
+    },
+  };
 }
 
 async function lookup(

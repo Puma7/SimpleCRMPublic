@@ -6,7 +6,7 @@ import {
   SERVER_JOB_TYPES,
   type ServerJobType,
 } from './policy';
-import type { EnqueueJobInput, JobPayload } from './types';
+import type { EnqueueJobInput, JobPayload, QueuedJob } from './types';
 import { scheduledSendDraftIdFromPayload, scheduledSendJobKey } from './scheduled-send-job-key';
 import type { JobHandlerRegistry } from './worker';
 import {
@@ -167,7 +167,7 @@ export function buildGraphileTaskList(
       if (!handler) {
         throw new Error(`No handler registered for job type ${type}`);
       }
-      const job = {
+      const job: QueuedJob = {
         id: 0,
         type,
         payload: normalizePayload(payload),
@@ -181,13 +181,14 @@ export function buildGraphileTaskList(
         createdAt: new Date(0).toISOString(),
         updatedAt: new Date(0).toISOString(),
       };
+      let mailAuthorization;
       try {
-        await enforceMailJobPolicy(job, mailPolicyPorts);
+        mailAuthorization = await enforceMailJobPolicy(job, mailPolicyPorts);
       } catch (error) {
         if (error instanceof MailAsyncAuthorizationError) return;
         throw error;
       }
-      await handler(job);
+      await handler(mailAuthorization ? { ...job, mailAuthorization } : job);
     },
   ]));
 }

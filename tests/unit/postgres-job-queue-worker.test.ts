@@ -202,6 +202,139 @@ describe('mail job ACL revalidation', () => {
     expect(result.status).toBe('failed');
     expect(calls).toEqual(['terminal:mail_access_denied']);
   });
+
+  test('legacy worker resolves a delayed workflow effective message before invoking the executor', async () => {
+    const calls: string[] = [];
+    const queued = makeQueuedJob({
+      id: 43,
+      type: 'workflow.execute',
+      workspaceId: 'workspace-a',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        workflowId: 7,
+        delayedJobId: 88,
+      },
+    });
+    let claimed = false;
+    const queue: JobQueuePort = {
+      async enqueue() { throw new Error('not used'); },
+      async claimNext() {
+        if (claimed) return null;
+        claimed = true;
+        return queued;
+      },
+      async complete() {
+        calls.push('complete');
+        return true;
+      },
+      async fail() {
+        calls.push('retryable-fail');
+        return null;
+      },
+      async failTerminal() {
+        calls.push('terminal');
+        return { ...queued, attempts: queued.maxAttempts };
+      },
+      async releaseStaleLocks() { return []; },
+    };
+
+    const result = await runJobQueueOnce({
+      queue,
+      workerId: 'worker-a',
+      handlers: {
+        'workflow.execute': async () => { calls.push('executor'); },
+      },
+      mailAccess: {
+        async assertPermission(input) {
+          if (input.resource.type === 'message' && input.resource.messageId === '101') {
+            throw new Error('mail_access_denied');
+          }
+        },
+        async resolveScope() { return { kind: 'none' }; },
+      },
+      mailResourceLookup: {
+        async resolve() { return []; },
+        async classifyWorkflowDelayedJob() {
+          return {
+            kind: 'message',
+            resource: { type: 'message', accountId: '7', folderId: '8', messageId: '101' },
+          };
+        },
+      },
+      auth: {
+        async listUsers() {
+          return [{ id: 'user-a', role: 'user', disabledAt: null }];
+        },
+      },
+    });
+
+    expect(result.status).toBe('failed');
+    expect(calls).toEqual(['terminal']);
+  });
+
+  test('legacy worker carries the authorized delayed message linkage to the executor', async () => {
+    const queued = makeQueuedJob({
+      id: 44,
+      type: 'workflow.execute',
+      workspaceId: 'workspace-a',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        workflowId: 7,
+        delayedJobId: 88,
+      },
+    });
+    let claimed = false;
+    let handledJob: QueuedJob | null = null;
+    const queue: JobQueuePort = {
+      async enqueue() { throw new Error('not used'); },
+      async claimNext() {
+        if (claimed) return null;
+        claimed = true;
+        return queued;
+      },
+      async complete() { return true; },
+      async fail() { return null; },
+      async failTerminal() { return null; },
+      async releaseStaleLocks() { return []; },
+    };
+
+    const result = await runJobQueueOnce({
+      queue,
+      workerId: 'worker-a',
+      handlers: {
+        'workflow.execute': async (job) => { handledJob = job; },
+      },
+      mailAccess: {
+        async assertPermission() {},
+        async resolveScope() { return { kind: 'none' }; },
+      },
+      mailResourceLookup: {
+        async resolve() { return []; },
+        async classifyWorkflowDelayedJob() {
+          return {
+            kind: 'message',
+            resource: { type: 'message', accountId: '7', folderId: '8', messageId: '14' },
+          };
+        },
+      },
+      auth: {
+        async listUsers() {
+          return [{ id: 'user-a', role: 'user', disabledAt: null }];
+        },
+      },
+    });
+
+    expect(result.status).toBe('completed');
+    expect(handledJob).toMatchObject({
+      mailAuthorization: {
+        kind: 'workflow_execute_delayed_message',
+        delayedJobId: 88,
+        messageId: 14,
+      },
+    });
+  });
 });
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {

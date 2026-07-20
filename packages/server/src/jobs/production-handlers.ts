@@ -1,4 +1,4 @@
-import type { JobPayload } from './types';
+import type { JobPayload, MailJobAuthorization } from './types';
 import type { JobHandlerRegistry } from './worker';
 import { isTrustedServiceJobPayload } from './policy';
 import type {
@@ -85,6 +85,7 @@ export type WorkflowExecutionJobPlan = Readonly<{
   messageId?: number;
   runId?: number;
   delayedJobId?: number;
+  authorizedDelayedJobMessageId?: number | null;
   triggerName?: string;
   actorUserId?: string;
   trustedService?: boolean;
@@ -210,7 +211,11 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     },
     'workflow.execute': async (job) => {
       if (!options.workflowExecution) throw new Error('workflow execution job port is not configured');
-      await options.workflowExecution.execute(buildWorkflowExecutionJobPlan(job.payload, job.workspaceId));
+      await options.workflowExecution.execute(buildWorkflowExecutionJobPlan(
+        job.payload,
+        job.workspaceId,
+        job.mailAuthorization,
+      ));
     },
     'workflow.http_request': async (job) => {
       if (!options.workflowHttpRequest) throw new Error('workflow HTTP request job port is not configured');
@@ -395,13 +400,32 @@ export function buildAiTransformTextJobPlan(
 export function buildWorkflowExecutionJobPlan(
   payload: JobPayload,
   jobWorkspaceId: string,
+  mailAuthorization?: MailJobAuthorization,
 ): WorkflowExecutionJobPlan {
+  const message = optionalPositiveInteger(payload, 'messageId');
+  const delayedJob = optionalPositiveInteger(payload, 'delayedJobId');
+  const delayedJobId = delayedJob.delayedJobId;
+  if (delayedJobId === undefined) {
+    if (mailAuthorization !== undefined) throw new Error('unexpected workflow mail authorization');
+  } else if (
+    mailAuthorization?.kind !== 'workflow_execute_delayed_message'
+    || mailAuthorization.delayedJobId !== delayedJobId
+    || (
+      message.messageId !== undefined
+      && mailAuthorization.messageId !== message.messageId
+    )
+  ) {
+    throw new Error('workflow delayed job authorization mismatch');
+  }
   return {
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     workflowId: requiredPositiveInteger(payload, 'workflowId'),
-    ...optionalPositiveInteger(payload, 'messageId'),
+    ...message,
     ...optionalPositiveInteger(payload, 'runId'),
-    ...optionalPositiveInteger(payload, 'delayedJobId'),
+    ...delayedJob,
+    ...(delayedJobId === undefined
+      ? {}
+      : { authorizedDelayedJobMessageId: mailAuthorization!.messageId }),
     ...optionalString(payload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
     ...optionalString(payload, 'actorUserId'),
     ...optionalTrustedService(payload),

@@ -112,36 +112,57 @@ export async function enforceMailHttpPolicy(
       principal.workspaceId,
       ports,
     );
+    const scopedMutation = isScopedWorkflowDelayedJobMutation(req.method, entry.route.path);
 
     if (resources.kind === 'scope') {
       const scope = await resolveScope();
-      if (
-        scope.kind === 'none'
-        && (req.method !== 'GET' || !EMPTY_SCOPE_READ_PATHS.has(entry.route.path))
-      ) {
-        return denied();
+      if (!scopedMutation) {
+        if (
+          scope.kind === 'none'
+          && (req.method !== 'GET' || !EMPTY_SCOPE_READ_PATHS.has(entry.route.path))
+        ) {
+          return denied();
+        }
+        if (
+          req.method === 'GET'
+          && scope.kind === 'restricted'
+          && !RESTRICTED_SCOPE_READ_PATHS.has(entry.route.path)
+        ) {
+          return denied();
+        }
+        if (req.method !== 'GET' && scope.kind !== 'all') {
+          return denied();
+        }
       }
-      if (
-        req.method === 'GET'
-        && scope.kind === 'restricted'
-        && !RESTRICTED_SCOPE_READ_PATHS.has(entry.route.path)
-      ) {
-        return denied();
-      }
-      if (req.method !== 'GET' && scope.kind !== 'all') {
-        return denied();
-      }
+      await assertSupplementalHttpPermissions(
+        req,
+        entry.route.path,
+        [],
+        principal.workspaceId,
+        actor,
+        ports,
+      );
       return { ok: true, context: { permission: entry.policy.permission, scope } };
     }
 
     if (resources.resources.length === 0) {
-      return entry.policy.resource.kind === 'bulk_message_lookup'
+      const allowedEmpty = entry.policy.resource.kind === 'bulk_message_lookup'
         || (
           entry.policy.resource.kind === 'optional_message_lookup'
           && entry.policy.resource.whenAbsent === 'non_mail'
-        )
-        ? { ok: true, context: { permission: entry.policy.permission } }
-        : denied();
+        );
+      if (!allowedEmpty) return denied();
+      await assertSupplementalHttpPermissions(
+        req,
+        entry.route.path,
+        [],
+        principal.workspaceId,
+        actor,
+        ports,
+      );
+      return scopedMutation
+        ? { ok: true, context: { permission: entry.policy.permission, scope: await resolveScope() } }
+        : { ok: true, context: { permission: entry.policy.permission } };
     }
     if (resources.mode === 'any') {
       await assertAnyResource(
@@ -172,6 +193,12 @@ export async function enforceMailHttpPolicy(
     );
 
     if (entry.policy.resource.kind === 'thread_lookup') {
+      return {
+        ok: true,
+        context: { permission: entry.policy.permission, scope: await resolveScope() },
+      };
+    }
+    if (scopedMutation) {
       return {
         ok: true,
         context: { permission: entry.policy.permission, scope: await resolveScope() },
@@ -295,6 +322,15 @@ export function portsWithMailAccessContext(
         ...ports.workflowDelayedJobs,
         list: (input) => ports.workflowDelayedJobs!.list(scopedInput(input)),
         get: (input) => ports.workflowDelayedJobs!.get(scopedInput(input)),
+        ...(ports.workflowDelayedJobs.create ? {
+          create: (input) => ports.workflowDelayedJobs!.create!(scopedInput(input)),
+        } : {}),
+        ...(ports.workflowDelayedJobs.update ? {
+          update: (input) => ports.workflowDelayedJobs!.update!(scopedInput(input)),
+        } : {}),
+        ...(ports.workflowDelayedJobs.delete ? {
+          delete: (input) => ports.workflowDelayedJobs!.delete!(scopedInput(input)),
+        } : {}),
       },
     } : {}),
   };
@@ -342,9 +378,14 @@ async function resolveHttpResources(
   if (resolution.kind === 'optional_message_lookup') {
     const raw = selectorValue(req, canonicalPath, resolution.messageId);
     if (raw === undefined && resolution.whenAbsent === 'mail_scope') return { kind: 'scope' };
+    if (raw === undefined && resolution.whenAbsent === 'deny') throw new MailAccessDeniedError();
     if (raw === undefined) return { kind: 'resources', resources: [], mode: 'all' };
+    if (raw === null && resolution.whenNull === 'non_mail') {
+      return { kind: 'resources', resources: [], mode: 'all' };
+    }
     return lookupSingle(ports, workspaceId, { kind: 'message', id: requirePositiveInt(raw) });
   }
+  if (resolution.kind === 'workflow_execute_message_lookup') throw new MailAccessDeniedError();
   if (resolution.kind === 'message_or_account_lookup') {
     const message = selectorValue(req, canonicalPath, resolution.messageId);
     if (message !== undefined) {
@@ -468,6 +509,36 @@ async function assertSupplementalHttpPermissions(
       resource: source[0]!,
     });
   }
+
+  if (
+    req.method === 'PATCH'
+    && canonicalPath === '/api/v1/workflow-delayed-jobs/:id'
+    && isBodyObject(req.body)
+    && Object.prototype.hasOwnProperty.call(req.body, 'messageId')
+  ) {
+    const rawMessageId = req.body.messageId;
+    if (rawMessageId === null) return;
+    const messageId = requirePositiveInt(rawMessageId);
+    const replacement = await ports.mailResourceLookup!.resolve({
+      workspaceId,
+      target: { kind: 'message', id: messageId },
+    });
+    if (replacement.length !== 1) throw new MailAccessDeniedError();
+    await ports.mailAccess!.assertPermission({
+      workspaceId,
+      actor,
+      permission: 'mail.content.read',
+      resource: replacement[0]!,
+    });
+  }
+}
+
+function isScopedWorkflowDelayedJobMutation(method: string, canonicalPath: string): boolean {
+  return (method === 'POST' && canonicalPath === '/api/v1/workflow-delayed-jobs')
+    || (
+      (method === 'PATCH' || method === 'DELETE')
+      && canonicalPath === '/api/v1/workflow-delayed-jobs/:id'
+    );
 }
 
 function selectorValue(
@@ -488,6 +559,10 @@ function bodyField(body: unknown, field: string): unknown {
   return body && typeof body === 'object' && !Array.isArray(body)
     ? (body as Record<string, unknown>)[field]
     : undefined;
+}
+
+function isBodyObject(body: unknown): body is Record<string, unknown> {
+  return body !== null && typeof body === 'object' && !Array.isArray(body);
 }
 
 function requirePositiveInt(value: unknown): number {

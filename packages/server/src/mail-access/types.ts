@@ -136,4 +136,17 @@ export interface MailResourceLookupPort {
     workspaceId: string;
     target: MailResourceLookupTarget;
   }>): Promise<readonly MailResource[]>;
+  classifyWorkflowDelayedJob?(input: Readonly<{
+    workspaceId: string;
+    delayedJobId: number;
+  }>): Promise<WorkflowDelayedJobMailClassification>;
 }
+
+export type WorkflowDelayedJobMailClassification =
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'invalid' }>
+  | Readonly<{ kind: 'non_mail' }>
+  | Readonly<{
+    kind: 'message';
+    resource: Extract<MailResource, { type: 'message' }>;
+  }>;

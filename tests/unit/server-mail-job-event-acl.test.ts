@@ -6,8 +6,9 @@ import {
   SERVER_JOB_POLICIES,
   TRUSTED_SERVICE_JOB_MARKER_FIELD,
 } from '../../packages/server/src/jobs';
-import type { ServerEvent } from '../../packages/server/src/api';
+import type { ServerEvent, ServerEventPort } from '../../packages/server/src/api';
 import {
+  createPrincipalFilteredEventPort,
   enforceMailJobPolicy,
   filterMailEventForPrincipal,
 } from '../../packages/server/src/mail-access/async-policy-enforcer';
@@ -62,6 +63,34 @@ describe('server mail job and event ACL', () => {
 
     expect(calls).toEqual([]);
     expect(queries).toEqual([]);
+  });
+
+  test('graphile task-list carries the authorized delayed message linkage to workflow execution', async () => {
+    let handledJob: QueuedJob | null = null;
+    const ports = makePolicyPorts({
+      delayedJobs: new Map([[87, { kind: 'message', resource: messageResource(12) }]]),
+    });
+    const taskList = buildGraphileTaskList(
+      {
+        'workflow.execute': async (job) => { handledJob = job; },
+      } satisfies JobHandlerRegistry,
+      ports,
+    );
+
+    await expect(taskList['workflow.execute']?.({
+      workspaceId: 'workspace-a',
+      actorUserId: 'user-a',
+      workflowId: 7,
+      delayedJobId: 87,
+    })).resolves.toBeUndefined();
+
+    expect(handledJob).toMatchObject({
+      mailAuthorization: {
+        kind: 'workflow_execute_delayed_message',
+        delayedJobId: 87,
+        messageId: 12,
+      },
+    });
   });
 
   test('job actor modes fail closed for missing deleted disabled actors and only accept canonical service payloads', async () => {
@@ -153,6 +182,79 @@ describe('server mail job and event ACL', () => {
       ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
     ]);
     expect(ports.scopePermissions).toEqual([]);
+  });
+
+  test('workflow execution resolves delayed-job mail, rejects mismatches, and validates non-mail provenance', async () => {
+    const ports = makePolicyPorts({
+      denyMessages: new Set(['101']),
+      delayedJobs: new Map([
+        [87, { kind: 'message', resource: messageResource(12) }],
+        [88, { kind: 'message', resource: messageResource(101) }],
+        [89, { kind: 'non_mail' }],
+      ]),
+    });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 87 },
+    }), ports)).resolves.toEqual({
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 87,
+      messageId: 12,
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 88 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        workflowId: 7,
+        messageId: 12,
+        delayedJobId: 88,
+      },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 999 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 89 },
+    }), ports)).resolves.toEqual({
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 89,
+      messageId: null,
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', workflowId: 7, delayedJobId: 89 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 7, delayedJobId: 88 }),
+    }), ports)).resolves.toEqual({
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 88,
+      messageId: 101,
+    });
+
+    for (const delayedJobId of [null, '', 0, {}, false]) {
+      await expect(enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId },
+      }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    }
+    for (const messageId of [null, '', 0, {}, false]) {
+      await expect(enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, messageId },
+      }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    }
+
+    expect(ports.delayedJobLookups).toEqual([87, 88, 88, 999, 89, 88]);
   });
 
   test('service jobs are allowed only through narrow policy resources without mail grants', async () => {
@@ -401,18 +503,79 @@ describe('server mail job and event ACL', () => {
       payload: { id: 89, messageId: null, status: 'pending' },
     });
 
+    for (const payload of [
+      { id: 90, status: 'pending' },
+      { id: 91, messageId: '', status: 'pending' },
+      { id: 92, messageId: 0, status: 'pending' },
+      { id: 93, messageId: {}, status: 'pending' },
+      { id: 94, messageId: false, status: 'pending' },
+    ]) {
+      await expect(filterMailEventForPrincipal(event({
+        type: 'workflow_delayed_job.updated',
+        entityType: 'workflow_delayed_job',
+        entityId: String(payload.id),
+        payload,
+      }), context)).resolves.toBeNull();
+    }
+
     expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual(expect.arrayContaining([
       ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
     ]));
   });
+
+  test('delayed-job live and replay filtering have identical strict optional-message semantics', async () => {
+    const rawEvents = [
+      delayedJobEvent(101, { messageId: 12, status: 'pending', context: { secret: 'visible-secret' } }),
+      delayedJobEvent(102, { messageId: 101, status: 'pending', context: { secret: 'hidden-secret' } }),
+      delayedJobEvent(103, { messageId: null, status: 'pending', context: { secret: 'non-mail-secret' } }),
+      delayedJobEvent(104, { status: 'pending', context: { secret: 'missing-id-secret' } }),
+      delayedJobEvent(105, { messageId: '', status: 'pending', context: { secret: 'empty-id-secret' } }),
+    ];
+    let sourceSubscriber: ((event: ServerEvent) => void | Promise<void>) | undefined;
+    const source: ServerEventPort = {
+      async publish() { return undefined; },
+      subscribe(subscriber) {
+        sourceSubscriber = subscriber;
+        return { unsubscribe() { sourceSubscriber = undefined; } };
+      },
+      replay() { return rawEvents; },
+    };
+    const filtered = createPrincipalFilteredEventPort(source, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' },
+      ports: makePolicyPorts({ denyMessages: new Set(['101']) }),
+    });
+    const live: ServerEvent[] = [];
+    filtered.subscribe?.((visible) => { live.push(visible); });
+    for (const candidate of rawEvents) await sourceSubscriber?.(candidate);
+    const replay = await filtered.replay?.({ workspaceId: 'workspace-a' });
+
+    expect(live).toEqual(replay);
+    expect(live.map((visible) => visible.entityId)).toEqual(['101', '103']);
+    expect(live.map((visible) => visible.payload)).toEqual([
+      { id: 101, messageId: 12, status: 'pending' },
+      { id: 103, messageId: null, status: 'pending' },
+    ]);
+    expect(JSON.stringify(live)).not.toMatch(/hidden-secret|missing-id-secret|empty-id-secret|101.*hidden/);
+  });
 });
 
-function makePolicyPorts(options: { denyAllMailAccess?: boolean; denyMessages?: ReadonlySet<string> } = {}) {
+type DelayedJobClassification =
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'non_mail' }>
+  | Readonly<{ kind: 'message'; resource: ReturnType<typeof messageResource> }>;
+
+function makePolicyPorts(options: {
+  denyAllMailAccess?: boolean;
+  denyMessages?: ReadonlySet<string>;
+  delayedJobs?: ReadonlyMap<number, DelayedJobClassification>;
+} = {}) {
   const lookups: unknown[] = [];
+  const delayedJobLookups: number[] = [];
   const assertions: Array<{ permission: string; resource: unknown; actor: unknown }> = [];
   const scopePermissions: string[] = [];
   return {
     lookups,
+    delayedJobLookups,
     assertions,
     scopePermissions,
     auth: {
@@ -469,8 +632,25 @@ function makePolicyPorts(options: { denyAllMailAccess?: boolean; denyMessages?: 
         }
         return [];
       },
+      async classifyWorkflowDelayedJob(input: { delayedJobId: number }) {
+        delayedJobLookups.push(input.delayedJobId);
+        return options.delayedJobs?.get(input.delayedJobId) ?? { kind: 'missing' as const };
+      },
     },
   };
+}
+
+function messageResource(messageId: number) {
+  return { type: 'message' as const, accountId: '7', folderId: '8', messageId: String(messageId) };
+}
+
+function delayedJobEvent(id: number, payload: Record<string, unknown>): ServerEvent {
+  return event({
+    type: 'workflow_delayed_job.updated',
+    entityType: 'workflow_delayed_job',
+    entityId: String(id),
+    payload: { id, ...payload },
+  });
 }
 
 function event(input: {

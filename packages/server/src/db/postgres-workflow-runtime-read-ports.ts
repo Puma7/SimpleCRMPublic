@@ -980,7 +980,7 @@ export function createPostgresWorkflowDelayedJobReadPort(
 
           const message = values.messageId === undefined || values.messageId === null
             ? null
-            : await resolveEmailMessageReference(trx, input.workspaceId, values.messageId);
+            : await resolveEmailMessageReference(trx, input.workspaceId, values.messageId, input.mailScope);
           if (values.messageId !== undefined && values.messageId !== null && !message) {
             return { ok: false, code: 'message_not_found' };
           }
@@ -1025,12 +1025,18 @@ export function createPostgresWorkflowDelayedJobReadPort(
           role: 'user',
         },
         async (trx) => {
-          const current = await trx
+          let currentQuery = trx
             .selectFrom('workflow_delayed_jobs')
             .select(['id'])
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const currentVisibility = workflowMessageVisibilityPredicate(
+            input.mailScope,
+            input.workspaceId,
+            'workflow_delayed_jobs.message_id',
+          );
+          if (currentVisibility) currentQuery = currentQuery.where(currentVisibility);
+          const current = await currentQuery.forUpdate().executeTakeFirst();
           if (!current) return null;
 
           const workflow = values.workflowId === undefined
@@ -1040,21 +1046,24 @@ export function createPostgresWorkflowDelayedJobReadPort(
 
           const message = values.messageId === undefined || values.messageId === null
             ? values.messageId === null ? null : undefined
-            : await resolveEmailMessageReference(trx, input.workspaceId, values.messageId);
+            : await resolveEmailMessageReference(trx, input.workspaceId, values.messageId, input.mailScope);
           if (values.messageId !== undefined && values.messageId !== null && !message) {
             return { ok: false, code: 'message_not_found' };
           }
 
-          const row = await trx
+          let updateQuery = trx
             .updateTable('workflow_delayed_jobs')
             .set({
               ...mutationToWorkflowDelayedJobPatch(values, workflow ?? undefined, message),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
+            .where('id', '=', input.id);
+          if (currentVisibility) updateQuery = updateQuery.where(currentVisibility);
+          const row = await updateQuery
             .returning(workflowDelayedJobDetailColumns)
-            .executeTakeFirstOrThrow();
+            .executeTakeFirst();
+          if (!row) return null;
           return { ok: true, job: mapWorkflowDelayedJobRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1069,12 +1078,17 @@ export function createPostgresWorkflowDelayedJobReadPort(
           role: 'user',
         },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .deleteFrom('workflow_delayed_jobs')
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .returning(workflowDelayedJobSummaryColumns)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const visibility = workflowMessageVisibilityPredicate(
+            input.mailScope,
+            input.workspaceId,
+            'workflow_delayed_jobs.message_id',
+          );
+          if (visibility) query = query.where(visibility);
+          const row = await query.returning(workflowDelayedJobSummaryColumns).executeTakeFirst();
           return row ? mapWorkflowDelayedJobRow(row, false) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -1450,18 +1464,39 @@ async function resolveEmailMessageReference(
   trx: Kysely<ServerDatabase>,
   workspaceId: string,
   messageId: number,
+  mailScope?: MailSqlScope,
 ): Promise<EmailMessageReference | null> {
-  const row = await trx
+  let query = trx
     .selectFrom('email_messages')
     .select(['id', 'source_sqlite_id'])
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', messageId)
-    .executeTakeFirst();
+    .where('id', '=', messageId);
+  const visibility = emailMessageVisibilityPredicate(mailScope);
+  if (visibility) query = query.where(visibility);
+  const row = await query.executeTakeFirst();
   if (!row) return null;
   return {
     id: Number(row.id),
     sourceSqliteId: Number(row.source_sqlite_id),
   };
+}
+
+function emailMessageVisibilityPredicate(scope: MailSqlScope | undefined): RawBuilder<boolean> | undefined {
+  if (!scope || scope.kind === 'all') return undefined;
+  if (scope.kind === 'none') return kyselySql<boolean>`false`;
+  const branches: RawBuilder<boolean>[] = [];
+  if (scope.accountIds.length > 0) {
+    branches.push(kyselySql<boolean>`email_messages.account_id in (${kyselySql.join(scope.accountIds)})`);
+  }
+  if (scope.folderIds.length > 0) {
+    branches.push(kyselySql<boolean>`email_messages.folder_id in (${kyselySql.join(scope.folderIds)})`);
+  }
+  if (scope.messageIds.length > 0) {
+    branches.push(kyselySql<boolean>`email_messages.id in (${kyselySql.join(scope.messageIds)})`);
+  }
+  return branches.length === 0
+    ? kyselySql<boolean>`false`
+    : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` or `)})`;
 }
 
 function assertJsonObjectLike(value: unknown, label: string): void {

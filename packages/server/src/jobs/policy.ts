@@ -51,7 +51,7 @@ export type ServerJobPolicyEntry =
     classification: 'non_mail' | 'system_maintenance';
   }>;
 
-const jobValue = (field: string) => ({ source: 'job' as const, field });
+const jobValue = <Field extends string>(field: Field) => ({ source: 'job' as const, field });
 const accountJobResource = { kind: 'account' as const, accountId: jobValue('accountId') };
 const messageJobResource = (field = 'messageId') => ({
   kind: 'message_lookup' as const,
@@ -151,7 +151,11 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
     permission: 'mail.content.read',
-    resource: optionalMessageJobResource(),
+    resource: {
+      kind: 'workflow_execute_message_lookup',
+      messageId: jobValue('messageId'),
+      delayedJobId: jobValue('delayedJobId'),
+    },
   },
   {
     type: 'workflow.http_request',

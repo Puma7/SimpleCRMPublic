@@ -1,5 +1,11 @@
 export type JobPayload = Record<string, unknown>;
 
+export type MailJobAuthorization = Readonly<{
+  kind: 'workflow_execute_delayed_message';
+  delayedJobId: number;
+  messageId: number | null;
+}>;
+
 export type QueuedJob = Readonly<{
   id: number;
   type: string;
@@ -13,6 +19,7 @@ export type QueuedJob = Readonly<{
   workspaceId: string;
   createdAt: string;
   updatedAt: string;
+  mailAuthorization?: MailJobAuthorization;
 }>;
 
 export type EnqueueJobInput = Readonly<{

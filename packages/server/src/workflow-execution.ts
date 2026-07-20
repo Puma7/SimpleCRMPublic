@@ -321,12 +321,28 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
+          if (delayedJob && delayedJobAuthorizationMismatch(input, delayedJob.message_id)) {
+            const run = await startOrReuseRun(trx, {
+              workspaceId: input.workspaceId,
+              workflow,
+              message: null,
+              direction,
+              requestedRunId: input.runId,
+              now,
+            });
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'error',
+              log: ['error:delayed_job_authorization_mismatch'],
+              now,
+            });
+            return;
+          }
+
           const messageId = input.messageId ?? delayedJob?.message_id ?? undefined;
           if (
             input.messageId !== undefined
-            && delayedJob?.message_id !== null
-            && delayedJob?.message_id !== undefined
-            && Number(delayedJob.message_id) !== input.messageId
+            && delayedJob !== null
+            && normalizeDelayedJobMessageId(delayedJob.message_id) !== input.messageId
           ) {
             const run = await startOrReuseRun(trx, {
               workspaceId: input.workspaceId,
@@ -618,12 +634,21 @@ async function prepareWorkflowRun(
     };
   }
 
+  if (delayedJob && delayedJobAuthorizationMismatch(input, delayedJob.message_id)) {
+    return {
+      ok: false,
+      workflow,
+      message: null,
+      error: 'delayed_job_authorization_mismatch',
+      log: ['error:delayed_job_authorization_mismatch'],
+    };
+  }
+
   const messageId = input.messageId ?? delayedJob?.message_id ?? undefined;
   if (
     input.messageId !== undefined
-    && delayedJob?.message_id !== null
-    && delayedJob?.message_id !== undefined
-    && Number(delayedJob.message_id) !== input.messageId
+    && delayedJob !== null
+    && normalizeDelayedJobMessageId(delayedJob.message_id) !== input.messageId
   ) {
     return {
       ok: false,
@@ -689,6 +714,20 @@ async function prepareWorkflowRun(
     resumeNodeId,
     delayedJob,
   };
+}
+
+function delayedJobAuthorizationMismatch(
+  input: WorkflowExecutionJobPlan,
+  actualMessageId: unknown,
+): boolean {
+  if (!Object.prototype.hasOwnProperty.call(input, 'authorizedDelayedJobMessageId')) return true;
+  return input.authorizedDelayedJobMessageId !== normalizeDelayedJobMessageId(actualMessageId);
+}
+
+function normalizeDelayedJobMessageId(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
 }
 
 function dryRunFailure(

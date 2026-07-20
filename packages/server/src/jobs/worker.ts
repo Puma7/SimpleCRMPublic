@@ -47,12 +47,12 @@ export async function runJobQueueOnce(input: {
   }
 
   try {
-    await enforceMailJobPolicy(job, {
+    const mailAuthorization = await enforceMailJobPolicy(job, {
       mailAccess: input.mailAccess,
       mailResourceLookup: input.mailResourceLookup,
       auth: input.auth,
     });
-    await handler(job);
+    await handler(mailAuthorization ? { ...job, mailAuthorization } : job);
     await input.queue.complete(job);
     const durationMs = Date.now() - started;
     input.log?.({

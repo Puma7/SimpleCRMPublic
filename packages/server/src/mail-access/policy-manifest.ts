@@ -27,7 +27,13 @@ export type MailResourceResolution =
   | Readonly<{
     kind: 'optional_message_lookup';
     messageId: PolicyValueSelector;
-    whenAbsent: 'non_mail' | 'mail_scope';
+    whenAbsent: 'non_mail' | 'mail_scope' | 'deny';
+    whenNull?: 'non_mail';
+  }>
+  | Readonly<{
+    kind: 'workflow_execute_message_lookup';
+    messageId: Readonly<{ source: 'job'; field: 'messageId' }>;
+    delayedJobId: Readonly<{ source: 'job'; field: 'delayedJobId' }>;
   }>
   | Readonly<{
     kind: 'message_or_account_lookup';
@@ -113,10 +119,14 @@ const messageBody = (field = 'messageId'): MailResourceResolution => ({
   kind: 'message_lookup',
   messageId: bodyValue(field),
 });
-const optionalMessageBody = (field = 'messageId'): MailResourceResolution => ({
+const optionalMessageBody = (
+  field = 'messageId',
+  options: { allowNull?: boolean } = {},
+): MailResourceResolution => ({
   kind: 'optional_message_lookup',
   messageId: bodyValue(field),
   whenAbsent: 'non_mail',
+  ...(options.allowNull ? { whenNull: 'non_mail' as const } : {}),
 });
 const attachmentPath = (): MailResourceResolution => ({
   kind: 'attachment_lookup',
@@ -338,11 +348,18 @@ function assignWorkflowMailPolicies(assign: AssignRoutePolicy): void {
     '/api/v1/workflow-message-applied/:id',
     '/api/v1/workflow-forward-dedup',
     '/api/v1/workflow-forward-dedup/:id',
-    '/api/v1/workflow-delayed-jobs',
-    '/api/v1/workflow-delayed-jobs/:id',
   ]) {
     assign(path, { GET: permissionPolicy('mail.content.read', mailScope()) });
   }
+  assign('/api/v1/workflow-delayed-jobs', {
+    GET: permissionPolicy('mail.content.read', mailScope()),
+    POST: permissionPolicy('mail.content.read', optionalMessageBody('messageId', { allowNull: true })),
+  });
+  assign('/api/v1/workflow-delayed-jobs/:id', {
+    GET: permissionPolicy('mail.content.read', mailScope()),
+    PATCH: permissionPolicy('mail.content.read', mailScope()),
+    DELETE: permissionPolicy('mail.content.read', mailScope()),
+  });
 }
 
 type AssignRoutePolicy = (
@@ -589,7 +606,8 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
       resource: {
         kind: 'optional_message_lookup',
         messageId: eventPayloadValue('messageId'),
-        whenAbsent: 'non_mail',
+        whenAbsent: 'deny',
+        whenNull: 'non_mail',
       },
     },
     {
@@ -598,7 +616,8 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
       resource: {
         kind: 'optional_message_lookup',
         messageId: eventPayloadValue('messageId'),
-        whenAbsent: 'non_mail',
+        whenAbsent: 'deny',
+        whenNull: 'non_mail',
       },
     },
     {
@@ -607,7 +626,8 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
       resource: {
         kind: 'optional_message_lookup',
         messageId: eventPayloadValue('messageId'),
-        whenAbsent: 'non_mail',
+        whenAbsent: 'deny',
+        whenNull: 'non_mail',
       },
     },
   ];

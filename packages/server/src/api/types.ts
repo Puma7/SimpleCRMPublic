@@ -4091,17 +4091,20 @@ export type WorkflowDelayedJobApiPort = {
     workspaceId: string;
     actorUserId: string;
     values: WorkflowDelayedJobMutationInput;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobMutationPortResult>;
   update?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
     values: WorkflowDelayedJobMutationInput;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobRecord | null>;
 };
 

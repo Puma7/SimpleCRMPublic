@@ -39,6 +39,7 @@ import type {
   ServerDatabase,
 } from '../../packages/server/src/db/schema';
 import { createPostgresMailAccessPort } from '../../packages/server/src/mail-access/postgres-mail-access-port';
+import { createPostgresMailResourceLookupPort } from '../../packages/server/src/mail-access/postgres-mail-resource-lookup';
 import { createPostgresMailDelegationPort } from '../../packages/server/src/mail-access/postgres-mail-delegation-port';
 import {
   createPostgresMailAclRolloutLegacyPort,
@@ -2109,6 +2110,180 @@ describe('server mailbox ACL migration', () => {
       await client.query(`DELETE FROM email_workflow_run_steps WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7401 AND 7403`).catch(() => undefined);
       await client.query(`DELETE FROM email_workflow_runs WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7301 AND 7304`).catch(() => undefined);
       await client.query(`DELETE FROM email_workflows WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7101 AND 7102`).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('authorizes delayed-job HTTP mutations in PostgreSQL before atomic row changes', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_workflows (
+          id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
+          definition_json, graph_json, execution_mode, engine_version
+        ) VALUES
+          (7201, '${WORKSPACE_A}', 7201, 'Mutation ACL', 'manual', true, 1, '{}'::jsonb, '{}'::jsonb, 'graph', 1),
+          (7202, '${WORKSPACE_B}', 7202, 'Mutation ACL B', 'manual', true, 1, '{}'::jsonb, '{}'::jsonb, 'graph', 1)
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO workflow_delayed_jobs (
+          id, workspace_id, source_sqlite_id, workflow_source_sqlite_id, message_source_sqlite_id,
+          workflow_id, message_id, resume_node_id, execute_at, context_json, status
+        ) VALUES
+          (7801, '${WORKSPACE_A}', 7801, 7201, 31, 7201, ${MESSAGE_A}, 'allowed', '2026-07-21T12:00:00Z', '{}'::jsonb, 'pending'),
+          (7802, '${WORKSPACE_A}', 7802, 7201, 32, 7201, ${MESSAGE_A_SECOND}, 'hidden', '2026-07-21T12:01:00Z', '{}'::jsonb, 'pending'),
+          (7803, '${WORKSPACE_A}', 7803, 7201, NULL, 7201, NULL, 'non-mail', '2026-07-21T12:02:00Z', '{}'::jsonb, 'pending'),
+          (7804, '${WORKSPACE_B}', 7804, 7202, 41, 7202, ${MESSAGE_B}, 'cross-workspace', '2026-07-21T12:03:00Z', '{}'::jsonb, 'pending')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      const mailAccess = new MailAccessService(createPostgresMailAccessPort({ db }));
+      const resourceLookup = createPostgresMailResourceLookupPort({ db }) as ReturnType<typeof createPostgresMailResourceLookupPort> & {
+        classifyWorkflowDelayedJob(input: { workspaceId: string; delayedJobId: number }): Promise<unknown>;
+      };
+      await expect(resourceLookup.classifyWorkflowDelayedJob({
+        workspaceId: WORKSPACE_A,
+        delayedJobId: 7801,
+      })).resolves.toEqual({
+        kind: 'message',
+        resource: {
+          type: 'message',
+          accountId: String(ACCOUNT_A),
+          folderId: String(FOLDER_A),
+          messageId: String(MESSAGE_A),
+        },
+      });
+      await expect(resourceLookup.classifyWorkflowDelayedJob({
+        workspaceId: WORKSPACE_A,
+        delayedJobId: 7803,
+      })).resolves.toEqual({ kind: 'non_mail' });
+      await expect(resourceLookup.classifyWorkflowDelayedJob({
+        workspaceId: WORKSPACE_A,
+        delayedJobId: 7804,
+      })).resolves.toEqual({ kind: 'missing' });
+      await expect(resourceLookup.classifyWorkflowDelayedJob({
+        workspaceId: WORKSPACE_A,
+        delayedJobId: 999999,
+      })).resolves.toEqual({ kind: 'missing' });
+      const api = createServerApi({
+        auth: {} as ServerApiPorts['auth'],
+        locks: {} as ServerApiPorts['locks'],
+        mailAccess,
+        mailResourceLookup: resourceLookup,
+        workflowDelayedJobs: createPostgresWorkflowDelayedJobReadPort({ db }),
+      });
+      const user = { userId: USER_MESSAGE, workspaceId: WORKSPACE_A, role: 'user' as const };
+      const noGrantUser = { userId: USER_NONE, workspaceId: WORKSPACE_A, role: 'user' as const };
+      const owner = { userId: USER_CREATOR, workspaceId: WORKSPACE_A, role: 'owner' as const };
+      const createBody = {
+        workflowId: 7201,
+        executeAt: '2026-07-22T12:00:00.000Z',
+        status: 'pending',
+      };
+
+      const allowedCreate = await api.handle({
+        method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: user,
+        body: { ...createBody, messageId: MESSAGE_A },
+      });
+      const hiddenCreate = await api.handle({
+        method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: user,
+        body: { ...createBody, messageId: MESSAGE_A_SECOND },
+      });
+      const crossWorkspaceCreate = await api.handle({
+        method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: user,
+        body: { ...createBody, messageId: MESSAGE_B },
+      });
+      const absentCreate = await api.handle({
+        method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: noGrantUser, body: createBody,
+      });
+      const nullCreate = await api.handle({
+        method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: noGrantUser,
+        body: { ...createBody, messageId: null },
+      });
+      for (const messageId of ['', 0, {}, false]) {
+        const malformed = await api.handle({
+          method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: user,
+          body: { ...createBody, messageId },
+        });
+        expect(malformed.status).toBe(404);
+      }
+
+      expect(allowedCreate.status).toBe(201);
+      expect(hiddenCreate.status).toBe(404);
+      expect(crossWorkspaceCreate.status).toBe(404);
+      expect(absentCreate.status).toBe(201);
+      expect(nullCreate.status).toBe(201);
+
+      const allowedPatch = await api.handle({
+        method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7801', principal: user,
+        body: { status: 'authorized-update' },
+      });
+      const hiddenReplacement = await api.handle({
+        method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7801', principal: user,
+        body: { messageId: MESSAGE_A_SECOND, status: 'must-not-commit' },
+      });
+      const hiddenCurrent = await api.handle({
+        method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7802', principal: user,
+        body: { messageId: MESSAGE_A, status: 'must-not-commit' },
+      });
+      const hiddenDelete = await api.handle({
+        method: 'DELETE', path: '/api/v1/workflow-delayed-jobs/7802', principal: user,
+      });
+      const nonMailPatch = await api.handle({
+        method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7803', principal: noGrantUser,
+        body: { status: 'non-mail-update' },
+      });
+      const detach = await api.handle({
+        method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7801', principal: user,
+        body: { messageId: null },
+      });
+      const crossWorkspacePatch = await api.handle({
+        method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7804', principal: owner,
+        body: { status: 'must-not-commit' },
+      });
+      const ownerPatch = await api.handle({
+        method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7802', principal: owner,
+        body: { status: 'owner-update' },
+      });
+
+      expect(allowedPatch.status).toBe(200);
+      expect(hiddenReplacement.status).toBe(404);
+      expect(hiddenCurrent.status).toBe(404);
+      expect(hiddenDelete.status).toBe(404);
+      expect(nonMailPatch.status).toBe(200);
+      expect(detach.status).toBe(200);
+      expect(crossWorkspacePatch.status).toBe(404);
+      expect(ownerPatch.status).toBe(200);
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const rows = await client.query<{ id: string; message_id: string | null; status: string }>(`
+        SELECT id::text, message_id::text, status
+        FROM workflow_delayed_jobs
+        WHERE id IN (7801, 7802, 7803, 7804)
+        ORDER BY id
+      `);
+      expect(rows.rows).toEqual([
+        { id: '7801', message_id: null, status: 'authorized-update' },
+        { id: '7802', message_id: String(MESSAGE_A_SECOND), status: 'owner-update' },
+        { id: '7803', message_id: null, status: 'non-mail-update' },
+        { id: '7804', message_id: String(MESSAGE_B), status: 'pending' },
+      ]);
+
+      const nonMailDelete = await api.handle({
+        method: 'DELETE', path: '/api/v1/workflow-delayed-jobs/7803', principal: noGrantUser,
+      });
+      expect(nonMailDelete.status).toBe(200);
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      expect((await client.query<{ count: string }>(`SELECT count(*)::text AS count FROM workflow_delayed_jobs WHERE id = 7803`)).rows[0]?.count).toBe('0');
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      await client.query(`DELETE FROM workflow_delayed_jobs WHERE workflow_id IN (7201, 7202)`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflows WHERE id IN (7201, 7202)`).catch(() => undefined);
       await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
       await db.destroy();
     }

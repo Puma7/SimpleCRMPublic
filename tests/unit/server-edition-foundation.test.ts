@@ -2478,11 +2478,16 @@ describe('server edition foundation', () => {
       delayedJobId: 87,
       triggerName: ' mail.received ',
       context: { source: 'sync' },
-    }, WORKSPACE_A_ID)).toEqual({
+    }, WORKSPACE_A_ID, {
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 87,
+      messageId: 11,
+    })).toEqual({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 23,
       messageId: 11,
       delayedJobId: 87,
+      authorizedDelayedJobMessageId: 11,
       triggerName: 'mail.received',
       context: { source: 'sync' },
     });
@@ -8260,20 +8265,36 @@ describe('server edition foundation', () => {
         },
         execution_mode: 'graph',
       }],
-      messages: [{
-        id: 14,
-        workspace_id: WORKSPACE_A_ID,
-        source_sqlite_id: 140,
-        subject: 'Delay test',
-        from_json: { value: [{ address: 'customer@example.com' }] },
-        to_json: { value: [{ address: 'agent@example.com' }] },
-        cc_json: null,
-        snippet: 'Delay test',
-        body_text: 'Hallo',
-        body_html: null,
-        has_attachments: false,
-        attachments_json: null,
-      }],
+      messages: [
+        {
+          id: 14,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 140,
+          subject: 'Delay test',
+          from_json: { value: [{ address: 'customer@example.com' }] },
+          to_json: { value: [{ address: 'agent@example.com' }] },
+          cc_json: null,
+          snippet: 'Delay test',
+          body_text: 'Hallo',
+          body_html: null,
+          has_attachments: false,
+          attachments_json: null,
+        },
+        {
+          id: 15,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 150,
+          subject: 'Hidden delay test',
+          from_json: { value: [{ address: 'hidden@example.com' }] },
+          to_json: { value: [{ address: 'agent@example.com' }] },
+          cc_json: null,
+          snippet: 'Hidden delay test',
+          body_text: 'Hidden content',
+          body_html: null,
+          has_attachments: false,
+          attachments_json: null,
+        },
+      ],
     });
     const port = createPostgresWorkflowExecutionJobPort({
       db,
@@ -8329,18 +8350,40 @@ describe('server edition foundation', () => {
       ['delay-1', 'logic.delay', 'ok', `delayed_until:${executeAt.toISOString()}`],
     ]);
 
+    rows.delayedJobs[0]!.message_id = 15;
+    rows.delayedJobs[0]!.message_source_sqlite_id = 150;
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 26,
+      delayedJobId: 1,
+      authorizedDelayedJobMessageId: 14,
+      triggerName: 'manual',
+      context: payload.context as Record<string, unknown>,
+    });
+
+    expect(rows.delayedJobs[0]).toMatchObject({ status: 'pending' });
+    expect(rows.tags).toEqual([]);
+    expect(rows.runs[1]).toMatchObject({
+      status: 'error',
+      log_json: ['error:delayed_job_authorization_mismatch'],
+      finished_at: now,
+    });
+
+    rows.delayedJobs[0]!.message_id = 14;
+    rows.delayedJobs[0]!.message_source_sqlite_id = 140;
     await port.execute({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 26,
       messageId: 14,
       delayedJobId: 1,
+      authorizedDelayedJobMessageId: 14,
       triggerName: 'manual',
       context: payload.context as Record<string, unknown>,
     });
 
     expect(rows.delayedJobs[0]).toMatchObject({ status: 'done', updated_at: now });
     expect(rows.tags.map((tag) => tag.tag)).toEqual(['resumed']);
-    expect(rows.runs[1]).toMatchObject({
+    expect(rows.runs[2]).toMatchObject({
       status: 'ok',
       log_json: ['graph_resume:tag-1'],
       finished_at: now,
@@ -33546,7 +33589,7 @@ describe('server edition foundation', () => {
       body: {
         workspaceId: WORKSPACE_B_ID,
         workflowId: 0,
-        messageId: 0,
+        messageId: null,
         resumeNodeId: ' ',
         executeAt: 'not-a-date',
         context: 'not-json-object',
@@ -33558,7 +33601,6 @@ describe('server edition foundation', () => {
     expect((unsafePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
       { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
       { field: 'workflowId', message: 'workflowId muss eine positive Ganzzahl sein' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
       { field: 'resumeNodeId', message: 'resumeNodeId darf nicht leer sein' },
       { field: 'executeAt', message: 'executeAt muss ein valides Datum sein' },
       { field: 'context', message: 'context muss ein JSON-Objekt oder Array sein' },
