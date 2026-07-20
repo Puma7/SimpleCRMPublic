@@ -20,7 +20,9 @@ export type MailResourceResolution =
   | Readonly<{
     kind: 'optional_account';
     accountId: PolicyValueSelector;
-    whenAbsent: 'workspace_global';
+    // workspace_global → the nonempty-scope gate; owner_admin → owner/admin only
+    // (used for accountless deletion tombstones that have no account to resolve).
+    whenAbsent: 'workspace_global' | 'owner_admin';
   }>
   | Readonly<{ kind: 'folder_lookup'; folderId: PolicyValueSelector }>
   | Readonly<{ kind: 'message_lookup'; messageId: PolicyValueSelector }>
@@ -737,8 +739,15 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
       secondMessageId: eventPayloadValue('childMessageId'),
     };
   }
-  if (type === 'email_account_signature.deleted' || type === 'email_thread_alias.deleted') {
+  if (type === 'email_account_signature.deleted') {
     return { kind: 'account', accountId: eventPayloadValue('accountId') };
+  }
+  if (type === 'email_thread_alias.deleted') {
+    // An accountless (workspace-global) alias tombstone carries accountId null, so
+    // resolving a required account would throw and drop the deletion refresh for
+    // everyone — including owners/admins. Authorize account-scoped tombstones
+    // against their account and deliver accountless ones to owners/admins only.
+    return { kind: 'optional_account', accountId: eventPayloadValue('accountId'), whenAbsent: 'owner_admin' };
   }
 
   if (type.startsWith('spam_learning_event.') || type.startsWith('spam_decision.')) {

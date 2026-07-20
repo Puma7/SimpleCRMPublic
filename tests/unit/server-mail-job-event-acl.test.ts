@@ -694,6 +694,39 @@ describe('server mail job and event ACL', () => {
     }), adminContext)).resolves.toMatchObject({ type: 'email_account.deleted' });
   });
 
+  test('delivers accountless thread-alias deletions to owners/admins, account-scoped ones to the account', async () => {
+    const ports = makePolicyPorts();
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+    const adminContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' as const },
+      ports,
+    };
+
+    // Accountless (workspace-global) alias tombstone: accountId null cannot resolve
+    // an account, so it delivers to owners/admins only rather than dropping for all.
+    const accountless = event({
+      type: 'email_thread_alias.deleted',
+      entityType: 'email_thread_alias',
+      entityId: '30',
+      payload: { accountId: null, threadId: 'thread-x', state: 'deleted' },
+    });
+    await expect(filterMailEventForPrincipal(accountless, userContext)).resolves.toBeNull();
+    await expect(filterMailEventForPrincipal(accountless, adminContext))
+      .resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
+
+    // An account-scoped tombstone still resolves to its account and reaches that
+    // account's delegate.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_alias.deleted',
+      entityType: 'email_thread_alias',
+      entityId: '31',
+      payload: { accountId: 7, threadId: 'thread-y', state: 'deleted' },
+    }), userContext)).resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
+  });
+
   test('canned-response events authorize against their account, not any draft scope', async () => {
     const ports = makePolicyPorts();
     const userContext = {

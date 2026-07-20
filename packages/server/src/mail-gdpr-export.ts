@@ -382,6 +382,15 @@ async function appendInternalNotes(
 ): Promise<void> {
   const stream = new PassThrough();
   archive.append(stream, { name: 'internal_notes.jsonl' });
+  // Internal notes require the independent mail.comment permission (enforced on the
+  // note list/item routes) that the export's mail.export scope does not imply. A
+  // scoped export (mailScope defined ⇒ a restricted delegate; owner/admin bypass
+  // the scoped port) omits notes rather than leak team-confidential bodies past
+  // the comment gate; the delegate can still read authorized notes via the API.
+  if (mailScope !== undefined) {
+    stream.end();
+    return;
+  }
   let cursor = 0;
   for (;;) {
     let query = trx

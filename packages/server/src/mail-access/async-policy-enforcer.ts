@@ -434,9 +434,10 @@ async function resolveResources(input: {
   if (resolution.kind === 'notice_lookup') return { kind: 'scope' };
   if (resolution.kind === 'optional_account') {
     const raw = input.select(resolution.accountId);
-    return raw === undefined || raw === null
-      ? { kind: 'scope' }
-      : lookup(input, { kind: 'account', id: requirePositiveInt(raw) });
+    if (raw === undefined || raw === null) {
+      return resolution.whenAbsent === 'owner_admin' ? { kind: 'owner_admin' } : { kind: 'scope' };
+    }
+    return lookup(input, { kind: 'account', id: requirePositiveInt(raw) });
   }
   if (resolution.kind === 'optional_message_lookup') {
     const raw = input.select(resolution.messageId);
