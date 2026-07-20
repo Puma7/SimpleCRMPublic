@@ -76,8 +76,13 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       accountId: positiveInt.optional(),
       folderId: positiveInt.optional(),
+      cursor: positiveInt.optional(),
+      limit: z.number().int().min(1).max(100).optional(),
     }).optional(),
-    result: recordArray,
+    result: z.object({
+      items: recordArray,
+      nextCursor: positiveInt.nullable(),
+    }),
   });
   set(IPCChannels.Email.SaveMailDelegationBinding, {
     payload: z.object({

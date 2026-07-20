@@ -1,0 +1,6 @@
+Running one project: unit
+Test Suites: 1 passed, 1 total
+Tests:       4 passed, 4 total
+Snapshots:   0 total
+Time:        1.609 s, estimated 2 s
+Ran all test suites within paths "tests/unit/mail-delegation-panel.test.tsx".

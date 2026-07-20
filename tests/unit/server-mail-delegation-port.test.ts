@@ -93,7 +93,142 @@ describe('createPostgresMailDelegationPort', () => {
       permissions: ['mail.metadata.read', 'mail.send'],
     })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
   });
+
+  test('bulk-hydrates delegation pages with a constant query count', async () => {
+    const small = createListTransaction(2);
+    const large = createListTransaction(20);
+    const createPort = (trx: ReturnType<typeof createListTransaction>) => createPostgresMailDelegationPort({
+      db: {
+        transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
+      } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    const smallResult = await createPort(small).listBindings({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: true, isAdmin: false },
+      limit: 2,
+    });
+    const largeResult = await createPort(large).listBindings({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: true, isAdmin: false },
+      limit: 20,
+    });
+
+    expect(selectQueryCount(small)).toBe(6);
+    expect(selectQueryCount(large)).toBe(6);
+    expect(smallResult).toMatchObject({ ok: true, nextCursor: null });
+    expect(largeResult).toMatchObject({ ok: true, nextCursor: null });
+  });
+
+  test('returns deterministic bounded pages after the validated id cursor', async () => {
+    const trx = createListTransaction(6);
+    const port = createPostgresMailDelegationPort({
+      db: {
+        transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
+      } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    const result = await port.listBindings({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      cursor: 2,
+      limit: 2,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      bindings: [{ id: 3 }, { id: 4 }],
+      nextCursor: 4,
+    });
+  });
 });
+
+function selectQueryCount(trx: { calls: unknown[][] }): number {
+  return trx.calls.filter(([operation]) => operation === 'selectFrom').length;
+}
+
+function createListTransaction(bindingCount: number) {
+  const calls: unknown[][] = [];
+  const bindings = Array.from({ length: bindingCount }, (_, index) => {
+    const id = index + 1;
+    const group = id % 2 === 0;
+    return {
+      id,
+      workspace_id: WORKSPACE,
+      subject_type: group ? 'group' as const : 'user' as const,
+      subject_id: group ? String(1000 + id) : `user-${id}`,
+      resource_type: group ? 'folder' as const : 'account' as const,
+      account_id: 100 + id,
+      folder_id: group ? 200 + id : null,
+      message_id: null,
+      updated_at: '2026-07-20T10:00:00.000Z',
+    };
+  });
+  const rowsByTable: Record<string, Array<Record<string, unknown>>> = {
+    mail_acl_bindings: bindings,
+    mail_acl_binding_permissions: bindings.map((row) => ({
+      binding_id: row.id,
+      permission_key: 'mail.metadata.read',
+    })),
+    users: bindings
+      .filter((row) => row.subject_type === 'user')
+      .map((row) => ({ id: row.subject_id, workspace_id: WORKSPACE, display_name: `User ${row.id}` })),
+    user_groups: bindings
+      .filter((row) => row.subject_type === 'group')
+      .map((row) => ({ id: Number(row.subject_id), workspace_id: WORKSPACE, name: `Group ${row.id}` })),
+    email_accounts: bindings.map((row) => ({
+      id: row.account_id,
+      workspace_id: WORKSPACE,
+      display_name: `Account ${row.id}`,
+    })),
+    email_folders: bindings
+      .filter((row) => row.folder_id !== null)
+      .map((row) => ({ id: row.folder_id, workspace_id: WORKSPACE, path: `Folder ${row.id}` })),
+  };
+
+  const createBuilder = (table: string) => {
+    const wheres: Array<[string, string, unknown]> = [];
+    let rowLimit: number | undefined;
+    const builder = {
+      select: () => builder,
+      selectAll: () => builder,
+      where: (...args: unknown[]) => {
+        if (typeof args[0] === 'string') wheres.push(args as [string, string, unknown]);
+        return builder;
+      },
+      orderBy: () => builder,
+      limit: (value: number) => {
+        rowLimit = value;
+        return builder;
+      },
+      execute: async () => {
+        let rows = [...(rowsByTable[table] ?? [])];
+        for (const [rawColumn, operator, value] of wheres) {
+          const column = rawColumn.split('.').at(-1)!;
+          if (operator === '=') rows = rows.filter((row) => row[column] === value);
+          if (operator === '>') rows = rows.filter((row) => Number(row[column]) > Number(value));
+          if (operator === 'in' && Array.isArray(value)) rows = rows.filter((row) => value.includes(row[column]));
+        }
+        return rowLimit === undefined ? rows : rows.slice(0, rowLimit);
+      },
+      executeTakeFirst: async () => {
+        const rows = await builder.execute();
+        return rows[0];
+      },
+    };
+    return builder;
+  };
+
+  return {
+    calls,
+    selectFrom(table: string) {
+      calls.push(['selectFrom', table]);
+      return createBuilder(table);
+    },
+  };
+}
 
 function createDelegationTransaction(fixtures: {
   actor: unknown;

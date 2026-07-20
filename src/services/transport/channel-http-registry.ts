@@ -1698,8 +1698,19 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       query: pruneQueryUndefined({
         accountId: optionalPositiveQueryId(input.accountId, "email account id"),
         folderId: optionalPositiveQueryId(input.folderId, "email folder id"),
+        cursor: optionalPositiveQueryId(input.cursor, "mail delegation cursor"),
+        limit: optionalPositiveQueryId(input.limit, "mail delegation limit"),
       }),
-      transform: (body) => listItems<Record<string, unknown>>(body),
+      transform: (body) => {
+        const result = dataBody<{ items: Record<string, unknown>[]; nextCursor: number | null }>(body)
+        if (!Array.isArray(result.items)) throw new Error("Invalid mail delegation page items")
+        return {
+          items: result.items,
+          nextCursor: result.nextCursor === null
+            ? null
+            : positiveId(result.nextCursor, "mail delegation next cursor"),
+        }
+      },
     }
   }],
   [IPCChannels.Email.SaveMailDelegationBinding, ([payload]) => {

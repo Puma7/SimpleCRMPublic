@@ -29,7 +29,7 @@ describe('server mail delegation API', () => {
 
     const list = await api.handle({
       method: 'GET',
-      path: `/api/v1/email/access/bindings?accountId=${ACCOUNT}`,
+      path: `/api/v1/email/access/bindings?accountId=${ACCOUNT}&cursor=800&limit=25`,
       principal: owner,
     });
     const createUser = await api.handle({
@@ -73,7 +73,10 @@ describe('server mail delegation API', () => {
       workspaceId: WORKSPACE,
       actor: expect.objectContaining({ userId: OWNER, isOwner: true }),
       resource: { type: 'account', accountId: ACCOUNT },
+      cursor: 800,
+      limit: 25,
     }));
+    expect(list.body).toMatchObject({ data: { items: [{ id: 900 }], nextCursor: null } });
     expect(mailDelegation.replaceBinding).toHaveBeenNthCalledWith(1, expect.objectContaining({
       workspaceId: WORKSPACE,
       actor: expect.objectContaining({ userId: OWNER }),
@@ -132,6 +135,26 @@ describe('server mail delegation API', () => {
     expect(unknownPermission).toMatchObject({ status: 400, body: { error: { code: 'unknown_mail_permission' } } });
     expect(invalidFolder).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
     expect(denied).toMatchObject({ status: 403, body: { error: { code: 'mail_delegation_denied' } } });
+  });
+
+  test('rejects invalid delegation pagination before calling the port', async () => {
+    const mailDelegation = delegationPort();
+    const api = createServerApi(ports({ mailDelegation }));
+
+    const invalidCursor = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/access/bindings?cursor=0',
+      principal: owner,
+    });
+    const invalidLimit = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/access/bindings?limit=101',
+      principal: owner,
+    });
+
+    expect(invalidCursor).toMatchObject({ status: 400, body: { error: { code: 'invalid_cursor' } } });
+    expect(invalidLimit).toMatchObject({ status: 400, body: { error: { code: 'invalid_limit' } } });
+    expect(mailDelegation.listBindings).not.toHaveBeenCalled();
   });
 
   test('prevents privilege escalation for delegated managers while owner/admin retain bypass', async () => {
@@ -263,7 +286,11 @@ function delegationPort(
   overrides: Partial<jest.Mocked<MailDelegationApiPort>> & Partial<MailDelegationApiPort> = {},
 ): jest.Mocked<MailDelegationApiPort> {
   return {
-    listBindings: jest.fn(async () => ({ ok: true as const, bindings: [binding(900, ['mail.metadata.read'])] })),
+    listBindings: jest.fn(async () => ({
+      ok: true as const,
+      bindings: [binding(900, ['mail.metadata.read'])],
+      nextCursor: null,
+    })),
     replaceBinding: jest.fn(async (input) => ({
       ok: true as const,
       binding: binding(901, input.permissions),

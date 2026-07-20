@@ -1,4 +1,4 @@
-import type { Kysely, Transaction } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 
 import type { MailPermission } from '@simplecrm/core';
 
@@ -70,25 +70,64 @@ export function createPostgresMailDelegationPort(
             }
           }
 
-          const rows = await trx
+          let query = trx
             .selectFrom('mail_acl_bindings')
             .selectAll()
             .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .execute() as BindingRow[];
-
-          const bindings: MailDelegationBinding[] = [];
-          const actorGrants = !input.actor.isOwner && !input.actor.isAdmin
-            ? await heldGrantRowsForActor(trx, input.workspaceId, input.actor.userId)
-            : null;
-          for (const row of rows) {
-            if (row.resource_type === 'message') continue;
-            const resource = rowResource(row);
-            if (input.resource && !sameResource(input.resource, resource)) continue;
-            if (actorGrants && !heldPermissionsFromRows(actorGrants, resource).has(MANAGE_PERMISSION)) continue;
-            bindings.push(await hydrateBinding(trx, input.workspaceId, row));
+            .where('resource_type', 'in', ['account', 'folder']);
+          if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
+          if (input.resource) {
+            query = query
+              .where('resource_type', '=', input.resource.type)
+              .where('account_id', '=', input.resource.accountId);
+            query = input.resource.type === 'folder'
+              ? query.where('folder_id', '=', input.resource.folderId)
+              : query.where('folder_id', 'is', null);
           }
-          return { ok: true as const, bindings };
+          if (!input.actor.isOwner && !input.actor.isAdmin) {
+            query = query.where(sql<boolean>`exists (
+              select 1
+              from mail_acl_bindings actor_binding
+              inner join mail_acl_binding_permissions actor_permission
+                on actor_permission.binding_id = actor_binding.id
+              where actor_binding.workspace_id = ${input.workspaceId}
+                and actor_permission.permission_key = ${MANAGE_PERMISSION}
+                and (
+                  (actor_binding.subject_type = 'user' and actor_binding.subject_id = ${input.actor.userId})
+                  or (
+                    actor_binding.subject_type = 'group'
+                    and exists (
+                      select 1
+                      from user_group_members actor_membership
+                      where actor_membership.workspace_id = ${input.workspaceId}
+                        and actor_membership.user_id = ${input.actor.userId}
+                        and actor_binding.subject_id = cast(actor_membership.group_id as text)
+                    )
+                  )
+                )
+                and actor_binding.account_id = mail_acl_bindings.account_id
+                and (
+                  actor_binding.resource_type = 'account'
+                  or (
+                    actor_binding.resource_type = 'folder'
+                    and mail_acl_bindings.resource_type = 'folder'
+                    and actor_binding.folder_id = mail_acl_bindings.folder_id
+                  )
+                )
+            )`);
+          }
+
+          const rows = await query
+            .orderBy('id', 'asc')
+            .limit(input.limit + 1)
+            .execute() as BindingRow[];
+          const hasMore = rows.length > input.limit;
+          const pageRows = hasMore ? rows.slice(0, input.limit) : rows;
+          return {
+            ok: true as const,
+            bindings: await hydrateBindings(trx, input.workspaceId, pageRows),
+            nextCursor: hasMore ? pageRows.at(-1)?.id ?? null : null,
+          };
         },
         sessionOptions,
       );
@@ -219,7 +258,7 @@ export function createPostgresMailDelegationPort(
 
     return {
       ok: true as const,
-      binding: await hydrateBinding(trx, workspaceId, bindingRow),
+      binding: (await hydrateBindings(trx, workspaceId, [bindingRow]))[0] ?? null,
       affectedUserIds,
       deleted: false,
     };
@@ -328,6 +367,20 @@ async function heldGrantRowsForActor(
       'mail_acl_binding_permissions.permission_key',
     ])
     .where('mail_acl_bindings.workspace_id', '=', workspaceId)
+    .where((eb) => {
+      const directUser = eb.and([
+        eb('mail_acl_bindings.subject_type', '=', 'user'),
+        eb('mail_acl_bindings.subject_id', '=', userId),
+      ]);
+      if (groupRows.length === 0) return directUser;
+      return eb.or([
+        directUser,
+        eb.and([
+          eb('mail_acl_bindings.subject_type', '=', 'group'),
+          eb('mail_acl_bindings.subject_id', 'in', groupRows.map((row) => String(row.group_id))),
+        ]),
+      ]);
+    })
     .execute() as Array<{
       subject_type: 'user' | 'group';
       subject_id: string;
@@ -420,71 +473,78 @@ async function affectedUsersForSubject(
   return rows.map((row) => row.user_id);
 }
 
-async function hydrateBinding(
+async function hydrateBindings(
   trx: Trx,
   workspaceId: string,
-  row: BindingRow,
-): Promise<MailDelegationBinding> {
-  const permissions = await trx
+  rows: readonly BindingRow[],
+): Promise<MailDelegationBinding[]> {
+  if (rows.length === 0) return [];
+  const bindingIds = rows.map((row) => row.id);
+  const userIds = unique(rows.filter((row) => row.subject_type === 'user').map((row) => row.subject_id));
+  const groupIds = unique(rows
+    .filter((row) => row.subject_type === 'group')
+    .map((row) => Number(row.subject_id))
+    .filter(Number.isSafeInteger));
+  const accountIds = unique(rows.filter((row) => row.resource_type === 'account').map((row) => row.account_id));
+  const folderIds = unique(rows
+    .filter((row) => row.resource_type === 'folder' && row.folder_id !== null)
+    .map((row) => row.folder_id!));
+
+  const permissionRows = await trx
     .selectFrom('mail_acl_binding_permissions')
-    .select(['permission_key'])
-    .where('binding_id', '=', row.id)
+    .select(['binding_id', 'permission_key'])
+    .where('binding_id', 'in', bindingIds)
+    .orderBy('binding_id', 'asc')
     .orderBy('permission_key', 'asc')
-    .execute() as Array<{ permission_key: MailPermission }>;
-  return {
+    .execute() as Array<{ binding_id: number; permission_key: MailPermission }>;
+  const users = userIds.length === 0 ? [] : await trx
+    .selectFrom('users')
+    .select(['id', 'display_name'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', 'in', userIds)
+    .execute() as Array<{ id: string; display_name: string }>;
+  const groups = groupIds.length === 0 ? [] : await trx
+      .selectFrom('user_groups')
+      .select(['id', 'name'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', 'in', groupIds)
+      .execute() as Array<{ id: number; name: string }>;
+  const accounts = accountIds.length === 0 ? [] : await trx
+    .selectFrom('email_accounts')
+    .select(['id', 'display_name'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', 'in', accountIds)
+    .execute() as Array<{ id: number; display_name: string }>;
+  const folders = folderIds.length === 0 ? [] : await trx
+      .selectFrom('email_folders')
+      .select(['id', 'path'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', 'in', folderIds)
+      .execute() as Array<{ id: number; path: string }>;
+
+  const permissionMap = new Map<number, MailPermission[]>();
+  for (const permission of permissionRows) {
+    const entries = permissionMap.get(permission.binding_id) ?? [];
+    entries.push(permission.permission_key);
+    permissionMap.set(permission.binding_id, entries);
+  }
+  const userLabels = new Map(users.map((user) => [user.id, user.display_name]));
+  const groupLabels = new Map(groups.map((group) => [group.id, group.name]));
+  const accountLabels = new Map(accounts.map((account) => [account.id, account.display_name]));
+  const folderLabels = new Map(folders.map((folder) => [folder.id, folder.path]));
+
+  return rows.map((row) => ({
     id: row.id,
-    subject: await hydrateSubject(trx, workspaceId, row),
-    resource: await hydrateResource(trx, workspaceId, row),
-    permissions: permissions.map((permission) => permission.permission_key),
+    subject: row.subject_type === 'group'
+      ? { type: 'group', id: Number(row.subject_id), label: groupLabels.get(Number(row.subject_id)) }
+      : { type: 'user', id: row.subject_id, label: userLabels.get(row.subject_id) },
+    resource: row.resource_type === 'folder' && row.folder_id !== null
+      ? { type: 'folder', accountId: row.account_id, folderId: row.folder_id, label: folderLabels.get(row.folder_id) }
+      : { type: 'account', accountId: row.account_id, label: accountLabels.get(row.account_id) },
+    permissions: permissionMap.get(row.id) ?? [],
     profile: null,
     updatedAt: formatTimestamp(row.updated_at),
-  };
-}
-
-async function hydrateSubject(
-  trx: Trx,
-  workspaceId: string,
-  row: BindingRow,
-): Promise<MailDelegationSubject> {
-  if (row.subject_type === 'group') {
-    const group = await trx
-      .selectFrom('user_groups')
-      .select(['name'])
-      .where('workspace_id', '=', workspaceId)
-      .where('id', '=', Number(row.subject_id))
-      .executeTakeFirst() as { name: string } | undefined;
-    return { type: 'group', id: Number(row.subject_id), label: group?.name };
-  }
-  const user = await trx
-    .selectFrom('users')
-    .select(['display_name'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', row.subject_id)
-    .executeTakeFirst() as { display_name: string } | undefined;
-  return { type: 'user', id: row.subject_id, label: user?.display_name };
-}
-
-async function hydrateResource(
-  trx: Trx,
-  workspaceId: string,
-  row: BindingRow,
-): Promise<MailDelegationResource> {
-  if (row.resource_type === 'folder' && row.folder_id !== null) {
-    const folder = await trx
-      .selectFrom('email_folders')
-      .select(['path'])
-      .where('workspace_id', '=', workspaceId)
-      .where('id', '=', row.folder_id)
-      .executeTakeFirst() as { path: string } | undefined;
-    return { type: 'folder', accountId: row.account_id, folderId: row.folder_id, label: folder?.path };
-  }
-  const account = await trx
-    .selectFrom('email_accounts')
-    .select(['display_name'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', row.account_id)
-    .executeTakeFirst() as { display_name: string } | undefined;
-  return { type: 'account', accountId: row.account_id, label: account?.display_name };
+  }));
 }
 
 function actorRole(actor: MailDelegationActor): 'owner' | 'admin' | 'user' {
@@ -510,12 +570,6 @@ function rowResource(row: BindingRow): MailDelegationResource {
   return { type: 'account', accountId: row.account_id };
 }
 
-function sameResource(left: MailDelegationResource, right: MailDelegationResource): boolean {
-  return left.type === right.type
-    && left.accountId === right.accountId
-    && (left.type === 'account' || right.type === 'account' || left.folderId === right.folderId);
-}
-
 function rowCoversResource(
   row: { resource_type: string; account_id: number; folder_id: number | null },
   resource: MailDelegationResource,
@@ -529,6 +583,10 @@ function rowCoversResource(
 
 function uniquePermissions(input: readonly MailPermission[]): readonly MailPermission[] {
   return [...new Set(input)].sort();
+}
+
+function unique<T>(input: readonly T[]): T[] {
+  return [...new Set(input)];
 }
 
 function formatTimestamp(value: Date | string): string {

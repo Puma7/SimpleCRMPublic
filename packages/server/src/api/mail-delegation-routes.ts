@@ -21,6 +21,8 @@ import { data, error, positiveIntFromPath, requirePrincipal } from './http';
 const BASE_PATH = '/api/v1/email/access/bindings';
 const KNOWN_PERMISSIONS = new Set<string>(MAIL_PERMISSIONS);
 const KNOWN_PROFILES = new Set<string>(Object.keys(MAIL_PERMISSION_PROFILES));
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
 
 export async function handleMailDelegationRoute(
   req: ApiRequest,
@@ -57,13 +59,16 @@ async function handleList(
 ): Promise<ApiResponse> {
   const resource = parseQueryResource(req);
   if (!resource.ok) return resource.response;
+  const pagination = parsePagination(req);
+  if (!pagination.ok) return pagination.response;
   const result = await port.listBindings({
     workspaceId: principal.workspaceId,
     actor: actor(principal),
     ...(resource.resource ? { resource: resource.resource } : {}),
+    ...pagination.value,
   });
   if (!result.ok) return mutationError(result.code);
-  return data(200, { items: result.bindings });
+  return data(200, { items: result.bindings, nextCursor: result.nextCursor });
 }
 
 async function handleCreate(
@@ -253,6 +258,27 @@ function parseQueryResource(req: ApiRequest):
   if (accountId === null) return { ok: true };
   if (folderId === null) return { ok: true, resource: { type: 'account', accountId } };
   return { ok: true, resource: { type: 'folder', accountId, folderId } };
+}
+
+function parsePagination(req: ApiRequest):
+  | { ok: true; value: { cursor?: number; limit: number } }
+  | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  const query = queryParams(req);
+  const cursor = parsePositiveInteger(query.cursor);
+  if (query.cursor !== undefined && cursor === null) {
+    return errorResult(400, 'invalid_cursor', 'cursor muss eine positive Ganzzahl sein');
+  }
+  const parsedLimit = query.limit === undefined ? DEFAULT_PAGE_SIZE : parsePositiveInteger(query.limit);
+  if (parsedLimit === null || parsedLimit > MAX_PAGE_SIZE) {
+    return errorResult(400, 'invalid_limit', `limit muss zwischen 1 und ${MAX_PAGE_SIZE} liegen`);
+  }
+  return {
+    ok: true,
+    value: {
+      ...(cursor === null ? {} : { cursor }),
+      limit: parsedLimit,
+    },
+  };
 }
 
 async function auditAndPublish(

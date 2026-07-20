@@ -1,0 +1,50 @@
+
+Running 1 test using 1 worker
+
+  x  1 tests\e2e\mail-delegation-server-client.spec.ts:102:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event (1.2s)
+
+
+  1) tests\e2e\mail-delegation-server-client.spec.ts:102:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event
+
+    Error: expect(locator).toHaveValue(expected) failed
+
+    Locator: getByLabel('Konto')
+    Expected: ""
+    Error: strict mode violation: getByLabel('Konto') resolved to 4 elements:
+        1) <select class="h-9 w-full rounded-md border bg-background px-3 text-sm"></select> aka getByLabel('Konto', { exact: true })
+        2) <select class="h-9 w-full rounded-md border bg-background px-3 text-sm">…</select> aka getByLabel('RessourceGanzes KontoOrdner')
+        3) <input type="checkbox"/> aka getByRole('checkbox', { name: 'Als Konto senden' })
+        4) <input type="checkbox"/> aka getByRole('checkbox', { name: 'Konto verwalten' })
+
+    Call log:
+      - Expect "toHaveValue" with timeout 10000ms
+      - waiting for getByLabel('Konto')
+
+
+      137 |   await expect.poll(() => state.accountListCalls).toBeGreaterThan(accountCallsBeforeRevoke);
+      138 |   await expect(page.getByRole('option', { name: 'Support' })).toHaveCount(0);
+    > 139 |   await expect(page.getByLabel('Konto')).toHaveValue('');
+          |                                          ^
+      140 |   await expect(page.getByRole('button', { name: 'Löschen Agent' })).toHaveCount(0);
+      141 |   await expect(page.getByRole('button', { name: 'Berechtigung speichern' })).toBeDisabled();
+      142 |
+        at C:\Cursor\SimpleCRM\SimpleCRMPublic\tests\e2e\mail-delegation-server-client.spec.ts:139:42
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    tests\e2e\mail-delegation-server-client.spec.ts:102:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event

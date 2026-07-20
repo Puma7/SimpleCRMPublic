@@ -774,7 +774,12 @@ export type MailDelegationApiPort = {
     workspaceId: string;
     actor: MailDelegationActor;
     resource?: MailDelegationResource;
-  }): Promise<{ ok: true; bindings: readonly MailDelegationBinding[] } | { ok: false; code: 'permission_denied' | 'resource_not_found' }>;
+    cursor?: number;
+    limit: number;
+  }): Promise<
+    | { ok: true; bindings: readonly MailDelegationBinding[]; nextCursor: number | null }
+    | { ok: false; code: 'permission_denied' | 'resource_not_found' }
+  >;
   replaceBinding(input: {
     workspaceId: string;
     actor: MailDelegationActor;

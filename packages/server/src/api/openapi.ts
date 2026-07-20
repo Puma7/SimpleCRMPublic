@@ -309,7 +309,15 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       },
       '/email/folders': { get: { summary: 'List mail folders' } },
       '/email/access/bindings': {
-        get: { summary: 'List mailbox delegation bindings' },
+        get: {
+          summary: 'List mailbox delegation bindings',
+          parameters: [
+            { name: 'accountId', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'folderId', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'cursor', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+          ],
+        },
         post: { summary: 'Create or replace mailbox delegation binding' },
       },
       '/email/access/bindings/{id}': {

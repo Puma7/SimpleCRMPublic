@@ -72,3 +72,97 @@ Base: `0181a43`
 
 - Playwright wurde nicht ausgeführt: der vorhandene `tests/e2e`-Harness startet die Electron-Standalone-App, in der der server-only Delegations-Tab absichtlich ausgeblendet ist. Harness-Scan: `.hermes/reports/task-7-playwright-harness-scan.log`.
 - Die initialen RED-Symptome vor der ersten Implementierung wurden im Terminal beobachtet; die dauerhaft gespeicherten RED-Artefakte beginnen mit `.hermes/reports/task-7-focused-jest-1.log`.
+
+---
+
+## Review-Fix 2026-07-20
+
+Base: `b247869`
+
+### Bestaetigte Review-Blocker
+
+1. Es fehlte ein ausfuehrbarer Browser-E2E-Pfad fuer den Server-Client.
+2. Die Binding-Liste war unbeschraenkt und hydrierte Permissions/Labels mit etwa `1 + 3N` Queries.
+3. Das Panel behielt nach `email_acl.changed` veraltete Account-/Folder-/Edit-IDs und war nicht gegen ueberholte Responses abgesichert.
+
+### RED
+
+- Query-Count und Pagination:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/server-mail-delegation-port.test.ts --runInBand`
+  - Beobachtung: Query-Count erwartete `6`, erhielt bereits bei zwei Bindings `7`; Cursor `2`/Limit `2` lieferte weiterhin alle sechs Bindings und keinen `nextCursor`.
+  - Evidence: `.hermes/reports/task-7-review-query-count-red.log`
+- API und Transport:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/server-mail-delegation-port.test.ts tests/unit/server-mail-delegation-api.test.ts tests/unit/renderer-transport.test.ts --runInBand`
+  - Beobachtung: Cursor/Limit wurden nicht an den Port gegeben, `cursor=0` wurde akzeptiert und der Renderer verlor `nextCursor`.
+  - Evidence: `.hermes/reports/task-7-review-nplus1-pagination-red.log`
+- UI-Pagination und stale ACL-State:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/mail-delegation-panel.test.tsx --runInBand`
+  - Beobachtung: zweite Binding-Seite (`Bob`) fehlte; beim invertierten Refresh-Rennen blieb der Folder ungueltig statt auf `203` zu wechseln und Edit-State sicher zu verwerfen.
+  - Evidence: `.hermes/reports/task-7-review-ui-pagination-stale-red.log`
+- StrictMode/Unmount:
+  - Gleicher fokussierter UI-Befehl.
+  - Beobachtung: nach StrictMode-Effect-Replay blieb der Mounted-Guard `false`; der zweite Load konnte `Alice` nicht mehr anwenden.
+  - Evidence: `.hermes/reports/task-7-review-strictmode-unmount-red.log`
+- Playwright:
+  - Befehl: `pnpm exec playwright test -c tests/e2e/playwright.server-client.config.ts`
+  - Beobachtung: der zuerst geschriebene Test erhielt ohne Browser-Harness fuer `/` einen nicht erfolgreichen HTTP-Response.
+  - Evidence: `.hermes/reports/task-7-review-playwright-red.log`
+
+### GREEN
+
+- Fokussierte Unit-Suiten:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/server-mail-delegation-api.test.ts tests/unit/server-mail-delegation-port.test.ts tests/unit/mail-delegation-panel.test.tsx tests/unit/renderer-transport.test.ts tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-policy-manifest.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 6 passed, 6 total`; `Tests: 178 passed, 178 total`.
+  - Evidence: `.hermes/reports/task-7-review-focused-unit-green.log`
+- Event-Integration:
+  - Befehl: `pnpm exec jest --selectProjects integration --runTestsByPath tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 1 passed, 1 total`; `Tests: 1 passed, 1 total`.
+  - Evidence: `.hermes/reports/task-7-review-event-integration-green.log`
+- Server-Client Playwright:
+  - Befehl: `pnpm exec playwright test -c tests/e2e/playwright.server-client.config.ts`
+  - Ergebnis: `1 passed (4.9s)`; Profilwahl, exakter Triage-Permission-Satz plus individuelles `mail.send`, Owner-Widerruf, gefiltertes Live-Event, autorisierter Account-/Folder-/Binding-Refetch und Socket-Unsubscribe wurden beobachtet.
+  - Evidence: `.hermes/reports/task-7-review-playwright-final.log`
+- Lint:
+  - Befehl: `pnpm run lint`
+  - Ergebnis: Exit `0`, `eslint . --ext ts,tsx --max-warnings 0`.
+  - Evidence: `.hermes/reports/task-7-review-lint.log`
+- Server-Build:
+  - Befehl: `pnpm --filter @simplecrm/server run build`
+  - Ergebnis: Exit `0`, `tsc -p tsconfig.json`.
+  - Evidence: `.hermes/reports/task-7-review-server-build.log`
+- Root-Typecheck:
+  - Befehl: `pnpm run typecheck`
+  - Ergebnis: Exit `0`, vollstaendige Root-TS-Kette.
+  - Evidence: `.hermes/reports/task-7-review-root-typecheck.log`
+- Whitespace:
+  - Befehl: `git diff --check`
+  - Ergebnis: Exit `0`, keine Ausgabe.
+  - Evidence: `.hermes/reports/task-7-review-git-diff-check.log`
+
+### Implementierung und Architektur
+
+- `GET /api/v1/email/access/bindings` verwendet einen validierten positiven ID-Cursor, Default-Limit `50`, festes Maximum `100`, deterministische `id ASC`-Reihenfolge und `limit + 1` fuer `nextCursor`.
+- Die delegierte Manager-Sichtbarkeit wird vor Pagination durch ein workspace-gebundenes SQL-`EXISTS` auf eigene Benutzer-/Gruppen-Grants mit `mail.delegation.manage` eingeschraenkt. Account-Grants decken Account und Folder, Folder-Grants nur den exakten Folder ab.
+- Eine Seite benoetigt eine Binding-Query und hoechstens fuenf Bulkqueries fuer Permissions, User, Groups, Accounts und Folders. Die Query-Anzahl bleibt bei zwei und zwanzig sichtbaren Bindings konstant `6`.
+- Shared Schema und HTTP-Transport erhalten `{ items, nextCursor }`; das Panel laedt Seiten sequenziell bis `nextCursor: null` und verwirft nicht-fortschreitende oder wiederholte Cursor.
+- ACL-Refreshes tragen eine monotone Request-Generation. Nur die neueste Response darf State anwenden; Unmount und StrictMode-Replay invalidieren alte Generationen.
+- Nach jedem autorisierten Refresh werden `accountId`, `folderId`, Subject und Edit-Binding gegen die neue Option-Menge geprueft. Ungueltige Edit-States setzen Profil/Permissions zurueck. Save ist waehrend Refresh gesperrt und validiert Account-/Folder-IDs unmittelbar vor dem Transport erneut.
+
+### Playwright-Harness Start, Fixture und Cleanup
+
+- `tests/e2e/mail-delegation-server-client.spec.ts` startet Vite als Middleware hinter einem Node-HTTP-Server mit OS-Port `0` und Fastify ebenfalls mit OS-Port `0`; keine festen Ports und keine Kindprozesse.
+- `tests/e2e/server-client-harness/main.tsx` rendert das echte `MailDelegationPanel`, setzt eine servergebundene Auth-Session und konfiguriert den echten `createHttpRendererTransport`.
+- Fastify verwendet die echten Task-7-Routen, den echten In-Memory-Server-Eventbus, WebSocket-Transport sowie Live-Eventfilter. Deterministische API-Ports bilden nur die Testdaten und den Widerrufszustand ab.
+- Der Test schliesst die Browserseite explizit und wartet auf `activeEventSubscriptions === 0`. `afterAll` schliesst Fastify, alle HTTP-Verbindungen, den Node-HTTP-Server und Vite.
+
+### Self-Review
+
+- Pagination-Luecken: Manager-Sichtbarkeit und optionale Resource-Filter liegen vor Cursor/Limit; der Cursor stammt immer vom letzten ausgegebenen Row der uebervollen Seite. API und Shared Schema lehnen `0`, Nicht-Zahlen und Limits ueber `100` ab.
+- Query-Komplexitaet: keine per-Binding-Hydration; alle `IN`-Mengen sind durch die Page-Groesse begrenzt. Bestehende Workspace-/Subject-/Account-/Folder-Indizes aus Migration `0038` werden genutzt; keine Migration geaendert.
+- IDOR/Cross-Tenant: Port bleibt in `withWorkspaceTransaction`; alle Bulk-Labelqueries enthalten `workspace_id`, die Manager-Subquery bindet Workspace, Actor und Ressource.
+- Event-Race: Live und Replay bleiben im gemeinsamen serverseitigen Filter. Renderer-Generationen verhindern, dass ein aelterer Refresh einen neueren Widerruf rueckgaengig macht; Save sendet nach Removal keine alten IDs.
+- Prozess-Cleanup: keine Spawn-Prozesse; ephemere Listener und WebSocket-Subscription werden im Test beobachtbar geschlossen.
+
+### Restbedenken Review-Fix
+
+- Keine bestaetigten offenen Task-7-Blocker. Der Browser-E2E verwendet echte API-/HTTP-/WebSocket-Komposition mit deterministischen In-Memory-Ports; die PostgreSQL-Queryform wird separat durch Port-/Query-Count-Tests und Server-Build abgedeckt.

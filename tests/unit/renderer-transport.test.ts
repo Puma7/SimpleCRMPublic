@@ -481,6 +481,7 @@ describe('renderer transport', () => {
             profile: 'custom',
             updatedAt: '2026-07-19T10:00:00.000Z',
           }],
+          nextCursor: 900,
         },
       }))
       .mockResolvedValueOnce(jsonResponse({ data: { id: 901 } }, 201))
@@ -494,7 +495,12 @@ describe('renderer transport', () => {
     await expect(transport.invoke(IPCChannels.Email.ListMailDelegationBindings, {
       accountId: 101,
       folderId: 202,
-    })).resolves.toEqual([expect.objectContaining({ id: 900 })]);
+      cursor: 800,
+      limit: 25,
+    })).resolves.toEqual({
+      items: [expect.objectContaining({ id: 900 })],
+      nextCursor: 900,
+    });
     await expect(transport.invoke(IPCChannels.Email.SaveMailDelegationBinding, {
       subject: { type: 'group', id: 55 },
       resource: { type: 'folder', accountId: 101, folderId: 202 },
@@ -510,7 +516,7 @@ describe('renderer transport', () => {
 
     expect(fetchImpl).toHaveBeenNthCalledWith(
       1,
-      'https://crm.example.com/api/v1/email/access/bindings?accountId=101&folderId=202',
+      'https://crm.example.com/api/v1/email/access/bindings?accountId=101&folderId=202&cursor=800&limit=25',
       expect.objectContaining({ method: 'GET' }),
     );
     expect(fetchImpl).toHaveBeenNthCalledWith(
