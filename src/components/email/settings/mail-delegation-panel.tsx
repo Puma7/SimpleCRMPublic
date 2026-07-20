@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import {
   invokeRenderer,
   isMailAclRefreshEvent,
+  RendererTransportError,
   subscribeServerEvents,
 } from "@/services/transport"
 import { cn } from "@/lib/utils"
@@ -173,11 +174,11 @@ export function MailDelegationPanel() {
       loadingRef.current = false
       setAuthorizationReady(true)
       setLoading(false)
-    } catch {
+    } catch (err) {
       if (!mountedRef.current || generation !== loadGenerationRef.current) return
       loadingRef.current = false
       setLoading(false)
-      setError("Delegationen konnten nicht geladen werden.")
+      setError(err instanceof RendererTransportError ? err.message : "Delegationen konnten nicht geladen werden.")
     }
   }, [clearAuthorizedState])
 
@@ -222,11 +223,11 @@ export function MailDelegationPanel() {
       loadingRef.current = false
       setAuthorizationReady(true)
       setLoading(false)
-    } catch {
+    } catch (err) {
       if (!mountedRef.current || generation !== subjectGenerationRef.current) return
       loadingRef.current = false
       setLoading(false)
-      setError("Delegationen konnten nicht geladen werden.")
+      setError(err instanceof RendererTransportError ? err.message : "Delegationen konnten nicht geladen werden.")
     }
   }, [])
 
@@ -311,12 +312,12 @@ export function MailDelegationPanel() {
       }) as { success?: boolean; error?: string }
       if (result.success === false) throw new Error(result.error ?? "save_failed")
       if (mountedRef.current) await load()
-    } catch {
+    } catch (err) {
       if (mountedRef.current) {
         clearAuthorizedState()
         loadingRef.current = false
         setLoading(false)
-        setError("Delegation konnte nicht gespeichert werden.")
+        setError(err instanceof RendererTransportError ? err.message : "Delegation konnte nicht gespeichert werden.")
       }
     } finally {
       if (mountedRef.current) setSaving(false)
@@ -329,12 +330,12 @@ export function MailDelegationPanel() {
     try {
       await invokeRenderer(IPCChannels.Email.DeleteMailDelegationBinding, bindingId)
       if (mountedRef.current) await load()
-    } catch {
+    } catch (err) {
       if (mountedRef.current) {
         clearAuthorizedState()
         loadingRef.current = false
         setLoading(false)
-        setError("Delegation konnte nicht gelöscht werden.")
+        setError(err instanceof RendererTransportError ? err.message : "Delegation konnte nicht gelöscht werden.")
       }
     } finally {
       if (mountedRef.current) setSaving(false)

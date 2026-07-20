@@ -23,6 +23,9 @@ type EnforcementResult =
   | Readonly<{ ok: true; context?: MailRouteAccessContext }>
   | Readonly<{ ok: false; response: ApiResponse }>;
 
+/** Mirrors the bulk-mutation handler cap (parseEmailMessageBulkMutationBody). */
+const MAX_BULK_MESSAGE_IDS = 500;
+
 const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/accounts',
   '/api/v1/email/folder-counts',
@@ -531,6 +534,42 @@ async function assertSupplementalHttpPermissions(
       resource: replacement[0]!,
     });
   }
+
+  // A move whose target is "trash" runs the same softDeleteMessageRows operation
+  // as the dedicated mail.delete-protected /soft-delete route, so require
+  // mail.delete on top of the base mail.triage. The handler trims `view`, so
+  // trim here too — otherwise " trash " would slip past this check.
+  if (req.method === 'PATCH' && canonicalPath === '/api/v1/email/messages/:messageId/move') {
+    const moveView = bodyField(req.body, 'view');
+    if (typeof moveView === 'string' && moveView.trim() === 'trash') {
+      for (const resource of baseResources) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission: 'mail.delete',
+          resource,
+        });
+      }
+    }
+  }
+
+  // Thread-edge creation persists BOTH parentMessageId and childMessageId, but
+  // the base policy only authorizes the parent. Authorize the child too — reads
+  // and deletes of the edge already require both messages to be in scope.
+  if (req.method === 'POST' && canonicalPath === '/api/v1/email/thread-edges') {
+    const childId = requirePositiveInt(bodyField(req.body, 'childMessageId'));
+    const child = await ports.mailResourceLookup!.resolve({
+      workspaceId,
+      target: { kind: 'message', id: childId },
+    });
+    if (child.length !== 1) throw new MailAccessDeniedError();
+    await ports.mailAccess!.assertPermission({
+      workspaceId,
+      actor,
+      permission: 'mail.triage',
+      resource: child[0]!,
+    });
+  }
 }
 
 function isScopedWorkflowDelayedJobMutation(method: string, canonicalPath: string): boolean {
@@ -598,6 +637,11 @@ function requirePositiveIntList(value: unknown): number[] {
       ? value.split(',')
       : [];
   if (!Array.isArray(value) && typeof value !== 'string') throw new MailAccessDeniedError();
+  // Bound the list BEFORE resolving each id — resolveHttpResources fires one
+  // withWorkspaceTransaction per id, so an unbounded array would open millions
+  // of parallel transactions and exhaust the pool before the bulk handler's own
+  // 500-cap (parseEmailMessageBulkMutationBody) ever runs.
+  if (values.length > MAX_BULK_MESSAGE_IDS) throw new MailAccessDeniedError();
   return [...new Set(values.map(requirePositiveInt))];
 }
 

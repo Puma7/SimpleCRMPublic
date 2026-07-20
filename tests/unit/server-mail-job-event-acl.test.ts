@@ -15,7 +15,7 @@ import {
 import { createBoundedEventSequenceDedupe } from '../../packages/server/src/api/fastify-adapter';
 
 describe('server mail job and event ACL', () => {
-  test('graphile task-list treats revoked mail authorization as terminal success before handler invocation', async () => {
+  test('graphile task-list surfaces revoked mail authorization as a job failure before handler invocation', async () => {
     const calls: string[] = [];
     const taskList = buildGraphileTaskList(
       {
@@ -52,14 +52,17 @@ describe('server mail job and event ACL', () => {
       }),
     };
 
+    // The task must REJECT (not resolve): a resolved graphile task is treated as
+    // success and deletes the job with no last_error, silently dropping the
+    // side-effect. Rethrowing lets graphile retry / mark it permanently failed.
     await expect(taskList['ai.reply_suggestion']?.(
       { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
       helpers as never,
-    )).resolves.toBeUndefined();
+    )).rejects.toThrow();
     await expect(taskList['ai.reply_suggestion']?.(
       { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
       helpers as never,
-    )).resolves.toBeUndefined();
+    )).rejects.toThrow();
 
     expect(calls).toEqual([]);
     expect(queries).toEqual([]);
@@ -104,18 +107,20 @@ describe('server mail job and event ACL', () => {
       makePolicyPorts({ denyAllMailAccess: true }),
     );
 
+    // Rejects rather than silently resolving — the denial must be visible so the
+    // scheduled send is retried / marked failed, not dropped without a trace.
     await expect(taskList['mail.send.scheduled']?.({
       workspaceId: 'workspace-a',
       actorUserId: 'user-a',
       draftId: 12,
       accountId: 7,
-    })).resolves.toBeUndefined();
+    })).rejects.toThrow();
     await expect(taskList['mail.send.scheduled']?.({
       workspaceId: 'workspace-a',
       actorUserId: 'disabled-user',
       draftId: 12,
       accountId: 7,
-    })).resolves.toBeUndefined();
+    })).rejects.toThrow();
 
     expect(calls).toEqual([]);
   });

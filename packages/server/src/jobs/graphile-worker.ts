@@ -11,7 +11,6 @@ import { scheduledSendDraftIdFromPayload, scheduledSendJobKey } from './schedule
 import type { JobHandlerRegistry } from './worker';
 import {
   enforceMailJobPolicy,
-  MailAsyncAuthorizationError,
   type MailAsyncPolicyPorts,
 } from '../mail-access/async-policy-enforcer';
 
@@ -185,7 +184,12 @@ export function buildGraphileTaskList(
       try {
         mailAuthorization = await enforceMailJobPolicy(job, mailPolicyPorts);
       } catch (error) {
-        if (error instanceof MailAsyncAuthorizationError) return;
+        // Do NOT swallow an authorization denial. For graphile-worker a resolved
+        // task means "success", so `return` here deletes the job row with no
+        // last_error and drops the side-effect (mail send, webhook, auto-reply)
+        // without a trace. Rethrow so the failure is visible: graphile retries
+        // and, after maxAttempts, keeps the row as permanently failed — mirroring
+        // the legacy worker's failTerminal handling of MailAsyncAuthorizationError.
         throw error;
       }
       await handler(mailAuthorization ? { ...job, mailAuthorization } : job);

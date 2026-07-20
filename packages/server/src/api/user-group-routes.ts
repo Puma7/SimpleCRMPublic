@@ -134,12 +134,44 @@ async function handleUpdateGroup(
   return data(200, result.group);
 }
 
+/**
+ * Group membership feeds effective mail ACL grants (mail_acl_bindings with
+ * subject_type='group'), so a membership or group change must invalidate the
+ * affected users' loaded mailbox state — otherwise the client keeps showing
+ * mail the server would now deny until a manual reload. Mirrors the per-user
+ * email_acl.changed publish in mail-delegation-routes (no bindingId here, since
+ * this is a group/membership change, not a single binding).
+ */
+async function publishGroupAclInvalidation(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  groupId: number,
+  targetUserIds: readonly string[],
+  state: 'changed' | 'deleted',
+): Promise<void> {
+  const now = new Date().toISOString();
+  for (const targetUserId of [...new Set(targetUserIds)].sort()) {
+    await ports.events?.publish({
+      type: 'email_acl.changed',
+      workspaceId: principal.workspaceId,
+      entityType: 'email_acl',
+      entityId: String(groupId),
+      actorUserId: principal.userId,
+      occurredAt: now,
+      payload: { targetUserId, state },
+    });
+  }
+}
+
 async function handleDeleteGroup(
   ports: ServerApiPorts,
   principal: AuthenticatedPrincipal,
   groupId: number,
 ): Promise<ApiResponse> {
   if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
+  // Capture members before the delete cascades their membership away, so we can
+  // invalidate their mailbox state afterwards.
+  const members = await ports.userGroups!.listMembers({ workspaceId: principal.workspaceId, groupId });
   const group = await ports.userGroups!.delete({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -155,6 +187,13 @@ async function handleDeleteGroup(
     entityId: String(group.id),
     metadata: { name: group.name },
   });
+  await publishGroupAclInvalidation(
+    ports,
+    principal,
+    groupId,
+    (members ?? []).map((member) => member.userId),
+    'deleted',
+  );
   return data(200, { deleted: true, group });
 }
 
@@ -183,6 +222,7 @@ async function handleMemberRoute(
       userId,
     });
     if (!result.ok) return memberMutationError(result.code);
+    await publishGroupAclInvalidation(ports, principal, groupId, [userId], 'changed');
     return data(201, { added: true });
   }
 
@@ -196,6 +236,7 @@ async function handleMemberRoute(
       userId,
     });
     if (!result.ok) return memberMutationError(result.code);
+    await publishGroupAclInvalidation(ports, principal, groupId, [userId], 'changed');
     return data(200, { removed: true });
   }
 

@@ -9,6 +9,16 @@ jest.mock('@/services/transport', () => ({
   invokeRenderer: (...args: unknown[]) => mockInvoke(...args),
   subscribeServerEvents: (...args: unknown[]) => mockSubscribe(...args),
   isMailAclRefreshEvent: (event: { type?: string }) => event.type === 'email_acl.changed',
+  RendererTransportError: class RendererTransportError extends Error {
+    status?: number;
+    code?: string;
+    constructor(message: string, opts?: { status?: number; code?: string }) {
+      super(message);
+      this.name = 'RendererTransportError';
+      this.status = opts?.status;
+      this.code = opts?.code;
+    }
+  },
 }));
 
 import { MailDelegationPanel } from '@/components/email/settings/mail-delegation-panel';
