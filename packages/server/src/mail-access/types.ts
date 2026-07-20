@@ -52,6 +52,36 @@ export interface MailAccessService {
   }>): Promise<MailSqlScope>;
 }
 
+export type MailAclRolloutMode = 'shadow' | 'enforce';
+
+export type MailAclRolloutCounters = Readonly<{
+  evaluated: bigint;
+  legacyAllowNewDeny: bigint;
+  legacyDenyNewAllow: bigint;
+  notComparable: bigint;
+}>;
+
+export type MailAclRolloutState = MailAclRolloutCounters & Readonly<{
+  mode: MailAclRolloutMode;
+  observationStartedAt: string | null;
+  observationUpdatedAt: string | null;
+  diagnostic?: string;
+}>;
+
+export type MailAclRolloutReadiness = MailAclRolloutState & Readonly<{
+  workspaceId: string;
+  ready: boolean;
+  enforced: boolean;
+}>;
+
+export type MailAclRolloutTransitionResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; code: 'not_shadow' | 'no_observations' | 'mismatches_present' }>;
+
+export type MailAclRolloutCounterResetResult =
+  | Readonly<{ ok: true }>
+  | Readonly<{ ok: false; code: 'not_shadow' }>;
+
 export type MailResourceLookupTarget =
   | Readonly<{ kind: 'account'; id: number }>
   | Readonly<{ kind: 'folder'; id: number }>

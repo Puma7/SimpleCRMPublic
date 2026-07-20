@@ -347,6 +347,15 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         patch: { summary: 'Replace mailbox delegation binding permissions' },
         delete: { summary: 'Delete mailbox delegation binding' },
       },
+      '/email/acl-rollout/readiness': {
+        get: { summary: 'Read mailbox ACL rollout readiness aggregates (owner/admin)' },
+      },
+      '/email/acl-rollout/reset-counters': {
+        post: { summary: 'Reset mailbox ACL rollout shadow counters (owner/admin)' },
+      },
+      '/email/acl-rollout/enforce': {
+        post: { summary: 'Switch mailbox ACL rollout from shadow to enforce (owner/admin)' },
+      },
       '/email/tags': {
         get: { summary: 'List mail tags' },
         post: { summary: 'Create mail tag' },

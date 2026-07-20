@@ -109,6 +109,17 @@ function ports(overrides: Partial<ServerApiPorts>): ServerApiPorts {
   return {
     auth: authPort(),
     locks: {} as ServerApiPorts['locks'],
+    mailAccess: {
+      async assertPermission() {},
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    },
+    mailResourceLookup: {
+      async resolve() {
+        return [];
+      },
+    },
     ...overrides,
   };
 }

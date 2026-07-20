@@ -145,7 +145,12 @@ describe('mail read-route dispatch ordering', () => {
   test.each(locked)(
     'locked route $label ($method $path) → $status/$code',
     async ({ method, path, status, code }) => {
-      const res = await api().handle({ method, path, principal });
+      const res = await api().handle({
+        method,
+        path,
+        principal,
+        ...(path === '/api/v1/email/compose/send' ? { body: { draftMessageId: 5, accountId: 5 } } : {}),
+      });
       expect(res.status).toBe(status);
       expect((res.body as any).error.code).toBe(code);
     },
@@ -156,6 +161,26 @@ function ports(overrides: Partial<ServerApiPorts> = {}): ServerApiPorts {
   return {
     auth: authPort(),
     locks: {} as ServerApiPorts['locks'],
+    mailAccess: {
+      async assertPermission() {},
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    },
+    mailResourceLookup: {
+      async resolve(input) {
+        const id = String(input.target.id);
+        if (input.target.kind === 'account') return [{ type: 'account', accountId: id }];
+        if (input.target.kind === 'folder') return [{ type: 'folder', accountId: '5', folderId: id }];
+        if (input.target.kind === 'message') {
+          return [{ type: 'message', accountId: '5', folderId: '6', messageId: id }];
+        }
+        if (input.target.kind === 'attachment') {
+          return [{ type: 'message', accountId: '5', folderId: '6', messageId: id }];
+        }
+        return [];
+      },
+    },
     ...overrides,
   };
 }

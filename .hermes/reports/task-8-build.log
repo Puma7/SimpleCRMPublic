@@ -1,0 +1,222 @@
+$ npm run build:packages && npm run build:web && npm run build:electron:main
+
+> simplecrm@0.1.7 build:packages
+> tsc -b packages/core packages/server packages/desktop
+
+
+> simplecrm@0.1.7 build:web
+> tsc && vite build
+
+[36mvite v8.1.4 [32mbuilding client environment for production...[36m[39m
+[2K
+[plugin rolldown:vite-resolve] Module "crypto" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/auth/password-hash.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "crypto" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/ticket.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "crypto" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/outbound-threading.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "node:crypto" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/outbound-approval-marker.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "fs" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/zip-path-safety.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "path" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/zip-path-safety.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "node:path" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/mail-rfc822-compose.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "node:fs" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/mail-rfc822-compose.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+[plugin rolldown:vite-resolve] Module "node:crypto" has been externalized for browser compatibility, imported by "C:/Cursor/SimpleCRM/SimpleCRMPublic/packages/core/dist/email/mail-rfc822-compose.js". See https://vite.dev/guide/troubleshooting.html#module-externalized-for-browser-compatibility for more details.
+transforming...✓ 6541 modules transformed.
+rendering chunks...
+dist/index.html                                      4.86 kB
+dist/assets/codicon-ngg6Pgfi.ttf                   121.97 kB
+dist/assets/editor.worker-B9tos8Rw.js              280.07 kB
+dist/assets/json.worker-ulnR8HPd.js                409.34 kB
+dist/assets/page-BdXDwkki.css                       12.02 kB
+dist/assets/style-DLioOiRN.css                      15.41 kB
+dist/assets/signature-quill-editor-Z6d9l4XO.css     25.83 kB
+dist/assets/main-DlibcGcv.css                      137.04 kB
+dist/assets/editor-DOgAgpTS.css                    146.06 kB
+dist/assets/email-settings-search-BSfhFLnb.js        0.06 kB
+dist/assets/collapsible-B_S3DwvB.js                  0.09 kB
+dist/assets/check-BDTn1lla.js                        0.12 kB
+dist/assets/password-policy-C1dquPiB.js              0.12 kB
+dist/assets/chevron-right-DliEYxHo.js                0.13 kB
+dist/assets/circle-DoWDsIHm.js                       0.13 kB
+dist/assets/runtime-mode-BBgSYvUZ.js                 0.13 kB
+dist/assets/snooze-settings-BNubzqCv.js              0.13 kB
+dist/assets/loader-circle-DRcjs0ZQ.js                0.14 kB
+dist/assets/plus-B5kwMdmG.js                         0.15 kB
+dist/assets/x-CCJRk4ud.js                            0.15 kB
+dist/assets/addDays-D2OfQMHj.js                      0.15 kB
+dist/assets/arrow-right-BOOUXY0D.js                  0.16 kB
+dist/assets/clock-B6VJmocG.js                        0.16 kB
+dist/assets/chevrons-up-down-Cdy6EMTx.js             0.17 kB
+dist/assets/search-Ct_rLLa4.js                       0.17 kB
+dist/assets/matchContext-QDjF8crh.js                 0.17 kB
+dist/assets/mail-account-scope-BY8__GFx.js           0.17 kB
+dist/assets/skeleton-CWXVqyy4.js                     0.17 kB
+dist/assets/useRouter-DsVrsOpY.js                    0.18 kB
+dist/assets/circle-check-big-Cpl_If9s.js             0.19 kB
+dist/assets/circle-plus-WCM9W78E.js                  0.20 kB
+dist/assets/circle-x-CfkyGCSG.js                     0.20 kB
+dist/assets/mail-16D-5TgD.js                         0.21 kB
+dist/assets/useSearch-AKfFinSi.js                    0.21 kB
+dist/assets/ellipsis-RBlo334n.js                     0.22 kB
+dist/assets/download-CBL-ovod.js                     0.23 kB
+dist/assets/copy-CGsu8426.js                         0.23 kB
+dist/assets/database-9bj7M0sh.js                     0.24 kB
+dist/assets/circle-alert-CZWKQG2n.js                 0.25 kB
+dist/assets/chart-column-ptn80_Zr.js                 0.25 kB
+dist/assets/calendar-CxA8T_gv.js                     0.25 kB
+dist/assets/useParams-BEttkU-L.js                    0.25 kB
+dist/assets/useNavigate-BOSC4ocv.js                  0.26 kB
+dist/assets/triangle-alert-CoFzd12H.js               0.26 kB
+dist/assets/workflow-CPX4fc3w.js                     0.26 kB
+dist/assets/use-has-electron-BR_-Mlx0.js             0.26 kB
+dist/assets/pencil-BYi8ivHd.js                       0.27 kB
+dist/assets/inbox-CDKc5Keh.js                        0.28 kB
+dist/assets/flask-conical-DI9PuNwx.js                0.30 kB
+dist/assets/wrench-DOli_uSt.js                       0.30 kB
+dist/assets/users-ytnAIkkH.js                        0.30 kB
+dist/assets/languages-D_ZliwJG.js                    0.31 kB
+dist/assets/shield-check-CfnRu6mx.js                 0.32 kB
+dist/assets/square-pen-CUp2y1KI.js                   0.32 kB
+dist/assets/refresh-cw-Dad6pUed.js                   0.32 kB
+dist/assets/trash-2-WYPJMQLN.js                      0.32 kB
+dist/assets/stethoscope-DuT9YVPt.js                  0.34 kB
+dist/assets/layout-grid-CGSfOZrd.js                  0.34 kB
+dist/assets/shield-alert-DuPB97QR.js                 0.35 kB
+dist/assets/file-text-mrRRYSEj.js                    0.38 kB
+dist/assets/contact-utils-CjGiD6V0.js                0.43 kB
+dist/assets/user-ChJSzDJS.js                         0.46 kB
+dist/assets/settings-Bl-8XuIB.js                     0.48 kB
+dist/assets/calendar-days-BJypBlWO.js                0.49 kB
+dist/assets/file-box-DlJYGPCS.js                     0.53 kB
+dist/assets/textarea-BHwOLg9_.js                     0.59 kB
+dist/assets/package-s_p1BkLg.js                      0.59 kB
+dist/assets/dist-J6jWQQZZ.js                         0.64 kB
+dist/assets/mail-account-overrides-C7RDaiTR.js       0.66 kB
+dist/assets/input-DphmDFyH.js                        0.67 kB
+dist/assets/useMatch-sz7_kNFg.js                     0.69 kB
+dist/assets/rolldown-runtime-QTnfLwEv.js             0.69 kB
+dist/assets/page-BbBQ7Q0L.js                         0.79 kB
+dist/assets/badge-i5Y6vWbb.js                        0.83 kB
+dist/assets/userGroupService-CdcbmWMt.js             0.90 kB
+dist/assets/automation-api-DCRT7ruJ.js               0.94 kB
+dist/assets/electron-utils-BNF6ug7f.js               0.95 kB
+dist/assets/separator-DXz7LNJz.js                    0.96 kB
+dist/assets/alert-20XH6yP_.js                        1.04 kB
+dist/assets/signature-template-acGqHK2L.js           1.09 kB
+dist/assets/card-8gBJ_CR_.js                         1.10 kB
+dist/assets/email-recipient-parse-CP4sJcKz.js        1.12 kB
+dist/assets/layout-Br-gritg.js                       1.16 kB
+dist/assets/label-BPlSwhzq.js                        1.16 kB
+dist/assets/preload-helper-Czpn1I53.js               1.19 kB
+dist/assets/use-toast-cj1RB5lA.js                    1.22 kB
+dist/assets/export-button-BF5699yL.js                1.25 kB
+dist/assets/transport-C-vv6VGq.js                    1.26 kB
+dist/assets/page-Bo_O1lJJ.js                         1.37 kB
+dist/assets/createLucideIcon-DyMAgLa3.js             1.41 kB
+dist/assets/page-B0cFMw-g.js                         1.47 kB
+dist/assets/table-DoanSBup.js                        1.59 kB
+dist/assets/with-selector-dcZ1NnB1.js                1.65 kB
+dist/assets/calendarService-DfPpXbns.js              1.71 kB
+dist/assets/pagination-DZBifVwk.js                   1.78 kB
+dist/assets/customFieldService-DjVSr-04.js           2.08 kB
+dist/assets/types-BONuYdfP.js                        2.34 kB
+dist/assets/dist-B_2qjUqh.js                         2.40 kB
+dist/assets/layout-D_y9MEQp.js                       2.68 kB
+dist/assets/eventemitter3-B3aZE5lq.js                2.83 kB
+dist/assets/i18n-CvMVFq6y.js                         2.93 kB
+dist/assets/taskService-B7ZZfT1z.js                  2.94 kB
+dist/assets/zod-CfVLnMnY.js                          3.16 kB
+dist/assets/monaco-curated-DsqSMFlY.js               3.30 kB
+dist/assets/page-BRFEBU7g.js                         3.37 kB
+dist/assets/customer-combobox-BKlfYhEr.js            3.37 kB
+dist/assets/python-Cj1G85J6.js                       3.45 kB
+dist/assets/tabs-K4BTIYsC.js                         3.49 kB
+dist/assets/auth-context-DYzPdD1s.js                 3.53 kB
+dist/assets/react-dom-cJyBB_A4.js                    3.57 kB
+dist/assets/markdown-Cimd5fb3.js                     3.63 kB
+dist/assets/button-J136pSL_.js                       3.69 kB
+dist/assets/useStore-Cnsov-yd.js                     3.83 kB
+dist/assets/switch-BTeC5aYf.js                       3.88 kB
+dist/assets/alert-dialog-DVcSDY9S.js                 3.88 kB
+dist/assets/dist-B3_Nudui.js                         3.97 kB
+dist/assets/checkbox-DOSULJhV.js                     4.05 kB
+dist/assets/custom-fields-form-RCxwce9o.js           4.07 kB
+dist/assets/workflow-export-import-BCTwL4FS.js       4.51 kB
+dist/assets/workspace-context-Bdn0YCgk.js            4.80 kB
+dist/assets/account-scope-toolbar-BY28AMPt.js        5.06 kB
+dist/assets/page-BILMnYWa.js                         5.09 kB
+dist/assets/javascript-Bdyr6ZMe.js                   5.26 kB
+dist/assets/dist-Dzbl52_x.js                         5.27 kB
+dist/assets/snooze-popover-MUkuEqPP.js               5.37 kB
+dist/assets/popover-B-BJdmoG.js                      5.49 kB
+dist/assets/page-3yntU3T_.js                         5.97 kB
+dist/assets/server-event-filters-_YKi3v-n.js         6.35 kB
+dist/assets/react-CZI7_Jkm.js                        7.53 kB
+dist/assets/tooltip-qgMw8TUq.js                      8.31 kB
+dist/assets/trigger-labels-DooBRQ0T.js               8.65 kB
+dist/assets/value-8xOwwyZS.js                        9.23 kB
+dist/assets/grouping-CED0u_RV.js                     9.78 kB
+dist/assets/page-DU34r-en.js                        10.58 kB
+dist/assets/page-Bq7KNdfQ.js                        10.61 kB
+dist/assets/page-DijIGcQF.js                        11.09 kB
+dist/assets/log-CF09l7Ac.js                         13.40 kB
+dist/assets/renderer-transport-B-iV7DB1.js          13.86 kB
+dist/assets/toast-2Xi9HJBK.js                       13.88 kB
+dist/assets/dist-CSaP2J_J.js                        14.20 kB
+dist/assets/page-Dz2RKV3_.js                        16.11 kB
+dist/assets/page-CPHiC0sM.js                        16.40 kB
+dist/assets/page-DsDlWU5S.js                        16.42 kB
+dist/assets/command-No27-nOY.js                     16.70 kB
+dist/assets/channels-DxZ9ozNX.js                    16.94 kB
+dist/assets/link-Czc7WFuq.js                        18.01 kB
+dist/assets/page-ChWADI5J.js                        19.66 kB
+dist/assets/dropdown-menu-DOFS1DU5.js               22.28 kB
+dist/assets/page-BHdQjYqI.js                        22.55 kB
+dist/assets/page-0EsP1TdY.js                        24.46 kB
+dist/assets/page-C2il79z6.js                        26.08 kB
+dist/assets/dist-BFrxsL8_.js                        26.15 kB
+dist/assets/de-Dee9wQmW.js                          26.44 kB
+dist/assets/page-CRqOYpP7.js                        27.35 kB
+dist/assets/utils-D9vujMpb.js                       27.70 kB
+dist/assets/form-AeeJgiLz.js                        32.59 kB
+dist/assets/dist-BOS6OKSE.js                        32.61 kB
+dist/assets/resizable-DdeP0iOh.js                   35.24 kB
+dist/assets/page-C2JvW0Cc.js                        39.50 kB
+dist/assets/jsonMode-CcCT5e4Y.js                    41.31 kB
+dist/assets/sortable.esm-DdNVSVuU.js                48.46 kB
+dist/assets/lib-ChtMf7T1.js                         50.54 kB
+dist/assets/dialog-Dkzn_CsF.js                      52.10 kB
+dist/assets/Matches-D20lgK5R.js                     55.75 kB
+dist/assets/schemas-C1Tm_3ux.js                     64.66 kB
+dist/assets/page-Dk6rLHbg.js                        66.18 kB
+dist/assets/channel-http-registry-Yv7dXwne.js      132.49 kB
+dist/assets/signature-quill-editor-CvdkxQ7d.js     227.10 kB
+dist/assets/main-CZGA3wCx.js                       229.51 kB
+dist/assets/page-WFIWO1YW.js                       287.16 kB
+dist/assets/page-Cdy7CIcO.js                       353.61 kB
+dist/assets/page-cA4VHrrb.js                       377.89 kB
+dist/assets/page-BBpISW5a.js                       397.27 kB
+dist/assets/page-CCDVEsyW.js                       625.07 kB
+dist/assets/editor.api2-Bcc9nfRd.js              3,626.94 kB
+
+[32m✓ built in 2.63s[39m
+[plugin builtin:vite-reporter]
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rolldownOptions.output.codeSplitting to improve chunking: https://rolldown.rs/reference/OutputOptions.codeSplitting
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.
+[36mvite v8.1.4 [32mbuilding client environment for production...[36m[39m
+[2K
+transforming...✓ 3 modules transformed.
+rendering chunks...
+computing gzip size...
+dist-electron/main.js  14.58 kB │ gzip: 5.36 kB
+
+[32m✓ built in 26ms[39m
+[36mvite v8.1.4 [32mbuilding client environment for production...[36m[39m
+[2K
+transforming...✓ 4 modules transformed.
+rendering chunks...
+computing gzip size...
+dist-electron/electron/preload.js  18.84 kB │ gzip: 5.17 kB
+
+[32m✓ built in 16ms[39m
+> simplecrm@0.1.7 build:electron:main
+> tsc -p tsconfig.electron.json

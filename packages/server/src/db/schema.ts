@@ -28,6 +28,7 @@ export type ServerDatabase = {
   user_group_permissions: UserGroupPermissionsTable;
   mail_acl_bindings: MailAclBindingsTable;
   mail_acl_binding_permissions: MailAclBindingPermissionsTable;
+  mail_acl_rollout_state: MailAclRolloutStateTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
   customer_custom_fields: CustomerCustomFieldsTable;
@@ -440,6 +441,18 @@ export type MailAclBindingsTable = {
 export type MailAclBindingPermissionsTable = {
   binding_id: number;
   permission_key: MailPermission;
+};
+
+export type MailAclRolloutStateTable = {
+  workspace_id: string;
+  mode: 'shadow' | 'enforce';
+  evaluated: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  legacy_allow_new_deny: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  legacy_deny_new_allow: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  not_comparable: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  observation_started_at: TimestampColumn | null;
+  observation_updated_at: TimestampColumn | null;
+  updated_at: TimestampColumn;
 };
 
 export type DealProductsTable = {

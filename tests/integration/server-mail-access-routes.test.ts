@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
+import { createHash } from 'crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { createRequire } from 'module';
 import { createServer } from 'net';
 import { PassThrough, Readable } from 'stream';
@@ -32,6 +33,7 @@ import type {
 } from '../../packages/server/src/db/schema';
 import { createPostgresMailAccessPort } from '../../packages/server/src/mail-access/postgres-mail-access-port';
 import { createPostgresMailDelegationPort } from '../../packages/server/src/mail-access/postgres-mail-delegation-port';
+import { createPostgresMailAclRolloutStatePort } from '../../packages/server/src/mail-access/postgres-mail-acl-rollout-state-port';
 import { MailAccessService } from '../../packages/server/src/mail-access/service';
 import type { MailSqlScope } from '../../packages/server/src/mail-access/types';
 import { serverMigrations } from '../../packages/server/src/migrations';
@@ -70,6 +72,7 @@ const schemaTypeAssertions: readonly [
 
 const WORKSPACE_A = '11111111-1111-4111-8111-111111111111';
 const WORKSPACE_B = '22222222-2222-4222-8222-222222222222';
+const WORKSPACE_NEW_AFTER_ROLLOUT = '55555555-5555-4555-8555-555555555555';
 const USER_READ = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const USER_SEND = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const USER_BOTH = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -127,6 +130,7 @@ const MIGRATION_0038_PERMISSION_KEYS = [
   'mail.account.manage',
   'mail.delegation.manage',
 ] as const;
+const MIGRATION_0038_SOURCE_SHA256 = '3048f74add211b1f36b49b54baaf84d5f3a1d66fc6561e5614766f76c87600cd';
 
 type TestMailResourceLookupTarget =
   | Readonly<{ kind: 'account'; id: number }>
@@ -589,8 +593,12 @@ describe('server mailbox ACL migration', () => {
 
   afterAll(async () => {
     if (client) {
-      const mailAclMigration = serverMigrations.find((candidate) => candidate.id === '0038_mail_acl');
-      if (mailAclMigration && !migrationDownApplied) await applyStatements(mailAclMigration.downSql);
+      const teardownMigrations = serverMigrations
+        .filter((candidate) => candidate.id === '0038_mail_acl' || candidate.id === '0039_mail_acl_rollout')
+        .reverse();
+      if (!migrationDownApplied) {
+        for (const migration of teardownMigrations) await applyStatements(migration.downSql);
+      }
       await client.end();
     }
     if (adminClient) await adminClient.end();
@@ -599,6 +607,21 @@ describe('server mailbox ACL migration', () => {
       await new Promise<void>((resolve) => postgresProcess.once('exit', () => resolve()));
     }
     if (postgresDir) rmSync(postgresDir, { recursive: true, force: true });
+  });
+
+  test('keeps migration 0038 source unchanged and registers rollout separately as 0039', () => {
+    const migrationIds = serverMigrations.map((migration) => migration.id);
+    const mailAclMigrationIndex = migrationIds.indexOf('0038_mail_acl');
+    const rolloutMigrationIndex = migrationIds.indexOf('0039_mail_acl_rollout');
+    const source = readFileSync(join(__dirname, '..', '..', 'packages', 'server', 'src', 'migrations', '0038_mail_acl.ts'), 'utf8')
+      .replace(/\r\n/g, '\n');
+    const sourceHash = createHash('sha256').update(source).digest('hex');
+
+    expect(sourceHash).toBe(MIGRATION_0038_SOURCE_SHA256);
+    expect(mailAclMigrationIndex).toBeGreaterThan(0);
+    expect(rolloutMigrationIndex).toBe(mailAclMigrationIndex + 1);
+    expect(serverMigrations[mailAclMigrationIndex]?.upSql.join('\n')).not.toContain('mail_acl_rollout_state');
+    expect(serverMigrations[rolloutMigrationIndex]?.upSql.join('\n')).toContain('mail_acl_rollout_state');
   });
 
   test('runs the backfill in one non-superuser transaction with transaction-local RLS context', async () => {
@@ -2140,20 +2163,192 @@ describe('server mailbox ACL migration', () => {
     });
   });
 
+  test('rollout migration creates RLS shadow state only for existing workspaces and missing rows default to enforce', async () => {
+    const rolloutMigration = serverMigrations.find((candidate) => candidate.id === '0039_mail_acl_rollout');
+    expect(rolloutMigration).toBeDefined();
+    const workspacesBeforeRollout = await client.query<{ id: string }>('SELECT id FROM workspaces ORDER BY id');
+    await applyStatementsInTransaction(rolloutMigration!.upSql);
+    const db = createApplicationDb({ maxConnections: 2 });
+    const port = createPostgresMailAclRolloutStatePort({ db });
+    try {
+      const existing = await Promise.all([
+        port.getReadiness(WORKSPACE_A),
+        port.getReadiness(WORKSPACE_B),
+      ]);
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO workspaces (id, name)
+        VALUES ('${WORKSPACE_NEW_AFTER_ROLLOUT}', 'Workspace created after rollout')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+      const createdAfterRollout = await port.getReadiness(WORKSPACE_NEW_AFTER_ROLLOUT);
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const storedRows = await client.query<{ workspace_id: string; mode: string }>(`
+        SELECT workspace_id, mode
+        FROM mail_acl_rollout_state
+        ORDER BY workspace_id
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      expect(existing.map((row) => row.mode)).toEqual(['shadow', 'shadow']);
+      expect(existing.every((row) => row.evaluated === 0n && row.ready === false && row.enforced === false)).toBe(true);
+      expect(createdAfterRollout).toMatchObject({
+        workspaceId: WORKSPACE_NEW_AFTER_ROLLOUT,
+        mode: 'enforce',
+        evaluated: 0n,
+        legacyAllowNewDeny: 0n,
+        legacyDenyNewAllow: 0n,
+        notComparable: 0n,
+        ready: false,
+        enforced: true,
+      });
+      expect(storedRows.rows).toEqual(workspacesBeforeRollout.rows.map((row) => ({
+        workspace_id: row.id,
+        mode: 'shadow',
+      })));
+      expect(storedRows.rows).not.toContainEqual({
+        workspace_id: WORKSPACE_NEW_AFTER_ROLLOUT,
+        mode: 'shadow',
+      });
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('rollout state is workspace-isolated by FORCE RLS', async () => {
+    const db = createApplicationDb({ maxConnections: 2 });
+    try {
+      const workspaceARows = await withWorkspaceTransaction(
+        db,
+        { workspaceId: WORKSPACE_A, userId: USER_READ, role: 'admin' },
+        (trx) => trx
+          .selectFrom('mail_acl_rollout_state')
+          .select(['workspace_id', 'mode'])
+          .execute(),
+      );
+      const workspaceBRows = await withWorkspaceTransaction(
+        db,
+        { workspaceId: WORKSPACE_B, userId: USER_WORKSPACE_B, role: 'admin' },
+        (trx) => trx
+          .selectFrom('mail_acl_rollout_state')
+          .select(['workspace_id', 'mode'])
+          .execute(),
+      );
+      const rls = await client.query<{ relrowsecurity: boolean; relforcerowsecurity: boolean }>(`
+        SELECT relrowsecurity, relforcerowsecurity
+        FROM pg_class
+        WHERE relname = 'mail_acl_rollout_state'
+      `);
+      const policy = await client.query<{ qual: string; with_check: string }>(`
+        SELECT qual, with_check
+        FROM pg_policies
+        WHERE schemaname = 'public'
+          AND tablename = 'mail_acl_rollout_state'
+          AND policyname = 'mail_acl_rollout_state_workspace_isolation'
+      `);
+
+      expect(workspaceARows).toEqual([{ workspace_id: WORKSPACE_A, mode: 'shadow' }]);
+      expect(workspaceBRows).toEqual([{ workspace_id: WORKSPACE_B, mode: 'shadow' }]);
+      expect(rls.rows).toEqual([{ relrowsecurity: true, relforcerowsecurity: true }]);
+      expect(policy.rows[0]?.qual).toContain('app.can_access_workspace(workspace_id)');
+      expect(policy.rows[0]?.with_check).toContain('app.can_access_workspace(workspace_id)');
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('rollout counter increments are atomic and stay workspace-scoped under concurrency', async () => {
+    const db = createApplicationDb({ maxConnections: 8 });
+    const port = createPostgresMailAclRolloutStatePort({ db });
+    try {
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_B });
+      await Promise.all(Array.from({ length: 40 }, async (_, index) => {
+        await port.increment(WORKSPACE_A, {
+          evaluated: 1n,
+          legacyAllowNewDeny: index % 2 === 0 ? 1n : 0n,
+          legacyDenyNewAllow: index % 2 === 1 ? 1n : 0n,
+        });
+      }));
+      await Promise.all(Array.from({ length: 13 }, async () => {
+        await port.increment(WORKSPACE_B, { notComparable: 1n });
+      }));
+
+      const workspaceA = await port.getReadiness(WORKSPACE_A);
+      const workspaceB = await port.getReadiness(WORKSPACE_B);
+
+      expect(workspaceA).toMatchObject({
+        evaluated: 40n,
+        legacyAllowNewDeny: 20n,
+        legacyDenyNewAllow: 20n,
+        notComparable: 0n,
+      });
+      expect(workspaceB).toMatchObject({
+        evaluated: 0n,
+        legacyAllowNewDeny: 0n,
+        legacyDenyNewAllow: 0n,
+        notComparable: 13n,
+      });
+    } finally {
+      await db.destroy();
+    }
+  });
+
+  test('rollout transition is one-way, requires observations without mismatches, and reset is shadow-only', async () => {
+    const db = createApplicationDb({ maxConnections: 4 });
+    const port = createPostgresMailAclRolloutStatePort({ db });
+    try {
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+        ok: false,
+        code: 'no_observations',
+      });
+
+      await port.increment(WORKSPACE_A, { evaluated: 1n, legacyAllowNewDeny: 1n, legacyDenyNewAllow: 0n });
+      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+        ok: false,
+        code: 'mismatches_present',
+      });
+
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await port.increment(WORKSPACE_A, { evaluated: 3n, legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n });
+      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({ ok: true });
+      await expect(port.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        mode: 'enforce',
+        ready: false,
+        enforced: true,
+        evaluated: 3n,
+      });
+      await expect(port.resetShadowCounters({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+        ok: false,
+        code: 'not_shadow',
+      });
+    } finally {
+      await db.destroy();
+    }
+  });
+
   test('down removes only ACL objects and preserves the legacy table', async () => {
     const mailAclMigration = serverMigrations.find((candidate) => candidate.id === '0038_mail_acl');
+    const rolloutMigration = serverMigrations.find((candidate) => candidate.id === '0039_mail_acl_rollout');
     expect(mailAclMigration).toBeDefined();
+    expect(rolloutMigration).toBeDefined();
+    await applyStatements(rolloutMigration!.downSql);
     await applyStatements(mailAclMigration!.downSql);
     migrationDownApplied = true;
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     const relations = await client.query<{
       bindings: string | null;
       permissions: string | null;
+      rollout: string | null;
       legacy: string | null;
       legacy_count: string;
     }>(`
       SELECT
         to_regclass('public.mail_acl_bindings')::text AS bindings,
         to_regclass('public.mail_acl_binding_permissions')::text AS permissions,
+        to_regclass('public.mail_acl_rollout_state')::text AS rollout,
         to_regclass('public.user_account_access')::text AS legacy,
         (SELECT count(*)::text FROM user_account_access) AS legacy_count
     `);
@@ -2171,6 +2366,7 @@ describe('server mailbox ACL migration', () => {
     expect(relations.rows[0]).toEqual({
       bindings: null,
       permissions: null,
+      rollout: null,
       legacy: 'user_account_access',
       legacy_count: '3',
     });

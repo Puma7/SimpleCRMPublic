@@ -17,6 +17,9 @@ import type { LoginPenalty } from '../auth';
 import type { ServerMaintenancePort } from '../maintenance/service';
 import type {
   MailAccessService,
+  MailAclRolloutReadiness,
+  MailAclRolloutCounterResetResult,
+  MailAclRolloutTransitionResult,
   MailResourceLookupPort,
   MailSqlScope,
 } from '../mail-access/types';
@@ -4717,6 +4720,12 @@ export type HealthCheckApiPort = {
   pingDatabase(): Promise<void>;
 };
 
+export type MailAclRolloutAdminApiPort = {
+  getReadiness(workspaceId: string): Promise<MailAclRolloutReadiness>;
+  transitionToEnforce(input: { workspaceId: string }): Promise<MailAclRolloutTransitionResult>;
+  resetShadowCounters(input: { workspaceId: string }): Promise<MailAclRolloutCounterResetResult>;
+};
+
 export type ServerLogReadEntry = {
   time: string;
   level: 'info' | 'warn' | 'error' | 'fatal';
@@ -5125,6 +5134,7 @@ export type ServerApiPorts = {
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;
   mailAccess?: MailAccessService;
+  mailAclRollout?: MailAclRolloutAdminApiPort;
   mailResourceLookup?: MailResourceLookupPort;
   emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailTracking?: EmailTrackingApiPort;
