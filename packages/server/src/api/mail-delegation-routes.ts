@@ -147,7 +147,7 @@ async function handleCreate(
   });
   if (!result.ok) return mutationError(result.code);
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {
-    bindingId: result.binding?.id,
+    bindingId: result.binding?.id ?? result.deletedBindingId,
     subject: parsed.subject,
     resource: parsed.resource,
     permissions: parsed.permissions,
@@ -156,7 +156,7 @@ async function handleCreate(
   });
   return data(201, {
     success: true,
-    id: result.binding?.id,
+    id: result.binding?.id ?? result.deletedBindingId,
     binding: result.binding,
     deleted: result.deleted === true,
   });

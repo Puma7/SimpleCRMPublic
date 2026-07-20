@@ -821,7 +821,7 @@ export type MailDelegationApiPort = {
     resource: MailDelegationResource;
     permissions: readonly MailPermission[];
   }): Promise<
-    | { ok: true; binding: MailDelegationBinding | null; affectedUserIds: readonly string[]; deleted?: boolean }
+    | { ok: true; binding: MailDelegationBinding | null; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted?: boolean }
     | { ok: false; code: MailDelegationMutationCode }
   >;
   replaceBindingById(input: {
@@ -830,7 +830,7 @@ export type MailDelegationApiPort = {
     bindingId: number;
     permissions: readonly MailPermission[];
   }): Promise<
-    | { ok: true; binding: MailDelegationBinding | null; affectedUserIds: readonly string[]; deleted: boolean }
+    | { ok: true; binding: MailDelegationBinding | null; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted: boolean }
     | { ok: false; code: MailDelegationMutationCode }
   >;
   deleteBinding(input: {

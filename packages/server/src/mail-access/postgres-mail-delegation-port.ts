@@ -363,7 +363,15 @@ export function createPostgresMailDelegationPort(
     const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
     if (input.permissions.length === 0) {
       if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
-      return { ok: true as const, binding: null, affectedUserIds, deleted: Boolean(existing) };
+      // Surface the deleted row's id so the route can still publish the
+      // email_acl.changed invalidation (binding is null on delete).
+      return {
+        ok: true as const,
+        binding: null,
+        ...(existing ? { deletedBindingId: existing.id } : {}),
+        affectedUserIds,
+        deleted: Boolean(existing),
+      };
     }
 
     const now = options.now?.() ?? new Date();
