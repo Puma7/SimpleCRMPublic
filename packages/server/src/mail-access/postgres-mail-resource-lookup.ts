@@ -59,7 +59,31 @@ export function createPostgresMailResourceLookupPort(
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async resolveThreadAliasThreadIds(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => resolveThreadAliasThreadIds(trx, input.workspaceId, input.aliasId),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
   };
+}
+
+async function resolveThreadAliasThreadIds(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  aliasId: number,
+): Promise<{ aliasThreadId: string; canonicalThreadId: string } | null> {
+  const row = await trx
+    .selectFrom('email_thread_aliases')
+    .select(['alias_thread_id', 'canonical_thread_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', aliasId)
+    .executeTakeFirst();
+  return row
+    ? { aliasThreadId: row.alias_thread_id, canonicalThreadId: row.canonical_thread_id }
+    : null;
 }
 
 async function resolveScheduledDraftReplyParent(

@@ -562,6 +562,89 @@ describe('mail ACL rollout central use', () => {
     ]);
   });
 
+  test('thread-alias DELETE authorizes every message in both stored threads', async () => {
+    const deniedMessages = new Set<string>();
+    const mailAccess: MailAccessService = {
+      async assertPermission(input) {
+        if (input.resource.type === 'message' && deniedMessages.has(input.resource.messageId)) {
+          throw new MailAccessDeniedError();
+        }
+      },
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    };
+    const aliasRecord = {
+      id: 9500,
+      sourceSqliteId: 9500,
+      accountSourceSqliteId: null,
+      accountId: ACCOUNT_A,
+      aliasThreadId: 'thread-alias',
+      canonicalThreadId: 'thread-canonical',
+      confidence: 'high',
+      source: 'manual_merge',
+      createdAt: '2026-07-20T10:00:00.000Z',
+      updatedAt: '2026-07-20T10:00:00.000Z',
+    };
+    const deleteAlias = jest.fn(async () => aliasRecord);
+    const ports: ServerApiPorts = {
+      ...makeCentralPorts(mailAccess),
+      mailResourceLookup: {
+        async resolve(input) {
+          const target = input.target;
+          // Base metadata resolution → the alias's own account (accessible).
+          if (target.kind === 'metadata' && target.entity === 'thread_alias') {
+            return [{ type: 'account', accountId: String(ACCOUNT_A) }];
+          }
+          // The canonical thread spans a second account the delegate cannot triage.
+          if (target.kind === 'thread' && target.id === 'thread-canonical') {
+            return [messageResource(ACCOUNT_A, FOLDER_A, 501), messageResource(ACCOUNT_B, 505, 502)];
+          }
+          if (target.kind === 'thread' && target.id === 'thread-alias') {
+            return [messageResource(ACCOUNT_A, FOLDER_A, 503)];
+          }
+          return [];
+        },
+        async resolveThreadAliasThreadIds(input) {
+          return input.aliasId === 9500
+            ? { aliasThreadId: 'thread-alias', canonicalThreadId: 'thread-canonical' }
+            : null;
+        },
+      },
+      emailThreadAliases: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async delete() {
+          return deleteAlias();
+        },
+      } as unknown as ServerApiPorts['emailThreadAliases'],
+    };
+    const api = createServerApi(ports);
+
+    // A message in the canonical thread lives in an account the delegate cannot
+    // triage → the DELETE is denied and the alias is never removed.
+    deniedMessages.add('502');
+    await expect(api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/thread-aliases/9500',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(deleteAlias).not.toHaveBeenCalled();
+
+    // With triage on every message in both stored threads, the delete proceeds.
+    deniedMessages.clear();
+    await expect(api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/thread-aliases/9500',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 200 });
+    expect(deleteAlias).toHaveBeenCalledTimes(1);
+  });
+
   test('service jobs stay on Task-6 new ACL semantics and never increment rollout counters', async () => {
     const fixture = createRolloutFixture({ mode: 'shadow', newGrants: [], legacyReadAccounts: [ACCOUNT_A] });
     const ports = makeCentralPorts(fixture.service);

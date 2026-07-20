@@ -898,6 +898,43 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // A thread-alias DELETE removes the alias by id; the canonical-thread resolvers
+  // then rebuild edges and the aggregate across BOTH the alias and canonical
+  // threads (which can span accounts the row's own account_id does not cover),
+  // while the base metadata policy only authorizes the alias's stored account.
+  // There is no request body to read the thread ids from, so resolve them from
+  // the stored row and require mail.triage on every message in both threads,
+  // mirroring alias creation.
+  if (
+    req.method === 'DELETE'
+    && canonicalPath === '/api/v1/email/thread-aliases/:id'
+    && ports.mailResourceLookup!.resolveThreadAliasThreadIds
+  ) {
+    const aliasId = optionalPositiveInt(
+      selectorValue(req, canonicalPath, { source: 'path', field: 'id' }),
+    );
+    if (aliasId !== undefined) {
+      const threads = await ports.mailResourceLookup!.resolveThreadAliasThreadIds({
+        workspaceId,
+        aliasId,
+      });
+      for (const threadId of threads ? [threads.aliasThreadId, threads.canonicalThreadId] : []) {
+        const messages = await ports.mailResourceLookup!.resolve({
+          workspaceId,
+          target: { kind: 'thread', id: threadId },
+        });
+        for (const resource of messages) {
+          await ports.mailAccess!.assertPermission({
+            workspaceId,
+            actor,
+            permission: 'mail.triage',
+            resource,
+          });
+        }
+      }
+    }
+  }
+
   // Responding to a read-receipt request with action "send" loads the account's
   // SMTP credentials and transmits an outbound MDN to the sender — an outbound
   // send the base mail.triage policy doesn't cover. Require mail.send when

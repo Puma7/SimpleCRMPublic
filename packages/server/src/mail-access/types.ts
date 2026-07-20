@@ -157,6 +157,14 @@ export interface MailResourceLookupPort {
     workspaceId: string;
     workflowId: number;
   }>): Promise<Readonly<{ graph: unknown }> | null>;
+  // The alias/canonical thread ids a stored thread-alias row points at, used to
+  // authorize a DELETE against both threads (deletion rebuilds edges across both,
+  // which can span accounts the alias row's own account_id does not cover). null
+  // if the alias row is gone.
+  resolveThreadAliasThreadIds?(input: Readonly<{
+    workspaceId: string;
+    aliasId: number;
+  }>): Promise<Readonly<{ aliasThreadId: string; canonicalThreadId: string }> | null>;
 }
 
 export type WorkflowDelayedJobMailClassification =
