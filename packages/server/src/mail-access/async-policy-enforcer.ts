@@ -252,6 +252,12 @@ async function assertScheduledSendReplyParentTriage(
     workspaceId: job.workspaceId,
     target: { kind: 'message', id: info.replyParentMessageId },
   });
+  // The reply parent is an exact stored foreign key that must resolve to exactly
+  // one message. The id-or-source resolver returns [] when the id is ambiguous
+  // with another message's source_sqlite_id (imported-id collision); finalization
+  // still marks the exact FK parent done, so fail closed rather than skip the
+  // triage recheck and let a send-only delegate mutate an unverified parent.
+  if (parent.length !== 1) throw new MailAsyncAuthorizationError();
   for (const resource of parent) {
     await ports.mailAccess.assertPermission({
       workspaceId: job.workspaceId,

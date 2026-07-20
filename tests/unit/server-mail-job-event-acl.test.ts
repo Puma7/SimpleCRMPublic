@@ -396,6 +396,17 @@ describe('server mail job and event ACL', () => {
       type: 'mail.send.scheduled',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
     }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A reply parent whose stored id does not resolve to exactly one message
+    // (an imported-id collision returns []) fails closed rather than skipping the
+    // triage recheck and letting the send mark an unverified parent done.
+    const ambiguousParent = makePolicyPorts({
+      replyParents: new Map([[12, { replyParentMessageId: 999, markParentDone: true }]]),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), ambiguousParent)).rejects.toMatchObject({ nonRetryable: true });
   });
 
   test('reply generation requires content-read in addition to draft-create', async () => {

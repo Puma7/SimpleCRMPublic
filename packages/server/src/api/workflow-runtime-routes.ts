@@ -910,6 +910,13 @@ async function handleDelayedJobGet(
 async function handleDelayedJobCreate(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Creating a delayed job forges queued workflow.execute runtime state (a
+  // workflow-management operation), just like the update/delete handlers below.
+  // A delayed job may carry no messageId, so the route policy resolves non_mail
+  // and the mail ACL cannot gate it — enforce the capability here.
+  if (!requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Workflow-Berechtigung erforderlich');
+  }
   if (!ports.workflowDelayedJobs?.create) return unavailable('workflow_delayed_jobs_unavailable', 'Workflow delayed job API nicht konfiguriert');
 
   const parsed = parseDelayedJobMutationBody(req.body, {

@@ -2780,7 +2780,8 @@ describe('server mailbox ACL migration', () => {
           (7301, '${WORKSPACE_A}', 7301, 7101, 31, 7101, ${MESSAGE_A}, 'inbound', 'ok', '{"log":"visible"}'::jsonb, '2026-07-19T12:00:00Z'),
           (7302, '${WORKSPACE_A}', 7302, 7101, 32, 7101, ${MESSAGE_A_SECOND}, 'inbound', 'ok', '{"log":"hidden"}'::jsonb, '2026-07-19T12:01:00Z'),
           (7303, '${WORKSPACE_A}', 7303, 7101, NULL, 7101, NULL, 'manual', 'ok', '{"log":"non-mail"}'::jsonb, '2026-07-19T12:02:00Z'),
-          (7304, '${WORKSPACE_B}', 7304, 7102, 41, 7102, ${MESSAGE_B}, 'inbound', 'ok', '{"log":"workspace-b"}'::jsonb, '2026-07-19T12:03:00Z')
+          (7304, '${WORKSPACE_B}', 7304, 7102, 41, 7102, ${MESSAGE_B}, 'inbound', 'ok', '{"log":"workspace-b"}'::jsonb, '2026-07-19T12:03:00Z'),
+          (7305, '${WORKSPACE_A}', 7305, 7101, 33, 7101, NULL, 'inbound', 'ok', '{"log":"orphan"}'::jsonb, '2026-07-19T12:04:00Z')
         ON CONFLICT DO NOTHING
       `);
       await client.query(`
@@ -2790,7 +2791,8 @@ describe('server mailbox ACL migration', () => {
         ) VALUES
           (7401, '${WORKSPACE_A}', 7401, 7301, 7301, 'visible-node', 'condition', 'ok', NULL, 1, 'visible', '{"detail":"visible-body"}'::jsonb),
           (7402, '${WORKSPACE_A}', 7402, 7302, 7302, 'hidden-node', 'condition', 'ok', NULL, 1, 'hidden', '{"detail":"hidden-body"}'::jsonb),
-          (7403, '${WORKSPACE_A}', 7403, 7303, 7303, 'non-mail-node', 'condition', 'ok', NULL, 1, 'non-mail', '{"detail":"non-mail"}'::jsonb)
+          (7403, '${WORKSPACE_A}', 7403, 7303, 7303, 'non-mail-node', 'condition', 'ok', NULL, 1, 'non-mail', '{"detail":"non-mail"}'::jsonb),
+          (7404, '${WORKSPACE_A}', 7404, 7305, 7305, 'orphan-node', 'condition', 'ok', NULL, 1, 'orphan', '{"detail":"orphan-body"}'::jsonb)
         ON CONFLICT DO NOTHING
       `);
       await client.query(`
@@ -2836,6 +2838,7 @@ describe('server mailbox ACL migration', () => {
       const firstFolderPage = await runPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeLog: false, limit: 1 }, folderScope));
       const hiddenRun = await runPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7302, includeLog: true }, folderScope));
       const folderSteps = await stepPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeDetail: true, limit: 10 }, folderScope));
+      const noneSteps = await stepPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeDetail: true, limit: 10 }, noneScope));
       const hiddenStep = await stepPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7402, includeDetail: true }, folderScope));
       const appliedRows = await appliedPort.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, folderScope));
       const hiddenApplied = await appliedPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7502 }, folderScope));
@@ -2852,6 +2855,11 @@ describe('server mailbox ACL migration', () => {
       expect(hiddenRun).toBeNull();
       expect(folderSteps.items.map((item) => item.id)).toEqual([7401, 7403]);
       expect(folderSteps.items.map((item) => item.detail)).toEqual([{ detail: 'visible-body' }, { detail: 'non-mail' }]);
+      // A scope-'none' caller sees only the genuinely non-mail step. The orphaned
+      // mail run 7305 (message deleted → message_id null, message_source_sqlite_id
+      // still 33) must stay hidden — a single-column message_id-null test would
+      // leak step 7404's node message/detail_json.
+      expect(noneSteps.items.map((item) => item.id)).toEqual([7403]);
       expect(hiddenStep).toBeNull();
       expect(appliedRows.items.map((item) => item.id)).toEqual([7501]);
       expect(hiddenApplied).toBeNull();
@@ -2867,8 +2875,8 @@ describe('server mailbox ACL migration', () => {
       await client.query(`DELETE FROM workflow_delayed_jobs WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7701 AND 7703`).catch(() => undefined);
       await client.query(`DELETE FROM email_workflow_forward_dedup WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7601 AND 7602`).catch(() => undefined);
       await client.query(`DELETE FROM email_message_workflow_applied WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7501 AND 7502`).catch(() => undefined);
-      await client.query(`DELETE FROM email_workflow_run_steps WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7401 AND 7403`).catch(() => undefined);
-      await client.query(`DELETE FROM email_workflow_runs WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7301 AND 7304`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflow_run_steps WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7401 AND 7404`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflow_runs WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7301 AND 7305`).catch(() => undefined);
       await client.query(`DELETE FROM email_workflows WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7101 AND 7102`).catch(() => undefined);
       await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
       await db.destroy();

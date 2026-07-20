@@ -1156,28 +1156,26 @@ function workflowRunStepVisibilityPredicate(
   workspaceId: string,
 ): RawBuilder<boolean> | undefined {
   if (!scope || scope.kind === 'all') return undefined;
-  const runBranches = scope.kind === 'none'
-    ? kyselySql<boolean>`workflow_scope_run.message_id is null`
-    : workflowRunStepRestrictedPredicate(scope, workspaceId);
+  // Mirror the run-list predicate exactly: the parent run is non-mail only when
+  // BOTH message_id AND message_source_sqlite_id are null. An orphaned mail run
+  // (message deleted → message_id nulled via ON DELETE SET NULL, source_sqlite_id
+  // preserved) must stay mail-scoped. A single-column message_id-null test would
+  // leak such a run's node messages/detail_json to a scope-'none' caller.
+  // workflowMessageVisibilityPredicate returns a predicate for 'none'|'restricted';
+  // the ?? false is a fail-closed guard should that ever change.
+  const runVisibility = workflowMessageVisibilityPredicate(scope, workspaceId, 'workflow_scope_run.message_id')
+    ?? kyselySql<boolean>`false`;
 
-  return kyselySql<boolean>`(
-    email_workflow_run_steps.run_id is null
-    or exists (
-      select 1
-      from email_workflow_runs as workflow_scope_run
-      where workflow_scope_run.workspace_id = ${workspaceId}
-        and workflow_scope_run.id = email_workflow_run_steps.run_id
-        and ${runBranches}
-    )
+  // A step whose parent run cannot be resolved — run_id null, or run_id pointing at
+  // a missing row — fails CLOSED (the exists() yields no row), rather than the
+  // previous `run_id is null OR ...` fail-open branch.
+  return kyselySql<boolean>`exists (
+    select 1
+    from email_workflow_runs as workflow_scope_run
+    where workflow_scope_run.workspace_id = ${workspaceId}
+      and workflow_scope_run.id = email_workflow_run_steps.run_id
+      and ${runVisibility}
   )`;
-}
-
-function workflowRunStepRestrictedPredicate(
-  scope: Extract<MailSqlScope, { kind: 'restricted' }>,
-  workspaceId: string,
-): RawBuilder<boolean> {
-  const messageVisibility = workflowMessageVisibilityPredicate(scope, workspaceId, 'workflow_scope_run.message_id');
-  return messageVisibility ?? kyselySql<boolean>`true`;
 }
 
 function normalizeLimit(limit: number, label: string): number {

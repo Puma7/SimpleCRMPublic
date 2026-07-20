@@ -4724,19 +4724,55 @@ export function parentAwareAccountVisibility(
  * secrets are configured) or vacation content.
  */
 function redactParentOnlyAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelectColumns[number]>): EmailAccountRecord {
+  // Fail-CLOSED allowlist: expose only the identity fields the mailbox tree
+  // renders and neutralize every connection/security/policy field. Built as an
+  // explicit literal (not `{ ...mapEmailAccountRow(row), overrides }`) so any
+  // field later added to EmailAccountRecord fails to compile here and must be
+  // consciously classified, rather than silently leaking a parent account's
+  // connection config to a folder-/message-only delegate.
   return {
-    ...mapEmailAccountRow(row),
+    // identity — safe to render in the tree
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    displayName: row.display_name,
+    emailAddress: row.email_address,
+    // connection config — neutralized (safest defaults; never advertise real hosts,
+    // ports, auth mode, or a downgraded TLS posture)
+    protocol: 'imap',
     imapHost: '',
+    imapPort: 0,
+    imapTls: true,
     imapUsername: '',
-    smtpHost: '',
-    smtpUsername: '',
-    pop3Host: '',
+    smtpHost: null,
+    smtpPort: null,
+    smtpTls: true,
+    smtpUsername: null,
+    smtpUseImapAuth: false,
+    pop3Host: null,
+    pop3Port: null,
+    pop3Tls: true,
     oauthProvider: null,
-    vacationSubject: '',
-    vacationBodyText: '',
+    // server folder paths + sync flags — hidden
+    sentFolderPath: null,
+    syncSpamFolderPath: null,
+    syncArchiveFolderPath: null,
+    imapSyncSent: false,
+    imapSyncArchive: false,
+    imapSyncSpam: false,
+    imapSyncSeenOnOpen: false,
+    // vacation + policies — neutralized to the safest values
+    vacationEnabled: false,
+    vacationSubject: null,
+    vacationBodyText: null,
+    requestReadReceipt: false,
+    imapDeleteOptIn: false,
+    defaultRemoteContentPolicy: 'blocked',
+    respondToReadReceipts: 'never',
+    // secret-presence flags — never reveal what is configured
     imapPasswordConfigured: false,
     smtpPasswordConfigured: false,
     oauthRefreshConfigured: false,
+    updatedAt: timestampToIso(row.updated_at),
   };
 }
 

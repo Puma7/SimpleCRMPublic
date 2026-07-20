@@ -172,6 +172,20 @@ describe('server mail policy manifest', () => {
     expect(SERVER_JOB_POLICIES.map(({ type }) => type)).toEqual(expect.arrayContaining(executableTypes));
   });
 
+  test('classifies PGP detect and verify as triage mutations, not reads', () => {
+    // Both persist the shared pgp_status / signer fingerprint on the message.
+    for (const path of [
+      '/api/v1/pgp/messages/42/detect',
+      '/api/v1/pgp/messages/42/verify',
+    ]) {
+      expect(assertMailRoutePolicy('POST', path).policy).toEqual({
+        kind: 'permission',
+        permission: 'mail.triage',
+        resource: { kind: 'message_lookup', messageId: { source: 'path', field: 'messageId' } },
+      });
+    }
+  });
+
   test('classifies ai.pick_canned as optional message content access', () => {
     expect(assertServerJobPolicy('ai.pick_canned')).toEqual({
       type: 'ai.pick_canned',
