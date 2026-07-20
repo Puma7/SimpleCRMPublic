@@ -268,6 +268,34 @@ async function handleEventSocket(
       mailResourceLookup: ports.mailResourceLookup,
     },
   };
+  // The principal is captured once at socket open, but a later role demotion or
+  // account disable must take effect for event authorization — otherwise a demoted
+  // admin keeps bypassing resource checks and a disabled delegate keeps receiving
+  // events until reconnect. Re-resolve from the request (which re-reads the DB and
+  // returns null on disabled/revoked/expired) on a short TTL, mutate the shared
+  // context so the filter rebuilds the actor from the current role, and close the
+  // socket when the session is no longer valid. Mirrors the per-request HTTP path.
+  const PRINCIPAL_REVALIDATE_MS = 10_000;
+  let principalCheckedAt = Date.now();
+  const revalidatePrincipal = async (): Promise<boolean> => {
+    if (Date.now() - principalCheckedAt < PRINCIPAL_REVALIDATE_MS) return true;
+    principalCheckedAt = Date.now();
+    const fresh = await resolvePrincipal(request);
+    if (!fresh || fresh.workspaceId !== principal.workspaceId) return false;
+    context.principal = fresh;
+    return true;
+  };
+  const deliver = async (event: ServerEvent): Promise<void> => {
+    if (closed) return;
+    if (!(await revalidatePrincipal())) {
+      if (!closed) {
+        closed = true;
+        socket.close(1008, 'session revoked');
+      }
+      return;
+    }
+    await sendFilteredEvent(socket, event, deliveredSequences, context, () => closed);
+  };
   const enqueueLive = (event: ServerEvent) => {
     if (event.workspaceId !== principal.workspaceId) return;
     if (replaying) {
@@ -275,7 +303,7 @@ async function handleEventSocket(
       return;
     }
     liveChain = liveChain
-      .then(async () => sendFilteredEvent(socket, event, deliveredSequences, context, () => closed))
+      .then(async () => deliver(event))
       .catch(() => {
         if (!closed) socket.close(1011, 'event stream error');
       });
@@ -295,7 +323,7 @@ async function handleEventSocket(
       afterSequence,
     }) ?? [];
     for (const event of replayEvents) {
-      await sendFilteredEvent(socket, event, deliveredSequences, context, () => closed);
+      await deliver(event);
     }
   }
   replaying = false;
