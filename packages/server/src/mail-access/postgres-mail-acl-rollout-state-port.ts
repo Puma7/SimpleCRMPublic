@@ -1,6 +1,7 @@
 import type { MailPermission } from '@simplecrm/core';
 import { sql, type Kysely } from 'kysely';
 
+import { recordPostgresAuditEvent } from '../db/postgres-audit-port';
 import type { ServerDatabase } from '../db/schema';
 import {
   withWorkspaceTransaction,
@@ -9,11 +10,13 @@ import {
 } from '../db/workspace-context';
 import {
   createPostgresMailAclRolloutEvaluationContext,
+  requirePostgresMailAclRolloutState,
   requirePostgresMailAclRolloutTransaction,
 } from './postgres-mail-acl-rollout-evaluation-context';
 import {
   comparableLegacyFlag,
   type MailAclRolloutDelta,
+  type MailAclRolloutEvaluationOutcome,
   type MailAclRolloutLegacyPort,
   type MailAclRolloutStatePort,
   type MailAclRolloutTelemetryResult,
@@ -37,6 +40,7 @@ type RolloutRow = Readonly<{
   legacy_allow_new_deny: string | number | bigint;
   legacy_deny_new_allow: string | number | bigint;
   not_comparable: string | number | bigint;
+  in_flight: string | number | bigint;
   observation_started_at: Date | string | null;
   observation_updated_at: Date | string | null;
   telemetry_healthy: boolean;
@@ -47,6 +51,11 @@ type RolloutRow = Readonly<{
 type CounterUpdateRow = Readonly<{
   telemetry_healthy: boolean;
   diagnostic_code: string | null;
+}>;
+
+type EvaluationRegistration = Readonly<{
+  state: MailAclRolloutState;
+  registered: boolean;
 }>;
 
 const MAX_BIGINT = 9_223_372_036_854_775_807n;
@@ -89,20 +98,87 @@ export function createPostgresMailAclRolloutStatePort(
   }
 
   const port: MailAclRolloutStatePort = {
-    async withSharedEvaluation(workspaceId, operation) {
-      return withWorkspaceTransaction(
-        options.db,
-        { workspaceId, role: 'system' },
-        async (trx) => {
-          await acquireEvaluationLock(trx, workspaceId);
-          return operation(createPostgresMailAclRolloutEvaluationContext(workspaceId, trx));
-        },
-        sessionOptions,
-      );
+    async withSharedEvaluation<T>(workspaceId: string, operation: (
+      context: MailAclRolloutEvaluationContext,
+    ) => Promise<MailAclRolloutEvaluationOutcome<T>>) {
+      let computed: MailAclRolloutEvaluationOutcome<T> | undefined;
+      let telemetry: MailAclRolloutTelemetryResult = { healthy: true };
+
+      try {
+        await options.db.connection().execute(async (connection) => {
+          let lockAcquired = false;
+          let registered = false;
+          try {
+            await acquireEvaluationSessionLock(connection, workspaceId);
+            lockAcquired = true;
+
+            const registration = await withWorkspaceTransaction(
+              connection,
+              { workspaceId, role: 'system' },
+              (trx) => registerEvaluation(trx, workspaceId),
+              sessionOptions,
+            );
+            registered = registration.registered;
+
+            try {
+              computed = await withWorkspaceTransaction(
+                connection,
+                { workspaceId, role: 'system' },
+                (trx) => operation(createPostgresMailAclRolloutEvaluationContext(
+                  workspaceId,
+                  trx,
+                  registration.state,
+                )),
+                sessionOptions,
+              );
+            } catch (error) {
+              if (!computed) {
+                if (registered) {
+                  await persistFinalizationFailureBestEffort(connection, workspaceId, sessionOptions);
+                }
+                throw error;
+              }
+              telemetry = { healthy: false, code: 'counter_update_failed' };
+            }
+
+            if (registered && telemetry.healthy) {
+              try {
+                telemetry = await withWorkspaceTransaction(
+                  connection,
+                  { workspaceId, role: 'system' },
+                  (trx) => finalizeEvaluation(trx, workspaceId, computed?.delta ?? {}),
+                  sessionOptions,
+                );
+              } catch {
+                telemetry = { healthy: false, code: 'counter_update_failed' };
+                await persistFinalizationFailureBestEffort(connection, workspaceId, sessionOptions);
+              }
+            }
+          } finally {
+            if (lockAcquired) {
+              try {
+                const unlocked = await releaseEvaluationSessionLock(connection, workspaceId);
+                if (!unlocked) telemetry = { healthy: false, code: 'counter_update_failed' };
+              } catch {
+                telemetry = { healthy: false, code: 'counter_update_failed' };
+              }
+            }
+          }
+        });
+      } catch (error) {
+        if (!computed) throw error;
+        telemetry = { healthy: false, code: 'counter_update_failed' };
+      }
+
+      if (!computed) throw new Error('mail ACL rollout evaluation completed without a decision');
+      return { value: computed.value, telemetry };
     },
 
     async getState(workspaceId, evaluationContext): Promise<MailAclRolloutState> {
-      const row = await readRow(workspaceId, evaluationContext);
+      if (evaluationContext) {
+        return requirePostgresMailAclRolloutState(evaluationContext, workspaceId);
+      }
+      const row = await readRow(workspaceId);
       if (!row) return defaultEnforceState();
       return mapState(row);
     },
@@ -115,6 +191,7 @@ export function createPostgresMailAclRolloutStatePort(
         ...state,
         ready: state.mode === 'shadow'
           && state.telemetryHealthy
+          && state.inFlight === 0n
           && state.evaluated > 0n
           && state.legacyAllowNewDeny === 0n
           && state.legacyDenyNewAllow === 0n,
@@ -123,27 +200,19 @@ export function createPostgresMailAclRolloutStatePort(
     },
 
     async increment(workspaceId, delta, evaluationContext): Promise<MailAclRolloutTelemetryResult> {
-      if (!evaluationContext) {
-        return port.withSharedEvaluation(
-          workspaceId,
-          (context) => port.increment(workspaceId, delta, context),
-        );
-      }
       return runInWorkspaceTransaction(
         workspaceId,
         evaluationContext,
-        (trx) => incrementCounters(trx, workspaceId, delta),
+        async (trx) => {
+          if (!evaluationContext) await acquireEvaluationTransactionLock(trx, workspaceId);
+          return incrementCounters(trx, workspaceId, delta);
+        },
       );
     },
 
     async markTelemetryUnhealthy(workspaceId, code, evaluationContext): Promise<void> {
-      if (!evaluationContext) {
-        await port.withSharedEvaluation(workspaceId, async (context) => {
-          await port.markTelemetryUnhealthy(workspaceId, code, context);
-        });
-        return;
-      }
       await runInWorkspaceTransaction(workspaceId, evaluationContext, async (trx) => {
+        if (!evaluationContext) await acquireEvaluationTransactionLock(trx, workspaceId);
         await markTelemetryUnhealthy(trx, workspaceId, code);
       });
     },
@@ -157,17 +226,29 @@ export function createPostgresMailAclRolloutStatePort(
           const result = await selectRolloutRow(trx, input.workspaceId, true);
           const state = result.rows[0] ? mapState(result.rows[0]) : defaultEnforceState();
           if (state.mode !== 'shadow' || state.diagnostic) return { ok: false, code: 'not_shadow' } as const;
+          if (state.inFlight !== 0n) return { ok: false, code: 'evaluations_in_flight' } as const;
           if (!state.telemetryHealthy) return { ok: false, code: 'telemetry_unhealthy' } as const;
           if (state.evaluated === 0n) return { ok: false, code: 'no_observations' } as const;
           if (state.legacyAllowNewDeny !== 0n || state.legacyDenyNewAllow !== 0n) {
             return { ok: false, code: 'mismatches_present' } as const;
           }
-          await sql`
+          const updated = await sql<{ workspace_id: string }>`
             UPDATE mail_acl_rollout_state
             SET mode = 'enforce', updated_at = now()
             WHERE workspace_id = ${input.workspaceId}::uuid
               AND mode = 'shadow'
+              AND in_flight = 0
+            RETURNING workspace_id::text AS workspace_id
           `.execute(trx);
+          if (updated.rows.length !== 1) return { ok: false, code: 'not_shadow' } as const;
+          await recordPostgresAuditEvent(trx, {
+            workspaceId: input.workspaceId,
+            actorUserId: input.actorUserId,
+            action: 'mail_acl_rollout.enforced',
+            entityType: 'mail_acl_rollout',
+            entityId: input.workspaceId,
+            metadata: { mode: 'enforce' },
+          });
           return { ok: true } as const;
         },
         sessionOptions,
@@ -194,6 +275,7 @@ export function createPostgresMailAclRolloutStatePort(
               legacy_allow_new_deny = 0,
               legacy_deny_new_allow = 0,
               not_comparable = 0,
+              in_flight = 0,
               observation_started_at = NULL,
               observation_updated_at = NULL,
               telemetry_healthy = true,
@@ -204,9 +286,16 @@ export function createPostgresMailAclRolloutStatePort(
               AND mode = 'shadow'
             RETURNING workspace_id::text AS workspace_id
           `.execute(trx);
-          return reset.rows.length === 1
-            ? { ok: true } as const
-            : { ok: false, code: 'not_shadow' } as const;
+          if (reset.rows.length !== 1) return { ok: false, code: 'not_shadow' } as const;
+          await recordPostgresAuditEvent(trx, {
+            workspaceId: input.workspaceId,
+            actorUserId: input.actorUserId,
+            action: 'mail_acl_rollout.counters_reset',
+            entityType: 'mail_acl_rollout',
+            entityId: input.workspaceId,
+            metadata: { mode: 'shadow' },
+          });
+          return { ok: true } as const;
         },
         sessionOptions,
       );
@@ -253,9 +342,67 @@ export function createPostgresMailAclRolloutLegacyPort(
   };
 }
 
-async function acquireEvaluationLock(trx: WorkspaceTransaction, workspaceId: string): Promise<void> {
-  // A namespaced UUID is hashed to PostgreSQL's signed 64-bit advisory key.
-  // Distinct workspaces only serialize on a conservative 64-bit hash collision.
+async function registerEvaluation(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+): Promise<EvaluationRegistration> {
+  const selected = await selectRolloutRow(trx, workspaceId);
+  const row = selected.rows[0];
+  if (!row) return { state: defaultEnforceState(), registered: false };
+  const state = mapState(row);
+  if (state.mode !== 'shadow' || state.diagnostic) return { state, registered: false };
+
+  const result = await sql<{ in_flight: string | number | bigint }>`
+    UPDATE mail_acl_rollout_state
+    SET in_flight = in_flight + 1, updated_at = now()
+    WHERE workspace_id = ${workspaceId}::uuid
+      AND mode = 'shadow'
+      AND in_flight < ${MAX_BIGINT.toString()}::bigint
+    RETURNING in_flight
+  `.execute(trx);
+  const updated = result.rows[0];
+  if (updated) {
+    return {
+      state: { ...state, inFlight: safeBigInt(updated.in_flight, 'in_flight') },
+      registered: true,
+    };
+  }
+
+  await markTelemetryUnhealthy(trx, workspaceId, 'counter_saturated');
+  return {
+    state: invalidState('mail ACL rollout evaluation registration failed'),
+    registered: false,
+  };
+}
+
+async function acquireEvaluationSessionLock(
+  db: Kysely<ServerDatabase>,
+  workspaceId: string,
+): Promise<void> {
+  // Session scope spans the committed registration, comparison, and finalization transactions.
+  await sql`
+    SELECT pg_advisory_lock_shared(
+      hashtextextended(${`${LOCK_KEY_PREFIX}${workspaceId}`}, 0)
+    )
+  `.execute(db);
+}
+
+async function releaseEvaluationSessionLock(
+  db: Kysely<ServerDatabase>,
+  workspaceId: string,
+): Promise<boolean> {
+  const result = await sql<{ unlocked: boolean }>`
+    SELECT pg_advisory_unlock_shared(
+      hashtextextended(${`${LOCK_KEY_PREFIX}${workspaceId}`}, 0)
+    ) AS unlocked
+  `.execute(db);
+  return result.rows[0]?.unlocked === true;
+}
+
+async function acquireEvaluationTransactionLock(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+): Promise<void> {
   await sql`
     SELECT pg_advisory_xact_lock_shared(
       hashtextextended(${`${LOCK_KEY_PREFIX}${workspaceId}`}, 0)
@@ -264,6 +411,7 @@ async function acquireEvaluationLock(trx: WorkspaceTransaction, workspaceId: str
 }
 
 async function acquireAdministrativeLock(trx: WorkspaceTransaction, workspaceId: string): Promise<void> {
+  // A 64-bit collision only conservatively serializes two workspaces; SQL and RLS remain workspace-bound.
   await sql`
     SELECT pg_advisory_xact_lock(
       hashtextextended(${`${LOCK_KEY_PREFIX}${workspaceId}`}, 0)
@@ -284,6 +432,7 @@ function selectRolloutRow(
       legacy_allow_new_deny,
       legacy_deny_new_allow,
       not_comparable,
+      in_flight,
       observation_started_at,
       observation_updated_at,
       telemetry_healthy,
@@ -295,86 +444,33 @@ function selectRolloutRow(
   `.execute(trx);
 }
 
+async function finalizeEvaluation(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  delta: MailAclRolloutDelta,
+): Promise<MailAclRolloutTelemetryResult> {
+  const result = await updateCounters(trx, workspaceId, delta, true);
+  if (result) return result;
+  await markTelemetryUnhealthy(trx, workspaceId, 'counter_update_zero_rows');
+  return { healthy: false, code: 'counter_update_zero_rows' };
+}
+
 async function incrementCounters(
   trx: WorkspaceTransaction,
   workspaceId: string,
   delta: MailAclRolloutDelta,
 ): Promise<MailAclRolloutTelemetryResult> {
-  const evaluated = counterDelta(delta.evaluated);
-  const legacyAllowNewDeny = counterDelta(delta.legacyAllowNewDeny);
-  const legacyDenyNewAllow = counterDelta(delta.legacyDenyNewAllow);
-  const notComparable = counterDelta(delta.notComparable);
-  if (
-    evaluated === 0n
-    && legacyAllowNewDeny === 0n
-    && legacyDenyNewAllow === 0n
-    && notComparable === 0n
-  ) return { healthy: true };
-
+  if (!hasCounterDelta(delta)) return { healthy: true };
   await sql`SAVEPOINT mail_acl_rollout_counter_increment`.execute(trx);
   try {
-    const maxBigint = MAX_BIGINT.toString();
-    const result = await sql<CounterUpdateRow>`
-      WITH locked AS (
-        SELECT
-          workspace_id,
-          evaluated,
-          legacy_allow_new_deny,
-          legacy_deny_new_allow,
-          not_comparable,
-          (
-            evaluated::numeric + ${evaluated.toString()}::numeric > ${maxBigint}::numeric
-            OR legacy_allow_new_deny::numeric + ${legacyAllowNewDeny.toString()}::numeric > ${maxBigint}::numeric
-            OR legacy_deny_new_allow::numeric + ${legacyDenyNewAllow.toString()}::numeric > ${maxBigint}::numeric
-            OR not_comparable::numeric + ${notComparable.toString()}::numeric > ${maxBigint}::numeric
-          ) AS saturated
-        FROM mail_acl_rollout_state
-        WHERE workspace_id = ${workspaceId}::uuid
-          AND mode = 'shadow'
-        FOR UPDATE
-      )
-      UPDATE mail_acl_rollout_state AS rollout
-      SET
-        evaluated = LEAST(
-          locked.evaluated::numeric + ${evaluated.toString()}::numeric,
-          ${maxBigint}::numeric
-        )::bigint,
-        legacy_allow_new_deny = LEAST(
-          locked.legacy_allow_new_deny::numeric + ${legacyAllowNewDeny.toString()}::numeric,
-          ${maxBigint}::numeric
-        )::bigint,
-        legacy_deny_new_allow = LEAST(
-          locked.legacy_deny_new_allow::numeric + ${legacyDenyNewAllow.toString()}::numeric,
-          ${maxBigint}::numeric
-        )::bigint,
-        not_comparable = LEAST(
-          locked.not_comparable::numeric + ${notComparable.toString()}::numeric,
-          ${maxBigint}::numeric
-        )::bigint,
-        observation_started_at = COALESCE(rollout.observation_started_at, now()),
-        observation_updated_at = now(),
-        telemetry_healthy = CASE WHEN locked.saturated THEN false ELSE rollout.telemetry_healthy END,
-        diagnostic_code = CASE WHEN locked.saturated THEN 'counter_saturated' ELSE rollout.diagnostic_code END,
-        diagnostic_at = CASE WHEN locked.saturated THEN now() ELSE rollout.diagnostic_at END,
-        updated_at = now()
-      FROM locked
-      WHERE rollout.workspace_id = locked.workspace_id
-      RETURNING rollout.telemetry_healthy, rollout.diagnostic_code
-    `.execute(trx);
-    const updated = result.rows[0];
-    if (!updated) {
+    const result = await updateCounters(trx, workspaceId, delta, false);
+    if (!result) {
       await markTelemetryUnhealthy(trx, workspaceId, 'counter_update_zero_rows');
       await sql`RELEASE SAVEPOINT mail_acl_rollout_counter_increment`.execute(trx);
       return { healthy: false, code: 'counter_update_zero_rows' };
     }
-    const telemetryResult: MailAclRolloutTelemetryResult = updated.telemetry_healthy
-      ? { healthy: true }
-      : {
-        healthy: false,
-        code: parsePersistentDiagnosticCode(updated.diagnostic_code),
-      };
     await sql`RELEASE SAVEPOINT mail_acl_rollout_counter_increment`.execute(trx);
-    return telemetryResult;
+    return result;
   } catch (error) {
     try {
       await sql`ROLLBACK TO SAVEPOINT mail_acl_rollout_counter_increment`.execute(trx);
@@ -385,9 +481,94 @@ async function incrementCounters(
     try {
       await markTelemetryUnhealthy(trx, workspaceId, 'counter_update_failed');
     } catch {
-      // The caller still receives a bounded unhealthy result when persistence fails.
+      // Direct telemetry callers still receive a bounded unhealthy result.
     }
     return { healthy: false, code: 'counter_update_failed' };
+  }
+}
+
+async function updateCounters(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  delta: MailAclRolloutDelta,
+  finalize: boolean,
+): Promise<MailAclRolloutTelemetryResult | null> {
+  const evaluated = counterDelta(delta.evaluated);
+  const legacyAllowNewDeny = counterDelta(delta.legacyAllowNewDeny);
+  const legacyDenyNewAllow = counterDelta(delta.legacyDenyNewAllow);
+  const notComparable = counterDelta(delta.notComparable);
+  const hasObservation = evaluated !== 0n
+    || legacyAllowNewDeny !== 0n
+    || legacyDenyNewAllow !== 0n
+    || notComparable !== 0n;
+  const maxBigint = MAX_BIGINT.toString();
+  const result = await sql<CounterUpdateRow>`
+    WITH locked AS (
+      SELECT
+        workspace_id,
+        evaluated,
+        legacy_allow_new_deny,
+        legacy_deny_new_allow,
+        not_comparable,
+        in_flight,
+        (
+          evaluated::numeric + ${evaluated.toString()}::numeric > ${maxBigint}::numeric
+          OR legacy_allow_new_deny::numeric + ${legacyAllowNewDeny.toString()}::numeric > ${maxBigint}::numeric
+          OR legacy_deny_new_allow::numeric + ${legacyDenyNewAllow.toString()}::numeric > ${maxBigint}::numeric
+          OR not_comparable::numeric + ${notComparable.toString()}::numeric > ${maxBigint}::numeric
+        ) AS saturated
+      FROM mail_acl_rollout_state
+      WHERE workspace_id = ${workspaceId}::uuid
+        AND mode = 'shadow'
+        ${finalize ? sql`AND in_flight > 0` : sql``}
+      FOR UPDATE
+    )
+    UPDATE mail_acl_rollout_state AS rollout
+    SET
+      evaluated = LEAST(locked.evaluated::numeric + ${evaluated.toString()}::numeric, ${maxBigint}::numeric)::bigint,
+      legacy_allow_new_deny = LEAST(locked.legacy_allow_new_deny::numeric + ${legacyAllowNewDeny.toString()}::numeric, ${maxBigint}::numeric)::bigint,
+      legacy_deny_new_allow = LEAST(locked.legacy_deny_new_allow::numeric + ${legacyDenyNewAllow.toString()}::numeric, ${maxBigint}::numeric)::bigint,
+      not_comparable = LEAST(locked.not_comparable::numeric + ${notComparable.toString()}::numeric, ${maxBigint}::numeric)::bigint,
+      in_flight = CASE WHEN ${finalize} THEN locked.in_flight - 1 ELSE locked.in_flight END,
+      observation_started_at = CASE
+        WHEN ${hasObservation} THEN COALESCE(rollout.observation_started_at, now())
+        ELSE rollout.observation_started_at
+      END,
+      observation_updated_at = CASE
+        WHEN ${hasObservation} THEN now()
+        ELSE rollout.observation_updated_at
+      END,
+      telemetry_healthy = CASE WHEN locked.saturated THEN false ELSE rollout.telemetry_healthy END,
+      diagnostic_code = CASE WHEN locked.saturated THEN 'counter_saturated' ELSE rollout.diagnostic_code END,
+      diagnostic_at = CASE WHEN locked.saturated THEN now() ELSE rollout.diagnostic_at END,
+      updated_at = now()
+    FROM locked
+    WHERE rollout.workspace_id = locked.workspace_id
+    RETURNING rollout.telemetry_healthy, rollout.diagnostic_code
+  `.execute(trx);
+  const updated = result.rows[0];
+  if (!updated) return null;
+  return updated.telemetry_healthy
+    ? { healthy: true }
+    : { healthy: false, code: parsePersistentDiagnosticCode(updated.diagnostic_code) };
+}
+
+async function persistFinalizationFailureBestEffort(
+  db: Kysely<ServerDatabase>,
+  workspaceId: string,
+  sessionOptions: { applySession?: WorkspaceSessionApplier },
+): Promise<void> {
+  try {
+    await withWorkspaceTransaction(
+      db,
+      { workspaceId, role: 'system' },
+      async (trx) => {
+        await markTelemetryUnhealthy(trx, workspaceId, 'counter_update_failed');
+      },
+      sessionOptions,
+    );
+  } catch {
+    // The committed in-flight latch remains the durable fail-closed signal.
   }
 }
 
@@ -458,6 +639,7 @@ function defaultEnforceState(): MailAclRolloutState {
     legacyAllowNewDeny: 0n,
     legacyDenyNewAllow: 0n,
     notComparable: 0n,
+    inFlight: 0n,
     observationStartedAt: null,
     observationUpdatedAt: null,
     telemetryHealthy: true,
@@ -482,6 +664,7 @@ function mapState(row: RolloutRow): MailAclRolloutState {
       legacyAllowNewDeny: safeBigInt(row.legacy_allow_new_deny, 'legacy_allow_new_deny'),
       legacyDenyNewAllow: safeBigInt(row.legacy_deny_new_allow, 'legacy_deny_new_allow'),
       notComparable: safeBigInt(row.not_comparable, 'not_comparable'),
+      inFlight: safeBigInt(row.in_flight, 'in_flight'),
       observationStartedAt: timestampOrNull(row.observation_started_at),
       observationUpdatedAt: timestampOrNull(row.observation_updated_at),
       telemetryHealthy,
@@ -504,6 +687,13 @@ function invalidState(diagnostic: string): MailAclRolloutState {
     diagnosticCode: 'rollout_state_invalid',
     diagnostic,
   };
+}
+
+function hasCounterDelta(delta: MailAclRolloutDelta): boolean {
+  return counterDelta(delta.evaluated) !== 0n
+    || counterDelta(delta.legacyAllowNewDeny) !== 0n
+    || counterDelta(delta.legacyDenyNewAllow) !== 0n
+    || counterDelta(delta.notComparable) !== 0n;
 }
 
 function counterDelta(value: bigint | undefined): bigint {

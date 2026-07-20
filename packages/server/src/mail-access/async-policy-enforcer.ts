@@ -95,6 +95,9 @@ const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Obj
   'spam_decision.created': ['messageId', 'accountId', 'state'],
   'spam_decision.updated': ['messageId', 'accountId', 'state'],
   'spam_decision.deleted': ['messageId', 'accountId', 'state'],
+  'workflow_delayed_job.created': ['id', 'sourceSqliteId', 'workflowId', 'workflowSourceSqliteId', 'messageId', 'messageSourceSqliteId', 'resumeNodeId', 'executeAt', 'status'],
+  'workflow_delayed_job.updated': ['id', 'sourceSqliteId', 'workflowId', 'workflowSourceSqliteId', 'messageId', 'messageSourceSqliteId', 'resumeNodeId', 'executeAt', 'status'],
+  'workflow_delayed_job.deleted': ['id', 'sourceSqliteId', 'workflowId', 'workflowSourceSqliteId', 'messageId', 'messageSourceSqliteId', 'resumeNodeId', 'executeAt', 'status'],
 });
 
 export async function enforceMailJobPolicy(
@@ -292,7 +295,7 @@ async function resolveResources(input: {
   }
   if (resolution.kind === 'optional_message_lookup') {
     const raw = input.select(resolution.messageId);
-    if (raw === undefined) {
+    if (raw === undefined || raw === null || raw === '') {
       return resolution.whenAbsent === 'non_mail' ? { kind: 'non_mail' } : { kind: 'scope' };
     }
     return lookup(input, { kind: 'message', id: requirePositiveInt(raw) });

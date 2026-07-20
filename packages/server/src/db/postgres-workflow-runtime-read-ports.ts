@@ -52,6 +52,7 @@ import {
   resolveEmailAccountReference,
   type EmailAccountReference,
 } from './resolve-email-account-reference';
+import type { MailSqlScope } from '../mail-access/types';
 
 export type PostgresWorkflowRuntimeReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -390,6 +391,8 @@ export function createPostgresWorkflowRunReadPort(options: PostgresWorkflowRunti
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
           if (input.direction !== undefined) query = query.where('direction', '=', input.direction);
           if (input.status !== undefined) query = query.where('status', '=', input.status);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'email_workflow_runs.message_id');
+          if (visibility) query = query.where(visibility);
 
           const rows = await query.execute();
           return pageNumeric(
@@ -407,12 +410,14 @@ export function createPostgresWorkflowRunReadPort(options: PostgresWorkflowRunti
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .selectFrom('email_workflow_runs')
             .select(input.includeLog ? workflowRunDetailColumns : workflowRunSummaryColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'email_workflow_runs.message_id');
+          if (visibility) query = query.where(visibility);
+          const row = await query.executeTakeFirst();
           return row ? mapWorkflowRunRow(row, input.includeLog) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -443,6 +448,8 @@ export function createPostgresWorkflowRunStepReadPort(
           if (input.nodeId !== undefined) query = query.where('node_id', '=', input.nodeId);
           if (input.nodeType !== undefined) query = query.where('node_type', '=', input.nodeType);
           if (input.status !== undefined) query = query.where('status', '=', input.status);
+          const visibility = workflowRunStepVisibilityPredicate(input.mailScope, input.workspaceId);
+          if (visibility) query = query.where(visibility);
 
           const rows = await query.execute();
           return pageNumeric(
@@ -460,12 +467,14 @@ export function createPostgresWorkflowRunStepReadPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .selectFrom('email_workflow_run_steps')
             .select(input.includeDetail ? workflowRunStepDetailColumns : workflowRunStepSummaryColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const visibility = workflowRunStepVisibilityPredicate(input.mailScope, input.workspaceId);
+          if (visibility) query = query.where(visibility);
+          const row = await query.executeTakeFirst();
           return row ? mapWorkflowRunStepRow(row, input.includeDetail) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -494,6 +503,8 @@ export function createPostgresWorkflowMessageAppliedReadPort(
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
           if (input.workflowId !== undefined) query = query.where('workflow_id', '=', input.workflowId);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'email_message_workflow_applied.message_id');
+          if (visibility) query = query.where(visibility);
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapWorkflowMessageAppliedRow);
@@ -506,12 +517,14 @@ export function createPostgresWorkflowMessageAppliedReadPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .selectFrom('email_message_workflow_applied')
             .select(workflowMessageAppliedSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'email_message_workflow_applied.message_id');
+          if (visibility) query = query.where(visibility);
+          const row = await query.executeTakeFirst();
           return row ? mapWorkflowMessageAppliedRow(row) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -541,6 +554,8 @@ export function createPostgresWorkflowForwardDedupReadPort(
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
           if (input.workflowId !== undefined) query = query.where('workflow_id', '=', input.workflowId);
           if (input.dest !== undefined) query = query.where('dest', '=', input.dest);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'email_workflow_forward_dedup.message_id');
+          if (visibility) query = query.where(visibility);
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapWorkflowForwardDedupRow);
@@ -553,12 +568,14 @@ export function createPostgresWorkflowForwardDedupReadPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .selectFrom('email_workflow_forward_dedup')
             .select(workflowForwardDedupSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'email_workflow_forward_dedup.message_id');
+          if (visibility) query = query.where(visibility);
+          const row = await query.executeTakeFirst();
           return row ? mapWorkflowForwardDedupRow(row) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -911,6 +928,8 @@ export function createPostgresWorkflowDelayedJobReadPort(
           if (input.workflowId !== undefined) query = query.where('workflow_id', '=', input.workflowId);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
           if (input.status !== undefined) query = query.where('status', '=', input.status);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'workflow_delayed_jobs.message_id');
+          if (visibility) query = query.where(visibility);
 
           const rows = await query.execute();
           return pageNumeric(
@@ -928,12 +947,14 @@ export function createPostgresWorkflowDelayedJobReadPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .selectFrom('workflow_delayed_jobs')
             .select(input.includeContext ? workflowDelayedJobDetailColumns : workflowDelayedJobSummaryColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const visibility = workflowMessageVisibilityPredicate(input.mailScope, input.workspaceId, 'workflow_delayed_jobs.message_id');
+          if (visibility) query = query.where(visibility);
+          const row = await query.executeTakeFirst();
           return row ? mapWorkflowDelayedJobRow(row, input.includeContext) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -1073,6 +1094,68 @@ function pageNumeric<TRow, TRecord>(
     items: pageRows.map(map),
     nextCursor: rows.length > limit ? cursorValue(pageRows[pageRows.length - 1] as TRow) : null,
   };
+}
+
+function workflowMessageVisibilityPredicate(
+  scope: MailSqlScope | undefined,
+  workspaceId: string,
+  messageColumn: string,
+): RawBuilder<boolean> | undefined {
+  if (!scope || scope.kind === 'all') return undefined;
+  const messageRef = kyselySql.ref(messageColumn);
+  if (scope.kind === 'none') return kyselySql<boolean>`${messageRef} is null`;
+
+  const branches: RawBuilder<boolean>[] = [];
+  if (scope.accountIds.length > 0) {
+    branches.push(kyselySql<boolean>`workflow_scope_message.account_id in (${kyselySql.join(scope.accountIds)})`);
+  }
+  if (scope.folderIds.length > 0) {
+    branches.push(kyselySql<boolean>`workflow_scope_message.folder_id in (${kyselySql.join(scope.folderIds)})`);
+  }
+  if (scope.messageIds.length > 0) {
+    branches.push(kyselySql<boolean>`workflow_scope_message.id in (${kyselySql.join(scope.messageIds)})`);
+  }
+  if (branches.length === 0) return kyselySql<boolean>`${messageRef} is null`;
+
+  return kyselySql<boolean>`(
+    ${messageRef} is null
+    or exists (
+      select 1
+      from email_messages as workflow_scope_message
+      where workflow_scope_message.workspace_id = ${workspaceId}
+        and workflow_scope_message.id = ${messageRef}
+        and (${kyselySql.join(branches, kyselySql` or `)})
+    )
+  )`;
+}
+
+function workflowRunStepVisibilityPredicate(
+  scope: MailSqlScope | undefined,
+  workspaceId: string,
+): RawBuilder<boolean> | undefined {
+  if (!scope || scope.kind === 'all') return undefined;
+  const runBranches = scope.kind === 'none'
+    ? kyselySql<boolean>`workflow_scope_run.message_id is null`
+    : workflowRunStepRestrictedPredicate(scope, workspaceId);
+
+  return kyselySql<boolean>`(
+    email_workflow_run_steps.run_id is null
+    or exists (
+      select 1
+      from email_workflow_runs as workflow_scope_run
+      where workflow_scope_run.workspace_id = ${workspaceId}
+        and workflow_scope_run.id = email_workflow_run_steps.run_id
+        and ${runBranches}
+    )
+  )`;
+}
+
+function workflowRunStepRestrictedPredicate(
+  scope: Extract<MailSqlScope, { kind: 'restricted' }>,
+  workspaceId: string,
+): RawBuilder<boolean> {
+  const messageVisibility = workflowMessageVisibilityPredicate(scope, workspaceId, 'workflow_scope_run.message_id');
+  return messageVisibility ?? kyselySql<boolean>`true`;
 }
 
 function normalizeLimit(limit: number, label: string): number {

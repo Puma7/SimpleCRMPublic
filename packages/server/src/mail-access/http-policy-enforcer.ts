@@ -45,6 +45,21 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/thread-aliases',
   '/api/v1/email/threads',
   '/api/v1/email/thread-alias-warnings',
+  '/api/v1/workflows/:id/runs',
+  '/api/v1/workflows/by-source/:sourceId/runs',
+  '/api/v1/workflow-runs',
+  '/api/v1/workflow-runs/:id',
+  '/api/v1/workflow-runs/:id/steps',
+  '/api/v1/workflow-runs/by-source/:sourceId',
+  '/api/v1/workflow-runs/by-source/:sourceId/steps',
+  '/api/v1/workflow-run-steps',
+  '/api/v1/workflow-run-steps/:id',
+  '/api/v1/workflow-message-applied',
+  '/api/v1/workflow-message-applied/:id',
+  '/api/v1/workflow-forward-dedup',
+  '/api/v1/workflow-forward-dedup/:id',
+  '/api/v1/workflow-delayed-jobs',
+  '/api/v1/workflow-delayed-jobs/:id',
 ]);
 
 const RESTRICTED_SCOPE_READ_PATHS = new Set(
@@ -121,6 +136,10 @@ export async function enforceMailHttpPolicy(
 
     if (resources.resources.length === 0) {
       return entry.policy.resource.kind === 'bulk_message_lookup'
+        || (
+          entry.policy.resource.kind === 'optional_message_lookup'
+          && entry.policy.resource.whenAbsent === 'non_mail'
+        )
         ? { ok: true, context: { permission: entry.policy.permission } }
         : denied();
     }
@@ -241,6 +260,41 @@ export function portsWithMailAccessContext(
     ...(ports.emailGdprExport ? {
       emailGdprExport: {
         export: (input) => ports.emailGdprExport!.export(scopedInput(input)),
+      },
+    } : {}),
+    ...(ports.workflowRuns ? {
+      workflowRuns: {
+        ...ports.workflowRuns,
+        list: (input) => ports.workflowRuns!.list(scopedInput(input)),
+        get: (input) => ports.workflowRuns!.get(scopedInput(input)),
+      },
+    } : {}),
+    ...(ports.workflowRunSteps ? {
+      workflowRunSteps: {
+        ...ports.workflowRunSteps,
+        list: (input) => ports.workflowRunSteps!.list(scopedInput(input)),
+        get: (input) => ports.workflowRunSteps!.get(scopedInput(input)),
+      },
+    } : {}),
+    ...(ports.workflowMessageApplied ? {
+      workflowMessageApplied: {
+        ...ports.workflowMessageApplied,
+        list: (input) => ports.workflowMessageApplied!.list(scopedInput(input)),
+        get: (input) => ports.workflowMessageApplied!.get(scopedInput(input)),
+      },
+    } : {}),
+    ...(ports.workflowForwardDedup ? {
+      workflowForwardDedup: {
+        ...ports.workflowForwardDedup,
+        list: (input) => ports.workflowForwardDedup!.list(scopedInput(input)),
+        get: (input) => ports.workflowForwardDedup!.get(scopedInput(input)),
+      },
+    } : {}),
+    ...(ports.workflowDelayedJobs ? {
+      workflowDelayedJobs: {
+        ...ports.workflowDelayedJobs,
+        list: (input) => ports.workflowDelayedJobs!.list(scopedInput(input)),
+        get: (input) => ports.workflowDelayedJobs!.get(scopedInput(input)),
       },
     } : {}),
   };
@@ -398,7 +452,9 @@ async function assertSupplementalHttpPermissions(
     ? optionalPositiveInt(bodyField(req.body, 'inReplyToMessageId'))
     : canonicalPath === '/api/v1/email/messages/:messageId/compose-draft'
       ? optionalPositiveInt(bodyField(req.body, 'replyParentMessageId'))
-      : undefined;
+      : canonicalPath === '/api/v1/email/messages/:messageId/reply-draft'
+        ? optionalPositiveInt(selectorValue(req, canonicalPath, { source: 'path', field: 'messageId' }))
+        : undefined;
   if (replyParent !== undefined) {
     const source = await ports.mailResourceLookup!.resolve({
       workspaceId,

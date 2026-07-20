@@ -90,6 +90,7 @@ const pathValue = (field: string): PolicyValueSelector => ({ source: 'path', fie
 const bodyValue = (field: string): PolicyValueSelector => ({ source: 'body', field });
 const queryValue = (field: string): PolicyValueSelector => ({ source: 'query', field });
 const eventValue = (field: string): PolicyValueSelector => ({ source: 'event', field });
+const eventPayloadValue = (field: string): PolicyValueSelector => ({ source: 'event_payload', field });
 const spamEventResource = (): MailResourceResolution => ({
   kind: 'event_message_then_account_lookup',
   messageId: { source: 'event_payload', field: 'messageId' },
@@ -111,6 +112,11 @@ const messagePath = (): MailResourceResolution => ({ kind: 'message_lookup', mes
 const messageBody = (field = 'messageId'): MailResourceResolution => ({
   kind: 'message_lookup',
   messageId: bodyValue(field),
+});
+const optionalMessageBody = (field = 'messageId'): MailResourceResolution => ({
+  kind: 'optional_message_lookup',
+  messageId: bodyValue(field),
+  whenAbsent: 'non_mail',
 });
 const attachmentPath = (): MailResourceResolution => ({
   kind: 'attachment_lookup',
@@ -296,6 +302,8 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/attachments/:attachmentId', { GET: permissionPolicy('mail.attachment.read', attachmentPath()) });
   assign('/api/v1/email/attachments/:attachmentId/content', { GET: permissionPolicy('mail.attachment.read', attachmentPath()) });
 
+  assignWorkflowMailPolicies(assign);
+
   assignMetadataPolicies(assign);
   assignSupplementalProtectedPolicies(assign);
 
@@ -309,6 +317,32 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
     if (!policy) throw new Error(`unclassified mail route: ${mailRoutePolicyKey(route)}`);
     return policy.kind === 'permission' ? { route, policy } : { route, policy };
   });
+}
+
+function assignWorkflowMailPolicies(assign: AssignRoutePolicy): void {
+  assign('/api/v1/workflows/:id/execute', { POST: permissionPolicy('mail.content.read', optionalMessageBody()) });
+  assign('/api/v1/workflows/by-source/:sourceId/execute', { POST: permissionPolicy('mail.content.read', optionalMessageBody()) });
+  assign('/api/v1/email/messages/:messageId/workflow-runs', { GET: permissionPolicy('mail.content.read', messagePath()) });
+
+  for (const path of [
+    '/api/v1/workflows/:id/runs',
+    '/api/v1/workflows/by-source/:sourceId/runs',
+    '/api/v1/workflow-runs',
+    '/api/v1/workflow-runs/:id',
+    '/api/v1/workflow-runs/:id/steps',
+    '/api/v1/workflow-runs/by-source/:sourceId',
+    '/api/v1/workflow-runs/by-source/:sourceId/steps',
+    '/api/v1/workflow-run-steps',
+    '/api/v1/workflow-run-steps/:id',
+    '/api/v1/workflow-message-applied',
+    '/api/v1/workflow-message-applied/:id',
+    '/api/v1/workflow-forward-dedup',
+    '/api/v1/workflow-forward-dedup/:id',
+    '/api/v1/workflow-delayed-jobs',
+    '/api/v1/workflow-delayed-jobs/:id',
+  ]) {
+    assign(path, { GET: permissionPolicy('mail.content.read', mailScope()) });
+  }
 }
 
 type AssignRoutePolicy = (
@@ -543,11 +577,41 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
     || type.startsWith('spam_')
     || type.startsWith('pgp_'))
   ));
-  return mailEventTypes.map((type) => ({
+  const mailEventPolicies: MailEventPolicyEntry[] = mailEventTypes.map((type) => ({
     type,
     permission: 'mail.metadata.read',
     resource: eventResourceResolution(type),
   }));
+  const workflowDelayedJobPolicies: MailEventPolicyEntry[] = [
+    {
+      type: 'workflow_delayed_job.created',
+      permission: 'mail.content.read',
+      resource: {
+        kind: 'optional_message_lookup',
+        messageId: eventPayloadValue('messageId'),
+        whenAbsent: 'non_mail',
+      },
+    },
+    {
+      type: 'workflow_delayed_job.updated',
+      permission: 'mail.content.read',
+      resource: {
+        kind: 'optional_message_lookup',
+        messageId: eventPayloadValue('messageId'),
+        whenAbsent: 'non_mail',
+      },
+    },
+    {
+      type: 'workflow_delayed_job.deleted',
+      permission: 'mail.content.read',
+      resource: {
+        kind: 'optional_message_lookup',
+        messageId: eventPayloadValue('messageId'),
+        whenAbsent: 'non_mail',
+      },
+    },
+  ];
+  return mailEventPolicies.concat(workflowDelayedJobPolicies);
 }
 
 function eventResourceResolution(type: ServerEventType): MailResourceResolution {

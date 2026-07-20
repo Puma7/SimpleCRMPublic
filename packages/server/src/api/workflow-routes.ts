@@ -22,6 +22,8 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   ServerApiPorts,
   WorkflowListResult,
   WorkflowMutationInput,
@@ -43,6 +45,55 @@ const WEBHOOK_BODY_JSON_MAX = 64 * 1024;
 const WEBHOOK_DEDUP_MS = 5 * 60 * 1000;
 const MAX_WEBHOOK_WORKFLOWS = 500;
 const WEBHOOK_AUTOMATION_SCOPE = 'workflows';
+
+type WorkflowMailRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration & { source: string };
+}>;
+
+function workflowMailRoute(
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+): WorkflowMailRouteRegistration {
+  return {
+    registration: {
+      source: 'workflow-mail-routes',
+      path,
+      methods,
+      pattern,
+    },
+  };
+}
+
+export const WORKFLOW_MAIL_ROUTE_REGISTRATIONS: readonly WorkflowMailRouteRegistration[] = Object.freeze([
+  workflowMailRoute('/api/v1/workflows/:id/execute', ['POST'], /^\/api\/v1\/workflows\/([^/]+)\/execute$/),
+  workflowMailRoute('/api/v1/workflows/by-source/:sourceId/execute', ['POST'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/execute$/),
+  workflowMailRoute('/api/v1/email/messages/:messageId/workflow-runs', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/workflow-runs$/),
+  workflowMailRoute('/api/v1/workflows/:id/runs', ['GET'], /^\/api\/v1\/workflows\/([^/]+)\/runs$/),
+  workflowMailRoute('/api/v1/workflows/by-source/:sourceId/runs', ['GET'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/runs$/),
+  workflowMailRoute('/api/v1/workflow-runs', ['GET'], /^\/api\/v1\/workflow-runs$/),
+  workflowMailRoute('/api/v1/workflow-runs/:id', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-runs/:id/steps', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)\/steps$/),
+  workflowMailRoute('/api/v1/workflow-runs/by-source/:sourceId', ['GET'], /^\/api\/v1\/workflow-runs\/by-source\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-runs/by-source/:sourceId/steps', ['GET'], /^\/api\/v1\/workflow-runs\/by-source\/([^/]+)\/steps$/),
+  workflowMailRoute('/api/v1/workflow-run-steps', ['GET'], /^\/api\/v1\/workflow-run-steps$/),
+  workflowMailRoute('/api/v1/workflow-run-steps/:id', ['GET'], /^\/api\/v1\/workflow-run-steps\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-message-applied', ['GET'], /^\/api\/v1\/workflow-message-applied$/),
+  workflowMailRoute('/api/v1/workflow-message-applied/:id', ['GET'], /^\/api\/v1\/workflow-message-applied\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-forward-dedup', ['GET'], /^\/api\/v1\/workflow-forward-dedup$/),
+  workflowMailRoute('/api/v1/workflow-forward-dedup/:id', ['GET'], /^\/api\/v1\/workflow-forward-dedup\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-delayed-jobs', ['GET'], /^\/api\/v1\/workflow-delayed-jobs$/),
+  workflowMailRoute('/api/v1/workflow-delayed-jobs/:id', ['GET'], /^\/api\/v1\/workflow-delayed-jobs\/([^/]+)$/),
+]);
+
+export const WORKFLOW_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  WORKFLOW_MAIL_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: registration.source,
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 type WorkflowReadResource = 'aiProfiles' | 'aiPrompts' | 'workflows';
 

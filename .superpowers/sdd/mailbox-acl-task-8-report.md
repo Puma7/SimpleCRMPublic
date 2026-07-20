@@ -226,3 +226,103 @@ Aussagen der Erstimplementierung oben.
 
 - Der Build zeigt weiterhin nur die bereits dokumentierten Vite-Warnungen zur
   Browser-Externalisierung von Node-Modulen und zur Chunk-Groesse.
+
+## Atomic Audit / Durable Latch Review-Fix 2026-07-20 (Base `43d273c`)
+
+Die zwei validierten Folgefindings sind implementiert und verifiziert. Wegen
+der koordinierten parallelen Workflow-ACL-Welle ist dieser Stand bewusst noch
+nicht gestaged oder committed.
+
+### RED
+
+- Invocation:
+  `pnpm exec jest --runTestsByPath tests/unit/server-mail-acl-rollout.test.ts tests/integration/server-mail-access-routes.test.ts --runInBand`
+- Observable: Exit `1`; `8 failed`, `52 passed`.
+- Reproduziert wurden die fehlende `in_flight`-Spalte, nicht-atomare
+  Rollout-Mutation/Auditierung, unsichtbare laufende Auswertungen, fehlende
+  Session-Lock-Finalisierung und durch Verbindungsverlust nicht geschuetzte
+  ACL-Entscheidungen.
+- Artifact: `.hermes/reports/task-8-atomic-latch-red.log`.
+
+### GREEN
+
+- Fokussierter Abschlusslauf: `2` Suites, `63` Tests, Exit `0`.
+- Artifact: `.hermes/reports/task-8-atomic-latch-focused-green.log`.
+- Finaler kombinierter Lauf nach Abschluss der parallelen Workflow-ACL-Welle:
+  `5` Suites, `493` Tests, Exit `0`.
+- Artifact: `.hermes/reports/task-8-atomic-latch-combined-focused.log`.
+- Full Unit: `265` Suites, `2401` Tests, eine Snapshot-Pruefung, Exit `0`.
+- Full Integration: `25` Suites, `350` Tests, Exit `0`.
+- Mail Coverage: `179` Suites; `1166` passed, `1` skipped; 91.91 % Lines und
+  80.08 % Branches, Exit `0`.
+- Lint, Build und Root-Typecheck: jeweils Exit `0`.
+
+### Atomare Administration und Audit
+
+- `resetShadowCounters` und `transitionToEnforce` nehmen weiterhin den
+  workspace-abgeleiteten exklusiven Rollout-Lock und schreiben Mutation plus
+  Hashchain-Audit in derselben Workspace-Transaktion.
+- Der bestehende Audit-Hash-/Lock-/Insert-Code wurde als
+  `recordPostgresAuditEvent` faktorisiert und unveraendert von normalem
+  Audit-Port und Rollout-Administration verwendet. Es gibt keinen zweiten
+  Hashalgorithmus.
+- Die Route reicht `actorUserId` in die atomare Operation und schreibt kein
+  nachgelagertes Audit mehr. Ein erzwungener Audit-INSERT-Fehler rollt Reset
+  und Enforce vollstaendig zurueck. Retry und konkurriertes Enforce erzeugen
+  genau einen erfolgreichen, verifizierbaren Hashchain-Eintrag.
+
+### Durable In-Flight Latch
+
+- `0039_mail_acl_rollout` und das typisierte Schema enthalten den einzigen
+  neuen aggregierten Zustand `in_flight bigint`; `0038_mail_acl.ts` bleibt mit
+  SHA-256 `3048f74add211b1f36b49b54baaf84d5f3a1d66fc6561e5614766f76c87600cd`
+  byte-identisch zu `43d273c`.
+- Shadow-Auswertungen pinnen genau eine Kysely/PostgreSQL-Verbindung, nehmen
+  einen sessionweiten Shared Advisory Lock und committen zuerst die
+  `in_flight`-Registrierung. Vergleich und Counter-/Latch-Finalisierung laufen
+  in folgenden Workspace-Transaktionen auf derselben Verbindung.
+- Nur erfolgreiche Counter-Finalisierung dekrementiert den Latch. Statement-,
+  Commit-, RLS-Zero-Row- oder Verbindungsfehler lassen ihn offen; die bereits
+  berechnete Allow-/Deny-Entscheidung bleibt unveraendert. Readiness verlangt
+  `inFlight=0`; Enforce liefert bei offenem Latch `evaluations_in_flight`.
+- `pg_advisory_unlock_shared` wird im `finally` auf der gepinnten Verbindung
+  geprueft. Der echte `maxConnections=1`-Test weist den expliziten Unlock und
+  danach null gehaltene Session-Locks nach. Bei Prozess-/Connection-Verlust
+  gibt PostgreSQL den Session-Lock frei, waehrend der vorher committe Latch die
+  Readiness weiterhin blockiert.
+- Reset wartet auf denselben Lock exklusiv. Erst nach Lock-Erwerb sind
+  verbleibende Latches nachweislich stale; Reset loescht sie zusammen mit
+  Counter, Observation und Diagnose atomar und auditiert.
+
+### Self-Review
+
+- Security-Downgrade/Cache: Fehlende oder korrupte States bleiben enforce;
+  Enforce registriert keinen Latch und ruft Legacy nie auf. Es gibt weiterhin
+  keinen Mode-Cache oder App-Downgrade.
+- Locking/Deadlock: Registration, Vergleich und Finalisierung leihen auf einem
+  `maxConnections=1`-Pool keine zweite Verbindung. Session-Shared und
+  Transaction-Exclusive verwenden denselben 64-Bit-Key; die Audit-Hashchain
+  wird danach in stabiler Lock-Reihenfolge gesperrt.
+- Lost Updates/Overflow: `in_flight` und Counter werden atomar unter Row-Lock
+  aktualisiert; Counter bleiben saturierend. Ein Latch wird niemals unter null
+  dekrementiert und nur bei erfolgreicher Finalisierung geschlossen.
+- RLS/Cross-Tenant: Jede Teiltransaktion setzt erneut den Workspace-Kontext;
+  Latch, Counter, Mutation und Audit sind workspace-gebunden. Der echte
+  falsch gescopten Finalisierungstest veraendert keinen anderen Workspace.
+- Datenminimierung: Rollout-State und Readiness enthalten nur Aggregate,
+  Mode, Zeitstempel, Diagnose und `inFlight`; keine User-, Mail-, Resource-,
+  Route- oder Inhaltsdaten.
+- Performance: Shadow verwendet eine gepinnte Verbindung ueber drei kurze
+  Transaktionen; mehrere Auswertungen teilen den Advisory Lock. Enforce bleibt
+  new-ACL-only und fuehrt keine In-flight-Registrierung aus.
+
+### Restbedenken / Koordination
+
+- Keine fachlichen offenen Findings in den zwei beauftragten Review-Punkten.
+- Der Build zeigt weiterhin die bestehenden Vite-Warnungen zur
+  Browser-Externalisierung und Chunk-Groesse.
+- Die parallele Workflow-ACL-Welle ist abgeschlossen. Der gemeinsame finale
+  Stand einschliesslich der geteilten Integrationstestdatei wurde mit dem
+  kombinierten fokussierten Lauf verifiziert.
+- Der gesamte Worktree ist gemaess Koordination weiterhin unstaged; dieser
+  Task-8-Stand wurde weder gestaged noch committed.

@@ -22,6 +22,7 @@ import { SMTP_RELAY_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/re
 import { MAIL_SETTINGS_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/settings-routes';
 import { SPAM_MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/spam-routes';
 import { USER_SIGNATURE_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/user-signature-routes';
+import { WORKFLOW_MAIL_ROUTE_REGISTRATIONS } from '../../packages/server/src/api/workflow-routes';
 import {
   MAIL_EVENT_POLICY_MANIFEST,
   MAIL_ROUTE_POLICY_MANIFEST,
@@ -73,6 +74,7 @@ describe('server mail policy manifest', () => {
       'settings-routes',
       'mail-routes',
       'notice-routes',
+      'workflow-mail-routes',
       'workflow-routes',
       'pgp-routes',
       'spam-routes',
@@ -87,6 +89,7 @@ describe('server mail policy manifest', () => {
     expectRegistrationInventory('mail-routes', MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('mail-metadata-routes', MAIL_METADATA_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('notice-routes', MAIL_NOTICE_ROUTE_REGISTRATIONS);
+    expectRegistrationInventory('workflow-mail-routes', WORKFLOW_MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('pgp-routes', PGP_MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('spam-routes', SPAM_MAIL_ROUTE_REGISTRATIONS);
     expectRegistrationInventory('lock-routes', MAIL_LOCK_ROUTE_REGISTRATIONS);
@@ -283,6 +286,22 @@ describe('server mail policy manifest', () => {
       ['PATCH', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
       ['DELETE', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
       ['POST', '/api/v1/email/threads/merge', 'mail.triage', account('body')],
+      ['POST', '/api/v1/workflows/23/execute', 'mail.content.read', optionalMessageBody()],
+      ['POST', '/api/v1/workflows/by-source/-23/execute', 'mail.content.read', optionalMessageBody()],
+      ['GET', '/api/v1/email/messages/42/workflow-runs', 'mail.content.read', messagePath()],
+      ['GET', '/api/v1/workflow-runs', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-runs/80', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-runs/80/steps', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-runs/by-source/-91', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-runs/by-source/-91/steps', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-run-steps', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-run-steps/81', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-message-applied', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-message-applied/82', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-forward-dedup', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-forward-dedup/83', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-delayed-jobs', 'mail.content.read', { kind: 'mail_scope' }],
+      ['GET', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
     ] as const;
 
     for (const [method, path, permission, resource] of matrix) {
@@ -304,6 +323,38 @@ describe('server mail policy manifest', () => {
         whenAbsent: 'mail_scope',
       },
     });
+  });
+
+  test('classifies message workflow execution jobs as content reads and preserves no-message jobs', () => {
+    expect(assertServerJobPolicy('workflow.execute')).toEqual({
+      type: 'workflow.execute',
+      kind: 'mail',
+      actorMode: 'initiating_user_or_service',
+      permission: 'mail.content.read',
+      resource: {
+        kind: 'optional_message_lookup',
+        messageId: { source: 'job', field: 'messageId' },
+        whenAbsent: 'non_mail',
+      },
+    });
+  });
+
+  test('classifies delayed-job events by optional source message instead of non-mail passthrough', () => {
+    for (const type of [
+      'workflow_delayed_job.created',
+      'workflow_delayed_job.updated',
+      'workflow_delayed_job.deleted',
+    ] as const) {
+      expect(assertMailEventPolicy(type)).toEqual({
+        type,
+        permission: 'mail.content.read',
+        resource: {
+          kind: 'optional_message_lookup',
+          messageId: { source: 'event_payload', field: 'messageId' },
+          whenAbsent: 'non_mail',
+        },
+      });
+    }
   });
 
   test('resolves every spam event by message then account and denies missing resources', () => {
@@ -413,7 +464,8 @@ function isMailEventType(type: string): boolean {
   return type.startsWith('email_')
     || type.startsWith('conversation_lock.')
     || type.startsWith('spam_')
-    || type.startsWith('pgp_');
+    || type.startsWith('pgp_')
+    || type.startsWith('workflow_delayed_job.');
 }
 
 function account(source: 'path' | 'query' | 'body') {
@@ -434,6 +486,14 @@ function messagePath() {
 
 function messageBody(field: string) {
   return { kind: 'message_lookup', messageId: { source: 'body', field } } as const;
+}
+
+function optionalMessageBody() {
+  return {
+    kind: 'optional_message_lookup',
+    messageId: { source: 'body', field: 'messageId' },
+    whenAbsent: 'non_mail',
+  } as const;
 }
 
 function attachmentPath() {

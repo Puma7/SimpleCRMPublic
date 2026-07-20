@@ -1,0 +1,202 @@
+FAIL integration tests/integration/server-mail-access-routes.test.ts (14.253 s)
+  ● server mailbox ACL migration › rollout migration creates RLS shadow state only for existing workspaces and missing rows default to enforce
+
+    error: column "in_flight" does not exist
+
+      2253 |           expect(hydrated.bindings.some((binding) => binding.resource.accountId === DELEGATION_OTHER_ACCOUNT)).toBe(false);
+      2254 |         }
+    > 2255 |       } finally {
+           |                          ^
+      2256 |         await db.destroy();
+      2257 |       }
+      2258 |     });
+
+      at node_modules/.pnpm/pg@8.22.0/node_modules/pg/lib/client.js:652:17
+      at Object.<anonymous> (tests/integration/server-mail-access-routes.test.ts:2255:26)
+
+  ● server mailbox ACL migration › reset and enforce commit with exactly one hash-chained audit event or roll back together
+
+    expect(received).rejects.toThrow()
+
+    Received promise resolved instead of rejected
+    Resolved to value: {"ok": true}
+
+      2426 |         mode: 'shadow',
+      2427 |       }));
+    > 2428 |     } finally {
+           |             ^
+      2429 |       await db.destroy();
+      2430 |     }
+      2431 |   });
+
+      at expect (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2116:15)
+      at Object.expect (tests/integration/server-mail-access-routes.test.ts:2428:13)
+
+  ● server mailbox ACL migration › exclusive enforce waits for every earlier shared shadow evaluation and observes their mismatches
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 0
+
+      Object {
+    -   "inFlight": 2n,
+        "ready": false,
+      }
+
+      2510 |   });
+      2511 |
+    > 2512 |   test('reset and enforce commit with exactly one hash-chained audit event or roll back together', async () => {
+           |                                                                   ^
+      2513 |     const db = createApplicationDb({ maxConnections: 4 });
+      2514 |     const state = createPostgresMailAclRolloutStatePort({ db });
+      2515 |     const adminInput = { workspaceId: WORKSPACE_B, actorUserId: USER_WORKSPACE_B };
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/integration/server-mail-access-routes.test.ts:2512:67)
+
+  ● server mailbox ACL migration › exclusive reset waits for an earlier shadow evaluation and then clears its observation atomically
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 0
+
+      Object {
+    -   "inFlight": 1n,
+        "ready": false,
+      }
+
+      2577 |       ]);
+      2578 |       expect(concurrent.filter((result) => result.ok)).toHaveLength(1);
+    > 2579 |       expect(concurrent.filter((result) => !result.ok)).toEqual([
+           |                                                                   ^
+      2580 |         { ok: false, code: 'not_shadow' },
+      2581 |       ]);
+      2582 |
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/integration/server-mail-access-routes.test.ts:2579:67)
+
+  ● server mailbox ACL migration › single-connection rollout evaluation reuses its transaction and does not borrow a nested pool connection
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 0
+
+      Object {
+        "evaluated": 1n,
+    -   "inFlight": 0n,
+        "telemetryHealthy": true,
+      }
+
+      2637 |     let evaluations: Array<Promise<void>> = [];
+      2638 |     let transition: Promise<Awaited<ReturnType<typeof adminState.transitionToEnforce>>> | undefined;
+    > 2639 |     try {
+           |                    ^
+      2640 |       await adminState.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      2641 |       evaluations = [service.assertPermission(request), service.assertPermission(request)];
+      2642 |       await allEvaluationsEntered.promise;
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/integration/server-mail-access-routes.test.ts:2639:62)
+
+  ● server mailbox ACL migration › unexpected PostgreSQL counter errors persist unhealthy diagnostics without replacing allow or deny decisions
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 0
+
+      Object {
+        "diagnosticCode": "counter_update_failed",
+        "evaluated": 0n,
+    -   "inFlight": 1n,
+        "ready": false,
+        "telemetryHealthy": false,
+      }
+
+      2799 |     try {
+      2800 |       await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+    > 2801 |       await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+           |                                                              ^
+      2802 |       await client.query(`
+      2803 |         UPDATE mail_acl_rollout_state
+      2804 |         SET evaluated = '${(maxBigint - 1n).toString()}'::bigint
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/integration/server-mail-access-routes.test.ts:2801:62)
+
+  ● server mailbox ACL migration › transaction-fatal finalization preserves computed allow and deny while a durable latch blocks readiness
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 2
+    + Received  + 1
+
+      Object {
+    -   "evaluated": 0n,
+    -   "inFlight": 1n,
+    +   "evaluated": 1n,
+        "ready": false,
+      }
+
+      2884 |     const state = createPostgresMailAclRolloutStatePort({ db });
+      2885 |     const diagnostics: string[] = [];
+    > 2886 |     const newDeny = { async resolveGrants() { return []; } };
+           |                                                                      ^
+      2887 |     const newAllow = {
+      2888 |       async resolveGrants() {
+      2889 |         return [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/integration/server-mail-access-routes.test.ts:2886:70)
+
+FAIL unit tests/unit/server-mail-acl-rollout.test.ts
+  ● mail ACL rollout central use › readiness routes pass the actor to atomic admin operations without post-commit audit
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 2
+    + Received  + 6
+
+      Object {
+        "body": Object {
+    -     "data": ObjectContaining {
+    +     "data": Object {
+    +       "diagnosticAt": null,
+            "diagnosticCode": null,
+    +       "enforced": false,
+            "evaluated": "7",
+    -       "inFlight": "0",
+            "legacyAllowNewDeny": "0",
+            "legacyDenyNewAllow": "0",
+            "mode": "shadow",
+            "notComparable": "2",
+    +       "observationStartedAt": "2026-07-20T10:00:00.000Z",
+    +       "observationUpdatedAt": "2026-07-20T10:05:00.000Z",
+            "ready": true,
+            "telemetryHealthy": true,
+    +       "workspaceId": "11111111-1111-4111-8111-111111111111",
+          },
+        },
+        "status": 200,
+      }
+
+      593 |       path: '/api/v1/email/acl-rollout/readiness',
+      594 |       principal: principal('admin'),
+    > 595 |     })).resolves.toMatchObject({
+          |                  ^
+      596 |       status: 200,
+      597 |       body: {
+      598 |         data: expect.objectContaining({
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/unit/server-mail-acl-rollout.test.ts:595:18)
+
+Test Suites: 2 failed, 2 total
+Tests:       8 failed, 52 passed, 60 total
+Snapshots:   0 total
+Time:        16.017 s
+Ran all test suites within paths "tests/unit/server-mail-acl-rollout.test.ts", "tests/integration/server-mail-access-routes.test.ts" in 2 projects.

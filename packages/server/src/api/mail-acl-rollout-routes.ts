@@ -24,21 +24,19 @@ export async function handleMailAclRolloutRoute(
 
   if (req.path === RESET_PATH) {
     if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    const result = await ports.mailAclRollout.resetShadowCounters({ workspaceId: principal.workspaceId });
-    if (!result.ok) return error(409, result.code, 'Counter koennen nur im Shadow-Modus zurueckgesetzt werden');
-    await ports.audit?.record({
+    const result = await ports.mailAclRollout.resetShadowCounters({
       workspaceId: principal.workspaceId,
       actorUserId: principal.userId,
-      action: 'mail_acl_rollout.counters_reset',
-      entityType: 'mail_acl_rollout',
-      entityId: principal.workspaceId,
-      metadata: { mode: 'shadow' },
     });
+    if (!result.ok) return error(409, result.code, 'Counter koennen nur im Shadow-Modus zurueckgesetzt werden');
     return data(200, { ok: true });
   }
 
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  const result = await ports.mailAclRollout.transitionToEnforce({ workspaceId: principal.workspaceId });
+  const result = await ports.mailAclRollout.transitionToEnforce({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+  });
   if (!result.ok) {
     const message = result.code === 'no_observations'
       ? 'Vor enforce ist mindestens eine Shadow-Beobachtung erforderlich'
@@ -46,17 +44,11 @@ export async function handleMailAclRolloutRoute(
         ? 'Enforce ist bei vorhandenen Shadow-Mismatches gesperrt'
         : result.code === 'telemetry_unhealthy'
           ? 'Enforce ist bei ungesunder Shadow-Telemetrie gesperrt'
+          : result.code === 'evaluations_in_flight'
+            ? 'Enforce ist bei offenen Shadow-Auswertungen gesperrt'
           : 'Workspace ist nicht im Shadow-Modus';
     return error(409, result.code, message);
   }
-  await ports.audit?.record({
-    workspaceId: principal.workspaceId,
-    actorUserId: principal.userId,
-    action: 'mail_acl_rollout.enforced',
-    entityType: 'mail_acl_rollout',
-    entityId: principal.workspaceId,
-    metadata: { mode: 'enforce' },
-  });
   return data(200, { ok: true });
 }
 
@@ -70,6 +62,7 @@ function serializeReadiness(
     legacyAllowNewDeny: readiness.legacyAllowNewDeny.toString(),
     legacyDenyNewAllow: readiness.legacyDenyNewAllow.toString(),
     notComparable: readiness.notComparable.toString(),
+    inFlight: readiness.inFlight.toString(),
     observationStartedAt: readiness.observationStartedAt,
     observationUpdatedAt: readiness.observationUpdatedAt,
     telemetryHealthy: readiness.telemetryHealthy,

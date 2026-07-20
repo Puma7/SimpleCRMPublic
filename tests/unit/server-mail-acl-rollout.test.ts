@@ -80,9 +80,38 @@ function createRolloutFixture(input: Readonly<{
   const state = {
     async withSharedEvaluation<T>(
       workspaceId: string,
-      operation: (context: { workspaceId: string }) => Promise<T>,
-    ): Promise<T> {
-      return operation({ workspaceId });
+      operation: (context: { workspaceId: string }) => Promise<{
+        value: T;
+        delta?: Readonly<Partial<{
+          evaluated: bigint;
+          legacyAllowNewDeny: bigint;
+          legacyDenyNewAllow: bigint;
+          notComparable: bigint;
+        }>>;
+      }>,
+    ) {
+      const outcome = await operation({ workspaceId });
+      if (outcome.delta) increments.push({ workspaceId, ...outcome.delta });
+      if (input.incrementFailure === 'throw') {
+        unhealthyMarks.push('counter_update_failed');
+        return {
+          value: outcome.value,
+          telemetry: { healthy: false as const, code: 'counter_update_failed' as const },
+        };
+      }
+      if (input.incrementFailure === 'zero_rows') {
+        return {
+          value: outcome.value,
+          telemetry: { healthy: false as const, code: 'counter_update_zero_rows' as const },
+        };
+      }
+      if (input.incrementFailure === 'counter_saturated') {
+        return {
+          value: outcome.value,
+          telemetry: { healthy: false as const, code: 'counter_saturated' as const },
+        };
+      }
+      return { value: outcome.value, telemetry: { healthy: true as const } };
     },
     async getState(workspaceId: string) {
       if (input.corruptState) {
@@ -106,6 +135,7 @@ function createRolloutFixture(input: Readonly<{
         legacyAllowNewDeny: 0n,
         legacyDenyNewAllow: 0n,
         notComparable: 0n,
+        inFlight: 0n,
         observationStartedAt: null,
         observationUpdatedAt: null,
         telemetryHealthy: true,
@@ -144,6 +174,7 @@ function createRolloutFixture(input: Readonly<{
         legacyAllowNewDeny: 0n,
         legacyDenyNewAllow: 0n,
         notComparable: 0n,
+        inFlight: 0n,
         observationStartedAt: null,
         observationUpdatedAt: null,
         ready: false,
@@ -543,8 +574,10 @@ describe('mail ACL rollout central use', () => {
     expect(fixture.increments).toEqual([]);
   });
 
-  test('readiness and one-way transition admin API are owner/admin-only and audited', async () => {
-    const auditEvents: Array<Record<string, unknown>> = [];
+  test('readiness routes pass the actor to atomic admin operations without post-commit audit', async () => {
+    const auditRecord = jest.fn(async () => {
+      throw new Error('route must not write a second audit event');
+    });
     const rollout = {
       getReadiness: jest.fn(async () => ({
         workspaceId: WORKSPACE_A,
@@ -553,6 +586,7 @@ describe('mail ACL rollout central use', () => {
         legacyAllowNewDeny: 0n,
         legacyDenyNewAllow: 0n,
         notComparable: 2n,
+        inFlight: 0n,
         observationStartedAt: '2026-07-20T10:00:00.000Z',
         observationUpdatedAt: '2026-07-20T10:05:00.000Z',
         ready: true,
@@ -573,9 +607,7 @@ describe('mail ACL rollout central use', () => {
       }),
       mailAclRollout: rollout,
       audit: {
-        async record(event) {
-          auditEvents.push(event);
-        },
+        record: auditRecord,
       },
     } as ServerApiPorts);
 
@@ -598,6 +630,7 @@ describe('mail ACL rollout central use', () => {
           legacyAllowNewDeny: '0',
           legacyDenyNewAllow: '0',
           notComparable: '2',
+          inFlight: '0',
           ready: true,
           telemetryHealthy: true,
           diagnosticCode: null,
@@ -624,13 +657,15 @@ describe('mail ACL rollout central use', () => {
     })).resolves.toMatchObject({ status: 200 });
 
     expect(rollout.transitionToEnforce).toHaveBeenCalledTimes(2);
-    expect(rollout.transitionToEnforce).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A });
-    expect(rollout.resetShadowCounters).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A });
-    expect(auditEvents.map((event) => event.action)).toEqual([
-      'mail_acl_rollout.counters_reset',
-      'mail_acl_rollout.enforced',
-    ]);
-    expect(JSON.stringify(auditEvents)).not.toContain(String(MESSAGE_A));
+    expect(rollout.transitionToEnforce).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_A,
+      actorUserId: OWNER_A,
+    });
+    expect(rollout.resetShadowCounters).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_A,
+      actorUserId: OWNER_A,
+    });
+    expect(auditRecord).not.toHaveBeenCalled();
   });
 });
 

@@ -122,6 +122,14 @@ describe('server mail job and event ACL', () => {
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
     }), ports);
     await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), ports);
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
+    }), ports);
+    await enforceMailJobPolicy(job({
       type: 'ai.agent',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
     }), ports);
@@ -138,9 +146,11 @@ describe('server mail job and event ACL', () => {
       { kind: 'account', id: 7 },
       { kind: 'message', id: 12 },
       { kind: 'message', id: 12 },
+      { kind: 'message', id: 12 },
     ]);
     expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([
       ['mail.triage', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
     ]);
     expect(ports.scopePermissions).toEqual([]);
   });
@@ -344,6 +354,56 @@ describe('server mail job and event ACL', () => {
     expect(dedupe.has(12)).toBe(true);
     expect(dedupe.has(13)).toBe(true);
     expect(dedupe.has(14)).toBe(true);
+  });
+
+  test('delayed-job events require source-message content access and sanitize live or replay payloads', async () => {
+    const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
+    const context = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '87',
+      payload: {
+        id: 87,
+        messageId: 12,
+        status: 'pending',
+        context: { secret: 'hidden' },
+        resumeNodeId: 'wait-1',
+      },
+    }), context)).resolves.toMatchObject({
+      type: 'workflow_delayed_job.updated',
+      payload: {
+        id: 87,
+        messageId: 12,
+        status: 'pending',
+        resumeNodeId: 'wait-1',
+      },
+    });
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '88',
+      payload: { id: 88, messageId: 101, status: 'pending' },
+    }), context)).resolves.toBeNull();
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '89',
+      payload: { id: 89, messageId: null, status: 'pending', context: { secret: 'non-mail' } },
+    }), context)).resolves.toMatchObject({
+      type: 'workflow_delayed_job.updated',
+      payload: { id: 89, messageId: null, status: 'pending' },
+    });
+
+    expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual(expect.arrayContaining([
+      ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+    ]));
   });
 });
 

@@ -150,7 +150,7 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
     type: 'workflow.execute',
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
-    permission: 'mail.metadata.read',
+    permission: 'mail.content.read',
     resource: optionalMessageJobResource(),
   },
   {

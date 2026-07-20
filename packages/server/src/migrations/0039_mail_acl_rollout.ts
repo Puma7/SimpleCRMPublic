@@ -11,6 +11,7 @@ export const mailAclRolloutMigration: SqlMigration = {
   legacy_allow_new_deny bigint NOT NULL DEFAULT 0 CHECK (legacy_allow_new_deny >= 0),
   legacy_deny_new_allow bigint NOT NULL DEFAULT 0 CHECK (legacy_deny_new_allow >= 0),
   not_comparable bigint NOT NULL DEFAULT 0 CHECK (not_comparable >= 0),
+  in_flight bigint NOT NULL DEFAULT 0 CHECK (in_flight >= 0),
   observation_started_at timestamptz,
   observation_updated_at timestamptz,
   telemetry_healthy boolean NOT NULL DEFAULT true,

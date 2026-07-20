@@ -31865,7 +31865,7 @@ describe('server edition foundation', () => {
     const invalidPayload = await api.handle({
       method: 'POST',
       path: '/api/v1/workflows/by-source/-23/execute',
-      body: { messageId: 0, extra: true },
+      body: { dryRun: 'yes', extra: true },
       principal,
     });
     expect(invalidPayload.status).toBe(400);

@@ -450,6 +450,7 @@ export type MailAclRolloutStateTable = {
   legacy_allow_new_deny: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
   legacy_deny_new_allow: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
   not_comparable: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  in_flight: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
   observation_started_at: TimestampColumn | null;
   observation_updated_at: TimestampColumn | null;
   telemetry_healthy: ColumnType<boolean, boolean | undefined, boolean>;

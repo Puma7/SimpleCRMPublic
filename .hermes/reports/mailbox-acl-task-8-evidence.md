@@ -70,3 +70,38 @@ Base: `e188c5e`
 | `pnpm run build` | Exit `0`; existing Vite warnings only | `.hermes/reports/task-8-review-fix-build.log` |
 | `pnpm run typecheck` | Exit `0` | `.hermes/reports/task-8-review-fix-root-typecheck.log` |
 | `git diff --check` | Exit `0` | `.hermes/reports/task-8-review-fix-git-diff-check.log` |
+
+## Atomic Audit / Durable Latch Review-Fix (Base `43d273c`)
+
+| Criterion | Scenario | Binary observable | Artifact |
+|---|---|---|---|
+| Durable RED | New route, migration, atomic audit and fatal-finalization regressions against `43d273c` | Exit `1`; `8 failed`, `52 passed` | `.hermes/reports/task-8-atomic-latch-red.log` |
+| Focused GREEN | Unit plus embedded PostgreSQL rollout tests | Exit `0`; `2` suites, `63` tests | `.hermes/reports/task-8-atomic-latch-focused-green.log` |
+| Final combined GREEN | Task-8 plus completed Workflow-ACL files, including the shared integration suite | Exit `0`; `5` suites, `493` tests | `.hermes/reports/task-8-atomic-latch-combined-focused.log` |
+| Atomic audit rollback | Audit INSERT trigger fails during reset and enforce | Both mutations rolled back; no audit row committed | Focused GREEN log |
+| Valid exactly-once chain | Successful retry and concurrent enforce | One successful action row; full workspace chain verifies | Focused GREEN log |
+| Durable registration | Paused multi-pool evaluations | `inFlight` visible before comparison completes; readiness false | Focused GREEN log |
+| Shared/exclusive ordering | Active evaluations against reset/enforce | Admin waits; final counters/latches observed before mutation | Focused GREEN log |
+| Transaction-fatal preservation | Finalization backend terminated after comparison | Computed allow and deny preserved; `inFlight=1`; transition blocked | Focused GREEN log |
+| Stale recovery | Exclusive reset after connection loss | Stale latch, counters, observation and diagnostics reset atomically with audit | Focused GREEN log |
+| Session lock hygiene | Successful `maxConnections=1` evaluation | Explicit `pg_advisory_unlock_shared`; zero remaining session locks | Focused GREEN log |
+| RLS zero-row | Only finalization transaction deliberately scoped to another workspace | Both decisions preserved; two latches remain until reset; other workspace unchanged | Focused GREEN log |
+| Migration integrity | Source comparison against `43d273c` | 0038 SHA-256 unchanged: `3048f74add211b1f36b49b54baaf84d5f3a1d66fc6561e5614766f76c87600cd` | Focused GREEN log |
+
+### Atomic Latch Required Gates
+
+| Gate | Binary observable | Artifact |
+|---|---|---|
+| `pnpm run lint` | Exit `0` | `.hermes/reports/task-8-atomic-latch-lint.log` |
+| `pnpm run test:unit` | `265` suites, `2401` tests passed, Exit `0` | `.hermes/reports/task-8-atomic-latch-test-unit.log` |
+| `pnpm run test:integration` | `25` suites, `350` tests passed, Exit `0` | `.hermes/reports/task-8-atomic-latch-test-integration.log` |
+| `pnpm run test:mail:coverage` | `179` suites; `1166` passed, `1` skipped; 91.91 % lines / 80.08 % branches; Exit `0` | `.hermes/reports/task-8-atomic-latch-test-mail-coverage.log` |
+| `pnpm run build` | Exit `0`; existing Vite warnings only | `.hermes/reports/task-8-atomic-latch-build.log` |
+| `pnpm run typecheck` | Exit `0` | `.hermes/reports/task-8-atomic-latch-root-typecheck.log` |
+| `git diff --check` | Exit `0` | `.hermes/reports/task-8-atomic-latch-git-diff-check.log` |
+
+### Final Coordination State
+
+- The concurrent Workflow-ACL wave is complete and the combined unstaged
+  worktree passed the focused suite above.
+- No path or hunk was staged or committed by this Task-8 wave, as requested.

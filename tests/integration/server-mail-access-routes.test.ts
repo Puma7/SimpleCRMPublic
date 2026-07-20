@@ -24,6 +24,13 @@ import {
   createPostgresEmailMessageCategoryReadPort,
   createPostgresEmailThreadReadPort,
 } from '../../packages/server/src/db/postgres-mail-metadata-read-ports';
+import {
+  createPostgresWorkflowDelayedJobReadPort,
+  createPostgresWorkflowForwardDedupReadPort,
+  createPostgresWorkflowMessageAppliedReadPort,
+  createPostgresWorkflowRunReadPort,
+  createPostgresWorkflowRunStepReadPort,
+} from '../../packages/server/src/db/postgres-workflow-runtime-read-ports';
 import { createPostgresEmailReportingPort } from '../../packages/server/src/db/postgres-email-reporting-port';
 import { createPostgresEmailGdprExportPort } from '../../packages/server/src/mail-gdpr-export';
 import type {
@@ -37,10 +44,7 @@ import {
   createPostgresMailAclRolloutLegacyPort,
   createPostgresMailAclRolloutStatePort,
 } from '../../packages/server/src/mail-access/postgres-mail-acl-rollout-state-port';
-import {
-  MailAccessRolloutService,
-  type MailAclRolloutStatePort,
-} from '../../packages/server/src/mail-access/rollout-service';
+import { MailAccessRolloutService } from '../../packages/server/src/mail-access/rollout-service';
 import {
   MailAccessDeniedError,
   MailAccessService,
@@ -48,6 +52,7 @@ import {
 import type { MailSqlScope } from '../../packages/server/src/mail-access/types';
 import { serverMigrations } from '../../packages/server/src/migrations';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
+import { verifyAuditHashChain, type AuditHashChainRow } from '../../packages/server/src/db/postgres-audit-port';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
 
@@ -354,18 +359,24 @@ describe('server mailbox ACL migration', () => {
     maxConnections?: number;
     onQuery?: (sqlText: string) => void;
     applicationName?: string;
+    onPoolError?: (error: Error) => void;
   }> = {}): Kysely<ServerDatabase> {
+    const pool = new Pool({
+      host: '127.0.0.1',
+      port: postgresPort,
+      user: MIGRATION_ROLE,
+      password: MIGRATION_ROLE_PASSWORD,
+      database: 'postgres',
+      max: options.maxConnections ?? 1,
+      application_name: options.applicationName,
+    });
+    if (options.onPoolError) {
+      pool.on('error', options.onPoolError);
+      pool.on('connect', (connection) => connection.on('error', options.onPoolError));
+    }
     return new Kysely<ServerDatabase>({
       dialect: new PostgresDialect({
-        pool: new Pool({
-          host: '127.0.0.1',
-          port: postgresPort,
-          user: MIGRATION_ROLE,
-          password: MIGRATION_ROLE_PASSWORD,
-          database: 'postgres',
-          max: options.maxConnections ?? 1,
-          application_name: options.applicationName,
-        }),
+        pool,
       }),
       log(event) {
         if (event.level === 'query') options.onQuery?.(event.query.sql);
@@ -416,6 +427,14 @@ describe('server mailbox ACL migration', () => {
     `);
     await client.query(`
       INSERT INTO mail_acl_binding_permissions (binding_id, permission_key)
+      SELECT id, 'mail.content.read'
+      FROM mail_acl_bindings
+      WHERE workspace_id = '${WORKSPACE_A}'
+        AND subject_id IN ('${USER_FOLDER}', '${USER_MESSAGE}')
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query(`
+      INSERT INTO mail_acl_binding_permissions (binding_id, permission_key)
       SELECT id, 'mail.export'
       FROM mail_acl_bindings
       WHERE workspace_id = '${WORKSPACE_A}'
@@ -439,6 +458,23 @@ describe('server mailbox ACL migration', () => {
         isAdmin: false,
       },
       permission: 'mail.metadata.read',
+    });
+  }
+
+  async function resolveContentScope(
+    db: Kysely<ServerDatabase>,
+    userId: string,
+  ): Promise<MailSqlScope> {
+    const service = new MailAccessService(createPostgresMailAccessPort({ db }));
+    return service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: {
+        workspaceId: WORKSPACE_A,
+        userId,
+        isOwner: false,
+        isAdmin: false,
+      },
+      permission: 'mail.content.read',
     });
   }
 
@@ -1170,6 +1206,152 @@ describe('server mailbox ACL migration', () => {
     expect(setAccountSettings).not.toHaveBeenCalled();
   });
 
+  test('requires content read for message-bearing workflow execute routes and preserves no-message execution', async () => {
+    const dryRun = jest.fn(async (input: { messageId?: number }) => ({
+      success: true,
+      dryRun: true,
+      workflowId: 701,
+      messageId: input.messageId,
+      status: 'ok',
+      blocked: false,
+      blockReason: null,
+      log: ['condition:secret-body'],
+    }));
+    const enqueue = jest.fn(async () => undefined);
+    const workflow = {
+      id: 701,
+      sourceSqliteId: -701,
+      name: 'ACL workflow',
+      triggerName: 'manual',
+      enabled: true,
+      priority: 1,
+      definition: {},
+      graph: {},
+      cronExpr: null,
+      scheduleAccountSourceSqliteId: null,
+      scheduleAccountId: null,
+      accountSourceSqliteId: null,
+      accountId: null,
+      overrideKey: null,
+      executionMode: 'graph',
+      engineVersion: 1,
+      legacyCreatedByUserId: null,
+      createdByUserId: null,
+      createdAt: null,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    };
+    const api = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.metadata.read', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ]),
+      overrides: {
+        workflows: {
+          async list() {
+            return { items: [workflow], nextCursor: null };
+          },
+          async get(input) {
+            return input.id === workflow.id ? workflow : null;
+          },
+        },
+        emailMessages: {
+          list: async () => ({ items: [], nextCursor: null }),
+          get: async (input) => (input.id === MESSAGE_A ? makeMessageRecord(MESSAGE_A) : null),
+        },
+        workflowExecution: { dryRun },
+        jobQueue: { enqueue },
+      },
+    }));
+    const principal = { ...makePrincipal(), capabilities: ['workflows.manage'] };
+
+    for (const [path, body] of [
+      [`/api/v1/workflows/${workflow.id}/execute`, { messageId: MESSAGE_A, dryRun: true }],
+      ['/api/v1/workflows/by-source/-701/execute', { messageId: MESSAGE_A, dryRun: true }],
+      [`/api/v1/workflows/${workflow.id}/execute`, { messageId: MESSAGE_A, dryRun: false }],
+      ['/api/v1/workflows/by-source/-701/execute', { messageId: MESSAGE_A, dryRun: false }],
+    ] as const) {
+      const denied = await api.handle({ method: 'POST', path, body, principal });
+      expect(denied.status).toBe(404);
+      expect((denied.body as any).error.code).toBe('mail_resource_not_found');
+    }
+    expect(dryRun).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+
+    for (const [path, body] of [
+      [`/api/v1/workflows/${workflow.id}/execute`, { messageId: null, dryRun: true }],
+      [`/api/v1/workflows/${workflow.id}/execute`, { messageId: '', dryRun: true }],
+      [`/api/v1/workflows/${workflow.id}/execute`, { messageId: 0, dryRun: false }],
+      ['/api/v1/workflows/by-source/-701/execute', { messageId: 'not-a-number', dryRun: false }],
+    ] as const) {
+      const denied = await api.handle({ method: 'POST', path, body, principal });
+      expect(denied.status).toBe(404);
+      expect((denied.body as any).error.code).toBe('mail_resource_not_found');
+    }
+    expect(dryRun).not.toHaveBeenCalled();
+    expect(enqueue).not.toHaveBeenCalled();
+
+    const noMessageDryRun = await api.handle({
+      method: 'POST',
+      path: `/api/v1/workflows/${workflow.id}/execute`,
+      body: { dryRun: true },
+      principal,
+    });
+    const noMessageEnqueue = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/by-source/-701/execute',
+      body: { dryRun: false },
+      principal,
+    });
+
+    expect(noMessageDryRun.status).toBe(200);
+    expect(noMessageEnqueue.status).toBe(202);
+    expect(dryRun).toHaveBeenCalledTimes(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  test('reply draft generation requires both target draft-create and source content-read grants', async () => {
+    const generate = jest.fn(async () => ({ success: true, text: 'Antwortentwurf' }));
+    const baseOverrides: Partial<ServerApiPorts> = {
+      aiReplySuggestions: {
+        async get() {
+          return null;
+        },
+        async ensure() {
+          return undefined;
+        },
+        generate,
+      },
+    };
+    const draftOnlyApi = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.draft.create', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ]),
+      overrides: baseOverrides,
+    }));
+    const contentOnlyApi = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.content.read', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ]),
+      overrides: baseOverrides,
+    }));
+    const bothApi = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.draft.create', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+        ['mail.content.read', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ]),
+      overrides: baseOverrides,
+    }));
+
+    const path = `/api/v1/email/messages/${MESSAGE_A}/reply-draft`;
+    const draftOnly = await draftOnlyApi.handle({ method: 'POST', path, principal: makePrincipal(), body: {} });
+    const contentOnly = await contentOnlyApi.handle({ method: 'POST', path, principal: makePrincipal(), body: {} });
+    const both = await bothApi.handle({ method: 'POST', path, principal: makePrincipal(), body: {} });
+
+    expect(draftOnly.status).toBe(404);
+    expect(contentOnly.status).toBe(404);
+    expect(both.status).toBe(200);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
   test('passes one fail-closed scope to list, counts, thread, reporting, and export handlers', async () => {
     const observedScopes: Array<MailSqlScope | undefined> = [];
     const ports = makeHttpPorts({
@@ -1815,6 +1997,123 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('scopes workflow runtime rows in PostgreSQL before exposing logs, context, destinations, or hidden pages', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_workflows (
+          id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
+          definition_json, graph_json, execution_mode, engine_version
+        ) VALUES
+          (7101, '${WORKSPACE_A}', 7101, 'Runtime ACL', 'manual', true, 1, '{}'::jsonb, '{}'::jsonb, 'graph', 1),
+          (7102, '${WORKSPACE_B}', 7102, 'Runtime ACL B', 'manual', true, 1, '{}'::jsonb, '{}'::jsonb, 'graph', 1)
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO email_workflow_runs (
+          id, workspace_id, source_sqlite_id, workflow_source_sqlite_id, message_source_sqlite_id,
+          workflow_id, message_id, direction, status, log_json, started_at
+        ) VALUES
+          (7301, '${WORKSPACE_A}', 7301, 7101, 31, 7101, ${MESSAGE_A}, 'inbound', 'ok', '{"log":"visible"}'::jsonb, '2026-07-19T12:00:00Z'),
+          (7302, '${WORKSPACE_A}', 7302, 7101, 32, 7101, ${MESSAGE_A_SECOND}, 'inbound', 'ok', '{"log":"hidden"}'::jsonb, '2026-07-19T12:01:00Z'),
+          (7303, '${WORKSPACE_A}', 7303, 7101, NULL, 7101, NULL, 'manual', 'ok', '{"log":"non-mail"}'::jsonb, '2026-07-19T12:02:00Z'),
+          (7304, '${WORKSPACE_B}', 7304, 7102, 41, 7102, ${MESSAGE_B}, 'inbound', 'ok', '{"log":"workspace-b"}'::jsonb, '2026-07-19T12:03:00Z')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO email_workflow_run_steps (
+          id, workspace_id, source_sqlite_id, run_source_sqlite_id, run_id, node_id,
+          node_type, status, port, duration_ms, message, detail_json
+        ) VALUES
+          (7401, '${WORKSPACE_A}', 7401, 7301, 7301, 'visible-node', 'condition', 'ok', NULL, 1, 'visible', '{"detail":"visible-body"}'::jsonb),
+          (7402, '${WORKSPACE_A}', 7402, 7302, 7302, 'hidden-node', 'condition', 'ok', NULL, 1, 'hidden', '{"detail":"hidden-body"}'::jsonb),
+          (7403, '${WORKSPACE_A}', 7403, 7303, 7303, 'non-mail-node', 'condition', 'ok', NULL, 1, 'non-mail', '{"detail":"non-mail"}'::jsonb)
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO email_message_workflow_applied (
+          id, workspace_id, source_sqlite_id, message_source_sqlite_id, workflow_source_sqlite_id,
+          message_id, workflow_id, applied_at
+        ) VALUES
+          (7501, '${WORKSPACE_A}', 7501, 31, 7101, ${MESSAGE_A}, 7101, '2026-07-19T12:00:00Z'),
+          (7502, '${WORKSPACE_A}', 7502, 32, 7101, ${MESSAGE_A_SECOND}, 7101, '2026-07-19T12:01:00Z')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO email_workflow_forward_dedup (
+          id, workspace_id, source_sqlite_id, message_source_sqlite_id, workflow_source_sqlite_id,
+          message_id, workflow_id, dest, created_at
+        ) VALUES
+          (7601, '${WORKSPACE_A}', 7601, 31, 7101, ${MESSAGE_A}, 7101, 'visible@example.test', '2026-07-19T12:00:00Z'),
+          (7602, '${WORKSPACE_A}', 7602, 32, 7101, ${MESSAGE_A_SECOND}, 7101, 'hidden@example.test', '2026-07-19T12:01:00Z')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query(`
+        INSERT INTO workflow_delayed_jobs (
+          id, workspace_id, source_sqlite_id, workflow_source_sqlite_id, message_source_sqlite_id,
+          workflow_id, message_id, resume_node_id, execute_at, context_json, status
+        ) VALUES
+          (7701, '${WORKSPACE_A}', 7701, 7101, 31, 7101, ${MESSAGE_A}, 'visible-delay', '2026-07-20T12:00:00Z', '{"context":"visible-body"}'::jsonb, 'pending'),
+          (7702, '${WORKSPACE_A}', 7702, 7101, 32, 7101, ${MESSAGE_A_SECOND}, 'hidden-delay', '2026-07-20T12:01:00Z', '{"context":"hidden-body"}'::jsonb, 'pending'),
+          (7703, '${WORKSPACE_A}', 7703, 7101, NULL, 7101, NULL, 'non-mail-delay', '2026-07-20T12:02:00Z', '{"context":"non-mail"}'::jsonb, 'pending')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      const noneScope = await resolveContentScope(db, USER_NONE);
+      const folderScope = await resolveContentScope(db, USER_FOLDER);
+      const runPort = createPostgresWorkflowRunReadPort({ db });
+      const stepPort = createPostgresWorkflowRunStepReadPort({ db });
+      const appliedPort = createPostgresWorkflowMessageAppliedReadPort({ db });
+      const forwardPort = createPostgresWorkflowForwardDedupReadPort({ db });
+      const delayedPort = createPostgresWorkflowDelayedJobReadPort({ db });
+
+      const noneRuns = await runPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeLog: true, limit: 10 }, noneScope));
+      const folderRuns = await runPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeLog: true, limit: 10 }, folderScope));
+      const firstFolderPage = await runPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeLog: false, limit: 1 }, folderScope));
+      const hiddenRun = await runPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7302, includeLog: true }, folderScope));
+      const folderSteps = await stepPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeDetail: true, limit: 10 }, folderScope));
+      const hiddenStep = await stepPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7402, includeDetail: true }, folderScope));
+      const appliedRows = await appliedPort.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, folderScope));
+      const hiddenApplied = await appliedPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7502 }, folderScope));
+      const forwardRows = await forwardPort.list(withMailScope({ workspaceId: WORKSPACE_A, limit: 10 }, folderScope));
+      const hiddenForward = await forwardPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7602 }, folderScope));
+      const delayedRows = await delayedPort.list(withMailScope({ workspaceId: WORKSPACE_A, includeContext: true, limit: 10 }, folderScope));
+      const hiddenDelayed = await delayedPort.get(withMailScope({ workspaceId: WORKSPACE_A, id: 7702, includeContext: true }, folderScope));
+
+      expect(noneRuns.items.map((item) => item.id)).toEqual([7303]);
+      expect(folderRuns.items.map((item) => item.id)).toEqual([7301, 7303]);
+      expect(folderRuns.items.map((item) => item.log)).toEqual([{ log: 'visible' }, { log: 'non-mail' }]);
+      expect(firstFolderPage.items.map((item) => item.id)).toEqual([7301]);
+      expect(firstFolderPage.nextCursor).toBe(7301);
+      expect(hiddenRun).toBeNull();
+      expect(folderSteps.items.map((item) => item.id)).toEqual([7401, 7403]);
+      expect(folderSteps.items.map((item) => item.detail)).toEqual([{ detail: 'visible-body' }, { detail: 'non-mail' }]);
+      expect(hiddenStep).toBeNull();
+      expect(appliedRows.items.map((item) => item.id)).toEqual([7501]);
+      expect(hiddenApplied).toBeNull();
+      expect(forwardRows.items.map((item) => [item.id, item.dest])).toEqual([[7601, 'visible@example.test']]);
+      expect(hiddenForward).toBeNull();
+      expect(delayedRows.items.map((item) => [item.id, item.context])).toEqual([
+        [7701, { context: 'visible-body' }],
+        [7703, { context: 'non-mail' }],
+      ]);
+      expect(hiddenDelayed).toBeNull();
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      await client.query(`DELETE FROM workflow_delayed_jobs WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7701 AND 7703`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflow_forward_dedup WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7601 AND 7602`).catch(() => undefined);
+      await client.query(`DELETE FROM email_message_workflow_applied WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7501 AND 7502`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflow_run_steps WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7401 AND 7403`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflow_runs WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7301 AND 7304`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflows WHERE workspace_id IN ('${WORKSPACE_A}', '${WORKSPACE_B}') AND id BETWEEN 7101 AND 7102`).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
   test('scopes PostgreSQL GDPR export before batching', async () => {
     await ensureScopedGrantFixtures();
     const db = createApplicationDb();
@@ -2222,11 +2521,12 @@ describe('server mailbox ACL migration', () => {
       const storedRows = await client.query<{
         workspace_id: string;
         mode: string;
+        in_flight: string;
         telemetry_healthy: boolean;
         diagnostic_code: string | null;
         diagnostic_at: Date | null;
       }>(`
-        SELECT workspace_id, mode, telemetry_healthy, diagnostic_code, diagnostic_at
+        SELECT workspace_id, mode, in_flight::text, telemetry_healthy, diagnostic_code, diagnostic_at
         FROM mail_acl_rollout_state
         ORDER BY workspace_id
       `);
@@ -2241,6 +2541,7 @@ describe('server mailbox ACL migration', () => {
         legacyAllowNewDeny: 0n,
         legacyDenyNewAllow: 0n,
         notComparable: 0n,
+        inFlight: 0n,
         ready: false,
         enforced: true,
         telemetryHealthy: true,
@@ -2250,6 +2551,7 @@ describe('server mailbox ACL migration', () => {
       expect(storedRows.rows).toEqual(workspacesBeforeRollout.rows.map((row) => ({
         workspace_id: row.id,
         mode: 'shadow',
+        in_flight: '0',
         telemetry_healthy: true,
         diagnostic_code: null,
         diagnostic_at: null,
@@ -2309,8 +2611,8 @@ describe('server mailbox ACL migration', () => {
     const db = createApplicationDb({ maxConnections: 8 });
     const port = createPostgresMailAclRolloutStatePort({ db });
     try {
-      await port.resetShadowCounters({ workspaceId: WORKSPACE_A });
-      await port.resetShadowCounters({ workspaceId: WORKSPACE_B });
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_B, actorUserId: USER_WORKSPACE_B });
       await Promise.all(Array.from({ length: 40 }, async (_, index) => {
         await port.increment(WORKSPACE_A, {
           evaluated: 1n,
@@ -2338,6 +2640,91 @@ describe('server mailbox ACL migration', () => {
         notComparable: 13n,
       });
     } finally {
+      await db.destroy();
+    }
+  });
+
+  test('reset and enforce commit with exactly one hash-chained audit event or roll back together', async () => {
+    const db = createApplicationDb({ maxConnections: 4 });
+    const state = createPostgresMailAclRolloutStatePort({ db });
+    const adminInput = { workspaceId: WORKSPACE_B, actorUserId: USER_WORKSPACE_B };
+    const readAuditRows = async (): Promise<readonly AuditHashChainRow[]> => {
+      await client.query(`SELECT set_config('app.workspace_id', '${WORKSPACE_B}', false), set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'off', false)`);
+      const rows = await client.query<AuditHashChainRow>(`
+        SELECT id, workspace_id, actor_user_id, action, entity_type, entity_id,
+               metadata, previous_hash, event_hash, created_at
+        FROM audit_events
+        WHERE workspace_id = '${WORKSPACE_B}'
+        ORDER BY id
+      `);
+      await client.query('RESET app.workspace_id; RESET app.role; RESET app.cross_workspace_access');
+      return rows.rows;
+    };
+    const installAuditFailure = async (): Promise<void> => {
+      await client.query(`
+        CREATE OR REPLACE FUNCTION task8_fail_rollout_audit_insert()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.action IN ('mail_acl_rollout.counters_reset', 'mail_acl_rollout.enforced') THEN
+            RAISE EXCEPTION 'task8 audit insert failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+      `);
+      await client.query(`
+        CREATE TRIGGER task8_fail_rollout_audit_insert
+        BEFORE INSERT ON audit_events
+        FOR EACH ROW EXECUTE FUNCTION task8_fail_rollout_audit_insert()
+      `);
+    };
+    const removeAuditFailure = async (): Promise<void> => {
+      await client.query('DROP TRIGGER IF EXISTS task8_fail_rollout_audit_insert ON audit_events');
+      await client.query('DROP FUNCTION IF EXISTS task8_fail_rollout_audit_insert()');
+    };
+    try {
+      await state.resetShadowCounters(adminInput);
+      await state.increment(WORKSPACE_B, { evaluated: 3n, legacyAllowNewDeny: 1n });
+      const beforeFailedReset = await state.getReadiness(WORKSPACE_B);
+      const auditBeforeFailures = await readAuditRows();
+
+      await installAuditFailure();
+      await expect(state.resetShadowCounters(adminInput)).rejects.toThrow('task8 audit insert failure');
+      await expect(state.getReadiness(WORKSPACE_B)).resolves.toEqual(beforeFailedReset);
+      await expect(readAuditRows()).resolves.toHaveLength(auditBeforeFailures.length);
+      await removeAuditFailure();
+
+      await expect(state.resetShadowCounters(adminInput)).resolves.toEqual({ ok: true });
+      await state.increment(WORKSPACE_B, { evaluated: 1n });
+      await installAuditFailure();
+      await expect(state.transitionToEnforce(adminInput)).rejects.toThrow('task8 audit insert failure');
+      await expect(state.getReadiness(WORKSPACE_B)).resolves.toMatchObject({
+        mode: 'shadow',
+        evaluated: 1n,
+      });
+      await removeAuditFailure();
+
+      const concurrent = await Promise.all([
+        state.transitionToEnforce(adminInput),
+        state.transitionToEnforce(adminInput),
+      ]);
+      expect(concurrent.filter((result) => result.ok)).toHaveLength(1);
+      expect(concurrent.filter((result) => !result.ok)).toEqual([
+        { ok: false, code: 'not_shadow' },
+      ]);
+
+      const auditAfterSuccess = await readAuditRows();
+      const newEvents = auditAfterSuccess.slice(auditBeforeFailures.length);
+      expect(newEvents.map((event) => event.action)).toEqual([
+        'mail_acl_rollout.counters_reset',
+        'mail_acl_rollout.enforced',
+      ]);
+      expect(newEvents.every((event) => event.actor_user_id === USER_WORKSPACE_B)).toBe(true);
+      expect(verifyAuditHashChain(auditAfterSuccess)).toMatchObject({ ok: true });
+    } finally {
+      await removeAuditFailure().catch(() => undefined);
       await db.destroy();
     }
   });
@@ -2385,11 +2772,18 @@ describe('server mailbox ACL migration', () => {
     let evaluations: Array<Promise<void>> = [];
     let transition: Promise<Awaited<ReturnType<typeof adminState.transitionToEnforce>>> | undefined;
     try {
-      await adminState.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await adminState.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       evaluations = [service.assertPermission(request), service.assertPermission(request)];
       await allEvaluationsEntered.promise;
+      await expect(adminState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        inFlight: 2n,
+        ready: false,
+      });
       let transitionSettled = false;
-      transition = adminState.transitionToEnforce({ workspaceId: WORKSPACE_A }).finally(() => {
+      transition = adminState.transitionToEnforce({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+      }).finally(() => {
         transitionSettled = true;
       });
       await waitForAdvisoryLockWaiters(1, 'enforce to wait on shared shadow evaluations');
@@ -2407,6 +2801,7 @@ describe('server mailbox ACL migration', () => {
         mode: 'shadow',
         evaluated: 2n,
         legacyAllowNewDeny: 2n,
+        inFlight: 0n,
       });
     } finally {
       for (const release of releases) release.resolve(undefined);
@@ -2447,8 +2842,15 @@ describe('server mailbox ACL migration', () => {
     });
     try {
       await evaluationEntered.promise;
+      await expect(adminState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        inFlight: 1n,
+        ready: false,
+      });
       let resetSettled = false;
-      reset = adminState.resetShadowCounters({ workspaceId: WORKSPACE_A }).finally(() => {
+      reset = adminState.resetShadowCounters({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+      }).finally(() => {
         resetSettled = true;
       });
       await waitForAdvisoryLockWaiters(1, 'reset to wait on the shared shadow evaluation');
@@ -2463,6 +2865,7 @@ describe('server mailbox ACL migration', () => {
         legacyAllowNewDeny: 0n,
         legacyDenyNewAllow: 0n,
         notComparable: 0n,
+        inFlight: 0n,
         observationStartedAt: null,
         observationUpdatedAt: null,
         telemetryHealthy: true,
@@ -2479,7 +2882,12 @@ describe('server mailbox ACL migration', () => {
   });
 
   test('single-connection rollout evaluation reuses its transaction and does not borrow a nested pool connection', async () => {
-    const db = createApplicationDb({ maxConnections: 1, applicationName: 'task8-single-connection-evaluation' });
+    const queries: string[] = [];
+    const db = createApplicationDb({
+      maxConnections: 1,
+      applicationName: 'task8-single-connection-evaluation',
+      onQuery: (query) => queries.push(query),
+    });
     const state = createPostgresMailAclRolloutStatePort({ db });
     const service = new MailAccessRolloutService({
       state,
@@ -2487,7 +2895,7 @@ describe('server mailbox ACL migration', () => {
       newAcl: createPostgresMailAccessPort({ db }),
     });
     try {
-      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       await expect(service.assertPermission({
         workspaceId: WORKSPACE_A,
         actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
@@ -2501,8 +2909,18 @@ describe('server mailbox ACL migration', () => {
       })).resolves.toBeUndefined();
       await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         evaluated: 1n,
+        inFlight: 0n,
         telemetryHealthy: true,
       });
+      expect(queries.some((query) => query.includes('pg_advisory_unlock_shared'))).toBe(true);
+      const heldSessionLocks = await client.query<{ held: string }>(`
+        SELECT count(*)::text AS held
+        FROM pg_locks locks
+        JOIN pg_stat_activity activity ON activity.pid = locks.pid
+        WHERE locks.locktype = 'advisory'
+          AND activity.application_name = 'task8-single-connection-evaluation'
+      `);
+      expect(heldSessionLocks.rows).toEqual([{ held: '0' }]);
     } finally {
       await db.destroy();
     }
@@ -2528,7 +2946,7 @@ describe('server mailbox ACL migration', () => {
     const service = new MailAccessRolloutService(serviceOptions);
     const maxBigint = 9_223_372_036_854_775_807n;
     try {
-      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
       await client.query(`
         UPDATE mail_acl_rollout_state
@@ -2554,12 +2972,12 @@ describe('server mailbox ACL migration', () => {
         ready: false,
       });
       expect(diagnostics).toEqual(['counter_saturated']);
-      await expect(state.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+      await expect(state.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({
         ok: false,
         code: 'telemetry_unhealthy',
       });
 
-      await expect(state.resetShadowCounters({ workspaceId: WORKSPACE_A })).resolves.toEqual({ ok: true });
+      await expect(state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({ ok: true });
       await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         evaluated: 0n,
         telemetryHealthy: true,
@@ -2603,7 +3021,7 @@ describe('server mailbox ACL migration', () => {
         diagnosticCode: 'counter_saturated',
       });
       expect(diagnostics).toEqual(['counter_saturated', 'counter_saturated']);
-      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
     } finally {
       await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
       await db.destroy();
@@ -2621,7 +3039,7 @@ describe('server mailbox ACL migration', () => {
       },
     };
     try {
-      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       await client.query(`
         CREATE OR REPLACE FUNCTION task8_fail_rollout_counter_update()
         RETURNS trigger
@@ -2662,16 +3080,17 @@ describe('server mailbox ACL migration', () => {
       })).resolves.toBeUndefined();
       await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         evaluated: 0n,
+        inFlight: 1n,
         telemetryHealthy: false,
         diagnosticCode: 'counter_update_failed',
         ready: false,
       });
-      await expect(state.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+      await expect(state.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({
         ok: false,
-        code: 'telemetry_unhealthy',
+        code: 'evaluations_in_flight',
       });
 
-      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       const deniedService = new MailAccessRolloutService({
         state,
         legacy: {
@@ -2689,6 +3108,7 @@ describe('server mailbox ACL migration', () => {
       })).rejects.toBeInstanceOf(MailAccessDeniedError);
       await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         evaluated: 0n,
+        inFlight: 1n,
         telemetryHealthy: false,
         diagnosticCode: 'counter_update_failed',
       });
@@ -2696,8 +3116,99 @@ describe('server mailbox ACL migration', () => {
     } finally {
       await client.query('DROP TRIGGER IF EXISTS task8_fail_rollout_counter_update ON mail_acl_rollout_state');
       await client.query('DROP FUNCTION IF EXISTS task8_fail_rollout_counter_update()');
-      await state.resetShadowCounters({ workspaceId: WORKSPACE_A }).catch(() => undefined);
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ }).catch(() => undefined);
       await db.destroy();
+    }
+  });
+
+  test('transaction-fatal finalization preserves computed allow and deny while a durable latch blocks readiness', async () => {
+    const fatalDb = createApplicationDb({
+      maxConnections: 1,
+      applicationName: 'task8-fatal-finalization',
+      onPoolError() {},
+    });
+    const observerDb = createApplicationDb({ maxConnections: 2, applicationName: 'task8-fatal-observer' });
+    const observerState = createPostgresMailAclRolloutStatePort({ db: observerDb });
+    let workspaceTransactions = 0;
+    const fatalState = createPostgresMailAclRolloutStatePort({
+      db: fatalDb,
+      applyWorkspaceSession: async (trx, command) => {
+        workspaceTransactions += 1;
+        if (workspaceTransactions % 3 === 0) {
+          await sql`SELECT pg_terminate_backend(pg_backend_pid())`.execute(trx);
+          return;
+        }
+        await sql`
+          SELECT
+            set_config('app.workspace_id', ${command.params[0]}, true),
+            set_config('app.user_id', ${command.params[1]}, true),
+            set_config('app.role', ${command.params[2]}, true),
+            set_config('app.cross_workspace_access', ${command.params[3]}, true)
+        `.execute(trx);
+      },
+    });
+    const request = {
+      workspaceId: WORKSPACE_A,
+      actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+      permission: 'mail.content.read' as const,
+      resource: { type: 'account' as const, accountId: String(ACCOUNT_A) },
+    };
+    try {
+      await observerState.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
+      const allowedService = new MailAccessRolloutService({
+        state: fatalState,
+        legacy: {
+          async canAccessAccount() { return true; },
+          async resolveAccountScope() { return [ACCOUNT_A]; },
+        },
+        newAcl: { async resolveGrants() { return []; } },
+      });
+      await expect(allowedService.assertPermission(request)).resolves.toBeUndefined();
+      await expect(observerState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: 0n,
+        inFlight: 1n,
+        ready: false,
+      });
+      await expect(observerState.transitionToEnforce({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+      })).resolves.toEqual({ ok: false, code: 'evaluations_in_flight' });
+
+      await expect(observerState.resetShadowCounters({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+      })).resolves.toEqual({ ok: true });
+      const deniedService = new MailAccessRolloutService({
+        state: fatalState,
+        legacy: {
+          async canAccessAccount() { return false; },
+          async resolveAccountScope() { return []; },
+        },
+        newAcl: {
+          async resolveGrants() {
+            return [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+          },
+        },
+      });
+      await expect(deniedService.assertPermission(request)).rejects.toBeInstanceOf(MailAccessDeniedError);
+      await expect(observerState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: 0n,
+        inFlight: 1n,
+        ready: false,
+      });
+
+      const heldSessionLocks = await client.query<{ held: string }>(`
+        SELECT count(*)::text AS held
+        FROM pg_locks locks
+        JOIN pg_stat_activity activity ON activity.pid = locks.pid
+        WHERE locks.locktype = 'advisory'
+          AND activity.application_name = 'task8-fatal-finalization'
+      `);
+      expect(heldSessionLocks.rows).toEqual([{ held: '0' }]);
+      await observerState.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
+    } finally {
+      await fatalDb.destroy();
+      await observerDb.destroy();
     }
   });
 
@@ -2705,31 +3216,27 @@ describe('server mailbox ACL migration', () => {
     const normalDb = createApplicationDb({ maxConnections: 2 });
     const misScopedDb = createApplicationDb({ maxConnections: 1 });
     const normalState = createPostgresMailAclRolloutStatePort({ db: normalDb });
+    let misScopedTransactions = 0;
     const misScopedState = createPostgresMailAclRolloutStatePort({
       db: misScopedDb,
-      applyWorkspaceSession: async (trx) => {
+      applyWorkspaceSession: async (trx, command) => {
+        misScopedTransactions += 1;
+        const finalization = misScopedTransactions % 3 === 0;
         await sql`
           SELECT
-            set_config('app.workspace_id', ${WORKSPACE_B}, true),
-            set_config('app.user_id', ${USER_WORKSPACE_B}, true),
-            set_config('app.role', 'admin', true),
-            set_config('app.cross_workspace_access', 'off', true)
+            set_config('app.workspace_id', ${finalization ? WORKSPACE_B : command.params[0]}, true),
+            set_config('app.user_id', ${finalization ? USER_WORKSPACE_B : command.params[1]}, true),
+            set_config('app.role', ${finalization ? 'admin' : command.params[2]}, true),
+            set_config('app.cross_workspace_access', ${finalization ? 'off' : command.params[3]}, true)
         `.execute(trx);
       },
     });
     try {
-      await normalState.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await normalState.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       const workspaceBBefore = await normalState.getReadiness(WORKSPACE_B);
       const diagnostics: string[] = [];
-      const zeroRowState: MailAclRolloutStatePort = {
-        ...normalState,
-        increment: (workspaceId, delta) => misScopedState.increment(workspaceId, delta),
-        markTelemetryUnhealthy: (workspaceId, code) => (
-          misScopedState.markTelemetryUnhealthy(workspaceId, code)
-        ),
-      };
       const allowedService = new MailAccessRolloutService({
-        state: zeroRowState,
+        state: misScopedState,
         legacy: {
           async canAccessAccount() { return true; },
           async resolveAccountScope() { return [ACCOUNT_A]; },
@@ -2738,7 +3245,7 @@ describe('server mailbox ACL migration', () => {
         onTelemetryDiagnostic: (event) => diagnostics.push(event.code),
       });
       const deniedService = new MailAccessRolloutService({
-        state: zeroRowState,
+        state: misScopedState,
         legacy: {
           async canAccessAccount() { return false; },
           async resolveAccountScope() { return []; },
@@ -2757,6 +3264,7 @@ describe('server mailbox ACL migration', () => {
         permission: 'mail.content.read',
         resource: { type: 'account', accountId: String(ACCOUNT_A) },
       })).resolves.toBeUndefined();
+      await normalState.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       await expect(deniedService.assertPermission({
         workspaceId: WORKSPACE_A,
         actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
@@ -2765,9 +3273,14 @@ describe('server mailbox ACL migration', () => {
       })).rejects.toBeInstanceOf(MailAccessDeniedError);
 
       expect(diagnostics).toEqual(['counter_update_zero_rows', 'counter_update_zero_rows']);
-      await expect(normalState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({ evaluated: 0n });
+      await expect(normalState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: 0n,
+        inFlight: 1n,
+        ready: false,
+      });
       await expect(normalState.getReadiness(WORKSPACE_B)).resolves.toEqual(workspaceBBefore);
     } finally {
+      await normalState.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ }).catch(() => undefined);
       await normalDb.destroy();
       await misScopedDb.destroy();
     }
@@ -2777,21 +3290,21 @@ describe('server mailbox ACL migration', () => {
     const db = createApplicationDb({ maxConnections: 4 });
     const port = createPostgresMailAclRolloutStatePort({ db });
     try {
-      await port.resetShadowCounters({ workspaceId: WORKSPACE_A });
-      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
+      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({
         ok: false,
         code: 'no_observations',
       });
 
       await port.increment(WORKSPACE_A, { evaluated: 1n, legacyAllowNewDeny: 1n, legacyDenyNewAllow: 0n });
-      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({
         ok: false,
         code: 'mismatches_present',
       });
 
-      await port.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await port.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       await port.increment(WORKSPACE_A, { evaluated: 3n, legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n });
-      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({ ok: true });
+      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({ ok: true });
       await expect(port.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         mode: 'enforce',
         ready: false,
@@ -2824,7 +3337,7 @@ describe('server mailbox ACL migration', () => {
         resource: { type: 'account', accountId: String(ACCOUNT_A) },
       })).resolves.toBeUndefined();
       expect(legacyCalls).toBe(0);
-      await expect(port.resetShadowCounters({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+      await expect(port.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({
         ok: false,
         code: 'not_shadow',
       });

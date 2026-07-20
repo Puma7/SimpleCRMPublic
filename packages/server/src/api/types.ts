@@ -3821,11 +3821,13 @@ export type WorkflowRunApiPort = {
     includeLog: boolean;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunListResult>;
   get(input: {
     workspaceId: string;
     id: number;
     includeLog: boolean;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunRecord | null>;
 };
 
@@ -3857,11 +3859,13 @@ export type WorkflowRunStepApiPort = {
     includeDetail: boolean;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunStepListResult>;
   get(input: {
     workspaceId: string;
     id: number;
     includeDetail: boolean;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunStepRecord | null>;
 };
 
@@ -3885,10 +3889,12 @@ export type WorkflowMessageAppliedApiPort = {
     workflowId?: number;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowMessageAppliedListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowMessageAppliedRecord | null>;
 };
 
@@ -3914,10 +3920,12 @@ export type WorkflowForwardDedupApiPort = {
     dest?: string;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowForwardDedupListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowForwardDedupRecord | null>;
 };
 
@@ -4071,11 +4079,13 @@ export type WorkflowDelayedJobApiPort = {
     includeContext: boolean;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobListResult>;
   get(input: {
     workspaceId: string;
     id: number;
     includeContext: boolean;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobRecord | null>;
   create?(input: {
     workspaceId: string;
@@ -4722,8 +4732,14 @@ export type HealthCheckApiPort = {
 
 export type MailAclRolloutAdminApiPort = {
   getReadiness(workspaceId: string): Promise<MailAclRolloutReadiness>;
-  transitionToEnforce(input: { workspaceId: string }): Promise<MailAclRolloutTransitionResult>;
-  resetShadowCounters(input: { workspaceId: string }): Promise<MailAclRolloutCounterResetResult>;
+  transitionToEnforce(input: {
+    workspaceId: string;
+    actorUserId: string;
+  }): Promise<MailAclRolloutTransitionResult>;
+  resetShadowCounters(input: {
+    workspaceId: string;
+    actorUserId: string;
+  }): Promise<MailAclRolloutCounterResetResult>;
 };
 
 export type ServerLogReadEntry = {

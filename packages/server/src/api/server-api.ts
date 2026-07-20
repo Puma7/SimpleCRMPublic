@@ -25,7 +25,7 @@ import { handleSpamReadRoute, SPAM_MAIL_ROUTE_INVENTORY } from './spam-routes';
 import { handleSettingsRoute, MAIL_SETTINGS_ROUTE_INVENTORY } from './settings-routes';
 import { handleUserGroupRoute } from './user-group-routes';
 import { handleUserSignatureRoute, USER_SIGNATURE_ROUTE_INVENTORY } from './user-signature-routes';
-import { handleWorkflowReadRoute } from './workflow-routes';
+import { handleWorkflowReadRoute, WORKFLOW_MAIL_ROUTE_INVENTORY } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
 import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
 import { data, error } from './http';
@@ -80,6 +80,7 @@ export const SERVER_API_ROUTE_REGISTRATIONS: readonly ServerApiRouteRegistration
   mailRoutes('settings-routes', MAIL_SETTINGS_ROUTE_INVENTORY, handleSettingsRoute),
   mailRoutes('mail-routes', MAIL_ROUTE_INVENTORY, handleMailReadRoute),
   mailRoutes('notice-routes', MAIL_NOTICE_ROUTE_INVENTORY, handleNoticeRoute),
+  mailRoutes('workflow-mail-routes', WORKFLOW_MAIL_ROUTE_INVENTORY, handleWorkflowReadRoute),
   nonMailRoutes('workflow-routes', handleWorkflowReadRoute),
   mailRoutes('pgp-routes', PGP_MAIL_ROUTE_INVENTORY, handlePgpReadRoute),
   mailRoutes('spam-routes', SPAM_MAIL_ROUTE_INVENTORY, handleSpamReadRoute),

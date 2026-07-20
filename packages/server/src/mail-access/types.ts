@@ -75,6 +75,7 @@ export type MailAclRolloutCounters = Readonly<{
   legacyAllowNewDeny: bigint;
   legacyDenyNewAllow: bigint;
   notComparable: bigint;
+  inFlight: bigint;
 }>;
 
 export type MailAclRolloutState = MailAclRolloutCounters & Readonly<{
@@ -97,7 +98,12 @@ export type MailAclRolloutTransitionResult =
   | Readonly<{ ok: true }>
   | Readonly<{
     ok: false;
-    code: 'not_shadow' | 'no_observations' | 'mismatches_present' | 'telemetry_unhealthy';
+    code:
+      | 'not_shadow'
+      | 'no_observations'
+      | 'mismatches_present'
+      | 'telemetry_unhealthy'
+      | 'evaluations_in_flight';
   }>;
 
 export type MailAclRolloutCounterResetResult =
