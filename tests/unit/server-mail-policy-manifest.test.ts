@@ -195,7 +195,14 @@ describe('server mail policy manifest', () => {
       permission === 'mail.metadata.read'
       || permission === 'mail.content.read'
       || permission === 'mail.attachment.read'
+      || permission === 'mail.comment'
     ))).toBe(true);
+  });
+
+  test('internal-note events require mail.comment, matching the note routes', () => {
+    const noteEvents = MAIL_EVENT_POLICY_MANIFEST.filter(({ type }) => type.startsWith('email_internal_note.'));
+    expect(noteEvents.length).toBeGreaterThan(0);
+    expect(noteEvents.every(({ permission }) => permission === 'mail.comment')).toBe(true);
   });
 
   test('rejects duplicate route, job and event policy keys', () => {

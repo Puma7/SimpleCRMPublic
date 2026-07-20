@@ -65,13 +65,18 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/workflow-delayed-jobs/:id',
 ]);
 
-const RESTRICTED_SCOPE_READ_PATHS = new Set(
-  [...EMPTY_SCOPE_READ_PATHS].filter((path) => ![
+const RESTRICTED_SCOPE_READ_PATHS = new Set([
+  ...[...EMPTY_SCOPE_READ_PATHS].filter((path) => ![
     '/api/v1/email/categories',
     '/api/v1/email/remote-content-allowlist',
     '/api/v1/email/team-members',
   ].includes(path)),
-);
+  // A delegate loads their OWN per-account signatures here, and the companion
+  // upsert is already account-authorized — so a restricted-scope read must be
+  // allowed too, otherwise they can save signatures they can never load. Kept out
+  // of EMPTY_SCOPE_READ_PATHS so a scope-'none' user still gets nothing.
+  '/api/v1/email/user-signatures',
+]);
 
 // Stateless PGP crypto helpers: they transform client-supplied plaintext —
 // encrypting to recipient public keys, or signing with the workspace identity
@@ -408,13 +413,19 @@ async function resolveHttpResources(
   if (resolution.kind === 'workflow_execute_message_lookup') throw new MailAccessDeniedError();
   if (resolution.kind === 'message_or_account_lookup') {
     const message = selectorValue(req, canonicalPath, resolution.messageId);
-    if (message !== undefined) {
+    // Treat an explicit null messageId the same as absent (the schemas allow
+    // both for account-only records) and fall through to the account.
+    if (message !== undefined && message !== null) {
       return lookupSingle(ports, workspaceId, { kind: 'message', id: requirePositiveInt(message) });
     }
     const account = selectorValue(req, canonicalPath, resolution.accountId);
-    if (account !== undefined) {
+    if (account !== undefined && account !== null) {
       return lookupSingle(ports, workspaceId, { kind: 'account', id: requirePositiveInt(account) });
     }
+    // Neither a message nor an account was supplied — a malformed payload (the
+    // schemas require accountId). Deny uniformly rather than fall through to a
+    // scope check that would let an owner reach the handler with garbage.
+    if (resolution.whenAbsent === 'deny') throw new MailAccessDeniedError();
     return { kind: 'scope' };
   }
   if (resolution.kind === 'bulk_message_lookup') {
@@ -528,6 +539,23 @@ async function assertSupplementalHttpPermissions(
       permission: 'mail.content.read',
       resource: source[0]!,
     });
+    // Marking the reply parent "done" is a mail.triage mutation (finalizeSentDraft
+    // calls markMessageDone on it). compose/send marks it done BY DEFAULT unless
+    // markReplyParentDone is explicitly false; compose-draft only records the
+    // intent when the flag is true. Require mail.triage on the parent in those
+    // cases so a send/draft delegate without triage cannot mark it done.
+    const markDone = bodyField(req.body, 'markReplyParentDone');
+    const wouldMarkParent = canonicalPath === '/api/v1/email/compose/send'
+      ? markDone !== false
+      : canonicalPath === '/api/v1/email/messages/:messageId/compose-draft' && markDone === true;
+    if (wouldMarkParent) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.triage',
+        resource: source[0]!,
+      });
+    }
   }
 
   if (
@@ -642,11 +670,18 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
-  // A thread merge rebuilds edges and the aggregate across the WHOLE canonical
-  // thread (which can span accounts), while the base policy only checks the
-  // submitted accountId. Require mail.triage on every message in both the alias
-  // and canonical threads (mode 'all', unlike the read path's 'any').
-  if (req.method === 'POST' && canonicalPath === '/api/v1/email/threads/merge') {
+  // A thread merge — and a thread-alias creation, which persists an alias row the
+  // canonical-thread resolvers apply workspace-wide (filtered by workspace_id +
+  // thread_id, NOT account_id) — rebuilds edges and the aggregate across the WHOLE
+  // canonical thread (which can span accounts), while the base policy only checks
+  // the submitted accountId. A delegate with triage on account A could otherwise
+  // submit B's thread IDs and relabel B's threads. Require mail.triage on every
+  // message in both the alias and canonical threads (mode 'all', unlike the read
+  // path's 'any').
+  if (
+    req.method === 'POST'
+    && (canonicalPath === '/api/v1/email/threads/merge' || canonicalPath === '/api/v1/email/thread-aliases')
+  ) {
     for (const field of ['aliasThreadId', 'canonicalThreadId'] as const) {
       const raw = bodyField(req.body, field);
       if (typeof raw !== 'string' || !raw.trim()) throw new MailAccessDeniedError();
@@ -659,6 +694,27 @@ async function assertSupplementalHttpPermissions(
           workspaceId,
           actor,
           permission: 'mail.triage',
+          resource,
+        });
+      }
+    }
+  }
+
+  // Responding to a read-receipt request with action "send" loads the account's
+  // SMTP credentials and transmits an outbound MDN to the sender — an outbound
+  // send the base mail.triage policy doesn't cover. Require mail.send when
+  // sending; declining stays a pure triage operation.
+  if (
+    req.method === 'POST'
+    && canonicalPath === '/api/v1/email/messages/:messageId/read-receipt-response'
+  ) {
+    const action = bodyField(req.body, 'action');
+    if (typeof action === 'string' && action.trim() === 'send') {
+      for (const resource of baseResources) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission: 'mail.send',
           resource,
         });
       }

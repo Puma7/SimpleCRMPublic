@@ -39,7 +39,7 @@ export type MailResourceResolution =
     kind: 'message_or_account_lookup';
     messageId: PolicyValueSelector;
     accountId: PolicyValueSelector;
-    whenAbsent: 'mail_scope';
+    whenAbsent: 'mail_scope' | 'deny';
   }>
   | Readonly<{
     kind: 'event_message_then_account_lookup';
@@ -88,7 +88,7 @@ export type MailRoutePolicyEntry =
 
 export type MailEventPolicyEntry = Readonly<{
   type: ServerEventType;
-  permission: Extract<MailPermission, 'mail.metadata.read' | 'mail.content.read' | 'mail.attachment.read'>;
+  permission: Extract<MailPermission, 'mail.metadata.read' | 'mail.content.read' | 'mail.attachment.read' | 'mail.comment'>;
   resource: MailResourceResolution;
 }>;
 
@@ -118,6 +118,16 @@ const messagePath = (): MailResourceResolution => ({ kind: 'message_lookup', mes
 const messageBody = (field = 'messageId'): MailResourceResolution => ({
   kind: 'message_lookup',
   messageId: bodyValue(field),
+});
+// Spam learning-events / decisions allow messageId to be absent/null (account-only
+// records) while requiring accountId. Authorize the message when present, else the
+// account — otherwise the enforcer resolves a missing message and 404s every
+// account-only write before the owner/admin ACL bypass can run.
+const messageOrAccountBody = (): MailResourceResolution => ({
+  kind: 'message_or_account_lookup',
+  messageId: bodyValue('messageId'),
+  accountId: bodyValue('accountId'),
+  whenAbsent: 'deny',
 });
 const optionalMessageBody = (
   field = 'messageId',
@@ -570,14 +580,14 @@ function assignSupplementalProtectedPolicies(assign: AssignRoutePolicy): void {
 
   assign('/api/v1/spam/learning-events', {
     GET: permissionPolicy('mail.metadata.read', mailScope()),
-    POST: permissionPolicy('mail.triage', messageBody()),
+    POST: permissionPolicy('mail.triage', messageOrAccountBody()),
   });
   assign('/api/v1/spam/learning-events/:id', {
     GET: permissionPolicy('mail.metadata.read', metadataPath('spam_learning_event')),
   });
   assign('/api/v1/spam/decisions', {
     GET: permissionPolicy('mail.metadata.read', mailScope()),
-    POST: permissionPolicy('mail.triage', messageBody()),
+    POST: permissionPolicy('mail.triage', messageOrAccountBody()),
   });
   assign('/api/v1/spam/decisions/:id', {
     GET: permissionPolicy('mail.metadata.read', metadataPath('spam_decision')),
@@ -596,7 +606,11 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
   ));
   const mailEventPolicies: MailEventPolicyEntry[] = mailEventTypes.map((type) => ({
     type,
-    permission: 'mail.metadata.read',
+    // Internal-note events carry note existence + message/note id + state; the
+    // HTTP note routes gate that behind the independent mail.comment permission,
+    // so the event stream must too — otherwise a viewer denied comments still
+    // learns of every note over the stream.
+    permission: type.startsWith('email_internal_note.') ? 'mail.comment' : 'mail.metadata.read',
     resource: eventResourceResolution(type),
   }));
   const workflowDelayedJobPolicies: MailEventPolicyEntry[] = [

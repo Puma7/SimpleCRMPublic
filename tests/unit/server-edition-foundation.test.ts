@@ -28726,6 +28726,11 @@ describe('server edition foundation', () => {
     expect(unavailableSplit.status).toBe(503);
     expect((unavailableSplit.body as any).error.code).toBe('email_thread_split_unavailable');
 
+    // The supplemental thread-target authorization now resolves aliasThreadId /
+    // canonicalThreadId before the handler validates the body (mirroring the
+    // thread-merge route), so blank thread IDs are denied uniformly (404) rather
+    // than surfacing per-field 400s — the alias row must never persist against
+    // thread IDs the caller has no triage on.
     const unsafeAliasPayload = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
@@ -28739,14 +28744,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeAliasPayload.status).toBe(400);
-    expect((unsafeAliasPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'aliasThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'canonicalThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'confidence', message: 'Feld darf nicht leer sein' },
-      { field: 'source', message: 'Feld darf nicht leer sein' },
-    ]));
+    expect(unsafeAliasPayload.status).toBe(404);
+    expect((unsafeAliasPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const sameAlias = await writableApi.handle({
       method: 'POST',
@@ -36906,13 +36905,17 @@ describe('server edition foundation', () => {
     expect(unsafeLearningPayload.status).toBe(404);
     expect((unsafeLearningPayload.body as any).error.code).toBe('mail_resource_not_found');
 
+    // Account-only spam writes are now authorized against the submitted account
+    // (message optional), so an account-present payload reaches the handler and
+    // is rejected by body validation (missing label) with a 400 instead of being
+    // denied 404 by the enforcer for a missing message.
     const missingLearningFields = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/learning-events',
       body: { accountId: 1 },
       principal,
     });
-    expect(missingLearningFields.status).toBe(404);
+    expect(missingLearningFields.status).toBe(400);
 
     const missingLearningAccount = await writableApi.handle({
       method: 'POST',
@@ -36976,13 +36979,15 @@ describe('server edition foundation', () => {
     expect(unsafeDecisionPayload.status).toBe(404);
     expect((unsafeDecisionPayload.body as any).error.code).toBe('mail_resource_not_found');
 
+    // As above: an account-present decision payload is now authorized against the
+    // account and rejected by body validation (missing source) with a 400.
     const missingDecisionFields = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/decisions',
       body: { accountId: 1, score: 50, status: 'review' },
       principal,
     });
-    expect(missingDecisionFields.status).toBe(404);
+    expect(missingDecisionFields.status).toBe(400);
 
     const missingDecisionAccount = await writableApi.handle({
       method: 'POST',
