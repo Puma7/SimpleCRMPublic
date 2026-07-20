@@ -67,11 +67,12 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
 ]);
 
 const RESTRICTED_SCOPE_READ_PATHS = new Set([
-  ...[...EMPTY_SCOPE_READ_PATHS].filter((path) => ![
-    '/api/v1/email/categories',
-    '/api/v1/email/remote-content-allowlist',
-    '/api/v1/email/team-members',
-  ].includes(path)),
+  // Categories and team members are workspace-global lookups the mail UI needs to
+  // populate the category/assignee controls; a mail.triage delegate is authorized
+  // to assign them, and scope-'none' users can already read them, so restricted
+  // scopes must too. remote-content-allowlist stays excluded — it is an
+  // account/workspace security setting, not triage lookup data.
+  ...[...EMPTY_SCOPE_READ_PATHS].filter((path) => path !== '/api/v1/email/remote-content-allowlist'),
   // A delegate loads their OWN per-account signatures here, and the companion
   // upsert is already account-authorized — so a restricted-scope read must be
   // allowed too, otherwise they can save signatures they can never load. Kept out
