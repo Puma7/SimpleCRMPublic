@@ -452,6 +452,20 @@ async function resolveHttpResources(
     }));
     return { kind: 'resources', resources, mode: 'all' };
   }
+  if (resolution.kind === 'canned_response_lookup') {
+    const id = requirePositiveInt(selectorValue(req, canonicalPath, resolution.id));
+    const resources = await ports.mailResourceLookup!.resolve({
+      workspaceId,
+      target: { kind: 'canned_response', id },
+    });
+    // An account-scoped canned response authorizes that account so its delegate
+    // can autosave (PATCH) or reset (DELETE) the override. A global (accountless)
+    // or missing row resolves to no account → the workspace-global scope gate,
+    // where the restricted-scope write check keeps global rows owner/admin only.
+    return resources.length === 0
+      ? { kind: 'scope' }
+      : { kind: 'resources', resources, mode: 'all' };
+  }
 
   let target: MailResourceLookupTarget;
   if (resolution.kind === 'account') {
@@ -660,6 +674,31 @@ async function assertSupplementalHttpPermissions(
         workspaceId,
         actor,
         permission: 'mail.account.manage',
+        resource: dest[0]!,
+      });
+    }
+  }
+
+  // A canned-response PATCH may reparent the row to a different account, or
+  // globalize it (accountId → null). The base policy authorized only the row's
+  // CURRENT account (or the workspace-global gate for an already-global row), so
+  // authorize the replacement too: reparenting needs mail.draft.create on the
+  // destination account; globalizing is a workspace-wide write kept owner/admin
+  // only, matching the base scope gate for global rows.
+  if (req.method === 'PATCH' && canonicalPath === '/api/v1/email/canned-responses/:id') {
+    const raw = bodyField(req.body, 'accountId');
+    if (raw === null) {
+      if (!actor.isOwner && !actor.isAdmin) throw new MailAccessDeniedError();
+    } else if (raw !== undefined) {
+      const dest = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'account', id: requirePositiveInt(raw) },
+      });
+      if (dest.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.draft.create',
         resource: dest[0]!,
       });
     }

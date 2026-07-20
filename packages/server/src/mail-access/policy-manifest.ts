@@ -63,6 +63,11 @@ export type MailResourceResolution =
       | 'spam_learning_event';
     id: PolicyValueSelector;
   }>
+  // Resolve a canned-response row by id to its account. Unlike metadata_lookup,
+  // a canned response may be GLOBAL (account_id null); a global/missing row
+  // resolves to the workspace-global scope gate (owner/admin for restricted
+  // writes) rather than denying, so global rows stay manageable.
+  | Readonly<{ kind: 'canned_response_lookup'; id: PolicyValueSelector }>
   | Readonly<{ kind: 'notice_lookup'; notice: 'uid_validity' | 'imap_auth' }>
   | Readonly<{ kind: 'workspace_global' }>
   // Event-only: the underlying entity no longer exists (e.g. account deletion),
@@ -159,6 +164,10 @@ const bulkMessages = (source: 'body' | 'query', field: string): MailResourceReso
 const metadataPath = (
   entity: Extract<MailResourceResolution, { kind: 'metadata_lookup' }>['entity'],
 ): MailResourceResolution => ({ kind: 'metadata_lookup', entity, id: pathValue('id') });
+const cannedResponsePath = (): MailResourceResolution => ({
+  kind: 'canned_response_lookup',
+  id: pathValue('id'),
+});
 
 const permissionPolicy = (
   permission: MailPermission,
@@ -460,8 +469,12 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
   });
   assign('/api/v1/email/canned-responses/:id', {
     GET: permissionPolicy('mail.draft.create', mailScope()),
-    PATCH: permissionPolicy('mail.draft.create', mailScope()),
-    DELETE: permissionPolicy('mail.draft.create', mailScope()),
+    // Resolve the existing row to its account so an account-level delegate can
+    // autosave (PATCH) or reset (DELETE) an account-scoped override. Global rows
+    // resolve to the workspace-global scope gate, keeping restricted-scope writes
+    // owner/admin-only exactly as before.
+    PATCH: permissionPolicy('mail.draft.create', cannedResponsePath()),
+    DELETE: permissionPolicy('mail.draft.create', cannedResponsePath()),
   });
   assign('/api/v1/email/account-signatures', {
     GET: permissionPolicy('mail.metadata.read', mailScope()),

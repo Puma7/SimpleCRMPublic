@@ -561,6 +561,11 @@ describe('server mailbox ACL migration', () => {
             messageId: String(MESSAGE_A),
           }];
         }
+        if (target.kind === 'canned_response') {
+          // 8801 = account-scoped (ACCOUNT_A); 8802 = global/missing → [] (scope gate).
+          if (target.id === 8801) return [{ type: 'account', accountId: String(ACCOUNT_A) }];
+          return [];
+        }
         if (target.kind === 'thread' && target.id === THREAD_A) {
           return [
             {
@@ -1796,6 +1801,73 @@ describe('server mailbox ACL migration', () => {
     });
     expect(allowed.status).toBe(200);
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test('resolves account-scoped canned responses so their delegate can edit them', async () => {
+    const update = jest.fn(async () => ({
+      id: 8801,
+      sourceSqliteId: 8801,
+      title: 'Autosave',
+      body: 'Body',
+      accountSourceSqliteId: null,
+      accountId: ACCOUNT_A,
+      overrideKey: 'greeting',
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    }));
+    const patchBody = { title: 'Autosave' };
+    const draftCreate = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.create', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const delegateApi = createServerApi(makeHttpPorts({
+      grants: draftCreate,
+      overrides: { emailCannedResponses: { update } as unknown as ServerApiPorts['emailCannedResponses'] },
+    }));
+
+    // 8801 is account-scoped to ACCOUNT_A; the account-level draft.create delegate
+    // may autosave (PATCH) it.
+    const allowed = await delegateApi.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/canned-responses/8801',
+      principal: makePrincipal(),
+      body: patchBody,
+    });
+    expect(allowed.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(1);
+
+    // Without any grant the same PATCH is denied and the port never runs.
+    const noGrantApi = createServerApi(makeHttpPorts({
+      overrides: { emailCannedResponses: { update } as unknown as ServerApiPorts['emailCannedResponses'] },
+    }));
+    const denied = await noGrantApi.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/canned-responses/8801',
+      principal: makePrincipal(),
+      body: patchBody,
+    });
+    expect(denied.status).toBe(404);
+    expect(update).toHaveBeenCalledTimes(1);
+
+    // 8802 resolves to no account (global/missing) → the workspace-global scope
+    // gate keeps the restricted-scope write owner/admin only.
+    const globalDenied = await delegateApi.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/canned-responses/8802',
+      principal: makePrincipal(),
+      body: patchBody,
+    });
+    expect(globalDenied.status).toBe(404);
+    expect(update).toHaveBeenCalledTimes(1);
+
+    const globalAllowed = await delegateApi.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/canned-responses/8802',
+      principal: makePrincipal('owner'),
+      body: patchBody,
+    });
+    expect(globalAllowed.status).toBe(200);
+    expect(update).toHaveBeenCalledTimes(2);
   });
 
   test('requires mail.attachment.read to export raw EML', async () => {

@@ -129,7 +129,10 @@ export type MailResourceLookupTarget =
       | 'spam_decision'
       | 'spam_learning_event';
     id: number;
-  }>;
+  }>
+  // Canned responses may be global (account_id null); the resolver returns an
+  // account resource for account-scoped rows and [] for global/missing rows.
+  | Readonly<{ kind: 'canned_response'; id: number }>;
 
 export interface MailResourceLookupPort {
   resolve(input: Readonly<{

@@ -345,6 +345,12 @@ async function resolveResources(input: {
   if (resolution.kind === 'bulk_message_lookup') {
     throw new MailAsyncAuthorizationError();
   }
+  // canned_response_lookup is HTTP-only (autosave/reset of a canned override).
+  // No event or job resolves it — canned-response events are workspace_global —
+  // so fail closed here rather than fall through to the metadata builder.
+  if (resolution.kind === 'canned_response_lookup') {
+    throw new MailAsyncAuthorizationError();
+  }
 
   let target: MailResourceLookupTarget;
   if (resolution.kind === 'account') {

@@ -129,6 +129,20 @@ async function resolveTarget(
       .execute();
     return rows.flatMap(resourceFromMessageRow);
   }
+  if (target.kind === 'canned_response') {
+    const row = await trx
+      .selectFrom('email_canned_responses')
+      .select(['account_id', 'account_source_sqlite_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', target.id)
+      .executeTakeFirst();
+    // Missing row → []; the enforcer maps an empty canned-response resolution to
+    // the workspace-global scope gate (owner/admin for restricted writes), which
+    // also covers a genuinely global (accountless) canned response.
+    if (!row) return [];
+    if (row.account_id === null && row.account_source_sqlite_id === null) return [];
+    return resolveAccountColumns(trx, workspaceId, row.account_id, row.account_source_sqlite_id);
+  }
   return resolveMetadataTarget(trx, workspaceId, target);
 }
 
