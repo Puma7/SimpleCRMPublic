@@ -720,6 +720,24 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // The security-check POST reconstructs the raw message (raw_rfc822_b64, headers,
+  // body) and submits it to mailauth/Rspamd, returning Rspamd symbols and the spam
+  // breakdown — content-derived data the sibling GET /security route already gates
+  // behind mail.content.read. The base policy classifies this as a mail.triage
+  // mutation (it may persist a spam decision/status), so also require
+  // mail.content.read: a triage-only delegate without content access must not read
+  // reconstructed body content through the scan result.
+  if (req.method === 'POST' && canonicalPath === '/api/v1/email/messages/:messageId/security/check') {
+    for (const resource of baseResources) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.content.read',
+        resource,
+      });
+    }
+  }
+
   // A move whose target is "trash" runs the same softDeleteMessageRows operation
   // as the dedicated mail.delete-protected /soft-delete route, so require
   // mail.delete on top of the base mail.triage. The handler trims `view`, so

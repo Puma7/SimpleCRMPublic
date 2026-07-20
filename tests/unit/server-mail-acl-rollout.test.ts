@@ -645,6 +645,56 @@ describe('mail ACL rollout central use', () => {
     expect(deleteAlias).toHaveBeenCalledTimes(1);
   });
 
+  test('security-check POST requires content-read in addition to triage', async () => {
+    // The scan reconstructs the raw message and returns content-derived Rspamd
+    // symbols, so a triage-only delegate without content access must be blocked
+    // before the handler runs — mirroring the sibling GET /security route.
+    const runSecurityCheck = jest.fn(async () => null);
+    const withMailAccess = (mailAccess: MailAccessService) => createServerApi({
+      ...makeCentralPorts(mailAccess),
+      emailMessages: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        runSecurityCheck,
+      } as unknown as ServerApiPorts['emailMessages'],
+    });
+
+    // content-read denied → the supplemental gate rejects before the handler,
+    // so runSecurityCheck is never reached.
+    const denyContentRead = withMailAccess({
+      async assertPermission(input) {
+        if (input.permission === 'mail.content.read') throw new MailAccessDeniedError();
+      },
+      async resolveScope() { return { kind: 'all' }; },
+    });
+    await expect(denyContentRead.handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/security/check`,
+      body: { applyStatus: true },
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(runSecurityCheck).not.toHaveBeenCalled();
+
+    // With both grants the enforcer asserts triage AND content-read on the message
+    // before dispatching to the handler.
+    const calls: string[] = [];
+    const allowAll = withMailAccess({
+      async assertPermission(input) { calls.push(`assert:${input.permission}:${input.resource.type}`); },
+      async resolveScope() { return { kind: 'all' }; },
+    });
+    await allowAll.handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/security/check`,
+      body: { applyStatus: true },
+      principal: principal(),
+    });
+    expect(calls).toEqual(expect.arrayContaining([
+      'assert:mail.triage:message',
+      'assert:mail.content.read:message',
+    ]));
+    expect(runSecurityCheck).toHaveBeenCalledTimes(1);
+  });
+
   test('thread-alias PATCH authorizes the unchanged stored thread, not just the replacement', async () => {
     const deniedMessages = new Set<string>();
     const mailAccess: MailAccessService = {
