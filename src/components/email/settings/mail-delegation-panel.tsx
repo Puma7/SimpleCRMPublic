@@ -270,6 +270,22 @@ export function MailDelegationPanel() {
     setPermissions(subjectId ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
   }
 
+  const changeSubjectType = (next: "user" | "group") => {
+    const nextSubjectId = String(subjects.find((subject) => subject.type === next)?.id ?? "")
+    setSubjectType(next)
+    setSubjectId(nextSubjectId)
+    setEditingId(null)
+    setProfile("viewer")
+    setPermissions(nextSubjectId ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
+  }
+
+  const changeSubject = (nextSubjectId: string) => {
+    setSubjectId(nextSubjectId)
+    setEditingId(null)
+    setProfile("viewer")
+    setPermissions(nextSubjectId ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
+  }
+
   const save = async () => {
     if (loadingRef.current || !authorizationReadyRef.current) return
     const resource = selectedResource(resources, resourceType, accountId, folderId)
@@ -411,11 +427,7 @@ export function MailDelegationPanel() {
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={subjectType}
               disabled={!authorizationReady || loading}
-              onChange={(event) => {
-                const next = event.target.value as "user" | "group"
-                setSubjectType(next)
-                setSubjectId(String(subjects.find((subject) => subject.type === next)?.id ?? ""))
-              }}
+              onChange={(event) => changeSubjectType(event.target.value as "user" | "group")}
             >
               <option value="user">Benutzer</option>
               <option value="group">Gruppe</option>
@@ -426,7 +438,7 @@ export function MailDelegationPanel() {
             <select
               className="h-9 w-full rounded-md border bg-background px-3 text-sm"
               value={subjectId}
-              onChange={(event) => setSubjectId(event.target.value)}
+              onChange={(event) => changeSubject(event.target.value)}
               disabled={!authorizationReady || loading}
             >
               {subjectOptions.length === 0 ? <option value="">Kein auswählbares Subjekt</option> : null}

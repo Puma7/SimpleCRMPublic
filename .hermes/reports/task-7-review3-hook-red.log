@@ -1,0 +1,64 @@
+Running one project: unit
+FAIL unit tests/unit/use-email-accounts.test.tsx
+  ● useEmailAccounts ACL invalidation › keeps a revoked account empty when an older load resolves after the ACL refresh returns empty
+
+    TypeError: Cannot read properties of undefined (reading 'onEvent')
+
+      167 | function emitAclChanged() {
+      168 |   const subscription = mockSubscribe.mock.calls.at(-1)?.[0] as { onEvent: (event: unknown) => void };
+    > 169 |   act(() => subscription.onEvent({ type: 'email_acl.changed', entityType: 'email_acl', payload: {} }));
+          |                          ^
+      170 | }
+      171 |
+      172 | async function defaultInvoke(channel: string) {
+
+      at onEvent (tests/unit/use-email-accounts.test.tsx:169:26)
+      at node_modules/.pnpm/@testing-library+react@16.3_11d2d49f5a29711711a9ee76b83cb539/node_modules/@testing-library/react/dist/act-compat.js:47:24
+      at process.env.NODE_ENV.exports.act (node_modules/.pnpm/react@19.2.7/node_modules/react/cjs/react.development.js:814:22)
+      at node_modules/.pnpm/@testing-library+react@16.3_11d2d49f5a29711711a9ee76b83cb539/node_modules/@testing-library/react/dist/act-compat.js:46:25
+      at emitAclChanged (tests/unit/use-email-accounts.test.tsx:169:6)
+      at Object.emitAclChanged (tests/unit/use-email-accounts.test.tsx:62:5)
+
+  ● useEmailAccounts ACL invalidation › stays fail-closed after a refresh error, ignores stale success, and permits retry
+
+    TypeError: Cannot read properties of undefined (reading 'onEvent')
+
+      167 | function emitAclChanged() {
+      168 |   const subscription = mockSubscribe.mock.calls.at(-1)?.[0] as { onEvent: (event: unknown) => void };
+    > 169 |   act(() => subscription.onEvent({ type: 'email_acl.changed', entityType: 'email_acl', payload: {} }));
+          |                          ^
+      170 | }
+      171 |
+      172 | async function defaultInvoke(channel: string) {
+
+      at onEvent (tests/unit/use-email-accounts.test.tsx:169:26)
+      at node_modules/.pnpm/@testing-library+react@16.3_11d2d49f5a29711711a9ee76b83cb539/node_modules/@testing-library/react/dist/act-compat.js:47:24
+      at process.env.NODE_ENV.exports.act (node_modules/.pnpm/react@19.2.7/node_modules/react/cjs/react.development.js:814:22)
+      at node_modules/.pnpm/@testing-library+react@16.3_11d2d49f5a29711711a9ee76b83cb539/node_modules/@testing-library/react/dist/act-compat.js:46:25
+      at emitAclChanged (tests/unit/use-email-accounts.test.tsx:169:6)
+      at Object.emitAclChanged (tests/unit/use-email-accounts.test.tsx:97:5)
+
+  ● useEmailAccounts ACL invalidation › uses the latest StrictMode generation and ignores a pending load after unmount
+
+    expect(element).toHaveTextContent()
+
+    Expected element to have text content:
+      102
+    Received:
+      101
+
+      130 |     await waitFor(() => expect(screen.getByTestId('accounts')).toHaveTextContent('102'));
+      131 |     await act(async () => first.resolve([account(101)]));
+    > 132 |     expect(screen.getByTestId('accounts')).toHaveTextContent('102');
+          |                                            ^
+      133 |
+      134 |     fireEvent.click(screen.getByRole('button', { name: 'Retry accounts' }));
+      135 |     await waitFor(() => expect(accountRequest).toBe(3));
+
+      at Object.toHaveTextContent (tests/unit/use-email-accounts.test.tsx:132:44)
+
+Test Suites: 1 failed, 1 total
+Tests:       3 failed, 1 passed, 4 total
+Snapshots:   0 total
+Time:        1.334 s
+Ran all test suites within paths "tests/unit/use-email-accounts.test.tsx".

@@ -297,3 +297,75 @@ Base: `e850251`
 ### Restbedenken Zweite Review-Fix-Welle
 
 - Keine bestaetigten offenen Task-7-Findings. Der Browser-Harness verwendet deterministische In-Memory-Fachdaten-Ports, aber echten Browser-, HTTP-, API-, Live-/Replay- und UI-Code; die produktive Datenbanksemantik wird separat gegen das migrierte echte PostgreSQL-Harness belegt.
+
+## Dritte Review-Fix-Welle (Base `ccc6c5f`)
+
+### Umfang
+
+- Ausschliesslich die zwei bestaetigten Findings wurden bearbeitet: stale Binding-State bei Subject-Wechseln im Delegationspanel und stale Account-State durch invertierte Requests nach `email_acl.changed`.
+- Keine API-, Datenbank-, ACL-Policy- oder Task-8-Aenderung. `.superpowers/sdd/task-7-report.md` blieb unveraendert.
+
+### RED
+
+- Subject-Wechsel im Delegationspanel:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/mail-delegation-panel.test.tsx --runInBand`
+  - Ergebnis: `Test Suites: 1 failed`; `Tests: 2 failed, 4 passed`. Nach Wechsel von User zu Gruppe bzw. von `user-1` zu `user-2` blieb der Edit-Modus samt alter Binding-ID und altem Grant-Satz aktiv (`Abbrechen` weiterhin sichtbar).
+  - Evidence: `.hermes/reports/task-7-review3-panel-red.log`
+- Account-Revoke-Race:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/use-email-accounts.test.tsx --runInBand`
+  - Ergebnis: `Test Suites: 1 failed`; `Tests: 3 failed, 1 passed`. Der Hook abonnierte die ACL-Invalidierung nicht und eine zuletzt aufloesende alte StrictMode-Anfrage ersetzte Account `102` wieder durch den widerrufenen Account `101`.
+  - Evidence: `.hermes/reports/task-7-review3-hook-red.log`
+
+### GREEN
+
+- Panel- und Hook-Regressionen:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/mail-delegation-panel.test.tsx tests/unit/use-email-accounts.test.tsx --runInBand`
+  - Ergebnis: `Test Suites: 2 passed, 2 total`; `Tests: 11 passed, 11 total`. Abgedeckt sind Subject-Type-/Subject-ID-Wechsel als Create ohne alte ID, Viewer-Profil-Reset, Abbrechen, Ressourcenwechsel, normaler Initial-Load, leere und fehlerhafte Revoke-Refetches, invertierte Responses, Retry, StrictMode und Unmount.
+  - Evidence: `.hermes/reports/task-7-review3-panel-hook-green.log`
+- Fokussierte Panel-/Hook-/Mail-Shell-/Event-Suiten:
+  - Befehl: `pnpm exec jest --selectProjects unit --runTestsByPath tests/unit/mail-delegation-panel.test.tsx tests/unit/use-email-accounts.test.tsx tests/unit/mail-settings-server-client-ui.test.tsx tests/unit/email-settings-navigation.test.ts tests/unit/renderer-transport.test.ts tests/unit/server-mail-job-event-acl.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 6 passed, 6 total`; `Tests: 176 passed, 176 total`.
+  - Evidence: `.hermes/reports/task-7-review3-focused-unit-green.log`
+- Server-Event-Integration:
+  - Befehl: `pnpm exec jest --selectProjects integration --runTestsByPath tests/integration/server-mail-job-event-acl.test.ts --runInBand`
+  - Ergebnis: `Test Suites: 1 passed`; `Tests: 1 passed`.
+  - Evidence: `.hermes/reports/task-7-review3-focused-integration-green.log`
+- Vollstaendiger Server-Client Playwright:
+  - Befehl: `pnpm exec playwright test -c tests/e2e/playwright.server-client.config.ts`
+  - Ergebnis: `1 passed (4.7s)`. Profilwahl, individuelles Recht, HTTP-Revoke, sichtbares Entfernen, Account-/Folder-/Binding-Refetch, zielgefiltertes Live-/Replay-Event und Cleanup liefen im echten Browser-/HTTP-/WebSocket-Harness.
+  - Evidence: `.hermes/reports/task-7-review3-playwright-green.log`
+- Lint:
+  - Befehl: `pnpm run lint`
+  - Ergebnis: Exit `0`, `eslint . --ext ts,tsx --max-warnings 0`.
+  - Evidence: `.hermes/reports/task-7-review3-lint.log`
+- Server-Build:
+  - Befehl: `pnpm --filter @simplecrm/server build`
+  - Ergebnis: Exit `0`, `tsc -p tsconfig.json`.
+  - Evidence: `.hermes/reports/task-7-review3-server-build.log`
+- Root-Typecheck:
+  - Befehl: `pnpm run typecheck`
+  - Ergebnis: Exit `0`, vollstaendige Root-TS-Kette einschliesslich Core, Server, Desktop, Web und Electron.
+  - Evidence: `.hermes/reports/task-7-review3-root-typecheck.log`
+- Whitespace:
+  - Befehl: `git diff --check`
+  - Ergebnis: Exit `0`, keine Beanstandung.
+  - Evidence: `.hermes/reports/task-7-review3-git-diff-check.log`
+
+### Implementierung
+
+- `mail-delegation-panel.tsx`: Subject-Type und Subject-ID besitzen explizite Change-Pfade. Jeder Wechsel entfernt `editingId`, setzt Profil `viewer` und ersetzt die Permissions durch den vollstaendigen zentralen Viewer-Satz. Save erzeugt dadurch ein neues Binding per POST statt das alte Binding per PATCH umzudeuten.
+- `use-email-accounts.ts`: Jede Account-Anfrage erhaelt eine monoton steigende Generation. Nur die aktuelle Generation darf Accounts, Teammitglieder, Auswahl oder Loading-State schreiben. Ein Mount-Guard verhindert State-Aenderungen nach Unmount.
+- Bei `email_acl.changed` werden Accounts, Teammitglieder, `selectedAccountId`, Folder-/Mail-View, Kategorie und selektierte Nachricht synchron fail-closed geleert bzw. auf `inbox` gesetzt. Danach startet ein neuer autorisierter Load; bei Fehler bleibt der State leer, waehrend `loadAccounts` als Retry erhalten bleibt.
+- Tests: `tests/unit/mail-delegation-panel.test.tsx` erweitert; `tests/unit/use-email-accounts.test.tsx` neu. Ausfuehrliche Rohlogs liegen ausschliesslich unter `.hermes/reports/`.
+
+### Self-Review
+
+- Binding-Semantik: Weder Subject-Type noch Subject-ID koennen eine alte Binding-ID oder alte Einzelrechte uebernehmen. Resource-Wechsel und Abbrechen verwenden weiterhin ihre vorhandenen fail-safe Reset-Pfade.
+- Event-Race: Invalidierung erhoeht die Generation vor dem Leeren und vor dem neuen Load. Alte Account- oder Team-Member-Promises koennen deshalb weder Daten noch Loading-State zurueckschreiben. Der bestehende Mail-Shell-Revision-Refresh darf spaeter eine weitere, neuere Generation starten, ohne widerrufenen State wiederzubeleben.
+- Fehler/Retry: Ein fehlgeschlagener neuester Account-Load setzt keine alten Daten; die sofort geleerten Workspace-Auswahlen bleiben leer. Ein manueller oder revisionsgetriebener Retry kann nur mit seiner eigenen neuesten Generation setzen.
+- StrictMode/Unmount: Effect-Cleanup markiert den Hook unmounted, erhoeht die Generation und beendet jedes Event-Abonnement genau einmal. Die zweite StrictMode-Montage startet mit einer neueren Generation; spaete Ergebnisse der ersten Montage werden verworfen.
+- Leakage/Scope: Event-Inhalt, Transportfilter und Serverfilter wurden nicht geaendert. Es werden keine Subject-, Resource- oder Maildaten zusaetzlich exponiert. Keine Task-8-Datei, Migration oder der fremde alte Bericht wurde veraendert.
+
+### Restbedenken Dritte Review-Fix-Welle
+
+- Keine bestaetigten offenen Findings innerhalb der zwei verlangten Korrekturen. Der Account-Hook und die Mail-Shell besitzen weiterhin je einen ACL-getriebenen Refresh; die Generationenlogik macht diese absichtlich idempotent und race-sicher, verursacht unmittelbar nach einem Event aber moeglicherweise einen zusaetzlichen gebundenen Listen-Request.

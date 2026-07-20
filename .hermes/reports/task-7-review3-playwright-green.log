@@ -1,0 +1,6 @@
+
+Running 1 test using 1 worker
+
+  ok 1 tests\e2e\mail-delegation-server-client.spec.ts:112:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event (1.7s)
+
+  1 passed (4.7s)

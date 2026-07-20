@@ -1,5 +1,6 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MAIL_PERMISSION_PROFILES } from '@simplecrm/core';
 
 const mockInvoke = jest.fn();
 const mockSubscribe = jest.fn(() => ({ unsubscribe: jest.fn() }));
@@ -88,6 +89,57 @@ describe('MailDelegationPanel', () => {
       limit: 100,
     });
     expect(mockInvoke).toHaveBeenCalledWith('email:list-mail-delegation-bindings', { cursor: 900, limit: 100 });
+  });
+
+  test('turns an edited user binding into a create with reset permissions after subject type changes', async () => {
+    mockInvoke.mockImplementation(subjectChangeInvoke);
+    render(<MailDelegationPanel />);
+
+    await editAliceBinding();
+    expect(screen.getByRole('checkbox', { name: 'Senden', exact: true })).toBeChecked();
+    expect(screen.getByLabelText('Profil')).toHaveValue('custom');
+
+    fireEvent.change(screen.getByLabelText('Subjekt'), { target: { value: 'group' } });
+
+    expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
+    expect(screen.getByLabelText('Profil')).toHaveValue('viewer');
+    expect(screen.getByRole('checkbox', { name: 'Senden', exact: true })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+    await expectCreateFor({ type: 'group', id: 55 });
+  });
+
+  test('turns an edited binding into a create with reset permissions after subject id changes', async () => {
+    mockInvoke.mockImplementation(subjectChangeInvoke);
+    render(<MailDelegationPanel />);
+
+    await editAliceBinding();
+    fireEvent.change(screen.getByLabelText('Auswahl'), { target: { value: 'user-2' } });
+
+    expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
+    expect(screen.getByLabelText('Profil')).toHaveValue('viewer');
+    expect(screen.getByRole('checkbox', { name: 'Senden', exact: true })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+    await expectCreateFor({ type: 'user', id: 'user-2' });
+  });
+
+  test('keeps edit cancel and resource changes fail-safe', async () => {
+    mockInvoke.mockImplementation(subjectChangeInvoke);
+    render(<MailDelegationPanel />);
+
+    await editAliceBinding();
+    fireEvent.click(screen.getByRole('button', { name: 'Abbrechen' }));
+    expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
+    expect(screen.getByLabelText('Profil')).toHaveValue('viewer');
+    expect(screen.getByRole('checkbox', { name: 'Senden', exact: true })).not.toBeChecked();
+
+    await editAliceBinding();
+    fireEvent.change(screen.getByLabelText('Ressource'), { target: { value: 'folder' } });
+    await waitFor(() => expect(screen.getByLabelText('Ressource')).toHaveValue('folder'));
+    expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
+    expect(screen.getByLabelText('Profil')).toHaveValue('viewer');
+    expect(screen.getByRole('checkbox', { name: 'Senden', exact: true })).not.toBeChecked();
   });
 
   test('fails closed on ACL refresh errors, ignores late responses, and recovers only after full retry', async () => {
@@ -201,6 +253,55 @@ function binding(id: number, userId: string, label: string) {
     profile: 'custom',
     updatedAt: '2026-07-20T10:00:00.000Z',
   };
+}
+
+async function subjectChangeInvoke(channel: string, payload?: Record<string, unknown>) {
+  if (channel === 'email:list-mail-delegation-resources') return defaultInvoke(channel, payload);
+  if (channel === 'email:list-mail-delegation-subjects') {
+    if (payload?.subjectType === 'user') {
+      return {
+        items: [
+          { type: 'user', id: 'user-1', label: 'Alice' },
+          { type: 'user', id: 'user-2', label: 'Bob' },
+        ],
+        nextCursor: null,
+      };
+    }
+    return { items: [{ type: 'group', id: 55, label: 'Support-Team' }], nextCursor: null };
+  }
+  if (channel === 'email:list-mail-delegation-bindings') {
+    return {
+      items: [{
+        ...binding(900, 'user-1', 'Alice'),
+        permissions: ['mail.metadata.read', 'mail.send'],
+      }],
+      nextCursor: null,
+    };
+  }
+  if (channel === 'email:save-mail-delegation-binding') return { success: true };
+  throw new Error(`Unexpected channel ${channel}`);
+}
+
+async function editAliceBinding() {
+  expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
+  const editButton = screen.getAllByRole('button', { name: /Alice/ })
+    .find((button) => !button.getAttribute('aria-label')?.startsWith('Löschen'));
+  if (!editButton) throw new Error('missing edit binding button');
+  fireEvent.click(editButton);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Abbrechen' })).toBeVisible());
+}
+
+async function expectCreateFor(subject: { type: 'user'; id: string } | { type: 'group'; id: number }) {
+  await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+    'email:save-mail-delegation-binding',
+    expect.objectContaining({
+      subject,
+      profile: 'viewer',
+      permissions: [...MAIL_PERMISSION_PROFILES.viewer].sort(),
+    }),
+  ));
+  const saves = mockInvoke.mock.calls.filter(([channel]) => channel === 'email:save-mail-delegation-binding');
+  expect(saves.at(-1)?.[1]).not.toHaveProperty('id');
 }
 
 function refreshPass(

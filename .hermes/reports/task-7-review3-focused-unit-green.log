@@ -1,0 +1,7 @@
+Running one project: unit
+
+Test Suites: 6 passed, 6 total
+Tests:       176 passed, 176 total
+Snapshots:   0 total
+Time:        4.529 s, estimated 6 s
+Ran all test suites within paths "tests/unit/mail-delegation-panel.test.tsx", "tests/unit/use-email-accounts.test.tsx", "tests/unit/mail-settings-server-client-ui.test.tsx", "tests/unit/email-settings-navigation.test.ts", "tests/unit/renderer-transport.test.ts", "tests/unit/server-mail-job-event-acl.test.ts".
