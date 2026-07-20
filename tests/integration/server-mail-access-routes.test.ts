@@ -1810,7 +1810,7 @@ describe('server mailbox ACL migration', () => {
           ELSE date_received
         END,
         snoozed_until = CASE
-          WHEN id = ${MESSAGE_A} THEN '2026-07-20T12:00:00Z'::timestamptz
+          WHEN id = ${MESSAGE_A} THEN '2099-07-20T12:00:00Z'::timestamptz
           WHEN id = ${MESSAGE_A_SECOND} THEN '2026-07-20T10:00:00Z'::timestamptz
           ELSE snoozed_until
         END
