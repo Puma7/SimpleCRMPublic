@@ -1873,6 +1873,60 @@ describe('server mailbox ACL migration', () => {
     expect(health).toMatchObject({ status: 200, body: { data: { status: 'ok' } } });
   });
 
+  test('requires mail.account.manage to test a stored account by id', async () => {
+    const testImap = jest.fn(async () => ({ success: true as const }));
+    const storedAccountBody = {
+      accountId: ACCOUNT_A,
+      imapHost: 'imap.example.test',
+      imapPort: 993,
+      imapTls: true,
+      imapUsername: 'user',
+      imapPassword: '',
+    };
+
+    // No account.manage grant → the stored-account test is denied (404, not 403,
+    // so it can't be used as an existence probe) and the port never runs.
+    const deniedApi = createServerApi(makeHttpPorts({
+      overrides: { mailConnectionTests: { testImap, async testPop3() { return { success: true }; }, async testSmtp() { return { success: true }; } } },
+    }));
+    const denied = await deniedApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/test-imap',
+      principal: makePrincipal(),
+      body: storedAccountBody,
+    });
+    expect(denied.status).toBe(404);
+    expect(testImap).not.toHaveBeenCalled();
+
+    // With account.manage on the account, the stored-account test is allowed.
+    const manageGrant = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.account.manage', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const allowedApi = createServerApi(makeHttpPorts({
+      grants: manageGrant,
+      overrides: { mailConnectionTests: { testImap, async testPop3() { return { success: true }; }, async testSmtp() { return { success: true }; } } },
+    }));
+    const allowed = await allowedApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/test-imap',
+      principal: makePrincipal(),
+      body: storedAccountBody,
+    });
+    expect(allowed.status).toBe(200);
+    expect(testImap).toHaveBeenCalledTimes(1);
+
+    // Owner bypasses the grant map (workspace binding), so a stored-account test
+    // still works for owners/admins the same as ad-hoc credential tests.
+    const ownerAllowed = await deniedApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/test-imap',
+      principal: makePrincipal('owner'),
+      body: storedAccountBody,
+    });
+    expect(ownerAllowed.status).toBe(200);
+    expect(testImap).toHaveBeenCalledTimes(2);
+  });
+
   test('applies none, folder, message, and account scopes before message search pagination', async () => {
     await ensureScopedGrantFixtures();
     const db = createApplicationDb();

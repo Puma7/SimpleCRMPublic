@@ -47,6 +47,8 @@ import {
   requireAdmin,
   requirePrincipal,
 } from './http';
+import { MailAccessDeniedError } from '../mail-access/service';
+import type { MailAccessActor } from '../mail-access/types';
 import { JOB_STALE_LOCK_SECONDS } from '../jobs/policy';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
 import {
@@ -540,6 +542,11 @@ async function handleMailConnectionTest(
   const parsed = parseMailConnectionTestBody(req.body, protocol);
   if (!parsed.ok) return parsed.response;
 
+  if (parsed.values.accountId != null) {
+    const denied = await assertConnectionTestAccountAccess(ports, principal, parsed.values.accountId);
+    if (denied) return denied;
+  }
+
   const input = {
     workspaceId: principal.workspaceId,
     ...parsed.values,
@@ -550,6 +557,54 @@ async function handleMailConnectionTest(
       ? await ports.mailConnectionTests.testPop3(input)
       : await ports.mailConnectionTests.testSmtp(input);
   return data(200, result);
+}
+
+// The connection-test routes (test-imap/pop3/smtp) are ACL-exempt so the
+// account-creation flow can validate ad-hoc credentials before any account
+// exists. But when the caller references a STORED account by id, the test port
+// loads that account's saved credentials (via role:'system', bypassing RLS) and
+// connects with them — an oracle for whether the stored secret is still valid,
+// plus an account-existence probe. Testing a stored account is account
+// management, so require mail.account.manage on it. The route is exempt, so the
+// enforcer can't do this — the gate has to live in the handler. Denials return
+// 404 (not 403) so "exists but unmanaged" is indistinguishable from "not found".
+async function assertConnectionTestAccountAccess(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  accountId: number,
+): Promise<ApiResponse | null> {
+  if (!ports.mailAccess || !ports.mailResourceLookup) {
+    return error(503, 'mail_connection_test_unavailable', 'Mail connection test API nicht konfiguriert');
+  }
+  const actor: MailAccessActor = {
+    workspaceId: principal.workspaceId,
+    userId: principal.userId,
+    isOwner: principal.role === 'owner',
+    isAdmin: principal.role === 'admin',
+  };
+  const resources = await ports.mailResourceLookup.resolve({
+    workspaceId: principal.workspaceId,
+    target: { kind: 'account', id: accountId },
+  });
+  if (resources.length === 0) {
+    return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+  }
+  try {
+    for (const resource of resources) {
+      await ports.mailAccess.assertPermission({
+        workspaceId: principal.workspaceId,
+        actor,
+        permission: 'mail.account.manage',
+        resource,
+      });
+    }
+  } catch (caught) {
+    if (caught instanceof MailAccessDeniedError) {
+      return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+    }
+    throw caught;
+  }
+  return null;
 }
 
 async function handleEmailOAuthApp(
