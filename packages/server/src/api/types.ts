@@ -3253,6 +3253,10 @@ export type EmailUserSignatureApiPort = {
   listForUser(input: {
     workspaceId: string;
     userId: string;
+    // When present (restricted-scope caller), only signatures for accounts the
+    // caller can reach — directly or as the parent of a visible folder/message —
+    // are returned. Absent for owner/admin (full access).
+    mailScope?: MailSqlScope;
   }): Promise<EmailUserSignatureListResult>;
   upsert(input: {
     workspaceId: string;

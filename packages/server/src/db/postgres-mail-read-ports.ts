@@ -4624,7 +4624,7 @@ function emailAccountSecretIdentifier(
  * OR owns a scoped folder/message on it (so the parent shows up for folder-only
  * grants). Falls back to `false` when the scope names nothing.
  */
-function parentAwareAccountVisibility(
+export function parentAwareAccountVisibility(
   workspaceId: string,
   scope: { accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] },
 ): RawBuilder<boolean> {

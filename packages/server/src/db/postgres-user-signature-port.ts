@@ -7,6 +7,7 @@ import type {
 } from '../api/types';
 import type { ServerDatabase } from './schema';
 import { resolveEmailAccountReference } from './resolve-email-account-reference';
+import { parentAwareAccountVisibility } from './postgres-mail-read-ports';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -45,7 +46,21 @@ export function createPostgresUserSignaturePort(
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.userId)
             .executeTakeFirst();
-          const rows = await trx
+          // A restricted-scope caller must only see signatures for accounts they
+          // can reach (directly or as the parent of a visible folder/message);
+          // otherwise the response leaks account B's signature HTML and id to an
+          // account-A-only delegate. Owner/admin callers pass no scope → full list.
+          const scope = input.mailScope;
+          if (scope?.kind === 'none') {
+            return {
+              user: {
+                displayName: user?.display_name ?? '',
+                publicName: user?.public_name ?? null,
+              },
+              signatures: [],
+            };
+          }
+          let query = trx
             .selectFrom('user_account_signatures')
             .innerJoin('email_accounts', 'email_accounts.id', 'user_account_signatures.account_id')
             .select([
@@ -55,8 +70,11 @@ export function createPostgresUserSignaturePort(
               'user_account_signatures.updated_at as updated_at',
             ])
             .where('user_account_signatures.workspace_id', '=', input.workspaceId)
-            .where('user_account_signatures.user_id', '=', input.userId)
-            .execute();
+            .where('user_account_signatures.user_id', '=', input.userId);
+          if (scope?.kind === 'restricted') {
+            query = query.where(parentAwareAccountVisibility(input.workspaceId, scope));
+          }
+          const rows = await query.execute();
           const signatures: EmailUserSignatureRecord[] = rows.map((row) => ({
             accountId: legacyAccountId(row),
             signatureHtml: row.signature_html ?? '',

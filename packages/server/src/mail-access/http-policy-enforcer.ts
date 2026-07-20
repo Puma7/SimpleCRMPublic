@@ -315,6 +315,12 @@ export function portsWithMailAccessContext(
         collect: (input) => ports.emailReporting!.collect(scopedInput(input)),
       },
     } : {}),
+    ...(ports.emailUserSignatures ? {
+      emailUserSignatures: {
+        ...ports.emailUserSignatures,
+        listForUser: (input) => ports.emailUserSignatures!.listForUser(scopedInput(input)),
+      },
+    } : {}),
     ...(ports.emailGdprExport ? {
       emailGdprExport: {
         export: (input) => ports.emailGdprExport!.export(scopedInput(input)),
