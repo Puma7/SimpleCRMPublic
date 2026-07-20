@@ -21142,6 +21142,11 @@ describe('server edition foundation', () => {
     expect((rawHeaders.body as any).data.emlSource).toBe('reconstructed');
     expect((rawHeaders.body as any).data.messageIdHeader).toBe('<message-11@example.com>');
     expect(messageRawHeadersCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, id: 11 }]);
+    // Raw EML embeds attachment bytes, so the enforcer lists the message's
+    // attachments to gate suspicious downloads (R12-3). Reset the shared tracker
+    // so the dedicated attachments assertion below stays isolated.
+    expect(attachmentListCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, messageId: 11 }]);
+    attachmentListCalls.length = 0;
 
     const readReceiptState = await api.handle({
       method: 'GET',

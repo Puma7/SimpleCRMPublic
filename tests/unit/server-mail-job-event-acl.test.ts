@@ -349,6 +349,26 @@ describe('server mail job and event ACL', () => {
     }), denied)).rejects.toMatchObject({ nonRetryable: true });
   });
 
+  test('reply generation requires content-read in addition to draft-create', async () => {
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.draft.create',
+      'mail.content.read',
+    ]);
+
+    // draft.create alone is not enough — a delegate lacking content.read cannot
+    // queue generation that reads the message body.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
   test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {
     const ports = makePolicyPorts({ denyAllMailAccess: true });
     const servicePayloads = {
@@ -739,6 +759,7 @@ type DelayedJobClassification =
 function makePolicyPorts(options: {
   denyAllMailAccess?: boolean;
   denyMessages?: ReadonlySet<string>;
+  denyPermissions?: ReadonlySet<string>;
   delayedJobs?: ReadonlyMap<number, DelayedJobClassification>;
   replyParents?: ReadonlyMap<number, { replyParentMessageId: number | null; markParentDone: boolean } | null>;
   workflowGraphs?: ReadonlyMap<number, unknown>;
@@ -764,6 +785,7 @@ function makePolicyPorts(options: {
     mailAccess: {
       async assertPermission(input: { permission: string; resource: unknown; actor: unknown }) {
         if (options.denyAllMailAccess) throw new Error('mail_access_denied');
+        if (options.denyPermissions?.has(input.permission)) throw new Error('mail_access_denied');
         if (
           typeof input.resource === 'object'
           && input.resource !== null

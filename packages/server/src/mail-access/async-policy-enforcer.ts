@@ -147,6 +147,18 @@ export async function enforceMailJobPolicy(
     // A scheduled reply-send marks the reply parent done by default, a mail.triage
     // mutation the base mail.send policy never covers — recheck it on the parent.
     await assertScheduledSendReplyParentTriage(job, actor.actor, requiredPorts);
+    // Reply generation reads the message body and sends it to the AI provider, so
+    // the base mail.draft.create is not enough — also require mail.content.read.
+    if (job.type === 'ai.reply_suggestion' && resolved.resources.kind === 'resources') {
+      for (const resource of resolved.resources.resources) {
+        await requiredPorts.mailAccess.assertPermission({
+          workspaceId: job.workspaceId,
+          actor: actor.actor,
+          permission: 'mail.content.read',
+          resource,
+        });
+      }
+    }
     return resolved.authorization;
   } catch (error) {
     if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);

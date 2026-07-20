@@ -676,6 +676,27 @@ async function assertSupplementalHttpPermissions(
     });
   }
 
+  // Queuing (reply-suggestion/ensure) or generating (reply-draft) an AI reply
+  // reads the message body and sends it to the AI provider, so it needs
+  // mail.content.read in addition to the base mail.draft.create — the two grants
+  // are independent, and a draft-create-only delegate must not read the body here.
+  if (
+    req.method === 'POST'
+    && (
+      canonicalPath === '/api/v1/email/messages/:messageId/reply-suggestion/ensure'
+      || canonicalPath === '/api/v1/email/messages/:messageId/reply-draft'
+    )
+  ) {
+    for (const resource of baseResources) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.content.read',
+        resource,
+      });
+    }
+  }
+
   // A move whose target is "trash" runs the same softDeleteMessageRows operation
   // as the dedicated mail.delete-protected /soft-delete route, so require
   // mail.delete on top of the base mail.triage. The handler trims `view`, so
@@ -938,6 +959,27 @@ async function assertSupplementalHttpPermissions(
         permission: 'mail.attachment.read',
         resource,
       });
+    }
+    // Raw EML embeds every attachment's decoded bytes, so a message carrying a
+    // dangerous (executable/script) attachment additionally requires the
+    // suspicious-download grant — the attachment-content route gates it, so this
+    // path must too, else a delegate without it exfiltrates the executable here.
+    if (ports.emailAttachments?.listForMessage) {
+      for (const resource of baseResources) {
+        if (resource.type !== 'message') continue;
+        const attachments = await ports.emailAttachments.listForMessage({
+          workspaceId,
+          messageId: Number(resource.messageId),
+        });
+        if (attachments.items.some((item) => isPotentiallyDangerousAttachment(item.filename))) {
+          await ports.mailAccess!.assertPermission({
+            workspaceId,
+            actor,
+            permission: 'mail.attachment.suspicious_download',
+            resource,
+          });
+        }
+      }
     }
   }
 
