@@ -2654,6 +2654,55 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('editing an unclaimed pending scheduled draft invalidates its pending send', async () => {
+    await ensureScheduledSendProvenanceSchema();
+    const db = createApplicationDb();
+    const draftId = 88108;
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      // A draft scheduled by USER_SEND that the ticker has NOT yet claimed (no
+      // scheduled_send_claimed_at row), so it is still editable.
+      await client.query(`
+        INSERT INTO email_messages (
+          id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+          account_id, folder_id, uid, subject, body_text, folder_kind,
+          scheduled_send_at, scheduled_send_actor_user_id
+        ) VALUES (
+          ${draftId}, '${WORKSPACE_A}', ${draftId}, 1, 11,
+          ${ACCOUNT_A}, ${FOLDER_A}, -${draftId}, 'Scheduled by sender', 'Plain body', 'draft',
+          '2026-08-01T10:00:00.000Z', '${USER_SEND}'
+        )
+      `);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`);
+
+      const port = createPostgresEmailMessageReadPort({ db });
+      // An editor (mail.draft.edit, no mail.send) can rewrite content; the edit
+      // succeeds, but the pending send must be invalidated so the ticker cannot
+      // later transmit the editor's content under the scheduler's provenance.
+      const updated = await port.updateComposeDraft?.({
+        workspaceId: WORKSPACE_A,
+        messageId: draftId,
+        values: { subject: 'Rewritten by editor' },
+      });
+      expect(updated).toMatchObject({ ok: true });
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const rows = await client.query<{ subject: string; scheduled_send_at: string | null; scheduled_send_actor_user_id: string | null }>(`
+        SELECT subject, scheduled_send_at, scheduled_send_actor_user_id
+        FROM email_messages
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}
+      `);
+      expect(rows.rows[0]?.subject).toBe('Rewritten by editor');
+      expect(rows.rows[0]?.scheduled_send_at).toBeNull();
+      expect(rows.rows[0]?.scheduled_send_actor_user_id).toBeNull();
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`DELETE FROM email_messages WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}`).catch(() => undefined);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
   test('scheduled-send approval validates non-persistently then persists with schedule atomically', async () => {
     await ensureScheduledSendProvenanceSchema();
     const db = createApplicationDb({ maxConnections: 2 });

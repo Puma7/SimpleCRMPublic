@@ -1038,6 +1038,17 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               ...(input.values.trackingOverride === undefined ? {} : {
                 tracking_override: input.values.trackingOverride,
               }),
+              // Editing draft content invalidates any pending (unclaimed) scheduled
+              // send: otherwise an editor with mail.draft.edit but not mail.send could
+              // replace the recipients/body/attachments of a draft another user
+              // scheduled, and the ticker would transmit the editor's content under
+              // the scheduler's mail.send provenance. Re-scheduling then goes back
+              // through the mail.send-gated /scheduled-send route. Claimed sends were
+              // already rejected above by assertNoActiveScheduledSendClaimTx, so this
+              // only clears not-yet-claimed schedules (null -> null when none).
+              scheduled_send_at: null,
+              scheduled_send_actor_user_id: null,
+              scheduled_send_trusted_service_principal: null,
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)

@@ -79,6 +79,7 @@ import {
   runRlsCheckCli,
   type RlsCheckPgClient,
 } from '../../packages/server/src/cli/rls-check';
+import { POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../../packages/server/src/jobs';
 import {
   SERVER_POSTGRES_MAJOR,
   CI_SMOKE_ACCESS_TOKEN_SECRET,
@@ -30982,6 +30983,9 @@ describe('server edition foundation', () => {
         applyStatus: true,
         runSecurityCheck: true,
         enqueueInboundWorkflows: true,
+        // R18-5: server-only marker so the worker re-verifies current owner/admin
+        // status before running the retry's system-role side effects.
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: true,
       },
       maxAttempts: 3,
     }]);
@@ -33876,12 +33880,22 @@ describe('server edition foundation', () => {
     const api = createServerApi(makeServerApiPorts({
       auditEvents,
       events,
+      // The delayed job is backed by a read-only-graph workflow, so a non-admin
+      // manager's resume/context edit passes the side-effect admin gate.
+      workflows: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 23 ? makeWorkflowRecord(23) : null;
+        },
+      },
       workflowDelayedJobs: {
         async list() {
           return { items: [], nextCursor: null };
         },
-        async get() {
-          return null;
+        async get(input) {
+          return input.id === 87 ? withRuntimeLeaks(createdJob) : null;
         },
         async create(input) {
           createCalls.push(input);
@@ -33995,6 +34009,76 @@ describe('server edition foundation', () => {
     expect(JSON.stringify(events)).not.toContain('delayed-context-secret');
     expect(JSON.stringify(auditEvents)).not.toContain('updated-delayed-context-secret');
     expect(JSON.stringify(events)).not.toContain('updated-delayed-context-secret');
+  });
+
+  test('non-admin cannot redirect a side-effecting delayed job resume node into a writing node', async () => {
+    const updateCalls: unknown[] = [];
+    const existingJob: WorkflowDelayedJobRecord = {
+      ...makeWorkflowDelayedJobRecord(87, true),
+      workflowId: 23,
+      messageId: 11,
+      resumeNodeId: 'wait-1',
+      executeAt: '2026-06-03T12:00:00.000Z',
+      context: { secret: 'ctx' },
+      status: 'pending',
+    };
+    const makeApi = (graph: unknown) => createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? { ...makeWorkflowRecord(23), graph } : null; },
+      },
+      workflowDelayedJobs: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get(input) { return input.id === 87 ? existingJob : null; },
+        async update(input) { updateCalls.push(input); return { ok: true, job: existingJob }; },
+      },
+    }));
+    // A live send node makes the backing workflow.execute side-effecting; a logic
+    // node keeps it read-only.
+    const sideEffectGraph = { nodes: [{ id: 'send-1', type: 'action', data: { nodeType: 'email.send' } }], edges: [] };
+    const readOnlyGraph = { nodes: [{ id: 'branch-1', type: 'action', data: { nodeType: 'logic.branch' } }], edges: [] };
+    const manager = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
+    const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    // Non-admin manager redirecting a side-effecting job's resume node → 403, update
+    // port never reached (execution would otherwise run the node as the admin).
+    const denied = await makeApi(sideEffectGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { resumeNodeId: 'send-1' },
+      principal: manager,
+    });
+    expect(denied.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    // Reschedule / cancel edits stay open to the manager even for a side-effecting job.
+    const rescheduled = await makeApi(sideEffectGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { executeAt: '2026-06-05T12:00:00.000Z' },
+      principal: manager,
+    });
+    expect(rescheduled.status).toBe(200);
+
+    // Admin may redirect the same side-effecting job.
+    const adminRedirect = await makeApi(sideEffectGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { resumeNodeId: 'send-1' },
+      principal: admin,
+    });
+    expect(adminRedirect.status).toBe(200);
+
+    // No over-restriction: a manager may still redirect a read-only-graph job.
+    updateCalls.length = 0;
+    const readOnlyRedirect = await makeApi(readOnlyGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { resumeNodeId: 'branch-1' },
+      principal: manager,
+    });
+    expect(readOnlyRedirect.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
   });
 
   test('server workflow delayed job mutation routes reject unsafe payloads and missing references', async () => {

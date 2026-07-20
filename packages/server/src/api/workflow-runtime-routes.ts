@@ -26,10 +26,12 @@ import type {
   WorkflowVersionMutationInput,
   WorkflowVersionRecord,
 } from './types';
+import { workflowGraphHasSideEffectNode } from '@simplecrm/core';
 import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requireCapability,
   requirePrincipal,
 } from './http';
@@ -966,6 +968,33 @@ async function handleDelayedJobUpdate(
     requireStatus: false,
   });
   if (!parsed.ok) return parsed.response;
+
+  // Redirecting a delayed job (resumeNodeId/context) does not re-enqueue the backing
+  // workflow.execute — that job keeps the initiating admin's actorUserId, so at
+  // resume the async side-effect gate (which only denies non-admin ACTORS) is
+  // bypassed and the chosen node runs under the admin's authority. A non-admin
+  // workflows.manage holder could thus jump an admin-originated run to a writing node
+  // the live-execution route (workflow-routes.ts) forbids them from running. Mirror
+  // that route's admin gate for redirect edits on a side-effecting workflow. Reschedule
+  // (executeAt) and cancel (status) edits stay open to workflows.manage.
+  if (
+    (parsed.values.resumeNodeId !== undefined || parsed.values.context !== undefined)
+    && !requireAdmin(principal)
+  ) {
+    if (!ports.workflows) return unavailable('workflows_unavailable', 'Workflow API nicht konfiguriert');
+    const existing = await ports.workflowDelayedJobs.get({
+      workspaceId: principal.workspaceId,
+      id,
+      includeContext: false,
+    });
+    if (!existing) return error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
+    if (existing.workflowId !== null) {
+      const workflow = await ports.workflows.get({ workspaceId: principal.workspaceId, id: existing.workflowId });
+      if (workflow && workflowGraphHasSideEffectNode(workflow.graph)) {
+        return error(403, 'forbidden', 'Umleiten von Workflows mit schreibenden Knoten erfordert Adminrechte');
+      }
+    }
+  }
 
   const result = await ports.workflowDelayedJobs.update({
     workspaceId: principal.workspaceId,
