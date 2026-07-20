@@ -554,12 +554,20 @@ async function assertSupplementalHttpPermissions(
     if (target.length !== 1) throw new MailAccessDeniedError();
     const draftAccountId = baseResources[0]?.accountId;
     if (draftAccountId !== target[0]?.accountId) {
-      await ports.mailAccess!.assertPermission({
-        workspaceId,
-        actor,
-        permission: 'mail.send_as',
-        resource: target[0]!,
-      });
+      // Sending from a different account transmits through THAT account's SMTP
+      // credentials, so the base mail.send check on the draft's account is not
+      // enough. mail.send_as is an additional identity right, not permission to
+      // transmit — require BOTH mail.send and mail.send_as on the replacement
+      // account, else a delegate with send on A but only send-as on B could push
+      // A's draft out through B's credentials.
+      for (const permission of ['mail.send', 'mail.send_as'] as const) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission,
+          resource: target[0]!,
+        });
+      }
     }
   }
 
@@ -818,18 +826,26 @@ async function assertSupplementalHttpPermissions(
   // whose extension is an executable/script type requires the extra
   // mail.attachment.suspicious_download grant on top of mail.attachment.read, so
   // the "Verdächtige Anhänge laden" delegation actually gates risky downloads.
+  const isPgpDecrypt = req.method === 'POST'
+    && canonicalPath === '/api/v1/pgp/attachments/:attachmentId/decrypt';
   if (
     ports.emailAttachments
     && (
       (req.method === 'GET' && canonicalPath === '/api/v1/email/attachments/:attachmentId/content')
-      || (req.method === 'POST' && canonicalPath === '/api/v1/pgp/attachments/:attachmentId/decrypt')
+      || isPgpDecrypt
     )
   ) {
     const attachmentId = requirePositiveInt(
       selectorValue(req, canonicalPath, { source: 'path', field: 'attachmentId' }),
     );
     const attachment = await ports.emailAttachments.get({ workspaceId, id: attachmentId });
-    if (attachment && isPotentiallyDangerousAttachment(attachment.filename)) {
+    // PGP decrypt returns the DECRYPTED name (invoice.exe.pgp → invoice.exe), so
+    // classify the post-decryption name — otherwise the stored ".pgp" extension
+    // reads as safe and the executable payload bypasses suspicious_download.
+    const classifiedName = attachment
+      ? (isPgpDecrypt ? pgpDecryptedAttachmentName(attachment.filename) : attachment.filename)
+      : undefined;
+    if (classifiedName !== undefined && isPotentiallyDangerousAttachment(classifiedName)) {
       for (const resource of baseResources) {
         await ports.mailAccess!.assertPermission({
           workspaceId,
@@ -932,6 +948,15 @@ function bodyField(body: unknown, field: string): unknown {
 
 function isBodyObject(body: unknown): body is Record<string, unknown> {
   return body !== null && typeof body === 'object' && !Array.isArray(body);
+}
+
+// Mirrors pgpDecryptedAttachmentName in pgp/message-crypto-port.ts: the decrypt
+// route derives the returned filename by stripping a trailing .pgp/.gpg/.asc, so
+// the suspicious-attachment gate must classify that post-decryption name.
+function pgpDecryptedAttachmentName(filename: string): string {
+  const base = filename.trim() || 'attachment';
+  const stripped = base.replace(/\.(?:pgp|gpg|asc)$/i, '').trim();
+  return stripped || `${base}.decrypted`;
 }
 
 function requirePositiveInt(value: unknown): number {

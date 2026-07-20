@@ -1720,6 +1720,12 @@ describe('server mailbox ACL migration', () => {
     attachmentAndSendAs.set('mail.send_as', [
       { resourceType: 'account', accountId: ACCOUNT_A_OTHER, folderId: null, messageId: null },
     ]);
+    // Transmitting through the replacement account requires mail.send on it too,
+    // not just mail.send_as (R10-3).
+    attachmentAndSendAs.set('mail.send', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+      { resourceType: 'account', accountId: ACCOUNT_A_OTHER, folderId: null, messageId: null },
+    ]);
     // compose/send rewrites the stored draft from request content, so it also
     // requires mail.draft.edit on the draft (R9-3); grant it on the draft account.
     attachmentAndSendAs.set('mail.draft.edit', [
@@ -1868,6 +1874,117 @@ describe('server mailbox ACL migration', () => {
     });
     expect(globalAllowed.status).toBe(200);
     expect(update).toHaveBeenCalledTimes(2);
+  });
+
+  test('requires mail.send on the replacement account, not only mail.send_as', async () => {
+    const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A_OTHER }));
+    const sendBody = {
+      accountId: ACCOUNT_A_OTHER,
+      draftMessageId: MESSAGE_A,
+      subject: 'Cross-account',
+      bodyText: 'Body',
+      to: 'recipient@example.test',
+    };
+    // send + draft.edit on the draft account A, send_as on B — but NOT mail.send
+    // on B. Transmitting through B's SMTP still requires mail.send on B.
+    const grants = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.send', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.draft.edit', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.send_as', [{ resourceType: 'account', accountId: ACCOUNT_A_OTHER, folderId: null, messageId: null }]],
+    ]);
+    const api = createServerApi(makeHttpPorts({
+      grants,
+      overrides: { emailMessages: { get: async () => makeMessageRecord(MESSAGE_A) }, emailComposeSender: { send } },
+    }));
+    const denied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: sendBody,
+    });
+    expect(denied.status).toBe(404);
+    expect(send).not.toHaveBeenCalled();
+
+    // Add mail.send on B → the cross-account send is authorized.
+    const withSendB = new Map(grants);
+    withSendB.set('mail.send', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+      { resourceType: 'account', accountId: ACCOUNT_A_OTHER, folderId: null, messageId: null },
+    ]);
+    const allowedApi = createServerApi(makeHttpPorts({
+      grants: withSendB,
+      overrides: { emailMessages: { get: async () => makeMessageRecord(MESSAGE_A) }, emailComposeSender: { send } },
+    }));
+    const allowed = await allowedApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: sendBody,
+    });
+    expect(allowed.status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  test('classifies the decrypted PGP attachment name for the suspicious-download grant', async () => {
+    const attachmentRecord = (filename: string) => ({
+      get: async () => ({
+        id: 701,
+        sourceSqliteId: 701,
+        messageSourceSqliteId: Number(MESSAGE_A),
+        messageId: MESSAGE_A,
+        filename,
+        contentType: 'application/octet-stream',
+        sizeBytes: 10,
+        contentSha256: null,
+        updatedAt: '2026-07-19T12:00:00.000Z',
+      }),
+    });
+    const attachmentReadOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.attachment.read', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+
+    // invoice.exe.pgp decrypts to invoice.exe — dangerous → suspicious_download
+    // required. Without it, the enforcer denies before the decrypt handler runs.
+    const dangerousApi = createServerApi(makeHttpPorts({
+      grants: attachmentReadOnly,
+      overrides: { emailAttachments: attachmentRecord('invoice.exe.pgp') as unknown as ServerApiPorts['emailAttachments'] },
+    }));
+    const dangerousDenied = await dangerousApi.handle({
+      method: 'POST',
+      path: '/api/v1/pgp/attachments/701/decrypt',
+      principal: makePrincipal(),
+      body: {},
+    });
+    expect(dangerousDenied).toMatchObject({ status: 404, body: { error: { code: 'mail_resource_not_found' } } });
+
+    // notes.txt.pgp decrypts to notes.txt — safe → attachment.read alone suffices,
+    // so the enforcer passes and the handler is reached (503, no pgp port wired).
+    const safeApi = createServerApi(makeHttpPorts({
+      grants: attachmentReadOnly,
+      overrides: { emailAttachments: attachmentRecord('notes.txt.pgp') as unknown as ServerApiPorts['emailAttachments'] },
+    }));
+    const safePassed = await safeApi.handle({
+      method: 'POST',
+      path: '/api/v1/pgp/attachments/701/decrypt',
+      principal: makePrincipal(),
+      body: {},
+    });
+    expect(safePassed.status).toBe(503);
+
+    // Dangerous decrypted name WITH the grant → the enforcer passes too.
+    const grantedApi = createServerApi(makeHttpPorts({
+      grants: new Map(attachmentReadOnly).set('mail.attachment.suspicious_download', [
+        { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+      ]),
+      overrides: { emailAttachments: attachmentRecord('invoice.exe.pgp') as unknown as ServerApiPorts['emailAttachments'] },
+    }));
+    const grantedPassed = await grantedApi.handle({
+      method: 'POST',
+      path: '/api/v1/pgp/attachments/701/decrypt',
+      principal: makePrincipal(),
+      body: {},
+    });
+    expect(grantedPassed.status).toBe(503);
   });
 
   test('requires mail.attachment.read to export raw EML', async () => {
