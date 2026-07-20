@@ -515,6 +515,23 @@ async function assertSupplementalHttpPermissions(
   ports: ServerApiPorts,
 ): Promise<void> {
   if (canonicalPath === '/api/v1/email/compose/send') {
+    // Sending rewrites the stored draft row with the caller-supplied subject,
+    // body, recipients and attachments before it transmits (mail-compose-send
+    // updateDraftForSend), so a send is a draft mutation, not just a transmit.
+    // The base policy only requires mail.send; also require mail.draft.edit on
+    // the draft so a custom send-only delegate (mail.send without mail.draft.edit)
+    // cannot replace another user's draft content and recipients at send time.
+    // Every built-in sending profile (editor/sender/manager) already includes
+    // mail.draft.edit, and the compose UI persists the draft (mail.draft.edit)
+    // before every send, so this only closes the direct-API send-without-edit gap.
+    for (const resource of baseResources) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.draft.edit',
+        resource,
+      });
+    }
     const accountId = requirePositiveInt(bodyField(req.body, 'accountId'));
     const target = await ports.mailResourceLookup!.resolve({
       workspaceId,

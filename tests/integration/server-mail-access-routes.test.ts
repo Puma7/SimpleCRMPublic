@@ -1715,6 +1715,11 @@ describe('server mailbox ACL migration', () => {
     attachmentAndSendAs.set('mail.send_as', [
       { resourceType: 'account', accountId: ACCOUNT_A_OTHER, folderId: null, messageId: null },
     ]);
+    // compose/send rewrites the stored draft from request content, so it also
+    // requires mail.draft.edit on the draft (R9-3); grant it on the draft account.
+    attachmentAndSendAs.set('mail.draft.edit', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+    ]);
     const elevatedApi = createServerApi(makeHttpPorts({
       grants: attachmentAndSendAs,
       overrides: {
@@ -1742,6 +1747,55 @@ describe('server mailbox ACL migration', () => {
     });
     expect(attachmentAllowed.status).toBe(200);
     expect(sendAsAllowed.status).toBe(200);
+  });
+
+  test('requires mail.draft.edit to send (send rewrites the stored draft)', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A }));
+    const sendBody = {
+      accountId: ACCOUNT_A,
+      draftMessageId: MESSAGE_A,
+      subject: 'Rewritten',
+      bodyText: 'Injected content',
+      to: 'recipient@example.test',
+    };
+
+    // send + content, but NOT draft.edit → a custom send-only delegate cannot
+    // rewrite another user's draft content at send time.
+    const sendOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.content.read', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.send', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const sendOnlyApi = createServerApi(makeHttpPorts({
+      grants: sendOnly,
+      overrides: { emailMessages: { get: getMessage }, emailComposeSender: { send } },
+    }));
+    const denied = await sendOnlyApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: sendBody,
+    });
+    expect(denied.status).toBe(404);
+    expect(send).not.toHaveBeenCalled();
+
+    // Add draft.edit → the send is authorized.
+    const sendAndEdit = new Map(sendOnly);
+    sendAndEdit.set('mail.draft.edit', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+    ]);
+    const editApi = createServerApi(makeHttpPorts({
+      grants: sendAndEdit,
+      overrides: { emailMessages: { get: getMessage }, emailComposeSender: { send } },
+    }));
+    const allowed = await editApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: sendBody,
+    });
+    expect(allowed.status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   test('requires mail.attachment.read to export raw EML', async () => {
