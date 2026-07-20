@@ -1744,6 +1744,98 @@ describe('server mailbox ACL migration', () => {
     expect(sendAsAllowed.status).toBe(200);
   });
 
+  test('requires mail.attachment.read to export raw EML', async () => {
+    const getRawHeaders = jest.fn(async () => ({
+      rawEml: 'From: a@example.test\r\n\r\nbody',
+      emlSource: 'original' as const,
+      rawHeaders: 'From: a@example.test',
+      messageIdHeader: '<msg@example.test>',
+      fromJson: null,
+    }));
+    const contentOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.content.read', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const contentApi = createServerApi(makeHttpPorts({
+      grants: contentOnly,
+      overrides: { emailMessages: { getRawHeaders } as unknown as ServerApiPorts['emailMessages'] },
+    }));
+    const denied = await contentApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}/raw-headers`,
+      principal: makePrincipal(),
+    });
+    expect(denied.status).toBe(404);
+    expect(getRawHeaders).not.toHaveBeenCalled();
+
+    const withAttachment = new Map(contentOnly);
+    withAttachment.set('mail.attachment.read', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+    ]);
+    const attachmentApi = createServerApi(makeHttpPorts({
+      grants: withAttachment,
+      overrides: { emailMessages: { getRawHeaders } as unknown as ServerApiPorts['emailMessages'] },
+    }));
+    const allowed = await attachmentApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}/raw-headers`,
+      principal: makePrincipal(),
+    });
+    expect(allowed.status).toBe(200);
+    expect(getRawHeaders).toHaveBeenCalledTimes(1);
+  });
+
+  test('requires mail.account.manage to remember a remote-content sender/domain', async () => {
+    const setRemoteContentPolicy = jest.fn(async () => ({
+      ok: true as const,
+      result: { policy: 'allowed_once' as const, allowRemote: true },
+      message: makeMessageRecord(MESSAGE_A),
+    }));
+    const triageOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.triage', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const triageApi = createServerApi(makeHttpPorts({
+      grants: triageOnly,
+      overrides: { emailMessages: { setRemoteContentPolicy } as unknown as ServerApiPorts['emailMessages'] },
+    }));
+
+    // A plain per-message decision (no remember) stays pure triage.
+    const plainAllowed = await triageApi.handle({
+      method: 'PATCH',
+      path: `/api/v1/email/messages/${MESSAGE_A}/remote-content-policy`,
+      principal: makePrincipal(),
+      body: { policy: 'allowed_once' },
+    });
+    expect(plainAllowed.status).toBe(200);
+    expect(setRemoteContentPolicy).toHaveBeenCalledTimes(1);
+
+    // rememberSender persists a workspace-wide allowlist row → needs account.manage.
+    const rememberDenied = await triageApi.handle({
+      method: 'PATCH',
+      path: `/api/v1/email/messages/${MESSAGE_A}/remote-content-policy`,
+      principal: makePrincipal(),
+      body: { policy: 'allowed_sender', rememberSender: true },
+    });
+    expect(rememberDenied.status).toBe(404);
+    expect(setRemoteContentPolicy).toHaveBeenCalledTimes(1);
+
+    const withManage = new Map(triageOnly);
+    withManage.set('mail.account.manage', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+    ]);
+    const manageApi = createServerApi(makeHttpPorts({
+      grants: withManage,
+      overrides: { emailMessages: { setRemoteContentPolicy } as unknown as ServerApiPorts['emailMessages'] },
+    }));
+    const rememberAllowed = await manageApi.handle({
+      method: 'PATCH',
+      path: `/api/v1/email/messages/${MESSAGE_A}/remote-content-policy`,
+      principal: makePrincipal(),
+      body: { policy: 'allowed_domain', rememberDomain: true },
+    });
+    expect(rememberAllowed.status).toBe(200);
+    expect(setRemoteContentPolicy).toHaveBeenCalledTimes(2);
+  });
+
   test('preserves exempt checks and non-mail dispatch', async () => {
     const testImap = jest.fn(async () => ({ success: true as const }));
     const api = createServerApi(makeHttpPorts({

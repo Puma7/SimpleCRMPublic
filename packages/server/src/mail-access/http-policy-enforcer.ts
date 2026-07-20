@@ -806,6 +806,44 @@ async function assertSupplementalHttpPermissions(
       });
     }
   }
+
+  // Returning the raw EML source streams the full MIME body — including every
+  // attachment's decoded bytes — through a single mail.content.read gate. The
+  // dedicated attachment-content route additionally requires mail.attachment.read
+  // (and suspicious_download for risky extensions), so a content-only delegate
+  // could otherwise exfiltrate attachments this same message denies them on the
+  // attachment route. Require mail.attachment.read on top of the base check.
+  if (req.method === 'GET' && canonicalPath === '/api/v1/email/messages/:messageId/raw-headers') {
+    for (const resource of baseResources) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.attachment.read',
+        resource,
+      });
+    }
+  }
+
+  // Setting a per-message remote-content decision is triage, but rememberSender /
+  // rememberDomain additionally persist a row into email_remote_content_allowlist
+  // scoped by workspace + sender/domain (NOT by account), which governs remote
+  // content loading for ALL current and future messages workspace-wide. That is
+  // account/workspace configuration, so require mail.account.manage before either
+  // remember option is honoured (the handler rejects both being true at once).
+  if (req.method === 'PATCH' && canonicalPath === '/api/v1/email/messages/:messageId/remote-content-policy') {
+    const remember = bodyField(req.body, 'rememberSender') === true
+      || bodyField(req.body, 'rememberDomain') === true;
+    if (remember) {
+      for (const resource of baseResources) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission: 'mail.account.manage',
+          resource,
+        });
+      }
+    }
+  }
 }
 
 function isScopedWorkflowDelayedJobMutation(method: string, canonicalPath: string): boolean {

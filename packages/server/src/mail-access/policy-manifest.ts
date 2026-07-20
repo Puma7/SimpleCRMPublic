@@ -533,7 +533,11 @@ function assignSupplementalProtectedPolicies(assign: AssignRoutePolicy): void {
   });
   assign('/api/v1/email/notices/uid-validity', {
     GET: permissionPolicy('mail.metadata.read', { kind: 'notice_lookup', notice: 'uid_validity' }),
-    DELETE: permissionPolicy('mail.metadata.read', { kind: 'notice_lookup', notice: 'uid_validity' }),
+    // Dismissing a UID-validity (mailbox reset / data-recovery) warning hides it
+    // workspace-wide. It is keyed by noticeId (no account handle), so gate the
+    // dismissal on account management — via scope this admits owners/admins only,
+    // matching the imap-auth dismissal hardening.
+    DELETE: permissionPolicy('mail.account.manage', { kind: 'notice_lookup', notice: 'uid_validity' }),
   });
   assign('/api/v1/email/notices/imap-auth', {
     GET: permissionPolicy('mail.metadata.read', { kind: 'notice_lookup', notice: 'imap_auth' }),
