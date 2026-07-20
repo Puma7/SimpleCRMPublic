@@ -552,7 +552,11 @@ describe('mail ACL rollout central use', () => {
     await filterMailEventForPrincipal(mailEvent(), { principal: principal(), ports });
 
     expect(calls).toEqual([
+      // GET /messages authorizes on mail.metadata.read but also resolves the
+      // mail.content.read scope so the read port can redact body-derived content
+      // per row for a metadata-only delegate.
       'scope:mail.metadata.read',
+      'scope:mail.content.read',
       'assert:mail.triage:message',
       'assert:mail.metadata.read:message',
     ]);
