@@ -292,7 +292,7 @@ describe('server mail job and event ACL', () => {
 
   test('rechecks workflow.execute side-effect privilege against the current graph', async () => {
     const sideEffecting = { nodes: [{ type: 'action', data: { nodeType: 'email.delete_server' } }] };
-    const readOnly = { nodes: [{ type: 'trigger' }, { type: 'action', data: { nodeType: 'ai.classify' } }] };
+    const readOnly = { nodes: [{ type: 'trigger' }, { type: 'action', data: { nodeType: 'email.sender_filter' } }] };
     const ports = makePolicyPorts({
       workflowGraphs: new Map<number, unknown>([[700, sideEffecting], [701, readOnly]]),
     });

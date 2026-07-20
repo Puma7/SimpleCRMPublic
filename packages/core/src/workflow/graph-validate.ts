@@ -71,7 +71,9 @@ const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'jtl.lookup',
   'jtl.order_context',
   'jtl.prepare_action',
-  'ai.classify',
+  // NOTE: ai.classify is intentionally NOT here — it persists a tag on the message
+  // (addClassificationTag), a mail.triage mutation, so a graph containing it is
+  // side-effecting and a non-admin live run must be blocked.
   'ai.reply_suggestion',
 ]);
 

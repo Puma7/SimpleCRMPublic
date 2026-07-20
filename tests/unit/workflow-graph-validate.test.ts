@@ -350,11 +350,21 @@ describe('workflowGraphHasSideEffectNode', () => {
           { id: 'l1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'v', value: '1' } } },
           { id: 'l2', type: 'registry', data: { nodeType: 'logic.delay', config: { delaySeconds: 60 } } },
           { id: 'r1', type: 'registry', data: { nodeType: 'email.read_tracking_evidence', config: {} } },
-          { id: 'r2', type: 'registry', data: { nodeType: 'ai.classify', config: {} } },
           { id: 'r3', type: 'registry', data: { nodeType: 'email.sender_filter', config: {} } },
         ]),
       ),
     ).toBe(false);
+  });
+
+  it('flags ai.classify as side-effecting (it persists a tag)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([
+          trigger,
+          { id: 'r2', type: 'registry', data: { nodeType: 'ai.classify', config: {} } },
+        ]),
+      ),
+    ).toBe(true);
   });
 
   it('flags a writing registry node (email.delete_server)', () => {

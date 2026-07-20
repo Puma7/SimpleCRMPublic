@@ -128,10 +128,12 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
     resource: optionalMessageJobResource(),
   },
   {
+    // Classification persists a tag on the message (addClassificationTag), the
+    // same mutation the tag routes protect with mail.triage — not a plain read.
     type: 'ai.classify',
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
-    permission: 'mail.content.read',
+    permission: 'mail.triage',
     resource: messageJobResource(),
   },
   {
