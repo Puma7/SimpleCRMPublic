@@ -33,8 +33,15 @@ export type ResolveMailAccessGrantsInput = Readonly<{
   permission: MailPermission;
 }>;
 
+export type MailAclRolloutEvaluationContext = Readonly<{
+  workspaceId: string;
+}>;
+
 export interface MailAccessPort {
-  resolveGrants(input: ResolveMailAccessGrantsInput): Promise<readonly MailAccessGrant[]>;
+  resolveGrants(
+    input: ResolveMailAccessGrantsInput,
+    evaluationContext?: MailAclRolloutEvaluationContext,
+  ): Promise<readonly MailAccessGrant[]>;
 }
 
 export interface MailAccessService {
@@ -54,6 +61,15 @@ export interface MailAccessService {
 
 export type MailAclRolloutMode = 'shadow' | 'enforce';
 
+export type MailAclRolloutPersistentDiagnosticCode =
+  | 'counter_update_failed'
+  | 'counter_update_zero_rows'
+  | 'counter_saturated';
+
+export type MailAclRolloutDiagnosticCode =
+  | MailAclRolloutPersistentDiagnosticCode
+  | 'rollout_state_invalid';
+
 export type MailAclRolloutCounters = Readonly<{
   evaluated: bigint;
   legacyAllowNewDeny: bigint;
@@ -65,6 +81,9 @@ export type MailAclRolloutState = MailAclRolloutCounters & Readonly<{
   mode: MailAclRolloutMode;
   observationStartedAt: string | null;
   observationUpdatedAt: string | null;
+  telemetryHealthy: boolean;
+  diagnosticCode: MailAclRolloutDiagnosticCode | null;
+  diagnosticAt: string | null;
   diagnostic?: string;
 }>;
 
@@ -76,7 +95,10 @@ export type MailAclRolloutReadiness = MailAclRolloutState & Readonly<{
 
 export type MailAclRolloutTransitionResult =
   | Readonly<{ ok: true }>
-  | Readonly<{ ok: false; code: 'not_shadow' | 'no_observations' | 'mismatches_present' }>;
+  | Readonly<{
+    ok: false;
+    code: 'not_shadow' | 'no_observations' | 'mismatches_present' | 'telemetry_unhealthy';
+  }>;
 
 export type MailAclRolloutCounterResetResult =
   | Readonly<{ ok: true }>

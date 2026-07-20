@@ -44,7 +44,9 @@ export async function handleMailAclRolloutRoute(
       ? 'Vor enforce ist mindestens eine Shadow-Beobachtung erforderlich'
       : result.code === 'mismatches_present'
         ? 'Enforce ist bei vorhandenen Shadow-Mismatches gesperrt'
-        : 'Workspace ist nicht im Shadow-Modus';
+        : result.code === 'telemetry_unhealthy'
+          ? 'Enforce ist bei ungesunder Shadow-Telemetrie gesperrt'
+          : 'Workspace ist nicht im Shadow-Modus';
     return error(409, result.code, message);
   }
   await ports.audit?.record({
@@ -70,6 +72,9 @@ function serializeReadiness(
     notComparable: readiness.notComparable.toString(),
     observationStartedAt: readiness.observationStartedAt,
     observationUpdatedAt: readiness.observationUpdatedAt,
+    telemetryHealthy: readiness.telemetryHealthy,
+    diagnosticCode: readiness.diagnosticCode,
+    diagnosticAt: readiness.diagnosticAt,
     ready: readiness.ready,
     enforced: readiness.enforced,
     ...(readiness.diagnostic ? { diagnostic: readiness.diagnostic } : {}),

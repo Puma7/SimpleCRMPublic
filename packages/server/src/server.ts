@@ -156,7 +156,10 @@ import {
 } from './mail-access/postgres-mail-acl-rollout-state-port';
 import { createPostgresMailDelegationPort } from './mail-access/postgres-mail-delegation-port';
 import { createPostgresMailResourceLookupPort } from './mail-access/postgres-mail-resource-lookup';
-import { MailAccessRolloutService } from './mail-access/rollout-service';
+import {
+  MailAccessRolloutService,
+  type MailAclRolloutDiagnosticReporter,
+} from './mail-access/rollout-service';
 import {
   createPostgresEmailTrackingService,
   startEmailTrackingRetentionTicker,
@@ -213,6 +216,7 @@ export type PostgresServerApiPortsOptions = Readonly<{
   publicBaseUrl?: string;
   masterKey?: Buffer;
   emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
+  mailAclRolloutDiagnostic?: MailAclRolloutDiagnosticReporter;
 }>;
 
 export type ServerListenOptions = Readonly<{
@@ -545,6 +549,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       state: mailAclRolloutState,
       legacy: createPostgresMailAclRolloutLegacyPort({ db: options.db }),
       newAcl: mailAccessPort,
+      onTelemetryDiagnostic: options.mailAclRolloutDiagnostic ?? reportMailAclRolloutDiagnostic,
     }),
     mailAclRollout: mailAclRolloutState,
     mailDelegation: createPostgresMailDelegationPort({ db: options.db }),
@@ -669,6 +674,10 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     workflowVersions: createPostgresWorkflowVersionReadPort({ db: options.db }),
     workflows: createPostgresWorkflowReadPort({ db: options.db }),
   };
+}
+
+function reportMailAclRolloutDiagnostic(event: Parameters<MailAclRolloutDiagnosticReporter>[0]): void {
+  console.warn(`[mail-acl-rollout] telemetry diagnostic: ${event.code}`);
 }
 
 function accessTokenSignerFromEnv(env: ServerEditionEnv): AccessTokenSigner | undefined {

@@ -9,6 +9,8 @@ import type {
   MailAccessPort,
   MailAccessService,
   MailAclRolloutCounterResetResult,
+  MailAclRolloutEvaluationContext,
+  MailAclRolloutPersistentDiagnosticCode,
   MailAclRolloutReadiness,
   MailAclRolloutState,
   MailAclRolloutTransitionResult,
@@ -22,9 +24,29 @@ export type MailAclRolloutDelta = Readonly<Partial<{
   notComparable: bigint;
 }>>;
 
+export type MailAclRolloutTelemetryResult =
+  | Readonly<{ healthy: true }>
+  | Readonly<{ healthy: false; code: MailAclRolloutPersistentDiagnosticCode }>;
+
 export interface MailAclRolloutStatePort {
-  getState(workspaceId: string): Promise<MailAclRolloutState>;
-  increment(workspaceId: string, delta: MailAclRolloutDelta): Promise<void>;
+  withSharedEvaluation<T>(
+    workspaceId: string,
+    operation: (context: MailAclRolloutEvaluationContext) => Promise<T>,
+  ): Promise<T>;
+  getState(
+    workspaceId: string,
+    evaluationContext?: MailAclRolloutEvaluationContext,
+  ): Promise<MailAclRolloutState>;
+  increment(
+    workspaceId: string,
+    delta: MailAclRolloutDelta,
+    evaluationContext?: MailAclRolloutEvaluationContext,
+  ): Promise<MailAclRolloutTelemetryResult>;
+  markTelemetryUnhealthy(
+    workspaceId: string,
+    code: MailAclRolloutPersistentDiagnosticCode,
+    evaluationContext?: MailAclRolloutEvaluationContext,
+  ): Promise<void>;
   getReadiness(workspaceId: string): Promise<MailAclRolloutReadiness>;
   transitionToEnforce(input: { workspaceId: string }): Promise<MailAclRolloutTransitionResult>;
   resetShadowCounters(input: { workspaceId: string }): Promise<MailAclRolloutCounterResetResult>;
@@ -36,24 +58,29 @@ export interface MailAclRolloutLegacyPort {
     userId: string;
     permission: MailPermission;
     accountId: number;
-  }>): Promise<boolean>;
+  }>, evaluationContext?: MailAclRolloutEvaluationContext): Promise<boolean>;
   resolveAccountScope(input: Readonly<{
     workspaceId: string;
     userId: string;
     permission: MailPermission;
-  }>): Promise<readonly number[]>;
+  }>, evaluationContext?: MailAclRolloutEvaluationContext): Promise<readonly number[]>;
 }
 
-export class MailAccessRolloutService implements MailAccessService {
-  private readonly newAcl: NewMailAccessService;
+export type MailAclRolloutDiagnosticReporter = (
+  event: Readonly<{ code: MailAclRolloutPersistentDiagnosticCode }>,
+) => void;
 
+type PermissionDecision =
+  | Readonly<{ allowed: true }>
+  | Readonly<{ allowed: false; error: MailAccessDeniedError }>;
+
+export class MailAccessRolloutService implements MailAccessService {
   constructor(private readonly options: Readonly<{
     state: MailAclRolloutStatePort;
     legacy: MailAclRolloutLegacyPort;
     newAcl: MailAccessPort;
-  }>) {
-    this.newAcl = new NewMailAccessService(options.newAcl);
-  }
+    onTelemetryDiagnostic?: MailAclRolloutDiagnosticReporter;
+  }>) {}
 
   async assertPermission(input: Parameters<MailAccessService['assertPermission']>[0]): Promise<void> {
     if (input.actor.workspaceId !== input.workspaceId) {
@@ -61,103 +88,144 @@ export class MailAccessRolloutService implements MailAccessService {
     }
     if (input.actor.isOwner || input.actor.isAdmin) return;
 
-    const comparable = comparableLegacyFlag(input.permission);
-    if (!comparable) {
-      const state = await this.options.state.getState(input.workspaceId);
-      try {
-        await this.newAcl.assertPermission(input);
-      } finally {
+    const decision = await this.options.state.withSharedEvaluation(input.workspaceId, async (context) => {
+      const state = await this.options.state.getState(input.workspaceId, context);
+      const newAcl = this.contextualNewAcl(context);
+      const comparable = comparableLegacyFlag(input.permission);
+      if (!comparable) {
+        const newDecision = await this.newDecision(newAcl, input);
         if (state.mode === 'shadow' && !state.diagnostic) {
-          await this.options.state.increment(input.workspaceId, { notComparable: 1n });
+          await this.recordTelemetryBestEffort(input.workspaceId, { notComparable: 1n }, context);
         }
+        return newDecision;
       }
-      return undefined;
-    }
 
-    const state = await this.options.state.getState(input.workspaceId);
-    if (state.mode !== 'shadow' || state.diagnostic) {
-      await this.newAcl.assertPermission(input);
-      return;
-    }
+      if (state.mode !== 'shadow' || state.diagnostic) {
+        return this.newDecision(newAcl, input);
+      }
 
-    const accountId = resourceAccountId(input.resource);
-    if (accountId === null) throw new MailAccessDeniedError();
+      const accountId = resourceAccountId(input.resource);
+      if (accountId === null) return deniedDecision();
 
-    const [legacyAllowed, newAllowed] = await Promise.all([
-      this.options.legacy.canAccessAccount({
-        workspaceId: input.workspaceId,
-        userId: input.actor.userId,
-        permission: input.permission,
-        accountId,
-      }),
-      this.newAllows(input),
-    ]);
-    await this.options.state.increment(input.workspaceId, {
-      evaluated: 1n,
-      legacyAllowNewDeny: legacyAllowed && !newAllowed ? 1n : 0n,
-      legacyDenyNewAllow: !legacyAllowed && newAllowed ? 1n : 0n,
+      const [legacyAllowed, newDecision] = await Promise.all([
+        this.options.legacy.canAccessAccount({
+          workspaceId: input.workspaceId,
+          userId: input.actor.userId,
+          permission: input.permission,
+          accountId,
+        }, context),
+        this.newDecision(newAcl, input),
+      ]);
+      await this.recordTelemetryBestEffort(input.workspaceId, {
+        evaluated: 1n,
+        legacyAllowNewDeny: legacyAllowed && !newDecision.allowed ? 1n : 0n,
+        legacyDenyNewAllow: !legacyAllowed && newDecision.allowed ? 1n : 0n,
+      }, context);
+
+      return legacyAllowed ? allowedDecision() : deniedDecision();
     });
 
-    if (!legacyAllowed) throw new MailAccessDeniedError();
+    if (!decision.allowed) throw decision.error;
   }
 
   async resolveScope(input: Parameters<MailAccessService['resolveScope']>[0]): Promise<MailSqlScope> {
     if (input.actor.workspaceId !== input.workspaceId) return { kind: 'none' };
     if (input.actor.isOwner || input.actor.isAdmin) return { kind: 'all' };
 
-    const comparable = comparableLegacyFlag(input.permission);
-    if (!comparable) {
-      const scope = await this.newAcl.resolveScope(input);
-      await this.incrementIfShadow(input.workspaceId, { notComparable: 1n });
-      return scope;
-    }
+    return this.options.state.withSharedEvaluation(input.workspaceId, async (context) => {
+      const state = await this.options.state.getState(input.workspaceId, context);
+      const newAcl = this.contextualNewAcl(context);
+      const comparable = comparableLegacyFlag(input.permission);
+      if (!comparable) {
+        const scope = await newAcl.resolveScope(input);
+        if (state.mode === 'shadow' && !state.diagnostic) {
+          await this.recordTelemetryBestEffort(input.workspaceId, { notComparable: 1n }, context);
+        }
+        return scope;
+      }
 
-    const state = await this.options.state.getState(input.workspaceId);
-    if (state.mode !== 'shadow' || state.diagnostic) {
-      return this.newAcl.resolveScope(input);
-    }
+      if (state.mode !== 'shadow' || state.diagnostic) {
+        return newAcl.resolveScope(input);
+      }
 
-    const [legacyAccountIds, newGrants] = await Promise.all([
-      this.options.legacy.resolveAccountScope({
-        workspaceId: input.workspaceId,
-        userId: input.actor.userId,
-        permission: input.permission,
-      }),
-      this.options.newAcl.resolveGrants({
-        workspaceId: input.workspaceId,
-        userId: input.actor.userId,
-        permission: input.permission,
-      }),
-    ]);
-    const mismatch = compareLegacyAccountScopeToNewGrants(legacyAccountIds, newGrants);
-    await this.options.state.increment(input.workspaceId, {
-      evaluated: 1n,
-      legacyAllowNewDeny: mismatch.legacyAllowNewDeny,
-      legacyDenyNewAllow: mismatch.legacyDenyNewAllow,
+      const [legacyAccountIds, newGrants] = await Promise.all([
+        this.options.legacy.resolveAccountScope({
+          workspaceId: input.workspaceId,
+          userId: input.actor.userId,
+          permission: input.permission,
+        }, context),
+        this.options.newAcl.resolveGrants({
+          workspaceId: input.workspaceId,
+          userId: input.actor.userId,
+          permission: input.permission,
+        }, context),
+      ]);
+      const mismatch = compareLegacyAccountScopeToNewGrants(legacyAccountIds, newGrants);
+      await this.recordTelemetryBestEffort(input.workspaceId, {
+        evaluated: 1n,
+        legacyAllowNewDeny: mismatch.legacyAllowNewDeny,
+        legacyDenyNewAllow: mismatch.legacyDenyNewAllow,
+      }, context);
+
+      const accountIds = [...new Set(legacyAccountIds)].sort(compareNumbers);
+      return accountIds.length === 0
+        ? { kind: 'none' }
+        : { kind: 'restricted', accountIds, folderIds: [], messageIds: [] };
     });
-
-    const accountIds = [...new Set(legacyAccountIds)].sort(compareNumbers);
-    return accountIds.length === 0
-      ? { kind: 'none' }
-      : { kind: 'restricted', accountIds, folderIds: [], messageIds: [] };
   }
 
-  private async newAllows(input: Parameters<MailAccessService['assertPermission']>[0]): Promise<boolean> {
+  private contextualNewAcl(context: MailAclRolloutEvaluationContext): NewMailAccessService {
+    return new NewMailAccessService({
+      resolveGrants: (input) => this.options.newAcl.resolveGrants(input, context),
+    });
+  }
+
+  private async newDecision(
+    newAcl: NewMailAccessService,
+    input: Parameters<MailAccessService['assertPermission']>[0],
+  ): Promise<PermissionDecision> {
     try {
-      await this.newAcl.assertPermission(input);
-      return true;
+      await newAcl.assertPermission(input);
+      return allowedDecision();
     } catch (error) {
-      if (error instanceof MailAccessDeniedError) return false;
+      if (error instanceof MailAccessDeniedError) return { allowed: false, error };
       throw error;
     }
   }
 
-  private async incrementIfShadow(workspaceId: string, delta: MailAclRolloutDelta): Promise<void> {
-    const state = await this.options.state.getState(workspaceId);
-    if (state.mode === 'shadow' && !state.diagnostic) {
-      await this.options.state.increment(workspaceId, delta);
+  private async recordTelemetryBestEffort(
+    workspaceId: string,
+    delta: MailAclRolloutDelta,
+    context: MailAclRolloutEvaluationContext,
+  ): Promise<void> {
+    try {
+      const result = await this.options.state.increment(workspaceId, delta, context);
+      if (!result.healthy) this.reportTelemetryDiagnostic(result.code);
+    } catch {
+      this.reportTelemetryDiagnostic('counter_update_failed');
+      try {
+        await this.options.state.markTelemetryUnhealthy(workspaceId, 'counter_update_failed', context);
+      } catch {
+        // Authorization must retain the decision already computed above.
+      }
     }
   }
+
+  private reportTelemetryDiagnostic(code: MailAclRolloutPersistentDiagnosticCode): void {
+    try {
+      this.options.onTelemetryDiagnostic?.({ code });
+    } catch {
+      // Diagnostics are deliberately isolated from authorization behavior.
+    }
+  }
+}
+
+function allowedDecision(): PermissionDecision {
+  return { allowed: true };
+}
+
+function deniedDecision(): PermissionDecision {
+  return { allowed: false, error: new MailAccessDeniedError() };
 }
 
 export function comparableLegacyFlag(permission: MailPermission): 'can_read' | 'can_send' | null {

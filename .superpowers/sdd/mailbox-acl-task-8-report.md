@@ -139,3 +139,90 @@ neuen Migration `0039_mail_acl_rollout`.
 - `pnpm run build` meldet bestehende Vite-Warnungen zur Browser-Externalisierung
   von Node-Modulen und zur Chunk-Groesse. Sie sind unabhaengig von Task 8 und
   wurden nicht repariert.
+
+## Review-Fix 2026-07-20 (Base `6e286e7`)
+
+Die zwei bestaetigten Review-Findings wurden isoliert behoben. Dieser Abschnitt
+ersetzt fuer Synchronisation, Overflow und Telemetrie-Health die entsprechenden
+Aussagen der Erstimplementierung oben.
+
+### RED
+
+- Invocation:
+  `pnpm exec jest --runTestsByPath tests/unit/server-mail-acl-rollout.test.ts tests/integration/server-mail-access-routes.test.ts --runInBand`
+- Observable: Exit `1`; `11 failed`, `46 passed`.
+- Reproduziert wurden fehlende Shared/Exclusive-Wartebeziehungen, fehlende
+  Health-Spalten, Bigint-Overflow, unsichtbare Zero-Row-Updates und durch
+  Counterfehler ersetzte Allow-/Deny-Entscheidungen.
+- Artifact: `.hermes/reports/task-8-review-fix-red.log`.
+
+### GREEN
+
+- Fokussierter Abschlusslauf: Exit `0`; `2 passed` Suites, `58 passed` Tests.
+- Artifact: `.hermes/reports/task-8-review-fix-focused-green.log`.
+- Full Unit: `265` Suites, `2398` Tests, eine Snapshot-Pruefung, Exit `0`.
+- Full Integration: `25` Suites, `345` Tests, Exit `0`.
+- Mail Coverage: `179` Suites; `1166` passed, `1` skipped; 91.91 % Lines und
+  80.08 % Branches, Exit `0`.
+- Lint, Build und Root-Typecheck: jeweils Exit `0`.
+
+### Linearisierung
+
+- Jede userbezogene Rollout-Evaluation haelt einen PostgreSQL Shared Advisory
+  Transaction Lock von Mode-Read ueber Legacy/New-Abfragen und Counter-Write bis
+  zur reifizierten Allow-/Deny-Entscheidung.
+- Transition und Reset nehmen denselben workspace-abgeleiteten Advisory Key
+  exklusiv. Tests mit getrennten Kysely-Pools beweisen, dass sie auf alle zuvor
+  gestarteten Shared-Evaluationen warten.
+- Der Key ist `hashtextextended('simplecrm:mail-acl-rollout:' || workspace_uuid,
+  0)`: Die feste Namespace-Praefix verhindert beabsichtigte Ueberschneidungen
+  mit anderen Lock-Familien. Eine 64-Bit-Hashkollision wuerde zwei Workspaces nur
+  konservativ serialisieren, nie Berechtigungen vermischen.
+- Der explizite Evaluation-Context reicht dieselbe Kysely-Transaktion an State-,
+  Legacy- und New-ACL-Port weiter. Der echte `maxConnections=1`-Test beweist,
+  dass keine verschachtelte Pool-Ausleihe und damit kein Pool-Deadlock entsteht.
+- Erwartete Denies werden innerhalb der Transaktion als Wert gefuehrt und erst
+  nach Commit wieder als `MailAccessDeniedError` geworfen. Dadurch werden Deny-
+  Beobachtungen nicht zurueckgerollt.
+
+### Telemetrie-Health
+
+- `0039_mail_acl_rollout` enthaelt nun `telemetry_healthy`, einen durch CHECK
+  begrenzten `diagnostic_code` und `diagnostic_at`. `0038_mail_acl.ts` bleibt
+  unveraendert gegen `6e286e7`.
+- Counter rechnen vor dem Bigint-Cast als `numeric`, saturieren bei
+  `9223372036854775807` und markieren das Beobachtungsfenster mit
+  `counter_saturated` ungesund. Negative oder ueberlaufende Werte werden nicht
+  gespeichert.
+- Zero-Row-Updates liefern explizit `counter_update_zero_rows`. Unerwartete
+  SQL-Fehler werden ueber einen Savepoint isoliert und best-effort als
+  `counter_update_failed` persistiert. Der injizierte Reporter erhaelt nur den
+  begrenzten Code, keine Workspace-, User-, Resource-, Route- oder Mail-ID.
+- Telemetriefehler und selbst Fehler beim Persistieren oder Melden der Diagnose
+  ersetzen weder Allow noch Deny. Nicht vergleichbare Rechte bestimmen zuerst
+  die New-ACL-Entscheidung und schreiben erst danach best-effort Telemetrie.
+- Readiness verlangt `telemetryHealthy=true`. Transition liefert bei ungesundem
+  Fenster deterministisch `telemetry_unhealthy`; der auditierte Shadow-Reset
+  setzt Counter, Observation und Diagnose atomar auf ein neues gesundes Fenster.
+
+### Review-Fix Self-Review
+
+- Security-Downgrade: Nach erfolgreichem Exclusive-Enforce kann keine spaeter
+  linearisierte Evaluation mehr Shadow lesen oder Legacy aufrufen.
+- Lost Updates: Shared-Evaluationen duerfen parallel laufen; die atomaren
+  Row-Updates behalten alle Mismatches. Exclusive Adminpfade warten auf alle.
+- RLS/Cross-Tenant: Context und SQL sind workspace-gebunden; ein realer falsch
+  gescopter RLS-Test liefert Zero-Row, veraendert keinen anderen Workspace und
+  behaelt die ACL-Entscheidung.
+- Cache-Staleness: Weiterhin kein Mode-Cache; der Mode-Read liegt im gehaltenen
+  Shared Lock.
+- Performance: Shadow haelt eine kurze DB-Transaktion ueber die beiden ACL-
+  Abfragen. Enforce nimmt ebenfalls kurz den Shared Key, ruft aber weiterhin
+  keinen Legacy-Port auf.
+- No-Regression: Keine SQLite-/Desktop-Aenderung, kein Drop von
+  `user_account_access`, keine Aenderung an Migration `0038`.
+
+### Review-Fix Restbedenken
+
+- Der Build zeigt weiterhin nur die bereits dokumentierten Vite-Warnungen zur
+  Browser-Externalisierung von Node-Modulen und zur Chunk-Groesse.

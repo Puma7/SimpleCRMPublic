@@ -13,11 +13,21 @@ export const mailAclRolloutMigration: SqlMigration = {
   not_comparable bigint NOT NULL DEFAULT 0 CHECK (not_comparable >= 0),
   observation_started_at timestamptz,
   observation_updated_at timestamptz,
+  telemetry_healthy boolean NOT NULL DEFAULT true,
+  diagnostic_code text CHECK (
+    diagnostic_code IN ('counter_update_failed', 'counter_update_zero_rows', 'counter_saturated')
+  ),
+  diagnostic_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT mail_acl_rollout_observation_window_check CHECK (
     (observation_started_at IS NULL AND observation_updated_at IS NULL)
     OR
     (observation_started_at IS NOT NULL AND observation_updated_at IS NOT NULL)
+  ),
+  CONSTRAINT mail_acl_rollout_telemetry_diagnostic_check CHECK (
+    (telemetry_healthy = true AND diagnostic_code IS NULL AND diagnostic_at IS NULL)
+    OR
+    (telemetry_healthy = false AND diagnostic_code IS NOT NULL AND diagnostic_at IS NOT NULL)
   )
 );`,
     `ALTER TABLE mail_acl_rollout_state ENABLE ROW LEVEL SECURITY;

@@ -452,6 +452,9 @@ export type MailAclRolloutStateTable = {
   not_comparable: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
   observation_started_at: TimestampColumn | null;
   observation_updated_at: TimestampColumn | null;
+  telemetry_healthy: ColumnType<boolean, boolean | undefined, boolean>;
+  diagnostic_code: 'counter_update_failed' | 'counter_update_zero_rows' | 'counter_saturated' | null;
+  diagnostic_at: TimestampColumn | null;
   updated_at: TimestampColumn;
 };
 

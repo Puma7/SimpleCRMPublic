@@ -70,10 +70,21 @@ function createRolloutFixture(input: Readonly<{
   legacyReadAccounts?: readonly number[];
   legacySendAccounts?: readonly number[];
   corruptState?: boolean;
+  incrementFailure?: 'throw' | 'zero_rows' | 'counter_saturated';
+  markTelemetryFailure?: boolean;
+  diagnosticReporterFailure?: boolean;
 }> = {}) {
   const increments: Array<Record<string, bigint | string>> = [];
-  const state: MailAclRolloutStatePort = {
-    async getState(workspaceId) {
+  const unhealthyMarks: string[] = [];
+  const diagnostics: string[] = [];
+  const state = {
+    async withSharedEvaluation<T>(
+      workspaceId: string,
+      operation: (context: { workspaceId: string }) => Promise<T>,
+    ): Promise<T> {
+      return operation({ workspaceId });
+    },
+    async getState(workspaceId: string) {
       if (input.corruptState) {
         return {
           mode: 'enforce',
@@ -83,6 +94,9 @@ function createRolloutFixture(input: Readonly<{
           notComparable: 0n,
           observationStartedAt: null,
           observationUpdatedAt: null,
+          telemetryHealthy: false,
+          diagnosticCode: 'rollout_state_invalid' as const,
+          diagnosticAt: null,
           diagnostic: 'invalid rollout mode: legacy',
         };
       }
@@ -94,12 +108,35 @@ function createRolloutFixture(input: Readonly<{
         notComparable: 0n,
         observationStartedAt: null,
         observationUpdatedAt: null,
+        telemetryHealthy: true,
+        diagnosticCode: null,
+        diagnosticAt: null,
       };
     },
-    async increment(workspaceId, delta) {
+    async increment(
+      workspaceId: string,
+      delta: Readonly<Partial<{
+        evaluated: bigint;
+        legacyAllowNewDeny: bigint;
+        legacyDenyNewAllow: bigint;
+        notComparable: bigint;
+      }>>,
+    ) {
       increments.push({ workspaceId, ...delta });
+      if (input.incrementFailure === 'throw') throw new Error('counter unavailable');
+      if (input.incrementFailure === 'zero_rows') {
+        return { healthy: false as const, code: 'counter_update_zero_rows' as const };
+      }
+      if (input.incrementFailure === 'counter_saturated') {
+        return { healthy: false as const, code: 'counter_saturated' as const };
+      }
+      return { healthy: true as const };
     },
-    async getReadiness(workspaceId) {
+    async markTelemetryUnhealthy(_workspaceId: string, code: string) {
+      unhealthyMarks.push(code);
+      if (input.markTelemetryFailure) throw new Error('diagnostic store unavailable');
+    },
+    async getReadiness(workspaceId: string) {
       return {
         workspaceId,
         mode: input.mode ?? 'shadow',
@@ -111,6 +148,9 @@ function createRolloutFixture(input: Readonly<{
         observationUpdatedAt: null,
         ready: false,
         enforced: false,
+        telemetryHealthy: true,
+        diagnosticCode: null,
+        diagnosticAt: null,
       };
     },
     async transitionToEnforce() {
@@ -119,7 +159,7 @@ function createRolloutFixture(input: Readonly<{
     async resetShadowCounters() {
       return { ok: true };
     },
-  };
+  } as unknown as MailAclRolloutStatePort;
   const legacy: MailAclRolloutLegacyPort & {
     calls: Array<{ permission: MailPermission; accountId?: number }>;
   } = {
@@ -148,11 +188,22 @@ function createRolloutFixture(input: Readonly<{
       return input.newGrants ?? [];
     },
   };
+  const serviceOptions = {
+    state,
+    legacy,
+    newAcl: newPort,
+    onTelemetryDiagnostic(event: { code: string }) {
+      diagnostics.push(event.code);
+      if (input.diagnosticReporterFailure) throw new Error('logger unavailable');
+    },
+  };
   return {
     increments,
+    unhealthyMarks,
+    diagnostics,
     legacy,
     newPort,
-    service: new MailAccessRolloutService({ state, legacy, newAcl: newPort }),
+    service: new MailAccessRolloutService(serviceOptions),
   };
 }
 
@@ -357,6 +408,90 @@ describe('MailAccessRolloutService', () => {
     })).rejects.toBeInstanceOf(MailAccessDeniedError);
     expect(corrupt.legacy.calls).toEqual([]);
   });
+
+  test('counter exceptions and failed diagnostic persistence preserve a shadow legacy allow', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      newGrants: [],
+      legacyReadAccounts: [ACCOUNT_A],
+      incrementFailure: 'throw',
+      markTelemetryFailure: true,
+    });
+
+    await expect(fixture.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.content.read',
+      resource: messageResource(),
+    })).resolves.toBeUndefined();
+
+    expect(fixture.unhealthyMarks).toEqual(['counter_update_failed']);
+    expect(fixture.diagnostics).toEqual(['counter_update_failed']);
+  });
+
+  test('counter exceptions preserve a shadow legacy deny instead of replacing it with telemetry failure', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      newGrants: [accountGrant(ACCOUNT_A)],
+      legacyReadAccounts: [],
+      incrementFailure: 'throw',
+    });
+
+    await expect(fixture.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+      resource: messageResource(),
+    })).rejects.toBeInstanceOf(MailAccessDeniedError);
+
+    expect(fixture.unhealthyMarks).toEqual(['counter_update_failed']);
+    expect(fixture.diagnostics).toEqual(['counter_update_failed']);
+  });
+
+  test('zero-row telemetry leaves the legacy decision unchanged and reports a bounded diagnostic', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      newGrants: [],
+      legacyReadAccounts: [ACCOUNT_A],
+      incrementFailure: 'zero_rows',
+    });
+
+    await expect(fixture.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.content.read',
+      resource: messageResource(),
+    })).resolves.toBeUndefined();
+    expect(fixture.diagnostics).toEqual(['counter_update_zero_rows']);
+  });
+
+  test('non-comparable new ACL allow and deny survive counter and logger failures exactly', async () => {
+    const allowed = createRolloutFixture({
+      mode: 'shadow',
+      newGrants: [accountGrant(ACCOUNT_A)],
+      incrementFailure: 'throw',
+      diagnosticReporterFailure: true,
+    });
+    const denied = createRolloutFixture({
+      mode: 'shadow',
+      newGrants: [],
+      incrementFailure: 'throw',
+      diagnosticReporterFailure: true,
+    });
+
+    await expect(allowed.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.delete',
+      resource: messageResource(),
+    })).resolves.toBeUndefined();
+    await expect(denied.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.delete',
+      resource: messageResource(),
+    })).rejects.toBeInstanceOf(MailAccessDeniedError);
+  });
 });
 
 describe('mail ACL rollout central use', () => {
@@ -422,8 +557,13 @@ describe('mail ACL rollout central use', () => {
         observationUpdatedAt: '2026-07-20T10:05:00.000Z',
         ready: true,
         enforced: false,
+        telemetryHealthy: true,
+        diagnosticCode: null,
+        diagnosticAt: null,
       })),
-      transitionToEnforce: jest.fn(async () => ({ ok: true as const })),
+      transitionToEnforce: jest.fn()
+        .mockResolvedValueOnce({ ok: false as const, code: 'telemetry_unhealthy' as const })
+        .mockResolvedValueOnce({ ok: true as const }),
       resetShadowCounters: jest.fn(async () => ({ ok: true as const })),
     };
     const api = createServerApi({
@@ -459,6 +599,8 @@ describe('mail ACL rollout central use', () => {
           legacyDenyNewAllow: '0',
           notComparable: '2',
           ready: true,
+          telemetryHealthy: true,
+          diagnosticCode: null,
         }),
       },
     });
@@ -471,8 +613,17 @@ describe('mail ACL rollout central use', () => {
       method: 'POST',
       path: '/api/v1/email/acl-rollout/enforce',
       principal: principal('owner'),
+    })).resolves.toMatchObject({
+      status: 409,
+      body: { error: { code: 'telemetry_unhealthy' } },
+    });
+    await expect(api.handle({
+      method: 'POST',
+      path: '/api/v1/email/acl-rollout/enforce',
+      principal: principal('owner'),
     })).resolves.toMatchObject({ status: 200 });
 
+    expect(rollout.transitionToEnforce).toHaveBeenCalledTimes(2);
     expect(rollout.transitionToEnforce).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A });
     expect(rollout.resetShadowCounters).toHaveBeenCalledWith({ workspaceId: WORKSPACE_A });
     expect(auditEvents.map((event) => event.action)).toEqual([

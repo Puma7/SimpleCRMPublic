@@ -7,7 +7,7 @@ import { PassThrough, Readable } from 'stream';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import { Pool } from 'pg';
 import type { MailPermission } from '../../packages/core/src/email/mail-permissions';
 import { createServerApi } from '../../packages/server/src/api/server-api';
@@ -33,8 +33,18 @@ import type {
 } from '../../packages/server/src/db/schema';
 import { createPostgresMailAccessPort } from '../../packages/server/src/mail-access/postgres-mail-access-port';
 import { createPostgresMailDelegationPort } from '../../packages/server/src/mail-access/postgres-mail-delegation-port';
-import { createPostgresMailAclRolloutStatePort } from '../../packages/server/src/mail-access/postgres-mail-acl-rollout-state-port';
-import { MailAccessService } from '../../packages/server/src/mail-access/service';
+import {
+  createPostgresMailAclRolloutLegacyPort,
+  createPostgresMailAclRolloutStatePort,
+} from '../../packages/server/src/mail-access/postgres-mail-acl-rollout-state-port';
+import {
+  MailAccessRolloutService,
+  type MailAclRolloutStatePort,
+} from '../../packages/server/src/mail-access/rollout-service';
+import {
+  MailAccessDeniedError,
+  MailAccessService,
+} from '../../packages/server/src/mail-access/service';
 import type { MailSqlScope } from '../../packages/server/src/mail-access/types';
 import { serverMigrations } from '../../packages/server/src/migrations';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
@@ -343,6 +353,7 @@ describe('server mailbox ACL migration', () => {
   function createApplicationDb(options: Readonly<{
     maxConnections?: number;
     onQuery?: (sqlText: string) => void;
+    applicationName?: string;
   }> = {}): Kysely<ServerDatabase> {
     return new Kysely<ServerDatabase>({
       dialect: new PostgresDialect({
@@ -353,12 +364,36 @@ describe('server mailbox ACL migration', () => {
           password: MIGRATION_ROLE_PASSWORD,
           database: 'postgres',
           max: options.maxConnections ?? 1,
+          application_name: options.applicationName,
         }),
       }),
       log(event) {
         if (event.level === 'query') options.onQuery?.(event.query.sql);
       },
     });
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((settle) => {
+      resolve = settle;
+    });
+    return { promise, resolve };
+  }
+
+  async function waitForAdvisoryLockWaiters(minimum: number, description: string): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= 5_000) {
+      const result = await client.query<{ waiting: string }>(`
+        SELECT count(*)::text AS waiting
+        FROM pg_locks
+        WHERE locktype = 'advisory'
+          AND granted = false
+      `);
+      if (Number(result.rows[0]?.waiting ?? 0) >= minimum) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for ${description}`);
   }
 
   async function ensureScopedGrantFixtures(): Promise<void> {
@@ -2184,8 +2219,14 @@ describe('server mailbox ACL migration', () => {
       await client.query('RESET app.role; RESET app.cross_workspace_access');
       const createdAfterRollout = await port.getReadiness(WORKSPACE_NEW_AFTER_ROLLOUT);
       await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
-      const storedRows = await client.query<{ workspace_id: string; mode: string }>(`
-        SELECT workspace_id, mode
+      const storedRows = await client.query<{
+        workspace_id: string;
+        mode: string;
+        telemetry_healthy: boolean;
+        diagnostic_code: string | null;
+        diagnostic_at: Date | null;
+      }>(`
+        SELECT workspace_id, mode, telemetry_healthy, diagnostic_code, diagnostic_at
         FROM mail_acl_rollout_state
         ORDER BY workspace_id
       `);
@@ -2202,15 +2243,21 @@ describe('server mailbox ACL migration', () => {
         notComparable: 0n,
         ready: false,
         enforced: true,
+        telemetryHealthy: true,
+        diagnosticCode: null,
+        diagnosticAt: null,
       });
       expect(storedRows.rows).toEqual(workspacesBeforeRollout.rows.map((row) => ({
         workspace_id: row.id,
         mode: 'shadow',
+        telemetry_healthy: true,
+        diagnostic_code: null,
+        diagnostic_at: null,
       })));
-      expect(storedRows.rows).not.toContainEqual({
+      expect(storedRows.rows).not.toContainEqual(expect.objectContaining({
         workspace_id: WORKSPACE_NEW_AFTER_ROLLOUT,
         mode: 'shadow',
-      });
+      }));
     } finally {
       await db.destroy();
     }
@@ -2295,6 +2342,437 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('exclusive enforce waits for every earlier shared shadow evaluation and observes their mismatches', async () => {
+    const evaluationDb = createApplicationDb({ maxConnections: 2, applicationName: 'task8-shadow-evaluation' });
+    const adminDb = createApplicationDb({ maxConnections: 2, applicationName: 'task8-enforce-transition' });
+    const evaluationState = createPostgresMailAclRolloutStatePort({ db: evaluationDb });
+    const adminState = createPostgresMailAclRolloutStatePort({ db: adminDb });
+    const allEvaluationsEntered = deferred<void>();
+    const releases = [deferred<void>(), deferred<void>()];
+    let entered = 0;
+    const service = new MailAccessRolloutService({
+      state: evaluationState,
+      legacy: {
+        async canAccessAccount() {
+          const index = entered;
+          entered += 1;
+          if (entered === releases.length) allEvaluationsEntered.resolve(undefined);
+          await releases[index]!.promise;
+          return true;
+        },
+        async resolveAccountScope() { return [ACCOUNT_A]; },
+      },
+      newAcl: {
+        async resolveGrants() { return []; },
+      },
+    });
+    const request = {
+      workspaceId: WORKSPACE_A,
+      actor: {
+        workspaceId: WORKSPACE_A,
+        userId: USER_READ,
+        isOwner: false,
+        isAdmin: false,
+      },
+      permission: 'mail.content.read' as const,
+      resource: {
+        type: 'message' as const,
+        accountId: String(ACCOUNT_A),
+        folderId: String(FOLDER_A),
+        messageId: String(MESSAGE_A),
+      },
+    };
+    let evaluations: Array<Promise<void>> = [];
+    let transition: Promise<Awaited<ReturnType<typeof adminState.transitionToEnforce>>> | undefined;
+    try {
+      await adminState.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      evaluations = [service.assertPermission(request), service.assertPermission(request)];
+      await allEvaluationsEntered.promise;
+      let transitionSettled = false;
+      transition = adminState.transitionToEnforce({ workspaceId: WORKSPACE_A }).finally(() => {
+        transitionSettled = true;
+      });
+      await waitForAdvisoryLockWaiters(1, 'enforce to wait on shared shadow evaluations');
+      expect(transitionSettled).toBe(false);
+
+      releases[0]!.resolve(undefined);
+      await evaluations[0];
+      await waitForAdvisoryLockWaiters(1, 'enforce to keep waiting on the second shadow evaluation');
+      expect(transitionSettled).toBe(false);
+
+      releases[1]!.resolve(undefined);
+      await evaluations[1];
+      await expect(transition).resolves.toEqual({ ok: false, code: 'mismatches_present' });
+      await expect(adminState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        mode: 'shadow',
+        evaluated: 2n,
+        legacyAllowNewDeny: 2n,
+      });
+    } finally {
+      for (const release of releases) release.resolve(undefined);
+      await Promise.allSettled(evaluations);
+      if (transition) await Promise.allSettled([transition]);
+      await evaluationDb.destroy();
+      await adminDb.destroy();
+    }
+  });
+
+  test('exclusive reset waits for an earlier shadow evaluation and then clears its observation atomically', async () => {
+    const evaluationDb = createApplicationDb({ maxConnections: 1, applicationName: 'task8-reset-evaluation' });
+    const adminDb = createApplicationDb({ maxConnections: 1, applicationName: 'task8-reset-admin' });
+    const evaluationState = createPostgresMailAclRolloutStatePort({ db: evaluationDb });
+    const adminState = createPostgresMailAclRolloutStatePort({ db: adminDb });
+    const evaluationEntered = deferred<void>();
+    const releaseEvaluation = deferred<void>();
+    const service = new MailAccessRolloutService({
+      state: evaluationState,
+      legacy: {
+        async canAccessAccount() {
+          evaluationEntered.resolve(undefined);
+          await releaseEvaluation.promise;
+          return true;
+        },
+        async resolveAccountScope() { return [ACCOUNT_A]; },
+      },
+      newAcl: {
+        async resolveGrants() { return []; },
+      },
+    });
+    let reset: Promise<Awaited<ReturnType<typeof adminState.resetShadowCounters>>> | undefined;
+    const evaluation = service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+      permission: 'mail.metadata.read',
+      resource: { type: 'account', accountId: String(ACCOUNT_A) },
+    });
+    try {
+      await evaluationEntered.promise;
+      let resetSettled = false;
+      reset = adminState.resetShadowCounters({ workspaceId: WORKSPACE_A }).finally(() => {
+        resetSettled = true;
+      });
+      await waitForAdvisoryLockWaiters(1, 'reset to wait on the shared shadow evaluation');
+      expect(resetSettled).toBe(false);
+
+      releaseEvaluation.resolve(undefined);
+      await expect(evaluation).resolves.toBeUndefined();
+      await expect(reset).resolves.toEqual({ ok: true });
+      await expect(adminState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        mode: 'shadow',
+        evaluated: 0n,
+        legacyAllowNewDeny: 0n,
+        legacyDenyNewAllow: 0n,
+        notComparable: 0n,
+        observationStartedAt: null,
+        observationUpdatedAt: null,
+        telemetryHealthy: true,
+        diagnosticCode: null,
+        diagnosticAt: null,
+      });
+    } finally {
+      releaseEvaluation.resolve(undefined);
+      await Promise.allSettled([evaluation]);
+      if (reset) await Promise.allSettled([reset]);
+      await evaluationDb.destroy();
+      await adminDb.destroy();
+    }
+  });
+
+  test('single-connection rollout evaluation reuses its transaction and does not borrow a nested pool connection', async () => {
+    const db = createApplicationDb({ maxConnections: 1, applicationName: 'task8-single-connection-evaluation' });
+    const state = createPostgresMailAclRolloutStatePort({ db });
+    const service = new MailAccessRolloutService({
+      state,
+      legacy: createPostgresMailAclRolloutLegacyPort({ db }),
+      newAcl: createPostgresMailAccessPort({ db }),
+    });
+    try {
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await expect(service.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: {
+          type: 'message',
+          accountId: String(ACCOUNT_A),
+          folderId: String(FOLDER_A),
+          messageId: String(MESSAGE_A),
+        },
+      })).resolves.toBeUndefined();
+      await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: 1n,
+        telemetryHealthy: true,
+      });
+    } finally {
+      await db.destroy();
+    }
+  }, 10_000);
+
+  test('counter saturation marks telemetry unhealthy without changing allowed shadow decisions and reset starts a healthy window', async () => {
+    const db = createApplicationDb({ maxConnections: 2 });
+    const state = createPostgresMailAclRolloutStatePort({ db });
+    const diagnostics: string[] = [];
+    const serviceOptions = {
+      state,
+      legacy: {
+        async canAccessAccount() { return true; },
+        async resolveAccountScope() { return [ACCOUNT_A]; },
+      },
+      newAcl: {
+        async resolveGrants() { return []; },
+      },
+      onTelemetryDiagnostic(event: { code: string }) {
+        diagnostics.push(event.code);
+      },
+    };
+    const service = new MailAccessRolloutService(serviceOptions);
+    const maxBigint = 9_223_372_036_854_775_807n;
+    try {
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        UPDATE mail_acl_rollout_state
+        SET evaluated = '${(maxBigint - 1n).toString()}'::bigint
+        WHERE workspace_id = '${WORKSPACE_A}'
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      for (let index = 0; index < 2; index += 1) {
+        await expect(service.assertPermission({
+          workspaceId: WORKSPACE_A,
+          actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+          permission: 'mail.content.read',
+          resource: { type: 'account', accountId: String(ACCOUNT_A) },
+        })).resolves.toBeUndefined();
+      }
+
+      await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: maxBigint,
+        legacyAllowNewDeny: 2n,
+        telemetryHealthy: false,
+        diagnosticCode: 'counter_saturated',
+        ready: false,
+      });
+      expect(diagnostics).toEqual(['counter_saturated']);
+      await expect(state.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+        ok: false,
+        code: 'telemetry_unhealthy',
+      });
+
+      await expect(state.resetShadowCounters({ workspaceId: WORKSPACE_A })).resolves.toEqual({ ok: true });
+      await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: 0n,
+        telemetryHealthy: true,
+        diagnosticCode: null,
+        diagnosticAt: null,
+        ready: false,
+      });
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        UPDATE mail_acl_rollout_state
+        SET evaluated = '${(maxBigint - 1n).toString()}'::bigint
+        WHERE workspace_id = '${WORKSPACE_A}'
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+      const deniedService = new MailAccessRolloutService({
+        state,
+        legacy: {
+          async canAccessAccount() { return false; },
+          async resolveAccountScope() { return []; },
+        },
+        newAcl: {
+          async resolveGrants() {
+            return [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+          },
+        },
+        onTelemetryDiagnostic: serviceOptions.onTelemetryDiagnostic,
+      });
+      for (let index = 0; index < 2; index += 1) {
+        await expect(deniedService.assertPermission({
+          workspaceId: WORKSPACE_A,
+          actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+          permission: 'mail.content.read',
+          resource: { type: 'account', accountId: String(ACCOUNT_A) },
+        })).rejects.toBeInstanceOf(MailAccessDeniedError);
+      }
+      await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: maxBigint,
+        legacyDenyNewAllow: 2n,
+        telemetryHealthy: false,
+        diagnosticCode: 'counter_saturated',
+      });
+      expect(diagnostics).toEqual(['counter_saturated', 'counter_saturated']);
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+    } finally {
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('unexpected PostgreSQL counter errors persist unhealthy diagnostics without replacing allow or deny decisions', async () => {
+    const db = createApplicationDb({ maxConnections: 2 });
+    const state = createPostgresMailAclRolloutStatePort({ db });
+    const diagnostics: string[] = [];
+    const newDeny = { async resolveGrants() { return []; } };
+    const newAllow = {
+      async resolveGrants() {
+        return [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+      },
+    };
+    try {
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      await client.query(`
+        CREATE OR REPLACE FUNCTION task8_fail_rollout_counter_update()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.evaluated IS DISTINCT FROM OLD.evaluated
+            OR NEW.legacy_allow_new_deny IS DISTINCT FROM OLD.legacy_allow_new_deny
+            OR NEW.legacy_deny_new_allow IS DISTINCT FROM OLD.legacy_deny_new_allow
+            OR NEW.not_comparable IS DISTINCT FROM OLD.not_comparable
+          THEN
+            RAISE EXCEPTION 'task8 counter update failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+      `);
+      await client.query(`
+        CREATE TRIGGER task8_fail_rollout_counter_update
+        BEFORE UPDATE ON mail_acl_rollout_state
+        FOR EACH ROW EXECUTE FUNCTION task8_fail_rollout_counter_update()
+      `);
+
+      const allowedService = new MailAccessRolloutService({
+        state,
+        legacy: {
+          async canAccessAccount() { return true; },
+          async resolveAccountScope() { return [ACCOUNT_A]; },
+        },
+        newAcl: newDeny,
+        onTelemetryDiagnostic: (event) => diagnostics.push(event.code),
+      });
+      await expect(allowedService.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: { type: 'account', accountId: String(ACCOUNT_A) },
+      })).resolves.toBeUndefined();
+      await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: 0n,
+        telemetryHealthy: false,
+        diagnosticCode: 'counter_update_failed',
+        ready: false,
+      });
+      await expect(state.transitionToEnforce({ workspaceId: WORKSPACE_A })).resolves.toEqual({
+        ok: false,
+        code: 'telemetry_unhealthy',
+      });
+
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      const deniedService = new MailAccessRolloutService({
+        state,
+        legacy: {
+          async canAccessAccount() { return false; },
+          async resolveAccountScope() { return []; },
+        },
+        newAcl: newAllow,
+        onTelemetryDiagnostic: (event) => diagnostics.push(event.code),
+      });
+      await expect(deniedService.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: { type: 'account', accountId: String(ACCOUNT_A) },
+      })).rejects.toBeInstanceOf(MailAccessDeniedError);
+      await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        evaluated: 0n,
+        telemetryHealthy: false,
+        diagnosticCode: 'counter_update_failed',
+      });
+      expect(diagnostics).toEqual(['counter_update_failed', 'counter_update_failed']);
+    } finally {
+      await client.query('DROP TRIGGER IF EXISTS task8_fail_rollout_counter_update ON mail_acl_rollout_state');
+      await client.query('DROP FUNCTION IF EXISTS task8_fail_rollout_counter_update()');
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A }).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('RLS zero-row counter updates are unhealthy, explicit, and cannot mutate another workspace', async () => {
+    const normalDb = createApplicationDb({ maxConnections: 2 });
+    const misScopedDb = createApplicationDb({ maxConnections: 1 });
+    const normalState = createPostgresMailAclRolloutStatePort({ db: normalDb });
+    const misScopedState = createPostgresMailAclRolloutStatePort({
+      db: misScopedDb,
+      applyWorkspaceSession: async (trx) => {
+        await sql`
+          SELECT
+            set_config('app.workspace_id', ${WORKSPACE_B}, true),
+            set_config('app.user_id', ${USER_WORKSPACE_B}, true),
+            set_config('app.role', 'admin', true),
+            set_config('app.cross_workspace_access', 'off', true)
+        `.execute(trx);
+      },
+    });
+    try {
+      await normalState.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      const workspaceBBefore = await normalState.getReadiness(WORKSPACE_B);
+      const diagnostics: string[] = [];
+      const zeroRowState: MailAclRolloutStatePort = {
+        ...normalState,
+        increment: (workspaceId, delta) => misScopedState.increment(workspaceId, delta),
+        markTelemetryUnhealthy: (workspaceId, code) => (
+          misScopedState.markTelemetryUnhealthy(workspaceId, code)
+        ),
+      };
+      const allowedService = new MailAccessRolloutService({
+        state: zeroRowState,
+        legacy: {
+          async canAccessAccount() { return true; },
+          async resolveAccountScope() { return [ACCOUNT_A]; },
+        },
+        newAcl: { async resolveGrants() { return []; } },
+        onTelemetryDiagnostic: (event) => diagnostics.push(event.code),
+      });
+      const deniedService = new MailAccessRolloutService({
+        state: zeroRowState,
+        legacy: {
+          async canAccessAccount() { return false; },
+          async resolveAccountScope() { return []; },
+        },
+        newAcl: {
+          async resolveGrants() {
+            return [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+          },
+        },
+        onTelemetryDiagnostic: (event) => diagnostics.push(event.code),
+      });
+
+      await expect(allowedService.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: { type: 'account', accountId: String(ACCOUNT_A) },
+      })).resolves.toBeUndefined();
+      await expect(deniedService.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: { type: 'account', accountId: String(ACCOUNT_A) },
+      })).rejects.toBeInstanceOf(MailAccessDeniedError);
+
+      expect(diagnostics).toEqual(['counter_update_zero_rows', 'counter_update_zero_rows']);
+      await expect(normalState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({ evaluated: 0n });
+      await expect(normalState.getReadiness(WORKSPACE_B)).resolves.toEqual(workspaceBBefore);
+    } finally {
+      await normalDb.destroy();
+      await misScopedDb.destroy();
+    }
+  });
+
   test('rollout transition is one-way, requires observations without mismatches, and reset is shadow-only', async () => {
     const db = createApplicationDb({ maxConnections: 4 });
     const port = createPostgresMailAclRolloutStatePort({ db });
@@ -2320,6 +2798,32 @@ describe('server mailbox ACL migration', () => {
         enforced: true,
         evaluated: 3n,
       });
+      let legacyCalls = 0;
+      const enforcedService = new MailAccessRolloutService({
+        state: port,
+        legacy: {
+          async canAccessAccount() {
+            legacyCalls += 1;
+            return true;
+          },
+          async resolveAccountScope() {
+            legacyCalls += 1;
+            return [ACCOUNT_A];
+          },
+        },
+        newAcl: {
+          async resolveGrants() {
+            return [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+          },
+        },
+      });
+      await expect(enforcedService.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: { type: 'account', accountId: String(ACCOUNT_A) },
+      })).resolves.toBeUndefined();
+      expect(legacyCalls).toBe(0);
       await expect(port.resetShadowCounters({ workspaceId: WORKSPACE_A })).resolves.toEqual({
         ok: false,
         code: 'not_shadow',

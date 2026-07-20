@@ -1,0 +1,8 @@
+$ jest --selectProjects integration
+Running one project: integration
+
+Test Suites: 25 passed, 25 total
+Tests:       345 passed, 345 total
+Snapshots:   0 total
+Time:        14.98 s
+Ran all test suites.
