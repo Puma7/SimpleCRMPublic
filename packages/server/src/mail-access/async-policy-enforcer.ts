@@ -173,26 +173,32 @@ export async function enforceMailJobPolicy(
 // it contains side-effecting nodes, mirroring the HTTP route's admin gate. The
 // workflows.manage capability is not resolvable from the job actor, so this covers
 // the demotion (admin → user) scenario; non-side-effecting graphs stay allowed.
-// Side-effect child jobs a live/manual workflow queues that resolve to non_mail
-// when the node has no message (workflow.http_request + the AI children). Each is
-// produced ONLY by the workflow runtime and every one is a side-effecting node
-// type (graph-validate READ_ONLY allowlist), so a workflow.execute run already
-// required owner/admin for a non-admin actor. There is no direct user producer for
-// any of them, so gating on job.type is safe. (ai.reply_suggestion is excluded: it
-// has a direct user route, is message-required, and is read-only-classified.)
+// Side-effect child jobs a live/manual workflow queues. Each is produced ONLY by
+// the workflow runtime and is a side-effecting node type (graph-validate READ_ONLY
+// allowlist), so a workflow.execute run already required owner/admin for a non-admin
+// actor. There is no direct user producer for any of them, so gating on job.type is
+// safe. The message-optional ones (http_request + AI children) resolve to non_mail
+// when the node has no message and skip every check; the message-scoped ones
+// (forward_copy = SMTP send, ai.classify = message tag) DO get a per-message ACL
+// check, but that verifies only mail.export / mail.triage — NOT the admin the graph
+// required — so a demoted admin who retains those grants would still run the effect.
+// (ai.reply_suggestion is excluded: it has a direct user route and is read-only.)
 const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'workflow.http_request',
   'ai.agent',
   'ai.pick_canned',
   'ai.review',
   'ai.transform_text',
+  'workflow.forward_copy',
+  'ai.classify',
 ]);
 
-// R12-2: a message-less child of these types hits the non_mail early return and
-// skips every check, yet still runs a side-effecting node under the system role.
-// Re-deny a non-owner/admin actor here — this catches an initiator demoted between
-// workflow.execute time and the child's execution. Trusted-service children
-// (automatic/inbound runs) are actor.kind==='service' and never reach here.
+// R12-2/R13-1: re-deny a non-owner/admin actor for any workflow side-effect child —
+// this catches an initiator demoted between workflow.execute time and the child's
+// execution, for both the message-less children (which otherwise hit the non_mail
+// early return) and the message-scoped ones (whose per-message check does not
+// re-establish admin). Trusted-service children (automatic/inbound runs) are
+// actor.kind==='service' and never reach here.
 function assertWorkflowChildSideEffectPrivilege(job: QueuedJob, actor: MailAccessActor): void {
   if (!WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES.has(job.type)) return;
   if (actor.isOwner || actor.isAdmin) return;

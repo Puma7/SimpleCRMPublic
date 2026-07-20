@@ -346,6 +346,24 @@ describe('server mail job and event ACL', () => {
       }), makePolicyPorts())).resolves.toBeUndefined();
     }
 
+    // Message-scoped side-effect children (forward_copy = SMTP send, ai.classify =
+    // message tag) are also gated (R13-1): the per-message check verifies
+    // mail.export/mail.triage, not the admin the graph required.
+    for (const type of ['workflow.forward_copy', 'ai.classify'] as const) {
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+      }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12 },
+      }), makePolicyPorts())).resolves.toBeUndefined();
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+      }), makePolicyPorts())).resolves.toBeUndefined();
+    }
+
     // ai.reply_suggestion is NOT gated: it has a direct user route, is
     // message-required, and only adds its content-read supplemental.
     await expect(enforceMailJobPolicy(job({

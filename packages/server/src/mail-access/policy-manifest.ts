@@ -571,7 +571,11 @@ function assignSupplementalProtectedPolicies(assign: AssignRoutePolicy): void {
   assign('/api/v1/pgp/attachments/:attachmentId/decrypt', { POST: permissionPolicy('mail.attachment.read', attachmentPath()) });
   assign('/api/v1/pgp/attachments/:attachmentId/verify', { POST: permissionPolicy('mail.attachment.read', attachmentPath()) });
   assign('/api/v1/pgp/messages/:messageId/decrypt', { POST: permissionPolicy('mail.content.read', messagePath()) });
-  assign('/api/v1/pgp/messages/:messageId/detect', { POST: permissionPolicy('mail.content.read', messagePath()) });
+  // Detection persists the shared pgp_status / signer fingerprint on the message
+  // (updateMessagePgpDetectionStatus), so it is a triage-level mutation, not a
+  // read — otherwise a content-only viewer could downgrade the verification state
+  // shown to everyone.
+  assign('/api/v1/pgp/messages/:messageId/detect', { POST: permissionPolicy('mail.triage', messagePath()) });
   assign('/api/v1/pgp/messages/:messageId/verify', { POST: permissionPolicy('mail.content.read', messagePath()) });
 
   assign('/api/v1/pgp/identities/generate', { POST: permissionPolicy('mail.account.manage', mailScope()) });

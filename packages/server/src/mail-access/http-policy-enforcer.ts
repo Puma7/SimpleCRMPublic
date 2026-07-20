@@ -812,6 +812,37 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // Spam decision / learning-event CREATE authorizes only the message when both
+  // messageId and accountId are supplied (messageOrAccountBody), so a delegate can
+  // pair an accessible message with a guessed foreign accountId; the create port
+  // then resolves the unchecked account and its mismatch/not-found errors enumerate
+  // inaccessible account ids. When both are present, authorize mail.triage on the
+  // account too (the account-only case is already covered by the base).
+  if (
+    req.method === 'POST'
+    && (canonicalPath === '/api/v1/spam/decisions' || canonicalPath === '/api/v1/spam/learning-events')
+    && isBodyObject(req.body)
+  ) {
+    const rawMessageId = req.body.messageId;
+    const rawAccountId = req.body.accountId;
+    if (
+      rawMessageId !== undefined && rawMessageId !== null
+      && rawAccountId !== undefined && rawAccountId !== null
+    ) {
+      const account = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'account', id: requirePositiveInt(rawAccountId) },
+      });
+      if (account.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.triage',
+        resource: account[0]!,
+      });
+    }
+  }
+
   // A thread merge — and a thread-alias creation, which persists an alias row the
   // canonical-thread resolvers apply workspace-wide (filtered by workspace_id +
   // thread_id, NOT account_id) — rebuilds edges and the aggregate across the WHOLE
