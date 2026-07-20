@@ -343,7 +343,8 @@ describe('server mail policy manifest', () => {
       ['GET', '/api/v1/email/accounts/9', 'mail.metadata.read', account('path')],
       ['PATCH', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
       ['DELETE', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
-      ['POST', '/api/v1/email/threads/merge', 'mail.triage', account('body')],
+      ['POST', '/api/v1/email/threads/merge', 'mail.triage', optionalAccount('body')],
+      ['POST', '/api/v1/email/thread-aliases', 'mail.triage', optionalAccount('body')],
       ['POST', '/api/v1/workflows/23/execute', 'mail.content.read', optionalMessageBody()],
       ['POST', '/api/v1/workflows/by-source/-23/execute', 'mail.content.read', optionalMessageBody()],
       ['GET', '/api/v1/email/messages/42/workflow-runs', 'mail.content.read', messagePath()],
@@ -443,14 +444,22 @@ describe('server mail policy manifest', () => {
     }
   });
 
-  test('keeps PGP events explicitly workspace-global', () => {
-    const eventTypes = SERVER_EVENT_TYPES.filter((type) => type.startsWith('pgp_'));
+  test('restricts PGP and spam-list events to owners/admins, matching their read routes', () => {
+    // pgp_identity/pgp_peer_key and spam_list_entry mutations; spam_learning_event
+    // and spam_decision carry a message/account and are resolved separately above.
+    const eventTypes = SERVER_EVENT_TYPES.filter((type) => (
+      (type.startsWith('pgp_') || type.startsWith('spam_'))
+      && !type.startsWith('spam_learning_event.')
+      && !type.startsWith('spam_decision.')
+    ));
     expect(eventTypes).not.toHaveLength(0);
+    expect(eventTypes.some((type) => type.startsWith('pgp_'))).toBe(true);
+    expect(eventTypes.some((type) => type.startsWith('spam_list_entry.'))).toBe(true);
     for (const type of eventTypes) {
       expect(assertMailEventPolicy(type)).toEqual({
         type,
         permission: 'mail.metadata.read',
-        resource: { kind: 'workspace_global' },
+        resource: { kind: 'owner_admin_only' },
       });
     }
   });

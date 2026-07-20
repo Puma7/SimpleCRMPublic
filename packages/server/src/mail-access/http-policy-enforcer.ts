@@ -37,6 +37,10 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/folders',
   '/api/v1/email/tags',
   '/api/v1/email/categories',
+  // Fetching a single workspace-global category/team member by id is the same
+  // lookup as listing the collection (both above), so a reader allowed the list
+  // must be allowed the item — otherwise the mail UI 404s on a record it may show.
+  '/api/v1/email/categories/:id',
   '/api/v1/email/category-counts',
   '/api/v1/email/message-categories',
   '/api/v1/email/internal-notes',
@@ -45,6 +49,7 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/remote-content-allowlist',
   '/api/v1/email/read-receipts',
   '/api/v1/email/team-members',
+  '/api/v1/email/team-members/:id',
   '/api/v1/email/thread-edges',
   '/api/v1/email/thread-aliases',
   '/api/v1/email/threads',
@@ -95,6 +100,17 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set([
 const RESTRICTED_SCOPE_WRITE_PATHS = new Set<string>([
   '/api/v1/pgp/messages/encrypt',
   '/api/v1/pgp/messages/sign',
+  // PGP identities are strictly per-user (stored + AEAD-bound to user_id == actor),
+  // and signing/decryption load only the actor's own identity — so an owner/admin
+  // cannot provision a key on a delegate's behalf. A delegated sender who may reach
+  // encrypt/sign above must therefore be able to generate and rotate their OWN key;
+  // these writes still require mail.account.manage (a scope-'none' delegate is
+  // rejected before this allowlist), and the generate/rotate ports are user_id
+  // scoped, so a restricted delegate can only touch their own identity. Peer-key
+  // import and manual identity POST stay owner/admin-only (workspace-wide effect).
+  '/api/v1/pgp/identities/generate',
+  '/api/v1/pgp/identities/:identityId/private-key/passphrase',
+  '/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase',
 ]);
 
 // Message list/search routes that expose body-derived content (snippet, search
@@ -862,6 +878,14 @@ async function assertSupplementalHttpPermissions(
         workspaceId,
         target: { kind: 'thread', id: raw.trim() },
       });
+      // An empty resolution means the thread currently holds no messages. A
+      // restricted delegate must prove access to a real thread — otherwise they
+      // could plant an alias for a not-yet-existing thread id that later captures
+      // a thread created in an account they cannot reach (canonical alias
+      // resolution is workspace-wide). Owner/admin have full access already.
+      if (messages.length === 0 && !actor.isOwner && !actor.isAdmin) {
+        throw new MailAccessDeniedError();
+      }
       for (const resource of messages) {
         await ports.mailAccess!.assertPermission({
           workspaceId,
@@ -887,6 +911,11 @@ async function assertSupplementalHttpPermissions(
         workspaceId,
         target: { kind: 'thread', id: raw.trim() },
       });
+      // Same planting guard as creation: repointing to an empty thread lets a
+      // restricted delegate seed an alias for a thread they cannot yet access.
+      if (messages.length === 0 && !actor.isOwner && !actor.isAdmin) {
+        throw new MailAccessDeniedError();
+      }
       for (const resource of messages) {
         await ports.mailAccess!.assertPermission({
           workspaceId,

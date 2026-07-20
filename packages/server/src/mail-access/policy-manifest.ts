@@ -525,7 +525,11 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
   });
   assign('/api/v1/email/thread-aliases', {
     GET: permissionPolicy('mail.metadata.read', mailScope()),
-    POST: permissionPolicy('mail.triage', accountBody()),
+    // accountId is optional (an accountless alias is stored workspace-global with
+    // account_id null), so resolve it optionally — requiring it would 404 a
+    // supported accountless creation even for an owner/admin. The supplemental
+    // below still authorizes mail.triage on every message in both threads.
+    POST: permissionPolicy('mail.triage', optionalAccount('body')),
   });
   assign('/api/v1/email/thread-aliases/:id', {
     GET: permissionPolicy('mail.metadata.read', metadataPath('thread_alias')),
@@ -535,7 +539,10 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
   assign('/api/v1/email/threads', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
   assign('/api/v1/email/threads/:id', { GET: permissionPolicy('mail.metadata.read', threadPath('id')) });
   assign('/api/v1/email/threads/split-message', { POST: permissionPolicy('mail.triage', messageBody()) });
-  assign('/api/v1/email/threads/merge', { POST: permissionPolicy('mail.triage', accountBody()) });
+  // accountId is optional on merge too (accountless merges are workspace-global);
+  // resolve it optionally so an owner/admin merge without an account still passes.
+  // The supplemental authorizes both merged threads regardless.
+  assign('/api/v1/email/threads/merge', { POST: permissionPolicy('mail.triage', optionalAccount('body')) });
   assign('/api/v1/email/thread-alias-warnings', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
 }
 
@@ -733,7 +740,13 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
     return spamEventResource();
   }
   if (type.startsWith('spam_') || type.startsWith('pgp_')) {
-    return { kind: 'workspace_global' };
+    // spam list-entry and PGP identity/peer-key activity. Their HTTP list routes
+    // (mail.metadata.read on mail_scope, not in RESTRICTED_SCOPE_READ_PATHS) admit
+    // only full-scope owner/admin callers, but a workspace_global event resolves to
+    // any nonempty scope — so a single-account metadata delegate would otherwise
+    // receive every workspace key/spam-policy mutation. Restrict delivery to
+    // owner/admin to match the read routes.
+    return { kind: 'owner_admin_only' };
   }
   if (type.startsWith('conversation_lock.') || type === 'email_message.updated' || type === 'email_tracking.updated') {
     return { kind: 'message_lookup', messageId: eventValue('entityId') };

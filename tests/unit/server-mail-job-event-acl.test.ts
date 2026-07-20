@@ -718,6 +718,31 @@ describe('server mail job and event ACL', () => {
     }), userContext)).resolves.toMatchObject({ type: 'email_canned_response.created' });
   });
 
+  test('restricts PGP identity and spam-list events to owners and admins', async () => {
+    const ports = makePolicyPorts();
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+    const adminContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' as const },
+      ports,
+    };
+
+    for (const evt of [
+      { type: 'pgp_identity.created', entityType: 'pgp_identity', entityId: '5', payload: { id: 5, accountId: 7 } },
+      { type: 'pgp_peer_key.updated', entityType: 'pgp_peer_key', entityId: '6', payload: { id: 6 } },
+      { type: 'spam_list_entry.updated', entityType: 'spam_list_entry', entityId: '9', payload: { id: 9 } },
+    ]) {
+      // A single-account metadata delegate cannot list these via HTTP, so they must
+      // not receive the workspace-wide key/spam-policy mutation over the stream.
+      await expect(filterMailEventForPrincipal(event(evt), userContext)).resolves.toBeNull();
+      // Owners/admins still get them (their read routes admit full-scope callers).
+      await expect(filterMailEventForPrincipal(event(evt), adminContext))
+        .resolves.toMatchObject({ type: evt.type });
+    }
+  });
+
   test('websocket replay/live dedupe keeps a bounded ordered window', () => {
     const dedupe = createBoundedEventSequenceDedupe(3);
 

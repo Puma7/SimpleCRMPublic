@@ -645,6 +645,77 @@ describe('mail ACL rollout central use', () => {
     expect(deleteAlias).toHaveBeenCalledTimes(1);
   });
 
+  test('thread-alias creation denies a restricted delegate seeding an empty thread', async () => {
+    const created = jest.fn(async () => ({
+      ok: true as const,
+      alias: {
+        id: 1,
+        sourceSqliteId: 1,
+        accountSourceSqliteId: null,
+        accountId: ACCOUNT_A,
+        aliasThreadId: 'empty-thread',
+        canonicalThreadId: 'thread-with-messages',
+        confidence: 'high',
+        source: 'manual_merge',
+        createdAt: null,
+        updatedAt: '2026-07-20T10:00:00.000Z',
+      },
+    }));
+    const mailAccess: MailAccessService = {
+      async assertPermission() {},
+      async resolveScope() {
+        return { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+      },
+    };
+    const ports: ServerApiPorts = {
+      ...makeCentralPorts(mailAccess),
+      mailResourceLookup: {
+        async resolve(input) {
+          const target = input.target;
+          if (target.kind === 'account') return [{ type: 'account', accountId: String(target.id) }];
+          // 'thread-with-messages' is populated; 'empty-thread' has no messages.
+          if (target.kind === 'thread' && target.id === 'thread-with-messages') {
+            return [messageResource(ACCOUNT_A, FOLDER_A, 501)];
+          }
+          return [];
+        },
+      },
+      emailThreadAliases: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create() {
+          return created();
+        },
+      } as unknown as ServerApiPorts['emailThreadAliases'],
+    };
+    const api = createServerApi(ports);
+    const body = { accountId: ACCOUNT_A, aliasThreadId: 'empty-thread', canonicalThreadId: 'thread-with-messages' };
+
+    // A restricted delegate cannot authorize the empty aliasThreadId, so the alias
+    // is never planted — otherwise a later thread with that id in an inaccessible
+    // account would silently inherit the alias.
+    await expect(api.handle({
+      method: 'POST',
+      path: '/api/v1/email/thread-aliases',
+      principal: principal(),
+      body,
+    })).resolves.toMatchObject({ status: 404 });
+    expect(created).not.toHaveBeenCalled();
+
+    // An owner has full workspace access and may seed it.
+    await expect(api.handle({
+      method: 'POST',
+      path: '/api/v1/email/thread-aliases',
+      principal: principal('owner'),
+      body,
+    })).resolves.toMatchObject({ status: 201 });
+    expect(created).toHaveBeenCalledTimes(1);
+  });
+
   test('service jobs stay on Task-6 new ACL semantics and never increment rollout counters', async () => {
     const fixture = createRolloutFixture({ mode: 'shadow', newGrants: [], legacyReadAccounts: [ACCOUNT_A] });
     const ports = makeCentralPorts(fixture.service);
