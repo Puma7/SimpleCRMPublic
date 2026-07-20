@@ -270,7 +270,10 @@ function parseSubject(value: unknown):
   | { ok: true; subject: MailDelegationSubject }
   | { ok: false; response: ApiResponse<ApiErrorBody> } {
   if (!isRecord(value)) return invalid('subject ist erforderlich');
-  if (value.type === 'user' && typeof value.id === 'string' && value.id.trim()) {
+  // users.id is a Postgres uuid column, so validate the format here — otherwise a
+  // malformed id reaches the query and raises "invalid input syntax for type
+  // uuid" (a 500) instead of an ordinary validation response.
+  if (value.type === 'user' && typeof value.id === 'string' && UUID_RE.test(value.id.trim())) {
     return { ok: true, subject: { type: 'user', id: value.id.trim() } };
   }
   if (value.type === 'group' && isPositiveInteger(value.id)) {
