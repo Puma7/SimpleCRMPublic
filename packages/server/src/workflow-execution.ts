@@ -40,7 +40,7 @@ import type {
   WorkflowExecutionJobPlan,
   WorkflowExecutionJobPort,
 } from './jobs';
-import { buildTrustedServiceJobPayload } from './jobs/policy';
+import { buildTrustedServiceJobPayload, TRUSTED_SERVICE_JOB_MARKER_VALUE } from './jobs/policy';
 import {
   createAiReviewPreviewRunner,
   type AiReviewPreviewRunner,
@@ -4470,6 +4470,8 @@ async function releaseWorkflowOutboundHold(
       outbound_hold: false,
       outbound_block_reason: null,
       scheduled_send_at: now,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE,
       // Persist the cleaned body so the customer does not see the internal
       // review banner, and the persisted ticket-prefixed subject so the
       // fingerprint matches at send time.
@@ -4672,6 +4674,8 @@ async function sendWorkflowDraft(
         outbound_hold: false,
         outbound_block_reason: null,
         scheduled_send_at: now,
+        scheduled_send_actor_user_id: null,
+        scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE,
         body_text: cleaned.plain,
         body_html: cleaned.html || null,
         subject: finalSubject,
@@ -4716,6 +4720,8 @@ async function sendWorkflowDraft(
         outbound_hold: false,
         outbound_block_reason: null,
         scheduled_send_at: now,
+        scheduled_send_actor_user_id: null,
+        scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE,
         updated_at: now,
       })
       .where('workspace_id', '=', context.workspaceId)

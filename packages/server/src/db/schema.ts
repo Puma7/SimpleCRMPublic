@@ -737,6 +737,8 @@ export type EmailMessagesTable = {
   spam_decided_at: TimestampColumn | null;
   snoozed_until: TimestampColumn | null;
   scheduled_send_at: TimestampColumn | null;
+  scheduled_send_actor_user_id: string | null;
+  scheduled_send_trusted_service_principal: string | null;
   reply_suggestion_text: string | null;
   reply_suggestion_status: string | null;
   reply_suggestion_error: string | null;

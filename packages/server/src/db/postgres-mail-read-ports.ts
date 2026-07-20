@@ -994,7 +994,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         }
         const validation = await options.outboundValidation.validate({
           workspaceId: input.workspaceId,
-          actorUserId: 'system',
+          actorUserId: input.actorUserId,
           values: {
             messageId: input.messageId,
             subject: draftForValidation.subject?.trim() || '(Ohne Betreff)',
@@ -1026,6 +1026,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .updateTable('email_messages')
             .set({
               scheduled_send_at: input.sendAt,
+              scheduled_send_actor_user_id: input.sendAt ? input.actorUserId : null,
+              scheduled_send_trusted_service_principal: null,
               outbound_hold: false,
               outbound_block_reason: null,
               updated_at: new Date(),
@@ -1080,6 +1082,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .updateTable('email_messages')
             .set({
               scheduled_send_at: new Date(),
+              scheduled_send_actor_user_id: input.actorUserId,
+              scheduled_send_trusted_service_principal: null,
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -4094,6 +4098,8 @@ export async function createPostgresComposeDraftInTransaction(
       spam_status: 'clean',
       snoozed_until: null,
       scheduled_send_at: null,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: null,
       pop3_uidl: null,
       remote_content_policy: 'blocked',
       read_receipt_requested: false,

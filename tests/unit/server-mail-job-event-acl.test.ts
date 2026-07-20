@@ -93,6 +93,33 @@ describe('server mail job and event ACL', () => {
     });
   });
 
+  test('graphile task-list refuses scheduled send before handler when initiating actor is degranted', async () => {
+    const calls: string[] = [];
+    const taskList = buildGraphileTaskList(
+      {
+        'mail.send.scheduled': async () => {
+          calls.push('handler');
+        },
+      } satisfies JobHandlerRegistry,
+      makePolicyPorts({ denyAllMailAccess: true }),
+    );
+
+    await expect(taskList['mail.send.scheduled']?.({
+      workspaceId: 'workspace-a',
+      actorUserId: 'user-a',
+      draftId: 12,
+      accountId: 7,
+    })).resolves.toBeUndefined();
+    await expect(taskList['mail.send.scheduled']?.({
+      workspaceId: 'workspace-a',
+      actorUserId: 'disabled-user',
+      draftId: 12,
+      accountId: 7,
+    })).resolves.toBeUndefined();
+
+    expect(calls).toEqual([]);
+  });
+
   test('job actor modes fail closed for missing deleted disabled actors and only accept canonical service payloads', async () => {
     const ports = makePolicyPorts();
 
@@ -164,11 +191,11 @@ describe('server mail job and event ACL', () => {
     }), ports);
     await enforceMailJobPolicy(job({
       type: 'mail.send.scheduled',
-      payload: { workspaceId: 'workspace-a', principal: 'simplecrm:service', draftId: 12, accountId: 7 },
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
     }), ports);
     await enforceMailJobPolicy(job({
       type: 'lock.cleanup',
-      payload: { workspaceId: 'workspace-a' },
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a' }),
     }), ports);
 
     expect(ports.lookups).toEqual([
@@ -180,6 +207,7 @@ describe('server mail job and event ACL', () => {
     expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([
       ['mail.triage', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
       ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      ['mail.send', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
     ]);
     expect(ports.scopePermissions).toEqual([]);
   });
@@ -257,41 +285,57 @@ describe('server mail job and event ACL', () => {
     expect(ports.delayedJobLookups).toEqual([87, 88, 88, 999, 89, 88]);
   });
 
-  test('service jobs are allowed only through narrow policy resources without mail grants', async () => {
+  test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {
     const ports = makePolicyPorts({ denyAllMailAccess: true });
+    const servicePayloads = {
+      'mail.vacation.auto_reply': { workspaceId: 'workspace-a', messageId: 12 },
+      'workflow.dmarc_ingest': { workspaceId: 'workspace-a', messageId: 12, workflowId: 7 },
+      'mail.send.scheduled': { workspaceId: 'workspace-a', draftId: 12, accountId: 7 },
+      'lock.cleanup': { workspaceId: 'workspace-a' },
+    } as const;
 
-    await expect(enforceMailJobPolicy(job({
-      type: 'mail.sync.imap',
-      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', accountId: 7 }),
-    }), ports)).resolves.toBeUndefined();
-    await expect(enforceMailJobPolicy(job({
-      type: 'mail.vacation.auto_reply',
-      payload: { workspaceId: 'workspace-a', messageId: 12 },
-    }), ports)).resolves.toBeUndefined();
-    await expect(enforceMailJobPolicy(job({
-      type: 'workflow.dmarc_ingest',
-      payload: { workspaceId: 'workspace-a', messageId: 12 },
-    }), ports)).resolves.toBeUndefined();
-    await expect(enforceMailJobPolicy(job({
-      type: 'mail.send.scheduled',
-      payload: { workspaceId: 'workspace-a', draftId: 12, accountId: 7 },
-    }), ports)).resolves.toBeUndefined();
-    await expect(enforceMailJobPolicy(job({
-      type: 'lock.cleanup',
-      payload: { workspaceId: 'workspace-a' },
-    }), ports)).resolves.toBeUndefined();
+    for (const [type, payload] of Object.entries(servicePayloads)) {
+      await expect(enforceMailJobPolicy(job({ type, payload }), ports))
+        .rejects.toMatchObject({ nonRetryable: true });
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { ...payload, [TRUSTED_SERVICE_JOB_MARKER_FIELD]: 'forged' },
+      }), ports)).rejects.toMatchObject({ nonRetryable: true });
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: buildTrustedServiceJobPayload(payload),
+      }), ports)).resolves.toBeUndefined();
+    }
 
     expect(ports.assertions).toEqual([]);
     expect(ports.scopePermissions).toEqual([]);
     await expect(enforceMailJobPolicy(job({
       type: 'mail.vacation.auto_reply',
-      payload: { workspaceId: 'workspace-a', messageId: 9999 },
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 9999 }),
     }), ports)).rejects.toMatchObject({ nonRetryable: true });
   });
 
-  test('inventories initiating mail job policies so every producer has user or trusted-service provenance', () => {
+  test('vacation and DMARC jobs accept initiating actor provenance and recheck mail grants', async () => {
+    const ports = makePolicyPorts();
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.vacation.auto_reply',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), ports)).resolves.toBeUndefined();
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.dmarc_ingest',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, workflowId: 7 },
+    }), ports)).resolves.toBeUndefined();
+
+    expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([
+      ['mail.send', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      ['mail.attachment.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+    ]);
+  });
+
+  test('inventories user-or-service mail job policies so every producer has user or trusted-service provenance', () => {
     const initiating = SERVER_JOB_POLICIES
-      .filter((entry) => entry.actorMode === 'initiating_user' || entry.actorMode === 'initiating_user_or_service')
+      .filter((entry) => entry.kind === 'mail' && entry.actorMode !== 'service')
       .map((entry) => entry.type)
       .sort();
 
@@ -302,9 +346,12 @@ describe('server mail job and event ACL', () => {
       'ai.reply_suggestion',
       'ai.review',
       'ai.transform_text',
+      'mail.send.scheduled',
       'mail.spam.score',
       'mail.sync.imap',
       'mail.sync.pop3',
+      'mail.vacation.auto_reply',
+      'workflow.dmarc_ingest',
       'workflow.execute',
       'workflow.forward_copy',
       'workflow.http_request',

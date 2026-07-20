@@ -37,6 +37,7 @@ import { userSignaturesMigration } from './0036_user_signatures';
 import { userGroupPermissionsMigration } from './0037_user_group_permissions';
 import { mailAclMigration } from './0038_mail_acl';
 import { mailAclRolloutMigration } from './0039_mail_acl_rollout';
+import { scheduledSendProvenanceMigration } from './0040_scheduled_send_provenance';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -80,6 +81,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   userGroupPermissionsMigration,
   mailAclMigration,
   mailAclRolloutMigration,
+  scheduledSendProvenanceMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

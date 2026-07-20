@@ -6,6 +6,7 @@ import {
   buildAiPickCannedJobPlan,
   buildAiReviewJobPlan,
   buildAiReplySuggestionJobPlan,
+  buildScheduledSendJobPlan,
   buildAiTransformTextJobPlan,
   buildWorkflowExecutionJobPlan,
   buildWorkflowForwardCopyJobPlan,
@@ -173,6 +174,11 @@ describe('server mail job provenance', () => {
       to: 'ops@example.test',
       continuation,
     }, WORKSPACE_ID).continuation?.actorUserId).toBe(USER_ID);
+    expect(buildScheduledSendJobPlan({
+      workspaceId: WORKSPACE_ID,
+      draftId: 12,
+      actorUserId: USER_ID,
+    }, WORKSPACE_ID, new Date('2026-07-20T10:00:00.000Z')).actorUserId).toBe(USER_ID);
   });
 
   test('production job plan builders preserve trusted service provenance through system continuations', () => {
@@ -225,16 +231,20 @@ describe('server mail job provenance', () => {
       workflowId: 23,
       trustedService: true,
     });
+    expect(buildScheduledSendJobPlan(buildTrustedServiceJobPayload({
+      workspaceId: WORKSPACE_ID,
+      draftId: 12,
+    }), WORKSPACE_ID, new Date('2026-07-20T10:00:00.000Z')).trustedService).toBe(true);
   });
 
-  test('source inventory covers every initiating mail policy producer with actor or trusted-service provenance', () => {
-    const initiatingTypes = new Set(SERVER_JOB_POLICIES
-      .filter((entry) => entry.actorMode === 'initiating_user' || entry.actorMode === 'initiating_user_or_service')
+  test('source inventory covers every user-or-service mail policy producer with actor or trusted-service provenance', () => {
+    const userOrServiceTypes = new Set(SERVER_JOB_POLICIES
+      .filter((entry) => entry.kind === 'mail' && entry.actorMode !== 'service')
       .map((entry) => entry.type));
     const producers = findServerSourceFiles('packages/server/src').flatMap((file) => extractQueueProducerBlocks(file)
-      .filter((producer) => initiatingTypes.has(producer.type)));
+      .filter((producer) => userOrServiceTypes.has(producer.type)));
     const seenTypes = new Set(producers.map((producer) => producer.type));
-    const missingInitiatingTypes = [...initiatingTypes]
+    const missingUserOrServiceTypes = [...userOrServiceTypes]
       .filter((type) => !seenTypes.has(type))
       .sort();
     const unprovenanced = producers
@@ -246,8 +256,8 @@ describe('server mail job provenance', () => {
         block: producer.block,
       }));
 
-    expect({ missingInitiatingTypes, unprovenanced }).toEqual({
-      missingInitiatingTypes: [],
+    expect({ missingUserOrServiceTypes, unprovenanced }).toEqual({
+      missingUserOrServiceTypes: [],
       unprovenanced: [],
     });
   });

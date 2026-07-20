@@ -10,11 +10,21 @@ import { sql, type Kysely, type RawBuilder } from 'kysely';
 
 import type { EmailComposeSenderApiPort } from './api';
 import type { ScheduledSendJobPlan, ScheduledSendJobPort } from './jobs';
+import {
+  buildTrustedServiceJobPayload,
+  TRUSTED_SERVICE_JOB_MARKER_VALUE,
+} from './jobs/policy';
 import type { ServerDatabase } from './db/schema';
 import { isOutboundReviewPendingError } from './mail-compose-send';
 import { withWorkspaceTransaction } from './db/workspace-context';
+import {
+  enforceMailJobPolicy,
+  MailAsyncAuthorizationError,
+  type MailAsyncPolicyPorts,
+} from './mail-access/async-policy-enforcer';
 
 const MAX_SCHEDULED_SEND_FAILURES = 5;
+const SCHEDULED_SEND_TRUSTED_SERVICE_ACTOR = 'system';
 
 function isComposeSendAlreadyInProgressError(error: string): boolean {
   const normalized = error.trim().toLowerCase();
@@ -34,6 +44,8 @@ type ScheduledDraft = Readonly<{
   replyParentMessageId: number | null;
   trackingOverride: boolean | null;
   claimedSendAt: Date | null;
+  actorUserId?: string | null;
+  trustedServicePrincipal?: string | null;
 }>;
 
 export type ScheduledSendStore = Readonly<{
@@ -73,17 +85,14 @@ export type ScheduledSendStore = Readonly<{
 export type ScheduledSendJobPortOptions = Readonly<{
   store: ScheduledSendStore;
   composeSender: EmailComposeSenderApiPort;
-  actorUserId?: string;
 }>;
 
 export type PostgresScheduledSendJobPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   composeSender: EmailComposeSenderApiPort;
-  actorUserId?: string;
 }>;
 
 export function createScheduledSendJobPort(options: ScheduledSendJobPortOptions): ScheduledSendJobPort {
-  const actorUserId = options.actorUserId ?? 'system';
   return {
     async processDue(input) {
       const drafts = await options.store.claimDueDrafts(input);
@@ -91,7 +100,7 @@ export function createScheduledSendJobPort(options: ScheduledSendJobPortOptions)
         await processScheduledDraft({
           store: options.store,
           composeSender: options.composeSender,
-          actorUserId,
+          actorUserId: resolveScheduledSendActor(input, draft),
           workspaceId: input.workspaceId,
           draft,
         });
@@ -105,9 +114,17 @@ export function createPostgresScheduledSendJobPort(
 ): ScheduledSendJobPort {
   return createScheduledSendJobPort({
     composeSender: options.composeSender,
-    actorUserId: options.actorUserId,
     store: createPostgresScheduledSendStore(options.db),
   });
+}
+
+function resolveScheduledSendActor(input: ScheduledSendJobPlan, draft: ScheduledDraft): string {
+  const actorUserId = input.actorUserId ?? draft.actorUserId;
+  if (actorUserId?.trim()) return actorUserId;
+  if (input.trustedService === true || draft.trustedServicePrincipal === TRUSTED_SERVICE_JOB_MARKER_VALUE) {
+    return SCHEDULED_SEND_TRUSTED_SERVICE_ACTOR;
+  }
+  throw new Error('scheduled_send_provenance_required');
 }
 
 async function processScheduledDraft(input: {
@@ -149,7 +166,7 @@ async function processScheduledDraft(input: {
       ...(recipientFieldFromJson(draft.ccJson) ? { cc: recipientFieldFromJson(draft.ccJson) } : {}),
       ...(recipientFieldFromJson(draft.bccJson) ? { bcc: recipientFieldFromJson(draft.bccJson) } : {}),
       ...(draft.replyParentMessageId === null ? {} : { inReplyToMessageId: draft.replyParentMessageId }),
-      ...(draft.trackingOverride === null ? {} : { trackingOverride: draft.trackingOverride }),
+      ...(draft.trackingOverride == null ? {} : { trackingOverride: draft.trackingOverride }),
       ...scheduledAttachmentPathsPayload(draft.draftAttachmentPathsJson),
     },
   });
@@ -242,6 +259,19 @@ function parseScheduledSendClaimedAt(value: string | null | undefined): Date | n
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function scheduledSendProvenanceFilter(input: ScheduledSendJobPlan): RawBuilder<unknown> {
+  if (input.actorUserId !== undefined) {
+    return sql`AND scheduled_send_actor_user_id = ${input.actorUserId}`;
+  }
+  if (input.trustedService === true) {
+    return sql`AND scheduled_send_trusted_service_principal = ${TRUSTED_SERVICE_JOB_MARKER_VALUE}`;
+  }
+  return sql`AND (
+    scheduled_send_actor_user_id IS NOT NULL
+    OR scheduled_send_trusted_service_principal = ${TRUSTED_SERVICE_JOB_MARKER_VALUE}
+  )`;
+}
+
 async function recoverOrphanedScheduledClaims(
   trx: Kysely<ServerDatabase>,
   workspaceId: string,
@@ -264,7 +294,11 @@ async function recoverOrphanedScheduledClaims(
 
     const message = await trx
       .selectFrom('email_messages')
-      .select(['scheduled_send_at'])
+      .select([
+        'scheduled_send_at',
+        'scheduled_send_actor_user_id',
+        'scheduled_send_trusted_service_principal',
+      ])
       .where('workspace_id', '=', workspaceId)
       .where('id', '=', draftId)
       .where('uid', '<', 0)
@@ -290,7 +324,10 @@ async function recoverOrphanedScheduledClaims(
     }
 
     const claimedSendAt = parseScheduledSendClaimedAt(row.value);
-    if (claimedSendAt) {
+    if (claimedSendAt && (
+      message.scheduled_send_actor_user_id !== null
+      || message.scheduled_send_trusted_service_principal === TRUSTED_SERVICE_JOB_MARKER_VALUE
+    )) {
       await trx
         .updateTable('email_messages')
         .set({
@@ -358,6 +395,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
           const draftFilter = input.draftId !== undefined
             ? sql`AND id = ${input.draftId}`
             : sql``;
+          const provenanceFilter = scheduledSendProvenanceFilter(input);
           const now = new Date();
           const result = await sql<{
             id: number | string | bigint;
@@ -372,9 +410,15 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
             reply_parent_message_id: number | string | bigint | null;
             tracking_override: boolean | null;
             claimed_send_at: Date | null;
+            scheduled_send_actor_user_id: string | null;
+            scheduled_send_trusted_service_principal: string | null;
           }>`
             WITH candidates AS (
-              SELECT id, scheduled_send_at AS claimed_send_at
+              SELECT
+                id,
+                scheduled_send_at AS claimed_send_at,
+                scheduled_send_actor_user_id,
+                scheduled_send_trusted_service_principal
               FROM email_messages
               WHERE workspace_id = ${input.workspaceId}
                 AND uid < 0
@@ -384,6 +428,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
                 AND scheduled_send_at <= ${input.dueBefore}
                 ${accountFilter}
                 ${draftFilter}
+                ${provenanceFilter}
               ORDER BY scheduled_send_at ASC, id ASC
               LIMIT ${input.limit}
               FOR UPDATE SKIP LOCKED
@@ -405,7 +450,9 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
               m.draft_attachment_paths_json,
               m.reply_parent_message_id,
               m.tracking_override,
-              c.claimed_send_at
+              c.claimed_send_at,
+              c.scheduled_send_actor_user_id,
+              c.scheduled_send_trusted_service_principal
           `.execute(trx);
           const drafts = result.rows.map((row) => ({
             id: Number(row.id),
@@ -420,6 +467,8 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
             replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
             trackingOverride: row.tracking_override === null ? null : Boolean(row.tracking_override),
             claimedSendAt: row.claimed_send_at,
+            actorUserId: row.scheduled_send_actor_user_id,
+            trustedServicePrincipal: row.scheduled_send_trusted_service_principal,
           }));
           await persistScheduledSendClaims(trx, input.workspaceId, drafts);
           return drafts;
@@ -519,7 +568,14 @@ async function updateScheduleTx(
 ): Promise<void> {
   await trx
     .updateTable('email_messages')
-    .set({ scheduled_send_at: sendAt, updated_at: new Date() })
+    .set({
+      scheduled_send_at: sendAt,
+      ...(sendAt === null ? {
+        scheduled_send_actor_user_id: null,
+        scheduled_send_trusted_service_principal: null,
+      } : {}),
+      updated_at: new Date(),
+    })
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', draftId)
     .execute();
@@ -594,6 +650,9 @@ export function startScheduledSendTicker(input: {
   db: Kysely<ServerDatabase>;
   composeSender: EmailComposeSenderApiPort;
   pollIntervalMs?: number;
+  mailAccess?: MailAsyncPolicyPorts['mailAccess'];
+  mailResourceLookup?: MailAsyncPolicyPorts['mailResourceLookup'];
+  auth?: MailAsyncPolicyPorts['auth'];
 }): ScheduledSendTickerRuntime {
   const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_SCHEDULED_SEND_TICKER_MS;
   const port = createPostgresScheduledSendJobPort({
@@ -610,24 +669,78 @@ export function startScheduledSendTicker(input: {
       const dueBefore = new Date();
       const rows = await input.db
         .selectFrom('email_messages')
-        .select('workspace_id')
+        .select([
+          'workspace_id',
+          'id',
+          'account_id',
+          'scheduled_send_actor_user_id',
+          'scheduled_send_trusted_service_principal',
+        ])
         .where('uid', '<', 0)
         .where('folder_kind', '=', 'draft')
         .where('outbound_hold', '=', false)
         .where('scheduled_send_at', 'is not', null)
         .where('scheduled_send_at', '<=', dueBefore)
-        .groupBy('workspace_id')
+        .where((eb) => eb.or([
+          eb('scheduled_send_actor_user_id', 'is not', null),
+          eb('scheduled_send_trusted_service_principal', '=', TRUSTED_SERVICE_JOB_MARKER_VALUE),
+        ]))
+        .orderBy('scheduled_send_at', 'asc')
+        .orderBy('id', 'asc')
+        .limit(30)
         .execute();
       for (const row of rows) {
+        const workspaceId = String(row.workspace_id);
+        const draftId = Number(row.id);
+        const accountId = row.account_id === null ? undefined : Number(row.account_id);
+        const actorUserId = row.scheduled_send_actor_user_id?.trim() || undefined;
+        const trustedService = row.scheduled_send_trusted_service_principal === TRUSTED_SERVICE_JOB_MARKER_VALUE;
         try {
+          const payload = actorUserId
+            ? {
+              workspaceId,
+              draftId,
+              ...(accountId === undefined ? {} : { accountId }),
+              actorUserId,
+            }
+            : buildTrustedServiceJobPayload({
+              workspaceId,
+              draftId,
+              ...(accountId === undefined ? {} : { accountId }),
+            });
+          await enforceMailJobPolicy({
+            id: 0,
+            type: 'mail.send.scheduled',
+            payload,
+            runAfter: dueBefore.toISOString(),
+            attempts: 0,
+            maxAttempts: 1,
+            lockedAt: null,
+            lockedBy: null,
+            lastError: null,
+            workspaceId,
+            createdAt: dueBefore.toISOString(),
+            updatedAt: dueBefore.toISOString(),
+          }, {
+            mailAccess: input.mailAccess,
+            mailResourceLookup: input.mailResourceLookup,
+            auth: input.auth,
+          });
           await port.processDue({
-            workspaceId: String(row.workspace_id),
+            workspaceId,
+            draftId,
+            ...(accountId === undefined ? {} : { accountId }),
+            ...(actorUserId ? { actorUserId } : { trustedService }),
             dueBefore,
-            limit: 30,
+            limit: 1,
           });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.warn(`[mail] scheduled send ticker workspace ${String(row.workspace_id)}: ${message}`);
+          if (error instanceof MailAsyncAuthorizationError) {
+            console.warn(`[mail] scheduled send ticker workspace ${workspaceId} draft ${draftId}: authorization denied`);
+          } else {
+            console.warn(`[mail] scheduled send ticker workspace ${workspaceId} draft ${draftId}: ${message}`);
+          }
         }
       }
     } catch (error) {

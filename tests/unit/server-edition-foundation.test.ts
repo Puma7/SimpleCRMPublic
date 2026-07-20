@@ -202,6 +202,7 @@ import {
   createEmailReadReceiptResponderPort,
   createPostgresReadReceiptOutboundReviewPort,
   createScheduledSendJobPort,
+  startScheduledSendTicker,
   createServerImapSentCopyAppenderPort,
   createServerWorkflowImapActionPort,
   createServerMailConnectionTestPort,
@@ -365,6 +366,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0037_user_group_permissions',
   '0038_mail_acl',
   '0039_mail_acl_rollout',
+  '0040_scheduled_send_provenance',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1814,12 +1816,16 @@ describe('server edition foundation', () => {
     expect(sql).toContain('draft_attachment_paths_json text');
     expect(sql).toContain('reply_parent_message_id bigint REFERENCES email_messages(id) ON DELETE SET NULL');
     expect(sql).toContain('scheduled_send_at timestamptz');
+    expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_actor_user_id text');
+    expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_trusted_service_principal text');
     expect(sql).toContain('trash_prev_archived boolean');
     expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS trash_prev_folder_kind text');
     expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_at timestamptz');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_search_gin_idx ON email_messages USING gin (search_vector)');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_account_folder_date_idx');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_scheduled_send_idx');
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_scheduled_send_actor_idx');
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_scheduled_send_service_idx');
     expect(sql).toContain('legacy_assigned_to_user_id text');
     expect(sql).toContain('auth_spf text');
     expect(sql).toContain('rspamd_score double precision');
@@ -12965,6 +12971,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       accountId: 7,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
@@ -12973,7 +12980,7 @@ describe('server edition foundation', () => {
     expect(composeCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
-        actorUserId: 'system',
+        actorUserId: USER_A_ID,
         values: {
           accountId: 7,
           draftMessageId: 101,
@@ -12987,7 +12994,7 @@ describe('server edition foundation', () => {
       },
       {
         workspaceId: WORKSPACE_A_ID,
-        actorUserId: 'system',
+        actorUserId: USER_A_ID,
         values: {
           accountId: 7,
           draftMessageId: 103,
@@ -12999,7 +13006,7 @@ describe('server edition foundation', () => {
       },
       {
         workspaceId: WORKSPACE_A_ID,
-        actorUserId: 'system',
+        actorUserId: USER_A_ID,
         values: {
           accountId: 7,
           draftMessageId: 104,
@@ -13012,6 +13019,7 @@ describe('server edition foundation', () => {
     expect(storeCalls).toEqual([
       ['claimDueDrafts', {
         workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
         accountId: 7,
         dueBefore: new Date('2026-06-03T12:00:00.000Z'),
         limit: 10,
@@ -13076,6 +13084,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       accountId: 7,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
@@ -13089,6 +13098,169 @@ describe('server edition foundation', () => {
     expect(Object.prototype.hasOwnProperty.call(composeCalls[2]!, 'trackingOverride')).toBe(false);
   });
 
+  test('scheduled-send job port uses actor loaded from persisted claimed draft after restart', async () => {
+    const composeCalls: unknown[] = [];
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send(input) {
+          composeCalls.push(input);
+          return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 205,
+            accountId: 7,
+            subject: 'Persisted actor',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'persisted@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            trackingOverride: null,
+            claimedSendAt: new Date('2026-06-03T11:30:00.000Z'),
+            actorUserId: USER_A_ID,
+            trustedServicePrincipal: null,
+          }];
+        },
+        async finalizeSentDraft() {},
+        async releaseClaimedDraft() {},
+        async restoreClaimedDraft() {},
+        async giveUpDraft() {},
+        async recordFailedAttempt() { return { failures: 1, gaveUp: false }; },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(composeCalls).toEqual([expect.objectContaining({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+    })]);
+  });
+
+  test('trusted-workflow scheduled-send validates service provenance but sends with system actor', async () => {
+    const composeCalls: unknown[] = [];
+    const handler = createProductionJobHandlers({
+      now: () => new Date('2026-06-03T12:00:00.000Z'),
+      scheduledSend: createScheduledSendJobPort({
+        composeSender: {
+          async send(input) {
+            composeCalls.push(input);
+            return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+          },
+        },
+        store: {
+          async claimDueDrafts() {
+            return [{
+              id: 207,
+              accountId: 7,
+              subject: 'Trusted workflow',
+              bodyText: 'Hello',
+              bodyHtml: null,
+              toJson: { value: [{ address: 'workflow@example.com' }] },
+              ccJson: null,
+              bccJson: null,
+              draftAttachmentPathsJson: null,
+              replyParentMessageId: null,
+              trackingOverride: null,
+              claimedSendAt: new Date('2026-06-03T11:30:00.000Z'),
+            }];
+          },
+          async finalizeSentDraft() {},
+          async releaseClaimedDraft() {},
+          async restoreClaimedDraft() {},
+          async giveUpDraft() {},
+          async recordFailedAttempt() { return { failures: 1, gaveUp: false }; },
+        },
+      }),
+    });
+    const taskList = buildGraphileTaskList(handler, {
+      mailResourceLookup: {
+        async resolve(input) {
+          expect(input.target).toEqual({ kind: 'message', id: 207 });
+          return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: '207' }];
+        },
+      },
+      mailAccess: {
+        async assertPermission() {
+          throw new Error('trusted service must not run user permission checks');
+        },
+        async resolveScope() {
+          throw new Error('trusted service must not run user scope checks');
+        },
+      },
+    });
+
+    await expect(taskList['mail.send.scheduled']?.(
+      buildTrustedServiceJobPayload({
+        workspaceId: WORKSPACE_A_ID,
+        draftId: 207,
+        accountId: 7,
+      }),
+    )).resolves.toBeUndefined();
+
+    expect(composeCalls).toEqual([expect.objectContaining({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'system',
+      values: expect.objectContaining({
+        accountId: 7,
+        draftMessageId: 207,
+        to: 'workflow@example.com',
+      }),
+    })]);
+  });
+
+  test('scheduled-send job port refuses to send without user or trusted-service provenance', async () => {
+    const composeCalls: unknown[] = [];
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send(input) {
+          composeCalls.push(input);
+          return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 204,
+            accountId: 7,
+            subject: 'No provenance',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'no-provenance@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            trackingOverride: null,
+            claimedSendAt: new Date('2026-06-03T11:30:00.000Z'),
+          }];
+        },
+        async finalizeSentDraft() {},
+        async releaseClaimedDraft() {},
+        async restoreClaimedDraft() {},
+        async giveUpDraft() {},
+        async recordFailedAttempt() { return { failures: 1, gaveUp: false }; },
+      },
+    });
+
+    await expect(port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    })).rejects.toThrow('scheduled_send_provenance_required');
+
+    expect(composeCalls).toEqual([]);
+  });
+
   test('scheduled-send Postgres store atomically claims due drafts with SKIP LOCKED', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
     expect(source).toMatch(/FOR UPDATE SKIP LOCKED/);
@@ -13099,6 +13271,19 @@ describe('server edition foundation', () => {
     expect(source).toMatch(/recoverOrphanedScheduledClaims/);
     expect(source).toMatch(/persistScheduledSendClaims/);
     expect(source).toMatch(/m\.tracking_override/);
+    expect(source).toMatch(/scheduled_send_actor_user_id/);
+    expect(source).toMatch(/scheduled_send_trusted_service_principal/);
+  });
+
+  test('scheduled-send provenance is cleared by terminal and import paths', () => {
+    const scheduledSource = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
+    const composeSource = readFileSync(resolve(__dirname, '../../packages/server/src/mail-compose-send.ts'), 'utf8');
+    const importSource = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-core-mail-import.ts'), 'utf8');
+
+    expect(scheduledSource).toMatch(/scheduled_send_actor_user_id: null/);
+    expect(scheduledSource).toMatch(/scheduled_send_trusted_service_principal: null/);
+    expect(composeSource).toMatch(/scheduled_send_at: null,[\s\S]*scheduled_send_actor_user_id: null,[\s\S]*scheduled_send_trusted_service_principal: null/);
+    expect(importSource).toMatch(/scheduled_send_at = EXCLUDED\.scheduled_send_at,[\s\S]*scheduled_send_actor_user_id = NULL,[\s\S]*scheduled_send_trusted_service_principal = NULL/);
   });
 
   test('thread list predicates align scheduled_send filters with message list', () => {
@@ -13111,6 +13296,59 @@ describe('server edition foundation', () => {
   test('scheduled-send ticker isolates workspace failures', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
     expect(source).toMatch(/scheduled send ticker workspace/);
+  });
+
+  test('scheduled-send ticker enforces central mail job policy before claiming or sending due drafts', async () => {
+    const composeCalls: unknown[] = [];
+    const warnings: unknown[] = [];
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args);
+    });
+    const db = makeScheduledSendTickerDb([{
+      workspace_id: WORKSPACE_A_ID,
+      id: 206,
+      account_id: 7,
+      scheduled_send_actor_user_id: USER_A_ID,
+      scheduled_send_trusted_service_principal: null,
+    }]);
+    try {
+      const runtime = startScheduledSendTicker({
+        db,
+        pollIntervalMs: 60_000,
+        composeSender: {
+          async send(input) {
+            composeCalls.push(input);
+            return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+          },
+        },
+        auth: {
+          async listUsers() {
+            return [{ id: USER_A_ID, role: 'user' as const, disabledAt: null }];
+          },
+        },
+        mailResourceLookup: {
+          async resolve() {
+            return [{ type: 'message', accountId: '7', folderId: '8', messageId: '206' }];
+          },
+        },
+        mailAccess: {
+          async assertPermission() {
+            throw new Error('mail_access_denied');
+          },
+          async resolveScope() {
+            return { kind: 'none' as const };
+          },
+        },
+      });
+      await new Promise((resolveDone) => setTimeout(resolveDone, 20));
+      runtime.stop();
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(composeCalls).toEqual([]);
+    expect(db.transactionCount).toBe(0);
+    expect(String(warnings[0]?.[0] ?? '')).toContain('authorization denied');
   });
 
   test('postgres job queue replaces pending scheduled-send jobs per draft', () => {
@@ -13172,6 +13410,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
     });
@@ -13230,6 +13469,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
     });
@@ -13281,6 +13521,7 @@ describe('server edition foundation', () => {
 
     await expect(port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
     })).rejects.toThrow('db connection lost mid-transition');
@@ -21247,6 +21488,7 @@ describe('server edition foundation', () => {
 
   test('server mail compose draft and scheduled-send routes normalize legacy payloads', async () => {
     const calls: unknown[] = [];
+    const queueCalls: unknown[] = [];
     const syncWrites: unknown[] = [];
     const draftRecord = (id: number): EmailMessageRecord => ({
       ...makeEmailMessageRecord(id, true),
@@ -21310,6 +21552,14 @@ describe('server edition foundation', () => {
             accountId: input.values.accountId,
             warning: 'Server-Kopie per IMAP APPEND ist im Test nicht aktiv.',
           };
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+        async clearScheduledSendJob(input) {
+          queueCalls.push(['clearScheduledSendJob', input]);
         },
       },
       syncInfo: {
@@ -21517,6 +21767,7 @@ describe('server edition foundation', () => {
       }],
       ['scheduleDraftSend', {
         workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
         messageId: 44,
         sendAt: '2026-06-04T15:00:00.000Z',
       }],
@@ -21534,6 +21785,7 @@ describe('server edition foundation', () => {
       }],
       ['retryScheduledSendDraft', {
         workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
         messageId: 44,
       }],
       ['updateComposeDraft', {
@@ -21541,6 +21793,29 @@ describe('server edition foundation', () => {
         messageId: 98,
         values: { subject: 'Nope' },
       }],
+    ]);
+    expect(queueCalls).toEqual([
+      {
+        workspaceId: WORKSPACE_A_ID,
+        type: 'mail.send.scheduled',
+        payload: {
+          workspaceId: WORKSPACE_A_ID,
+          draftId: 44,
+          actorUserId: USER_A_ID,
+          dueBefore: '2026-06-04T15:00:00.000Z',
+        },
+        runAfter: new Date('2026-06-04T15:00:00.000Z'),
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        type: 'mail.send.scheduled',
+        payload: {
+          workspaceId: WORKSPACE_A_ID,
+          draftId: 44,
+          actorUserId: USER_A_ID,
+        },
+        runAfter: expect.any(Date),
+      },
     ]);
   });
 
@@ -38191,6 +38466,35 @@ function makePostgresEventDb(): {
   } as unknown as Kysely<ServerDatabase>;
 
   return { db, rows, sessionCommands };
+}
+
+function makeScheduledSendTickerDb(rows: Array<Record<string, unknown>>): Kysely<ServerDatabase> & { transactionCount: number } {
+  return {
+    transactionCount: 0,
+    selectFrom(table: string) {
+      if (table !== 'email_messages') throw new Error(`unexpected scheduled-send ticker table: ${table}`);
+      return new FakeScheduledSendTickerSelect(rows);
+    },
+    transaction() {
+      this.transactionCount += 1;
+      return {
+        execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(this),
+      };
+    },
+  } as unknown as Kysely<ServerDatabase> & { transactionCount: number };
+}
+
+class FakeScheduledSendTickerSelect {
+  constructor(private readonly rows: Array<Record<string, unknown>>) {}
+
+  select() { return this; }
+  where() { return this; }
+  orderBy() { return this; }
+  limit() { return this; }
+
+  async execute() {
+    return this.rows;
+  }
 }
 
 function makeFakePostgresEventNotifications() {

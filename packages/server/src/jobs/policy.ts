@@ -88,14 +88,14 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
   {
     type: 'mail.vacation.auto_reply',
     kind: 'mail',
-    actorMode: 'service',
+    actorMode: 'initiating_user_or_service',
     permission: 'mail.send',
     resource: messageJobResource(),
   },
   {
     type: 'mail.send.scheduled',
     kind: 'mail',
-    actorMode: 'service',
+    actorMode: 'initiating_user_or_service',
     permission: 'mail.send',
     resource: {
       kind: 'message_or_account_lookup',
@@ -174,7 +174,7 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
   {
     type: 'workflow.dmarc_ingest',
     kind: 'mail',
-    actorMode: 'service',
+    actorMode: 'initiating_user_or_service',
     permission: 'mail.attachment.read',
     resource: messageJobResource(),
   },

@@ -50,6 +50,8 @@ export type ScheduledSendJobPlan = Readonly<{
   workspaceId: string;
   accountId?: number;
   draftId?: number;
+  actorUserId?: string;
+  trustedService?: boolean;
   dueBefore: Date;
   limit: number;
 }>;
@@ -272,6 +274,8 @@ export function buildScheduledSendJobPlan(
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     ...optionalPositiveInteger(payload, 'accountId'),
     ...optionalPositiveInteger(payload, 'draftId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...(isTrustedServiceJobPayload(payload) ? { trustedService: true } : {}),
     dueBefore: optionalDate(payload, 'dueBefore', now),
     limit: optionalInteger(payload, 'limit', DEFAULT_SCHEDULED_SEND_LIMIT, 1, MAX_SCHEDULED_SEND_LIMIT),
   };

@@ -886,6 +886,7 @@ async function handleScheduledSendDraftSchedule(
   if (!parsed.ok) return parsed.response;
   const result = await ports.emailMessages.scheduleDraftSend({
     workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
     messageId,
     sendAt: parsed.sendAt,
   });
@@ -900,6 +901,7 @@ async function handleScheduledSendDraftSchedule(
           payload: {
             workspaceId: principal.workspaceId,
             draftId: messageId,
+            actorUserId: principal.userId,
             dueBefore: sendAt.toISOString(),
           },
           runAfter: sendAt,
@@ -985,8 +987,25 @@ async function handleScheduledSendDraftRetry(
   if (!ports.emailMessages?.retryScheduledSendDraft) {
     return error(503, 'email_messages_unavailable', 'Email scheduled-send API nicht konfiguriert');
   }
-  const result = await ports.emailMessages.retryScheduledSendDraft({ workspaceId: principal.workspaceId, messageId });
+  const result = await ports.emailMessages.retryScheduledSendDraft({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    messageId,
+  });
   if (!result.ok) return composeDraftMutationError(result.reason);
+  if (ports.jobQueue) {
+    const runAfter = new Date();
+    await ports.jobQueue.enqueue({
+      workspaceId: principal.workspaceId,
+      type: 'mail.send.scheduled',
+      payload: {
+        workspaceId: principal.workspaceId,
+        draftId: messageId,
+        actorUserId: principal.userId,
+      },
+      runAfter,
+    });
+  }
   return data(200, { success: true });
 }
 

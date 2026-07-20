@@ -1549,6 +1549,8 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
               outbound_block_reason: null,
               archived: false,
               scheduled_send_at: null,
+              scheduled_send_actor_user_id: null,
+              scheduled_send_trusted_service_principal: null,
               sent_imap_sync_failed: input.sentImapSyncFailed,
               // Null the snapshot after measuring so an accidental re-run of
               // markDraftAsSent does not produce a duplicate feedback row.

@@ -414,6 +414,8 @@ DO UPDATE SET
   spam_status = EXCLUDED.spam_status,
   snoozed_until = EXCLUDED.snoozed_until,
   scheduled_send_at = EXCLUDED.scheduled_send_at,
+  scheduled_send_actor_user_id = NULL,
+  scheduled_send_trusted_service_principal = NULL,
   reply_suggestion_text = EXCLUDED.reply_suggestion_text,
   reply_suggestion_status = EXCLUDED.reply_suggestion_status,
   reply_suggestion_error = EXCLUDED.reply_suggestion_error,

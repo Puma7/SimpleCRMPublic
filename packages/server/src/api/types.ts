@@ -2422,6 +2422,7 @@ export type EmailMessageApiPort = {
   }): Promise<EmailComposeDraftMutationResult>;
   scheduleDraftSend?(input: {
     workspaceId: string;
+    actorUserId: string;
     messageId: number;
     sendAt: string | null;
   }): Promise<EmailComposeDraftMutationResult>;
@@ -2439,6 +2440,7 @@ export type EmailMessageApiPort = {
   }): Promise<{ success: true }>;
   retryScheduledSendDraft?(input: {
     workspaceId: string;
+    actorUserId: string;
     messageId: number;
   }): Promise<EmailComposeDraftMutationResult>;
   getSecurity?(input: {

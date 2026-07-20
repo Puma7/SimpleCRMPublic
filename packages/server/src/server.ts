@@ -412,6 +412,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       scheduledSendTicker = startScheduledSendTicker({
         db,
         composeSender: ports.emailComposeSender,
+        mailAccess: ports.mailAccess,
+        mailResourceLookup: ports.mailResourceLookup,
+        auth: ports.auth,
       });
     }
     if (db) {

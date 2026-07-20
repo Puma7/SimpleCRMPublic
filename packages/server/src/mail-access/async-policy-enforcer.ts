@@ -228,8 +228,8 @@ async function resolveJobActor(
     return { kind: 'user', actor: await resolveUserActor(job.workspaceId, actorUserId, ports) };
   }
   if (
-    policy.actorMode === 'service'
-    || (policy.actorMode === 'initiating_user_or_service' && isTrustedServiceJobPayload(job.payload))
+    (policy.actorMode === 'service' || policy.actorMode === 'initiating_user_or_service')
+    && isTrustedServiceJobPayload(job.payload)
   ) {
     return { kind: 'service' };
   }
