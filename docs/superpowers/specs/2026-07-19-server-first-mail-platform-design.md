@@ -1,8 +1,8 @@
 # Server-first Mail Platform: Berechtigungen, Migration, Verschluesselung, Anhaenge und Kollaboration
 
-**Stand:** 2026-07-19  
-**Status:** Fachlich freigegeben  
-**Zielplattform:** SimpleCRM Server Edition  
+**Stand:** 2026-07-19
+**Status:** Fachlich freigegeben
+**Zielplattform:** SimpleCRM Server Edition
 
 ## 1. Anlass und Zielbild
 
