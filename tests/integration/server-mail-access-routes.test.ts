@@ -2210,6 +2210,46 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('gates body-derived search matches by the content scope', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      // A body term present only in MESSAGE_A_SECOND (FOLDER_A_SECOND), absent
+      // from its subject "Hidden alpha".
+      await client.query(`UPDATE email_messages SET body_text = 'zzsecretbody' WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A_SECOND}`);
+      const port = createPostgresEmailMessageReadPort({ db });
+      // Metadata scope spans the whole account; the narrow content scope covers
+      // only FOLDER_A, so MESSAGE_A_SECOND is metadata-visible but content-redacted.
+      const metadataScope: MailSqlScope = { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+      const contentNarrow: MailSqlScope = { kind: 'restricted', accountIds: [], folderIds: [FOLDER_A], messageIds: [] };
+      const contentWide: MailSqlScope = { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+
+      const bodyRedacted = await port.list({
+        ...withMailScope({ workspaceId: WORKSPACE_A, search: '/zzsecretbody/', limit: 10 }, metadataScope),
+        mailContentScope: contentNarrow,
+      });
+      const bodyAuthorized = await port.list({
+        ...withMailScope({ workspaceId: WORKSPACE_A, search: '/zzsecretbody/', limit: 10 }, metadataScope),
+        mailContentScope: contentWide,
+      });
+      const subjectStillMatches = await port.list({
+        ...withMailScope({ workspaceId: WORKSPACE_A, search: '/Hidden/', limit: 10 }, metadataScope),
+        mailContentScope: contentNarrow,
+      });
+
+      // The body-only match is suppressed for a content-redacted row — a
+      // metadata-only delegate cannot probe hidden body text via search...
+      expect(bodyRedacted.items.map((item) => item.id)).toEqual([]);
+      // ...but a content-authorized caller still matches it.
+      expect(bodyAuthorized.items.map((item) => item.id)).toEqual([MESSAGE_A_SECOND]);
+      // Subject (metadata) search stays unaffected by content redaction.
+      expect(subjectStillMatches.items.map((item) => item.id)).toEqual([MESSAGE_A_SECOND]);
+    } finally {
+      await client.query(`UPDATE email_messages SET body_text = NULL WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A_SECOND}`).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
   test('ignores hidden message cursors before normal, priority, and snoozed pagination', async () => {
     await ensureScopedGrantFixtures();
     const db = createApplicationDb();
