@@ -300,7 +300,15 @@ const DEFAULT_RSPAMD_TIMEOUT_MS = 8000;
 type EmailMessageApiRow =
   & Pick<EmailMessageRow, typeof emailMessageSummaryColumns[number]>
   & Partial<Pick<EmailMessageRow, 'body_text' | 'body_html'>>
-  & { search_snippet?: string | null; thread_message_count?: number | string | null };
+  & {
+    search_snippet?: string | null;
+    thread_message_count?: number | string | null;
+    // Present only for a metadata-scoped list/search caller: false ⇒ the row's
+    // body-derived content (snippet, search snippet) must be redacted because the
+    // caller lacks mail.content.read on it. Absent ⇒ fully readable (owner/admin
+    // or content-authorized), so nothing is redacted.
+    content_readable?: boolean;
+  };
 
 type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
 
@@ -713,6 +721,15 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
           });
+          // Per-row content authorization: a caller with mail.metadata.read but not
+          // mail.content.read on a row must not receive its body-derived content or
+          // match it in search. undefined ⇒ content scope 'all'/absent ⇒ no gating
+          // (owner/admin, or content-authorized), so the query stays unchanged.
+          const contentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
           const cursorScopePredicate = mailScopePredicate(input.mailScope, {
             accountId: 'cursor_message.account_id',
             folderId: 'cursor_message.folder_id',
@@ -753,6 +770,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 .as('thread_message_count'))
               .where('workspace_id', '=', input.workspaceId);
 
+            if (contentPredicate) {
+              query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+            }
             if (messageScopePredicate) query = query.where(messageScopePredicate);
             query = query.limit(page.limit);
 
@@ -906,10 +926,13 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const items = pageRows.map((row) => {
             const record = mapEmailMessageRow(row, false);
             if (likeNeedles.length > 0 && record.searchSnippet === undefined) {
-              const snippet =
-                buildLikeSearchSnippet(row.body_text ?? null, likeNeedles) ??
-                buildLikeSearchSnippet(row.snippet, likeNeedles) ??
-                buildLikeSearchSnippet(row.subject, likeNeedles);
+              // A metadata-only caller (content_readable===false) must not get a
+              // body/snippet-derived preview — restrict the fallback to the subject.
+              const snippet = row.content_readable === false
+                ? buildLikeSearchSnippet(row.subject, likeNeedles)
+                : (buildLikeSearchSnippet(row.body_text ?? null, likeNeedles) ??
+                  buildLikeSearchSnippet(row.snippet, likeNeedles) ??
+                  buildLikeSearchSnippet(row.subject, likeNeedles));
               if (snippet) return { ...record, searchSnippet: snippet };
             }
             return record;
@@ -1323,6 +1346,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
           });
+          const contentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          if (contentPredicate) {
+            query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+          }
           if (scopePredicate) query = query.where(scopePredicate);
           const rows = await query
             .where(kyselySql<boolean>`(
@@ -2161,6 +2192,14 @@ async function selectConversationMessages(
     folderId: 'email_messages.folder_id',
     messageId: 'email_messages.id',
   });
+  const contentPredicate = mailScopePredicate(input.mailContentScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  if (contentPredicate) {
+    query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+  }
   if (scopePredicate) query = query.where(scopePredicate);
   query = query.limit(limit);
 
@@ -4733,7 +4772,9 @@ function mapEmailMessageRow(
     cc: row.cc_json,
     bcc: row.bcc_json,
     dateReceived: timestampToIsoOrNull(row.date_received),
-    snippet: row.snippet,
+    // content_readable===false ⇒ metadata-only caller: blank the body-derived
+    // preview so it cannot read message content it is not authorized for.
+    snippet: row.content_readable === false ? null : row.snippet,
     seenLocal: row.seen_local,
     doneLocal: row.done_local,
     archived: row.archived,
@@ -4761,7 +4802,8 @@ function mapEmailMessageRow(
     snoozedUntil: timestampToIsoOrNull(row.snoozed_until),
     draftAttachmentPathsJson: row.draft_attachment_paths_json,
     replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
-    ...(row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
+    ...(row.content_readable !== false
+      && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }
       : {}),
     ...(includeBody ? {

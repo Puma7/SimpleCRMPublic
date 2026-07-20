@@ -97,6 +97,15 @@ const RESTRICTED_SCOPE_WRITE_PATHS = new Set<string>([
   '/api/v1/pgp/messages/sign',
 ]);
 
+// Message list/search routes that expose body-derived content (snippet, search
+// snippet, body-text search). For a restricted-scope caller these resolve the
+// mail.content.read scope so the read port can redact content per row.
+const MESSAGE_CONTENT_SCOPE_PATHS = new Set<string>([
+  '/api/v1/email/messages',
+  '/api/v1/email/messages/conversation',
+  '/api/v1/email/threads/:threadId/messages',
+]);
+
 export async function enforceMailHttpPolicy(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -129,6 +138,21 @@ export async function enforceMailHttpPolicy(
         : 'mail.metadata.read',
     });
     return scopePromise;
+  };
+  // Message list/search routes authorize on mail.metadata.read but expose
+  // body-derived content (snippet, search snippet, body-text search matches).
+  // Resolve the caller's independent mail.content.read scope so the read port can
+  // redact that content per-row for a metadata-only delegate. Owner/admin never
+  // reach here (portsWithMailAccessContext skips scope 'all'), so this only runs
+  // for restricted delegates.
+  let contentScopePromise: Promise<MailSqlScope> | undefined;
+  const resolveContentScope = (): Promise<MailSqlScope> => {
+    contentScopePromise ??= ports.mailAccess!.resolveScope({
+      workspaceId: principal.workspaceId,
+      actor,
+      permission: 'mail.content.read',
+    });
+    return contentScopePromise;
   };
 
   try {
@@ -173,7 +197,10 @@ export async function enforceMailHttpPolicy(
         actor,
         ports,
       );
-      return { ok: true, context: { permission: entry.policy.permission, scope } };
+      const contentScope = scope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path)
+        ? await resolveContentScope()
+        : undefined;
+      return { ok: true, context: { permission: entry.policy.permission, scope, contentScope } };
     }
 
     if (resources.resources.length === 0) {
@@ -224,9 +251,13 @@ export async function enforceMailHttpPolicy(
     );
 
     if (entry.policy.resource.kind === 'thread_lookup') {
+      const threadScope = await resolveScope();
+      const contentScope = threadScope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path)
+        ? await resolveContentScope()
+        : undefined;
       return {
         ok: true,
-        context: { permission: entry.policy.permission, scope: await resolveScope() },
+        context: { permission: entry.policy.permission, scope: threadScope, contentScope },
       };
     }
     if (scopedMutation) {
@@ -248,10 +279,18 @@ export function portsWithMailAccessContext(
 ): ServerApiPorts {
   if (!context?.scope || context.scope.kind === 'all') return ports;
   const mailScope = context.scope;
+  const contentScope = context.contentScope;
   const scopedInput = <T extends object>(input: T): T & { mailScope: MailSqlScope } => ({
     ...input,
     mailScope,
   });
+  // Message list/search ports additionally receive the content-read scope so they
+  // can redact body-derived content per row for a metadata-only delegate.
+  const scopedMessageInput = <T extends object>(
+    input: T,
+  ): T & { mailScope: MailSqlScope; mailContentScope?: MailSqlScope } => (
+    contentScope ? { ...input, mailScope, mailContentScope: contentScope } : { ...input, mailScope }
+  );
   return {
     ...ports,
     ...(ports.emailAccounts ? {
@@ -263,15 +302,15 @@ export function portsWithMailAccessContext(
     ...(ports.emailMessages ? {
       emailMessages: {
         ...ports.emailMessages,
-        list: (input) => ports.emailMessages!.list(scopedInput(input)),
+        list: (input) => ports.emailMessages!.list(scopedMessageInput(input)),
         ...(ports.emailMessages.getFolderCounts ? {
           getFolderCounts: (input) => ports.emailMessages!.getFolderCounts!(scopedInput(input)),
         } : {}),
         ...(ports.emailMessages.listConversation ? {
-          listConversation: (input) => ports.emailMessages!.listConversation!(scopedInput(input)),
+          listConversation: (input) => ports.emailMessages!.listConversation!(scopedMessageInput(input)),
         } : {}),
         ...(ports.emailMessages.listThread ? {
-          listThread: (input) => ports.emailMessages!.listThread!(scopedInput(input)),
+          listThread: (input) => ports.emailMessages!.listThread!(scopedMessageInput(input)),
         } : {}),
       },
     } : {}),

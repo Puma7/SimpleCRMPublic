@@ -79,6 +79,11 @@ export type ApiErrorBody = {
 export type MailRouteAccessContext = Readonly<{
   permission: MailPermission;
   scope?: MailSqlScope;
+  // The caller's mail.content.read scope, resolved for message list/search routes
+  // (which authorize on mail.metadata.read). Rows outside it have their body-derived
+  // content — snippet, search snippet, and body-text search matches — redacted, so a
+  // metadata-only delegate cannot read previews or probe message bodies.
+  contentScope?: MailSqlScope;
 }>;
 
 export type ApiDataBody<T> = {
@@ -2395,6 +2400,7 @@ export type EmailMessageApiPort = {
   list(input: {
     workspaceId: string;
     mailScope?: MailSqlScope;
+    mailContentScope?: MailSqlScope;
     accountId?: number;
     folderPath?: string;
     folderKind?: string;
@@ -2487,6 +2493,7 @@ export type EmailMessageApiPort = {
   listConversation?(input: {
     workspaceId: string;
     mailScope?: MailSqlScope;
+    mailContentScope?: MailSqlScope;
     accountId?: number;
     excludeMessageId?: number;
     ticketCode?: string;
@@ -2500,6 +2507,7 @@ export type EmailMessageApiPort = {
     offset?: number;
     limit: number;
     mailScope?: MailSqlScope;
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageListResult>;
   bulkSoftDelete?(input: {
     workspaceId: string;
