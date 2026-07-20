@@ -944,9 +944,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId);
+          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
           if (!isLocalDraftUid(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
+          if (claimedConflict) return claimedConflict;
           const bodyText = input.values.bodyText ?? current.body_text ?? '';
           const snippet = bodyText.trim()
             ? (bodyText.length > 220 ? `${bodyText.slice(0, 217)}...` : bodyText)
@@ -1411,14 +1413,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .select(['id', 'uid'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
+            .forUpdate()
             .executeTakeFirst();
           if (!row) return { ok: false as const, reason: 'not_found' as const };
           if (Number(row.uid) >= 0) return { ok: false as const, reason: 'not_local_draft' as const };
-          const result = await deleteLocalDraftRows(trx, {
+          return deleteLocalDraftRows(trx, {
             workspaceId: input.workspaceId,
             messageIds: [input.messageId],
           });
-          return { ok: true as const, count: result.count };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -2263,9 +2265,25 @@ async function deleteLocalDraftRows(
     workspaceId: string;
     messageIds: readonly number[];
   },
-): Promise<{ count: number }> {
+): Promise<
+  | { ok: true; count: number }
+  | { ok: false; reason: 'scheduled_send_claimed'; message: string }
+> {
   const ids = normalizeMessageIdList(input.messageIds);
-  if (ids.length === 0) return { count: 0 };
+  if (ids.length === 0) return { ok: true, count: 0 };
+  const drafts = await trx
+    .selectFrom('email_messages')
+    .select('id')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', 'in', ids)
+    .where('uid', '<', 0)
+    .orderBy('id', 'asc')
+    .forUpdate()
+    .execute();
+  for (const draft of drafts) {
+    const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, Number(draft.id));
+    if (claimedConflict) return claimedConflict;
+  }
   const rows = await trx
     .deleteFrom('email_messages')
     .where('workspace_id', '=', input.workspaceId)
@@ -2273,7 +2291,7 @@ async function deleteLocalDraftRows(
     .where('uid', '<', 0)
     .returning('id')
     .execute();
-  return { count: rows.length };
+  return { ok: true, count: rows.length };
 }
 
 async function bulkSetSpamStatusRows(
@@ -4300,7 +4318,11 @@ async function assertNoActiveScheduledSendClaimTx(
   trx: WorkspaceTransaction,
   workspaceId: string,
   messageId: number,
-): Promise<EmailComposeDraftMutationResult | null> {
+): Promise<{
+  ok: false;
+  reason: 'scheduled_send_claimed';
+  message: string;
+} | null> {
   const claim = await trx
     .selectFrom('sync_info')
     .select('value')

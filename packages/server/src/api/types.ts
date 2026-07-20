@@ -2198,7 +2198,11 @@ export type EmailMessageBulkMutationResult = {
 
 export type EmailMessageDraftDeleteResult =
   | { ok: true; count: number }
-  | { ok: false; reason: 'not_found' | 'not_local_draft' };
+  | {
+    ok: false;
+    reason: 'not_found' | 'not_local_draft' | 'scheduled_send_claimed';
+    message?: string;
+  };
 
 export type EmailComposeDraftCreateInput = {
   accountId: number;
@@ -2524,7 +2528,7 @@ export type EmailMessageApiPort = {
   bulkDeleteLocalDrafts?(input: {
     workspaceId: string;
     messageIds: readonly number[];
-  }): Promise<EmailMessageBulkMutationResult>;
+  }): Promise<EmailMessageDraftDeleteResult>;
   deleteLocalDraft?(input: {
     workspaceId: string;
     messageId: number;

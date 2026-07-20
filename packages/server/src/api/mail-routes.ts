@@ -1585,7 +1585,8 @@ async function handleMessageBulkDeleteLocalDrafts(req: ApiRequest, ports: Server
     workspaceId: principal.workspaceId,
     messageIds: parsed.messageIds,
   });
-  return data(200, result);
+  if (!result.ok) return composeDraftMutationError(result.reason, result.message);
+  return data(200, { count: result.count });
 }
 
 async function handleMessageCustomerLinkBackfill(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
@@ -2001,6 +2002,9 @@ async function handleMessageDeleteLocalDraft(
     messageId,
   });
   if (!result.ok) {
+    if (result.reason === 'scheduled_send_claimed') {
+      return composeDraftMutationError(result.reason, result.message);
+    }
     return result.reason === 'not_found'
       ? error(404, 'email_message_not_found', 'Email message nicht gefunden')
       : error(409, 'email_message_not_local_draft', 'Nur lokale Entwuerfe koennen endgueltig geloescht werden');

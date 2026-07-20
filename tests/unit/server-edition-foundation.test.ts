@@ -13358,6 +13358,7 @@ describe('server edition foundation', () => {
       const runtime = startScheduledSendTicker({
         db,
         pollIntervalMs: 60_000,
+        applyWorkspaceSession: async () => undefined,
         composeSender: {
           async send(input) {
             composeCalls.push(input);
@@ -13390,7 +13391,7 @@ describe('server edition foundation', () => {
     }
 
     expect(composeCalls).toEqual([]);
-    expect(db.transactionCount).toBe(0);
+    expect(db.transactionCount).toBe(1);
     expect(String(warnings[0]?.[0] ?? '')).toContain('authorization denied');
   });
 
@@ -20966,7 +20967,7 @@ describe('server edition foundation', () => {
         },
         async bulkDeleteLocalDrafts(input) {
           bulkDraftDeleteCalls.push(input);
-          return { count: input.messageIds.length };
+          return { ok: true as const, count: input.messageIds.length };
         },
         async snooze(input) {
           snoozeCalls.push(input);
@@ -21942,6 +21943,60 @@ describe('server edition foundation', () => {
         actorUserId: USER_A_ID,
         messageId: 44,
       }],
+    ]);
+  });
+
+  test('claimed scheduled-send draft edit and delete routes return conflict', async () => {
+    const claimed = {
+      ok: false as const,
+      reason: 'scheduled_send_claimed' as const,
+      message: 'Scheduled send is already being processed',
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async updateComposeDraft() {
+          return claimed;
+        },
+        async bulkDeleteLocalDrafts() {
+          return claimed;
+        },
+        async deleteLocalDraft() {
+          return claimed;
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    const updated = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/compose-draft',
+      body: { subject: 'Mutated after claim' },
+      principal,
+    });
+    const bulkDeleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/messages/bulk/local-drafts',
+      body: { messageIds: [44] },
+      principal,
+    });
+    const deleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/messages/44/local-draft',
+      principal,
+    });
+
+    expect([updated.status, bulkDeleted.status, deleted.status]).toEqual([409, 409, 409]);
+    expect([
+      (updated.body as any).error.code,
+      (bulkDeleted.body as any).error.code,
+      (deleted.body as any).error.code,
+    ]).toEqual([
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
     ]);
   });
 

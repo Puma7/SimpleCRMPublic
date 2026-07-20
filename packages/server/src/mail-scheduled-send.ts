@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   SCHEDULED_SEND_CLAIMED_AT_PREFIX,
   scheduledSendClaimedAtKey,
@@ -16,7 +18,7 @@ import {
 } from './jobs/policy';
 import type { ServerDatabase } from './db/schema';
 import { isOutboundReviewPendingError } from './mail-compose-send';
-import { withWorkspaceTransaction } from './db/workspace-context';
+import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
 import {
   enforceMailJobPolicy,
   MailAsyncAuthorizationError,
@@ -653,6 +655,7 @@ export function startScheduledSendTicker(input: {
   mailAccess?: MailAsyncPolicyPorts['mailAccess'];
   mailResourceLookup?: MailAsyncPolicyPorts['mailResourceLookup'];
   auth?: MailAsyncPolicyPorts['auth'];
+  applyWorkspaceSession?: WorkspaceSessionApplier;
 }): ScheduledSendTickerRuntime {
   const pollIntervalMs = input.pollIntervalMs ?? DEFAULT_SCHEDULED_SEND_TICKER_MS;
   const port = createPostgresScheduledSendJobPort({
@@ -667,28 +670,33 @@ export function startScheduledSendTicker(input: {
     inFlight = true;
     try {
       const dueBefore = new Date();
-      const rows = await input.db
-        .selectFrom('email_messages')
-        .select([
-          'workspace_id',
-          'id',
-          'account_id',
-          'scheduled_send_actor_user_id',
-          'scheduled_send_trusted_service_principal',
-        ])
-        .where('uid', '<', 0)
-        .where('folder_kind', '=', 'draft')
-        .where('outbound_hold', '=', false)
-        .where('scheduled_send_at', 'is not', null)
-        .where('scheduled_send_at', '<=', dueBefore)
-        .where((eb) => eb.or([
-          eb('scheduled_send_actor_user_id', 'is not', null),
-          eb('scheduled_send_trusted_service_principal', '=', TRUSTED_SERVICE_JOB_MARKER_VALUE),
-        ]))
-        .orderBy('scheduled_send_at', 'asc')
-        .orderBy('id', 'asc')
-        .limit(30)
-        .execute();
+      const rows = await withWorkspaceTransaction(
+        input.db,
+        { workspaceId: randomUUID(), role: 'system', crossWorkspaceAccess: true },
+        async (trx) => trx
+          .selectFrom('email_messages')
+          .select([
+            'workspace_id',
+            'id',
+            'account_id',
+            'scheduled_send_actor_user_id',
+            'scheduled_send_trusted_service_principal',
+          ])
+          .where('uid', '<', 0)
+          .where('folder_kind', '=', 'draft')
+          .where('outbound_hold', '=', false)
+          .where('scheduled_send_at', 'is not', null)
+          .where('scheduled_send_at', '<=', dueBefore)
+          .where((eb) => eb.or([
+            eb('scheduled_send_actor_user_id', 'is not', null),
+            eb('scheduled_send_trusted_service_principal', '=', TRUSTED_SERVICE_JOB_MARKER_VALUE),
+          ]))
+          .orderBy('scheduled_send_at', 'asc')
+          .orderBy('id', 'asc')
+          .limit(30)
+          .execute(),
+        { applySession: input.applyWorkspaceSession },
+      );
       for (const row of rows) {
         const workspaceId = String(row.workspace_id);
         const draftId = Number(row.id);

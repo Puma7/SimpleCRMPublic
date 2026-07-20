@@ -59,6 +59,7 @@ import { serverMigrations } from '../../packages/server/src/migrations';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
 import { verifyAuditHashChain, type AuditHashChainRow } from '../../packages/server/src/db/postgres-audit-port';
 import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
+import { startScheduledSendTicker } from '../../packages/server/src/mail-scheduled-send';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
 
@@ -2079,6 +2080,134 @@ describe('server mailbox ACL migration', () => {
       await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
       await client.query(`DELETE FROM sync_info WHERE workspace_id = '${WORKSPACE_A}' AND key IN ('${claimedKey}', '${approvalKey}')`).catch(() => undefined);
       await client.query(`DELETE FROM email_messages WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}`).catch(() => undefined);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('scheduled-send ticker discovers due drafts through forced RLS', async () => {
+    await ensureScheduledSendProvenanceSchema();
+    const db = createApplicationDb();
+    const draftId = 88104;
+    const warnings: unknown[] = [];
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args);
+    });
+    let runtime: ReturnType<typeof startScheduledSendTicker> | undefined;
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_messages (
+          id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+          account_id, folder_id, uid, subject, body_text, to_json, folder_kind,
+          scheduled_send_at, scheduled_send_actor_user_id, scheduled_send_trusted_service_principal
+        ) VALUES (
+          ${draftId}, '${WORKSPACE_A}', ${draftId}, 1, 11,
+          ${ACCOUNT_A}, ${FOLDER_A}, -${draftId}, 'Due after restart', 'Plain body',
+          '{"value":[{"address":"kunde@example.test"}]}'::jsonb, 'draft',
+          NOW() - INTERVAL '1 minute', '${USER_SEND}', NULL
+        )
+      `);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`);
+
+      runtime = startScheduledSendTicker({
+        db,
+        pollIntervalMs: 60_000,
+        composeSender: {
+          async send(input) {
+            return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+          },
+        },
+        auth: {
+          async listUsers() {
+            return [{ id: USER_SEND, role: 'user' as const, disabledAt: null }];
+          },
+        },
+        mailResourceLookup: {
+          async resolve() {
+            return [{ type: 'message', accountId: String(ACCOUNT_A), folderId: String(FOLDER_A), messageId: String(draftId) }];
+          },
+        },
+        mailAccess: {
+          async assertPermission() {
+            throw new Error('mail_access_denied');
+          },
+          async resolveScope() {
+            return { kind: 'none' as const };
+          },
+        },
+      });
+      for (let attempt = 0; attempt < 100 && warnings.length === 0; attempt += 1) {
+        await new Promise((resolveDone) => setTimeout(resolveDone, 20));
+      }
+
+      expect(String(warnings[0]?.[0] ?? '')).toContain(`scheduled send ticker workspace ${WORKSPACE_A} draft ${draftId}: authorization denied`);
+    } finally {
+      runtime?.stop();
+      warnSpy.mockRestore();
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`DELETE FROM email_messages WHERE workspace_id = '${WORKSPACE_A}' AND id = ${draftId}`).catch(() => undefined);
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('claimed scheduled-send drafts reject edit and delete mutations', async () => {
+    await ensureScheduledSendProvenanceSchema();
+    const db = createApplicationDb();
+    const draftIds = [88105, 88106, 88107] as const;
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      for (const draftId of draftIds) {
+        await client.query(`
+          INSERT INTO email_messages (
+            id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+            account_id, folder_id, uid, subject, body_text, folder_kind,
+            scheduled_send_at, scheduled_send_actor_user_id
+          ) VALUES (
+            ${draftId}, '${WORKSPACE_A}', ${draftId}, 1, 11,
+            ${ACCOUNT_A}, ${FOLDER_A}, -${draftId}, 'Claimed ${draftId}', 'Plain body', 'draft',
+            NULL, '${USER_SEND}'
+          )
+        `);
+        await client.query(`
+          INSERT INTO sync_info (workspace_id, key, value, source_row)
+          VALUES ('${WORKSPACE_A}', 'scheduled_send_claimed_at:${draftId}', '2026-08-01T10:00:00.000Z', '{}'::jsonb)
+        `);
+      }
+      await client.query(`RESET app.role; RESET app.cross_workspace_access`);
+
+      const port = createPostgresEmailMessageReadPort({ db });
+      const updated = await port.updateComposeDraft?.({
+        workspaceId: WORKSPACE_A,
+        messageId: draftIds[0],
+        values: { subject: 'Mutated after claim' },
+      });
+      const bulkDeleted = await port.bulkDeleteLocalDrafts?.({
+        workspaceId: WORKSPACE_A,
+        messageIds: [draftIds[1]],
+      });
+      const deleted = await port.deleteLocalDraft?.({
+        workspaceId: WORKSPACE_A,
+        messageId: draftIds[2],
+      });
+
+      expect(updated).toMatchObject({ ok: false, reason: 'scheduled_send_claimed' });
+      expect(bulkDeleted).toMatchObject({ ok: false, reason: 'scheduled_send_claimed' });
+      expect(deleted).toMatchObject({ ok: false, reason: 'scheduled_send_claimed' });
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const rows = await client.query<{ id: string; subject: string }>(`
+        SELECT id::text, subject
+        FROM email_messages
+        WHERE workspace_id = '${WORKSPACE_A}' AND id IN (${draftIds.join(', ')})
+        ORDER BY id
+      `);
+      expect(rows.rows).toEqual(draftIds.map((id) => ({ id: String(id), subject: `Claimed ${id}` })));
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`DELETE FROM sync_info WHERE workspace_id = '${WORKSPACE_A}' AND key IN (${draftIds.map((id) => `'scheduled_send_claimed_at:${id}'`).join(', ')})`).catch(() => undefined);
+      await client.query(`DELETE FROM email_messages WHERE workspace_id = '${WORKSPACE_A}' AND id IN (${draftIds.join(', ')})`).catch(() => undefined);
       await client.query(`RESET app.role; RESET app.cross_workspace_access`).catch(() => undefined);
       await db.destroy();
     }
