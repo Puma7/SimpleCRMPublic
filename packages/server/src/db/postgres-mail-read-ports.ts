@@ -13,6 +13,7 @@ import {
   normalizeEmailAddress,
   parseSenderList,
   parseScheduledSendDraftStateFromValues,
+  scheduledSendClaimedAtKey,
   scheduledSendFailuresKey,
   scheduledSendLastErrorKey,
   scheduledSendStatusKey,
@@ -1019,9 +1020,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId);
+          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
           if (!isSchedulableLocalDraft(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
+          if (claimedConflict) return claimedConflict;
           const row = await trx
             .updateTable('email_messages')
             .set({
@@ -1074,9 +1077,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId);
+          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
           if (!isSchedulableLocalDraft(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
+          if (claimedConflict) return claimedConflict;
           await clearScheduledSendDraftMeta(trx, input.workspaceId, input.messageId);
           const row = await trx
             .updateTable('email_messages')
@@ -4190,13 +4195,15 @@ async function selectLocalDraftForMutation(
   trx: WorkspaceTransaction,
   workspaceId: string,
   messageId: number,
+  options: { forUpdate?: boolean } = {},
 ): Promise<LocalDraftMutationRow | undefined> {
-  return trx
+  let query = trx
     .selectFrom('email_messages')
     .select(emailMessageDetailColumns)
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', messageId)
-    .executeTakeFirst();
+    .where('id', '=', messageId);
+  if (options.forUpdate) query = query.forUpdate();
+  return query.executeTakeFirst();
 }
 
 function isLocalDraftUid(row: Pick<EmailMessageRow, 'uid'>): boolean {
@@ -4281,6 +4288,26 @@ async function getComposeDraftRecoveryStateFromSyncInfo(
       Number(draft.uid) < 0 &&
       draft.folder_kind === 'draft',
     ),
+  };
+}
+
+async function assertNoActiveScheduledSendClaimTx(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number,
+): Promise<EmailComposeDraftMutationResult | null> {
+  const claim = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', scheduledSendClaimedAtKey(messageId))
+    .forUpdate()
+    .executeTakeFirst();
+  if (!claim?.value?.trim()) return null;
+  return {
+    ok: false as const,
+    reason: 'scheduled_send_claimed' as const,
+    message: 'Geplanter Versand wird bereits verarbeitet',
   };
 }
 

@@ -13286,6 +13286,35 @@ describe('server edition foundation', () => {
     expect(importSource).toMatch(/scheduled_send_at = EXCLUDED\.scheduled_send_at,[\s\S]*scheduled_send_actor_user_id = NULL,[\s\S]*scheduled_send_trusted_service_principal = NULL/);
   });
 
+  test('scheduled-send mutations lock the draft and reject active claim markers before changing schedule state', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-read-ports.ts'), 'utf8');
+    const scheduleStart = source.indexOf('async scheduleDraftSend(input)');
+    const scheduleEnd = source.indexOf('async getScheduledSendDraftState(input)');
+    const retryStart = source.indexOf('async retryScheduledSendDraft(input)');
+    const retryEnd = source.indexOf('async getSecurity(input)');
+    const helperStart = source.indexOf('async function assertNoActiveScheduledSendClaimTx');
+    const helperEnd = source.indexOf('async function clearScheduledSendDraftMeta');
+    const scheduleBlock = source.slice(scheduleStart, scheduleEnd);
+    const retryBlock = source.slice(retryStart, retryEnd);
+    const helperBlock = source.slice(helperStart, helperEnd);
+
+    expect(scheduleBlock).toMatch(/selectLocalDraftForMutation\(trx,\s*input\.workspaceId,\s*input\.messageId,\s*\{\s*forUpdate:\s*true\s*\}\)/);
+    expect(scheduleBlock).toMatch(/assertNoActiveScheduledSendClaimTx\(trx,\s*input\.workspaceId,\s*input\.messageId\)/);
+    expect(scheduleBlock.indexOf('selectLocalDraftForMutation')).toBeGreaterThanOrEqual(0);
+    expect(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx')).toBeGreaterThan(scheduleBlock.indexOf('selectLocalDraftForMutation'));
+    expect(scheduleBlock.indexOf('updateTable')).toBeGreaterThan(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+
+    expect(retryBlock).toMatch(/selectLocalDraftForMutation\(trx,\s*input\.workspaceId,\s*input\.messageId,\s*\{\s*forUpdate:\s*true\s*\}\)/);
+    expect(retryBlock).toMatch(/assertNoActiveScheduledSendClaimTx\(trx,\s*input\.workspaceId,\s*input\.messageId\)/);
+    expect(retryBlock.indexOf('assertNoActiveScheduledSendClaimTx')).toBeGreaterThan(retryBlock.indexOf('selectLocalDraftForMutation'));
+    expect(retryBlock.indexOf('clearScheduledSendDraftMeta')).toBeGreaterThan(retryBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+    expect(retryBlock.indexOf('updateTable')).toBeGreaterThan(retryBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+
+    expect(helperBlock).toMatch(/scheduledSendClaimedAtKey\(messageId\)/);
+    expect(helperBlock).toMatch(/\.forUpdate\(\)/);
+    expect(helperBlock).toMatch(/reason: 'scheduled_send_claimed'/);
+  });
+
   test('thread list predicates align scheduled_send filters with message list', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-metadata-read-ports.ts'), 'utf8');
     expect(source).toMatch(/view === 'scheduled_send'[\s\S]*m\.scheduled_send_at IS NOT NULL/);
@@ -21816,6 +21845,89 @@ describe('server edition foundation', () => {
         },
         runAfter: expect.any(Date),
       },
+    ]);
+  });
+
+  test('scheduled-send routes return conflict and skip queue side effects when a draft is claimed', async () => {
+    const calls: unknown[] = [];
+    const queueCalls: unknown[] = [];
+    const claimed = {
+      ok: false as const,
+      reason: 'scheduled_send_claimed' as const,
+      message: 'Scheduled send is already being processed',
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async scheduleDraftSend(input) {
+          calls.push(['scheduleDraftSend', input]);
+          return claimed;
+        },
+        async retryScheduledSendDraft(input) {
+          calls.push(['retryScheduledSendDraft', input]);
+          return claimed;
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+        async clearScheduledSendJob(input) {
+          queueCalls.push(['clearScheduledSendJob', input]);
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    const scheduled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z' },
+      principal,
+    });
+    const cancelled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: null },
+      principal,
+    });
+    const retried = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send/retry',
+      principal,
+    });
+
+    expect([scheduled.status, cancelled.status, retried.status]).toEqual([409, 409, 409]);
+    expect([
+      (scheduled.body as any).error.code,
+      (cancelled.body as any).error.code,
+      (retried.body as any).error.code,
+    ]).toEqual([
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
+    ]);
+    expect(queueCalls).toEqual([]);
+    expect(calls).toEqual([
+      ['scheduleDraftSend', {
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
+        messageId: 44,
+        sendAt: '2026-06-04T15:00:00.000Z',
+      }],
+      ['scheduleDraftSend', {
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
+        messageId: 44,
+        sendAt: null,
+      }],
+      ['retryScheduledSendDraft', {
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
+        messageId: 44,
+      }],
     ]);
   });
 

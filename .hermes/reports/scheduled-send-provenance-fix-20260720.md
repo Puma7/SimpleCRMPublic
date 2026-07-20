@@ -23,3 +23,11 @@
 - Unmarked and forged service payloads fail closed for the covered mail job policies.
 - Revoked, disabled, or degranted actor scheduled-send jobs are blocked before handler execution.
 - Stale provenance is cleared on send finalization, cancellation/give-up paths, compose draft creation, relay sent insertion, mail sync insertion, and core import conflict update.
+
+## Follow-up: scheduled-send mutation serialization
+
+- Root cause fixed: `scheduleDraftSend` and `retryScheduledSendDraft` now lock the exact draft row in the mutation transaction, then check `scheduled_send_claimed_at:<draftId>` before writing `scheduled_send_at`, changing provenance, clearing scheduled-send metadata, or causing route queue side effects.
+- Active claims return deterministic `scheduled_send_claimed`, mapped by routes to HTTP `409` / `email_scheduled_send_claimed`.
+- The row lock orders mutations against `claimDueDrafts`: a mutation that starts first makes the claim path skip the locked row; a claim that starts first commits the claim marker before the mutation can proceed, so schedule/cancel/retry fail closed.
+- Regression evidence added to `.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`: RED showed missing lock/check and wrong 404 mapping; GREEN focused suite passed with `3 passed, 430 tests`.
+- Follow-up gates run: focused scheduled/provenance suite passed, lint passed, typecheck passed after missing import fix, integration passed, and `git diff --check` passed.

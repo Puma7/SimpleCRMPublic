@@ -22,6 +22,116 @@ Captured artifact path:
 
 `.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`
 
+## Follow-up RED - active claim mutation race
+
+Scenario: active scheduled-send claim must block schedule, cancel, and retry mutations before queue side effects.
+
+Invocation:
+
+`pnpm exec jest tests/unit/server-edition-foundation.test.ts --runInBand`
+
+Exit code: `1`
+
+Binary observable:
+
+- `scheduled-send mutations lock the draft and reject active claim markers before changing schedule state` failed because `scheduleDraftSend` used `selectLocalDraftForMutation(trx, input.workspaceId, input.messageId)` without `{ forUpdate: true }` and without `assertNoActiveScheduledSendClaimTx(...)`.
+- `scheduled-send routes return conflict and skip queue side effects when a draft is claimed` failed because schedule/cancel/retry returned HTTP statuses `[404, 404, 404]` instead of `[409, 409, 409]`.
+- No production code for this follow-up was changed before this RED run.
+
+Captured artifact path:
+
+`.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`
+
+## Follow-up GREEN - active claim mutation race
+
+Scenario: active scheduled-send claim blocks schedule, cancel, and retry mutations; route conflict avoids enqueue/clear.
+
+Invocation:
+
+`pnpm exec jest tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-job-provenance.test.ts tests/unit/server-edition-foundation.test.ts --runInBand`
+
+Exit code: `0`
+
+Binary observable:
+
+- `Test Suites: 3 passed, 3 total`.
+- `Tests: 430 passed, 430 total`.
+- `scheduleDraftSend` and `retryScheduledSendDraft` mutation transactions now lock the exact draft row with `forUpdate`, check `scheduled_send_claimed_at:<draftId>` with `forUpdate`, and return `scheduled_send_claimed` before schedule/provenance writes or metadata clearing.
+- Schedule, cancel, and retry routes map the conflict to HTTP `409` / `email_scheduled_send_claimed` and do not call job queue enqueue or clear methods after failed mutation.
+
+Captured artifact path:
+
+`.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`
+
+## Follow-up final gate evidence
+
+Scenario: focused scheduled/provenance tests after import fix.
+
+Invocation:
+
+`pnpm exec jest tests/unit/server-mail-job-event-acl.test.ts tests/unit/server-mail-job-provenance.test.ts tests/unit/server-edition-foundation.test.ts --runInBand`
+
+Exit code: `0`
+
+Binary observable:
+
+- `Test Suites: 3 passed, 3 total`.
+- `Tests: 430 passed, 430 total`.
+
+Scenario: lint.
+
+Invocation:
+
+`pnpm run lint`
+
+Exit code: `0`
+
+Binary observable:
+
+- Command printed `eslint . --ext ts,tsx --max-warnings 0`.
+
+Scenario: typecheck.
+
+Invocation:
+
+`pnpm run typecheck`
+
+Exit code: `1`, then `0` after adding the missing `scheduledSendClaimedAtKey` import.
+
+Binary observable:
+
+- RED typecheck failure: `packages/server/src/db/postgres-mail-read-ports.ts(4302,24): error TS2304: Cannot find name 'scheduledSendClaimedAtKey'.`
+- GREEN typecheck command printed `tsc -b packages/core packages/server packages/desktop && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.electron.json --noEmit`.
+
+Scenario: integration.
+
+Invocation:
+
+`pnpm run test:integration`
+
+Exit code: `0`
+
+Binary observable:
+
+- `Test Suites: 25 passed, 25 total`.
+- `Tests: 352 passed, 352 total`.
+
+Scenario: whitespace diff check.
+
+Invocation:
+
+`git diff --check`
+
+Exit code: `0`
+
+Binary observable:
+
+- Command produced no output.
+
+Captured artifact path:
+
+`.superpowers/sdd/scheduled-send-provenance-fix-evidence-20260720.md`
+
 ## Full gate evidence
 
 Scenario: lint.

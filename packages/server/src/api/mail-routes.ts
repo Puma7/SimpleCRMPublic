@@ -1010,11 +1010,14 @@ async function handleScheduledSendDraftRetry(
 }
 
 function composeDraftMutationError(
-  reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked',
+  reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked' | 'scheduled_send_claimed',
   message?: string,
 ): ApiResponse<ApiErrorBody> {
   if (reason === 'outbound_blocked') {
     return error(409, 'email_outbound_blocked', message ?? 'Ausgangspruefung wuerde den Versand blockieren');
+  }
+  if (reason === 'scheduled_send_claimed') {
+    return error(409, 'email_scheduled_send_claimed', message ?? 'Geplanter Versand wird bereits verarbeitet');
   }
   if (reason === 'account_not_found') return error(404, 'email_account_not_found', 'Email account nicht gefunden');
   if (reason === 'not_local_draft') {

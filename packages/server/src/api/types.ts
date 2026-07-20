@@ -2227,7 +2227,7 @@ export type EmailComposeDraftMutationResult =
   | { ok: true; message: EmailMessageRecord }
   | {
     ok: false;
-    reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked';
+    reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked' | 'scheduled_send_claimed';
     message?: string;
   };
 
