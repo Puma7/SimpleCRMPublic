@@ -524,6 +524,14 @@ describe('server mail job and event ACL', () => {
       entityId: '996',
       payload: { parentMessageId: 12, childMessageId: 13 },
     }), userContext)).resolves.toMatchObject({ type: 'email_thread_edge.deleted' });
+    // Both edge messages must be authorized — an inaccessible child drops it,
+    // so the child id never leaks to a parent-only viewer.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_edge.deleted',
+      entityType: 'email_thread_edge',
+      entityId: '995',
+      payload: { parentMessageId: 12, childMessageId: 101 },
+    }), userContext)).resolves.toBeNull();
 
     // The account itself is gone → owners/admins only.
     await expect(filterMailEventForPrincipal(event({

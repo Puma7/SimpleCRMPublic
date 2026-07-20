@@ -67,7 +67,10 @@ export type MailResourceResolution =
   | Readonly<{ kind: 'workspace_global' }>
   // Event-only: the underlying entity no longer exists (e.g. account deletion),
   // so there is nothing to authorize against — deliver to owners/admins only.
-  | Readonly<{ kind: 'owner_admin_only' }>;
+  | Readonly<{ kind: 'owner_admin_only' }>
+  // Event-only: authorize BOTH messages named in a deletion tombstone (e.g. a
+  // thread edge's parent + child) so neither id leaks to a partial-access viewer.
+  | Readonly<{ kind: 'event_message_pair'; firstMessageId: PolicyValueSelector; secondMessageId: PolicyValueSelector }>;
 
 export type MailRouteExemptionReason =
   | 'signed_public_tracking'
@@ -682,8 +685,13 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
     return { kind: 'message_lookup', messageId: eventPayloadValue('messageId') };
   }
   if (type === 'email_thread_edge.deleted') {
-    // Authorize the parent message; the child id is in the (allowlisted) payload.
-    return { kind: 'message_lookup', messageId: eventPayloadValue('parentMessageId') };
+    // Authorize BOTH the parent and child message (the child id is in the payload),
+    // matching the created/read events, so neither leaks to a partial-access viewer.
+    return {
+      kind: 'event_message_pair',
+      firstMessageId: eventPayloadValue('parentMessageId'),
+      secondMessageId: eventPayloadValue('childMessageId'),
+    };
   }
   if (type === 'email_account_signature.deleted' || type === 'email_thread_alias.deleted') {
     return { kind: 'account', accountId: eventPayloadValue('accountId') };

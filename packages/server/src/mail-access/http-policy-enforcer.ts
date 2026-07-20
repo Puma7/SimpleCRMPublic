@@ -77,6 +77,10 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set([
   // allowed too, otherwise they can save signatures they can never load. Kept out
   // of EMPTY_SCOPE_READ_PATHS so a scope-'none' user still gets nothing.
   '/api/v1/email/user-signatures',
+  // A delegated sender (restricted mail.send scope) can reach the PGP encrypt/sign
+  // endpoints, so they must also be able to check whether their recipients have
+  // usable keys. Read-only, no account/message resource; scope 'none' still 404s.
+  '/api/v1/pgp/recipient-key-status',
 ]);
 
 // Stateless PGP crypto helpers: they transform client-supplied plaintext —
@@ -394,9 +398,11 @@ async function resolveHttpResources(
   ) {
     return { kind: 'scope' };
   }
-  // owner_admin_only is an event-stream resolution (tombstone for a deleted
-  // entity); no HTTP route uses it, so fail closed if one ever does.
-  if (resolution.kind === 'owner_admin_only') throw new MailAccessDeniedError();
+  // owner_admin_only and event_message_pair are event-stream resolutions
+  // (tombstones for deleted entities); no HTTP route uses them, so fail closed.
+  if (resolution.kind === 'owner_admin_only' || resolution.kind === 'event_message_pair') {
+    throw new MailAccessDeniedError();
+  }
   if (resolution.kind === 'event_message_then_account_lookup') return { kind: 'resources', resources: [], mode: 'all' };
 
   if (resolution.kind === 'optional_account') {

@@ -298,6 +298,11 @@ async function resolveResources(input: {
     return { kind: 'scope' };
   }
   if (resolution.kind === 'owner_admin_only') return { kind: 'owner_admin' };
+  if (resolution.kind === 'event_message_pair') {
+    const first = await lookup(input, { kind: 'message', id: requirePositiveInt(input.select(resolution.firstMessageId)) });
+    const second = await lookup(input, { kind: 'message', id: requirePositiveInt(input.select(resolution.secondMessageId)) });
+    return { kind: 'resources', resources: [...first.resources, ...second.resources], mode: 'all' };
+  }
   if (resolution.kind === 'notice_lookup') return { kind: 'scope' };
   if (resolution.kind === 'optional_account') {
     const raw = input.select(resolution.accountId);
