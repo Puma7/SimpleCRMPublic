@@ -191,8 +191,10 @@ describe('server mail job and event ACL', () => {
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
     }), ports);
     await enforceMailJobPolicy(job({
+      // owner: a message-less side-effect child (ai.agent) requires owner/admin
+      // (R12-2); it then resolves to non_mail with no lookup/assertion.
       type: 'ai.agent',
-      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a' },
     }), ports);
     await enforceMailJobPolicy(job({
       type: 'mail.send.scheduled',
@@ -321,6 +323,35 @@ describe('server mail job and event ACL', () => {
       type: 'workflow.execute',
       payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 700 }),
     }), ports)).resolves.toBeUndefined();
+  });
+
+  test('rechecks side-effect privilege for message-less workflow child jobs', async () => {
+    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.pick_canned', 'ai.review', 'ai.transform_text'] as const;
+    for (const type of childTypes) {
+      // A demoted (non-admin) initiator's message-less child would otherwise hit
+      // the non_mail early return and run its side-effecting node unchecked.
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
+      }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+
+      // Owner/admin may run it; trusted-service (automatic/inbound) children bypass.
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a' },
+      }), makePolicyPorts())).resolves.toBeUndefined();
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a' }),
+      }), makePolicyPorts())).resolves.toBeUndefined();
+    }
+
+    // ai.reply_suggestion is NOT gated: it has a direct user route, is
+    // message-required, and only adds its content-read supplemental.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts())).resolves.toBeUndefined();
   });
 
   test('rechecks reply-parent triage before a scheduled reply-send marks the parent done', async () => {

@@ -129,6 +129,7 @@ export async function enforceMailJobPolicy(
   // only (trusted service jobs stay authorized).
   if (actor.kind === 'user') {
     await assertWorkflowExecuteSideEffectPrivilege(job, actor.actor, requiredPorts);
+    assertWorkflowChildSideEffectPrivilege(job, actor.actor);
   }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
   if (resolved.resources.kind === 'non_mail') return resolved.authorization;
@@ -172,6 +173,32 @@ export async function enforceMailJobPolicy(
 // it contains side-effecting nodes, mirroring the HTTP route's admin gate. The
 // workflows.manage capability is not resolvable from the job actor, so this covers
 // the demotion (admin → user) scenario; non-side-effecting graphs stay allowed.
+// Side-effect child jobs a live/manual workflow queues that resolve to non_mail
+// when the node has no message (workflow.http_request + the AI children). Each is
+// produced ONLY by the workflow runtime and every one is a side-effecting node
+// type (graph-validate READ_ONLY allowlist), so a workflow.execute run already
+// required owner/admin for a non-admin actor. There is no direct user producer for
+// any of them, so gating on job.type is safe. (ai.reply_suggestion is excluded: it
+// has a direct user route, is message-required, and is read-only-classified.)
+const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
+  'workflow.http_request',
+  'ai.agent',
+  'ai.pick_canned',
+  'ai.review',
+  'ai.transform_text',
+]);
+
+// R12-2: a message-less child of these types hits the non_mail early return and
+// skips every check, yet still runs a side-effecting node under the system role.
+// Re-deny a non-owner/admin actor here — this catches an initiator demoted between
+// workflow.execute time and the child's execution. Trusted-service children
+// (automatic/inbound runs) are actor.kind==='service' and never reach here.
+function assertWorkflowChildSideEffectPrivilege(job: QueuedJob, actor: MailAccessActor): void {
+  if (!WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES.has(job.type)) return;
+  if (actor.isOwner || actor.isAdmin) return;
+  throw new MailAsyncAuthorizationError();
+}
+
 async function assertWorkflowExecuteSideEffectPrivilege(
   job: QueuedJob,
   actor: MailAccessActor,
