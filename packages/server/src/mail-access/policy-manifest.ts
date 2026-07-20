@@ -751,9 +751,17 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
   if (type === 'email_thread.updated') {
     return { kind: 'thread_lookup', threadId: eventValue('entityId') };
   }
+  if (type.startsWith('email_canned_response.')) {
+    // Account-scoped canned responses authorize against their account (from the
+    // event payload); global templates (accountId absent) stay workspace-global.
+    return {
+      kind: 'optional_account',
+      accountId: eventPayloadValue('accountId'),
+      whenAbsent: 'workspace_global',
+    };
+  }
   if (
     type.startsWith('email_category.')
-    || type.startsWith('email_canned_response.')
     || type.startsWith('email_remote_content_allowlist.')
     || type.startsWith('email_team_member.')
   ) {

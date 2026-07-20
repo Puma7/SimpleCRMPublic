@@ -92,6 +92,12 @@ const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Obj
   'email_account_signature.created': ['accountId', 'signatureId', 'state'],
   'email_account_signature.updated': ['accountId', 'signatureId', 'state'],
   'email_account_signature.deleted': ['accountId', 'signatureId', 'state'],
+  // accountId (null for a global template) lets the event filter authorize an
+  // account-scoped canned response against its account; clients treat these as a
+  // refetch signal, so no other payload field needs to survive sanitization.
+  'email_canned_response.created': ['accountId'],
+  'email_canned_response.updated': ['accountId'],
+  'email_canned_response.deleted': ['accountId'],
   'email_read_receipt.created': ['messageId', 'state'],
   'email_tracking.updated': ['messageId', 'state'],
   'conversation_lock.acquired': ['messageId', 'state', 'reason'],
@@ -459,8 +465,10 @@ async function resolveResources(input: {
     throw new MailAsyncAuthorizationError();
   }
   // canned_response_lookup is HTTP-only (autosave/reset of a canned override).
-  // No event or job resolves it — canned-response events are workspace_global —
-  // so fail closed here rather than fall through to the metadata builder.
+  // No event or job resolves it — canned-response events use optional_account
+  // (account-scoped rows authorize against their account, global templates fall
+  // to the workspace-global scope) — so fail closed here rather than fall through
+  // to the metadata builder.
   if (resolution.kind === 'canned_response_lookup') {
     throw new MailAsyncAuthorizationError();
   }

@@ -1889,6 +1889,9 @@ async function publishEmailCannedResponse(
     payload: {
       id: response.id,
       sourceSqliteId: response.sourceSqliteId,
+      // Included so the event filter can authorize an account-scoped canned
+      // response against its account (null = global template → workspace-global).
+      accountId: response.accountId,
       title: response.title,
       body: response.body,
       sortOrder: response.sortOrder,

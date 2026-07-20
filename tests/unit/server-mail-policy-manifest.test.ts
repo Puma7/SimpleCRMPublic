@@ -212,6 +212,15 @@ describe('server mail policy manifest', () => {
     expect(cannedEvents.every(({ permission }) => permission === 'mail.draft.create')).toBe(true);
   });
 
+  test('canned-response events resolve to their account, falling back to workspace-global for templates', () => {
+    const cannedEvents = MAIL_EVENT_POLICY_MANIFEST.filter(({ type }) => type.startsWith('email_canned_response.'));
+    expect(cannedEvents.length).toBeGreaterThan(0);
+    expect(cannedEvents.every(({ resource }) => resource.kind === 'optional_account'
+      && resource.whenAbsent === 'workspace_global'
+      && resource.accountId.source === 'event_payload'
+      && resource.accountId.field === 'accountId')).toBe(true);
+  });
+
   test('rejects duplicate route, job and event policy keys', () => {
     const route = syntheticRoute('GET', '/api/v1/email/synthetic');
     const routeEntry = {

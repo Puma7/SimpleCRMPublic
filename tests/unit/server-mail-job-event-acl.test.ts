@@ -680,6 +680,44 @@ describe('server mail job and event ACL', () => {
     }), adminContext)).resolves.toMatchObject({ type: 'email_account.deleted' });
   });
 
+  test('canned-response events authorize against their account, not any draft scope', async () => {
+    const ports = makePolicyPorts();
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    // Account-scoped canned response on an account the delegate can reach: the
+    // event resolves to that account and is delivered, sanitized to accountId
+    // only (clients treat it as a refetch signal, so title/body are stripped).
+    const delivered = await filterMailEventForPrincipal(event({
+      type: 'email_canned_response.updated',
+      entityType: 'email_canned_response',
+      entityId: '30',
+      payload: { id: 30, accountId: 7, title: 't', body: 'b', sortOrder: 0 },
+    }), userContext);
+    expect(delivered).not.toBeNull();
+    expect(delivered!.payload).toEqual({ accountId: 7 });
+
+    // A canned response on a different account is no longer authorized by an
+    // unrelated draft scope (previously workspace-global leaked its existence).
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_canned_response.updated',
+      entityType: 'email_canned_response',
+      entityId: '31',
+      payload: { id: 31, accountId: 9, title: 't', body: 'b', sortOrder: 0 },
+    }), userContext)).resolves.toBeNull();
+
+    // A global template (accountId null) stays workspace-global: delivered to any
+    // delegate holding a draft scope.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_canned_response.created',
+      entityType: 'email_canned_response',
+      entityId: '32',
+      payload: { id: 32, accountId: null, title: 't', body: 'b', sortOrder: 0 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_canned_response.created' });
+  });
+
   test('websocket replay/live dedupe keeps a bounded ordered window', () => {
     const dedupe = createBoundedEventSequenceDedupe(3);
 
