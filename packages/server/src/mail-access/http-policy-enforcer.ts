@@ -45,6 +45,11 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/message-categories',
   '/api/v1/email/internal-notes',
   '/api/v1/email/canned-responses',
+  // Fetching a single canned response by id follows the same list-then-item rule:
+  // a reader allowed the collection must be allowed a global (or resolved-in-scope)
+  // item. Account-scoped rows still authorize per account via cannedResponsePath()
+  // (the resource path, not this scope gate), so this admits only global rows here.
+  '/api/v1/email/canned-responses/:id',
   '/api/v1/email/account-signatures',
   '/api/v1/email/remote-content-allowlist',
   '/api/v1/email/read-receipts',

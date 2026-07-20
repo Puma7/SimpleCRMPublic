@@ -72,7 +72,7 @@ const MAIL_EVENT_POLICY_TYPES = new Set(MAIL_EVENT_POLICY_MANIFEST.map((entry) =
 const SERVER_EVENT_TYPE_SET = new Set<string>(SERVER_EVENT_TYPES);
 
 const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  'email_acl.changed': ['bindingId', 'targetUserId', 'state'],
+  'email_acl.changed': ['bindingId', 'targetUserId', 'state', 'resourceType', 'accountId', 'folderId'],
   'email_account.created': ['accountId', 'state'],
   'email_account.updated': ['accountId', 'state'],
   'email_account.deleted': ['accountId', 'state'],
@@ -288,21 +288,56 @@ async function assertScheduledSendReplyParentTriage(
   }
 }
 
+// Reconstruct the binding's account/folder MailResource from a sanitized
+// email_acl.changed payload so the filter can authorize a scoped delegation
+// manager against it. Returns null when the tombstone carried no resource.
+function mailDelegationResourceFromEventPayload(payload: Record<string, unknown>): MailResource | null {
+  const { resourceType, accountId, folderId } = payload;
+  if (typeof accountId !== 'number' && typeof accountId !== 'string') return null;
+  const account = String(accountId);
+  if (resourceType === 'account') return { type: 'account', accountId: account };
+  if (resourceType === 'folder') {
+    if (typeof folderId !== 'number' && typeof folderId !== 'string') return null;
+    return { type: 'folder', accountId: account, folderId: String(folderId) };
+  }
+  return null;
+}
+
 export async function filterMailEventForPrincipal(
   event: ServerEvent,
   context: MailEventFilterContext,
 ): Promise<ServerEvent | null> {
   if (event.type === 'email_acl.changed') {
     const sanitized = sanitizeMailEventPayload(event);
-    // Deliver to the affected subject AND to owners/admins (delegation managers),
-    // so the delegation panel reloads for a manager who is not the subject —
-    // otherwise they keep a stale binding list and can overwrite a newer binding.
-    // The sanitized payload carries only bindingId/targetUserId/state, all of which
-    // an owner/admin can already enumerate, so this leaks nothing. (Plain
-    // mail.delegation.manage holders are not covered here: the payload omits the
-    // resource needed to scope delivery to them without leaking other subjects.)
+    // Deliver to the affected subject, to owners/admins, AND to a non-admin
+    // mail.delegation.manage holder scoped to the binding's resource (when the
+    // payload carries it) — their delegation panel otherwise stays stale and can
+    // revert a peer's newer edit. The sanitized payload carries only
+    // bindingId/targetUserId/state (+ the binding's account/folder), all enumerable
+    // by an owner/admin or by a manager already authorized on that resource, so this
+    // leaks nothing. Resource-less events (delete/empty-replace, group-membership,
+    // demotion) carry no resource and stay subject / owner-admin only.
     if (context.principal.role === 'owner' || context.principal.role === 'admin') return sanitized;
-    return sanitized.payload.targetUserId === context.principal.userId ? sanitized : null;
+    if (sanitized.payload.targetUserId === context.principal.userId) return sanitized;
+    const resource = mailDelegationResourceFromEventPayload(sanitized.payload);
+    if (!resource || !context.ports.mailAccess) return null;
+    try {
+      await context.ports.mailAccess.assertPermission({
+        workspaceId: sanitized.workspaceId,
+        actor: {
+          workspaceId: context.principal.workspaceId,
+          userId: context.principal.userId,
+          isOwner: false,
+          isAdmin: false,
+        },
+        permission: 'mail.delegation.manage',
+        resource,
+      });
+      return sanitized;
+    } catch (error) {
+      if (isAccessDenied(error)) return null;
+      throw error;
+    }
   }
   const policy = mailEventPolicyOrNull(event.type);
   if (!policy) return SERVER_EVENT_TYPE_SET.has(event.type) ? event : null;

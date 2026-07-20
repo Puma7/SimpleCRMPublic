@@ -430,6 +430,17 @@ async function auditAndPublish(
         bindingId,
         targetUserId,
         state: details.deleted ? 'deleted' : 'changed',
+        // Carry the binding's resource (when known) so the event filter can also
+        // deliver to a non-admin mail.delegation.manage holder scoped to it — their
+        // delegation panel otherwise stays stale and can revert a peer's newer edit.
+        // The resource + targetUserId are already enumerable by such a manager, so
+        // this leaks nothing. Absent on delete/empty-replace (binding gone) and on
+        // group-membership changes (no single resource): those stay subject-only.
+        ...(resource ? {
+          resourceType: resource.type,
+          accountId: resource.accountId,
+          ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
+        } : {}),
       },
     });
   }

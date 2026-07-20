@@ -695,6 +695,74 @@ describe('mail ACL rollout central use', () => {
     expect(runSecurityCheck).toHaveBeenCalledTimes(1);
   });
 
+  test('scoped delegates fetch in-scope or global canned responses by id but not out-of-scope ones', async () => {
+    const cannedRecord = (id: number, accountId: number | null) => ({
+      id,
+      sourceSqliteId: id,
+      title: 'T',
+      body: 'B',
+      accountSourceSqliteId: null,
+      accountId,
+      overrideKey: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: '2026-07-20T10:00:00.000Z',
+    });
+    const mailAccess: MailAccessService = {
+      async assertPermission(input) {
+        // The delegate holds mail.draft.create on account A only.
+        if (input.resource.type === 'account' && input.resource.accountId !== String(ACCOUNT_A)) {
+          throw new MailAccessDeniedError();
+        }
+      },
+      async resolveScope() {
+        return { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+      },
+    };
+    const ports: ServerApiPorts = {
+      ...makeCentralPorts(mailAccess),
+      mailResourceLookup: {
+        async resolve(input) {
+          if (input.target.kind === 'canned_response') {
+            if (input.target.id === 55) return [{ type: 'account', accountId: String(ACCOUNT_A) }];
+            if (input.target.id === 66) return [{ type: 'account', accountId: String(ACCOUNT_B) }];
+          }
+          return []; // id 77 → global/accountless (or missing) → scope gate
+        },
+      },
+      emailCannedResponses: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get(input) {
+          if (input.id === 55) return cannedRecord(55, ACCOUNT_A);
+          if (input.id === 77) return cannedRecord(77, null);
+          return null;
+        },
+      } as unknown as ServerApiPorts['emailCannedResponses'],
+    };
+    const api = createServerApi(ports);
+
+    // An account-A override the delegate can reach → authorized per account.
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/canned-responses/55',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 200 });
+
+    // An account-B override the delegate cannot reach → denied, no cross-account leak.
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/canned-responses/66',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+
+    // A global template → admitted for the restricted reader (matches the collection).
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/canned-responses/77',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
   test('thread-alias PATCH authorizes the unchanged stored thread, not just the replacement', async () => {
     const deniedMessages = new Set<string>();
     const mailAccess: MailAccessService = {

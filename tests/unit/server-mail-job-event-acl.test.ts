@@ -680,6 +680,48 @@ describe('server mail job and event ACL', () => {
     }
   });
 
+  test('ACL invalidation events reach scoped non-admin delegation managers when the payload carries the binding resource', async () => {
+    const aclEvent = (extra: Record<string, unknown>) => event({
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      entityId: '902',
+      payload: { bindingId: 902, targetUserId: 'user-a', state: 'changed', ...extra },
+    });
+    const manager = { workspaceId: 'workspace-a', userId: 'mgr', role: 'user' as const };
+
+    // A manager holding mail.delegation.manage on the binding's folder receives the
+    // invalidation; the filter authorized exactly that permission + resource.
+    const authorized = makePolicyPorts();
+    const delivered = await filterMailEventForPrincipal(
+      aclEvent({ resourceType: 'folder', accountId: 7, folderId: 8 }),
+      { principal: manager, ports: authorized },
+    );
+    expect(delivered).not.toBeNull();
+    expect(delivered!.payload).toEqual({
+      bindingId: 902, targetUserId: 'user-a', state: 'changed', resourceType: 'folder', accountId: 7, folderId: 8,
+    });
+    expect(authorized.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.delegation.manage',
+      resource: { type: 'folder', accountId: '7', folderId: '8' },
+    }));
+
+    // A manager lacking mail.delegation.manage on that resource is withheld.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.delegation.manage']) });
+    await expect(filterMailEventForPrincipal(
+      aclEvent({ resourceType: 'account', accountId: 7 }),
+      { principal: manager, ports: denied },
+    )).resolves.toBeNull();
+
+    // A resource-less invalidation (delete/empty-replace, group-membership, demotion)
+    // stays subject-only: a non-subject manager gets nothing, no permission checked.
+    const resourceless = makePolicyPorts();
+    await expect(filterMailEventForPrincipal(
+      aclEvent({}),
+      { principal: manager, ports: resourceless },
+    )).resolves.toBeNull();
+    expect(resourceless.assertions).toEqual([]);
+  });
+
   test('event resource matrix covers account message metadata edge parents thread any spam fallback deny and workspace-global', async () => {
     const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
     const context = {
@@ -876,7 +918,7 @@ describe('server mail job and event ACL', () => {
     }), userContext)).resolves.toMatchObject({ type: 'email_canned_response.created' });
   });
 
-  test('restricts PGP identity and spam-list events to owners and admins', async () => {
+  test('restricts PGP identity, spam-list, and remote-content-allowlist events to owners and admins', async () => {
     const ports = makePolicyPorts();
     const userContext = {
       principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
@@ -891,6 +933,9 @@ describe('server mail job and event ACL', () => {
       { type: 'pgp_identity.created', entityType: 'pgp_identity', entityId: '5', payload: { id: 5, accountId: 7 } },
       { type: 'pgp_peer_key.updated', entityType: 'pgp_peer_key', entityId: '6', payload: { id: 6 } },
       { type: 'spam_list_entry.updated', entityType: 'spam_list_entry', entityId: '9', payload: { id: 9 } },
+      // The remote-content allowlist is a workspace security setting whose HTTP list
+      // route excludes restricted scopes, so its events are owner/admin-only too.
+      { type: 'email_remote_content_allowlist.updated', entityType: 'email_remote_content_allowlist', entityId: '12', payload: { id: 12 } },
     ]) {
       // A single-account metadata delegate cannot list these via HTTP, so they must
       // not receive the workspace-wide key/spam-policy mutation over the stream.

@@ -470,11 +470,12 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
     POST: permissionPolicy('mail.draft.create', optionalAccount('body')),
   });
   assign('/api/v1/email/canned-responses/:id', {
-    GET: permissionPolicy('mail.draft.create', mailScope()),
-    // Resolve the existing row to its account so an account-level delegate can
-    // autosave (PATCH) or reset (DELETE) an account-scoped override. Global rows
-    // resolve to the workspace-global scope gate, keeping restricted-scope writes
-    // owner/admin-only exactly as before.
+    // Resolve the row to its account so an account-level delegate can fetch (GET),
+    // autosave (PATCH), or reset (DELETE) an account-scoped override; an out-of-scope
+    // account row is denied (no cross-account leak). Global rows resolve to the
+    // workspace-global scope gate — admitted for reads (the item is in
+    // EMPTY_SCOPE_READ_PATHS, matching the collection) but writes stay owner/admin.
+    GET: permissionPolicy('mail.draft.create', cannedResponsePath()),
     PATCH: permissionPolicy('mail.draft.create', cannedResponsePath()),
     DELETE: permissionPolicy('mail.draft.create', cannedResponsePath()),
   });
@@ -787,9 +788,17 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
       whenAbsent: 'workspace_global',
     };
   }
+  if (type.startsWith('email_remote_content_allowlist.')) {
+    // The workspace remote-content allowlist is a security setting: its HTTP list
+    // route (mail.metadata.read on mail_scope) is deliberately excluded from
+    // RESTRICTED_SCOPE_READ_PATHS, so only full-scope owner/admin callers can read
+    // it. A workspace_global event would instead reach any nonempty scope, leaking
+    // allowlist entry ids/activity to a single-account delegate. Restrict delivery
+    // to owner/admin to match the read route (sanitization already drops the value).
+    return { kind: 'owner_admin_only' };
+  }
   if (
     type.startsWith('email_category.')
-    || type.startsWith('email_remote_content_allowlist.')
     || type.startsWith('email_team_member.')
   ) {
     return { kind: 'workspace_global' };
