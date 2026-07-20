@@ -789,6 +789,7 @@ async function loadDelayedJob(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', delayedJobId)
     .where('workflow_id', '=', workflowId)
+    .forUpdate()
     .executeTakeFirst();
   return row ?? null;
 }

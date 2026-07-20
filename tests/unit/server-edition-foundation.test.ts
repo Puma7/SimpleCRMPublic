@@ -8239,7 +8239,7 @@ describe('server edition foundation', () => {
   test('postgres workflow execution job port schedules and resumes delay nodes', async () => {
     const now = new Date('2026-07-04T10:45:00.000Z');
     const executeAt = new Date('2026-07-04T10:47:00.000Z');
-    const { db, rows } = makeWorkflowExecutionDb({
+    const { db, rows, rowLocks } = makeWorkflowExecutionDb({
       workflows: [{
         id: 26,
         workspace_id: WORKSPACE_A_ID,
@@ -8392,6 +8392,7 @@ describe('server edition foundation', () => {
       ['delay-1', 'logic.delay', 'ok', 'default'],
       ['tag-1', 'email.tag', 'ok', 'default'],
     ]);
+    expect(rowLocks).toContain('workflow_delayed_jobs');
   });
 
   test('postgres workflow execution job port enqueues AI reply suggestion nodes', async () => {

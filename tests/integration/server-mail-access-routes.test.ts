@@ -54,6 +54,7 @@ import type { MailSqlScope } from '../../packages/server/src/mail-access/types';
 import { serverMigrations } from '../../packages/server/src/migrations';
 import { withWorkspaceTransaction } from '../../packages/server/src/db/workspace-context';
 import { verifyAuditHashChain, type AuditHashChainRow } from '../../packages/server/src/db/postgres-audit-port';
+import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/src/workflow-execution';
 
 jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules/kysely'));
 
@@ -404,6 +405,21 @@ describe('server mailbox ACL migration', () => {
       `);
       if (Number(result.rows[0]?.waiting ?? 0) >= minimum) return;
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`Timed out waiting for ${description}`);
+  }
+
+  async function waitForBlockedApplication(applicationName: string, description: string): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= 5_000) {
+      const result = await client.query<{ blocked: string }>(`
+        SELECT count(*)::text AS blocked
+        FROM pg_stat_activity
+        WHERE application_name = $1
+          AND cardinality(pg_blocking_pids(pid)) > 0
+      `, [applicationName]);
+      if (Number(result.rows[0]?.blocked ?? 0) > 0) return;
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     throw new Error(`Timed out waiting for ${description}`);
   }
@@ -2286,6 +2302,139 @@ describe('server mailbox ACL migration', () => {
       await client.query(`DELETE FROM email_workflows WHERE id IN (7201, 7202)`).catch(() => undefined);
       await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
       await db.destroy();
+    }
+  });
+
+  test('holds the delayed-job row lock from authorization through workflow completion', async () => {
+    const workflowId = 7251;
+    const delayedJobId = 7851;
+    const advisoryLockKey = 7_251_851;
+    const executionApplication = 'workflow-delayed-lock-execution';
+    const patchApplication = 'workflow-delayed-lock-patch';
+    const executionDb = createApplicationDb({ maxConnections: 1, applicationName: executionApplication });
+    const patchDb = createApplicationDb({ maxConnections: 1, applicationName: patchApplication });
+    const delayedPort = createPostgresWorkflowDelayedJobReadPort({ db: patchDb });
+    const completionOrder: string[] = [];
+    let advisoryLockHeld = false;
+    let executionPromise: Promise<void> | undefined;
+    let patchPromise: Promise<unknown> | undefined;
+    try {
+      const graph = {
+        version: 1,
+        nodes: [
+          { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+          { id: 'tag-1', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'lock-race' } } },
+        ],
+        edges: [{ id: 'edge-1', source: 'trigger-1', target: 'tag-1' }],
+      };
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_workflows (
+          id, workspace_id, source_sqlite_id, name, trigger_name, enabled, priority,
+          definition_json, graph_json, execution_mode, engine_version
+        ) VALUES ($1, $2, $1, 'Delayed lock race', 'manual', true, 1, '{}'::jsonb, $3::jsonb, 'graph', 1)
+      `, [workflowId, WORKSPACE_A, JSON.stringify(graph)]);
+      await client.query(`
+        INSERT INTO workflow_delayed_jobs (
+          id, workspace_id, source_sqlite_id, workflow_source_sqlite_id, message_source_sqlite_id,
+          workflow_id, message_id, resume_node_id, execute_at, context_json, status
+        ) VALUES ($1, $2, $1, $3, 31, $3, $4, 'tag-1', '2026-07-21T14:00:00Z', '{}'::jsonb, 'pending')
+      `, [delayedJobId, WORKSPACE_A, workflowId, MESSAGE_A]);
+      await client.query(`
+        CREATE OR REPLACE FUNCTION workflow_delayed_execution_test_barrier()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.workflow_id = ${workflowId} THEN
+            PERFORM pg_advisory_xact_lock(${advisoryLockKey});
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+      `);
+      await client.query(`
+        CREATE TRIGGER workflow_delayed_execution_test_barrier
+        BEFORE INSERT ON email_workflow_runs
+        FOR EACH ROW EXECUTE FUNCTION workflow_delayed_execution_test_barrier()
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+      await client.query('SELECT pg_advisory_lock($1)', [advisoryLockKey]);
+      advisoryLockHeld = true;
+
+      const executionPort = createPostgresWorkflowExecutionJobPort({ db: executionDb });
+      executionPromise = executionPort.execute({
+        workspaceId: WORKSPACE_A,
+        workflowId,
+        delayedJobId,
+        authorizedDelayedJobMessageId: MESSAGE_A,
+        triggerName: 'manual',
+        context: {},
+      }).then(() => {
+        completionOrder.push('execution');
+      });
+      await waitForBlockedApplication(executionApplication, 'workflow execution to enter the pre-action barrier');
+
+      patchPromise = delayedPort.update!({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_CREATOR,
+        id: delayedJobId,
+        values: { messageId: MESSAGE_A_SECOND, status: 'relinked' },
+        mailScope: { kind: 'all' },
+      }).then((result) => {
+        completionOrder.push('patch');
+        return result;
+      });
+      await waitForBlockedApplication(patchApplication, 'delayed-job relink to wait for workflow execution');
+      expect(completionOrder).toEqual([]);
+
+      await client.query('SELECT pg_advisory_unlock($1)', [advisoryLockKey]);
+      advisoryLockHeld = false;
+      await executionPromise;
+      await expect(patchPromise).resolves.toMatchObject({
+        ok: true,
+        job: { id: delayedJobId, messageId: MESSAGE_A_SECOND, status: 'relinked' },
+      });
+      expect(completionOrder).toEqual(['execution', 'patch']);
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const finalState = await client.query<{
+        message_id: string | null;
+        status: string;
+        authorized_tags: string;
+        hidden_tags: string;
+      }>(`
+        SELECT
+          delayed.message_id::text,
+          delayed.status,
+          (SELECT count(*)::text FROM email_message_tags WHERE workspace_id = $1 AND message_id = $2 AND tag = 'lock-race') AS authorized_tags,
+          (SELECT count(*)::text FROM email_message_tags WHERE workspace_id = $1 AND message_id = $3 AND tag = 'lock-race') AS hidden_tags
+        FROM workflow_delayed_jobs AS delayed
+        WHERE delayed.workspace_id = $1 AND delayed.id = $4
+      `, [WORKSPACE_A, MESSAGE_A, MESSAGE_A_SECOND, delayedJobId]);
+      expect(finalState.rows).toEqual([{
+        message_id: String(MESSAGE_A_SECOND),
+        status: 'relinked',
+        authorized_tags: '1',
+        hidden_tags: '0',
+      }]);
+    } finally {
+      if (advisoryLockHeld) {
+        await client.query('SELECT pg_advisory_unlock($1)', [advisoryLockKey]).catch(() => undefined);
+      }
+      await Promise.allSettled([
+        ...(executionPromise ? [executionPromise] : []),
+        ...(patchPromise ? [patchPromise] : []),
+      ]);
+      await client.query('DROP TRIGGER IF EXISTS workflow_delayed_execution_test_barrier ON email_workflow_runs').catch(() => undefined);
+      await client.query('DROP FUNCTION IF EXISTS workflow_delayed_execution_test_barrier()').catch(() => undefined);
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      await client.query(`DELETE FROM email_message_tags WHERE workspace_id = '${WORKSPACE_A}' AND tag = 'lock-race'`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflow_run_steps WHERE workspace_id = '${WORKSPACE_A}' AND run_id IN (SELECT id FROM email_workflow_runs WHERE workflow_id = ${workflowId})`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflow_runs WHERE workspace_id = '${WORKSPACE_A}' AND workflow_id = ${workflowId}`).catch(() => undefined);
+      await client.query(`DELETE FROM workflow_delayed_jobs WHERE workspace_id = '${WORKSPACE_A}' AND id = ${delayedJobId}`).catch(() => undefined);
+      await client.query(`DELETE FROM email_workflows WHERE workspace_id = '${WORKSPACE_A}' AND id = ${workflowId}`).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await executionDb.destroy();
+      await patchDb.destroy();
     }
   });
 

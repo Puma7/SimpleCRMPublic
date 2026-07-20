@@ -58,7 +58,7 @@ Validated and fixed the reviewed server-side mailbox ACL bypass paths:
 - PATCH/DELETE authorize the current row through SQL scope before locking/mutating. PATCH separately authorizes and SQL-scopes a replacement message. `null` detach remains supported and mutation failure is atomic.
 - The PostgreSQL worker lookup classifies delayed jobs as `missing`, `invalid`, `non_mail`, or `message`; it never uses a sentinel resource and never conflates a missing row with non-mail.
 - Worker authorization produces a typed, transient `MailJobAuthorization` outside the payload. Both legacy and Graphile workers pass it to the workflow handler only after actor/service provenance and mailbox permission checks.
-- Workflow execution compares the authorized delayed-job ID/message linkage with the delayed row selected inside its execution transaction before loading message content or running nodes. A relink committed before that select is denied; a relink committed after it cannot change the selected effective message ID used by that execution.
+- Workflow execution compares the authorized delayed-job ID/message linkage with the delayed row selected `FOR UPDATE` inside its execution transaction before loading message content or running nodes. The row lock is held through workflow actions and the final delayed-job update, so a concurrent relink cannot commit across the authorized execution.
 - Direct and delayed message IDs must agree, including null/non-null mismatches. Missing/malformed delayed IDs fail closed; an explicit delayed row with `message_id IS NULL` remains a genuine non-mail execution.
 - Delayed-job events accept only a positive integer message ID or explicit `null`; missing, empty, zero, object, and malformed values are filtered from both live and replay streams.
 
@@ -82,3 +82,27 @@ Validated and fixed the reviewed server-side mailbox ACL bypass paths:
 
 - Delayed-job message linkage remains intentionally mutable through the authorized PATCH API. Correctness therefore depends on all production workflow execution entering through a policy-enforcing worker, which now supplies the non-payload authorization result; the execution port also fails closed for an existing delayed row when that result is absent.
 - Build output retains the pre-existing Vite browser externalization and large-chunk warnings; neither is introduced by this server-only ACL change.
+
+## Delayed-Job Row-Lock Follow-Up
+
+### Validated Finding
+
+- The earlier in-transaction message comparison did not lock `workflow_delayed_jobs`. A PATCH could commit after comparison but before execution acquired a row lock through its later `status = 'running'` update. The execution would then run actions against the old message snapshot and overwrite final state on the newly linked row. This was real.
+
+### Fix And Concurrency Contract
+
+- `loadDelayedJob(...)` now terminates its existing PostgreSQL SELECT with `FOR UPDATE`.
+- Execute and dry-run share this loader. The surrounding workspace transaction holds the row lock until each operation completes; normal execution therefore retains it through authorization comparison, message load, workflow actions, and final delayed-job status update.
+- The PostgreSQL regression opens the exact pre-action race window without timing sleeps: a trigger blocks the workflow-run INSERT on an advisory lock after delayed-row comparison but before the old `status = 'running'` update. A second connection starts the real delayed-job mutation port, and `pg_blocking_pids` proves that PATCH waits on the execution transaction.
+- After releasing the barrier, completion order is deterministically `execution`, then `patch`. The action is stored only for the authorized message, and the later PATCH's `relinked` state remains final instead of being overwritten by the old execution.
+
+### Row-Lock Evidence Matrix
+
+| Scenario | Invocation | Binary observable | Artifact |
+|---|---|---|---|
+| RED: query contract and real concurrent relink | `pnpm exec jest --runTestsByPath tests/unit/server-edition-foundation.test.ts tests/integration/server-mail-access-routes.test.ts --runInBand -t "schedules and resumes delay nodes|holds the delayed-job row lock"` | Failed: unit fake recorded no delayed-row lock; real PATCH committed instead of becoming a PostgreSQL lock waiter | `.superpowers/sdd/mail-acl-delayed-job-lock-red-20260720.log` |
+| Focused GREEN race proof | Same targeted command after adding `FOR UPDATE` | Passed: 2 suites, 2 tests | `.superpowers/sdd/mail-acl-delayed-job-lock-focused-green-20260720.log` |
+| Full affected workflow execution unit files | `pnpm exec jest --runTestsByPath tests/unit/server-edition-foundation.test.ts tests/unit/workflow-execution-jsonb.test.ts --runInBand` | Passed: 2 suites, 404 tests; explicit query contract records `workflow_delayed_jobs` as `FOR UPDATE` | `.superpowers/sdd/mail-acl-delayed-job-lock-workflow-unit-green-20260720.log` |
+| Full real PostgreSQL ACL route file | `pnpm exec jest --runTestsByPath tests/integration/server-mail-access-routes.test.ts --runInBand` | Passed: 1 suite, 45 tests | `.superpowers/sdd/mail-acl-delayed-job-lock-postgres-green-20260720.log` |
+| Typecheck | `pnpm run typecheck` | Passed | `.superpowers/sdd/mail-acl-delayed-job-lock-typecheck-20260720.log` |
+| Lint | `pnpm run lint` | Passed | `.superpowers/sdd/mail-acl-delayed-job-lock-lint-20260720.log` |
