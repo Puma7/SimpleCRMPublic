@@ -2,6 +2,7 @@ import {
   buildGraphileTaskList,
   buildTrustedServiceJobPayload,
   type JobHandlerRegistry,
+  POST_PROCESS_RETRY_JOB_MARKER_FIELD,
   type QueuedJob,
   SERVER_JOB_POLICIES,
   TRUSTED_SERVICE_JOB_MARKER_FIELD,
@@ -12,7 +13,10 @@ import {
   enforceMailJobPolicy,
   filterMailEventForPrincipal,
 } from '../../packages/server/src/mail-access/async-policy-enforcer';
-import { createBoundedEventSequenceDedupe } from '../../packages/server/src/api/fastify-adapter';
+import {
+  createBoundedEventSequenceDedupe,
+  publishDemotionAclInvalidationIfNeeded,
+} from '../../packages/server/src/api/fastify-adapter';
 
 describe('server mail job and event ACL', () => {
   test('graphile task-list surfaces revoked mail authorization as a job failure before handler invocation', async () => {
@@ -373,6 +377,54 @@ describe('server mail job and event ACL', () => {
     }), makePolicyPorts())).resolves.toBeUndefined();
   });
 
+  test('re-verifies current admin status for marked post-process retry spam-score jobs', async () => {
+    // A retry job carries the server-only marker (stamped only by the admin-only
+    // post-process/retry route). An initiator demoted to a plain user before the
+    // worker claims it must be re-denied before the system-role security check /
+    // status writes / inbound-workflow enqueue run — retaining mail.triage is not
+    // enough.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        messageId: 12,
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: true,
+      },
+    }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+
+    // An owner/admin initiator passes the recheck and still rechecks the base grant.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'owner-a',
+        messageId: 12,
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: true,
+      },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+
+    // An ordinary (unmarked) inbound spam-score job stays allowed for a plain user
+    // with triage — the recheck applies only to the admin-only retry marker.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+
+    // A forged marker on a request-shaped payload cannot be used to demand admin —
+    // but more importantly, a plain user forging it only makes the check STRICTER,
+    // never weaker; the value must be exactly boolean true to trip the recheck.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        messageId: 12,
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: 'true',
+      },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+  });
+
   test('rechecks reply-parent triage before a scheduled reply-send marks the parent done', async () => {
     const markDone = new Map([[12, { replyParentMessageId: 101, markParentDone: true }]]);
     const ports = makePolicyPorts({ replyParents: markDone });
@@ -538,7 +590,7 @@ describe('server mail job and event ACL', () => {
     expect(ports.lookups).toContainEqual({ kind: 'metadata', entity: 'account_signature', id: -71 });
   });
 
-  test('ACL invalidation events are target-user only and sanitized before live or replay delivery', async () => {
+  test('ACL invalidation events reach the subject and delegation managers, sanitized, and are withheld from unrelated users', async () => {
     const ports = makePolicyPorts();
     const aclEvent = event({
       type: 'email_acl.changed',
@@ -554,19 +606,78 @@ describe('server mail job and event ACL', () => {
       },
     });
 
-    await expect(filterMailEventForPrincipal(aclEvent, {
+    // The affected subject receives the sanitized invalidation so their client
+    // clears loaded mail state.
+    const subjectDelivered = await filterMailEventForPrincipal(aclEvent, {
       principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
       ports,
-    })).resolves.toMatchObject({
-      type: 'email_acl.changed',
-      entityType: 'email_acl',
-      payload: { bindingId: 901, targetUserId: 'user-a', state: 'deleted' },
     });
+    expect(subjectDelivered).not.toBeNull();
+    expect(subjectDelivered!.payload).toEqual({ bindingId: 901, targetUserId: 'user-a', state: 'deleted' });
 
-    await expect(filterMailEventForPrincipal(aclEvent, {
+    // R18-3: a delegation manager (owner/admin) who is NOT the subject also receives
+    // it so their delegation panel reloads instead of holding a stale binding list.
+    // The payload stays sanitized to the enumerable bindingId/targetUserId/state —
+    // the hidden email/body/filename fields never survive.
+    const managerDelivered = await filterMailEventForPrincipal(aclEvent, {
       principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'admin' as const },
       ports,
+    });
+    expect(managerDelivered).not.toBeNull();
+    expect(managerDelivered!.payload).toEqual({ bindingId: 901, targetUserId: 'user-a', state: 'deleted' });
+
+    // An unrelated non-manager user never receives another subject's invalidation.
+    await expect(filterMailEventForPrincipal(aclEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'user' as const },
+      ports,
     })).resolves.toBeNull();
+  });
+
+  test('publishes a self-targeted ACL invalidation only when a socket principal loses owner/admin', async () => {
+    const published: ServerEvent[] = [];
+    const events: ServerEventPort = {
+      async publish(event) { published.push(event); },
+    };
+    const at = '2026-07-20T22:40:00.000Z';
+    const principal = (userId: string, role: 'owner' | 'admin' | 'user') => ({
+      workspaceId: 'workspace-a',
+      userId,
+      role,
+    });
+
+    // owner -> user and admin -> user each emit exactly one self-targeted, sanitized
+    // invalidation so the demoted user's client clears mail loaded under the old role.
+    for (const from of ['owner', 'admin'] as const) {
+      published.length = 0;
+      await expect(
+        publishDemotionAclInvalidationIfNeeded(principal('user-a', from), principal('user-a', 'user'), events, at),
+      ).resolves.toBe(true);
+      expect(published).toHaveLength(1);
+      expect(published[0]).toEqual({
+        type: 'email_acl.changed',
+        workspaceId: 'workspace-a',
+        entityType: 'email_acl',
+        entityId: 'user-a',
+        actorUserId: 'user-a',
+        occurredAt: at,
+        payload: { targetUserId: 'user-a', state: 'changed' },
+      });
+    }
+
+    // Non-demotion transitions publish nothing: an unchanged plain user, a still-
+    // elevated admin, and an elevation (user -> admin) must not emit an invalidation.
+    for (const [from, to] of [
+      ['user', 'user'],
+      ['admin', 'admin'],
+      ['owner', 'owner'],
+      ['user', 'admin'],
+    ] as const) {
+      published.length = 0;
+      await expect(
+        publishDemotionAclInvalidationIfNeeded(principal('user-a', from), principal('user-a', to), events, at),
+      ).resolves.toBe(false);
+      expect(published).toHaveLength(0);
+    }
   });
 
   test('event resource matrix covers account message metadata edge parents thread any spam fallback deny and workspace-global', async () => {

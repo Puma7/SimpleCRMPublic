@@ -17,6 +17,7 @@ import {
 import {
   assertServerJobPolicy,
   isTrustedServiceJobPayload,
+  POST_PROCESS_RETRY_JOB_MARKER_FIELD,
   type ServerJobPolicyEntry,
 } from '../jobs/policy';
 import type { MailJobAuthorization, QueuedJob } from '../jobs/types';
@@ -136,6 +137,7 @@ export async function enforceMailJobPolicy(
   if (actor.kind === 'user') {
     await assertWorkflowExecuteSideEffectPrivilege(job, actor.actor, requiredPorts);
     assertWorkflowChildSideEffectPrivilege(job, actor.actor);
+    assertPostProcessRetryPrivilege(job, actor.actor);
   }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
   if (resolved.resources.kind === 'non_mail') return resolved.authorization;
@@ -214,6 +216,21 @@ function assertWorkflowChildSideEffectPrivilege(job: QueuedJob, actor: MailAcces
   throw new MailAsyncAuthorizationError();
 }
 
+// R18-5: the admin-only post-process/retry route enqueues a mail.spam.score job that
+// re-runs the system-role security check, writes message status, and re-enqueues
+// inbound workflows. The base mail.spam.score policy only rechecks mail.triage, so a
+// delegate/admin demoted between enqueue and execution — who retains triage — could
+// still complete those system-role side effects. The route stamps a server-only
+// marker (never set from request bodies, so not forgeable); re-verify current
+// owner/admin status for marked jobs. Unmarked mail.spam.score jobs (the ordinary
+// inbound scoring path) are unaffected.
+function assertPostProcessRetryPrivilege(job: QueuedJob, actor: MailAccessActor): void {
+  if (job.type !== 'mail.spam.score') return;
+  if (job.payload[POST_PROCESS_RETRY_JOB_MARKER_FIELD] !== true) return;
+  if (actor.isOwner || actor.isAdmin) return;
+  throw new MailAsyncAuthorizationError();
+}
+
 async function assertWorkflowExecuteSideEffectPrivilege(
   job: QueuedJob,
   actor: MailAccessActor,
@@ -277,6 +294,14 @@ export async function filterMailEventForPrincipal(
 ): Promise<ServerEvent | null> {
   if (event.type === 'email_acl.changed') {
     const sanitized = sanitizeMailEventPayload(event);
+    // Deliver to the affected subject AND to owners/admins (delegation managers),
+    // so the delegation panel reloads for a manager who is not the subject —
+    // otherwise they keep a stale binding list and can overwrite a newer binding.
+    // The sanitized payload carries only bindingId/targetUserId/state, all of which
+    // an owner/admin can already enumerate, so this leaks nothing. (Plain
+    // mail.delegation.manage holders are not covered here: the payload omits the
+    // resource needed to scope delivery to them without leaking other subjects.)
+    if (context.principal.role === 'owner' || context.principal.role === 'admin') return sanitized;
     return sanitized.payload.targetUserId === context.principal.userId ? sanitized : null;
   }
   const policy = mailEventPolicyOrNull(event.type);

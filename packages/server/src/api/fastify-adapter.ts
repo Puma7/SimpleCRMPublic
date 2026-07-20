@@ -18,6 +18,7 @@ import type {
   AuthenticatedPrincipal,
   HttpMethod,
   ServerEvent,
+  ServerEventPort,
   ServerApiPorts,
 } from './types';
 import { filterMailEventForPrincipal } from '../mail-access/async-policy-enforcer';
@@ -282,7 +283,15 @@ async function handleEventSocket(
     principalCheckedAt = Date.now();
     const fresh = await resolvePrincipal(request);
     if (!fresh || fresh.workspaceId !== principal.workspaceId) return false;
+    // A live demotion (owner/admin -> user) revokes the elevated bypass that let this
+    // socket's client load mail it can no longer access. Re-resolving the principal
+    // stops NEW events from bypassing resource checks, but the client still holds the
+    // mail it fetched while elevated. Detect the transition against the PREVIOUS
+    // principal, then mutate, so the invalidation fires exactly once (the next
+    // revalidation sees role 'user' and publishes nothing).
+    const previous = context.principal;
     context.principal = fresh;
+    await publishDemotionAclInvalidationIfNeeded(previous, fresh, ports.events, new Date().toISOString());
     return true;
   };
   const deliver = async (event: ServerEvent): Promise<void> => {
@@ -390,6 +399,36 @@ export function createBoundedEventSequenceDedupe(
       return delivered.size;
     },
   };
+}
+
+/**
+ * R18-4: when a live socket's principal is re-resolved and the actor has lost
+ * owner/admin status, publish a self-targeted email_acl.changed so the demoted
+ * user's renderer clears the mail it loaded under the elevated role (the renderer
+ * only drops account/message/selection state on that invalidation). Re-resolving
+ * the principal alone stops NEW events/HTTP from bypassing checks but leaves the
+ * already-loaded mail visible. Returns whether an invalidation was published so the
+ * caller can fire it exactly once per demotion. Non-demotion transitions
+ * (user→user, unchanged owner/admin, or an elevation) publish nothing.
+ */
+export async function publishDemotionAclInvalidationIfNeeded(
+  previous: AuthenticatedPrincipal,
+  fresh: AuthenticatedPrincipal,
+  events: ServerEventPort | undefined,
+  occurredAt: string,
+): Promise<boolean> {
+  const wasElevated = previous.role === 'owner' || previous.role === 'admin';
+  if (!wasElevated || fresh.role !== 'user') return false;
+  await events?.publish({
+    type: 'email_acl.changed',
+    workspaceId: fresh.workspaceId,
+    entityType: 'email_acl',
+    entityId: fresh.userId,
+    actorUserId: fresh.userId,
+    occurredAt,
+    payload: { targetUserId: fresh.userId, state: 'changed' },
+  });
+  return true;
 }
 
 function waitForWebSocketClient(): Promise<void> {

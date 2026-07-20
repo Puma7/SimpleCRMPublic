@@ -49,7 +49,7 @@ import {
 } from './http';
 import { MailAccessDeniedError } from '../mail-access/service';
 import type { MailAccessActor } from '../mail-access/types';
-import { JOB_STALE_LOCK_SECONDS } from '../jobs/policy';
+import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
 import {
   handleMailMetadataReadRoute,
@@ -1413,6 +1413,10 @@ async function handleMessagePostProcessRetry(
       applyStatus: true,
       runSecurityCheck: true,
       enqueueInboundWorkflows: true,
+      // Server-only marker: the worker re-verifies current owner/admin status for
+      // this admin-only retry (see assertPostProcessRetryPrivilege). Never forgeable
+      // from a request body — set here, in the admin-gated route, only.
+      [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: true,
     },
     maxAttempts: 3,
   });

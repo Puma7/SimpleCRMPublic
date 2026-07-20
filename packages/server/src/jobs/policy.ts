@@ -10,6 +10,12 @@ export const JOB_AI_DEFAULT_CONCURRENCY = 5;
 export const JOB_AI_MAX_CONCURRENCY = 100;
 export const TRUSTED_SERVICE_JOB_MARKER_FIELD = '__simplecrmTrustedServicePrincipal';
 export const TRUSTED_SERVICE_JOB_MARKER_VALUE = 'simplecrm:trusted-service:v1';
+// Stamped server-side on a mail.spam.score job enqueued by the admin-only
+// post-process/retry route. The base policy only rechecks mail.triage, so the
+// worker re-verifies current owner/admin status for marked jobs (a demoted admin
+// must not complete the retry's system-role security check / status writes /
+// inbound-workflow enqueue). Never set from request bodies, so not forgeable.
+export const POST_PROCESS_RETRY_JOB_MARKER_FIELD = '__simplecrmPostProcessRetry';
 
 export const SERVER_JOB_TYPES = [
   'mail.sync.imap',
