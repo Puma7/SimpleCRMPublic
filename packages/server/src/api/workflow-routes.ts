@@ -3,6 +3,7 @@ import {
   definitionToJson,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
   type WorkflowNodeCatalogEntry,
   type WorkflowTemplate,
@@ -33,6 +34,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requireCapability,
   requirePrincipal,
 } from './http';
@@ -487,6 +489,21 @@ async function handleWorkflowExecute(
   const dryRun = parsed.values.dryRun !== false;
   if (!dryRun && !requireCapability(principal, 'workflows.manage')) {
     return error(403, 'forbidden', 'Live-Ausführung erfordert Adminrechte oder Workflow-Berechtigung');
+  }
+
+  // Interim escalation guard: server workflow runs execute under a system role
+  // with no per-node ACL, so a live run whose graph contains a writing node
+  // (mutates mail/CRM state, sends mail, or reaches an external system) could
+  // let a non-admin perform mailbox operations they otherwise can't. Until
+  // per-node authorization lands, restrict such live runs to admins. Dry-runs
+  // and read-/notify-only graphs stay open to delegated `workflows.manage`
+  // holders.
+  if (!dryRun && !requireAdmin(principal) && workflowGraphHasSideEffectNode(workflow.graph)) {
+    return error(
+      403,
+      'forbidden',
+      'Live-Ausführung von Workflows mit schreibenden Knoten erfordert Adminrechte',
+    );
   }
 
   if (dryRun) {

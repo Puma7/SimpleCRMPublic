@@ -53,6 +53,81 @@ function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
   return node.type === 'condition' || registryType(node) === 'logic.threshold';
 }
 
+/**
+ * Runtime node types that only read state, branch, or produce in-run variables
+ * — they never mutate persisted mailbox/CRM state, send mail, or reach an
+ * external system. Kept as a fail-closed ALLOWLIST on purpose: any node type
+ * NOT listed here is treated as side-effecting, so a newly added node is
+ * writing until it is reviewed and added. Cross-check with executeServerNode
+ * (packages/server/src/workflow-execution.ts) when node types change. `logic.*`
+ * helpers (stop/merge/loop/set_variable/delay/threshold/switch) are covered by
+ * the prefix check below and are intentionally not enumerated here.
+ */
+const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'email.auth_check',
+  'email.read_tracking_evidence',
+  'email.sender_filter',
+  'returns.evaluate',
+  'jtl.lookup',
+  'jtl.order_context',
+  'jtl.prepare_action',
+  'ai.classify',
+  'ai.reply_suggestion',
+]);
+
+/** Resolve the runtime type of an action/registry node (mirrors nodeRuntimeType). */
+function sideEffectRuntimeType(node: WorkflowGraphNode): string {
+  const data = node.data as Record<string, unknown> | undefined;
+  if (node.type === 'registry') {
+    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
+  }
+  if (node.type === 'action') {
+    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
+    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
+    return 'action';
+  }
+  return node.type;
+}
+
+/**
+ * True if the graph has at least one node that mutates persisted state, sends
+ * mail, or reaches an external system when run live. Triggers and conditions
+ * never count; action/registry nodes count unless their runtime type is a known
+ * read-only/branch type or a `logic.*` helper. An unknown canvas type fails
+ * closed (counts as side-effecting).
+ *
+ * Scans every node regardless of reachability, so a writing node behind a delay
+ * or an unreached branch still trips the guard. Server workflow runs execute
+ * under a system role with no per-node ACL, so a live run initiated by a
+ * non-admin must be blocked whenever any writing node is present. A null/empty
+ * graph returns false: the server executor blocks legacy definition-only
+ * workflows, so there is nothing to escalate through.
+ */
+export function workflowGraphHasSideEffectNode(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type === 'trigger' || node.type === 'condition') continue;
+    if (node.type !== 'action' && node.type !== 'registry') return true;
+    const type = sideEffectRuntimeType(node);
+    if (type.startsWith('logic.')) continue;
+    if (READ_ONLY_WORKFLOW_NODE_TYPES.has(type)) continue;
+    return true;
+  }
+  return false;
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;

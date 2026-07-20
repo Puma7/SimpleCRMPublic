@@ -3,6 +3,7 @@ import {
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
+  workflowGraphHasSideEffectNode,
 } from '@simplecrm/core';
 import type { WorkflowGraphDocument } from '@simplecrm/core';
 // The electron / renderer transport carries a parallel copy of the validator.
@@ -320,5 +321,77 @@ describe('shipped outbound templates never trap mail', () => {
 
   it.each(outboundTemplates.map((t) => [t.id, t]))('%s releases mail', (_id, template) => {
     expect(findOutboundGraphTraps((template as { graph: WorkflowGraphDocument }).graph)).toEqual([]);
+  });
+});
+
+describe('workflowGraphHasSideEffectNode', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('returns false for null / non-object / graph without nodes', () => {
+    expect(workflowGraphHasSideEffectNode(null)).toBe(false);
+    expect(workflowGraphHasSideEffectNode(undefined)).toBe(false);
+    expect(workflowGraphHasSideEffectNode(42)).toBe(false);
+    expect(workflowGraphHasSideEffectNode({})).toBe(false);
+    expect(workflowGraphHasSideEffectNode({ nodes: 'x' })).toBe(false);
+  });
+
+  it('ignores triggers, conditions, logic.* helpers and known read-only nodes', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([
+          trigger,
+          { id: 'c1', type: 'condition', data: { field: 'subject', op: 'contains', value: 'x' } },
+          { id: 'l1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'v', value: '1' } } },
+          { id: 'l2', type: 'registry', data: { nodeType: 'logic.delay', config: { delaySeconds: 60 } } },
+          { id: 'r1', type: 'registry', data: { nodeType: 'email.read_tracking_evidence', config: {} } },
+          { id: 'r2', type: 'registry', data: { nodeType: 'ai.classify', config: {} } },
+          { id: 'r3', type: 'registry', data: { nodeType: 'email.sender_filter', config: {} } },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  it('flags a writing registry node (email.delete_server)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([trigger, { id: 'd1', type: 'registry', data: { nodeType: 'email.delete_server', config: {} } }]),
+      ),
+    ).toBe(true);
+  });
+
+  it('flags a legacy action node by actionType (tag / archive / forward_copy)', () => {
+    for (const actionType of ['tag', 'archive', 'forward_copy', 'mark_seen', 'set_category']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'a1', type: 'action', data: { actionType } }])),
+      ).toBe(true);
+    }
+  });
+
+  it('flags CRM writes, http.request, sync.run and subflow', () => {
+    for (const nodeType of ['crm.update_deal', 'http.request', 'sync.run', 'workflow.subflow', 'mssql.query']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType, config: {} } }])),
+      ).toBe(true);
+    }
+  });
+
+  it('fails closed on an unknown canvas type', () => {
+    expect(
+      workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'x', type: 'mystery-node', data: {} }])),
+    ).toBe(true);
+  });
+
+  it('accepts a JSON-string graph', () => {
+    const json = JSON.stringify(
+      graphOf([trigger, { id: 'a1', type: 'action', data: { actionType: 'archive' } }]),
+    );
+    expect(workflowGraphHasSideEffectNode(json)).toBe(true);
+    expect(workflowGraphHasSideEffectNode('{not json')).toBe(false);
   });
 });
