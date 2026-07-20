@@ -397,7 +397,8 @@ async function resolveHttpResources(
 
   if (resolution.kind === 'optional_account') {
     const raw = selectorValue(req, canonicalPath, resolution.accountId);
-    if (raw === undefined) return { kind: 'scope' };
+    // An absent OR explicitly null accountId is a workspace-global write.
+    if (raw === undefined || raw === null) return { kind: 'scope' };
     return lookupSingle(ports, workspaceId, { kind: 'account', id: requirePositiveInt(raw) });
   }
   if (resolution.kind === 'optional_message_lookup') {

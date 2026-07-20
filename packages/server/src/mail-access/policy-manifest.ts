@@ -434,7 +434,11 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
 
   assign('/api/v1/email/canned-responses', {
     GET: permissionPolicy('mail.draft.create', mailScope()),
-    POST: permissionPolicy('mail.draft.create', mailScope()),
+    // An account-scoped override carries accountId in the body; authorize it
+    // against that account so a delegate with mail.draft.create on the account
+    // can create it. Without accountId it is a workspace-global write, which the
+    // restricted-scope gate still limits to owner/admin.
+    POST: permissionPolicy('mail.draft.create', optionalAccount('body')),
   });
   assign('/api/v1/email/canned-responses/:id', {
     GET: permissionPolicy('mail.draft.create', mailScope()),
