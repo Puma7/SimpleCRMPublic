@@ -18,7 +18,12 @@ import {
 } from './jobs/policy';
 import type { ServerDatabase } from './db/schema';
 import { isOutboundReviewPendingError } from './mail-compose-send';
-import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceSessionContext,
+  type WorkspaceTransaction,
+} from './db/workspace-context';
 import {
   enforceMailJobPolicy,
   MailAsyncAuthorizationError,
@@ -26,6 +31,15 @@ import {
 } from './mail-access/async-policy-enforcer';
 
 const MAX_SCHEDULED_SEND_FAILURES = 5;
+/**
+ * Backoff applied when the ticker's per-draft authorization check is denied. The
+ * denied draft keeps its due schedule otherwise and would re-fill the capped
+ * "oldest 30 due" window every tick, starving every later valid send. Pushing it
+ * a few minutes out clears the window immediately; the shared failure counter
+ * still gives up after MAX_SCHEDULED_SEND_FAILURES so a real revocation ends as
+ * failed rather than looping forever.
+ */
+const SCHEDULED_SEND_DENIAL_BACKOFF_MS = 5 * 60_000;
 const SCHEDULED_SEND_TRUSTED_SERVICE_ACTOR = 'system';
 
 function isComposeSendAlreadyInProgressError(error: string): boolean {
@@ -382,11 +396,20 @@ async function persistScheduledSendClaims(
     .execute();
 }
 
-function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): ScheduledSendStore {
+function createPostgresScheduledSendStore(
+  db: Kysely<ServerDatabase>,
+  applySession?: WorkspaceSessionApplier,
+): ScheduledSendStore {
+  // Route every store transaction through the caller's session applier so the
+  // ticker (which passes its own applyWorkspaceSession) stays consistent; falls
+  // back to the default SET LOCAL applier when none is supplied.
+  const withTx = <T>(
+    context: WorkspaceSessionContext,
+    op: (trx: WorkspaceTransaction) => Promise<T>,
+  ): Promise<T> => withWorkspaceTransaction(db, context, op, applySession ? { applySession } : {});
   return {
     async claimDueDrafts(input) {
-      return withWorkspaceTransaction(
-        db,
+      return withTx(
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           await recoverOrphanedScheduledClaims(trx, input.workspaceId);
@@ -478,8 +501,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
       );
     },
     async finalizeSentDraft(input) {
-      await withWorkspaceTransaction(
-        db,
+      await withTx(
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           await updateScheduleTx(trx, input.workspaceId, input.draftId, null);
@@ -493,8 +515,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
       );
     },
     async releaseClaimedDraft(input) {
-      await withWorkspaceTransaction(
-        db,
+      await withTx(
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           await updateScheduleTx(trx, input.workspaceId, input.draftId, null);
@@ -504,8 +525,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
     },
     async restoreClaimedDraft(input) {
       if (input.claimedSendAt === null) return;
-      await withWorkspaceTransaction(
-        db,
+      await withTx(
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           await updateScheduleTx(trx, input.workspaceId, input.draftId, input.claimedSendAt);
@@ -514,8 +534,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
       );
     },
     async giveUpDraft(input) {
-      await withWorkspaceTransaction(
-        db,
+      await withTx(
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           await updateScheduleTx(trx, input.workspaceId, input.draftId, null);
@@ -529,8 +548,7 @@ function createPostgresScheduledSendStore(db: Kysely<ServerDatabase>): Scheduled
       );
     },
     async recordFailedAttempt(input) {
-      return withWorkspaceTransaction(
-        db,
+      return withTx(
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const current = await readFailureCountTx(trx, input.workspaceId, input.draftId);
@@ -662,6 +680,9 @@ export function startScheduledSendTicker(input: {
     db: input.db,
     composeSender: input.composeSender,
   });
+  // Same store the port uses — reached directly so the ticker can apply bounded
+  // retry to authorization-denied drafts (see the denial branch in tick()).
+  const store = createPostgresScheduledSendStore(input.db, input.applyWorkspaceSession);
   let stopped = false;
   let inFlight = false;
 
@@ -745,7 +766,22 @@ export function startScheduledSendTicker(input: {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (error instanceof MailAsyncAuthorizationError) {
-            console.warn(`[mail] scheduled send ticker workspace ${workspaceId} draft ${draftId}: authorization denied`);
+            // Bounded retry: back the denied draft off past the due window (so
+            // later valid sends aren't starved) and give up after N attempts so a
+            // genuinely revoked send ends as failed instead of looping forever.
+            try {
+              const outcome = await store.recordFailedAttempt({
+                workspaceId,
+                draftId,
+                error: 'Zeitversand abgelehnt: fehlende Berechtigung',
+                claimedSendAt: new Date(dueBefore.getTime() + SCHEDULED_SEND_DENIAL_BACKOFF_MS),
+                maxFailures: MAX_SCHEDULED_SEND_FAILURES,
+              });
+              console.warn(`[mail] scheduled send ticker workspace ${workspaceId} draft ${draftId}: authorization denied (attempt ${outcome.failures}${outcome.gaveUp ? ', gave up' : ''})`);
+            } catch (recordError) {
+              const recordMessage = recordError instanceof Error ? recordError.message : String(recordError);
+              console.warn(`[mail] scheduled send ticker workspace ${workspaceId} draft ${draftId}: authorization denied; failed to record attempt: ${recordMessage}`);
+            }
           } else {
             console.warn(`[mail] scheduled send ticker workspace ${workspaceId} draft ${draftId}: ${message}`);
           }

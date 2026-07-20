@@ -13391,8 +13391,12 @@ describe('server edition foundation', () => {
     }
 
     expect(composeCalls).toEqual([]);
-    expect(db.transactionCount).toBe(1);
+    // Two transactions now: the due-draft scan + the bounded-retry
+    // recordFailedAttempt that backs the denied draft off (so it can't starve
+    // the global ticker) and gives up after MAX_SCHEDULED_SEND_FAILURES.
+    expect(db.transactionCount).toBe(2);
     expect(String(warnings[0]?.[0] ?? '')).toContain('authorization denied');
+    expect(String(warnings[0]?.[0] ?? '')).toContain('attempt 1');
   });
 
   test('postgres job queue replaces pending scheduled-send jobs per draft', () => {
@@ -38650,12 +38654,29 @@ function makePostgresEventDb(): {
 }
 
 function makeScheduledSendTickerDb(rows: Array<Record<string, unknown>>): Kysely<ServerDatabase> & { transactionCount: number } {
+  // Chainable no-op builder for the bounded-retry store writes (sync_info reads,
+  // schedule updates, claim deletes) the denial path performs via
+  // recordFailedAttempt. executeTakeFirst → undefined so the failure counter
+  // starts at 0.
+  const chain: Record<string, unknown> = {};
+  for (const method of ['select', 'selectAll', 'where', 'whereRef', 'orderBy', 'limit', 'offset',
+    'set', 'values', 'onConflict', 'columns', 'doUpdateSet', 'doNothing', 'returning']) {
+    chain[method] = () => chain;
+  }
+  chain.execute = async () => [];
+  chain.executeTakeFirst = async () => undefined;
   return {
     transactionCount: 0,
+    // Satisfies the workspace-session SET LOCAL statement run inside each
+    // withWorkspaceTransaction (kyselySql`...`.execute(trx)).
+    executeQuery: async () => ({ rows: [] }),
     selectFrom(table: string) {
-      if (table !== 'email_messages') throw new Error(`unexpected scheduled-send ticker table: ${table}`);
-      return new FakeScheduledSendTickerSelect(rows);
+      if (table === 'email_messages') return new FakeScheduledSendTickerSelect(rows);
+      return chain;
     },
+    insertInto: () => chain,
+    updateTable: () => chain,
+    deleteFrom: () => chain,
     transaction() {
       this.transactionCount += 1;
       return {

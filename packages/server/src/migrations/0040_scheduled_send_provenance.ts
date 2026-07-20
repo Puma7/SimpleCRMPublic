@@ -1,5 +1,15 @@
 import type { SqlMigration } from './types';
 
+/**
+ * Adds initiating-user / trusted-service provenance to scheduled sends. Existing
+ * rows are intentionally NOT back-filled: scheduled send did not ship to
+ * production before this change, so there are no legacy `scheduled_send_at` rows
+ * with null provenance to migrate. (There is no safe back-fill anyway — an
+ * account has no owner column to reconstruct the initiating user, and stamping
+ * the trusted-service marker would bypass per-user ACL.) If such legacy rows
+ * ever did exist they would be excluded by the ticker's provenance filter and
+ * would need to be explicitly marked failed here.
+ */
 export const scheduledSendProvenanceMigration: SqlMigration = {
   id: '0040_scheduled_send_provenance',
   description: 'Persist scheduled-send initiating user or trusted-service provenance',
