@@ -582,6 +582,18 @@ describe('server mailbox ACL migration', () => {
             },
           ];
         }
+        // A populated alias thread in ACCOUNT_A: a real merge absorbs a non-empty
+        // thread, so an account-A delegate can authorize it. An empty resolution is
+        // now denied for restricted callers (alias-planting guard), so the merge
+        // fixture must resolve to a real message.
+        if (target.kind === 'thread' && target.id === 'alias-thread') {
+          return [{
+            type: 'message',
+            accountId: String(ACCOUNT_A),
+            folderId: String(FOLDER_A),
+            messageId: String(MESSAGE_A),
+          }];
+        }
         return [];
       },
     };
