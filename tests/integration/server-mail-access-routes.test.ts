@@ -2536,8 +2536,11 @@ describe('server mailbox ACL migration', () => {
         mailResourceLookup: resourceLookup,
         workflowDelayedJobs: createPostgresWorkflowDelayedJobReadPort({ db }),
       });
-      const user = { userId: USER_MESSAGE, workspaceId: WORKSPACE_A, role: 'user' as const };
-      const noGrantUser = { userId: USER_NONE, workspaceId: WORKSPACE_A, role: 'user' as const };
+      // Delayed-job PATCH/DELETE now additionally require the workflows.manage
+      // capability; this test exercises the mail-ACL layer, so grant it to the
+      // non-admin principals (owner bypasses via role).
+      const user = { userId: USER_MESSAGE, workspaceId: WORKSPACE_A, role: 'user' as const, capabilities: ['workflows.manage'] };
+      const noGrantUser = { userId: USER_NONE, workspaceId: WORKSPACE_A, role: 'user' as const, capabilities: ['workflows.manage'] };
       const owner = { userId: USER_CREATOR, workspaceId: WORKSPACE_A, role: 'owner' as const };
       const createBody = {
         workflowId: 7201,
