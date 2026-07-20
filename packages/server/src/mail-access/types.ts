@@ -143,6 +143,20 @@ export interface MailResourceLookupPort {
     workspaceId: string;
     delayedJobId: number;
   }>): Promise<WorkflowDelayedJobMailClassification>;
+  // A scheduled-send draft's reply parent (email_messages.reply_parent_message_id)
+  // plus whether finalizeSentDraft would mark it done — used to recheck
+  // mail.triage on the parent before a scheduled reply-send fires. null if the
+  // draft no longer exists.
+  resolveScheduledDraftReplyParent?(input: Readonly<{
+    workspaceId: string;
+    draftId: number;
+  }>): Promise<Readonly<{ replyParentMessageId: number | null; markParentDone: boolean }> | null>;
+  // A workflow's current graph (email_workflows.graph_json), used to reclassify
+  // its side-effecting nodes at execution time. null if the workflow is gone.
+  loadWorkflowGraphForPolicy?(input: Readonly<{
+    workspaceId: string;
+    workflowId: number;
+  }>): Promise<Readonly<{ graph: unknown }> | null>;
 }
 
 export type WorkflowDelayedJobMailClassification =

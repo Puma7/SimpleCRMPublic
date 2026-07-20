@@ -290,6 +290,65 @@ describe('server mail job and event ACL', () => {
     expect(ports.delayedJobLookups).toEqual([87, 88, 88, 999, 89, 88]);
   });
 
+  test('rechecks workflow.execute side-effect privilege against the current graph', async () => {
+    const sideEffecting = { nodes: [{ type: 'action', data: { nodeType: 'email.delete_server' } }] };
+    const readOnly = { nodes: [{ type: 'trigger' }, { type: 'action', data: { nodeType: 'ai.classify' } }] };
+    const ports = makePolicyPorts({
+      workflowGraphs: new Map<number, unknown>([[700, sideEffecting], [701, readOnly]]),
+    });
+
+    // Non-admin + side-effecting graph + message-less (resolves to non_mail, which
+    // returns early before any resource check) → denied by the pre-resolution recheck.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 700 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    // Owner may run side-effecting workflows.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', workflowId: 700 },
+    }), ports)).resolves.toBeUndefined();
+
+    // Non-admin + read-only graph → allowed.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 701 },
+    }), ports)).resolves.toBeUndefined();
+
+    // Trusted service payload bypasses the recheck.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 700 }),
+    }), ports)).resolves.toBeUndefined();
+  });
+
+  test('rechecks reply-parent triage before a scheduled reply-send marks the parent done', async () => {
+    const markDone = new Map([[12, { replyParentMessageId: 101, markParentDone: true }]]);
+    const ports = makePolicyPorts({ replyParents: markDone });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), ports)).resolves.toBeUndefined();
+    expect(ports.assertions.map((entry) => [entry.permission, (entry.resource as { messageId?: string }).messageId]))
+      .toContainEqual(['mail.triage', '101']);
+
+    // markParentDone false → the parent is not marked done, so no triage recheck.
+    const noMark = makePolicyPorts({ replyParents: new Map([[13, { replyParentMessageId: 101, markParentDone: false }]]) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 13, accountId: 7 },
+    }), noMark)).resolves.toBeUndefined();
+    expect(noMark.assertions.some((entry) => entry.permission === 'mail.triage')).toBe(false);
+
+    // A sender lacking triage on the parent is rejected when it would be marked done.
+    const denied = makePolicyPorts({ replyParents: markDone, denyMessages: new Set(['101']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
   test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {
     const ports = makePolicyPorts({ denyAllMailAccess: true });
     const servicePayloads = {
@@ -681,6 +740,8 @@ function makePolicyPorts(options: {
   denyAllMailAccess?: boolean;
   denyMessages?: ReadonlySet<string>;
   delayedJobs?: ReadonlyMap<number, DelayedJobClassification>;
+  replyParents?: ReadonlyMap<number, { replyParentMessageId: number | null; markParentDone: boolean } | null>;
+  workflowGraphs?: ReadonlyMap<number, unknown>;
 } = {}) {
   const lookups: unknown[] = [];
   const delayedJobLookups: number[] = [];
@@ -748,6 +809,14 @@ function makePolicyPorts(options: {
       async classifyWorkflowDelayedJob(input: { delayedJobId: number }) {
         delayedJobLookups.push(input.delayedJobId);
         return options.delayedJobs?.get(input.delayedJobId) ?? { kind: 'missing' as const };
+      },
+      async resolveScheduledDraftReplyParent(input: { draftId: number }) {
+        return options.replyParents?.get(input.draftId) ?? null;
+      },
+      async loadWorkflowGraphForPolicy(input: { workflowId: number }) {
+        return options.workflowGraphs?.has(input.workflowId)
+          ? { graph: options.workflowGraphs.get(input.workflowId) }
+          : null;
       },
     },
   };

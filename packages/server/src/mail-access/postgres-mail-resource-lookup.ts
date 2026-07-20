@@ -43,7 +43,66 @@ export function createPostgresMailResourceLookupPort(
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async resolveScheduledDraftReplyParent(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => resolveScheduledDraftReplyParent(trx, input.workspaceId, input.draftId),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async loadWorkflowGraphForPolicy(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => loadWorkflowGraphForPolicy(trx, input.workspaceId, input.workflowId),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
   };
+}
+
+async function resolveScheduledDraftReplyParent(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  draftId: number,
+): Promise<{ replyParentMessageId: number | null; markParentDone: boolean } | null> {
+  const draft = await trx
+    .selectFrom('email_messages')
+    .select(['reply_parent_message_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', draftId)
+    .executeTakeFirst();
+  if (!draft) return null;
+  const replyParentMessageId = draft.reply_parent_message_id === null
+    ? null
+    : Number(draft.reply_parent_message_id);
+  if (replyParentMessageId === null) {
+    return { replyParentMessageId: null, markParentDone: false };
+  }
+  // finalizeSentDraft marks the reply parent done unless the sender stored '0'
+  // (mirrors shouldMarkReplyParentDone in mail-compose-send.ts).
+  const markRow = await trx
+    .selectFrom('sync_info')
+    .select(['value'])
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', `compose_mark_parent_done:${draftId}`)
+    .executeTakeFirst();
+  return { replyParentMessageId, markParentDone: markRow?.value !== '0' };
+}
+
+async function loadWorkflowGraphForPolicy(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  workflowId: number,
+): Promise<{ graph: unknown } | null> {
+  const row = await trx
+    .selectFrom('email_workflows')
+    .select(['graph_json'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', workflowId)
+    .executeTakeFirst();
+  return row ? { graph: row.graph_json } : null;
 }
 
 async function classifyWorkflowDelayedJob(

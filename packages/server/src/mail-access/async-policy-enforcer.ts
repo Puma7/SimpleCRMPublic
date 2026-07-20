@@ -1,4 +1,5 @@
 import type { MailResource } from '@simplecrm/core';
+import { workflowGraphHasSideEffectNode } from '@simplecrm/core';
 
 import type {
   AuthenticatedPrincipal,
@@ -122,6 +123,13 @@ export async function enforceMailJobPolicy(
   };
 
   const actor = await resolveJobActor(job, policy, ports);
+  // Reclassify a workflow.execute graph BEFORE resource resolution: a message-less
+  // execution resolves to non_mail and returns early below, skipping every check,
+  // yet still runs side-effecting nodes under the system role. Runs for user actors
+  // only (trusted service jobs stay authorized).
+  if (actor.kind === 'user') {
+    await assertWorkflowExecuteSideEffectPrivilege(job, actor.actor, requiredPorts);
+  }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
   if (resolved.resources.kind === 'non_mail') return resolved.authorization;
   if (actor.kind === 'service') {
@@ -136,10 +144,70 @@ export async function enforceMailJobPolicy(
       resources: resolved.resources,
       ports: requiredPorts,
     });
+    // A scheduled reply-send marks the reply parent done by default, a mail.triage
+    // mutation the base mail.send policy never covers — recheck it on the parent.
+    await assertScheduledSendReplyParentTriage(job, actor.actor, requiredPorts);
     return resolved.authorization;
   } catch (error) {
     if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);
     throw error;
+  }
+}
+
+// R9-5: a demoted user's queued workflow.execute would otherwise run its
+// side-effecting nodes under the system role with no per-node ACL. Reclassify the
+// workflow's CURRENT graph at execution time and deny a non-owner/admin actor when
+// it contains side-effecting nodes, mirroring the HTTP route's admin gate. The
+// workflows.manage capability is not resolvable from the job actor, so this covers
+// the demotion (admin → user) scenario; non-side-effecting graphs stay allowed.
+async function assertWorkflowExecuteSideEffectPrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  if (actor.isOwner || actor.isAdmin) return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (loaded && workflowGraphHasSideEffectNode(loaded.graph)) {
+    throw new MailAsyncAuthorizationError();
+  }
+}
+
+// R7-2: a scheduled reply-send forwards replyParentMessageId and finalizeSentDraft
+// marks that parent done by default (unless the sender stored compose_mark_parent_done:'0').
+// The base job policy only rechecks mail.send on the draft, so a delegate without
+// triage — or whose triage grant was revoked before the job fires — could still
+// mutate the parent. Recheck mail.triage on the parent when it would be marked done.
+async function assertScheduledSendReplyParentTriage(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'mail.send.scheduled') return;
+  if (!ports.mailResourceLookup.resolveScheduledDraftReplyParent) return;
+  const draftId = optionalPositiveInt(job.payload.draftId);
+  if (draftId === null) return;
+  const info = await ports.mailResourceLookup.resolveScheduledDraftReplyParent({
+    workspaceId: job.workspaceId,
+    draftId,
+  });
+  if (!info || info.replyParentMessageId === null || !info.markParentDone) return;
+  const parent = await ports.mailResourceLookup.resolve({
+    workspaceId: job.workspaceId,
+    target: { kind: 'message', id: info.replyParentMessageId },
+  });
+  for (const resource of parent) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.triage',
+      resource,
+    });
   }
 }
 
@@ -545,6 +613,17 @@ function requirePositiveInt(value: unknown): number {
       : Number.NaN;
   if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new MailAsyncAuthorizationError();
   return parsed;
+}
+
+// Non-throwing variant for supplemental job checks: a malformed/absent id skips
+// the supplemental (the base policy still applies) rather than denying the job.
+function optionalPositiveInt(value: unknown): number | null {
+  const parsed = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && /^[1-9]\d*$/.test(value)
+      ? Number(value)
+      : Number.NaN;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 function requireNonZeroInt(value: unknown): number {
