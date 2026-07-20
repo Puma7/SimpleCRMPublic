@@ -151,15 +151,17 @@ async function resolveMetadataTarget(
       .executeTakeFirst();
     if (!edge) return [];
     const resources = await Promise.all([
-      resolveMessageByIdOrSource(
+      resolveMessageByStoredColumns(
         trx,
         workspaceId,
-        Number(edge.parent_message_id ?? edge.parent_message_source_sqlite_id),
+        edge.parent_message_id,
+        edge.parent_message_source_sqlite_id,
       ),
-      resolveMessageByIdOrSource(
+      resolveMessageByStoredColumns(
         trx,
         workspaceId,
-        Number(edge.child_message_id ?? edge.child_message_source_sqlite_id),
+        edge.child_message_id,
+        edge.child_message_source_sqlite_id,
       ),
     ]);
     return resources.every((resource) => resource !== null)
@@ -213,10 +215,11 @@ async function resolveMetadataTarget(
         .where('id', '=', target.id)
         .executeTakeFirst();
     if (!row) return [];
-    const message = await resolveMessageByIdOrSource(
+    const message = await resolveMessageByStoredColumns(
       trx,
       workspaceId,
-      Number(row.message_id ?? row.message_source_sqlite_id),
+      row.message_id,
+      row.message_source_sqlite_id,
     );
     return message ? [message] : resolveAccountColumns(
       trx,
@@ -256,14 +259,21 @@ async function resolveMetadataTarget(
             .executeTakeFirst()
           : undefined;
   if (!row) return [];
-  const message = await resolveMessageByIdOrSource(
+  const message = await resolveMessageByStoredColumns(
     trx,
     workspaceId,
-    Number(row.message_id ?? row.message_source_sqlite_id),
+    row.message_id,
+    row.message_source_sqlite_id,
   );
   return message ? [message] : [];
 }
 
+/**
+ * Resolve a PUBLIC message reference from a URL/target — the number may be a PG
+ * id or a legacy source_sqlite_id. Fails closed on an ambiguous reference (one
+ * message's PG id AND a different message's source_sqlite_id both match) so it
+ * never authorizes against the wrong message. Mirrors resolveEmailAccountReference.
+ */
 async function resolveMessageByIdOrSource(
   trx: WorkspaceTransaction,
   workspaceId: string,
@@ -275,11 +285,46 @@ async function resolveMessageByIdOrSource(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', id)
     .executeTakeFirst();
-  const row = byId ?? await trx
+  const bySource = await trx
     .selectFrom('email_messages')
     .select(['id as message_id', 'account_id', 'folder_id'])
     .where('workspace_id', '=', workspaceId)
     .where('source_sqlite_id', '=', id)
+    .executeTakeFirst();
+  if (byId && bySource && Number(byId.message_id) !== Number(bySource.message_id)) return null;
+  return resourceFromMessageRow(byId ?? bySource)[0] ?? null;
+}
+
+/**
+ * Resolve a message from a metadata row's STORED columns. `message_id` is a PG
+ * foreign key (resolve by id); `message_source_sqlite_id` is a legacy import
+ * reference (resolve by source_sqlite_id). Collapsing them into one number and
+ * trying id-first — as `Number(message_id ?? message_source_sqlite_id)` did —
+ * authorizes against an unrelated message whenever a source id collides with
+ * another message's PG id, letting a delegate reach metadata of an
+ * inaccessible message.
+ */
+async function resolveMessageByStoredColumns(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number | string | null,
+  messageSourceSqliteId: number | string | null,
+): Promise<Extract<MailResource, { type: 'message' }> | null> {
+  if (messageId !== null) {
+    const row = await trx
+      .selectFrom('email_messages')
+      .select(['id as message_id', 'account_id', 'folder_id'])
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', Number(messageId))
+      .executeTakeFirst();
+    return resourceFromMessageRow(row)[0] ?? null;
+  }
+  if (messageSourceSqliteId === null) return null;
+  const row = await trx
+    .selectFrom('email_messages')
+    .select(['id as message_id', 'account_id', 'folder_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('source_sqlite_id', '=', Number(messageSourceSqliteId))
     .executeTakeFirst();
   return resourceFromMessageRow(row)[0] ?? null;
 }
@@ -312,9 +357,25 @@ async function resolveAccountColumns(
   accountId: number | null,
   accountSourceSqliteId: number | null,
 ): Promise<readonly MailResource[]> {
-  const reference = accountId ?? accountSourceSqliteId;
-  if (reference === null) return [];
-  const account = await resolveEmailAccountReference(trx, workspaceId, Number(reference));
+  // account_id is a STORED PostgreSQL foreign key (from a signature/alias/spam
+  // row), so it is unambiguous by construction — resolve it EXACTLY by id.
+  // Routing it through the public-reference resolver (which fails closed on
+  // ambiguity) would wrongly reject it whenever some other account's
+  // source_sqlite_id equals this db id, 404-ing valid routes even for
+  // owners/admins. Mirrors postgres-relay-port.ts removeAllowedAccount.
+  if (accountId !== null) {
+    const row = await trx
+      .selectFrom('email_accounts')
+      .select('id')
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', accountId)
+      .executeTakeFirst();
+    return row ? [accountResource(Number(row.id))] : [];
+  }
+  // The legacy source_sqlite_id fallback IS a public reference, so keep the
+  // ambiguity-rejecting resolver here.
+  if (accountSourceSqliteId === null) return [];
+  const account = await resolveEmailAccountReference(trx, workspaceId, Number(accountSourceSqliteId));
   return account ? [accountResource(account.id)] : [];
 }
 
