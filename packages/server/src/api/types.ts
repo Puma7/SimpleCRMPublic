@@ -1753,7 +1753,15 @@ export type EmailAccountMutationInput = {
 };
 
 export type EmailAccountMutationPortResult =
-  | { ok: true; account: EmailAccountRecord }
+  | {
+    ok: true;
+    account: EmailAccountRecord;
+    // Delete only: the delegates (direct + group members) who held a binding on
+    // the account before its ACL bindings cascade-deleted, so the handler can
+    // publish a targeted email_acl.changed invalidation to each — the
+    // email_account.deleted event itself reaches owners/admins only.
+    affectedUserIds?: readonly string[];
+  }
   | { ok: false; code: 'secret_port_unavailable' };
 
 export type EmailAccountApiPort = {

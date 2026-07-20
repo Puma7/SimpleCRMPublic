@@ -653,7 +653,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         return { ok: false, code: 'secret_port_unavailable' };
       }
 
-      await withWorkspaceTransaction(
+      const affectedUserIds = await withWorkspaceTransaction(
         options.db,
         {
           workspaceId: input.workspaceId,
@@ -661,11 +661,37 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
           role: 'user',
         },
         async (trx) => {
+          // Capture the delegates holding any binding on this account BEFORE the
+          // cascade delete removes those bindings, so the handler can invalidate
+          // their loaded mailbox state (the account.deleted event reaches only
+          // owners/admins). Resolves both direct user subjects and group members;
+          // disabled users are excluded (they cannot be receiving events).
+          const rows = await trx
+            .selectFrom('mail_acl_bindings as b')
+            .leftJoin('users as direct_user', (join) => join
+              .onRef('direct_user.id', '=', 'b.subject_user_id')
+              .onRef('direct_user.workspace_id', '=', 'b.workspace_id')
+              .on('direct_user.disabled_at', 'is', null))
+            .leftJoin('user_group_members as gm', (join) => join
+              .onRef('gm.group_id', '=', 'b.subject_group_id')
+              .onRef('gm.workspace_id', '=', 'b.workspace_id'))
+            .leftJoin('users as group_user', (join) => join
+              .onRef('group_user.id', '=', 'gm.user_id')
+              .onRef('group_user.workspace_id', '=', 'b.workspace_id')
+              .on('group_user.disabled_at', 'is', null))
+            .select(['direct_user.id as direct_id', 'group_user.id as group_id'])
+            .where('b.workspace_id', '=', input.workspaceId)
+            .where('b.account_id', '=', Number(current.id))
+            .execute();
           await trx
             .deleteFrom('email_accounts')
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', Number(current.id))
             .executeTakeFirst();
+          return [...new Set(
+            rows.flatMap((row) => [row.direct_id, row.group_id])
+              .filter((value): value is string => value !== null),
+          )];
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -678,7 +704,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         ].map((promise) => promise.catch(() => false)));
       }
 
-      return { ok: true, account: mapEmailAccountRow(current) };
+      return { ok: true, account: mapEmailAccountRow(current), affectedUserIds };
     },
   };
 }

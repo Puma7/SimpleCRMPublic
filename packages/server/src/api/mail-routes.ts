@@ -1216,6 +1216,24 @@ async function handleEmailAccountDelete(
   await publishEmailAccount(ports, principal.workspaceId, 'email_account.deleted', result.account, principal.userId, {
     emailAddress: result.account.emailAddress,
   });
+  // The account.deleted event above reaches owners/admins only (the account is
+  // gone, so it cannot be authorized for delegates). Deliver a targeted
+  // email_acl.changed to every delegate who held a binding on it so their client
+  // drops the now-inaccessible account and clears any loaded mailbox state.
+  for (const targetUserId of result.affectedUserIds ?? []) {
+    await ports.events?.publish({
+      type: 'email_acl.changed',
+      workspaceId: principal.workspaceId,
+      entityType: 'email_acl',
+      entityId: String(result.account.id),
+      actorUserId: principal.userId,
+      occurredAt: new Date().toISOString(),
+      payload: {
+        targetUserId,
+        state: 'deleted',
+      },
+    });
+  }
   return data(200, { success: true, deleted: true, account: sanitizeEmailAccount(result.account) });
 }
 
