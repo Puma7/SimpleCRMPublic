@@ -2074,6 +2074,10 @@ async function publishEmailThreadAlias(
     payload: {
       id: alias.id,
       sourceSqliteId: alias.sourceSqliteId,
+      // accountId is the tombstone the deletion event's authorization resolves
+      // against (the alias row is already gone); without it the event filter
+      // cannot recover the resource and drops the event for every client.
+      accountId: alias.accountId,
       aliasThreadId: alias.aliasThreadId,
       canonicalThreadId: alias.canonicalThreadId,
       confidence: alias.confidence,

@@ -105,10 +105,12 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
     },
   },
   {
+    // Mirrors the HTTP reply-suggestion/ensure route: queuing generation is a
+    // draft-creation operation, not a plain content read.
     type: 'ai.reply_suggestion',
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
-    permission: 'mail.content.read',
+    permission: 'mail.draft.create',
     resource: messageJobResource(),
   },
   {

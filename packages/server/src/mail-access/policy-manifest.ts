@@ -330,7 +330,10 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/messages/:messageId/read-receipt-state', { GET: permissionPolicy('mail.metadata.read', messagePath()) });
   assign('/api/v1/email/messages/:messageId/attachments', { GET: permissionPolicy('mail.attachment.read', messagePath()) });
   assign('/api/v1/email/messages/:messageId/reply-suggestion', { GET: permissionPolicy('mail.content.read', messagePath()) });
-  assign('/api/v1/email/messages/:messageId/reply-suggestion/ensure', { POST: permissionPolicy('mail.content.read', messagePath()) });
+  // Queuing reply generation reads the body, calls the AI provider (incurring
+  // usage) and persists suggestion state, so it needs mail.draft.create, not just
+  // read access — otherwise a read-only viewer can force repeated generations.
+  assign('/api/v1/email/messages/:messageId/reply-suggestion/ensure', { POST: permissionPolicy('mail.draft.create', messagePath()) });
   assign('/api/v1/email/messages/:messageId/reply-draft', { POST: permissionPolicy('mail.draft.create', messagePath()) });
   assign('/api/v1/email/messages/:messageId/tracking', { GET: permissionPolicy('mail.metadata.read', messagePath()) });
   assign('/api/v1/email/messages/:messageId', { GET: permissionPolicy('mail.content.read', messagePath()) });
@@ -534,7 +537,9 @@ function assignSupplementalProtectedPolicies(assign: AssignRoutePolicy): void {
   });
   assign('/api/v1/email/notices/imap-auth', {
     GET: permissionPolicy('mail.metadata.read', { kind: 'notice_lookup', notice: 'imap_auth' }),
-    DELETE: permissionPolicy('mail.metadata.read', { kind: 'account', accountId: queryValue('accountId') }),
+    // Dismissing an auth-failure notice hides it workspace-wide from admins and
+    // every client, so it is a management action, not a metadata read.
+    DELETE: permissionPolicy('mail.account.manage', { kind: 'account', accountId: queryValue('accountId') }),
   });
 
   assign('/api/v1/locks', { GET: permissionPolicy('mail.metadata.read', bulkMessages('query', 'messageIds')) });
