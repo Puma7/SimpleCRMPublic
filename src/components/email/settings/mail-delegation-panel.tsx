@@ -6,7 +6,7 @@ import {
   MAIL_PERMISSIONS,
   type MailPermission,
   type MailPermissionProfile,
-} from "@simplecrm/core"
+} from "@shared/mail-permissions"
 import { IPCChannels, type InvokeChannel } from "@shared/ipc/channels"
 import { RefreshCw, Save, Trash2 } from "lucide-react"
 import { Button } from "@/components/ui/button"

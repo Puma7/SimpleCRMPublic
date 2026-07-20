@@ -17,12 +17,20 @@ export async function resolveEmailAccountReference(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', accountId)
     .executeTakeFirst();
-  const row = byId ?? await trx
+  const bySource = await trx
     .selectFrom('email_accounts')
     .select(['id', 'source_sqlite_id'])
     .where('workspace_id', '=', workspaceId)
     .where('source_sqlite_id', '=', accountId)
     .executeTakeFirst();
+  // Fail closed on an ambiguous reference: if `accountId` matches one account by
+  // postgres id AND a *different* account by legacy source_sqlite_id, this
+  // resolver (used by the mail ACL layer) and the route handlers
+  // (selectEmailAccountByPublicId, which prefers source_sqlite_id) would resolve
+  // to different accounts — a confused-deputy authorization bypass. Refuse
+  // rather than silently pick one.
+  if (byId && bySource && Number(byId.id) !== Number(bySource.id)) return null;
+  const row = byId ?? bySource;
   if (!row) return null;
   return {
     id: Number(row.id),

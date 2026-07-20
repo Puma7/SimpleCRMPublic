@@ -545,8 +545,30 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.offset !== undefined) query = query.offset(input.offset);
-          if (input.hasUnread !== undefined) query = query.where('has_unread', '=', input.hasUnread);
-          if (input.hasAttachments !== undefined) query = query.where('has_attachments', '=', input.hasAttachments);
+          // Under a restricted scope the base has_unread/has_attachments columns
+          // aggregate the WHOLE thread (incl. hidden messages), so filtering on
+          // them would select/hide threads based on inaccessible mail. Filter on
+          // the same scoped expression used for the returned value instead.
+          if (input.hasUnread !== undefined) {
+            query = scopePredicate
+              ? query.where(kyselySql<boolean>`coalesce((
+                  select bool_or(not m.seen_local) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false) = ${input.hasUnread}`)
+              : query.where('has_unread', '=', input.hasUnread);
+          }
+          if (input.hasAttachments !== undefined) {
+            query = scopePredicate
+              ? query.where(kyselySql<boolean>`coalesce((
+                  select bool_or(m.has_attachments) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false) = ${input.hasAttachments}`)
+              : query.where('has_attachments', '=', input.hasAttachments);
+          }
           if (input.accountId !== undefined || input.view !== undefined) {
             query = query.where(threadMessageExistsPredicate(
               input.workspaceId,
