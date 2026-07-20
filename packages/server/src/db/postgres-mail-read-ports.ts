@@ -871,6 +871,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 query,
                 tsQueryTokens,
                 parsed ? ilikeTextNeedles(parsed) : [],
+                contentPredicate,
               );
               // Highlight per OR-Query, damit auch Teiltreffer markiert werden.
               // Sentinel-Codepoints werden aus dem Quelltext gestrippt, bevor
@@ -884,11 +885,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               // body_text mitselektieren, damit der JS-Snippet-Builder wie im
               // Desktop auch Body-Treffer zeigen kann (Record bleibt body-frei).
               query = query.select('body_text');
-              query = applyMessageIlikeFilter(query, parsed);
+              query = applyMessageIlikeFilter(query, parsed, contentPredicate);
             } else if (mode === 'regex' && search) {
               // Regex-Modus liefert bewusst kein search_snippet (Paritaet zur
               // Desktop-App ist hier nicht noetig; Highlight nur fuer fts/like).
-              query = applyMessageSearchFilter(query, search, 'regex');
+              query = applyMessageSearchFilter(query, search, 'regex', contentPredicate);
             }
             query = orderQuery(query, mode);
             return (await query.execute()) as EmailMessageApiRow[];
@@ -3317,19 +3318,61 @@ function applyMessageFtsFilter(
   query: any,
   tsQueryTokens: readonly string[],
   tokenIlikePatterns: readonly string[],
+  contentPredicate?: RawBuilder<boolean>,
 ): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
   tsQueryTokens.forEach((token, index) => {
     // Leerer Fallback matcht nichts (ILIKE '' trifft nur den Leerstring).
     const tokenPattern = tokenIlikePatterns[index] ?? '';
+    if (!contentPredicate) {
+      // No content gating (owner/admin, or a content-authorized caller): the
+      // filter stays exactly as before.
+      query = query.where(rawSql<boolean>`(
+        email_messages.search_vector @@ to_tsquery('simple', ${token})
+        OR EXISTS (
+          SELECT 1 FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+            AND a.search_vector @@ to_tsquery('simple', ${token})
+        )
+        OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+        OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+        OR EXISTS (
+          SELECT 1 FROM customers c
+          WHERE c.workspace_id = email_messages.workspace_id
+            AND c.id = email_messages.customer_id
+            AND (
+              c.name ILIKE ${tokenPattern} ESCAPE '\\'
+              OR c.first_name ILIKE ${tokenPattern} ESCAPE '\\'
+              OR c.company ILIKE ${tokenPattern} ESCAPE '\\'
+              OR c.email ILIKE ${tokenPattern} ESCAPE '\\'
+            )
+        )
+      )`);
+      return;
+    }
+    // Content gating: search_vector blends metadata (subject/from/to/cc/ticket)
+    // with content (snippet/body_text), so the whole vector match — and the
+    // attachment content_text vector — are allowed only on content-readable rows
+    // (contentPredicate). For redacted rows, substitute a metadata-only ILIKE so
+    // subject/address/ticket search still works without letting body/attachment
+    // content decide which rows return. Attachment filenames stay matchable via
+    // the unconditional attachments_json clause.
     query = query.where(rawSql<boolean>`(
-      email_messages.search_vector @@ to_tsquery('simple', ${token})
-      OR EXISTS (
+      (${contentPredicate} AND email_messages.search_vector @@ to_tsquery('simple', ${token}))
+      OR (${contentPredicate} AND EXISTS (
         SELECT 1 FROM email_message_attachments a
         WHERE a.workspace_id = email_messages.workspace_id
           AND a.message_id = email_messages.id
           AND a.search_vector @@ to_tsquery('simple', ${token})
-      )
+      ))
+      OR (NOT (${contentPredicate}) AND (
+        email_messages.subject ILIKE ${tokenPattern} ESCAPE '\\'
+        OR email_messages.from_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+        OR email_messages.to_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+        OR email_messages.cc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+        OR email_messages.ticket_code ILIKE ${tokenPattern} ESCAPE '\\'
+      ))
       OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
       OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
       OR EXISTS (
@@ -3354,13 +3397,54 @@ function applyMessageFtsFilter(
  * (keine email_message_attachments-Zeile, s. applyMessageFtsFilter); das
  * Customer-EXISTS existiert seit R11 auch im fts-Zweig.
  */
-function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any {
+function applyMessageIlikeFilter(
+  query: any,
+  parsed: ParsedMailSearchQuery,
+  contentPredicate?: RawBuilder<boolean>,
+): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
   for (const pattern of ilikeTextNeedles(parsed)) {
+    if (!contentPredicate) {
+      query = query.where(rawSql<boolean>`(
+        subject ILIKE ${pattern} ESCAPE '\\'
+        OR snippet ILIKE ${pattern} ESCAPE '\\'
+        OR body_text ILIKE ${pattern} ESCAPE '\\'
+        OR from_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR to_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR bcc_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR ticket_code ILIKE ${pattern} ESCAPE '\\'
+        OR attachments_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR EXISTS (
+          SELECT 1 FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+            AND (
+              a.filename_display ILIKE ${pattern} ESCAPE '\\'
+              OR a.content_text ILIKE ${pattern} ESCAPE '\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1 FROM customers c
+          WHERE c.workspace_id = email_messages.workspace_id
+            AND c.id = email_messages.customer_id
+            AND (
+              c.name ILIKE ${pattern} ESCAPE '\\'
+              OR c.first_name ILIKE ${pattern} ESCAPE '\\'
+              OR c.company ILIKE ${pattern} ESCAPE '\\'
+              OR c.email ILIKE ${pattern} ESCAPE '\\'
+            )
+        )
+      )`);
+      continue;
+    }
+    // Content gating: snippet, body_text and attachment content_text may only
+    // match on content-readable rows; subject/addresses/ticket/filenames stay
+    // matchable for everyone so metadata search is unaffected.
     query = query.where(rawSql<boolean>`(
       subject ILIKE ${pattern} ESCAPE '\\'
-      OR snippet ILIKE ${pattern} ESCAPE '\\'
-      OR body_text ILIKE ${pattern} ESCAPE '\\'
+      OR (${contentPredicate} AND snippet ILIKE ${pattern} ESCAPE '\\')
+      OR (${contentPredicate} AND body_text ILIKE ${pattern} ESCAPE '\\')
       OR from_json::text ILIKE ${pattern} ESCAPE '\\'
       OR to_json::text ILIKE ${pattern} ESCAPE '\\'
       OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
@@ -3373,7 +3457,7 @@ function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any
           AND a.message_id = email_messages.id
           AND (
             a.filename_display ILIKE ${pattern} ESCAPE '\\'
-            OR a.content_text ILIKE ${pattern} ESCAPE '\\'
+            OR (${contentPredicate} AND a.content_text ILIKE ${pattern} ESCAPE '\\')
           )
       )
       OR EXISTS (
@@ -3394,7 +3478,12 @@ function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any
 
 const TS_HEADLINE_OPTIONS = `StartSel=${SEARCH_MARK_START}, StopSel=${SEARCH_MARK_END}, MaxWords=12, MinWords=6`;
 
-function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'like' | 'regex'): any {
+function applyMessageSearchFilter(
+  query: any,
+  search: string,
+  mode: 'fts' | 'like' | 'regex',
+  contentPredicate?: RawBuilder<boolean>,
+): any {
   if (mode === 'regex') {
     const parsed = parseRegexSearch(search);
     if (parsed) {
@@ -3404,7 +3493,7 @@ function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'lik
       // extrahierten Text der Attachment-Zeilen (pro Anhang per left() auf
       // 20k Zeichen gedeckelt) — sonst verschwinden /invoice\.pdf/i-Treffer
       // im Regex-Modus. bcc_json ergaenzt die Desktop-Feldliste.
-      return query.where(kyselySql<boolean>`(
+      const fullHaystack = kyselySql<string>`(
         coalesce(subject, '') || E'\n' ||
         coalesce(snippet, '') || E'\n' ||
         coalesce(body_text, '') || E'\n' ||
@@ -3423,17 +3512,60 @@ function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'lik
           WHERE a.workspace_id = email_messages.workspace_id
             AND a.message_id = email_messages.id
         ), '')
+      )`;
+      if (!contentPredicate) {
+        return query.where(kyselySql<boolean>`${fullHaystack} ${operator} ${parsed.pattern}`);
+      }
+      // Content gating: a redacted row's regex is matched against a metadata-only
+      // haystack (no snippet/body_text, and attachment filenames only — no
+      // content_text), so body/attachment content can't decide which rows return.
+      const metadataHaystack = kyselySql<string>`(
+        coalesce(subject, '') || E'\n' ||
+        coalesce(from_json::text, '') || E'\n' ||
+        coalesce(to_json::text, '') || E'\n' ||
+        coalesce(cc_json::text, '') || E'\n' ||
+        coalesce(bcc_json::text, '') || E'\n' ||
+        coalesce(ticket_code, '') || E'\n' ||
+        coalesce(attachments_json::text, '') || E'\n' ||
+        coalesce((
+          SELECT string_agg(coalesce(a.filename_display, ''), E'\n')
+          FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+        ), '')
+      )`;
+      return query.where(kyselySql<boolean>`(
+        CASE WHEN (${contentPredicate}) THEN ${fullHaystack} ELSE ${metadataHaystack} END
       ) ${operator} ${parsed.pattern}`);
     }
   }
   if (mode === 'fts') {
-    return query.where(kyselySql<boolean>`search_vector @@ plainto_tsquery('simple', ${search})`);
+    if (!contentPredicate) {
+      return query.where(kyselySql<boolean>`search_vector @@ plainto_tsquery('simple', ${search})`);
+    }
+    const ftsPattern = `%${escapeLikePattern(search)}%`;
+    return query.where(kyselySql<boolean>`(
+      (${contentPredicate} AND search_vector @@ plainto_tsquery('simple', ${search}))
+      OR (NOT (${contentPredicate}) AND (
+        subject ILIKE ${ftsPattern} ESCAPE '\\'
+        OR from_json::text ILIKE ${ftsPattern} ESCAPE '\\'
+        OR to_json::text ILIKE ${ftsPattern} ESCAPE '\\'
+        OR cc_json::text ILIKE ${ftsPattern} ESCAPE '\\'
+        OR ticket_code ILIKE ${ftsPattern} ESCAPE '\\'
+      ))
+    )`);
   }
   const pattern = `%${escapeLikePattern(search)}%`;
+  const snippetClause = contentPredicate
+    ? kyselySql<boolean>`(${contentPredicate} AND snippet ILIKE ${pattern} ESCAPE '\\')`
+    : kyselySql<boolean>`snippet ILIKE ${pattern} ESCAPE '\\'`;
+  const bodyClause = contentPredicate
+    ? kyselySql<boolean>`(${contentPredicate} AND body_text ILIKE ${pattern} ESCAPE '\\')`
+    : kyselySql<boolean>`body_text ILIKE ${pattern} ESCAPE '\\'`;
   return query.where(kyselySql<boolean>`(
     subject ILIKE ${pattern} ESCAPE '\\'
-    OR snippet ILIKE ${pattern} ESCAPE '\\'
-    OR body_text ILIKE ${pattern} ESCAPE '\\'
+    OR ${snippetClause}
+    OR ${bodyClause}
     OR from_json::text ILIKE ${pattern} ESCAPE '\\'
     OR to_json::text ILIKE ${pattern} ESCAPE '\\'
     OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
