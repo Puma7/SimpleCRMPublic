@@ -652,6 +652,61 @@ describe('mail ACL rollout central use', () => {
     expect(deleteAlias).toHaveBeenCalledTimes(1);
   });
 
+  test('GET /accounts/:accountId admits a folder-only delegate to the redacted parent, denies unrelated accounts (R51-2)', async () => {
+    // A folder-/message-only delegate holds no direct account grant, so the strict per-account
+    // check denied GET /accounts/:accountId (404) before the redacting port wrapper ran — even
+    // though the read port renders a redacted parent record for exactly this case. The GET now
+    // authorizes the parent relationship (folder/message → account) and carries the scope so the
+    // wrapped emailAccounts.get() redacts.
+    const getAccount = jest.fn(async (input: { id: number; mailScope?: MailSqlScope }) => ({
+      id: input.id,
+      sourceSqliteId: input.id,
+      displayName: 'Account A',
+    }));
+    const makePorts = (scope: MailSqlScope, folderAccountId: string): ServerApiPorts => ({
+      ...makeCentralPorts({
+        async assertPermission() { /* account_visible authorizes via scope, not assertPermission */ },
+        async resolveScope() { return scope; },
+      }),
+      mailResourceLookup: {
+        async resolve(input) {
+          if (input.target.kind === 'folder') return [{ type: 'account', accountId: folderAccountId }];
+          if (input.target.kind === 'account') return [{ type: 'account', accountId: String(input.target.id) }];
+          return [];
+        },
+      },
+      emailAccounts: { get: getAccount } as unknown as ServerApiPorts['emailAccounts'],
+    } as ServerApiPorts);
+
+    // Folder grant that maps to account 1 → admitted; get() receives the restricted scope so the
+    // read port redacts the parent connection config.
+    const admits = createServerApi(makePorts(
+      { kind: 'restricted', accountIds: [], folderIds: [FOLDER_A], messageIds: [] }, '1',
+    ));
+    await expect(admits.handle({ method: 'GET', path: '/api/v1/email/accounts/1', principal: principal() }))
+      .resolves.toMatchObject({ status: 200 });
+    expect(getAccount).toHaveBeenCalledTimes(1);
+    expect(getAccount.mock.calls[0]?.[0].mailScope).toMatchObject({ kind: 'restricted' });
+
+    // The delegate's only child grant maps to a DIFFERENT account → denied, get() never runs, so
+    // the redact-any-account read port cannot be used to enumerate other accounts' identities.
+    getAccount.mockClear();
+    const denies = createServerApi(makePorts(
+      { kind: 'restricted', accountIds: [], folderIds: [FOLDER_A], messageIds: [] }, '2',
+    ));
+    await expect(denies.handle({ method: 'GET', path: '/api/v1/email/accounts/1', principal: principal() }))
+      .resolves.toMatchObject({ status: 404 });
+    expect(getAccount).not.toHaveBeenCalled();
+
+    // Owner reads the full record unwrapped (no mailScope injected → no redaction).
+    getAccount.mockClear();
+    const asOwner = createServerApi(makePorts({ kind: 'all' }, '1'));
+    await expect(asOwner.handle({ method: 'GET', path: '/api/v1/email/accounts/1', principal: principal('owner') }))
+      .resolves.toMatchObject({ status: 200 });
+    expect(getAccount).toHaveBeenCalledTimes(1);
+    expect(getAccount.mock.calls[0]?.[0].mailScope).toBeUndefined();
+  });
+
   test('security-check POST requires content-read in addition to triage', async () => {
     // The scan reconstructs the raw message and returns content-derived Rspamd
     // symbols, so a triage-only delegate without content access must be blocked

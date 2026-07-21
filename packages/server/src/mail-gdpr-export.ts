@@ -79,7 +79,7 @@ export function createPostgresEmailGdprExportPort(
       const now = options.now?.() ?? new Date();
       const attachments = input.skipAttachments
         ? []
-        : await prepareAttachments(options, input.workspaceId, input.mailScope);
+        : await prepareAttachments(options, input.workspaceId, input.mailScope, input.mailAttachmentScope);
       // Only status==='ok' entries stream their bytes into the archive (writeExportArchive
       // skips every other status), so the size cap must count ONLY those. Counting the
       // declared sizes of missing / unsafe_path / blocked_suspicious entries would reject
@@ -132,6 +132,7 @@ async function prepareAttachments(
   options: PostgresEmailGdprExportPortOptions,
   workspaceId: string,
   mailScope: MailSqlScope | undefined,
+  attachmentScope: MailSqlScope | undefined,
 ): Promise<AttachmentExportEntry[]> {
   return withWorkspaceTransaction(
     options.db,
@@ -153,6 +154,25 @@ async function prepareAttachments(
             .whereRef('attachment_message.id', '=', 'email_message_attachments.message_id')
             .where('attachment_message.workspace_id', '=', workspaceId)
             .where(scopePredicate),
+        ));
+      }
+      // Attachment BYTES are gated on the caller's independent mail.attachment.read scope by the
+      // dedicated attachment routes; an export (mail.export) delegate lacking it must not receive
+      // them, so OMIT out-of-attachment-scope attachments from the archive entirely (not merely a
+      // manifest line). undefined ⇒ attachment scope 'all'/absent (owner/admin, or
+      // attachment-authorized) ⇒ no gating; 'none' ⇒ false ⇒ no attachments. (R51-1)
+      const attachmentScopePredicate = mailScopePredicate(attachmentScope, {
+        accountId: 'attachment_message.account_id',
+        folderId: 'attachment_message.folder_id',
+        messageId: 'attachment_message.id',
+      });
+      if (attachmentScopePredicate) {
+        query = query.where((eb) => eb.exists(
+          eb.selectFrom('email_messages as attachment_message')
+            .select('attachment_message.id')
+            .whereRef('attachment_message.id', '=', 'email_message_attachments.message_id')
+            .where('attachment_message.workspace_id', '=', workspaceId)
+            .where(attachmentScopePredicate),
         ));
       }
       const rows = await query

@@ -2020,6 +2020,87 @@ describe('server edition foundation', () => {
     expect(sessionCommands.map((command) => command.params[3])).toEqual(['on', 'on']);
   });
 
+  test('failTerminal marks the denied delayed workflow.execute row failed in the same workspace only', async () => {
+    const { db, rows, delayedRows } = makeFakePostgresJobQueueDb();
+    rows.push(makeFakePostgresJobQueueRow({
+      id: 55,
+      type: 'workflow.execute',
+      workspace_id: WORKSPACE_A_ID,
+      locked_by: 'worker-a',
+      payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, actorUserId: 'user-a', delayedJobId: 88 },
+    }));
+    delayedRows.push(
+      { id: 88, workspace_id: WORKSPACE_A_ID, status: 'pending', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+      // Same delayed id in a different workspace must stay untouched (RLS/workspace isolation).
+      { id: 88, workspace_id: WORKSPACE_B_ID, status: 'pending', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+    );
+    const port = createPostgresJobQueuePort({
+      db,
+      now: () => new Date('2026-06-05T08:30:00.000Z'),
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.failTerminal({
+      job: makeQueuedJob({
+        id: 55,
+        type: 'workflow.execute',
+        workspaceId: WORKSPACE_A_ID,
+        payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, actorUserId: 'user-a', delayedJobId: 88 },
+      }),
+      error: new Error('mail_access_denied'),
+      now: new Date('2026-06-05T08:30:00.000Z'),
+    });
+
+    expect(delayedRows.find((row) => row.workspace_id === WORKSPACE_A_ID)?.status).toBe('failed');
+    expect(delayedRows.find((row) => row.workspace_id === WORKSPACE_B_ID)?.status).toBe('pending');
+  });
+
+  test('failTerminal leaves non-workflow jobs and already-finalized delayed rows untouched', async () => {
+    const { db, rows, delayedRows } = makeFakePostgresJobQueueDb();
+    rows.push(
+      makeFakePostgresJobQueueRow({
+        id: 61,
+        type: 'mail.send.scheduled',
+        workspace_id: WORKSPACE_A_ID,
+        locked_by: 'worker-a',
+        // A non-workflow.execute job must not touch workflow_delayed_jobs even with a stray id.
+        payload: { workspaceId: WORKSPACE_A_ID, delayedJobId: 88 },
+      }),
+      makeFakePostgresJobQueueRow({
+        id: 62,
+        type: 'workflow.execute',
+        workspace_id: WORKSPACE_A_ID,
+        locked_by: 'worker-a',
+        payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, delayedJobId: 89 },
+      }),
+    );
+    delayedRows.push(
+      { id: 88, workspace_id: WORKSPACE_A_ID, status: 'pending', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+      // Already finalized: the status guard must not clobber a 'done' row back to 'failed'.
+      { id: 89, workspace_id: WORKSPACE_A_ID, status: 'done', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+    );
+    const port = createPostgresJobQueuePort({
+      db,
+      now: () => new Date('2026-06-05T08:30:00.000Z'),
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.failTerminal({
+      job: makeQueuedJob({ id: 61, type: 'mail.send.scheduled', workspaceId: WORKSPACE_A_ID, payload: { workspaceId: WORKSPACE_A_ID, delayedJobId: 88 } }),
+      error: new Error('mail_access_denied'),
+      now: new Date('2026-06-05T08:30:00.000Z'),
+    });
+    await port.failTerminal({
+      job: makeQueuedJob({ id: 62, type: 'workflow.execute', workspaceId: WORKSPACE_A_ID, payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, delayedJobId: 89 } }),
+      error: new Error('mail_access_denied'),
+      now: new Date('2026-06-05T08:30:00.000Z'),
+    });
+
+    // Non-workflow job left the pending row alone; the workflow job hit an already-done row (guard).
+    expect(delayedRows.find((row) => row.id === 88)?.status).toBe('pending');
+    expect(delayedRows.find((row) => row.id === 89)?.status).toBe('done');
+  });
+
   test('job worker completes successful jobs and records failures for missing or throwing handlers', async () => {
     const queue = makeJobQueuePort([
       makeQueuedJob({
@@ -39278,9 +39359,13 @@ type FakePostgresJobQueueRow = {
 function makeFakePostgresJobQueueDb(): {
   db: Kysely<ServerDatabase>;
   rows: FakePostgresJobQueueRow[];
+  delayedRows: FakeWorkflowDelayedJobRow[];
   sessionCommands: ReturnType<typeof buildWorkspaceSessionCommand>[];
 } {
   const rows: FakePostgresJobQueueRow[] = [];
+  // Models the workflow_delayed_jobs rows a terminally-denied delayed workflow.execute
+  // continuation must mark failed (R51-3); empty unless a test seeds it.
+  const delayedRows: FakeWorkflowDelayedJobRow[] = [];
   const sessionCommands: ReturnType<typeof buildWorkspaceSessionCommand>[] = [];
   const db = {
     selectFrom(table: string) {
@@ -39288,6 +39373,7 @@ function makeFakePostgresJobQueueDb(): {
       return new FakePostgresJobQueueSelect(rows);
     },
     updateTable(table: string) {
+      if (table === 'workflow_delayed_jobs') return new FakeWorkflowDelayedJobUpdate(delayedRows);
       if (table !== 'job_queue') throw new Error(`unexpected job queue update table: ${table}`);
       return new FakePostgresJobQueueUpdate(rows);
     },
@@ -39298,7 +39384,49 @@ function makeFakePostgresJobQueueDb(): {
     },
   } as unknown as Kysely<ServerDatabase>;
 
-  return { db, rows, sessionCommands };
+  return { db, rows, delayedRows, sessionCommands };
+}
+
+type FakeWorkflowDelayedJobRow = {
+  id: number;
+  workspace_id: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  updated_at: Date;
+};
+
+// Minimal fake for the single UPDATE failJobTerminal issues against workflow_delayed_jobs
+// (SET status/updated_at WHERE workspace_id = .. AND id = .. AND status IN (..)).
+class FakeWorkflowDelayedJobUpdate {
+  private values: Partial<Pick<FakeWorkflowDelayedJobRow, 'status' | 'updated_at'>> = {};
+
+  private workspaceId: string | null = null;
+
+  private idEquals: number | null = null;
+
+  private statusIn: readonly string[] | null = null;
+
+  constructor(private readonly rows: FakeWorkflowDelayedJobRow[]) {}
+
+  set(values: Partial<Pick<FakeWorkflowDelayedJobRow, 'status' | 'updated_at'>>): this {
+    this.values = values;
+    return this;
+  }
+
+  where(column: string, operator: string, value: unknown): this {
+    if (column === 'workspace_id' && operator === '=') this.workspaceId = String(value);
+    if (column === 'id' && operator === '=') this.idEquals = Number(value);
+    if (column === 'status' && operator === 'in') this.statusIn = value as readonly string[];
+    return this;
+  }
+
+  async execute(): Promise<void> {
+    for (const row of this.rows) {
+      if (this.workspaceId !== null && row.workspace_id !== this.workspaceId) continue;
+      if (this.idEquals !== null && row.id !== this.idEquals) continue;
+      if (this.statusIn !== null && !this.statusIn.includes(row.status)) continue;
+      Object.assign(row, this.values);
+    }
+  }
 }
 
 function makeFakePostgresJobQueueRow(input: Partial<FakePostgresJobQueueRow> = {}): FakePostgresJobQueueRow {

@@ -505,6 +505,48 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
+  test('rechecks mail.delete for a workflow.execute whose current graph moves to trash (R51-4)', async () => {
+    // Moving a message to a trash folder makes the runtime soft-delete it — a delete-equivalent
+    // — yet email.move_imap is classified triage-only. Recheck mail.delete on the resolved message
+    // when the CURRENT graph moves to a trash alias (or an interpolated target that MAY be trash),
+    // so a triage-but-not-delete delegate cannot remove the message from the active mailbox.
+    const trashGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.move_imap', config: { folderPath: 'Trash' } } }] };
+    const archiveGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.move_imap', config: { folderPath: 'Archive' } } }] };
+    const dynamicGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.move_imap', config: { folderPath: '{{customer.folder}}' } } }] };
+    const graphs = new Map<number, unknown>([[730, trashGraph], [731, archiveGraph], [732, dynamicGraph]]);
+
+    // Trash move + mail.delete revoked → denied at execution.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.delete retained, both the delete (trash-move) and triage (move is triage-class)
+    // supplementals are asserted on the message, in addition to the base content.read.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.delete', 'mail.triage']);
+
+    // A literal NON-trash move (Archive) adds no mail.delete requirement — only the triage recheck.
+    const nonTrash = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 731, messageId: 12 },
+    }), nonTrash);
+    expect(nonTrash.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.triage']);
+
+    // An interpolated target ({{...}}) may resolve to trash at runtime → fail closed (mail.delete required).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 732, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+  });
+
   test('rechecks mail.triage for a workflow.execute whose current graph mutates via triage-class nodes (R38-1)', async () => {
     // Triage-class nodes (tag/category/archive/mark_seen/assign/spam/move) mutate the
     // message under the system role, yet the base policy only requires content.read. A

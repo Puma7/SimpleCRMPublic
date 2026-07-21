@@ -296,6 +296,35 @@ async function failJobTerminal(
     .returningAll()
     .executeTakeFirst();
 
+  // A terminally-denied delayed workflow.execute continuation (its initiating user was
+  // disabled or lost a required mail permission before resume → MailAsyncAuthorizationError)
+  // only marks job_queue above; its handler never runs, so the referenced
+  // workflow_delayed_jobs row would stay 'pending' forever — no ticker scans pending delayed
+  // rows, leaving the workflow permanently stuck and falsely shown as pending. Migration 0042
+  // repaired only the legacy provenance-less rows; a correctly-provenanced job denied at
+  // runtime is the case that remains. Mark the referenced delayed row failed in the SAME
+  // transaction so the terminal failure is atomic. Gated on actually holding the terminal
+  // job_queue row (row != null ⇒ we still owned the lock), the job type, and a valid
+  // delayedJobId, so it no-ops for every other job that hits failTerminal; the status guard
+  // avoids clobbering an already-finalized ('done'/'failed') delayed row. (R51-3)
+  if (row && input.job.type === 'workflow.execute') {
+    const rawDelayedJobId = input.job.payload.delayedJobId;
+    const delayedJobId = typeof rawDelayedJobId === 'number'
+      && Number.isInteger(rawDelayedJobId)
+      && rawDelayedJobId > 0
+      ? rawDelayedJobId
+      : undefined;
+    if (delayedJobId !== undefined) {
+      await db
+        .updateTable('workflow_delayed_jobs')
+        .set({ status: 'failed', updated_at: now })
+        .where('workspace_id', '=', input.job.workspaceId)
+        .where('id', '=', delayedJobId)
+        .where('status', 'in', ['pending', 'running'])
+        .execute();
+    }
+  }
+
   return row ? mapJob(row) : null;
 }
 

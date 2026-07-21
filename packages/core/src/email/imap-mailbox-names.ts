@@ -31,6 +31,18 @@ export function normalizeMailboxName(value: string | null | undefined): string {
     .toLowerCase();
 }
 
+// The mailbox names the workflow IMAP-move runtime treats as trash: moving a message there
+// soft-deletes it (a delete-equivalent). Kept here so the runtime (applyWorkflowImapMoveLocalState)
+// and the async policy enforcer (which must require mail.delete for such a move) share ONE source
+// of truth and cannot drift. (R51-4)
+const WORKFLOW_TRASH_MAILBOX_NAMES = new Set(
+  ['trash', 'deleted', 'deleted items', 'papierkorb', 'geloscht', 'geloschte elemente'].map(normalizeMailboxName),
+);
+
+export function isTrashMailboxName(value: string | null | undefined): boolean {
+  return WORKFLOW_TRASH_MAILBOX_NAMES.has(normalizeMailboxName(value));
+}
+
 function mailboxHasSentSpecialUse(entry: MailboxListEntry): boolean {
   if (entry.specialUse?.toLowerCase() === '\\sent') return true;
   return entry.flags?.has?.('\\Sent') || entry.flags?.has?.('\\sent') || false;

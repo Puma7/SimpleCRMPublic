@@ -8,6 +8,7 @@ import {
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
   workflowGraphHasAnyNodeType,
+  workflowGraphHasDeleteEquivalentMoveImap,
   workflowGraphHasNodeType,
   workflowGraphHasSideEffectNode,
 } from '@simplecrm/core';
@@ -447,6 +448,45 @@ describe('workflowGraphHasSideEffectNode', () => {
     );
     expect(workflowGraphHasSideEffectNode(json)).toBe(true);
     expect(workflowGraphHasSideEffectNode('{not json')).toBe(false);
+  });
+});
+
+describe('workflowGraphHasDeleteEquivalentMoveImap', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({ version: 1, nodes, edges: [] });
+  const moveNode = (config: Record<string, unknown>) => ({ id: 'm1', type: 'registry' as const, data: { nodeType: 'email.move_imap', config } });
+
+  it('returns false for null / non-object / graph without move_imap', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(null)).toBe(false);
+    expect(workflowGraphHasDeleteEquivalentMoveImap({ nodes: 'x' })).toBe(false);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger]))).toBe(false);
+  });
+
+  it('flags a literal trash target (any of the runtime aliases, normalized)', () => {
+    for (const folder of ['Trash', 'Deleted Items', 'Papierkorb', 'Gelöschte Elemente', 'deleted']) {
+      expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: folder })]))).toBe(true);
+    }
+    // Alternate config keys the runtime also reads.
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folder: 'Trash' })]))).toBe(true);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ targetFolderPath: 'Papierkorb' })]))).toBe(true);
+  });
+
+  it('does NOT flag a literal non-trash move (stays triage-only)', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: 'Archive' })]))).toBe(false);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: 'Projekte/Kunde A' })]))).toBe(false);
+    // Absent target defaults to 'Spam' at runtime — not trash.
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({})]))).toBe(false);
+  });
+
+  it('flags an interpolated target (may resolve to trash at runtime → fail closed)', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: '{{customer.folder}}' })]))).toBe(true);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: 'Prefix {{var}}' })]))).toBe(true);
+  });
+
+  it('matches a legacy action node by its actionType', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(
+      graphOf([trigger, { id: 'a1', type: 'action', data: { actionType: 'email.move_imap', config: { folderPath: 'Trash' } } }]),
+    )).toBe(true);
   });
 });
 

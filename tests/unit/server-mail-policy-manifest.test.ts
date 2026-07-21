@@ -368,7 +368,7 @@ describe('server mail policy manifest', () => {
       ['GET', '/api/v1/locks', 'mail.metadata.read', bulkQuery()],
       ['GET', '/api/v1/email/accounts', 'mail.metadata.read', { kind: 'mail_scope' }],
       ['POST', '/api/v1/email/accounts', 'mail.account.manage', { kind: 'mail_scope' }],
-      ['GET', '/api/v1/email/accounts/9', 'mail.metadata.read', account('path')],
+      ['GET', '/api/v1/email/accounts/9', 'mail.metadata.read', accountParentAware('path')],
       ['PATCH', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
       ['DELETE', '/api/v1/email/accounts/9', 'mail.account.manage', account('path')],
       ['POST', '/api/v1/email/threads/merge', 'mail.triage', optionalAccount('body')],
@@ -577,6 +577,10 @@ function isMailEventType(type: string): boolean {
 
 function account(source: 'path' | 'query' | 'body') {
   return { kind: 'account', accountId: { source, field: 'accountId' } } as const;
+}
+
+function accountParentAware(source: 'path' | 'query' | 'body') {
+  return { kind: 'account_parent_aware', accountId: { source, field: 'accountId' } } as const;
 }
 
 function optionalAccount(source: 'query' | 'body') {

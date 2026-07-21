@@ -14,6 +14,7 @@ import {
   emailAddressForDelivery,
   generateTicketCode,
   interpolateWorkflowPlaceholders,
+  isTrashMailboxName,
   isUnsafeAutoReplyTarget,
   listBuiltinWorkflowNodeCatalog,
   normalizeMailboxName,
@@ -2247,7 +2248,7 @@ async function applyWorkflowImapMoveLocalState(
       updated_at: now,
     });
   }
-  if (new Set(['trash', 'deleted', 'deleted items', 'papierkorb', 'geloscht', 'geloschte elemente']).has(normalized)) {
+  if (isTrashMailboxName(targetFolderPath)) {
     return softDeleteWorkflowMessage(trx, context, now);
   }
   return updateWorkflowMessage(trx, context, { updated_at: now });

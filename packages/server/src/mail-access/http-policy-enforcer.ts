@@ -164,6 +164,14 @@ const MESSAGE_CONTENT_SCOPE_PATHS = new Set<string>([
   '/api/v1/email/threads/:threadId/messages',
 ]);
 
+// The GDPR export authorizes on mail.export but streams every in-scope attachment's bytes
+// into the ZIP — attachment CONTENT the dedicated attachment routes gate behind
+// mail.attachment.read. For a restricted caller the enforcer resolves that independent scope
+// so the export port can omit attachments the caller cannot read. (R51-1)
+const ATTACHMENT_EXPORT_SCOPE_PATHS = new Set<string>([
+  '/api/v1/email/gdpr-export',
+]);
+
 // Account-signature read routes authorize on mail.metadata.read but return the outbound
 // signatureHtml body. For a restricted caller the enforcer resolves an independent
 // mail.draft.create scope so the read port can redact the body per-account — a composer
@@ -285,6 +293,30 @@ export async function enforceMailHttpPolicy(
     );
     const scopedMutation = isScopedWorkflowDelayedJobMutation(req.method, entry.route.path);
 
+    if (resources.kind === 'account_visible') {
+      // GET /accounts/:accountId. Owner/admin, and a caller whose route scope is 'all', see the
+      // full record (portsWithMailAccessContext skips the wrapper). A restricted delegate is
+      // admitted only when it holds a direct account grant OR a child (folder/message) grant UNDER
+      // this account — the same authorization the async account_visible event delivery uses — and
+      // then carries the metadata scope so the wrapped emailAccounts.get() renders the REDACTED
+      // parent record (reachedOnlyAsParent). An account the delegate has no grant under still
+      // denies, so the redact-any-account read port cannot be used to enumerate. (R51-2)
+      if (actor.isOwner || actor.isAdmin) {
+        return { ok: true, context: { permission: entry.policy.permission } };
+      }
+      const accountScope = await resolveScope();
+      if (accountScope.kind === 'all') {
+        return { ok: true, context: { permission: entry.policy.permission } };
+      }
+      if (
+        accountScope.kind === 'none'
+        || !await restrictedScopeSeesAccount(accountScope, resources.accountId, principal.workspaceId, ports)
+      ) {
+        return denied();
+      }
+      return { ok: true, context: { permission: entry.policy.permission, scope: accountScope } };
+    }
+
     if (resources.kind === 'scope') {
       const scope = await resolveScope();
       if (!scopedMutation) {
@@ -319,7 +351,12 @@ export async function enforceMailHttpPolicy(
       );
       const isContentPath = scope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path);
       const contentScope = isContentPath ? await resolveContentScope() : undefined;
-      const attachmentScope = isContentPath ? await resolveAttachmentScope() : undefined;
+      // Resolve the caller's mail.attachment.read scope for the content list/search routes
+      // (attachment-text search gating) AND for the GDPR export (attachment-bytes gating,
+      // R51-1). Owner/admin never reach here (scope 'all' skips the wrapper).
+      const attachmentScope = isContentPath || (scope.kind !== 'all' && ATTACHMENT_EXPORT_SCOPE_PATHS.has(entry.route.path))
+        ? await resolveAttachmentScope()
+        : undefined;
       const signatureScope = scope.kind !== 'all' && ACCOUNT_SIGNATURE_BODY_SCOPE_PATHS.has(entry.route.path)
         ? await resolveSignatureScope()
         : undefined;
@@ -602,7 +639,13 @@ export function portsWithMailAccessContext(
     } : {}),
     ...(ports.emailGdprExport ? {
       emailGdprExport: {
-        export: (input) => ports.emailGdprExport!.export(scopedInput(input)),
+        // Inject the mail scope (row visibility) AND the caller's mail.attachment.read scope,
+        // so the export omits attachment bytes the caller cannot read via the gated attachment
+        // routes. Owner/admin resolve to scope 'all' → wrapper skipped → full export. (R51-1)
+        export: (input) => ports.emailGdprExport!.export({
+          ...scopedInput(input),
+          ...(attachmentScope ? { mailAttachmentScope: attachmentScope } : {}),
+        }),
       },
     } : {}),
     ...(ports.workflowRuns ? {
@@ -693,6 +736,27 @@ function scopeListPort<K extends keyof ServerApiPorts>(
   } as Partial<ServerApiPorts>;
 }
 
+// Mirrors the async account_visible check (async-policy-enforcer): a restricted delegate sees an
+// account when it holds a direct account grant, or a folder/message grant that maps back to that
+// account (rendering the redacted parent record). Called only for a scope of kind 'restricted'. (R51-2)
+async function restrictedScopeSeesAccount(
+  scope: Extract<MailSqlScope, { kind: 'restricted' }>,
+  accountId: string,
+  workspaceId: string,
+  ports: ServerApiPorts,
+): Promise<boolean> {
+  if (scope.accountIds.some((id) => String(id) === accountId)) return true;
+  for (const folderId of scope.folderIds) {
+    const resources = await ports.mailResourceLookup!.resolve({ workspaceId, target: { kind: 'folder', id: folderId } });
+    if (resources.some((resource) => resource.accountId === accountId)) return true;
+  }
+  for (const messageId of scope.messageIds) {
+    const resources = await ports.mailResourceLookup!.resolve({ workspaceId, target: { kind: 'message', id: messageId } });
+    if (resources.some((resource) => resource.accountId === accountId)) return true;
+  }
+  return false;
+}
+
 async function resolveHttpResources(
   req: ApiRequest,
   canonicalPath: string,
@@ -701,6 +765,7 @@ async function resolveHttpResources(
   ports: ServerApiPorts,
 ): Promise<
   | Readonly<{ kind: 'scope' }>
+  | Readonly<{ kind: 'account_visible'; accountId: string }>
   | Readonly<{ kind: 'resources'; resources: readonly MailResource[]; mode: 'all' | 'any' }>
 > {
   if (
@@ -799,9 +864,15 @@ async function resolveHttpResources(
   } else if (resolution.kind === 'thread_lookup') {
     target = { kind: 'thread', id: requireThreadId(selectorValue(req, canonicalPath, resolution.threadId)) };
   } else if (resolution.kind === 'account_parent_aware') {
-    // Event-only resolution (email_account.updated delivery to child-scoped delegates); no
-    // HTTP route maps to it, so fail closed rather than treat it as a metadata lookup.
-    throw new MailAccessDeniedError();
+    // GET /accounts/:accountId: a folder-/message-only delegate holding a child grant UNDER the
+    // account must reach the redacted-parent record the read port already renders, so this cannot
+    // be a strict per-account resource check (grantAllowsResource denies a child grant against its
+    // parent account → 404 before the scoped port wrapper runs). Hand off to the account_visible
+    // branch, which authorizes the parent relationship and carries the scope so get() redacts. (R51-2)
+    return {
+      kind: 'account_visible',
+      accountId: String(requirePositiveInt(selectorValue(req, canonicalPath, resolution.accountId))),
+    };
   } else {
     target = {
       kind: 'metadata',

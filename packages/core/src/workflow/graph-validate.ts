@@ -1,3 +1,4 @@
+import { isTrashMailboxName } from '../email/imap-mailbox-names';
 import type { WorkflowGraphDocument, WorkflowGraphNode } from './graph-types';
 
 function registryType(node: WorkflowGraphNode): string {
@@ -471,6 +472,43 @@ export function workflowGraphAssignsDynamicSendDraftTarget(graph: unknown): bool
     const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
     if (!targetVarNames.has(name)) return false;
     return staticPositiveIntOrNull(config.value) === null;
+  });
+}
+
+/**
+ * True if an `email.move_imap` node moves the message to a TRASH folder — which the runtime
+ * (applyWorkflowImapMoveLocalState) treats as a soft-delete (a delete-equivalent), the same
+ * outcome as `email.delete_server`. The move target is `config.folderPath ?? config.folder ??
+ * config.targetFolderPath ?? 'Spam'`. A STATIC target is delete-equivalent iff it normalizes to
+ * one of the runtime's trash aliases (isTrashMailboxName — the SAME set the runtime uses). A target
+ * containing `{{...}}` is interpolated at runtime (serverInterpolateFieldKeysFor marks folderPath
+ * interpolate:true), so its resolved value — possibly a trash folder — is unknowable at policy time;
+ * treat it as delete-equivalent so the enforcer fails closed (a mail.delete holder still proceeds,
+ * unlike an outright deny). A literal NON-trash move stays triage-only. Used by the async enforcer
+ * to require mail.delete for such a move, matching what the runtime actually does. (R51-4)
+ */
+export function workflowGraphHasDeleteEquivalentMoveImap(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+
+  return nodes.some((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    const node = raw as WorkflowGraphNode;
+    if (sideEffectRuntimeType(node) !== 'email.move_imap') return false;
+    const config = nodeConfig(node);
+    const rawTarget = config.folderPath ?? config.folder ?? config.targetFolderPath ?? 'Spam';
+    // Interpolated ({{...}}) target ⇒ resolved at runtime ⇒ possibly trash ⇒ fail closed.
+    if (typeof rawTarget === 'string' && rawTarget.includes('{{')) return true;
+    return isTrashMailboxName(String(rawTarget));
   });
 }
 

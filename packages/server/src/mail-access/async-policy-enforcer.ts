@@ -7,6 +7,7 @@ import {
   workflowGraphAssignsDynamicCreateDraftAccount,
   workflowGraphAssignsDynamicSendDraftTarget,
   workflowGraphHasAnyNodeType,
+  workflowGraphHasDeleteEquivalentMoveImap,
   workflowGraphHasNodeType,
   workflowGraphHasSideEffectNode,
 } from '@simplecrm/core';
@@ -321,6 +322,12 @@ export async function enforceMailJobPolicy(
         resolved.resources.resources,
         requiredPorts,
       );
+      await assertWorkflowExecuteMoveImapTrashPrivilege(
+        job,
+        actor.actor,
+        resolved.resources.resources,
+        requiredPorts,
+      );
       await assertWorkflowExecuteTriageNodePrivilege(
         job,
         actor.actor,
@@ -464,6 +471,40 @@ async function assertWorkflowExecuteDeleteNodePrivilege(
     workflowId,
   });
   if (!loaded || !workflowGraphHasNodeType(loaded.graph, 'email.delete_server')) return;
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.delete',
+      resource,
+    });
+  }
+}
+
+// R51-4: an email.move_imap node whose target is a TRASH folder makes the runtime
+// (applyWorkflowImapMoveLocalState) soft-delete the message — a delete-equivalent, exactly like
+// email.delete_server — yet move_imap is classified triage-only above (mail.triage). Its HTTP
+// equivalent requires the independent mail.delete for a trash target, so a user-attributed run
+// whose actor has content/triage but no delete grant must not remove the message from the active
+// mailbox. Recheck mail.delete on the resolved message when the CURRENT graph moves to a trash
+// alias (or to an interpolated target that MAY be trash — fail closed; a mail.delete holder still
+// proceeds). A literal non-trash move stays triage-only (handled by the triage recheck). Reuses the
+// runtime's own trash-aliasing (workflowGraphHasDeleteEquivalentMoveImap) so the decision matches
+// what actually happens. User actors only.
+async function assertWorkflowExecuteMoveImapTrashPrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  resources: readonly MailResource[],
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (!loaded || !workflowGraphHasDeleteEquivalentMoveImap(loaded.graph)) return;
   for (const resource of resources) {
     await ports.mailAccess.assertPermission({
       workspaceId: job.workspaceId,

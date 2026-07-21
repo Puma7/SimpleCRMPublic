@@ -154,6 +154,12 @@ const spamEventResource = (): MailResourceResolution => ({
 
 const mailScope = (): MailResourceResolution => ({ kind: 'mail_scope' });
 const accountPath = (): MailResourceResolution => ({ kind: 'account', accountId: pathValue('accountId') });
+// Like accountPath, but ALSO admits a folder-/message-only delegate that holds a child grant
+// UNDER the account: the read port renders a redacted parent record for it. Read-only GET use
+// only — writes (PATCH/DELETE, mail.account.manage) must keep the strict accountPath(). (R51-2)
+const accountPathParentAware = (): MailResourceResolution => (
+  { kind: 'account_parent_aware', accountId: pathValue('accountId') }
+);
 const accountBody = (): MailResourceResolution => ({ kind: 'account', accountId: bodyValue('accountId') });
 const accountQuery = (): MailResourceResolution => ({ kind: 'account', accountId: queryValue('accountId') });
 const optionalAccount = (source: 'query' | 'body'): MailResourceResolution => ({
@@ -300,7 +306,7 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
     POST: permissionPolicy('mail.account.manage', mailScope()),
   });
   assign('/api/v1/email/accounts/:accountId', {
-    GET: permissionPolicy('mail.metadata.read', accountPath()),
+    GET: permissionPolicy('mail.metadata.read', accountPathParentAware()),
     PATCH: permissionPolicy('mail.account.manage', accountPath()),
     DELETE: permissionPolicy('mail.account.manage', accountPath()),
   });

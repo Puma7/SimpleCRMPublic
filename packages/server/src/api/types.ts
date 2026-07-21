@@ -2756,6 +2756,11 @@ export type EmailGdprExportApiPort = {
     skipAttachments?: boolean;
     includeSensitiveTracking?: boolean;
     mailScope?: MailSqlScope;
+    // Present only for a restricted-scope delegate (owner/admin resolve to scope 'all', which
+    // skips the wrapper): the export omits attachment bytes outside this mail.attachment.read
+    // scope, so a mail.export delegate lacking attachment.read cannot bulk-exfiltrate attachment
+    // content the dedicated attachment routes would deny. Absent ⇒ scope 'all' ⇒ no gating. (R51-1)
+    mailAttachmentScope?: MailSqlScope;
   }): Promise<EmailGdprExportResult>;
 };
 
