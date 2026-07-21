@@ -90,6 +90,12 @@ export type MailRouteAccessContext = Readonly<{
   // content.read-but-not-attachment.read delegate cannot probe attachment bodies via
   // search. Attachment FILENAMES stay searchable (message metadata).
   attachmentScope?: MailSqlScope;
+  // The caller's mail.draft.create scope, resolved for the account-signature routes (which
+  // authorize on mail.metadata.read). Account signatures whose account is outside it have
+  // their signatureHtml body redacted, so a metadata-only delegate cannot read outbound
+  // signature bodies while a composer (draft.create on the account) still receives them,
+  // matching how canned-response and per-user signatures gate on draft.create. (R48-2)
+  signatureScope?: MailSqlScope;
 }>;
 
 export type ApiDataBody<T> = {
@@ -2762,11 +2768,16 @@ export type EmailNumericRecordApiPort<TRecord, TListFilters extends object = obj
     cursor?: number;
     limit: number;
     mailScope?: MailSqlScope;
+    // The caller's mail.draft.create scope, injected only for the account-signature port so
+    // it can redact signatureHtml per-account for a metadata-only delegate (R48-2). Other
+    // ports ignore it.
+    mailSignatureScope?: MailSqlScope;
   } & TListFilters): Promise<EmailNumericCursorListResult<TRecord>>;
   get(input: {
     workspaceId: string;
     id: number;
     mailScope?: MailSqlScope;
+    mailSignatureScope?: MailSqlScope;
   }): Promise<TRecord | null>;
 };
 

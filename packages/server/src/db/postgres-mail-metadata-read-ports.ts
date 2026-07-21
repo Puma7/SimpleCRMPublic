@@ -1709,7 +1709,12 @@ export function createPostgresEmailAccountSignatureReadPort(options: PostgresMai
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
 
           const rows = await query.execute();
-          return pageNumeric(rows, limit, (row) => Number(row.source_sqlite_id), mapEmailAccountSignatureRow);
+          return pageNumeric(
+            rows,
+            limit,
+            (row) => Number(row.source_sqlite_id),
+            (row) => redactAccountSignatureBodyForScope(mapEmailAccountSignatureRow(row), input.mailSignatureScope),
+          );
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -1725,7 +1730,8 @@ export function createPostgresEmailAccountSignatureReadPort(options: PostgresMai
             .where('workspace_id', '=', input.workspaceId)
             .where('source_sqlite_id', '=', input.id)
             .executeTakeFirst();
-          return row ? mapEmailAccountSignatureRow(row) : null;
+          if (!row) return null;
+          return redactAccountSignatureBodyForScope(mapEmailAccountSignatureRow(row), input.mailSignatureScope);
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -4073,6 +4079,23 @@ function mapEmailAccountSignatureRow(
     signatureHtml: row.signature_html,
     updatedAt: timestampToIso(row.updated_at),
   };
+}
+
+// A restricted delegate may hold mail.metadata.read on an account (so it may list the
+// account's signatures) without mail.draft.create (so it must NOT read the outbound
+// signature BODY, which compose/manage gate on draft.create — matching canned-response and
+// per-user signatures). Redact signatureHtml unless the caller's draft.create scope covers
+// the signature's account. undefined scope → owner/admin (the enforcer skips the wrapper) →
+// keep; 'none' → redact all; 'restricted' → keep only the accounts the caller may draft on,
+// so composers still receive their own account's signature. (R48-2)
+function redactAccountSignatureBodyForScope(
+  record: EmailAccountSignatureRecord,
+  signatureScope: MailSqlScope | undefined,
+): EmailAccountSignatureRecord {
+  const scope = effectiveMailScope(signatureScope);
+  const visible = scope.kind === 'all'
+    || (scope.kind === 'restricted' && record.accountId !== null && scope.accountIds.includes(record.accountId));
+  return visible ? record : { ...record, signatureHtml: null };
 }
 
 function mapEmailRemoteContentAllowlistRow(

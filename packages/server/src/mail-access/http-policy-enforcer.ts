@@ -164,6 +164,15 @@ const MESSAGE_CONTENT_SCOPE_PATHS = new Set<string>([
   '/api/v1/email/threads/:threadId/messages',
 ]);
 
+// Account-signature read routes authorize on mail.metadata.read but return the outbound
+// signatureHtml body. For a restricted caller the enforcer resolves an independent
+// mail.draft.create scope so the read port can redact the body per-account — a composer
+// (draft.create on the account) keeps its signature, a metadata-only delegate does not. (R48-2)
+const ACCOUNT_SIGNATURE_BODY_SCOPE_PATHS = new Set<string>([
+  '/api/v1/email/account-signatures',
+  '/api/v1/email/account-signatures/:id',
+]);
+
 // Triage mutation routes that authorize on a single message resource
 // (mail.triage) but echo the mutated message back whole — its body-derived
 // snippet and draft attachment paths included. For a caller lacking an
@@ -241,6 +250,19 @@ export async function enforceMailHttpPolicy(
     });
     return attachmentScopePromise;
   };
+  // Account-signature routes authorize on mail.metadata.read but expose the outbound
+  // signatureHtml body; resolve the caller's independent mail.draft.create scope so the read
+  // port redacts the body for accounts the caller cannot compose on. Owner/admin never reach
+  // here (scope 'all' skips the wrapper), so this only runs for restricted delegates.
+  let signatureScopePromise: Promise<MailSqlScope> | undefined;
+  const resolveSignatureScope = (): Promise<MailSqlScope> => {
+    signatureScopePromise ??= ports.mailAccess!.resolveScope({
+      workspaceId: principal.workspaceId,
+      actor,
+      permission: 'mail.draft.create',
+    });
+    return signatureScopePromise;
+  };
 
   try {
     const resources = await resolveHttpResources(
@@ -287,7 +309,10 @@ export async function enforceMailHttpPolicy(
       const isContentPath = scope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path);
       const contentScope = isContentPath ? await resolveContentScope() : undefined;
       const attachmentScope = isContentPath ? await resolveAttachmentScope() : undefined;
-      return { ok: true, context: { permission: entry.policy.permission, scope, contentScope, attachmentScope } };
+      const signatureScope = scope.kind !== 'all' && ACCOUNT_SIGNATURE_BODY_SCOPE_PATHS.has(entry.route.path)
+        ? await resolveSignatureScope()
+        : undefined;
+      return { ok: true, context: { permission: entry.policy.permission, scope, contentScope, attachmentScope, signatureScope } };
     }
 
     if (resources.resources.length === 0) {
@@ -382,6 +407,28 @@ export async function enforceMailHttpPolicy(
         };
       }
     }
+    // The account-signature :id GET resolves to an account resource but returns the outbound
+    // signatureHtml body. Carry the mail scope (so portsWithMailAccessContext wraps get())
+    // plus the caller's mail.draft.create scope, so the read port redacts the body for an
+    // account the caller cannot compose on. Owner/admin resolve to scope 'all' → wrapper
+    // skipped → full body. (R48-2)
+    if (
+      !actor.isOwner
+      && !actor.isAdmin
+      && ACCOUNT_SIGNATURE_BODY_SCOPE_PATHS.has(entry.route.path)
+    ) {
+      const signatureMailScope = await resolveScope();
+      if (signatureMailScope.kind !== 'all') {
+        return {
+          ok: true,
+          context: {
+            permission: entry.policy.permission,
+            scope: signatureMailScope,
+            signatureScope: await resolveSignatureScope(),
+          },
+        };
+      }
+    }
     return { ok: true, context: { permission: entry.policy.permission } };
   } catch (caught) {
     if (caught instanceof MailAccessDeniedError) return denied();
@@ -405,6 +452,7 @@ export function portsWithMailAccessContext(
   const mailScope = context.scope;
   const contentScope = context.contentScope;
   const attachmentScope = context.attachmentScope;
+  const signatureScope = context.signatureScope;
   const scopedInput = <T extends object>(input: T): T & { mailScope: MailSqlScope } => ({
     ...input,
     mailScope,
@@ -452,7 +500,17 @@ export function portsWithMailAccessContext(
     ...scopeListPort(ports, 'emailCategories', mailScope),
     ...scopeListPort(ports, 'emailInternalNotes', mailScope),
     ...scopeListPort(ports, 'emailCannedResponses', mailScope),
-    ...scopeListPort(ports, 'emailAccountSignatures', mailScope),
+    ...(ports.emailAccountSignatures ? {
+      emailAccountSignatures: {
+        ...ports.emailAccountSignatures,
+        // Inject the mail scope (row visibility) AND the caller's draft.create signature
+        // scope (per-account signatureHtml body redaction) into BOTH list and get, so a
+        // restricted metadata-only delegate cannot read outbound signature bodies via either
+        // route while a composer keeps its own account's signature. (R48-2)
+        list: (input) => ports.emailAccountSignatures!.list({ ...scopedInput(input), mailSignatureScope: signatureScope }),
+        get: (input) => ports.emailAccountSignatures!.get({ ...scopedInput(input), mailSignatureScope: signatureScope }),
+      },
+    } : {}),
     ...scopeListPort(ports, 'emailRemoteContentAllowlist', mailScope),
     ...scopeListPort(ports, 'emailReadReceipts', mailScope),
     ...(ports.emailTeamMembers ? {

@@ -1482,6 +1482,38 @@ describe('mail ACL rollout central use', () => {
     expect(listCalls.at(-1)).not.toHaveProperty('ownerUserId');
   });
 
+  test('restricted account-signature list carries the draft.create signature scope for body redaction (R48-2)', async () => {
+    const signatureListCalls: Array<Record<string, unknown>> = [];
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() {
+          return { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+        },
+      }),
+      emailAccountSignatures: {
+        async list(input: Record<string, unknown>) {
+          signatureListCalls.push(input);
+          return { items: [], nextCursor: null };
+        },
+      } as unknown as ServerApiPorts['emailAccountSignatures'],
+    });
+
+    // A restricted mail.metadata.read delegate is admitted to the account-signature
+    // collection, but the read port receives BOTH the mail scope (row visibility) and the
+    // caller's independent mail.draft.create signature scope, so it can redact signatureHtml
+    // for accounts the caller cannot compose on — while composers keep their own. (R48-2)
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/account-signatures',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 200 });
+    expect(signatureListCalls.at(-1)).toMatchObject({
+      mailScope: { kind: 'restricted' },
+      mailSignatureScope: { kind: 'restricted', accountIds: [ACCOUNT_A] },
+    });
+  });
+
   test('a restricted key manager may PATCH/DELETE their OWN PGP identity, but not peers or peer keys (R36-1/R46-1)', async () => {
     // PGP identities are strictly per-user, and every identity write port is
     // actorUserId-scoped: R46-1 adds `user_id = actorUserId` to the SELECT/UPDATE/DELETE
