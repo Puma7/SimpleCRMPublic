@@ -684,7 +684,19 @@ async function resolveResources(input: {
       if (resolution.whenAbsent === 'mail_scope') return { kind: 'scope' };
       throw new MailAsyncAuthorizationError();
     }
-    if (raw === null && resolution.whenNull === 'non_mail') return { kind: 'non_mail' };
+    if (raw === null && resolution.whenNull === 'non_mail') {
+      // An orphaned mail job/event nulls message_id (FK ON DELETE SET NULL) but keeps
+      // message_source_sqlite_id: it is still MAIL, so classifying it non_mail would
+      // broadcast its workflow/message metadata to every workspace subscriber. Mirror
+      // the HTTP read path's classifyWorkflowDelayedJob (non_mail only when BOTH refs
+      // are null) — a surviving message_source_sqlite_id fails closed to owner/admin.
+      const legacyId = resolution.messageSourceSqliteId !== undefined
+        ? input.select(resolution.messageSourceSqliteId)
+        : null;
+      return legacyId === null || legacyId === undefined
+        ? { kind: 'non_mail' }
+        : { kind: 'owner_admin' };
+    }
     return lookup(input, { kind: 'message', id: requirePositiveInt(raw) });
   }
   if (resolution.kind === 'workflow_execute_message_lookup') {

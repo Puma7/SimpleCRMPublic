@@ -150,17 +150,23 @@ async function publishGroupAclInvalidation(
   state: 'changed' | 'deleted',
 ): Promise<void> {
   const now = new Date().toISOString();
-  for (const targetUserId of [...new Set(targetUserIds)].sort()) {
-    await ports.events?.publish({
-      type: 'email_acl.changed',
-      workspaceId: principal.workspaceId,
-      entityType: 'email_acl',
-      entityId: String(groupId),
-      actorUserId: principal.userId,
-      occurredAt: now,
-      payload: { targetUserId, state },
-    });
-  }
+  // Each target's publish is independent — allSettled so one failed delivery does not
+  // skip the remaining members' invalidations (the group/binding mutation already
+  // committed, so a revoked member must still receive its email_acl.changed even if a
+  // sibling delivery throws). Mirrors the account-deletion delegate fanout.
+  await Promise.allSettled(
+    [...new Set(targetUserIds)].sort().map((targetUserId) => (
+      ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId: principal.workspaceId,
+        entityType: 'email_acl',
+        entityId: String(groupId),
+        actorUserId: principal.userId,
+        occurredAt: now,
+        payload: { targetUserId, state },
+      }) ?? Promise.resolve()
+    )),
+  );
 }
 
 async function handleDeleteGroup(
@@ -184,6 +190,24 @@ async function handleDeleteGroup(
   // transient audit-port failure must not drop the events a revoked member needs to
   // clear their loaded mailbox state.
   await publishGroupAclInvalidation(ports, principal, groupId, memberUserIds, 'deleted');
+  // A group can hold mailbox bindings even with ZERO members (binding validation only
+  // requires the group to exist); deleting it cascades those bindings, but the
+  // per-member fanout above emits nothing, so other owner/admin delegation panels
+  // never learn the bindings are gone. Publish one member-independent invalidation —
+  // owner/admin receive every email_acl.changed regardless of targetUserId — so their
+  // panels refresh even when the deleted group had no members. (With members, each
+  // per-member event already reaches owner/admin, so this only covers the empty case.)
+  if (memberUserIds.length === 0) {
+    await ports.events?.publish({
+      type: 'email_acl.changed',
+      workspaceId: principal.workspaceId,
+      entityType: 'email_acl',
+      entityId: String(groupId),
+      actorUserId: principal.userId,
+      occurredAt: new Date().toISOString(),
+      payload: { state: 'deleted' },
+    });
+  }
   await ports.audit?.record({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,

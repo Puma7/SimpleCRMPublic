@@ -545,6 +545,18 @@ async function handleMailConnectionTest(
   if (parsed.values.accountId != null) {
     const denied = await assertConnectionTestAccountAccess(ports, principal, parsed.values.accountId);
     if (denied) return denied;
+    // A stored-account test is meant to connect with the account's SAVED coordinates,
+    // but resolveImap/Pop3/SmtpInput switch to the CALLER-SUPPLIED host/port the moment
+    // the request carries an explicit password (or SMTP access token) — turning a
+    // per-account mail.account.manage grant into an arbitrary server-side connect
+    // (SSRF / internal port scan) to any host:port. That override is the same primitive
+    // the ad-hoc branch below gates on owner/admin, so require admin here too whenever
+    // the request supplies credentials that would override the stored endpoint.
+    const overridesStoredEndpoint = Boolean(parsed.values.password?.trim())
+      || Boolean(parsed.values.accessToken?.trim());
+    if (overridesStoredEndpoint && !requireAdmin(principal)) {
+      return error(403, 'forbidden', 'Adminrechte erforderlich');
+    }
   } else if (!requireAdmin(principal)) {
     // Ad-hoc test (no stored account): the handler opens a server-side TCP/TLS
     // connection to a caller-supplied host:port — an SSRF probe of internal

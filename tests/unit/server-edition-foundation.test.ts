@@ -17026,6 +17026,23 @@ describe('server edition foundation', () => {
       }),
     ]);
 
+    // Elevation (user -> admin) also publishes: the promoted user's client must reload
+    // to show the now-accessible mailbox instead of the old restricted/empty state.
+    const promote = await runSave(
+      [record('owner-x', 'owner'), record('target', 'user')],
+      'target',
+      { email: 'target@example.com', displayName: 'target', role: 'admin' },
+    );
+    expect(promote.status).toBe(200);
+    expect(promote.acl).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: 'target',
+        payload: { targetUserId: 'target', state: 'changed' },
+      }),
+    ]);
+
     // Disable (active -> disabled) also publishes.
     const disable = await runSave(
       [record('owner-x', 'owner'), record('target', 'user')],

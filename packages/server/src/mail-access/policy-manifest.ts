@@ -31,6 +31,13 @@ export type MailResourceResolution =
     messageId: PolicyValueSelector;
     whenAbsent: 'non_mail' | 'mail_scope' | 'deny';
     whenNull?: 'non_mail';
+    // A message delete FK-nulls message_id (ON DELETE SET NULL) but leaves
+    // message_source_sqlite_id intact — the job/event is still MAIL (orphaned), not
+    // non-mail. When set, the whenNull:'non_mail' branch consults this selector and
+    // fails closed (owner/admin only) if it is non-null, so an orphaned mail job's
+    // workflow/message metadata is never broadcast to every workspace user. Mirrors
+    // classifyWorkflowDelayedJob's "non_mail only when BOTH refs are null" rule.
+    messageSourceSqliteId?: PolicyValueSelector;
   }>
   | Readonly<{
     kind: 'workflow_execute_message_lookup';
@@ -696,6 +703,7 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
       resource: {
         kind: 'optional_message_lookup',
         messageId: eventPayloadValue('messageId'),
+        messageSourceSqliteId: eventPayloadValue('messageSourceSqliteId'),
         whenAbsent: 'deny',
         whenNull: 'non_mail',
       },
@@ -706,6 +714,7 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
       resource: {
         kind: 'optional_message_lookup',
         messageId: eventPayloadValue('messageId'),
+        messageSourceSqliteId: eventPayloadValue('messageSourceSqliteId'),
         whenAbsent: 'deny',
         whenNull: 'non_mail',
       },
@@ -716,6 +725,7 @@ function buildMailEventPolicyManifest(): MailEventPolicyEntry[] {
       resource: {
         kind: 'optional_message_lookup',
         messageId: eventPayloadValue('messageId'),
+        messageSourceSqliteId: eventPayloadValue('messageSourceSqliteId'),
         whenAbsent: 'deny',
         whenNull: 'non_mail',
       },

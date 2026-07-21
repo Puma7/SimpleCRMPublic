@@ -1381,6 +1381,29 @@ describe('server mail job and event ACL', () => {
       payload: { id: 89, messageId: null, status: 'pending' },
     });
 
+    // R33-2: a message delete FK-nulls message_id but LEAVES message_source_sqlite_id —
+    // the job is still MAIL (orphaned), so it must NOT be broadcast as non_mail to every
+    // workspace user; it fails closed to owner/admin only. A plain 'user' is denied...
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '95',
+      payload: { id: 95, messageId: null, messageSourceSqliteId: 41, status: 'pending', context: { secret: 'orphaned-mail' } },
+    }), context)).resolves.toBeNull();
+    // ...while an owner still receives it (fail closed ⇒ owner/admin only).
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '95',
+      payload: { id: 95, messageId: null, messageSourceSqliteId: 41, status: 'pending' },
+    }), {
+      principal: { workspaceId: 'workspace-a', userId: 'owner-a', role: 'owner' as const },
+      ports,
+    })).resolves.toMatchObject({
+      type: 'workflow_delayed_job.updated',
+      payload: { id: 95, messageSourceSqliteId: 41 },
+    });
+
     for (const payload of [
       { id: 90, status: 'pending' },
       { id: 91, messageId: '', status: 'pending' },

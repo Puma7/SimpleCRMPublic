@@ -376,19 +376,25 @@ async function handleSaveUser(
     },
   });
 
-  // A demotion (owner/admin -> user) or a disable revokes privileges under which
-  // this user's client may already have loaded mail. The live event stream only
-  // re-resolves the socket principal when an event arrives, so on a quiet workspace
-  // the demotion invalidation would never fire. Publish it from the mutation path:
-  // the event itself wakes the stream, and the email_acl.changed filter delivers to
-  // the subject by userId regardless of the socket's still-elevated role, so the
-  // renderer clears mail loaded under the old privileges (and a now-disabled
-  // session's socket is re-resolved and closed on the same wake-up).
+  // A mail-relevant role change or a disable changes the privileges under which this
+  // user's client resolves its mailbox. The live event stream only re-resolves the
+  // socket principal when an event arrives, so on a quiet workspace the invalidation
+  // would never fire. Publish it from the mutation path — the event itself wakes the
+  // stream, and the email_acl.changed filter delivers to the subject by userId
+  // regardless of the socket's stale role:
+  //  - demotion (owner/admin -> user) or disable REVOKES access: the renderer clears
+  //    mail loaded under the old privileges (a now-disabled socket is also re-resolved
+  //    and closed on the same wake-up);
+  //  - elevation (user -> owner/admin) GRANTS access: the re-resolved socket now reads
+  //    the full mailbox, so the renderer reloads instead of showing the old restricted/
+  //    empty state until a manual refresh.
   if (previousUser) {
     const wasElevated = previousUser.role === 'owner' || previousUser.role === 'admin';
-    const demoted = wasElevated && result.user.role === 'user';
+    const isElevated = result.user.role === 'owner' || result.user.role === 'admin';
+    const demoted = wasElevated && !isElevated;
+    const elevated = !wasElevated && isElevated;
     const disabled = previousUser.disabledAt === null && result.user.disabledAt !== null;
-    if (demoted || disabled) {
+    if (demoted || elevated || disabled) {
       await ports.events?.publish({
         type: 'email_acl.changed',
         workspaceId: principal.workspaceId,

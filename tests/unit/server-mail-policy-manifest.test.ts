@@ -427,6 +427,10 @@ describe('server mail policy manifest', () => {
         resource: {
           kind: 'optional_message_lookup',
           messageId: { source: 'event_payload', field: 'messageId' },
+          // An orphaned mail job nulls message_id but keeps message_source_sqlite_id;
+          // consulting it fails closed (owner/admin only) instead of broadcasting the
+          // job as non_mail to every workspace user.
+          messageSourceSqliteId: { source: 'event_payload', field: 'messageSourceSqliteId' },
           whenAbsent: 'deny',
           whenNull: 'non_mail',
         },

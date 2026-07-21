@@ -2543,6 +2543,50 @@ describe('server mailbox ACL migration', () => {
     expect(testImap).toHaveBeenCalledTimes(2);
   });
 
+  test('requires admin for a stored-account test that overrides the endpoint with explicit credentials', async () => {
+    const testImap = jest.fn(async () => ({ success: true as const }));
+    const manageGrant = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.account.manage', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    // accountId is present but a NONEMPTY password + attacker host/port would make the
+    // resolver switch to the CALLER-SUPPLIED endpoint (an authenticated SSRF/port scan),
+    // so this must require admin even though the delegate holds mail.account.manage.
+    const overrideBody = {
+      accountId: ACCOUNT_A,
+      imapHost: 'internal.attacker.test',
+      imapPort: 22,
+      imapTls: true,
+      imapUsername: 'user',
+      imapPassword: 'attacker-supplied',
+    };
+    const testPorts = () => ({ mailConnectionTests: { testImap, async testPop3() { return { success: true as const }; }, async testSmtp() { return { success: true as const }; } } });
+
+    const delegateApi = createServerApi(makeHttpPorts({ grants: manageGrant, overrides: testPorts() }));
+    const denied = await delegateApi.handle({
+      method: 'POST', path: '/api/v1/email/accounts/test-imap', principal: makePrincipal(), body: overrideBody,
+    });
+    expect(denied).toMatchObject({ status: 403, body: { error: { code: 'forbidden' } } });
+    expect(testImap).not.toHaveBeenCalled();
+
+    // Owner/admin may still run an endpoint-overriding test (same authority as ad-hoc).
+    const ownerApi = createServerApi(makeHttpPorts({ overrides: testPorts() }));
+    const allowed = await ownerApi.handle({
+      method: 'POST', path: '/api/v1/email/accounts/test-imap', principal: makePrincipal('owner'), body: overrideBody,
+    });
+    expect(allowed.status).toBe(200);
+    expect(testImap).toHaveBeenCalledTimes(1);
+
+    // An EMPTY password uses the account's SAVED endpoint, so the delegate stays
+    // allowed — only the endpoint override requires admin.
+    const savedApi = createServerApi(makeHttpPorts({ grants: manageGrant, overrides: testPorts() }));
+    const savedAllowed = await savedApi.handle({
+      method: 'POST', path: '/api/v1/email/accounts/test-imap', principal: makePrincipal(),
+      body: { ...overrideBody, imapPassword: '' },
+    });
+    expect(savedAllowed.status).toBe(200);
+    expect(testImap).toHaveBeenCalledTimes(2);
+  });
+
   test('applies none, folder, message, and account scopes before message search pagination', async () => {
     await ensureScopedGrantFixtures();
     const db = createApplicationDb();
