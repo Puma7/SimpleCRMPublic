@@ -791,6 +791,38 @@ describe('mail ACL rollout central use', () => {
     expect(setRemoteContentPolicy).not.toHaveBeenCalled();
   });
 
+  test('PGP identity list is scoped to the caller for non-admins and full for owner/admin', async () => {
+    const listCalls: Array<Record<string, unknown>> = [];
+    const makeApi = () => createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() {
+          return { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+        },
+      }),
+      pgpIdentities: {
+        async list(input) { listCalls.push(input); return { items: [], nextCursor: null }; },
+      } as unknown as ServerApiPorts['pgpIdentities'],
+    });
+
+    // A delegated (non-admin) key manager: the list is admitted (restricted scope)
+    // and scoped to their OWN private identities.
+    await expect(makeApi().handle({
+      method: 'GET',
+      path: '/api/v1/pgp/identities',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 200 });
+    expect(listCalls.at(-1)).toMatchObject({ workspaceId: WORKSPACE_A, ownerUserId: USER_A });
+
+    // Owner/admin get the full workspace list (no owner filter).
+    await expect(makeApi().handle({
+      method: 'GET',
+      path: '/api/v1/pgp/identities',
+      principal: principal('owner'),
+    })).resolves.toMatchObject({ status: 200 });
+    expect(listCalls.at(-1)).not.toHaveProperty('ownerUserId');
+  });
+
   test('thread-alias PATCH authorizes the unchanged stored thread, not just the replacement', async () => {
     const deniedMessages = new Set<string>();
     const mailAccess: MailAccessService = {

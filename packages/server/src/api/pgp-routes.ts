@@ -23,6 +23,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './http';
 
@@ -676,6 +677,11 @@ async function handleListRoute(
         ...(cursor === undefined ? {} : { cursor }),
         ...(search === undefined ? {} : { search }),
         ...(email === undefined ? {} : { email }),
+        // Owner/admin see the full workspace list (management); a delegated key
+        // manager sees only their own private identities. Private keys are per-user,
+        // so this is the correct scope for the PGP panel's fingerprints and
+        // passphrase-rotation selector, and it avoids exposing the workspace-wide list.
+        ...(requireAdmin(principal) ? {} : { ownerUserId: principal.userId }),
       });
       return data(200, sanitizeIdentityList(result));
     }

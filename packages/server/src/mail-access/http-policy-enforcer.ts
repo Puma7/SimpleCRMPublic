@@ -59,6 +59,12 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/thread-aliases',
   '/api/v1/email/threads',
   '/api/v1/email/thread-alias-warnings',
+  // A delegated key manager (account-scoped mail.account.manage) can generate/rotate
+  // their own PGP identity but otherwise resolves to a restricted/empty metadata
+  // scope. Admit the identities LIST so the PGP panel loads; the route handler scopes
+  // the result to the caller's own identities for non-owner/admin (private keys are
+  // per-user), so this never exposes the workspace-wide list.
+  '/api/v1/pgp/identities',
   '/api/v1/workflows/:id/runs',
   '/api/v1/workflows/by-source/:sourceId/runs',
   '/api/v1/workflow-runs',

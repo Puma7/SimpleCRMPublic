@@ -1723,6 +1723,9 @@ describe('server edition repository boundaries', () => {
         workspaceId: 'workspace-a',
         limit: 50,
         email: 'identity@example.com',
+        // R21-1: a non-owner/admin caller's identity list is scoped to their own
+        // private identities (the token here is role 'user' = user-a).
+        ownerUserId: 'user-a',
       }]);
 
       const pgpPeerKeys = await app.inject({

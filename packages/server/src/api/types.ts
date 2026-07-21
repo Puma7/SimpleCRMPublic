@@ -4202,6 +4202,10 @@ export type PgpIdentityApiPort = {
     email?: string;
     cursor?: number;
     limit: number;
+    // When set, restrict the list to identities owned by this user. Passed by the
+    // HTTP route for non-owner/admin callers so a delegated key manager sees only
+    // their own (private) identities, never the workspace-wide list.
+    ownerUserId?: string;
   }): Promise<PgpIdentityListResult>;
   get(input: {
     workspaceId: string;

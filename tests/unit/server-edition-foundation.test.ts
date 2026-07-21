@@ -34665,6 +34665,8 @@ describe('server edition foundation', () => {
       cursor: 40,
       search: 'fingerprint',
       email: 'identity@example.com',
+      // R21-1: a non-owner/admin caller's identity list is scoped to their own.
+      ownerUserId: 'user-a',
     }]);
 
     const peerKeys = await api.handle({

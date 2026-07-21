@@ -89,6 +89,9 @@ export function createPostgresPgpIdentityReadPort(options: PostgresPgpReadPortOp
             .orderBy('id', 'asc')
             .limit(limit + 1);
 
+          // Actor-owned scope: a delegated key manager (non-owner/admin) sees only
+          // their own private identities, never the workspace-wide list.
+          if (input.ownerUserId !== undefined) query = query.where('user_id', '=', input.ownerUserId);
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.email !== undefined) query = query.where('email', '=', input.email);
           const search = input.search?.trim();
