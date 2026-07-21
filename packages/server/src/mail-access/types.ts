@@ -115,6 +115,11 @@ export type MailResourceLookupTarget =
   | Readonly<{ kind: 'folder'; id: number }>
   | Readonly<{ kind: 'message'; id: number }>
   | Readonly<{ kind: 'attachment'; id: number }>
+  // Resolve a stored attachment by its on-disk storage_path to the message(s) that
+  // own it, so a caller-supplied compose attachment path can be authorized against
+  // mail.attachment.read. Returns [] for a path with no owning attachment row (e.g. a
+  // freshly uploaded draft-local file), which the caller must authorize another way.
+  | Readonly<{ kind: 'attachment_path'; path: string }>
   | Readonly<{ kind: 'thread'; id: string }>
   | Readonly<{
     kind: 'metadata';

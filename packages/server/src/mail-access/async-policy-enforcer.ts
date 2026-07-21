@@ -182,16 +182,23 @@ export async function enforceMailJobPolicy(
     // mutation the base mail.send policy never covers — recheck it on the parent.
     await assertScheduledSendReplyParentTriage(job, actor.actor, requiredPorts);
     // Reply generation (mail.draft.create), message classification (mail.triage),
-    // and message-attributed workflow HTTP requests (mail.metadata.read) all read the
-    // message body — snippet/body_text/combined_text — and send it onward (to the AI
-    // provider, or into the interpolated URL/body of an outbound HTTP call), so the
-    // base permission is not enough; also require mail.content.read on the message.
-    // This runs at EXECUTION time, so a content grant revoked after workflow.execute
-    // queued the child (while the user retained the base grant) is caught here rather
-    // than slipping through the queue window. (A message-less http_request resolves to
-    // non_mail and returns above, so this only gates message-attributed ones.)
+    // message-attributed workflow HTTP requests (mail.metadata.read), and spam scoring
+    // (mail.triage) all read the message body — snippet/body_text/combined_text, or the
+    // raw RFC822/headers/bodies that runSecurityCheck ships to Rspamd — and send it
+    // onward, so the base permission is not enough; also require mail.content.read on
+    // the message. This runs at EXECUTION time (for user actors only — service jobs
+    // returned above), so a content grant revoked after the job was queued (while the
+    // user retained the base grant) is caught here rather than slipping through the
+    // queue window; trusted-service inbound scoring stays unchanged. (A message-less
+    // http_request resolves to non_mail and returns above, so this only gates
+    // message-attributed ones.)
     if (
-      (job.type === 'ai.reply_suggestion' || job.type === 'ai.classify' || job.type === 'workflow.http_request')
+      (
+        job.type === 'ai.reply_suggestion'
+        || job.type === 'ai.classify'
+        || job.type === 'workflow.http_request'
+        || job.type === 'mail.spam.score'
+      )
       && resolved.resources.kind === 'resources'
     ) {
       for (const resource of resolved.resources.resources) {

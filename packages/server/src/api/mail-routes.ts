@@ -1260,9 +1260,11 @@ async function handleEmailAccountDelete(
   // before these fire: every delegate who held a binding on the now-gone account
   // needs one to drop the inaccessible account and clear loaded mailbox state. (The
   // account.deleted event below reaches owners/admins only — the account is gone, so
-  // it cannot be authorized for delegates.)
-  for (const targetUserId of result.affectedUserIds ?? []) {
-    await ports.events?.publish({
+  // it cannot be authorized for delegates.) Each delegate's publish is independent —
+  // allSettled so a failure delivering one does not skip the remaining delegates (or
+  // the audit/publish below).
+  await Promise.allSettled(
+    (result.affectedUserIds ?? []).map((targetUserId) => ports.events?.publish({
       type: 'email_acl.changed',
       workspaceId: principal.workspaceId,
       entityType: 'email_acl',
@@ -1273,8 +1275,8 @@ async function handleEmailAccountDelete(
         targetUserId,
         state: 'deleted',
       },
-    });
-  }
+    }) ?? Promise.resolve()),
+  );
   await auditEmailAccount(ports, principal, 'email_account.deleted', result.account, {
     emailAddress: result.account.emailAddress,
   });

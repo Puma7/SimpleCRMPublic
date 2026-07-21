@@ -653,6 +653,15 @@ async function resolveHttpResources(
     };
   }
   const result = await lookupSingle(ports, workspaceId, target);
+  // A workspace-global (accountless) thread alias whose threads currently hold no
+  // messages resolves to no resource, which the empty-resource branch would 404 —
+  // even for an owner/admin who needs to repair or remove it. Route the empty case
+  // through the workspace-global scope gate instead (like canned_response_lookup), so
+  // owner/admin reach the handler; a genuinely missing alias then 404s at the
+  // handler's own lookup, and a restricted delegate stays denied by the scope gate.
+  if (resolution.kind === 'metadata_lookup' && resolution.entity === 'thread_alias' && result.resources.length === 0) {
+    return { kind: 'scope' };
+  }
   return resolution.kind === 'thread_lookup'
     ? { ...result, mode: 'any' }
     : result;
@@ -732,6 +741,47 @@ async function assertSupplementalHttpPermissions(
           permission,
           resource: target[0]!,
         });
+      }
+    }
+    // resolveComposeAttachments only checks each caller-supplied attachment path stays
+    // beneath the shared attachment root, then reads and transmits its bytes — so a
+    // send-authorized delegate could exfiltrate any account's attachment by supplying
+    // its path. Authorize every path: a freshly uploaded file under THIS draft's own
+    // upload folder is covered by the mail.draft.edit asserted above (no owning
+    // attachment row exists yet); any other path must resolve to an existing message
+    // attachment the caller holds mail.attachment.read on.
+    const rawAttachmentPaths = bodyField(req.body, 'attachmentPaths');
+    if (Array.isArray(rawAttachmentPaths)) {
+      const draftResource = baseResources[0];
+      const draftMessageId = draftResource && draftResource.type === 'message'
+        ? draftResource.messageId
+        : undefined;
+      const draftLocalPrefix = draftMessageId === undefined
+        ? undefined
+        : `${workspaceId}/compose-drafts/${draftMessageId}/`;
+      for (const rawPath of rawAttachmentPaths) {
+        if (typeof rawPath !== 'string' || rawPath.length === 0) throw new MailAccessDeniedError();
+        // Draft-local upload carve-out: under this draft's folder and no `..` escape.
+        if (
+          draftLocalPrefix
+          && rawPath.startsWith(draftLocalPrefix)
+          && !rawPath.split('/').includes('..')
+        ) {
+          continue;
+        }
+        const owners = await ports.mailResourceLookup!.resolve({
+          workspaceId,
+          target: { kind: 'attachment_path', path: rawPath },
+        });
+        if (owners.length === 0) throw new MailAccessDeniedError();
+        for (const resource of owners) {
+          await ports.mailAccess!.assertPermission({
+            workspaceId,
+            actor,
+            permission: 'mail.attachment.read',
+            resource,
+          });
+        }
       }
     }
   }

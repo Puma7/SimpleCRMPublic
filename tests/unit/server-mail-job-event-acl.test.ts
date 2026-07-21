@@ -217,8 +217,13 @@ describe('server mail job and event ACL', () => {
       { kind: 'message', id: 12 },
     ]);
     expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([
+      // mail.spam.score: base mail.triage, then the content-read supplemental because
+      // scoring reads the body and ships raw content to Rspamd (user-attributed only).
       ['mail.triage', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
       ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      // workflow.execute (message 12): base mail.content.read.
+      ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      // mail.send.scheduled (draft 12): base mail.send.
       ['mail.send', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
     ]);
     expect(ports.scopePermissions).toEqual([]);
@@ -260,6 +265,35 @@ describe('server mail job and event ACL', () => {
       type: 'ai.review',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'inbound' },
     }), makePolicyPorts({ denyPermissions: new Set(['mail.triage']) }))).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('mail.spam.score requires content-read for user-attributed jobs, not trusted-service', async () => {
+    // User-attributed scoring reads the body and ships raw RFC822/headers/bodies to
+    // Rspamd, so a triage delegate that lost content.read is refused at execution.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // With content.read retained, both the base triage and the content-read supplemental are asserted.
+    const allowed = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.triage',
+      'mail.content.read',
+    ]);
+
+    // Trusted-service inbound scoring carries no per-user actor, so it stays authorized
+    // without a content-read grant — the normal IMAP-sync path is unaffected.
+    const service = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
   });
 
   test('workflow execution resolves delayed-job mail, rejects mismatches, and validates non-mail provenance', async () => {

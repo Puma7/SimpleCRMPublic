@@ -557,7 +557,10 @@ describe('mail ACL rollout central use', () => {
       // per row for a metadata-only delegate.
       'scope:mail.metadata.read',
       'scope:mail.content.read',
+      // mail.spam.score (user-attributed): base mail.triage, then the content-read
+      // supplemental because scoring reads the body and ships raw content to Rspamd.
       'assert:mail.triage:message',
+      'assert:mail.content.read:message',
       'assert:mail.metadata.read:message',
     ]);
   });

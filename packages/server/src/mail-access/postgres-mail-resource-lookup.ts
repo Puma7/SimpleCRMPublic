@@ -206,6 +206,22 @@ async function resolveTarget(
       .executeTakeFirst();
     return row ? resourceFromMessageRow(row) : [];
   }
+  if (target.kind === 'attachment_path') {
+    const rows = await trx
+      .selectFrom('email_message_attachments as attachment')
+      .innerJoin('email_messages as message', (join) => join
+        .onRef('message.id', '=', 'attachment.message_id')
+        .onRef('message.workspace_id', '=', 'attachment.workspace_id'))
+      .select([
+        'message.id as message_id',
+        'message.account_id as account_id',
+        'message.folder_id as folder_id',
+      ])
+      .where('attachment.workspace_id', '=', workspaceId)
+      .where('attachment.storage_path', '=', target.path)
+      .execute();
+    return rows.flatMap(resourceFromMessageRow);
+  }
   if (target.kind === 'thread') {
     const canonicalThreadId = await resolveCanonicalLookupThreadId(trx, workspaceId, target.id);
     const rows = await trx

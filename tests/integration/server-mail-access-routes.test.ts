@@ -561,6 +561,17 @@ describe('server mailbox ACL migration', () => {
             messageId: String(MESSAGE_A),
           }];
         }
+        if (target.kind === 'attachment_path') {
+          // A stored attachment path owned by MESSAGE_A; any other path is unowned.
+          return target.path === 'workspace-a/synced/invoice.pdf'
+            ? [{
+              type: 'message',
+              accountId: String(ACCOUNT_A),
+              folderId: String(FOLDER_A),
+              messageId: String(MESSAGE_A),
+            }]
+            : [];
+        }
         if (target.kind === 'canned_response') {
           // 8801 = account-scoped (ACCOUNT_A); 8802 = global/missing → [] (scope gate).
           if (target.id === 8801) return [{ type: 'account', accountId: String(ACCOUNT_A) }];
@@ -1953,6 +1964,73 @@ describe('server mailbox ACL migration', () => {
     });
     expect(attachmentAllowed.status).toBe(200);
     expect(sendAsAllowed.status).toBe(200);
+  });
+
+  test('compose send authorizes each supplied attachment path against mail.attachment.read', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A }));
+    const baseBody = {
+      accountId: ACCOUNT_A,
+      draftMessageId: MESSAGE_A,
+      subject: 'S',
+      bodyText: 'B',
+      to: 'recipient@example.test',
+    };
+    // A delegate that can edit + send this draft but holds no mail.attachment.read.
+    const editSend = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.edit', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.send', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const api = createServerApi(makeHttpPorts({
+      grants: editSend,
+      overrides: { emailMessages: { get: getMessage }, emailComposeSender: { send } },
+    }));
+
+    // A synced attachment owned by MESSAGE_A requires mail.attachment.read the caller lacks.
+    const foreignDenied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: { ...baseBody, attachmentPaths: ['workspace-a/synced/invoice.pdf'] },
+    });
+    // A path with no owning attachment row that is not this draft's upload folder is denied.
+    const unownedDenied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: { ...baseBody, attachmentPaths: ['workspace-a/other/secret.pdf'] },
+    });
+    expect(foreignDenied.status).toBe(404);
+    expect(unownedDenied.status).toBe(404);
+    expect(send).not.toHaveBeenCalled();
+
+    // This draft's own freshly uploaded file is covered by the mail.draft.edit above.
+    const draftLocal = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: { ...baseBody, attachmentPaths: [`${WORKSPACE_A}/compose-drafts/${MESSAGE_A}/ab12-file.pdf`] },
+    });
+    expect(draftLocal.status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // With mail.attachment.read on the account, the synced attachment is accepted.
+    const withAttachmentRead = new Map(editSend);
+    withAttachmentRead.set('mail.attachment.read', [
+      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
+    ]);
+    const authorizedApi = createServerApi(makeHttpPorts({
+      grants: withAttachmentRead,
+      overrides: { emailMessages: { get: getMessage }, emailComposeSender: { send } },
+    }));
+    const authorized = await authorizedApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/compose/send',
+      principal: makePrincipal(),
+      body: { ...baseBody, attachmentPaths: ['workspace-a/synced/invoice.pdf'] },
+    });
+    expect(authorized.status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(2);
   });
 
   test('requires mail.draft.edit to send (send rewrites the stored draft)', async () => {
