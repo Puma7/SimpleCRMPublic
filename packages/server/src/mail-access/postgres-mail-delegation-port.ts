@@ -324,7 +324,11 @@ export function createPostgresMailDelegationPort(
           }
           const affectedUserIds = await affectedUsersForSubject(trx, input.workspaceId, rowSubject(existing));
           await trx.deleteFrom('mail_acl_bindings').where('id', '=', input.bindingId).execute();
-          return { ok: true as const, bindingId: input.bindingId, affectedUserIds };
+          // Return the deleted binding's resource as tombstone data so the route can
+          // carry it in the email_acl.changed event — the delivery filter needs it to
+          // reach a PEER non-admin mail.delegation.manage holder scoped to that
+          // account/folder, whose panel would otherwise keep the deleted row.
+          return { ok: true as const, bindingId: input.bindingId, resource, affectedUserIds };
         },
         sessionOptions,
       );

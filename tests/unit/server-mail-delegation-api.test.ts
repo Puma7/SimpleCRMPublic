@@ -349,6 +349,34 @@ describe('server mail delegation API', () => {
       },
     }));
   });
+
+  test('binding deletion carries the deleted resource so scoped peer managers are invalidated', async () => {
+    const events = { publish: jest.fn(async () => undefined) };
+    const mailDelegation = delegationPort({
+      deleteBinding: async () => ({
+        ok: true,
+        bindingId: 900,
+        resource: { type: 'folder', accountId: ACCOUNT, folderId: FOLDER },
+        affectedUserIds: [AGENT],
+      }),
+    });
+    const api = createServerApi(ports({ mailDelegation, events }));
+
+    const res = await api.handle({ method: 'DELETE', path: '/api/v1/email/access/bindings/900', principal: owner });
+    expect(res.status).toBe(200);
+    // R34-2: the deletion invalidation carries the deleted binding's resource so the
+    // event filter can deliver it to a PEER non-admin mail.delegation.manage holder
+    // scoped to that folder — not only the affected subject.
+    expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      entityId: '900',
+      payload: {
+        bindingId: 900, targetUserId: AGENT, state: 'deleted',
+        resourceType: 'folder', accountId: ACCOUNT, folderId: FOLDER,
+      },
+    }));
+  });
 });
 
 function principal(userId: string, role: AuthenticatedPrincipal['role']): AuthenticatedPrincipal {
@@ -409,7 +437,7 @@ function delegationPort(
       affectedUserIds: [AGENT],
       deleted: input.permissions.length === 0,
     })),
-    deleteBinding: jest.fn(async () => ({ ok: true as const, bindingId: 900, affectedUserIds: [AGENT] })),
+    deleteBinding: jest.fn(async () => ({ ok: true as const, bindingId: 900, resource: { type: 'folder' as const, accountId: ACCOUNT, folderId: FOLDER }, affectedUserIds: [AGENT] })),
     ...overrides,
   } as unknown as jest.Mocked<MailDelegationApiPort> & {
     listResourceOptions: jest.Mock;

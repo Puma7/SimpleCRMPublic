@@ -806,6 +806,61 @@ describe('mail ACL rollout central use', () => {
     expect(getDecision).toHaveBeenCalledTimes(1);
   });
 
+  test('spam decision item PATCH and DELETE require content-read for the breakdown response', async () => {
+    // handleUpdateDecision / handleDeleteDecision echo sanitizeDecision(decision) —
+    // breakdown included — so a mail.triage delegate lacking content.read must be denied
+    // before the mutation handler runs, or the mutation response leaks the body-derived
+    // feature signals the GET path already gates.
+    const decisionRecord = {
+      id: 77, sourceSqliteId: 77, messageSourceSqliteId: null, accountSourceSqliteId: null,
+      messageId: MESSAGE_A, accountId: ACCOUNT_A, score: 5, status: 'review' as const,
+      source: 'server_api', breakdown: { featureKeys: ['token:secret'] }, modelVersion: 1,
+      createdAt: null, updatedAt: '2026-07-20T10:00:00.000Z',
+    };
+    const updateDecision = jest.fn(async () => ({ ok: true as const, decision: decisionRecord }));
+    const deleteDecision = jest.fn(async () => decisionRecord);
+    const withMailAccess = (mailAccess: MailAccessService) => createServerApi({
+      ...makeCentralPorts(mailAccess),
+      mailResourceLookup: {
+        async resolve(input) {
+          if (input.target.kind === 'metadata' && input.target.entity === 'spam_decision') {
+            return [messageResource(ACCOUNT_A, FOLDER_A, MESSAGE_A)];
+          }
+          if (input.target.kind === 'message') return [messageResource(ACCOUNT_A, FOLDER_A, Number(input.target.id))];
+          return [];
+        },
+      },
+      spamDecisions: { update: updateDecision, delete: deleteDecision } as unknown as ServerApiPorts['spamDecisions'],
+    });
+
+    const denyContentRead = withMailAccess({
+      async assertPermission(input) { if (input.permission === 'mail.content.read') throw new MailAccessDeniedError(); },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await expect(denyContentRead.handle({
+      method: 'PATCH', path: '/api/v1/spam/decisions/77', principal: principal(), body: { score: 7 },
+    })).resolves.toMatchObject({ status: 404 });
+    await expect(denyContentRead.handle({
+      method: 'DELETE', path: '/api/v1/spam/decisions/77', principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(updateDecision).not.toHaveBeenCalled();
+    expect(deleteDecision).not.toHaveBeenCalled();
+
+    // With content.read granted, the enforcer passes and both mutation handlers run.
+    const allowAll = withMailAccess({
+      async assertPermission() {},
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await expect(allowAll.handle({
+      method: 'PATCH', path: '/api/v1/spam/decisions/77', principal: principal(), body: { score: 7 },
+    })).resolves.toMatchObject({ status: 200 });
+    await expect(allowAll.handle({
+      method: 'DELETE', path: '/api/v1/spam/decisions/77', principal: principal(),
+    })).resolves.toMatchObject({ status: 200 });
+    expect(updateDecision).toHaveBeenCalledTimes(1);
+    expect(deleteDecision).toHaveBeenCalledTimes(1);
+  });
+
   test('spam learning-event item GET requires content-read in addition to metadata', async () => {
     // sanitizeLearningEvent returns featureKeys derived from the hidden body/HTML
     // (buildFeaturePreview), so a metadata-only delegate that obtains a learning

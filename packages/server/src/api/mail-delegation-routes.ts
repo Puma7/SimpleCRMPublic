@@ -208,6 +208,10 @@ async function handleDelete(
   if (!result.ok) return mutationError(result.code);
   await auditAndPublish(ports, principal, 'email_acl.binding_deleted', null, {
     bindingId,
+    // Carry the deleted binding's resource as tombstone data so the email_acl.changed
+    // event reaches a PEER non-admin mail.delegation.manage holder scoped to it — their
+    // delegation panel would otherwise keep the deleted row until a manual refresh.
+    resource: result.resource,
     permissions: [],
     affectedUserIds: result.affectedUserIds,
     deleted: true,

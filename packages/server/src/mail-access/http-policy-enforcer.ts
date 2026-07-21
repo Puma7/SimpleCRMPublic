@@ -953,15 +953,18 @@ async function assertSupplementalHttpPermissions(
   // fetching either item discloses content. Both item GETs are resource-authorized
   // on mail.metadata.read (metadataPath), so a metadata-only delegate who obtains an
   // id from the spam_decision.created / spam_learning_event.created event can reach
-  // them; also require mail.content.read on the resource. The collection GETs are
-  // scope-gated (mailScope) and stay owner/admin-only, so they have no parallel
-  // exposure.
+  // them; also require mail.content.read on the resource. The decision PATCH/DELETE
+  // (authorized on mail.triage) ALSO echo the mutated/deleted record back through
+  // sanitizeDecision — breakdown included — so a triage-only delegate lacking content
+  // access could read the same body-derived signals through the mutation response;
+  // gate those on mail.content.read too. The collection GETs are scope-gated
+  // (mailScope) and stay owner/admin-only, so they have no parallel exposure.
   if (
-    req.method === 'GET'
-    && (
+    (
       canonicalPath === '/api/v1/spam/decisions/:id'
-      || canonicalPath === '/api/v1/spam/learning-events/:id'
+      && (req.method === 'GET' || req.method === 'PATCH' || req.method === 'DELETE')
     )
+    || (canonicalPath === '/api/v1/spam/learning-events/:id' && req.method === 'GET')
   ) {
     for (const resource of baseResources) {
       await ports.mailAccess!.assertPermission({

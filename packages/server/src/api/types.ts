@@ -864,7 +864,7 @@ export type MailDelegationApiPort = {
     workspaceId: string;
     actor: MailDelegationActor;
     bindingId: number;
-  }): Promise<{ ok: true; bindingId: number; affectedUserIds: readonly string[] } | { ok: false; code: MailDelegationMutationCode }>;
+  }): Promise<{ ok: true; bindingId: number; resource: MailDelegationResource; affectedUserIds: readonly string[] } | { ok: false; code: MailDelegationMutationCode }>;
 };
 
 export type CustomerApiPort = {
