@@ -529,20 +529,63 @@ describe('server mail job and event ACL', () => {
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 731, messageId: 12 },
     }), legacy)).rejects.toMatchObject({ nonRetryable: true });
 
-    // A non-triage node (email.create_draft needs mail.draft.create, not triage) adds
-    // no triage requirement here — content.read only.
+    // email.create_draft is not a triage node — it adds NO mail.triage requirement.
+    // (It has its own mail.draft.create recheck, exercised in the R39-2 test below, so
+    // here the assertions are content.read + draft.create — never triage.)
     const draftOnly = makePolicyPorts({ workflowGraphs: graphs });
     await enforceMailJobPolicy(job({
       type: 'workflow.execute',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 732, messageId: 12 },
     }), draftOnly);
-    expect(draftOnly.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+    expect(draftOnly.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.create']);
+    expect(draftOnly.assertions.some((entry) => entry.permission === 'mail.triage')).toBe(false);
 
     // Trusted-service runs return before the supplemental.
     const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.triage']) });
     await enforceMailJobPolicy(job({
       type: 'workflow.execute',
       payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 730, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
+  test('rechecks mail.draft.create for a workflow.execute whose current graph creates a draft (R39-2)', async () => {
+    // An email.create_draft node persists a compose/reply draft on the message under the
+    // system role (createWorkflowComposeDraft), yet the base policy only requires
+    // content.read. A user-attributed run whose actor lacks/lost mail.draft.create must
+    // be denied.
+    const draftGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.create_draft' } }] };
+    const noDraftGraph = { nodes: [{ type: 'trigger' }, { type: 'registry', data: { nodeType: 'ai.classify' } }] };
+    const graphs = new Map<number, unknown>([[740, draftGraph], [741, noDraftGraph]]);
+
+    // Draft-create-node graph + mail.draft.create revoked → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 740, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.create']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.draft.create retained: base content.read + the draft.create supplemental.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 740, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.create']);
+
+    // A graph without a draft-create node adds no draft.create requirement.
+    const noDraft = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 741, messageId: 12 },
+    }), noDraft);
+    expect(noDraft.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // Trusted-service runs return before the supplemental.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.create']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 740, messageId: 12 }),
     }), service);
     expect(service.assertions).toEqual([]);
   });

@@ -303,6 +303,12 @@ export async function enforceMailJobPolicy(
         resolved.resources.resources,
         requiredPorts,
       );
+      await assertWorkflowExecuteDraftCreateNodePrivilege(
+        job,
+        actor.actor,
+        resolved.resources.resources,
+        requiredPorts,
+      );
     }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
@@ -447,8 +453,8 @@ async function assertWorkflowExecuteDeleteNodePrivilege(
 // recheck mail.triage on the resolved message when the CURRENT graph contains any of
 // them. The set carries BOTH the registry dotted form and the legacy canvas action
 // alias, because sideEffectRuntimeType returns the bare actionType for action nodes.
-// (email.delete_server → mail.delete is handled above; email.create_draft →
-// mail.draft.create is a separate gap and intentionally NOT here.)
+// (email.delete_server → mail.delete and email.create_draft → mail.draft.create are
+// each their own permission and handled by dedicated rechecks above/below, not here.)
 const WORKFLOW_TRIAGE_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'email.tag', 'tag',
   'email.set_category', 'set_category',
@@ -482,6 +488,39 @@ async function assertWorkflowExecuteTriageNodePrivilege(
       workspaceId: job.workspaceId,
       actor,
       permission: 'mail.triage',
+      resource,
+    });
+  }
+}
+
+// R39-2: an email.create_draft workflow node calls createWorkflowComposeDraft, which
+// persists a reply/compose draft on the message under the SYSTEM-role transaction with
+// no per-actor ACL, exactly like the ai.agent/ai.pick_canned createDraft children the
+// job policy already gates. The base workflow.execute policy only requires
+// mail.content.read, so a user-attributed run (e.g. a user-triggered sync) whose actor
+// lacks — or has since lost — mail.draft.create could still mint a draft through the
+// node. Recheck mail.draft.create on the resolved message when the CURRENT graph
+// contains an email.create_draft node (matching its HTTP-equivalent permission). Only
+// the registry runtime type exists (no legacy canvas action alias).
+async function assertWorkflowExecuteDraftCreateNodePrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  resources: readonly MailResource[],
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (!loaded || !workflowGraphHasNodeType(loaded.graph, 'email.create_draft')) return;
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.draft.create',
       resource,
     });
   }
