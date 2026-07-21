@@ -1412,6 +1412,41 @@ describe('server mail job and event ACL', () => {
     expect(resourceless.assertions).toEqual([]);
   });
 
+  test('email_account.updated reaches a child (folder)-scoped delegate but not one scoped to another account (R44-2)', async () => {
+    const accountUpdated = event({
+      type: 'email_account.updated',
+      entityType: 'email_account',
+      entityId: '7',
+      payload: { accountId: 7 },
+    });
+    const principal = { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const };
+
+    // A delegate scoped only to folder 8 (which belongs to account 7) renders a redacted
+    // parent account 7, so the account UPDATE must reach them even though a child grant
+    // cannot authorize the parent account resource directly.
+    const childScoped = makePolicyPorts({
+      scope: { kind: 'restricted', accountIds: [], folderIds: [8], messageIds: [] },
+      folderAccounts: new Map([[8, '7']]),
+    });
+    await expect(filterMailEventForPrincipal(accountUpdated, { principal, ports: childScoped }))
+      .resolves.toMatchObject({ type: 'email_account.updated' });
+
+    // A delegate scoped only to folder 9 (account 8) has no visibility of account 7 → dropped.
+    const unrelated = makePolicyPorts({
+      scope: { kind: 'restricted', accountIds: [], folderIds: [9], messageIds: [] },
+      folderAccounts: new Map([[9, '8']]),
+    });
+    await expect(filterMailEventForPrincipal(accountUpdated, { principal, ports: unrelated }))
+      .resolves.toBeNull();
+
+    // An owner receives it regardless of scope (short-circuits before the scope check).
+    const ownerPrincipal = { workspaceId: 'workspace-a', userId: 'owner-a', role: 'owner' as const };
+    await expect(filterMailEventForPrincipal(
+      accountUpdated,
+      { principal: ownerPrincipal, ports: makePolicyPorts({ scope: { kind: 'none' } }) },
+    )).resolves.toMatchObject({ type: 'email_account.updated' });
+  });
+
   test('event resource matrix covers account message metadata edge parents thread any spam fallback deny and workspace-global', async () => {
     const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
     const context = {
@@ -1792,6 +1827,9 @@ function makePolicyPorts(options: {
   replyParents?: ReadonlyMap<number, { replyParentMessageId: number | null; markParentDone: boolean } | null>;
   scheduledDraftAttachmentPaths?: ReadonlyMap<number, readonly string[] | null>;
   workflowGraphs?: ReadonlyMap<number, unknown>;
+  scope?: { kind: 'all' } | { kind: 'none' }
+    | { kind: 'restricted'; accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] };
+  folderAccounts?: ReadonlyMap<number, string>;
 } = {}) {
   const lookups: unknown[] = [];
   const delayedJobLookups: number[] = [];
@@ -1828,7 +1866,7 @@ function makePolicyPorts(options: {
       async resolveScope(input: { permission: string }) {
         if (options.denyAllMailAccess) throw new Error('mail_access_denied');
         scopePermissions.push(input.permission);
-        return { kind: 'restricted' as const, accountIds: [7], folderIds: [], messageIds: [] };
+        return options.scope ?? { kind: 'restricted' as const, accountIds: [7], folderIds: [], messageIds: [] };
       },
     },
     mailResourceLookup: {
@@ -1864,6 +1902,10 @@ function makePolicyPorts(options: {
             { type: 'message' as const, accountId: '7', folderId: '8', messageId: '101' },
             { type: 'message' as const, accountId: '7', folderId: '8', messageId: '12' },
           ];
+        }
+        if (input.target.kind === 'folder') {
+          const accountId = options.folderAccounts?.get(Number(input.target.id));
+          return accountId ? [{ type: 'folder' as const, accountId, folderId: String(input.target.id) }] : [];
         }
         return [];
       },

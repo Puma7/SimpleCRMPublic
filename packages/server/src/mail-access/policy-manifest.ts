@@ -17,6 +17,14 @@ export type PolicyValueSelector = Readonly<{
 export type MailResourceResolution =
   | Readonly<{ kind: 'mail_scope' }>
   | Readonly<{ kind: 'account'; accountId: PolicyValueSelector }>
+  // Like 'account', but ALSO authorizes a delegate who reaches the account only through a
+  // child (folder/message) grant — matching the read port's parent-aware account visibility
+  // (parentAwareAccountVisibility), which shows such a delegate a redacted parent account so
+  // the mailbox tree can render it. Used for email_account.updated so a folder/message
+  // delegate's tree refreshes the account's visible identity fields (displayName/email). The
+  // sanitized payload (accountId + state) is already enumerable by any delegate that renders
+  // the parent, so widening delivery this way leaks nothing.
+  | Readonly<{ kind: 'account_parent_aware'; accountId: PolicyValueSelector }>
   | Readonly<{
     kind: 'optional_account';
     accountId: PolicyValueSelector;
@@ -794,6 +802,14 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
   }
   if (type.startsWith('conversation_lock.') || type === 'email_message.updated' || type === 'email_tracking.updated') {
     return { kind: 'message_lookup', messageId: eventValue('entityId') };
+  }
+  if (type === 'email_account.updated') {
+    // A folder/message delegate legitimately renders a redacted parent account, so an
+    // account UPDATE (label/identity refresh) must reach them too — the plain 'account'
+    // resource authorization drops it because a child grant cannot authorize its parent
+    // account. .created/.deleted stay 'account'/owner_admin_only (a brand-new account has
+    // no child grants yet; deletions are owner/admin-only tombstones).
+    return { kind: 'account_parent_aware', accountId: eventValue('entityId') };
   }
   if (type.startsWith('email_account.')) {
     return { kind: 'account', accountId: eventValue('entityId') };

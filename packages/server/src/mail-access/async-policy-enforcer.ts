@@ -77,6 +77,7 @@ type ResolvedResources =
   | Readonly<{ kind: 'scope' }>
   | Readonly<{ kind: 'owner_admin' }>
   | Readonly<{ kind: 'owner_admin_or_user'; userId: string }>
+  | Readonly<{ kind: 'account_visible'; accountId: string }>
   | Readonly<{ kind: 'resources'; resources: readonly MailResource[]; mode: 'all' | 'any' }>;
 
 type ResolvedJobResources = Readonly<{
@@ -1010,6 +1011,10 @@ async function resolveResources(input: {
     throw new MailAsyncAuthorizationError();
   }
 
+  if (resolution.kind === 'account_parent_aware') {
+    return { kind: 'account_visible', accountId: String(requirePositiveInt(input.select(resolution.accountId))) };
+  }
+
   let target: MailResourceLookupTarget;
   if (resolution.kind === 'account') {
     target = { kind: 'account', id: requirePositiveInt(input.select(resolution.accountId)) };
@@ -1107,7 +1112,7 @@ async function assertResolvedResources(input: {
   actor: MailAccessActor;
   permission: MailEventPolicyEntry['permission'] | Extract<ServerJobPolicyEntry, { kind: 'mail' }>['permission'];
   resources: ResolvedResources;
-  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess'>>;
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>;
 }): Promise<void> {
   if (input.resources.kind === 'non_mail') return;
   if (input.resources.kind === 'owner_admin') {
@@ -1128,6 +1133,38 @@ async function assertResolvedResources(input: {
     });
     if (scope.kind === 'none') throw new MailAsyncAuthorizationError();
     return;
+  }
+  if (input.resources.kind === 'account_visible') {
+    if (input.actor.isOwner || input.actor.isAdmin) return;
+    const scope = await input.ports.mailAccess.resolveScope({
+      workspaceId: input.workspaceId,
+      actor: input.actor,
+      permission: input.permission,
+    });
+    if (scope.kind === 'all') return;
+    if (scope.kind === 'none') throw new MailAsyncAuthorizationError();
+    const { accountId } = input.resources;
+    // Direct account grant.
+    if (scope.accountIds.some((id) => String(id) === accountId)) return;
+    // Child (folder/message) grant UNDER the account: the delegate renders a redacted
+    // parent account for it (parentAwareAccountVisibility), so the update must reach them.
+    // Map each scoped folder/message back to its account via the existing resolver; any
+    // hit authorizes. Owner/admin and direct-account grants already returned above.
+    for (const folderId of scope.folderIds) {
+      const resources = await input.ports.mailResourceLookup.resolve({
+        workspaceId: input.workspaceId,
+        target: { kind: 'folder', id: folderId },
+      });
+      if (resources.some((resource) => resource.accountId === accountId)) return;
+    }
+    for (const messageId of scope.messageIds) {
+      const resources = await input.ports.mailResourceLookup.resolve({
+        workspaceId: input.workspaceId,
+        target: { kind: 'message', id: messageId },
+      });
+      if (resources.some((resource) => resource.accountId === accountId)) return;
+    }
+    throw new MailAsyncAuthorizationError();
   }
   if (input.resources.mode === 'any') {
     for (const resource of input.resources.resources) {

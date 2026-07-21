@@ -687,6 +687,10 @@ async function resolveHttpResources(
     target = { kind: 'attachment', id: requirePositiveInt(selectorValue(req, canonicalPath, resolution.attachmentId)) };
   } else if (resolution.kind === 'thread_lookup') {
     target = { kind: 'thread', id: requireThreadId(selectorValue(req, canonicalPath, resolution.threadId)) };
+  } else if (resolution.kind === 'account_parent_aware') {
+    // Event-only resolution (email_account.updated delivery to child-scoped delegates); no
+    // HTTP route maps to it, so fail closed rather than treat it as a metadata lookup.
+    throw new MailAccessDeniedError();
   } else {
     target = {
       kind: 'metadata',
