@@ -351,17 +351,37 @@ async function resolveMetadataTarget(
       .where('id', '=', target.id)
       .executeTakeFirst();
     if (!row) return [];
-    if (row.account_id !== null || row.account_source_sqlite_id !== null) {
-      return resolveAccountColumns(trx, workspaceId, row.account_id, row.account_source_sqlite_id);
-    }
+    // The alias record exposes BOTH thread ids, so authorization must require visibility
+    // into BOTH threads (the enforcer applies mode 'all' to the returned resources) — the
+    // nominal account column must never stand in for a NON-empty thread that belongs to
+    // another account (the R43-1 leak; mirrors the R42-2 list-predicate fix). Resolve each
+    // thread's messages, and fall back to the alias's own account ONLY for an EMPTY thread
+    // (merged away / not yet populated), so an appropriately-scoped account delegate (or
+    // owner/admin) can still manage it while a non-empty foreign thread stays gated on its
+    // own messages. Both threads empty + accountless → [] → the enforcer routes to the
+    // workspace-global scope gate (owner/admin). (An accountless alias yields an empty
+    // fallback, so its behaviour is unchanged.)
+    const accountFallback = await resolveAccountColumns(
+      trx,
+      workspaceId,
+      row.account_id,
+      row.account_source_sqlite_id,
+    );
     const messages = await trx
       .selectFrom('email_messages')
-      .select(['id as message_id', 'account_id', 'folder_id'])
+      .select(['id as message_id', 'account_id', 'folder_id', 'thread_id'])
       .where('workspace_id', '=', workspaceId)
       .where('thread_id', 'in', [row.alias_thread_id, row.canonical_thread_id])
       .orderBy('id', 'asc')
       .execute();
-    return messages.flatMap(resourceFromMessageRow);
+    const resources: MailResource[] = [];
+    for (const threadId of [row.alias_thread_id, row.canonical_thread_id]) {
+      const threadResources = messages
+        .filter((message) => message.thread_id === threadId)
+        .flatMap(resourceFromMessageRow);
+      resources.push(...(threadResources.length > 0 ? threadResources : accountFallback));
+    }
+    return resources;
   }
 
   if (target.entity === 'account_signature') {
