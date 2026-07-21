@@ -2465,6 +2465,13 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     id: number;
     includeBody: boolean;
+    // Present only for a restricted-scope delegate (owner/admin resolve to scope 'all',
+    // which skips the wrapper): the read port computes reply_parent_visible from mailScope
+    // so a scope-invisible reply-parent id is nulled (R50-1), and attachment_readable from
+    // mailAttachmentScope so draft attachment paths are redacted for a caller lacking
+    // mail.attachment.read (R50-2). Absent ⇒ scope 'all' ⇒ neither predicate ⇒ full row.
+    mailScope?: MailSqlScope;
+    mailAttachmentScope?: MailSqlScope;
   }): Promise<EmailMessageRecord | null>;
   createComposeDraft?(input: {
     workspaceId: string;

@@ -311,11 +311,16 @@ type EmailMessageApiRow =
     // caller lacks mail.content.read on it. Absent ⇒ fully readable (owner/admin
     // or content-authorized), so nothing is redacted.
     content_readable?: boolean;
-    // Present only for a scoped list/conversation/thread caller: false ⇒ the row's
-    // reply_parent_message_id points to a message OUTSIDE the caller's scope, so the id
+    // Present only for a scoped list/conversation/thread/single-fetch caller: false ⇒ the
+    // row's reply_parent_message_id points to a message OUTSIDE the caller's scope, so the id
     // must be nulled to avoid disclosing the hidden parent's existence/id. Absent ⇒ scope
     // 'all' (owner/admin) ⇒ the id passes through unchanged.
     reply_parent_visible?: boolean;
+    // Present only for a caller with a restricted mail.attachment.read scope (list or single
+    // fetch): false ⇒ the row falls outside that scope, so draft_attachment_paths_json (uploaded
+    // filenames + full server-side storage paths — attachment data) must be redacted. Absent ⇒
+    // attachment scope 'all'/absent (owner/admin, or attachment-authorized) ⇒ paths pass through.
+    attachment_readable?: boolean;
   };
 
 type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
@@ -830,6 +835,15 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             if (contentPredicate) {
               query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
             }
+            if (attachmentPredicate) {
+              // draft_attachment_paths_json (uploaded filenames + full server-side storage
+              // paths) is attachment data, so expose per row WHETHER the caller's independent
+              // mail.attachment.read scope covers it; the mapper redacts the paths otherwise.
+              // A content.read delegate lacking attachment.read thus cannot read draft
+              // attachment paths through the list. undefined ⇒ attachment scope 'all'/absent ⇒
+              // column absent ⇒ paths returned unchanged (owner/admin, or attachment-authorized).
+              query = query.select(kyselySql<boolean>`(${attachmentPredicate})`.as('attachment_readable'));
+            }
             const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
               accountId: 'reply_parent.account_id',
               folderId: 'reply_parent.folder_id',
@@ -1053,13 +1067,46 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          // A restricted delegate reaches the single-message fetch with mail.content.read on
+          // THIS message (the route's message_lookup resource check), but the row it echoes
+          // still carries reply_parent_message_id — which may point to a message OUTSIDE the
+          // caller's scope (cross-account replies are allowed) — and draft_attachment_paths_json
+          // (uploaded filenames + full server-side storage paths). Compute the same per-row
+          // redaction flags the list query does so mapEmailMessageRow can null a scope-invisible
+          // reply-parent id (R50-1) and redact the draft attachment paths for a caller lacking
+          // mail.attachment.read (R50-2). Owner/admin pass scope 'all' (the wrapper is skipped) ⇒
+          // both predicates undefined ⇒ columns absent ⇒ nothing redacted.
+          const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'reply_parent.account_id',
+            folderId: 'reply_parent.folder_id',
+            messageId: 'reply_parent.id',
+          });
+          const attachmentReadablePredicate = mailScopePredicate(input.mailAttachmentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          let query = trx
             .selectFrom('email_messages')
             .select(input.includeBody ? emailMessageDetailColumns : emailMessageSummaryColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
-          return row ? mapEmailMessageRow(row, input.includeBody) : null;
+            .where('id', '=', input.id);
+          if (replyParentScopePredicate) {
+            query = query.select(kyselySql<boolean>`(
+              email_messages.reply_parent_message_id is null
+              or exists (
+                select 1 from email_messages reply_parent
+                where reply_parent.id = email_messages.reply_parent_message_id
+                  and reply_parent.workspace_id = email_messages.workspace_id
+                  and (${replyParentScopePredicate})
+              )
+            )`.as('reply_parent_visible'));
+          }
+          if (attachmentReadablePredicate) {
+            query = query.select(kyselySql<boolean>`(${attachmentReadablePredicate})`.as('attachment_readable'));
+          }
+          const row = await query.executeTakeFirst();
+          return row ? mapEmailMessageRow(row as EmailMessageApiRow, input.includeBody) : null;
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -5235,12 +5282,16 @@ function mapEmailMessageRow(
     readReceiptRequested: row.read_receipt_requested,
     postProcessDone: row.post_process_done,
     snoozedUntil: timestampToIsoOrNull(row.snoozed_until),
-    // Draft attachment paths hold uploaded filenames + full server-side storage
-    // paths (filesystem layout), so redact them for a content-redacted row exactly
-    // like the snippet above. content_readable is only computed for the scoped
-    // list/conversation/thread reads; single-message get is separately gated on
-    // mail.content.read, so its undefined content_readable leaves this untouched.
-    draftAttachmentPathsJson: row.content_readable === false ? null : row.draft_attachment_paths_json,
+    // Draft attachment paths hold uploaded filenames + full server-side storage paths
+    // (filesystem layout) — attachment data. Redact them when the row is content-redacted
+    // (metadata-only caller, like the snippet above) OR when it falls outside the caller's
+    // mail.attachment.read scope (attachment_readable===false) — so a content.read delegate
+    // lacking attachment.read cannot recover them via the list or the single-message get
+    // (R50-2). Both flags absent (scope 'all', owner/admin) ⇒ paths returned unchanged.
+    draftAttachmentPathsJson:
+      row.content_readable === false || row.attachment_readable === false
+        ? null
+        : row.draft_attachment_paths_json,
     // reply_parent_message_id can reference a message OUTSIDE a restricted delegate's scope
     // (compose authorizes only the CREATOR against the parent, and the FK permits
     // cross-account parents). reply_parent_visible===false ⇒ the parent is not scope-visible,

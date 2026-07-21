@@ -188,6 +188,17 @@ const MESSAGE_CONTENT_SCOPE_MUTATION_PATHS = new Set<string>([
   '/api/v1/email/messages/:messageId/compose-draft',
 ]);
 
+// The single-message fetch authorizes mail.content.read on the fetched message, but the
+// whole row it echoes carries reply_parent_message_id (which may point to a message OUTSIDE
+// the caller's scope — cross-account replies are allowed) and draft_attachment_paths_json
+// (uploaded filenames + full server-side storage paths). For a restricted caller the enforcer
+// carries the route scope (so the read port nulls a scope-invisible reply-parent id, R50-1)
+// plus the independent mail.attachment.read scope (so it redacts the draft attachment paths
+// for a caller lacking attachment.read, R50-2).
+const MESSAGE_SINGLE_FETCH_SCOPE_PATHS = new Set<string>([
+  '/api/v1/email/messages/:messageId',
+]);
+
 export async function enforceMailHttpPolicy(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -429,6 +440,29 @@ export async function enforceMailHttpPolicy(
         };
       }
     }
+    // GET /api/v1/email/messages/:messageId already authorized the fetched message
+    // (mail.content.read on it) but echoes the whole row. Carry the route scope so the read
+    // port nulls a reply-parent id the caller cannot see (R50-1), plus the mail.attachment.read
+    // scope so it redacts the draft attachment paths for a caller lacking attachment.read
+    // (R50-2). Owner/admin resolve to scope 'all' → wrapper skipped → full row.
+    if (
+      !actor.isOwner
+      && !actor.isAdmin
+      && req.method === 'GET'
+      && MESSAGE_SINGLE_FETCH_SCOPE_PATHS.has(entry.route.path)
+    ) {
+      const singleFetchScope = await resolveScope();
+      if (singleFetchScope.kind !== 'all') {
+        return {
+          ok: true,
+          context: {
+            permission: entry.policy.permission,
+            scope: singleFetchScope,
+            attachmentScope: await resolveAttachmentScope(),
+          },
+        };
+      }
+    }
     return { ok: true, context: { permission: entry.policy.permission } };
   } catch (caught) {
     if (caught instanceof MailAccessDeniedError) return denied();
@@ -484,6 +518,12 @@ export function portsWithMailAccessContext(
       emailMessages: {
         ...ports.emailMessages,
         list: (input) => ports.emailMessages!.list(scopedMessageInput(input)),
+        // get() must receive the scope too: the single-message fetch echoes the whole row,
+        // whose reply_parent_message_id may point outside the caller's scope (null it — R50-1)
+        // and whose draft_attachment_paths_json must be redacted without mail.attachment.read
+        // (R50-2). Only the single-fetch route sets context.scope for this port, so other
+        // callers are unaffected.
+        get: (input) => ports.emailMessages!.get(scopedMessageInput(input)),
         ...(ports.emailMessages.getFolderCounts ? {
           getFolderCounts: (input) => ports.emailMessages!.getFolderCounts!(scopedInput(input)),
         } : {}),
