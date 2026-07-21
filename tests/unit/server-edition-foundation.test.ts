@@ -79,7 +79,10 @@ import {
   runRlsCheckCli,
   type RlsCheckPgClient,
 } from '../../packages/server/src/cli/rls-check';
-import { POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../../packages/server/src/jobs';
+import {
+  MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
+  POST_PROCESS_RETRY_JOB_MARKER_FIELD,
+} from '../../packages/server/src/jobs';
 import {
   SERVER_POSTGRES_MAJOR,
   CI_SMOKE_ACCESS_TOKEN_SECRET,
@@ -16920,6 +16923,73 @@ describe('server edition foundation', () => {
     expect(JSON.stringify(auditEvents)).not.toContain('agent-passphrase');
   });
 
+  test('demoting or disabling a user publishes a targeted ACL invalidation from the mutation path', async () => {
+    const record = (id: string, role: 'owner' | 'admin' | 'user', disabledAt: string | null = null) => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const admin = { userId: 'admin-x', workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+    const runSave = async (
+      authUsers: ReturnType<typeof record>[],
+      id: string,
+      body: Record<string, unknown>,
+    ) => {
+      const events: ServerEvent[] = [];
+      const api = createServerApi(makeServerApiPorts({ authUsers, events }));
+      const res = await api.handle({ method: 'PATCH', path: `/api/v1/auth/users/${id}`, principal: admin, body });
+      return { status: res.status, acl: events.filter((event) => event.type === 'email_acl.changed') };
+    };
+
+    // Demotion (admin -> user) publishes a self-targeted invalidation so the demoted
+    // user's client clears mail loaded under the old role even on a quiet stream.
+    const demote = await runSave(
+      [record('owner-x', 'owner'), record('target', 'admin')],
+      'target',
+      { email: 'target@example.com', displayName: 'target', role: 'user' },
+    );
+    expect(demote.status).toBe(200);
+    expect(demote.acl).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: 'target',
+        payload: { targetUserId: 'target', state: 'changed' },
+      }),
+    ]);
+
+    // Disable (active -> disabled) also publishes.
+    const disable = await runSave(
+      [record('owner-x', 'owner'), record('target', 'user')],
+      'target',
+      { email: 'target@example.com', displayName: 'target', role: 'user', isActive: false },
+    );
+    expect(disable.status).toBe(200);
+    expect(disable.acl.map((event) => (event.payload as { targetUserId?: string }).targetUserId)).toEqual(['target']);
+
+    // A plain rename on a user (no privilege reduction) publishes nothing.
+    const rename = await runSave(
+      [record('owner-x', 'owner'), record('target', 'user')],
+      'target',
+      { email: 'target@example.com', displayName: 'Renamed', role: 'user' },
+    );
+    expect(rename.status).toBe(200);
+    expect(rename.acl).toEqual([]);
+
+    // A still-elevated admin -> admin edit publishes nothing.
+    const stillAdmin = await runSave(
+      [record('owner-x', 'owner'), record('target', 'admin')],
+      'target',
+      { email: 'target@example.com', displayName: 'Target', role: 'admin' },
+    );
+    expect(stillAdmin.status).toBe(200);
+    expect(stillAdmin.acl).toEqual([]);
+  });
+
   test('server auth invitation routes create single-use links and accept with user-owned password', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const mailDeliveries: unknown[] = [];
@@ -25071,6 +25141,9 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Remembering a sender/domain writes the workspace-wide allowlist, so it now
+    // requires owner/admin (R21-2). Same userId so actorUserId assertions hold.
+    const admin = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const consumed = await api.handle({
       method: 'POST',
@@ -25093,7 +25166,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/messages/11/remote-content-policy',
       body: { policy: 'always', rememberSender: true },
-      principal,
+      principal: admin,
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('validation_error');
@@ -25102,7 +25175,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/messages/11/remote-content-policy',
       body: { policy: 'allowed_sender', rememberSender: true },
-      principal,
+      principal: admin,
     });
     expect(updated.status).toBe(200);
     expect((updated.body as any).data).toEqual({ success: true, policy: 'allowed_sender', allowRemote: true });
@@ -32452,6 +32525,9 @@ describe('server edition foundation', () => {
           triggerName: 'manual',
           actorUserId: USER_A_ID,
           context: {},
+          // R22-2: the manual live-execute route marks its job so the worker
+          // re-verifies owner/admin against the current graph (demotion guard).
+          [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
         },
       },
     ]);

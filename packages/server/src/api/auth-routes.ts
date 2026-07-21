@@ -332,6 +332,12 @@ async function handleSaveUser(
   const parsed = parseUserSaveBody(req.body, pathUserId);
   if ('response' in parsed) return parsed.response;
 
+  // Capture the pre-save role/active state so we can detect a privilege reduction
+  // (demotion or disable) after the write and publish a targeted invalidation.
+  const previousUser = parsed.values.id
+    ? (await ports.auth.listUsers?.({ workspaceId: principal.workspaceId }))?.find((row) => row.id === parsed.values.id)
+    : undefined;
+
   const { loginPin, ...saveValues } = parsed.values;
   const result = await ports.auth.saveUser({
     workspaceId: principal.workspaceId,
@@ -369,6 +375,31 @@ async function handleSaveUser(
       loginPinChanged: loginPin !== undefined,
     },
   });
+
+  // A demotion (owner/admin -> user) or a disable revokes privileges under which
+  // this user's client may already have loaded mail. The live event stream only
+  // re-resolves the socket principal when an event arrives, so on a quiet workspace
+  // the demotion invalidation would never fire. Publish it from the mutation path:
+  // the event itself wakes the stream, and the email_acl.changed filter delivers to
+  // the subject by userId regardless of the socket's still-elevated role, so the
+  // renderer clears mail loaded under the old privileges (and a now-disabled
+  // session's socket is re-resolved and closed on the same wake-up).
+  if (previousUser) {
+    const wasElevated = previousUser.role === 'owner' || previousUser.role === 'admin';
+    const demoted = wasElevated && result.user.role === 'user';
+    const disabled = previousUser.disabledAt === null && result.user.disabledAt !== null;
+    if (demoted || disabled) {
+      await ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId: principal.workspaceId,
+        entityType: 'email_acl',
+        entityId: result.user.id,
+        actorUserId: principal.userId,
+        occurredAt: new Date().toISOString(),
+        payload: { targetUserId: result.user.id, state: 'changed' },
+      });
+    }
+  }
 
   const refreshed = await ports.auth.listUsers?.({ workspaceId: principal.workspaceId });
   const savedUser = refreshed?.find((row) => row.id === result.user.id) ?? result.user;

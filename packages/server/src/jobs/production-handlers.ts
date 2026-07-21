@@ -1,6 +1,6 @@
 import type { JobPayload, MailJobAuthorization } from './types';
 import type { JobHandlerRegistry } from './worker';
-import { isTrustedServiceJobPayload } from './policy';
+import { isTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './policy';
 import type {
   AiClassificationContextMode,
   AiAgentJobPlan,
@@ -91,6 +91,7 @@ export type WorkflowExecutionJobPlan = Readonly<{
   triggerName?: string;
   actorUserId?: string;
   trustedService?: boolean;
+  manualAdminExecute?: boolean;
   context: JobPayload;
 }>;
 
@@ -433,6 +434,7 @@ export function buildWorkflowExecutionJobPlan(
     ...optionalString(payload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
     ...optionalString(payload, 'actorUserId'),
     ...optionalTrustedService(payload),
+    ...optionalManualAdminExecute(payload),
     context: optionalContext(payload, 'context'),
   };
 }
@@ -724,6 +726,10 @@ function optionalWorkflowHttpContinuation(
 
 function optionalTrustedService(payload: JobPayload): { trustedService?: true } {
   return isTrustedServiceJobPayload(payload) ? { trustedService: true } : {};
+}
+
+function optionalManualAdminExecute(payload: JobPayload): { manualAdminExecute?: true } {
+  return payload[MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD] === true ? { manualAdminExecute: true } : {};
 }
 
 function optionalDate(payload: JobPayload, key: string, fallback: Date): Date {

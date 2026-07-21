@@ -17,6 +17,7 @@ import {
 import {
   assertServerJobPolicy,
   isTrustedServiceJobPayload,
+  MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
   POST_PROCESS_RETRY_JOB_MARKER_FIELD,
   type ServerJobPolicyEntry,
 } from '../jobs/policy';
@@ -204,14 +205,19 @@ const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'workflow.dmarc_ingest',
 ]);
 
-// R12-2/R13-1: re-deny a non-owner/admin actor for any workflow side-effect child —
-// this catches an initiator demoted between workflow.execute time and the child's
-// execution, for both the message-less children (which otherwise hit the non_mail
-// early return) and the message-scoped ones (whose per-message check does not
-// re-establish admin). Trusted-service children (automatic/inbound runs) are
-// actor.kind==='service' and never reach here.
+// R12-2/R13-1 (R22-2: scoped to marked jobs): re-deny a non-owner/admin actor for a
+// workflow side-effect child that belongs to a MANUAL admin-gated run — the marker is
+// stamped on the manual live-execute workflow.execute and propagated to its delayed
+// continuations and side-effect children. This catches an admin demoted between
+// enqueue and the child's execution, for both the message-less children (which
+// otherwise hit the non_mail early return) and the message-scoped ones (whose
+// per-message check does not re-establish admin). Compose/inbound children are
+// unmarked → exempt from this admin recheck but still pass their per-message ACL.
+// Trusted-service children (automatic/inbound runs) are actor.kind==='service' and
+// never reach here.
 function assertWorkflowChildSideEffectPrivilege(job: QueuedJob, actor: MailAccessActor): void {
   if (!WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES.has(job.type)) return;
+  if (job.payload[MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD] !== true) return;
   if (actor.isOwner || actor.isAdmin) return;
   throw new MailAsyncAuthorizationError();
 }
@@ -231,12 +237,21 @@ function assertPostProcessRetryPrivilege(job: QueuedJob, actor: MailAccessActor)
   throw new MailAsyncAuthorizationError();
 }
 
+// R9-5/R13-1 (R22-2: scoped to marked jobs): a demoted admin's queued MANUAL
+// workflow.execute would otherwise run its side-effecting nodes under the system role
+// with no per-node ACL. Reclassify the workflow's CURRENT graph at execution time and
+// deny a non-owner/admin actor when it has side-effecting nodes — but ONLY for jobs
+// the manual live-execute route marked as admin-gated at enqueue (propagated to
+// delayed continuations). Compose-originated outbound-review workflow.execute jobs
+// (non-admin senders holding mail.send) are unmarked → exempt here, still bound by the
+// per-message mail.content.read ACL that runs after this gate.
 async function assertWorkflowExecuteSideEffectPrivilege(
   job: QueuedJob,
   actor: MailAccessActor,
   ports: Required<Pick<MailAsyncPolicyPorts, 'mailResourceLookup'>>,
 ): Promise<void> {
   if (job.type !== 'workflow.execute') return;
+  if (job.payload[MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD] !== true) return;
   if (actor.isOwner || actor.isAdmin) return;
   const workflowId = optionalPositiveInt(job.payload.workflowId);
   if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;

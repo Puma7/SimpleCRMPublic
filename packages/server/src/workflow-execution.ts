@@ -40,7 +40,7 @@ import type {
   WorkflowExecutionJobPlan,
   WorkflowExecutionJobPort,
 } from './jobs';
-import { buildTrustedServiceJobPayload, TRUSTED_SERVICE_JOB_MARKER_VALUE } from './jobs/policy';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD, TRUSTED_SERVICE_JOB_MARKER_VALUE } from './jobs/policy';
 import {
   createAiReviewPreviewRunner,
   type AiReviewPreviewRunner,
@@ -182,6 +182,7 @@ type ServerWorkflowContext = {
   variables: WorkflowVariableContext;
   actorUserId?: string;
   trustedService?: boolean;
+  manualAdminExecute?: boolean;
   previewOutbound?: boolean;
 };
 
@@ -495,6 +496,7 @@ export function createPostgresWorkflowExecutionJobPort(
             message,
             actorUserId: input.actorUserId,
             trustedService: input.trustedService,
+            manualAdminExecute: input.manualAdminExecute,
             jobContext,
           });
           const result = await runServerWorkflowGraph(trx, {
@@ -2310,7 +2312,15 @@ async function scheduleWorkflowDelay(
 }
 
 function workflowJobProvenance(context: ServerWorkflowContext): Record<string, unknown> {
-  if (context.actorUserId) return { actorUserId: context.actorUserId };
+  if (context.actorUserId) {
+    // Propagate the manual-admin marker onto this run's delayed continuations and
+    // side-effect children so the worker keeps re-verifying owner/admin across the
+    // whole chain (a demoted admin must not complete a run they queued while admin).
+    return {
+      actorUserId: context.actorUserId,
+      ...(context.manualAdminExecute ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
+    };
+  }
   return context.trustedService ? buildTrustedServiceJobPayload({}) : {};
 }
 
@@ -5958,6 +5968,7 @@ function buildWorkflowContext(input: {
   message: MessageRow | null;
   actorUserId?: string;
   trustedService?: boolean;
+  manualAdminExecute?: boolean;
   jobContext: Record<string, unknown>;
 }): ServerWorkflowContext {
   const eventStrings = stringRecord(input.jobContext.eventStrings);
@@ -6009,6 +6020,7 @@ function buildWorkflowContext(input: {
     variables,
     ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
     ...(input.trustedService ? { trustedService: true } : {}),
+    ...(input.manualAdminExecute ? { manualAdminExecute: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
   };
 }

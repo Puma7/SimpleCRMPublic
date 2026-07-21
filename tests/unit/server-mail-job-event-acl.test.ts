@@ -2,6 +2,7 @@ import {
   buildGraphileTaskList,
   buildTrustedServiceJobPayload,
   type JobHandlerRegistry,
+  MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
   POST_PROCESS_RETRY_JOB_MARKER_FIELD,
   type QueuedJob,
   SERVER_JOB_POLICIES,
@@ -296,30 +297,39 @@ describe('server mail job and event ACL', () => {
     expect(ports.delayedJobLookups).toEqual([87, 88, 88, 999, 89, 88]);
   });
 
-  test('rechecks workflow.execute side-effect privilege against the current graph', async () => {
+  test('rechecks workflow.execute side-effect privilege only for MANUAL admin-gated runs', async () => {
     const sideEffecting = { nodes: [{ type: 'action', data: { nodeType: 'email.delete_server' } }] };
     const readOnly = { nodes: [{ type: 'trigger' }, { type: 'action', data: { nodeType: 'email.sender_filter' } }] };
     const ports = makePolicyPorts({
       workflowGraphs: new Map<number, unknown>([[700, sideEffecting], [701, readOnly]]),
     });
+    const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
 
-    // Non-admin + side-effecting graph + message-less (resolves to non_mail, which
-    // returns early before any resource check) → denied by the pre-resolution recheck.
+    // MARKED (manual live-execute) + non-admin + side-effecting graph → denied: a
+    // demoted admin cannot complete a run they queued while admin.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 700, [MARK]: true },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    // UNMARKED (compose-originated outbound review) + non-admin + side-effecting graph
+    // → ALLOWED: the sender holds mail.send, and this message-less job resolves to
+    // non_mail. This is the R22-2 regression the marker fixes (previously denied).
     await expect(enforceMailJobPolicy(job({
       type: 'workflow.execute',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 700 },
-    }), ports)).rejects.toMatchObject({ nonRetryable: true });
-
-    // Owner may run side-effecting workflows.
-    await expect(enforceMailJobPolicy(job({
-      type: 'workflow.execute',
-      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', workflowId: 700 },
     }), ports)).resolves.toBeUndefined();
 
-    // Non-admin + read-only graph → allowed.
+    // Owner may run a marked side-effecting workflow.
     await expect(enforceMailJobPolicy(job({
       type: 'workflow.execute',
-      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 701 },
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', workflowId: 700, [MARK]: true },
+    }), ports)).resolves.toBeUndefined();
+
+    // Marked + non-admin + read-only graph → allowed (no side-effect node).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 701, [MARK]: true },
     }), ports)).resolves.toBeUndefined();
 
     // Trusted service payload bypasses the recheck.
@@ -329,20 +339,28 @@ describe('server mail job and event ACL', () => {
     }), ports)).resolves.toBeUndefined();
   });
 
-  test('rechecks side-effect privilege for message-less workflow child jobs', async () => {
+  test('rechecks side-effect privilege for MANUAL-marked workflow child jobs, not compose-originated ones', async () => {
+    const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
     const childTypes = ['workflow.http_request', 'ai.agent', 'ai.pick_canned', 'ai.review', 'ai.transform_text'] as const;
     for (const type of childTypes) {
-      // A demoted (non-admin) initiator's message-less child would otherwise hit
-      // the non_mail early return and run its side-effecting node unchecked.
+      // A demoted (non-admin) initiator's MARKED message-less child would otherwise
+      // hit the non_mail early return and run its side-effecting node unchecked.
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', [MARK]: true },
+      }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+
+      // UNMARKED (compose-originated) child for a non-admin sender → allowed: the
+      // message-less job resolves to non_mail and the sender was authorized at send.
       await expect(enforceMailJobPolicy(job({
         type,
         payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
-      }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+      }), makePolicyPorts())).resolves.toBeUndefined();
 
       // Owner/admin may run it; trusted-service (automatic/inbound) children bypass.
       await expect(enforceMailJobPolicy(job({
         type,
-        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a' },
+        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', [MARK]: true },
       }), makePolicyPorts())).resolves.toBeUndefined();
       await expect(enforceMailJobPolicy(job({
         type,
@@ -350,24 +368,36 @@ describe('server mail job and event ACL', () => {
       }), makePolicyPorts())).resolves.toBeUndefined();
     }
 
-    // Message-scoped side-effect children (forward_copy = SMTP send, ai.classify =
-    // message tag, dmarc_ingest = persists parsed DMARC reports) are also gated:
-    // the per-message check verifies mail.export/mail.triage/mail.attachment.read,
-    // not the admin the graph required.
+    // Message-scoped MARKED side-effect children (forward_copy = SMTP send,
+    // ai.classify = message tag, dmarc_ingest = parsed DMARC) stay admin-gated: the
+    // marker denies the demoted admin before the per-message check.
     for (const type of ['workflow.forward_copy', 'ai.classify', 'workflow.dmarc_ingest'] as const) {
       await expect(enforceMailJobPolicy(job({
         type,
-        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, [MARK]: true },
       }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+      // UNMARKED (compose-originated) → not admin-gated, but STILL bound by the
+      // per-message ACL (allowed here because the delegate holds the grant).
       await expect(enforceMailJobPolicy(job({
         type,
-        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12 },
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+      }), makePolicyPorts())).resolves.toBeUndefined();
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12, [MARK]: true },
       }), makePolicyPorts())).resolves.toBeUndefined();
       await expect(enforceMailJobPolicy(job({
         type,
         payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
       }), makePolicyPorts())).resolves.toBeUndefined();
     }
+
+    // An UNMARKED message-scoped child is still bound by per-message ACL: an
+    // out-of-scope message is denied even without the admin marker.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 101 },
+    }), makePolicyPorts({ denyMessages: new Set(['101']) }))).rejects.toMatchObject({ nonRetryable: true });
 
     // ai.reply_suggestion is NOT gated: it has a direct user route, is
     // message-required, and only adds its content-read supplemental.

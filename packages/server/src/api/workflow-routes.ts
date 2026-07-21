@@ -40,6 +40,7 @@ import {
 } from './http';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
+import { MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from '../jobs/policy';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -535,6 +536,12 @@ async function handleWorkflowExecute(
       triggerName: 'manual',
       actorUserId: principal.userId,
       context: {},
+      // Mark this manual live execution (the only workflow.execute producer that
+      // required owner/admin at enqueue) so the worker re-verifies current owner/admin
+      // for its side-effecting graph — catching a demotion between here and execution.
+      // Stamped unconditionally: the recheck loads the CURRENT graph, so this also
+      // catches a read-only graph edited to add a writing node before it runs.
+      [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
     },
   });
 

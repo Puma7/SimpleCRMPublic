@@ -16,6 +16,15 @@ export const TRUSTED_SERVICE_JOB_MARKER_VALUE = 'simplecrm:trusted-service:v1';
 // must not complete the retry's system-role security check / status writes /
 // inbound-workflow enqueue). Never set from request bodies, so not forgeable.
 export const POST_PROCESS_RETRY_JOB_MARKER_FIELD = '__simplecrmPostProcessRetry';
+// Stamped server-side by the manual live-execute route (workflow-routes.ts) — the
+// only workflow.execute producer that required owner/admin at enqueue for a
+// side-effecting graph — and propagated onto that run's delayed continuations and
+// side-effect child jobs. The worker re-verifies current owner/admin for marked
+// jobs so a demoted admin cannot complete a run they queued while admin. Unmarked
+// producers (compose outbound-review, inbound/automatic) were never admin-gated, so
+// they are exempt from the admin recheck but still pass per-message ACL. Never set
+// from a request body (job producers copy only known fields), so not forgeable.
+export const MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD = '__simplecrmManualAdminWorkflowExecute';
 
 export const SERVER_JOB_TYPES = [
   'mail.sync.imap',

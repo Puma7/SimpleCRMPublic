@@ -12,6 +12,7 @@ import {
   buildWorkflowForwardCopyJobPlan,
   buildWorkflowHttpRequestJobPlan,
   buildTrustedServiceJobPayload,
+  MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
   SERVER_JOB_POLICIES,
   TRUSTED_SERVICE_JOB_MARKER_FIELD,
 } from '../../packages/server/src/jobs';
@@ -122,6 +123,23 @@ describe('server mail job provenance', () => {
       actorUserId: USER_ID,
       context: { resumeNodeId: 'next' },
     }, WORKSPACE_ID).actorUserId).toBe(USER_ID);
+    // R22-2: the manual-admin marker is extracted onto the plan so it propagates
+    // through the run chain (workflowJobProvenance re-stamps it on children).
+    expect(buildWorkflowExecutionJobPlan({
+      workspaceId: WORKSPACE_ID,
+      workflowId: 23,
+      messageId: 12,
+      actorUserId: USER_ID,
+      [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
+      context: {},
+    }, WORKSPACE_ID).manualAdminExecute).toBe(true);
+    expect(buildWorkflowExecutionJobPlan({
+      workspaceId: WORKSPACE_ID,
+      workflowId: 23,
+      messageId: 12,
+      actorUserId: USER_ID,
+      context: {},
+    }, WORKSPACE_ID).manualAdminExecute).toBeUndefined();
     expect(buildAiReplySuggestionJobPlan({
       workspaceId: WORKSPACE_ID,
       messageId: 12,
