@@ -445,6 +445,23 @@ async function handleDeleteUser(
     entityId: id,
     metadata: {},
   });
+  // Deletion revokes this account's access entirely (row removed, refresh tokens
+  // dropped) — a strictly stronger reduction than the demote/disable path in
+  // handleSaveUser, which already publishes this event. Without it, the deleted
+  // user's still-open mail renderer keeps mailbox data loaded under the old
+  // privileges until the event stream re-resolves its socket, which on a quiet
+  // workspace only happens when some other event arrives. Publish a self-targeted
+  // email_acl.changed so the renderer clears loaded mail immediately (and the event
+  // wakes the socket's revalidation, which then closes the now-invalid session).
+  await ports.events?.publish({
+    type: 'email_acl.changed',
+    workspaceId: principal.workspaceId,
+    entityType: 'email_acl',
+    entityId: id,
+    actorUserId: principal.userId,
+    occurredAt: new Date().toISOString(),
+    payload: { targetUserId: id, state: 'changed' },
+  });
   return data(200, { deleted: true, id });
 }
 

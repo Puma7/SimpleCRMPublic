@@ -484,12 +484,38 @@ async function assertScheduledSendAttachmentAccess(
     draftId,
   });
   if (!paths || paths.length === 0) return;
-  // A freshly uploaded file under this draft's own upload folder was covered by the
-  // mail.draft.edit held when it was attached; every other path must resolve to an
-  // existing message attachment the sender still holds mail.attachment.read on.
+  // A freshly uploaded file under this draft's own upload folder has no
+  // email_message_attachments row, so it resolves to no message resource and
+  // mail.attachment.read cannot be checked on it. Do NOT exempt it purely by
+  // pathname — the EXECUTING actor (the scheduler, possibly a different delegate
+  // than the uploader, or the uploader after losing draft.edit) may hold only
+  // mail.send. Require mail.draft.edit on the draft itself instead, mirroring the
+  // HTTP compose/send enforcer, which asserts mail.draft.edit on the draft before
+  // the same carve-out. Every other path must resolve to an existing message
+  // attachment the sender still holds mail.attachment.read on.
   const draftLocalPrefix = `${job.workspaceId}/compose-drafts/${draftId}/`;
+  let draftResources: readonly MailResource[] | null = null;
   for (const path of paths) {
-    if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+    if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) {
+      if (draftResources === null) {
+        draftResources = await ports.mailResourceLookup.resolve({
+          workspaceId: job.workspaceId,
+          target: { kind: 'message', id: draftId },
+        });
+        // The draft is an exact stored id that must resolve to its message resource;
+        // fail closed rather than transmit its uploads with no re-authorization.
+        if (draftResources.length === 0) throw new MailAsyncAuthorizationError();
+      }
+      for (const resource of draftResources) {
+        await ports.mailAccess.assertPermission({
+          workspaceId: job.workspaceId,
+          actor,
+          permission: 'mail.draft.edit',
+          resource,
+        });
+      }
+      continue;
+    }
     const owners = await ports.mailResourceLookup.resolve({
       workspaceId: job.workspaceId,
       target: { kind: 'attachment_path', path },

@@ -1012,26 +1012,37 @@ async function handleScheduledSendDraftSchedule(
   });
   if (!result.ok) return composeDraftMutationError(result.reason, result.message);
   if (ports.jobQueue) {
-    if (parsed.sendAt) {
-      const sendAt = new Date(parsed.sendAt);
-      if (!Number.isNaN(sendAt.getTime())) {
-        await ports.jobQueue.enqueue({
-          workspaceId: principal.workspaceId,
-          type: 'mail.send.scheduled',
-          payload: {
+    // scheduleDraftSend already committed the durable schedule (scheduled_send_at +
+    // provenance, or its clearing). The queue is only a prompt-send accelerator — the
+    // ticker polls scheduled_send_at directly — so a transient enqueue/clear failure
+    // must not make the API report the schedule as failed. Swallow and log; the send
+    // (or its cancellation) is already durable.
+    try {
+      if (parsed.sendAt) {
+        const sendAt = new Date(parsed.sendAt);
+        if (!Number.isNaN(sendAt.getTime())) {
+          await ports.jobQueue.enqueue({
             workspaceId: principal.workspaceId,
-            draftId: messageId,
-            actorUserId: principal.userId,
-            dueBefore: sendAt.toISOString(),
-          },
-          runAfter: sendAt,
+            type: 'mail.send.scheduled',
+            payload: {
+              workspaceId: principal.workspaceId,
+              draftId: messageId,
+              actorUserId: principal.userId,
+              dueBefore: sendAt.toISOString(),
+            },
+            runAfter: sendAt,
+          });
+        }
+      } else if (ports.jobQueue.clearScheduledSendJob) {
+        await ports.jobQueue.clearScheduledSendJob({
+          workspaceId: principal.workspaceId,
+          draftId: messageId,
         });
       }
-    } else if (ports.jobQueue.clearScheduledSendJob) {
-      await ports.jobQueue.clearScheduledSendJob({
-        workspaceId: principal.workspaceId,
-        draftId: messageId,
-      });
+    } catch (enqueueError) {
+      console.warn(
+        `[mail] scheduled-send enqueue failed (workspace ${principal.workspaceId} draft ${messageId}); ticker will still send: ${enqueueError instanceof Error ? enqueueError.message : String(enqueueError)}`,
+      );
     }
   }
   return data(200, { success: true });
@@ -1115,16 +1126,30 @@ async function handleScheduledSendDraftRetry(
   if (!result.ok) return composeDraftMutationError(result.reason);
   if (ports.jobQueue) {
     const runAfter = new Date();
-    await ports.jobQueue.enqueue({
-      workspaceId: principal.workspaceId,
-      type: 'mail.send.scheduled',
-      payload: {
+    try {
+      await ports.jobQueue.enqueue({
         workspaceId: principal.workspaceId,
-        draftId: messageId,
-        actorUserId: principal.userId,
-      },
-      runAfter,
-    });
+        type: 'mail.send.scheduled',
+        payload: {
+          workspaceId: principal.workspaceId,
+          draftId: messageId,
+          actorUserId: principal.userId,
+        },
+        runAfter,
+      });
+    } catch (enqueueError) {
+      // retryScheduledSendDraft already committed scheduled_send_at = now() with the
+      // initiating-user provenance, so the durable scheduled-send ticker WILL discover
+      // and transmit this draft on its next poll regardless of the queue. The queue is
+      // only a prompt-send accelerator — a transient enqueue failure must not make the
+      // API report the retry as failed while the email actually gets sent (which would
+      // also mislead a client retry). Swallow and log; the send is durable. (Delivery
+      // is at-most-once: whichever of the ticker or a late job claims the row first
+      // nulls scheduled_send_at under FOR UPDATE SKIP LOCKED, so there is no double-send.)
+      console.warn(
+        `[mail] scheduled-send retry enqueue failed (workspace ${principal.workspaceId} draft ${messageId}); ticker will still send: ${enqueueError instanceof Error ? enqueueError.message : String(enqueueError)}`,
+      );
+    }
   }
   return data(200, { success: true });
 }

@@ -17071,6 +17071,39 @@ describe('server edition foundation', () => {
     expect(stillAdmin.acl).toEqual([]);
   });
 
+  test('deleting a user publishes a self-targeted ACL invalidation (R37-4)', async () => {
+    const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt: null,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const events: ServerEvent[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      authUsers: [userRecord('owner-x', 'owner'), userRecord('target', 'user')],
+      events,
+    }));
+    const admin = { userId: 'owner-x', workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+
+    // Deletion revokes all access — a strictly stronger reduction than demote/disable,
+    // which already invalidates. Without this event the deleted user's open renderer
+    // keeps mail loaded until some unrelated event arrives on a quiet stream.
+    const res = await api.handle({ method: 'DELETE', path: '/api/v1/auth/users/target', principal: admin });
+    expect(res.status).toBe(200);
+    expect((res.body as any).data).toMatchObject({ deleted: true, id: 'target' });
+    expect(events.filter((event) => event.type === 'email_acl.changed')).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: 'target',
+        payload: { targetUserId: 'target', state: 'changed' },
+      }),
+    ]);
+  });
+
   test('server auth invitation routes create single-use links and accept with user-owned password', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const mailDeliveries: unknown[] = [];
@@ -22105,6 +22138,61 @@ describe('server edition foundation', () => {
         messageId: 44,
       }],
     ]);
+  });
+
+  test('scheduled-send schedule/retry succeed even when the queue accelerator enqueue fails (R37-5)', async () => {
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async scheduleDraftSend() {
+          return { ok: true as const };
+        },
+        async retryScheduledSendDraft() {
+          return { ok: true as const };
+        },
+      },
+      jobQueue: {
+        async enqueue() {
+          throw new Error('queue backend down');
+        },
+        async clearScheduledSendJob() {
+          throw new Error('queue backend down');
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    // The durable schedule (scheduled_send_at + provenance) already committed and the
+    // ticker polls it directly, so the queue enqueue is only a prompt-send accelerator;
+    // a transient enqueue failure must NOT report the schedule/retry as failed (a 500)
+    // while the email actually gets sent.
+    const scheduled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z' },
+      principal,
+    });
+    expect(scheduled.status).toBe(200);
+    expect((scheduled.body as any).data).toMatchObject({ success: true });
+
+    const retried = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send/retry',
+      principal,
+    });
+    expect(retried.status).toBe(200);
+    expect((retried.body as any).data).toMatchObject({ success: true });
+
+    // The cancel path (sendAt: null → clearScheduledSendJob) is likewise resilient.
+    const cancelled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: null },
+      principal,
+    });
+    expect(cancelled.status).toBe(200);
   });
 
   test('claimed scheduled-send draft edit and delete routes return conflict', async () => {
@@ -37875,6 +37963,17 @@ function makeServerApiPorts(input: {
         };
         authUsers = authUsers.map((candidate) => candidate.id === updated.id ? updated : candidate);
         return { ok: true, user: updated };
+      },
+      async deleteUser(input) {
+        const existing = authUsers.find((candidate) => candidate.id === input.id);
+        if (!existing) return { ok: false, code: 'not_found' as const };
+        if (existing.role === 'owner') {
+          const otherActiveOwners = authUsers.filter((candidate) =>
+            candidate.id !== existing.id && candidate.role === 'owner' && candidate.disabledAt === null).length;
+          if (otherActiveOwners < 1) return { ok: false, code: 'last_owner_required' as const };
+        }
+        authUsers = authUsers.filter((candidate) => candidate.id !== input.id);
+        return { ok: true as const };
       },
       async createInvitation(input) {
         if (authUsers.some((candidate) => candidate.email.toLowerCase() === input.email.toLowerCase())) {

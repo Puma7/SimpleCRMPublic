@@ -667,7 +667,8 @@ describe('server mail job and event ACL', () => {
   });
 
   test('scheduled send rechecks mail.attachment.read on each stored attachment path', async () => {
-    // A draft-local upload (carve-out) + a synced path owned by a readable message → allowed.
+    // A draft-local upload (reauthorized via mail.draft.edit) + a synced path owned by
+    // a readable message → allowed.
     const allowed = makePolicyPorts({
       scheduledDraftAttachmentPaths: new Map([[12, [
         'workspace-a/compose-drafts/12/ab-upload.pdf',
@@ -678,9 +679,23 @@ describe('server mail job and event ACL', () => {
       type: 'mail.send.scheduled',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
     }), allowed);
-    // Base mail.send on the draft + a single mail.attachment.read on the synced path's
-    // owning message (the draft-local upload is carved out).
+    // Base mail.send on the draft + mail.attachment.read on the synced path's owning
+    // message + mail.draft.edit on the draft for the draft-local upload (a draft-local
+    // file has no owning attachment row, so it is reauthorized via draft.edit, not
+    // exempted by pathname).
     expect(allowed.assertions.filter((entry) => entry.permission === 'mail.attachment.read')).toHaveLength(1);
+    expect(allowed.assertions.filter((entry) => entry.permission === 'mail.draft.edit')).toHaveLength(1);
+
+    // A send-only delegate (or an uploader who lost draft.edit) cannot transmit a
+    // draft-local upload: the draft.edit recheck on the draft-local path fails closed.
+    const sendOnly = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/compose-drafts/12/ab-upload.pdf']]]),
+      denyPermissions: new Set(['mail.draft.edit']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), sendOnly)).rejects.toMatchObject({ nonRetryable: true });
 
     // The sender lost mail.attachment.read on the message that owns a synced path.
     const revoked = makePolicyPorts({

@@ -436,23 +436,34 @@ async function auditAndPublish(
     }
   }
 
-  await ports.audit?.record({
-    workspaceId: principal.workspaceId,
-    actorUserId: principal.userId,
-    action,
-    entityType: 'email_acl_binding',
-    entityId: bindingId === undefined ? null : String(bindingId),
-    metadata: {
-      ...(bindingId === undefined ? {} : { bindingId }),
-      ...(subject ? { subjectType: subject.type, subjectId: String(subject.id) } : {}),
-      ...(resource ? {
-        resourceType: resource.type,
-        accountId: resource.accountId,
-        ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
-      } : {}),
-      permissionNames: [...details.permissions].sort(),
-    },
-  });
+  // Best-effort record-keeping (see the comment above): the binding mutation already
+  // committed and the invalidation events already fired, so a transient audit-port
+  // rejection must NOT surface as a request failure — that would report a successful
+  // create/delete as an error and drive a client retry into re-overwriting the binding
+  // or receiving binding_not_found. Swallow and log instead of propagating.
+  try {
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action,
+      entityType: 'email_acl_binding',
+      entityId: bindingId === undefined ? null : String(bindingId),
+      metadata: {
+        ...(bindingId === undefined ? {} : { bindingId }),
+        ...(subject ? { subjectType: subject.type, subjectId: String(subject.id) } : {}),
+        ...(resource ? {
+          resourceType: resource.type,
+          accountId: resource.accountId,
+          ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
+        } : {}),
+        permissionNames: [...details.permissions].sort(),
+      },
+    });
+  } catch (error) {
+    console.warn(
+      `[mail-delegation] audit record failed for ${action} (binding ${bindingId ?? 'n/a'}); mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 function actor(principal: AuthenticatedPrincipal) {

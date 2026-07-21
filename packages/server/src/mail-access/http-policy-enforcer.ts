@@ -318,14 +318,24 @@ export async function enforceMailHttpPolicy(
         ports,
       );
     } else {
-      for (const resource of resources.resources) {
-        await ports.mailAccess.assertPermission({
+      // A bulk mutation (archive/delete/spam) resolves up to MAX_BULK_MESSAGE_IDS
+      // resources; checking them one-await-at-a-time is hundreds of SEQUENTIAL
+      // per-resource grant round trips on a normal supported input, which can time
+      // out under load. Authorize concurrently instead — mirrors the parallel
+      // resource-resolution phase above (requirePositiveIntList → Promise.all), stays
+      // pool-bounded, and is semantically identical: every resource must pass, and the
+      // first denial rejects the whole request (Promise.all short-circuits on reject).
+      // (permission hoisted to a const: `entry` is a `let`, so its narrowing past the
+      // exempt early-return does not persist into the map closure.)
+      const bulkPermission = entry.policy.permission;
+      await Promise.all(
+        resources.resources.map((resource) => ports.mailAccess!.assertPermission({
           workspaceId: principal.workspaceId,
           actor,
-          permission: entry.policy.permission,
+          permission: bulkPermission,
           resource,
-        });
-      }
+        })),
+      );
     }
 
     await assertSupplementalHttpPermissions(

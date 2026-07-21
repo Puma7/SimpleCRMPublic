@@ -350,6 +350,29 @@ describe('server mail delegation API', () => {
     }));
   });
 
+  test('a rejecting audit port does not fail the committed binding mutation (R37-1)', async () => {
+    const audit = { record: jest.fn(async () => { throw new Error('audit backend down'); }) };
+    const events = { publish: jest.fn(async () => undefined) };
+    const mailDelegation = delegationPort({
+      deleteBinding: async () => ({
+        ok: true,
+        bindingId: 900,
+        resource: { type: 'folder', accountId: ACCOUNT, folderId: FOLDER },
+        affectedUserIds: [AGENT],
+      }),
+    });
+    const api = createServerApi(ports({ mailDelegation, audit, events }));
+
+    // The binding delete already committed and the invalidation events already
+    // published before the best-effort audit runs; a transient audit rejection must
+    // NOT surface as a 500 — that would report a successful delete as a failure and
+    // drive a client retry into binding_not_found.
+    const res = await api.handle({ method: 'DELETE', path: '/api/v1/email/access/bindings/900', principal: owner });
+    expect(res.status).toBe(200);
+    expect(events.publish).toHaveBeenCalled();
+    expect(audit.record).toHaveBeenCalled();
+  });
+
   test('binding deletion carries the deleted resource so scoped peer managers are invalidated', async () => {
     const events = { publish: jest.fn(async () => undefined) };
     const mailDelegation = delegationPort({
