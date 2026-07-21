@@ -2,6 +2,8 @@ import type { MailPermission, MailResource } from '../../packages/core/src/email
 import { createServerApi } from '../../packages/server/src/api/server-api';
 import type {
   AuthenticatedPrincipal,
+  PgpIdentityMutationPortResult,
+  PgpIdentityRecord,
   ServerApiPorts,
   ServerEvent,
 } from '../../packages/server/src/api/types';
@@ -1480,14 +1482,26 @@ describe('mail ACL rollout central use', () => {
     expect(listCalls.at(-1)).not.toHaveProperty('ownerUserId');
   });
 
-  test('a restricted-scope key manager may PATCH/DELETE their OWN PGP identity, but not peer keys (R36-1)', async () => {
+  test('a restricted key manager may PATCH/DELETE their OWN PGP identity, but not peers or peer keys (R36-1/R46-1)', async () => {
     // PGP identities are strictly per-user, and every identity write port is
-    // actorUserId-scoped — so a delegated key manager who may generate/rotate their own
-    // key must also be able to update and delete it. Peer keys have a workspace-wide
-    // effect and stay owner/admin-only. The delete/update ports returning null here
-    // (not found) is irrelevant: a spy call proves the enforcer admitted the write.
-    const identityDelete = jest.fn(async (_input: { workspaceId: string; actorUserId: string; id: number }) => null);
-    const identityUpdate = jest.fn(async (_input: { workspaceId: string; actorUserId: string; id: number }) => null);
+    // actorUserId-scoped: R46-1 adds `user_id = actorUserId` to the SELECT/UPDATE/DELETE
+    // in postgres-pgp-read-ports, since workspace RLS carries no user_id predicate. So a
+    // delegated key manager who may generate/rotate their OWN key can also update and
+    // delete THAT key — but an id they do not own resolves to no row inside the port, so
+    // the route 404s and never touches a peer's identity or its AEAD-bound private-key
+    // secret. Peer keys have a workspace-wide effect and stay owner/admin-only.
+    const OWNED_ID = 9001;
+    const FOREIGN_ID = 9500;
+    // These mocks stand in for the port's user_id scoping: only the caller-owned id
+    // resolves to a row; a foreign id yields null, exactly as the scoped SQL would.
+    const scopedResolve = (
+      input: { workspaceId: string; actorUserId: string; id: number },
+    ): PgpIdentityMutationPortResult | null =>
+      input.actorUserId === USER_A && input.id === OWNED_ID
+        ? { ok: true, identity: makePgpIdentityRecord(OWNED_ID, USER_A) }
+        : null;
+    const identityDelete = jest.fn(async (input: { workspaceId: string; actorUserId: string; id: number }) => scopedResolve(input));
+    const identityUpdate = jest.fn(async (input: { workspaceId: string; actorUserId: string; id: number }) => scopedResolve(input));
     const peerKeyDelete = jest.fn(async (_input: { workspaceId: string; id: number }) => null);
     const api = createServerApi({
       ...makeCentralPorts({
@@ -1505,22 +1519,38 @@ describe('mail ACL rollout central use', () => {
       } as unknown as ServerApiPorts['pgpPeerKeys'],
     });
 
-    // Identity DELETE is admitted for a restricted delegate — it reaches the
-    // actorUserId-scoped delete port (a non-owned id 404s inside the port).
-    await api.handle({ method: 'DELETE', path: '/api/v1/pgp/identities/9001', principal: principal() });
+    // Own-identity DELETE is admitted for a restricted delegate, reaches the
+    // actorUserId-scoped delete port, resolves the row → 200.
+    await expect(api.handle({ method: 'DELETE', path: `/api/v1/pgp/identities/${OWNED_ID}`, principal: principal() }))
+      .resolves.toMatchObject({ status: 200 });
     expect(identityDelete).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: 9001 }),
+      expect.objectContaining({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: OWNED_ID }),
     );
 
-    // Identity PATCH (rotate/update) is admitted too, and likewise actorUserId-scoped.
-    await api.handle({
+    // Own-identity PATCH (rotate/update) is admitted too, likewise actorUserId-scoped → 200.
+    await expect(api.handle({
       method: 'PATCH',
-      path: '/api/v1/pgp/identities/9001',
+      path: `/api/v1/pgp/identities/${OWNED_ID}`,
       principal: principal(),
       body: { email: 'me@example.test' },
-    });
+    })).resolves.toMatchObject({ status: 200 });
     expect(identityUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: 9001 }),
+      expect.objectContaining({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: OWNED_ID }),
+    );
+
+    // A peer's identity id is admitted by the enforcer (identities are self-scoped, not
+    // gated on the mail scope) but the port's user_id filter finds no row → 404. The
+    // delegate cannot edit or destroy another user's identity or its private-key secret.
+    await expect(api.handle({ method: 'DELETE', path: `/api/v1/pgp/identities/${FOREIGN_ID}`, principal: principal() }))
+      .resolves.toMatchObject({ status: 404 });
+    await expect(api.handle({
+      method: 'PATCH',
+      path: `/api/v1/pgp/identities/${FOREIGN_ID}`,
+      principal: principal(),
+      body: { email: 'peer@example.test' },
+    })).resolves.toMatchObject({ status: 404 });
+    expect(identityDelete).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: FOREIGN_ID }),
     );
 
     // Peer-key DELETE has a workspace-wide effect and stays owner/admin-only — a
@@ -1814,6 +1844,24 @@ function principal(role: AuthenticatedPrincipal['role'] = 'user'): Authenticated
     workspaceId: WORKSPACE_A,
     userId: role === 'user' ? USER_A : OWNER_A,
     role,
+  };
+}
+
+function makePgpIdentityRecord(id: number, userId: string): PgpIdentityRecord {
+  return {
+    id,
+    sourceSqliteId: null,
+    userId,
+    legacyUserId: null,
+    email: 'me@example.test',
+    fingerprint: `FPR${id}`,
+    publicKeyArmor: '-----BEGIN PGP PUBLIC KEY BLOCK-----',
+    hasPrivateKey: true,
+    privateKeyConfigured: true,
+    expiresAt: null,
+    isPrimary: true,
+    createdAt: null,
+    updatedAt: '2026-07-20T10:00:00.000Z',
   };
 }
 

@@ -230,6 +230,11 @@ export function createPostgresPgpIdentityReadPort(options: PostgresPgpReadPortOp
             .select(pgpIdentitySelectColumns)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            // Scope to the CALLER's own identity: a PGP identity (and its AEAD-bound private
+            // key) belongs to one user, and workspace RLS carries no user_id predicate, so
+            // without this a mail.account.manage delegate could edit another user's identity
+            // by id. Mirrors rotatePrivateKeyPassphrase (R46-1).
+            .where('user_id', '=', input.actorUserId)
             .executeTakeFirst();
           if (!current) return null;
 
@@ -265,6 +270,7 @@ export function createPostgresPgpIdentityReadPort(options: PostgresPgpReadPortOp
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where('user_id', '=', input.actorUserId)
             .returning(pgpIdentitySelectColumns)
             .executeTakeFirstOrThrow();
 
@@ -311,6 +317,8 @@ export function createPostgresPgpIdentityReadPort(options: PostgresPgpReadPortOp
             .select(pgpIdentitySelectColumns)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            // Own-identity scope (R46-1): see update()'s SELECT above.
+            .where('user_id', '=', input.actorUserId)
             .executeTakeFirst(),
         { applySession: options.applyWorkspaceSession },
       );
@@ -833,6 +841,9 @@ async function deletePgpIdentityRow(
         .deleteFrom('pgp_identities')
         .where('workspace_id', '=', workspaceId)
         .where('id', '=', id)
+        // Own-identity scope (R46-1): a non-owned id deletes 0 rows → the route 404s,
+        // and its AEAD-bound private-key secret is NOT destroyed. Mirrors the SELECTs above.
+        .where('user_id', '=', actorUserId)
         .returning(pgpIdentitySelectColumns)
         .executeTakeFirst();
       return row ? mapPgpIdentityRow(row) : null;
