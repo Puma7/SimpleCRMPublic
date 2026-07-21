@@ -2268,7 +2268,40 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
           });
-          if (scopePredicate) query = query.where(scopePredicate);
+          if (scopePredicate) {
+            // The join above already requires a scope-visible message in the ALIAS thread,
+            // but each warning also discloses canonicalThreadId — so a delegate who can read
+            // the alias thread yet cannot access the canonical thread would still learn the
+            // hidden canonical thread id. Require canonical-thread visibility too (mirroring
+            // the R42-2 both-sides alias-list gate): a scope-visible message in the canonical
+            // thread, OR an empty/merged-away canonical thread whose alias account is in
+            // scope. Owner/admin (scope 'all') produce no predicate and skip this block.
+            query = query.where(scopePredicate);
+            const canonicalMsgPred = mailScopePredicate(input.mailScope, {
+              accountId: 'canonical_scope_message.account_id',
+              folderId: 'canonical_scope_message.folder_id',
+              messageId: 'canonical_scope_message.id',
+            }) ?? kyselySql<boolean>`false`;
+            const aliasAccountPred = mailScopePredicate(input.mailScope, {
+              accountId: 'email_thread_aliases.account_id',
+            }) ?? kyselySql<boolean>`false`;
+            query = query.where(kyselySql<boolean>`(
+              exists (
+                select 1 from email_messages canonical_scope_message
+                where canonical_scope_message.workspace_id = ${input.workspaceId}::uuid
+                  and canonical_scope_message.thread_id = ${kyselySql.ref('email_thread_aliases.canonical_thread_id')}
+                  and ${canonicalMsgPred}
+              )
+              or (
+                not exists (
+                  select 1 from email_messages canonical_scope_message
+                  where canonical_scope_message.workspace_id = ${input.workspaceId}::uuid
+                    and canonical_scope_message.thread_id = ${kyselySql.ref('email_thread_aliases.canonical_thread_id')}
+                )
+                and ${aliasAccountPred}
+              )
+            )`);
+          }
           const rows = await query
             .orderBy('email_thread_aliases.created_at', 'desc')
             .orderBy('email_thread_aliases.id', 'desc')
