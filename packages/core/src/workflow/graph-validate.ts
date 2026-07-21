@@ -375,6 +375,50 @@ export function collectWorkflowCreateDraftStaticAccountIds(graph: unknown): numb
   return [...ids];
 }
 
+/**
+ * True if the graph creates a draft AND a `logic.set_variable` node assigns the fixed
+ * `email.account_id` variable a value that is NOT a static positive-integer literal — i.e.
+ * an interpolated/runtime-computed account id (`{{customer.account_id}}`) that
+ * collectWorkflowCreateDraftStaticAccountIds cannot resolve. Because create_draft would then
+ * mint a draft under a runtime account the async job enforcer cannot authorize at policy
+ * time, a non-owner/admin run carrying such an assignment is denied fail-closed (R46-2, the
+ * residual of R45-1). Owner/admin — who may create a draft under any account — are exempt at
+ * the enforcer, not here. A static-integer pin returns false (it is authorized instead), and
+ * a graph without an email.create_draft node returns false.
+ */
+export function workflowGraphAssignsDynamicCreateDraftAccount(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+
+  const createsDraft = nodes.some((raw) => (
+    raw !== null && typeof raw === 'object'
+    && sideEffectRuntimeType(raw as WorkflowGraphNode) === 'email.create_draft'
+  ));
+  if (!createsDraft) return false;
+
+  return nodes.some((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') return false;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    if (name !== 'email.account_id') return false;
+    // A statically-resolvable positive-int pin is authorized elsewhere; anything else
+    // (interpolated, non-numeric, absent) is not resolvable at policy time.
+    return staticPositiveIntOrNull(config.value) === null;
+  });
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;

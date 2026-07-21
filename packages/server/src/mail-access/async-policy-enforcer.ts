@@ -3,6 +3,7 @@ import {
   collectWorkflowCreateDraftStaticAccountIds,
   collectWorkflowSendDraftStaticDraftIds,
   collectWorkflowSendDraftVariableStaticDraftIds,
+  workflowGraphAssignsDynamicCreateDraftAccount,
   workflowGraphHasAnyNodeType,
   workflowGraphHasNodeType,
   workflowGraphHasSideEffectNode,
@@ -164,10 +165,11 @@ export async function enforceMailJobPolicy(
     assertPostProcessRetryPrivilege(job, actor.actor);
     // Runs BEFORE the message-less early return: a message-less create_draft run resolves to
     // non_mail (returns below) yet still mints a draft under the account named by a
-    // set_variable-pinned email.account_id. Authorize that account here so the check is not
+    // set_variable-selected email.account_id. Authorize the statically-pinned account here (and
+    // deny a non-owner/admin run whose email.account_id is runtime-computed) so the check is not
     // skipped. (The default-account case — email.account_id = the context message's account —
     // is covered by the resource-gated draft.create recheck further down.)
-    await assertWorkflowExecuteDraftCreateStaticAccountPrivilege(job, actor.actor, requiredPorts);
+    await assertWorkflowExecuteDraftCreateAccountPrivilege(job, actor.actor, requiredPorts);
   }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
   // A compose-originated (user) ai.pick_canned loads canned templates under the
@@ -549,19 +551,22 @@ async function assertWorkflowExecuteDraftCreateNodePrivilege(
   }
 }
 
-// R45-1: email.create_draft mints a NEW draft row under the account named by the
+// R45-1 + R46-2: email.create_draft mints a NEW draft row under the account named by the
 // `email.account_id` workflow variable — seeded from the trigger message's account but
 // overwritable by a logic.set_variable node — under the SYSTEM role with no per-actor ACL.
 // The resource-gated draft.create recheck above only authorizes the CONTEXT message's account
 // (the default seed), so a set_variable pinning email.account_id to a DIFFERENT account lets a
 // delegate mint a draft in an account they cannot reach (and a message-less run skips that
 // recheck entirely). For each account the current graph statically pins email.account_id to,
-// resolve it and require mail.draft.create. A variable fed from genuine runtime data stays
-// unknown at policy time and — unlike send_draft, whose SMTP send is rechecked downstream —
-// create_draft has no later recheck, so that residual case is not covered here. Runs in the
-// pre-resolution user block so it also covers message-less runs; converts a denial to the
-// nonRetryable async error since it fires outside the main try/catch.
-async function assertWorkflowExecuteDraftCreateStaticAccountPrivilege(
+// resolve it and require mail.draft.create (R45-1). A set_variable that assigns email.account_id
+// a runtime-computed (interpolated) value cannot be resolved — and thus authorized — at policy
+// time and, unlike send_draft, create_draft has no downstream send recheck to backstop it; so a
+// non-owner/admin run carrying such a dynamic assignment is denied fail-closed (R46-2). Owner/
+// admin may create a draft under any account, so they are exempt from the dynamic denial (the
+// static assertions are already no-ops for them via the owner/admin assertPermission bypass).
+// Runs in the pre-resolution user block so it also covers message-less runs; converts a denial
+// to the nonRetryable async error since it fires outside the main try/catch.
+async function assertWorkflowExecuteDraftCreateAccountPrivilege(
   job: QueuedJob,
   actor: MailAccessActor,
   ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
@@ -574,6 +579,9 @@ async function assertWorkflowExecuteDraftCreateStaticAccountPrivilege(
     workflowId,
   });
   if (!loaded) return;
+  if (!actor.isOwner && !actor.isAdmin && workflowGraphAssignsDynamicCreateDraftAccount(loaded.graph)) {
+    throw new MailAsyncAuthorizationError();
+  }
   const accountIds = collectWorkflowCreateDraftStaticAccountIds(loaded.graph);
   if (accountIds.length === 0) return;
   try {

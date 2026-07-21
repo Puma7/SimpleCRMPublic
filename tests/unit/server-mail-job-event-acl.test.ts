@@ -653,6 +653,35 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
+  test('denies a non-owner create_draft run whose email.account_id is runtime-computed; exempts owner (R46-2)', async () => {
+    // A set_variable assigning email.account_id an interpolated value cannot be resolved (and
+    // authorized) at policy time, so a non-owner/admin run is denied fail-closed; owner/admin
+    // may create a draft under any account and are exempt.
+    const dynamicGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{customer.account_id}}' } } },
+      { type: 'registry', data: { nodeType: 'email.create_draft' } },
+    ] };
+    const graphs = new Map<number, unknown>([[747, dynamicGraph]]);
+
+    // Non-owner delegate (with a context message) → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 747, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // A message-less non-owner run is denied too (the guard runs before the non_mail return).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 747 },
+    }), makePolicyPorts({ workflowGraphs: graphs }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // Owner run is NOT denied by the dynamic guard (completes without throwing).
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', workflowId: 747, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs }));
+  });
+
   test('rechecks mail.draft.edit for workflow release/hold_outbound and static/variable-pinned send_draft nodes (R40-4/R41-3/R42-1)', async () => {
     // release_outbound / hold_outbound mutate the workflow message; send_draft with a static
     // config.draftId arms a SEPARATE target draft — all under the system role, all mutating a

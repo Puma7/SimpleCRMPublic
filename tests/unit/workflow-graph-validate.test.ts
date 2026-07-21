@@ -3,6 +3,7 @@ import {
   collectWorkflowCreateDraftStaticAccountIds,
   collectWorkflowSendDraftStaticDraftIds,
   collectWorkflowSendDraftVariableStaticDraftIds,
+  workflowGraphAssignsDynamicCreateDraftAccount,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
@@ -692,5 +693,55 @@ describe('collectWorkflowCreateDraftStaticAccountIds', () => {
     expect(collectWorkflowCreateDraftStaticAccountIds({})).toEqual([]);
     expect(collectWorkflowCreateDraftStaticAccountIds({ nodes: 'x' })).toEqual([]);
     expect(collectWorkflowCreateDraftStaticAccountIds('{not json')).toEqual([]);
+  });
+});
+
+describe('workflowGraphAssignsDynamicCreateDraftAccount', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('is true when a create_draft graph assigns email.account_id a runtime/interpolated value', () => {
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{customer.account_id}}' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(true);
+    // A non-numeric static value is also unresolvable → treated as dynamic (fail closed).
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'action', data: { actionType: 'set_variable', config: { name: 'email.account_id', value: 'abc' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(true);
+  });
+
+  it('is false for a static-integer pin, a different variable, or a graph without create_draft', () => {
+    // Static positive-int pin → authorized elsewhere, not dynamic.
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(false);
+    // Dynamic assignment to a DIFFERENT variable is irrelevant.
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: '{{x}}' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(false);
+    // No create_draft node → nothing to guard.
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{x}}' } } },
+    ]))).toBe(false);
+  });
+
+  it('returns false for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(null)).toBe(false);
+    expect(workflowGraphAssignsDynamicCreateDraftAccount({})).toBe(false);
+    expect(workflowGraphAssignsDynamicCreateDraftAccount({ nodes: 'x' })).toBe(false);
+    expect(workflowGraphAssignsDynamicCreateDraftAccount('{not json')).toBe(false);
   });
 });
