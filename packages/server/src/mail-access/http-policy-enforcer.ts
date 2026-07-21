@@ -45,11 +45,6 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/message-categories',
   '/api/v1/email/internal-notes',
   '/api/v1/email/canned-responses',
-  // Fetching a single canned response by id follows the same list-then-item rule:
-  // a reader allowed the collection must be allowed a global (or resolved-in-scope)
-  // item. Account-scoped rows still authorize per account via cannedResponsePath()
-  // (the resource path, not this scope gate), so this admits only global rows here.
-  '/api/v1/email/canned-responses/:id',
   '/api/v1/email/account-signatures',
   '/api/v1/email/remote-content-allowlist',
   '/api/v1/email/read-receipts',
@@ -94,6 +89,16 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set([
   // allowed too, otherwise they can save signatures they can never load. Kept out
   // of EMPTY_SCOPE_READ_PATHS so a scope-'none' user still gets nothing.
   '/api/v1/email/user-signatures',
+  // Fetching a single canned response by id. Account-scoped rows authorize per
+  // account via cannedResponsePath() (the resource path, not this scope gate); a
+  // global (accountless) row falls through to this scope gate. Unlike the
+  // collection — which the read port returns empty for scope 'none'
+  // (postgres-mail-metadata-read-ports.ts) — the item's unscoped get() returns the
+  // full global template body, so a scope-'none' user (no mail.draft.create grant
+  // anywhere) must NOT reach it. Kept out of EMPTY_SCOPE_READ_PATHS so scope 'none'
+  // 404s; a restricted delegate (draft.create on some account) still loads global
+  // compose templates.
+  '/api/v1/email/canned-responses/:id',
   // A delegated sender (restricted mail.send scope) can reach the PGP encrypt/sign
   // endpoints, so they must also be able to check whether their recipients have
   // usable keys. Read-only, no account/message resource; scope 'none' still 404s.

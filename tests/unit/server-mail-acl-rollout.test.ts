@@ -869,6 +869,46 @@ describe('mail ACL rollout central use', () => {
     })).resolves.toMatchObject({ status: 200 });
   });
 
+  test('scope-none user cannot read a global canned response by id', async () => {
+    // A user with no mail.draft.create grant anywhere resolves to scope 'none'. The
+    // collection read port returns no rows for them, but the item's unscoped get()
+    // returns the full global template body — so the item must require a nonempty
+    // draft-create scope (kept out of EMPTY_SCOPE_READ_PATHS) and deny scope 'none'
+    // before the handler runs.
+    const getCanned = jest.fn(async () => ({
+      id: 77,
+      sourceSqliteId: 77,
+      title: 'T',
+      body: 'B',
+      accountSourceSqliteId: null,
+      accountId: null,
+      overrideKey: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: '2026-07-20T10:00:00.000Z',
+    }));
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() { return { kind: 'none' }; },
+      } as unknown as MailAccessService),
+      mailResourceLookup: {
+        async resolve() { return []; }, // global/accountless → scope gate
+      },
+      emailCannedResponses: {
+        async list() { return { items: [], nextCursor: null }; },
+        get: getCanned,
+      } as unknown as ServerApiPorts['emailCannedResponses'],
+    });
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/canned-responses/77',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(getCanned).not.toHaveBeenCalled();
+  });
+
   test('remote-content remember flags are denied for a scoped non-admin (owner/admin only)', async () => {
     const setRemoteContentPolicy = jest.fn();
     const api = createServerApi({

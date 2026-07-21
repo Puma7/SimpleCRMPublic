@@ -512,6 +512,28 @@ describe('server mail job and event ACL', () => {
     }), denied)).rejects.toMatchObject({ nonRetryable: true });
   });
 
+  test('classification requires content-read in addition to triage', async () => {
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.triage',
+      'mail.content.read',
+    ]);
+
+    // triage alone is not enough — a content grant revoked after workflow.execute
+    // queued this ai.classify child (while the user retained triage) is caught at
+    // execution: classification reads snippet/body_text and may send it to the AI
+    // provider before persisting the tag.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
   test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {
     const ports = makePolicyPorts({ denyAllMailAccess: true });
     const servicePayloads = {
