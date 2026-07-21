@@ -2613,6 +2613,9 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     messageId: number;
     customerId: number | null;
+    // Present for a metadata-only delegate lacking mail.content.read on the target:
+    // the read port redacts the returned row's body-derived fields per this scope.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageMetadataMutationResult>;
   backfillCustomerLinks?(input: {
     workspaceId: string;
@@ -2623,12 +2626,16 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     messageId: number;
     teamMemberId: string | null;
+    // See linkCustomer: redacts the returned row's content for metadata-only callers.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageMetadataMutationResult>;
   setSpamStatus?(input: {
     workspaceId: string;
     actorUserId: string;
     messageId: number;
     values: EmailMessageSpamStatusMutationInput;
+    // See linkCustomer: redacts the returned row's content for metadata-only callers.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageRecord | null>;
   evaluateSpamDecision?(input: {
     workspaceId: string;

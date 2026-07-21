@@ -94,6 +94,7 @@ import {
 } from '../mail-security-check';
 import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
+import type { MailSqlScope } from '../mail-access/types';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
 
 export type PostgresMailReadPortOptions = Readonly<{
@@ -1725,6 +1726,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const rspamdLearningRequests: RspamdLearningRequest[] = [];
 
           const now = new Date();
+          const contentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'account_id',
+            folderId: 'folder_id',
+            messageId: 'id',
+          });
           const updated = await trx
             .updateTable('email_messages')
             .set({
@@ -1735,6 +1741,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .returning(emailMessageSummaryColumns)
+            .$if(Boolean(contentPredicate), (qb) => qb.returning(
+              kyselySql<boolean>`(${contentPredicate!})`.as('content_readable'),
+            ))
             .executeTakeFirstOrThrow();
 
           if (values.train !== false) {
@@ -2475,6 +2484,7 @@ async function linkMessageCustomer(
     workspaceId: string;
     messageId: number;
     customerId: number | null;
+    mailContentScope?: MailSqlScope;
   },
 ): Promise<NonNullable<EmailMessageApiPort['linkCustomer']> extends (arg: any) => Promise<infer R> ? R : never> {
   if (!Number.isSafeInteger(input.messageId) || input.messageId <= 0) {
@@ -2495,6 +2505,11 @@ async function linkMessageCustomer(
     customerSourceSqliteId = Number(customer.source_sqlite_id);
   }
 
+  const customerLinkContentPredicate = mailScopePredicate(input.mailContentScope, {
+    accountId: 'account_id',
+    folderId: 'folder_id',
+    messageId: 'id',
+  });
   const updated = await trx
     .updateTable('email_messages')
     .set({
@@ -2505,6 +2520,9 @@ async function linkMessageCustomer(
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .returning(emailMessageSummaryColumns)
+    .$if(Boolean(customerLinkContentPredicate), (qb: any) => qb.returning(
+      kyselySql<boolean>`(${customerLinkContentPredicate!})`.as('content_readable'),
+    ))
     .executeTakeFirst();
   return updated
     ? { ok: true as const, message: mapEmailMessageRow(updated, false) }
@@ -2636,6 +2654,7 @@ async function assignMessageTeamMember(
     workspaceId: string;
     messageId: number;
     teamMemberId: string | null;
+    mailContentScope?: MailSqlScope;
   },
 ): Promise<NonNullable<EmailMessageApiPort['assign']> extends (arg: any) => Promise<infer R> ? R : never> {
   if (!Number.isSafeInteger(input.messageId) || input.messageId <= 0) {
@@ -2655,6 +2674,11 @@ async function assignMessageTeamMember(
     if (!member) return { ok: false as const, reason: 'team_member_not_found' as const };
   }
 
+  const assignContentPredicate = mailScopePredicate(input.mailContentScope, {
+    accountId: 'account_id',
+    folderId: 'folder_id',
+    messageId: 'id',
+  });
   const updated = await trx
     .updateTable('email_messages')
     .set({
@@ -2664,6 +2688,9 @@ async function assignMessageTeamMember(
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .returning(emailMessageSummaryColumns)
+    .$if(Boolean(assignContentPredicate), (qb: any) => qb.returning(
+      kyselySql<boolean>`(${assignContentPredicate!})`.as('content_readable'),
+    ))
     .executeTakeFirst();
   return updated
     ? { ok: true as const, message: mapEmailMessageRow(updated, false) }
@@ -5005,7 +5032,12 @@ function mapEmailMessageRow(
     readReceiptRequested: row.read_receipt_requested,
     postProcessDone: row.post_process_done,
     snoozedUntil: timestampToIsoOrNull(row.snoozed_until),
-    draftAttachmentPathsJson: row.draft_attachment_paths_json,
+    // Draft attachment paths hold uploaded filenames + full server-side storage
+    // paths (filesystem layout), so redact them for a content-redacted row exactly
+    // like the snippet above. content_readable is only computed for the scoped
+    // list/conversation/thread reads; single-message get is separately gated on
+    // mail.content.read, so its undefined content_readable leaves this untouched.
+    draftAttachmentPathsJson: row.content_readable === false ? null : row.draft_attachment_paths_json,
     replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)

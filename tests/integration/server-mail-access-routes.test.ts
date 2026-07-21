@@ -1466,6 +1466,92 @@ describe('server mailbox ACL migration', () => {
     expect(observedScopes).toEqual(Array.from({ length: 6 }, () => ({ kind: 'none' })));
   });
 
+  test('injects the content scope into triage mutations so restricted callers get redacted rows', async () => {
+    const observedContentScopes: Array<MailSqlScope | undefined> = [];
+    const overrides: Partial<ServerApiPorts> = {
+      emailMessages: {
+        list: async () => ({ items: [], nextCursor: null }),
+        get: async () => null,
+        async linkCustomer(input) {
+          observedContentScopes.push((input as typeof input & { mailContentScope?: MailSqlScope }).mailContentScope);
+          return { ok: true as const, message: makeMessageRecord(MESSAGE_A) };
+        },
+        async assign(input) {
+          observedContentScopes.push((input as typeof input & { mailContentScope?: MailSqlScope }).mailContentScope);
+          return { ok: true as const, message: makeMessageRecord(MESSAGE_A) };
+        },
+        async setSpamStatus(input) {
+          observedContentScopes.push((input as typeof input & { mailContentScope?: MailSqlScope }).mailContentScope);
+          return makeMessageRecord(MESSAGE_A);
+        },
+      } as unknown as ServerApiPorts['emailMessages'],
+    };
+    const triageGrant = {
+      resourceType: 'message' as const,
+      accountId: ACCOUNT_A,
+      folderId: FOLDER_A,
+      messageId: MESSAGE_A,
+    };
+    // A metadata-only delegate holds mail.triage on the message but no
+    // mail.content.read anywhere, so its content scope resolves to 'none' and the
+    // read port redacts the row it echoes back.
+    const metadataOnly = createServerApi(makeHttpPorts({
+      grants: new Map([['mail.triage', [triageGrant]]]),
+      overrides,
+    }));
+    // A content-authorized delegate additionally holds mail.content.read on the
+    // account, so its content scope covers the message and nothing is redacted.
+    const contentAuthorized = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.triage', [triageGrant]],
+        ['mail.content.read', [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ]),
+      overrides,
+    }));
+    const ownerApi = createServerApi(makeHttpPorts({
+      grants: new Map([['mail.triage', [triageGrant]]]),
+      overrides,
+    }));
+
+    const mutations: Array<readonly [string, unknown]> = [
+      [`/api/v1/email/messages/${MESSAGE_A}/customer-link`, { customerId: null }],
+      [`/api/v1/email/messages/${MESSAGE_A}/assignment`, { teamMemberId: null }],
+      // train:false isolates the response-redaction path from the training gate.
+      [`/api/v1/email/messages/${MESSAGE_A}/spam-status`, { status: 'review', train: false }],
+    ];
+
+    for (const [path, body] of mutations) {
+      const restricted = await metadataOnly.handle({ method: 'PATCH', path, principal: makePrincipal(), body });
+      expect(restricted.status).toBe(200);
+    }
+    for (const [path, body] of mutations) {
+      const authorized = await contentAuthorized.handle({ method: 'PATCH', path, principal: makePrincipal(), body });
+      expect(authorized.status).toBe(200);
+    }
+    for (const [path, body] of mutations) {
+      const owner = await ownerApi.handle({ method: 'PATCH', path, principal: makePrincipal('owner'), body });
+      expect(owner.status).toBe(200);
+    }
+
+    // Restricted metadata-only delegate: content scope resolves to 'none' for each
+    // of the three mutations, forcing per-row redaction.
+    expect(observedContentScopes.slice(0, 3)).toEqual([
+      { kind: 'none' },
+      { kind: 'none' },
+      { kind: 'none' },
+    ]);
+    // Content-authorized delegate: the injected scope covers the account, so the
+    // read port leaves the row intact.
+    expect(observedContentScopes.slice(3, 6)).toEqual([
+      { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] },
+      { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] },
+      { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] },
+    ]);
+    // Owner/admin read everything, so no content scope is injected and nothing is
+    // redacted.
+    expect(observedContentScopes.slice(6, 9)).toEqual([undefined, undefined, undefined]);
+  });
+
   test('denies non-GET mail-scope writes for restricted account, folder, and message grants', async () => {
     const restrictedGrantCases: Array<readonly [
       string,

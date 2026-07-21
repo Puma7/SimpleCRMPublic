@@ -801,6 +801,68 @@ describe('mail ACL rollout central use', () => {
     expect(getDecision).toHaveBeenCalledTimes(1);
   });
 
+  test('spam learning-event item GET requires content-read in addition to metadata', async () => {
+    // sanitizeLearningEvent returns featureKeys derived from the hidden body/HTML
+    // (buildFeaturePreview), so a metadata-only delegate that obtains a learning
+    // event id from spam_learning_event.created must not read the item without
+    // content access — the same exposure as spam decisions above.
+    const getLearningEvent = jest.fn(async () => ({
+      id: 88,
+      sourceSqliteId: 88,
+      messageSourceSqliteId: null,
+      accountSourceSqliteId: 1,
+      messageId: MESSAGE_A,
+      accountId: ACCOUNT_A,
+      label: 'spam' as const,
+      source: 'manual',
+      featureKeys: ['token:secret'],
+      createdAt: null,
+      updatedAt: '2026-07-20T10:00:00.000Z',
+    }));
+    const withMailAccess = (mailAccess: MailAccessService) => createServerApi({
+      ...makeCentralPorts(mailAccess),
+      mailResourceLookup: {
+        async resolve(input) {
+          if (input.target.kind === 'metadata' && input.target.entity === 'spam_learning_event') {
+            return [messageResource(ACCOUNT_A, FOLDER_A, MESSAGE_A)];
+          }
+          if (input.target.kind === 'message') return [messageResource(ACCOUNT_A, FOLDER_A, Number(input.target.id))];
+          return [];
+        },
+      },
+      spamLearningEvents: { get: getLearningEvent } as unknown as ServerApiPorts['spamLearningEvents'],
+    });
+
+    const denyContentRead = withMailAccess({
+      async assertPermission(input) {
+        if (input.permission === 'mail.content.read') throw new MailAccessDeniedError();
+      },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await expect(denyContentRead.handle({
+      method: 'GET',
+      path: '/api/v1/spam/learning-events/88',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(getLearningEvent).not.toHaveBeenCalled();
+
+    const calls: string[] = [];
+    const allowAll = withMailAccess({
+      async assertPermission(input) { calls.push(`assert:${input.permission}:${input.resource.type}`); },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await allowAll.handle({
+      method: 'GET',
+      path: '/api/v1/spam/learning-events/88',
+      principal: principal(),
+    });
+    expect(calls).toEqual(expect.arrayContaining([
+      'assert:mail.metadata.read:message',
+      'assert:mail.content.read:message',
+    ]));
+    expect(getLearningEvent).toHaveBeenCalledTimes(1);
+  });
+
   test('scoped delegates fetch in-scope or global canned responses by id but not out-of-scope ones', async () => {
     const cannedRecord = (id: number, accountId: number | null) => ({
       id,
@@ -941,6 +1003,40 @@ describe('mail ACL rollout central use', () => {
       principal: principal(),
     })).resolves.toMatchObject({ status: 404 });
     expect(getTeamMember).not.toHaveBeenCalled();
+  });
+
+  test('scope-none user cannot read a category by id', async () => {
+    // Same asymmetry as the team member above: the collection read port returns no
+    // rows for scope 'none', but the item's unscoped get() returns the category name
+    // and hierarchy. The item requires a nonempty metadata.read scope (kept out of
+    // EMPTY_SCOPE_READ_PATHS), so scope 'none' 404s before the handler runs.
+    const getCategory = jest.fn(async () => ({
+      id: 5,
+      sourceSqliteId: 5,
+      parentSourceSqliteId: null,
+      parentId: null,
+      name: 'Confidential',
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: '2026-07-20T10:00:00.000Z',
+    }));
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() { return { kind: 'none' }; },
+      } as unknown as MailAccessService),
+      emailCategories: {
+        async list() { return { items: [], nextCursor: null }; },
+        get: getCategory,
+      } as unknown as ServerApiPorts['emailCategories'],
+    });
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/categories/5',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(getCategory).not.toHaveBeenCalled();
   });
 
   test('spam-decision POST requires content-read in addition to triage', async () => {

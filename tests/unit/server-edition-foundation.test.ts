@@ -22545,6 +22545,43 @@ describe('server edition foundation', () => {
     });
   });
 
+  test('account deletion publishes delegate ACL invalidations before the audit write', async () => {
+    // The delete has already committed by the time the handler runs its side
+    // effects, so a transient audit-port failure must not abort before the targeted
+    // email_acl.changed invalidations fire — otherwise a delegate keeps a now-gone
+    // account loaded. The invalidation loop therefore runs before auditEmailAccount.
+    const account = makeEmailAccountRecord(1);
+    const events: ServerEvent[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      audit: {
+        async record() { throw new Error('audit port down'); },
+      } as unknown as ServerApiPorts['audit'],
+      emailAccounts: {
+        async list() { return { items: [] }; },
+        async get() { return account; },
+        async delete() { return { ok: true as const, account, affectedUserIds: ['delegate-x'] }; },
+      } as unknown as ServerApiPorts['emailAccounts'],
+    }));
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+
+    // The audit write throws (and aborts the audit + account.deleted publish that
+    // follow it), but the delegate invalidation was already emitted beforehand.
+    await api.handle({ method: 'DELETE', path: '/api/v1/email/accounts/1', principal })
+      .catch(() => undefined);
+    expect(events.filter((event) => event.type === 'email_acl.changed')).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: '1',
+        payload: expect.objectContaining({ targetUserId: 'delegate-x', state: 'deleted' }),
+      }),
+    ]);
+    // The audit failure aborted before the generic account.deleted event, proving
+    // the invalidation ordering actually protects it.
+    expect(events.some((event) => event.type === 'email_account.deleted')).toBe(false);
+  });
+
   test('server mail account sync route enqueues workspace-scoped mail sync jobs', async () => {
     const queueCalls: unknown[] = [];
     const accountGetCalls: unknown[] = [];

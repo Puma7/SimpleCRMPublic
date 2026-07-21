@@ -37,10 +37,6 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/folders',
   '/api/v1/email/tags',
   '/api/v1/email/categories',
-  // Fetching a single workspace-global category/team member by id is the same
-  // lookup as listing the collection (both above), so a reader allowed the list
-  // must be allowed the item — otherwise the mail UI 404s on a record it may show.
-  '/api/v1/email/categories/:id',
   '/api/v1/email/category-counts',
   '/api/v1/email/message-categories',
   '/api/v1/email/internal-notes',
@@ -104,6 +100,11 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set([
   // EMPTY_SCOPE_READ_PATHS so scope 'none' 404s; a restricted metadata.read delegate
   // still resolves assignee/team labels the mail UI needs.
   '/api/v1/email/team-members/:id',
+  // Same asymmetry for a single category by id: the collection read port returns no
+  // rows for scope 'none', but the item's unscoped get() returns the category name +
+  // hierarchy. Keep it out of EMPTY so scope 'none' 404s; a restricted metadata.read
+  // delegate still resolves category labels the mail UI needs.
+  '/api/v1/email/categories/:id',
   // A delegated sender (restricted mail.send scope) can reach the PGP encrypt/sign
   // endpoints, so they must also be able to check whether their recipients have
   // usable keys. Read-only, no account/message resource; scope 'none' still 404s.
@@ -148,6 +149,17 @@ const MESSAGE_CONTENT_SCOPE_PATHS = new Set<string>([
   '/api/v1/email/messages',
   '/api/v1/email/messages/conversation',
   '/api/v1/email/threads/:threadId/messages',
+]);
+
+// Triage mutation routes that authorize on a single message resource
+// (mail.triage) but echo the mutated message back whole — its body-derived
+// snippet and draft attachment paths included. For a caller lacking an
+// independent mail.content.read scope on that message the enforcer resolves the
+// content scope so the read port can redact those fields on the returned row.
+const MESSAGE_CONTENT_SCOPE_MUTATION_PATHS = new Set<string>([
+  '/api/v1/email/messages/:messageId/customer-link',
+  '/api/v1/email/messages/:messageId/assignment',
+  '/api/v1/email/messages/:messageId/spam-status',
 ]);
 
 export async function enforceMailHttpPolicy(
@@ -310,6 +322,20 @@ export async function enforceMailHttpPolicy(
         context: { permission: entry.policy.permission, scope: await resolveScope() },
       };
     }
+    // Triage mutations echo the mutated message back whole. Owner/admin read
+    // everything; a restricted delegate gets its body-derived content redacted per
+    // its independent mail.content.read scope (the read port turns this into a
+    // per-row content_readable flag on the returned row).
+    if (
+      !actor.isOwner
+      && !actor.isAdmin
+      && MESSAGE_CONTENT_SCOPE_MUTATION_PATHS.has(entry.route.path)
+    ) {
+      return {
+        ok: true,
+        context: { permission: entry.policy.permission, contentScope: await resolveContentScope() },
+      };
+    }
     return { ok: true, context: { permission: entry.policy.permission } };
   } catch (caught) {
     if (caught instanceof MailAccessDeniedError) return denied();
@@ -321,6 +347,14 @@ export function portsWithMailAccessContext(
   ports: ServerApiPorts,
   context: MailRouteAccessContext | undefined,
 ): ServerApiPorts {
+  // Triage mutations (customer-link, assignment, spam-status) authorize on a
+  // message resource and carry no list scope, but a metadata-only delegate lacking
+  // mail.content.read must still get a content-redacted row back. Wrap just those
+  // three mutation ports to inject the caller's content scope; the read port turns
+  // it into a per-row content_readable flag that blanks the body-derived fields.
+  if ((!context?.scope || context.scope.kind === 'all') && context?.contentScope) {
+    return portsWithContentRedactedMutations(ports, context.contentScope);
+  }
   if (!context?.scope || context.scope.kind === 'all') return ports;
   const mailScope = context.scope;
   const contentScope = context.contentScope;
@@ -453,6 +487,29 @@ export function portsWithMailAccessContext(
         } : {}),
       },
     } : {}),
+  };
+}
+
+function portsWithContentRedactedMutations(
+  ports: ServerApiPorts,
+  contentScope: MailSqlScope,
+): ServerApiPorts {
+  if (!ports.emailMessages) return ports;
+  const messages = ports.emailMessages;
+  return {
+    ...ports,
+    emailMessages: {
+      ...messages,
+      ...(messages.linkCustomer ? {
+        linkCustomer: (input) => messages.linkCustomer!({ ...input, mailContentScope: contentScope }),
+      } : {}),
+      ...(messages.assign ? {
+        assign: (input) => messages.assign!({ ...input, mailContentScope: contentScope }),
+      } : {}),
+      ...(messages.setSpamStatus ? {
+        setSpamStatus: (input) => messages.setSpamStatus!({ ...input, mailContentScope: contentScope }),
+      } : {}),
+    },
   };
 }
 
@@ -787,15 +844,22 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
-  // A spam decision's breakdown (sanitizeDecision returns it whole) embeds the
-  // body/HTML-derived featureKeys from buildFeaturePreview — suspicious/business
-  // terms, form/script signals — so fetching a decision item discloses content.
-  // The item GET is resource-authorized on mail.metadata.read (metadataPath), so a
-  // metadata-only delegate who obtains a decision id from the spam_decision.created
-  // event can reach it; also require mail.content.read on the decision's resource.
-  // The collection GET is scope-gated (mailScope) and stays owner/admin-only, so it
-  // has no parallel exposure.
-  if (req.method === 'GET' && canonicalPath === '/api/v1/spam/decisions/:id') {
+  // A spam decision's breakdown (sanitizeDecision) and a learning event's
+  // featureKeys (sanitizeLearningEvent) both embed body/HTML-derived signals from
+  // buildFeaturePreview — suspicious/business terms, form/script signals — so
+  // fetching either item discloses content. Both item GETs are resource-authorized
+  // on mail.metadata.read (metadataPath), so a metadata-only delegate who obtains an
+  // id from the spam_decision.created / spam_learning_event.created event can reach
+  // them; also require mail.content.read on the resource. The collection GETs are
+  // scope-gated (mailScope) and stay owner/admin-only, so they have no parallel
+  // exposure.
+  if (
+    req.method === 'GET'
+    && (
+      canonicalPath === '/api/v1/spam/decisions/:id'
+      || canonicalPath === '/api/v1/spam/learning-events/:id'
+    )
+  ) {
     for (const resource of baseResources) {
       await ports.mailAccess!.assertPermission({
         workspaceId,

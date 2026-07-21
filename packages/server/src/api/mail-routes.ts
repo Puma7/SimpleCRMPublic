@@ -1217,16 +1217,12 @@ async function handleEmailAccountDelete(
   if (!result) return error(404, 'email_account_not_found', 'Email account nicht gefunden');
   if (!result.ok) return emailAccountMutationError(result);
 
-  await auditEmailAccount(ports, principal, 'email_account.deleted', result.account, {
-    emailAddress: result.account.emailAddress,
-  });
-  await publishEmailAccount(ports, principal.workspaceId, 'email_account.deleted', result.account, principal.userId, {
-    emailAddress: result.account.emailAddress,
-  });
-  // The account.deleted event above reaches owners/admins only (the account is
-  // gone, so it cannot be authorized for delegates). Deliver a targeted
-  // email_acl.changed to every delegate who held a binding on it so their client
-  // drops the now-inaccessible account and clears any loaded mailbox state.
+  // Deliver the targeted email_acl.changed invalidations FIRST. The delete already
+  // committed, so a transient audit-port or generic-publish failure must not abort
+  // before these fire: every delegate who held a binding on the now-gone account
+  // needs one to drop the inaccessible account and clear loaded mailbox state. (The
+  // account.deleted event below reaches owners/admins only — the account is gone, so
+  // it cannot be authorized for delegates.)
   for (const targetUserId of result.affectedUserIds ?? []) {
     await ports.events?.publish({
       type: 'email_acl.changed',
@@ -1241,6 +1237,12 @@ async function handleEmailAccountDelete(
       },
     });
   }
+  await auditEmailAccount(ports, principal, 'email_account.deleted', result.account, {
+    emailAddress: result.account.emailAddress,
+  });
+  await publishEmailAccount(ports, principal.workspaceId, 'email_account.deleted', result.account, principal.userId, {
+    emailAddress: result.account.emailAddress,
+  });
   return data(200, { success: true, deleted: true, account: sanitizeEmailAccount(result.account) });
 }
 
