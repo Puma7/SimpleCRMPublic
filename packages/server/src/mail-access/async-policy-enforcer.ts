@@ -262,6 +262,25 @@ export async function enforceMailJobPolicy(
         });
       }
     }
+    // A workflow.forward_copy job transmits (SMTP-sends) a copy of the message —
+    // including its content and attachments — to arbitrary recipients under the
+    // account's SYSTEM identity (createPostgresWorkflowForwardCopyPort sends via
+    // withWorkspaceTransaction role:'system', authing with the account's stored
+    // secrets, never the initiating user's live send grant). The base policy only
+    // requires mail.export, so a delegate whose mail.send was revoked (but who kept
+    // mail.export) could still exfiltrate content by forwarding. Recheck mail.send on
+    // the message at EXECUTION time — forwarding IS sending. User actors only;
+    // trusted-service forwards returned above.
+    if (job.type === 'workflow.forward_copy' && resolved.resources.kind === 'resources') {
+      for (const resource of resolved.resources.resources) {
+        await requiredPorts.mailAccess.assertPermission({
+          workspaceId: job.workspaceId,
+          actor: actor.actor,
+          permission: 'mail.send',
+          resource,
+        });
+      }
+    }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
     if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);

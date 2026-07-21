@@ -553,10 +553,12 @@ describe('mail ACL rollout central use', () => {
 
     expect(calls).toEqual([
       // GET /messages authorizes on mail.metadata.read but also resolves the
-      // mail.content.read scope so the read port can redact body-derived content
-      // per row for a metadata-only delegate.
+      // mail.content.read scope (to redact body-derived content per row) and the
+      // mail.attachment.read scope (to gate attachment-content search matches) for a
+      // metadata-/content-only delegate.
       'scope:mail.metadata.read',
       'scope:mail.content.read',
+      'scope:mail.attachment.read',
       // mail.spam.score (user-attributed): base mail.triage, then the content-read
       // supplemental because scoring reads the body and ships raw content to Rspamd.
       'assert:mail.triage:message',

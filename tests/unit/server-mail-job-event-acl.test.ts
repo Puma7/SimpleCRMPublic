@@ -296,6 +296,38 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
+  test('workflow.forward_copy requires mail.send for user-attributed jobs, not trusted-service', async () => {
+    // Forwarding a copy is an SMTP SEND of the message (content + attachments) under
+    // the account's system identity, so a delegate whose mail.send was revoked (but who
+    // kept mail.export) is refused at execution — a forward cannot be used to exfiltrate
+    // content after send was revoked.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.send']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.send retained, both the base mail.export and the mail.send supplemental
+    // are asserted on the forwarded message.
+    const allowed = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.export',
+      'mail.send',
+    ]);
+
+    // Trusted-service forwards carry no per-user actor, so they stay authorized without
+    // a mail.send grant — the enforcer returns before the user supplemental.
+    const service = makePolicyPorts({ denyPermissions: new Set(['mail.send']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
   test('workflow execution resolves delayed-job mail, rejects mismatches, and validates non-mail provenance', async () => {
     const ports = makePolicyPorts({
       denyMessages: new Set(['101']),

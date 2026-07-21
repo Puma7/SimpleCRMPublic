@@ -221,6 +221,20 @@ export async function enforceMailHttpPolicy(
     });
     return contentScopePromise;
   };
+  // Message search additionally matches extracted attachment text (a.content_text /
+  // a.search_vector). That is attachment CONTENT, not message body, so gate it on the
+  // caller's independent mail.attachment.read scope — a content.read delegate lacking
+  // attachment.read must not probe attachment bodies through search. Owner/admin never
+  // reach here (scope 'all' skips the wrapper), so this only runs for restricted delegates.
+  let attachmentScopePromise: Promise<MailSqlScope> | undefined;
+  const resolveAttachmentScope = (): Promise<MailSqlScope> => {
+    attachmentScopePromise ??= ports.mailAccess!.resolveScope({
+      workspaceId: principal.workspaceId,
+      actor,
+      permission: 'mail.attachment.read',
+    });
+    return attachmentScopePromise;
+  };
 
   try {
     const resources = await resolveHttpResources(
@@ -264,10 +278,10 @@ export async function enforceMailHttpPolicy(
         actor,
         ports,
       );
-      const contentScope = scope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path)
-        ? await resolveContentScope()
-        : undefined;
-      return { ok: true, context: { permission: entry.policy.permission, scope, contentScope } };
+      const isContentPath = scope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path);
+      const contentScope = isContentPath ? await resolveContentScope() : undefined;
+      const attachmentScope = isContentPath ? await resolveAttachmentScope() : undefined;
+      return { ok: true, context: { permission: entry.policy.permission, scope, contentScope, attachmentScope } };
     }
 
     if (resources.resources.length === 0) {
@@ -319,12 +333,12 @@ export async function enforceMailHttpPolicy(
 
     if (entry.policy.resource.kind === 'thread_lookup') {
       const threadScope = await resolveScope();
-      const contentScope = threadScope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path)
-        ? await resolveContentScope()
-        : undefined;
+      const isContentPath = threadScope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path);
+      const contentScope = isContentPath ? await resolveContentScope() : undefined;
+      const attachmentScope = isContentPath ? await resolveAttachmentScope() : undefined;
       return {
         ok: true,
-        context: { permission: entry.policy.permission, scope: threadScope, contentScope },
+        context: { permission: entry.policy.permission, scope: threadScope, contentScope, attachmentScope },
       };
     }
     if (scopedMutation) {
@@ -374,23 +388,32 @@ export function portsWithMailAccessContext(
   if (!context?.scope || context.scope.kind === 'all') return ports;
   const mailScope = context.scope;
   const contentScope = context.contentScope;
+  const attachmentScope = context.attachmentScope;
   const scopedInput = <T extends object>(input: T): T & { mailScope: MailSqlScope } => ({
     ...input,
     mailScope,
   });
-  // Message list/search ports additionally receive the content-read scope so they
-  // can redact body-derived content per row for a metadata-only delegate.
+  // Message list/search ports additionally receive the content-read scope (to redact
+  // body-derived content per row) and the attachment-read scope (to gate attachment
+  // content search matches) for a metadata-only / content-only delegate.
   const scopedMessageInput = <T extends object>(
     input: T,
-  ): T & { mailScope: MailSqlScope; mailContentScope?: MailSqlScope } => (
-    contentScope ? { ...input, mailScope, mailContentScope: contentScope } : { ...input, mailScope }
-  );
+  ): T & { mailScope: MailSqlScope; mailContentScope?: MailSqlScope; mailAttachmentScope?: MailSqlScope } => ({
+    ...input,
+    mailScope,
+    ...(contentScope ? { mailContentScope: contentScope } : {}),
+    ...(attachmentScope ? { mailAttachmentScope: attachmentScope } : {}),
+  });
   return {
     ...ports,
     ...(ports.emailAccounts ? {
       emailAccounts: {
         ...ports.emailAccounts,
         list: (input) => ports.emailAccounts!.list(scopedInput(input)),
+        // get() must receive the scope too, else a folder-/message-only delegate who
+        // fetches the parent account directly bypasses list()'s parent-only redaction
+        // and reads its full connection config.
+        get: (input) => ports.emailAccounts!.get(scopedInput(input)),
       },
     } : {}),
     ...(ports.emailMessages ? {
@@ -1312,21 +1335,47 @@ async function assertSupplementalHttpPermissions(
     // dangerous (executable/script) attachment additionally requires the
     // suspicious-download grant — the attachment-content route gates it, so this
     // path must too, else a delegate without it exfiltrates the executable here.
-    if (ports.emailAttachments?.listForMessage) {
-      for (const resource of baseResources) {
-        if (resource.type !== 'message') continue;
-        const attachments = await ports.emailAttachments.listForMessage({
-          workspaceId,
-          messageId: Number(resource.messageId),
-        });
+    // Two sources feed the danger decision:
+    //   1. stored email_message_attachments rows (listForMessage) — these carry the
+    //      decrypted/sanitized filenames (e.g. a decrypted PGP attachment name), which
+    //      the raw source may not reveal.
+    //   2. source parts recorded in attachments_json (listSourceAttachments) — these
+    //      enumerate EVERY MIME part the parser saw, including parts DROPPED by the
+    //      25MB/50MB ingest cap that never became stored rows. Such a dropped part has
+    //      no email_message_attachments row, so the per-attachment route can't serve
+    //      (or gate) it — the raw EML is its ONLY exfil path. Gate on a dangerous
+    //      dropped filename, and fail closed when the source part count exceeds the
+    //      stored-row count (a part was dropped and can't be independently classified
+    //      as safe here).
+    for (const resource of baseResources) {
+      if (resource.type !== 'message') continue;
+      const messageId = Number(resource.messageId);
+      let requiresSuspicious = false;
+      if (ports.emailAttachments?.listForMessage) {
+        const attachments = await ports.emailAttachments.listForMessage({ workspaceId, messageId });
         if (attachments.items.some((item) => isPotentiallyDangerousAttachment(item.filename))) {
-          await ports.mailAccess!.assertPermission({
-            workspaceId,
-            actor,
-            permission: 'mail.attachment.suspicious_download',
-            resource,
-          });
+          requiresSuspicious = true;
         }
+      }
+      if (!requiresSuspicious && ports.emailAttachments?.listSourceAttachments) {
+        const source = await ports.emailAttachments.listSourceAttachments({ workspaceId, messageId });
+        if (
+          source
+          && (
+            source.items.some((item) => isPotentiallyDangerousAttachment(item.filename))
+            || source.items.length > source.storedCount
+          )
+        ) {
+          requiresSuspicious = true;
+        }
+      }
+      if (requiresSuspicious) {
+        await ports.mailAccess!.assertPermission({
+          workspaceId,
+          actor,
+          permission: 'mail.attachment.suspicious_download',
+          resource,
+        });
       }
     }
   }

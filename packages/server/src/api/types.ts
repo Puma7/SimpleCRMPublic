@@ -84,6 +84,12 @@ export type MailRouteAccessContext = Readonly<{
   // content — snippet, search snippet, and body-text search matches — redacted, so a
   // metadata-only delegate cannot read previews or probe message bodies.
   contentScope?: MailSqlScope;
+  // The caller's mail.attachment.read scope, resolved for message search routes.
+  // Attachment CONTENT search clauses (extracted attachment text: a.content_text and
+  // the a.search_vector that embeds it) match only on rows inside this scope, so a
+  // content.read-but-not-attachment.read delegate cannot probe attachment bodies via
+  // search. Attachment FILENAMES stay searchable (message metadata).
+  attachmentScope?: MailSqlScope;
 }>;
 
 export type ApiDataBody<T> = {
@@ -1788,6 +1794,11 @@ export type EmailAccountApiPort = {
   get(input: {
     workspaceId: string;
     id: number;
+    // Present for a scoped delegate: an account reached ONLY as the parent of a
+    // scoped folder/message (not named by a direct account-level grant) is redacted
+    // to a minimal identity record so its connection config never leaks — matching
+    // the list port's parent-only redaction. Absent/'all' (owner/admin) => full record.
+    mailScope?: MailSqlScope;
   }): Promise<EmailAccountRecord | null>;
   create?(input: {
     workspaceId: string;
@@ -2425,6 +2436,7 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     mailScope?: MailSqlScope;
     mailContentScope?: MailSqlScope;
+    mailAttachmentScope?: MailSqlScope;
     accountId?: number;
     folderPath?: string;
     folderKind?: string;
@@ -2679,6 +2691,23 @@ export type EmailAttachmentListResult = {
   items: readonly EmailAttachmentRecord[];
 };
 
+export type EmailSourceAttachmentMeta = {
+  filename: string | null;
+  contentType: string | null;
+};
+
+export type EmailSourceAttachmentSummary = {
+  // Every MIME part the parser recorded in email_messages.attachments_json —
+  // including parts DROPPED by the ingest size cap that never became stored
+  // email_message_attachments rows. Used to gate the raw-EML download against
+  // dangerous attachments listForMessage() can't see.
+  items: readonly EmailSourceAttachmentMeta[];
+  // Count of stored email_message_attachments rows. items.length > storedCount
+  // means at least one source part was dropped (over-cap / empty / unreadable)
+  // and is reachable only via the raw MIME.
+  storedCount: number;
+};
+
 export type EmailAttachmentApiPort = {
   listForMessage(input: {
     workspaceId: string;
@@ -2688,6 +2717,13 @@ export type EmailAttachmentApiPort = {
     workspaceId: string;
     id: number;
   }): Promise<EmailAttachmentRecord | null>;
+  // Source attachment metadata (all MIME parts, incl. size-cap-dropped ones) plus
+  // the stored-row count, for the raw-EML suspicious-download gate. null when the
+  // message does not exist. Optional so lightweight port implementations may omit it.
+  listSourceAttachments?(input: {
+    workspaceId: string;
+    messageId: number;
+  }): Promise<EmailSourceAttachmentSummary | null>;
 };
 
 export type EmailAttachmentContentApiPort = {

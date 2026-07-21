@@ -48,6 +48,8 @@ import type {
   EmailAttachmentApiPort,
   EmailAttachmentListResult,
   EmailAttachmentRecord,
+  EmailSourceAttachmentSummary,
+  EmailSourceAttachmentMeta,
   EmailAccountApiPort,
   EmailAccountListResult,
   EmailAccountMutationInput,
@@ -415,7 +417,17 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const row = await selectEmailAccountByPublicId(trx, input.workspaceId, input.id);
-          return row ? mapEmailAccountRow(row) : null;
+          if (!row) return null;
+          // Same parent-only redaction as list(): a delegate reaching this account
+          // ONLY as the parent of a scoped folder/message (restricted scope that does
+          // not name the account directly) gets a minimal identity record — its
+          // IMAP/SMTP/OAuth/TLS/folder/vacation config never leaks through the single
+          // GET the enforcer authorized on account metadata.read. Owner/admin (scope
+          // undefined/all) and direct account-level grants keep the full record.
+          const scope = effectiveMailScope(input.mailScope);
+          const directAccountIds = scope.kind === 'restricted' ? new Set(scope.accountIds) : null;
+          const reachedOnlyAsParent = directAccountIds !== null && !directAccountIds.has(Number(row.id));
+          return reachedOnlyAsParent ? redactParentOnlyAccountRow(row) : mapEmailAccountRow(row);
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -757,6 +769,19 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
           });
+          // Per-row attachment authorization: extracted attachment text
+          // (email_message_attachments.content_text, and the a.search_vector that
+          // embeds it) is attachment CONTENT — gate search matches on it by the
+          // caller's independent mail.attachment.read scope, so a content.read
+          // delegate lacking attachment.read cannot probe attachment bodies via
+          // search. Attachment FILENAMES stay searchable (message metadata via
+          // attachments_json / a.filename_display). undefined ⇒ attachment scope
+          // 'all'/absent ⇒ no gating (owner/admin, or attachment-authorized).
+          const attachmentPredicate = mailScopePredicate(input.mailAttachmentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
           const cursorScopePredicate = mailScopePredicate(input.mailScope, {
             accountId: 'cursor_message.account_id',
             folderId: 'cursor_message.folder_id',
@@ -873,6 +898,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 tsQueryTokens,
                 parsed ? ilikeTextNeedles(parsed) : [],
                 contentPredicate,
+                attachmentPredicate,
               );
               // Highlight per OR-Query, damit auch Teiltreffer markiert werden.
               // Sentinel-Codepoints werden aus dem Quelltext gestrippt, bevor
@@ -886,11 +912,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               // body_text mitselektieren, damit der JS-Snippet-Builder wie im
               // Desktop auch Body-Treffer zeigen kann (Record bleibt body-frei).
               query = query.select('body_text');
-              query = applyMessageIlikeFilter(query, parsed, contentPredicate);
+              query = applyMessageIlikeFilter(query, parsed, contentPredicate, attachmentPredicate);
             } else if (mode === 'regex' && search) {
               // Regex-Modus liefert bewusst kein search_snippet (Paritaet zur
               // Desktop-App ist hier nicht noetig; Highlight nur fuer fts/like).
-              query = applyMessageSearchFilter(query, search, 'regex', contentPredicate);
+              query = applyMessageSearchFilter(query, search, 'regex', contentPredicate, attachmentPredicate);
             }
             query = orderQuery(query, mode);
             return (await query.execute()) as EmailMessageApiRow[];
@@ -3365,14 +3391,15 @@ function applyMessageFtsFilter(
   tsQueryTokens: readonly string[],
   tokenIlikePatterns: readonly string[],
   contentPredicate?: RawBuilder<boolean>,
+  attachmentPredicate?: RawBuilder<boolean>,
 ): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
   tsQueryTokens.forEach((token, index) => {
     // Leerer Fallback matcht nichts (ILIKE '' trifft nur den Leerstring).
     const tokenPattern = tokenIlikePatterns[index] ?? '';
-    if (!contentPredicate) {
-      // No content gating (owner/admin, or a content-authorized caller): the
-      // filter stays exactly as before.
+    if (!contentPredicate && !attachmentPredicate) {
+      // No content or attachment gating (owner/admin, or a caller authorized for
+      // both across all rows): the filter stays exactly as before.
       query = query.where(rawSql<boolean>`(
         email_messages.search_vector @@ to_tsquery('simple', ${token})
         OR EXISTS (
@@ -3397,28 +3424,42 @@ function applyMessageFtsFilter(
       )`);
       return;
     }
-    // Content gating: search_vector blends metadata (subject/from/to/cc/ticket)
-    // with content (snippet/body_text), so the whole vector match — and the
-    // attachment content_text vector — are allowed only on content-readable rows
+    // Content gating: email_messages.search_vector blends metadata
+    // (subject/from/to/cc/ticket) with content (snippet/body_text), so the whole
+    // message-vector match is allowed only on content-readable rows
     // (contentPredicate). For redacted rows, substitute a metadata-only ILIKE so
-    // subject/address/ticket search still works without letting body/attachment
-    // content decide which rows return. Attachment filenames stay matchable via
-    // the unconditional attachments_json clause.
+    // subject/address/ticket search still works without letting body content decide
+    // which rows return. undefined contentPredicate ⇒ content authorized for all ⇒
+    // the message vector matches unconditionally.
+    const messageVectorClause = contentPredicate
+      ? rawSql<boolean>`(
+        (${contentPredicate} AND email_messages.search_vector @@ to_tsquery('simple', ${token}))
+        OR (NOT (${contentPredicate}) AND (
+          email_messages.subject ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.from_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.to_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.cc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.ticket_code ILIKE ${tokenPattern} ESCAPE '\\'
+        ))
+      )`
+      : rawSql<boolean>`email_messages.search_vector @@ to_tsquery('simple', ${token})`;
+    // Attachment gating: a.search_vector embeds extracted attachment content
+    // (content_text) alongside the filename, so the attachment-vector match is
+    // attachment CONTENT — allowed only on rows within the caller's
+    // mail.attachment.read scope (attachmentPredicate). undefined ⇒ authorized for
+    // all ⇒ unconditional. Filenames stay matchable via the attachments_json clause.
+    const attachmentExists = rawSql<boolean>`EXISTS (
+      SELECT 1 FROM email_message_attachments a
+      WHERE a.workspace_id = email_messages.workspace_id
+        AND a.message_id = email_messages.id
+        AND a.search_vector @@ to_tsquery('simple', ${token})
+    )`;
+    const attachmentVectorClause = attachmentPredicate
+      ? rawSql<boolean>`(${attachmentPredicate} AND ${attachmentExists})`
+      : attachmentExists;
     query = query.where(rawSql<boolean>`(
-      (${contentPredicate} AND email_messages.search_vector @@ to_tsquery('simple', ${token}))
-      OR (${contentPredicate} AND EXISTS (
-        SELECT 1 FROM email_message_attachments a
-        WHERE a.workspace_id = email_messages.workspace_id
-          AND a.message_id = email_messages.id
-          AND a.search_vector @@ to_tsquery('simple', ${token})
-      ))
-      OR (NOT (${contentPredicate}) AND (
-        email_messages.subject ILIKE ${tokenPattern} ESCAPE '\\'
-        OR email_messages.from_json::text ILIKE ${tokenPattern} ESCAPE '\\'
-        OR email_messages.to_json::text ILIKE ${tokenPattern} ESCAPE '\\'
-        OR email_messages.cc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
-        OR email_messages.ticket_code ILIKE ${tokenPattern} ESCAPE '\\'
-      ))
+      ${messageVectorClause}
+      OR ${attachmentVectorClause}
       OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
       OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
       OR EXISTS (
@@ -3447,10 +3488,11 @@ function applyMessageIlikeFilter(
   query: any,
   parsed: ParsedMailSearchQuery,
   contentPredicate?: RawBuilder<boolean>,
+  attachmentPredicate?: RawBuilder<boolean>,
 ): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
   for (const pattern of ilikeTextNeedles(parsed)) {
-    if (!contentPredicate) {
+    if (!contentPredicate && !attachmentPredicate) {
       query = query.where(rawSql<boolean>`(
         subject ILIKE ${pattern} ESCAPE '\\'
         OR snippet ILIKE ${pattern} ESCAPE '\\'
@@ -3484,13 +3526,25 @@ function applyMessageIlikeFilter(
       )`);
       continue;
     }
-    // Content gating: snippet, body_text and attachment content_text may only
-    // match on content-readable rows; subject/addresses/ticket/filenames stay
-    // matchable for everyone so metadata search is unaffected.
+    // Content/attachment gating: snippet & body_text match only on content-readable
+    // rows (contentPredicate); attachment content_text matches only on
+    // attachment-readable rows (attachmentPredicate). subject/addresses/ticket and
+    // attachment FILENAMES stay matchable for everyone so metadata search is
+    // unaffected. An undefined predicate ⇒ authorized for all ⇒ that clause is
+    // unconditional.
+    const snippetClause = contentPredicate
+      ? rawSql<boolean>`(${contentPredicate} AND snippet ILIKE ${pattern} ESCAPE '\\')`
+      : rawSql<boolean>`snippet ILIKE ${pattern} ESCAPE '\\'`;
+    const bodyClause = contentPredicate
+      ? rawSql<boolean>`(${contentPredicate} AND body_text ILIKE ${pattern} ESCAPE '\\')`
+      : rawSql<boolean>`body_text ILIKE ${pattern} ESCAPE '\\'`;
+    const attachmentContentClause = attachmentPredicate
+      ? rawSql<boolean>`(${attachmentPredicate} AND a.content_text ILIKE ${pattern} ESCAPE '\\')`
+      : rawSql<boolean>`a.content_text ILIKE ${pattern} ESCAPE '\\'`;
     query = query.where(rawSql<boolean>`(
       subject ILIKE ${pattern} ESCAPE '\\'
-      OR (${contentPredicate} AND snippet ILIKE ${pattern} ESCAPE '\\')
-      OR (${contentPredicate} AND body_text ILIKE ${pattern} ESCAPE '\\')
+      OR ${snippetClause}
+      OR ${bodyClause}
       OR from_json::text ILIKE ${pattern} ESCAPE '\\'
       OR to_json::text ILIKE ${pattern} ESCAPE '\\'
       OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
@@ -3503,7 +3557,7 @@ function applyMessageIlikeFilter(
           AND a.message_id = email_messages.id
           AND (
             a.filename_display ILIKE ${pattern} ESCAPE '\\'
-            OR (${contentPredicate} AND a.content_text ILIKE ${pattern} ESCAPE '\\')
+            OR ${attachmentContentClause}
           )
       )
       OR EXISTS (
@@ -3529,6 +3583,7 @@ function applyMessageSearchFilter(
   search: string,
   mode: 'fts' | 'like' | 'regex',
   contentPredicate?: RawBuilder<boolean>,
+  attachmentPredicate?: RawBuilder<boolean>,
 ): any {
   if (mode === 'regex') {
     const parsed = parseRegexSearch(search);
@@ -3559,14 +3614,22 @@ function applyMessageSearchFilter(
             AND a.message_id = email_messages.id
         ), '')
       )`;
-      if (!contentPredicate) {
+      if (!contentPredicate && !attachmentPredicate) {
         return query.where(kyselySql<boolean>`${fullHaystack} ${operator} ${parsed.pattern}`);
       }
-      // Content gating: a redacted row's regex is matched against a metadata-only
-      // haystack (no snippet/body_text, and attachment filenames only — no
-      // content_text), so body/attachment content can't decide which rows return.
-      const metadataHaystack = kyselySql<string>`(
+      // Content/attachment gating: match the regex against a per-row haystack whose
+      // body-derived text (snippet/body_text) is included only for content-readable
+      // rows (contentPredicate) and whose attachment content_text is included only
+      // for attachment-readable rows (attachmentPredicate). Metadata (subject/
+      // addresses/ticket), attachments_json and attachment FILENAMES stay in the
+      // haystack for everyone, so a redacted row cannot let body/attachment CONTENT
+      // decide the match while metadata/filename search keeps working. An undefined
+      // predicate ⇒ authorized for all ⇒ that segment stays in unconditionally.
+      const contentGate = contentPredicate ?? kyselySql<boolean>`TRUE`;
+      const attachmentGate = attachmentPredicate ?? kyselySql<boolean>`TRUE`;
+      const gatedHaystack = kyselySql<string>`(
         coalesce(subject, '') || E'\n' ||
+        CASE WHEN (${contentGate}) THEN coalesce(snippet, '') || E'\n' || coalesce(body_text, '') ELSE '' END || E'\n' ||
         coalesce(from_json::text, '') || E'\n' ||
         coalesce(to_json::text, '') || E'\n' ||
         coalesce(cc_json::text, '') || E'\n' ||
@@ -3574,15 +3637,17 @@ function applyMessageSearchFilter(
         coalesce(ticket_code, '') || E'\n' ||
         coalesce(attachments_json::text, '') || E'\n' ||
         coalesce((
-          SELECT string_agg(coalesce(a.filename_display, ''), E'\n')
+          SELECT string_agg(
+            coalesce(a.filename_display, '')
+              || CASE WHEN (${attachmentGate}) THEN E'\n' || coalesce(left(a.content_text, 20000), '') ELSE '' END,
+            E'\n'
+          )
           FROM email_message_attachments a
           WHERE a.workspace_id = email_messages.workspace_id
             AND a.message_id = email_messages.id
         ), '')
       )`;
-      return query.where(kyselySql<boolean>`(
-        CASE WHEN (${contentPredicate}) THEN ${fullHaystack} ELSE ${metadataHaystack} END
-      ) ${operator} ${parsed.pattern}`);
+      return query.where(kyselySql<boolean>`${gatedHaystack} ${operator} ${parsed.pattern}`);
     }
   }
   if (mode === 'fts') {
@@ -3701,7 +3766,58 @@ export function createPostgresEmailAttachmentReadPort(options: PostgresMailReadP
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async listSourceAttachments(input): Promise<EmailSourceAttachmentSummary | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const message = await trx
+            .selectFrom('email_messages')
+            .select('attachments_json')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.messageId)
+            .executeTakeFirst();
+          if (!message) return null;
+          const stored = await trx
+            .selectFrom('email_message_attachments')
+            .select((eb) => eb.fn.countAll<string>().as('count'))
+            .where('workspace_id', '=', input.workspaceId)
+            .where('message_id', '=', input.messageId)
+            .executeTakeFirst();
+          return {
+            items: parseSourceAttachmentMetas(message.attachments_json),
+            storedCount: Number(stored?.count ?? 0),
+          };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
   };
+}
+
+// attachments_json is a jsonb array of { filename, contentType, size } written by
+// parseAttachmentsMeta over the FULL parsed MIME part list (before the ingest size
+// cap), so it enumerates parts the size cap later dropped from
+// email_message_attachments. node-postgres returns jsonb pre-parsed, but tolerate a
+// raw JSON string too. Non-array / malformed input yields [] (fail open on shape,
+// closed on danger is handled by the caller's count check).
+function parseSourceAttachmentMetas(value: unknown): EmailSourceAttachmentMeta[] {
+  let source: unknown = value;
+  if (typeof source === 'string') {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(source)) return [];
+  return source.map((entry) => {
+    const obj = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+    return {
+      filename: typeof obj.filename === 'string' ? obj.filename : null,
+      contentType: typeof obj.contentType === 'string' ? obj.contentType : null,
+    };
+  });
 }
 
 export function createPostgresEmailAttachmentContentPort(

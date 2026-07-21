@@ -17,6 +17,7 @@ import type {
   ServerApiPorts,
 } from '../../packages/server/src/api/types';
 import {
+  createPostgresEmailAccountReadPort,
   createPostgresEmailMessageReadPort,
 } from '../../packages/server/src/db/postgres-mail-read-ports';
 import {
@@ -2300,6 +2301,84 @@ describe('server mailbox ACL migration', () => {
     expect(getRawHeaders).toHaveBeenCalledTimes(1);
   });
 
+  test('requires suspicious-download for a dangerous attachment dropped by the ingest cap', async () => {
+    const getRawHeaders = jest.fn(async () => ({
+      rawEml: 'From: a@example.test\r\n\r\nbody',
+      emlSource: 'original' as const,
+      rawHeaders: 'From: a@example.test',
+      messageIdHeader: '<msg@example.test>',
+      fromJson: null,
+    }));
+    const accountGrant = { resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null };
+    const attachmentRead = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.content.read', [accountGrant]],
+      ['mail.attachment.read', [accountGrant]],
+    ]);
+    // A 30MB payload.exe over the ingest cap: no stored email_message_attachments row
+    // (listForMessage empty), but attachments_json recorded it (listSourceAttachments),
+    // and the raw EML still carries its bytes — so the raw route must gate it.
+    const droppedDangerous = {
+      listForMessage: jest.fn(async () => ({ items: [] })),
+      listSourceAttachments: jest.fn(async () => ({
+        items: [{ filename: 'payload.exe', contentType: 'application/octet-stream' }],
+        storedCount: 0,
+      })),
+    } as unknown as ServerApiPorts['emailAttachments'];
+
+    const deniedApi = createServerApi(makeHttpPorts({
+      grants: attachmentRead,
+      overrides: {
+        emailMessages: { getRawHeaders } as unknown as ServerApiPorts['emailMessages'],
+        emailAttachments: droppedDangerous,
+      },
+    }));
+    const denied = await deniedApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}/raw-headers`,
+      principal: makePrincipal(),
+    });
+    expect(denied.status).toBe(404);
+    expect(getRawHeaders).not.toHaveBeenCalled();
+
+    // With the suspicious-download grant the enforcer passes and the handler runs.
+    const grantedApi = createServerApi(makeHttpPorts({
+      grants: new Map(attachmentRead).set('mail.attachment.suspicious_download', [accountGrant]),
+      overrides: {
+        emailMessages: { getRawHeaders } as unknown as ServerApiPorts['emailMessages'],
+        emailAttachments: droppedDangerous,
+      },
+    }));
+    const allowed = await grantedApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}/raw-headers`,
+      principal: makePrincipal(),
+    });
+    expect(allowed.status).toBe(200);
+
+    // Fail-closed: even a benign-looking dropped part (source count > stored count)
+    // requires the grant, since the dropped bytes are reachable only via the raw EML.
+    const truncatedBenign = {
+      listForMessage: jest.fn(async () => ({ items: [] })),
+      listSourceAttachments: jest.fn(async () => ({
+        items: [{ filename: 'report.pdf', contentType: 'application/pdf' }],
+        storedCount: 0,
+      })),
+    } as unknown as ServerApiPorts['emailAttachments'];
+    const truncatedApi = createServerApi(makeHttpPorts({
+      grants: attachmentRead,
+      overrides: {
+        emailMessages: { getRawHeaders } as unknown as ServerApiPorts['emailMessages'],
+        emailAttachments: truncatedBenign,
+      },
+    }));
+    const truncatedDenied = await truncatedApi.handle({
+      method: 'GET',
+      path: `/api/v1/email/messages/${MESSAGE_A}/raw-headers`,
+      principal: makePrincipal(),
+    });
+    expect(truncatedDenied.status).toBe(404);
+  });
+
   test('requires owner/admin to remember a remote-content sender/domain', async () => {
     const setRemoteContentPolicy = jest.fn(async () => ({
       ok: true as const,
@@ -2528,6 +2607,87 @@ describe('server mailbox ACL migration', () => {
       expect(subjectStillMatches.items.map((item) => item.id)).toEqual([MESSAGE_A_SECOND]);
     } finally {
       await client.query(`UPDATE email_messages SET body_text = NULL WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A_SECOND}`).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('gates attachment-content search matches by the attachment scope', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      // An attachment whose extracted text 'zzsecretattachment' lives only on
+      // MESSAGE_A_SECOND (FOLDER_A_SECOND); its filename is independently searchable.
+      // search_vector is GENERATED from filename_display + content_text (migration 0026).
+      await client.query(`
+        INSERT INTO email_message_attachments (
+          id, workspace_id, source_sqlite_id, message_source_sqlite_id, message_id,
+          filename_display, content_type, size_bytes, storage_path, content_text
+        ) VALUES (
+          9001, '${WORKSPACE_A}', 9001, 32, ${MESSAGE_A_SECOND},
+          'zzsecretfile.pdf', 'application/pdf', 100, '${WORKSPACE_A}/att/9001', 'zzsecretattachment'
+        ) ON CONFLICT DO NOTHING
+      `);
+      const port = createPostgresEmailMessageReadPort({ db });
+      // Metadata spans the whole account (row is visible); content is left
+      // unrestricted (undefined ⇒ authorized) so the ONLY gate on the attachment's
+      // extracted text is the attachment scope. attachmentNarrow covers FOLDER_A,
+      // which does NOT include MESSAGE_A_SECOND (FOLDER_A_SECOND).
+      const accountScope: MailSqlScope = { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+      const attachmentNarrow: MailSqlScope = { kind: 'restricted', accountIds: [], folderIds: [FOLDER_A], messageIds: [] };
+      const attachmentWide: MailSqlScope = { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+
+      const contentRedacted = await port.list({
+        ...withMailScope({ workspaceId: WORKSPACE_A, search: '/zzsecretattachment/', limit: 10 }, accountScope),
+        mailAttachmentScope: attachmentNarrow,
+      });
+      const contentAuthorized = await port.list({
+        ...withMailScope({ workspaceId: WORKSPACE_A, search: '/zzsecretattachment/', limit: 10 }, accountScope),
+        mailAttachmentScope: attachmentWide,
+      });
+      const filenameStillMatches = await port.list({
+        ...withMailScope({ workspaceId: WORKSPACE_A, search: '/zzsecretfile/', limit: 10 }, accountScope),
+        mailAttachmentScope: attachmentNarrow,
+      });
+
+      // Attachment CONTENT match suppressed for an attachment-redacted row — a
+      // content.read delegate lacking attachment.read cannot probe attachment bodies...
+      expect(contentRedacted.items.map((item) => item.id)).toEqual([]);
+      // ...but an attachment-authorized caller still matches it.
+      expect(contentAuthorized.items.map((item) => item.id)).toEqual([MESSAGE_A_SECOND]);
+      // Attachment FILENAME search stays matchable regardless (metadata, not content).
+      expect(filenameStillMatches.items.map((item) => item.id)).toEqual([MESSAGE_A_SECOND]);
+    } finally {
+      await client.query(`DELETE FROM email_message_attachments WHERE workspace_id = '${WORKSPACE_A}' AND id = 9001`).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('redacts account connection config on GET for a folder-only delegate', async () => {
+    await ensureScopedGrantFixtures();
+    const db = createApplicationDb();
+    try {
+      const port = createPostgresEmailAccountReadPort({ db });
+      // USER_FOLDER holds only a folder grant on ACCOUNT_A/FOLDER_A (no account-level
+      // grant), so its metadata scope names the folder but not the account directly —
+      // it reaches ACCOUNT_A only as a parent. USER_READ holds a direct account grant.
+      const folderScope = await resolveMetadataScope(db, USER_FOLDER);
+      const accountScope = await resolveMetadataScope(db, USER_READ);
+
+      // Public id 1 == ACCOUNT_A's source_sqlite_id (the id the GET route resolves).
+      const asFolderDelegate = await port.get({ workspaceId: WORKSPACE_A, id: 1, mailScope: folderScope });
+      const asAccountDelegate = await port.get({ workspaceId: WORKSPACE_A, id: 1, mailScope: accountScope });
+      const asOwner = await port.get({ workspaceId: WORKSPACE_A, id: 1 });
+
+      // Parent-only reach ⇒ minimal identity record; connection config neutralized
+      // (imapHost/username blanked), matching list()'s parent-only redaction.
+      expect(asFolderDelegate?.displayName).toBe('Account A');
+      expect(asFolderDelegate?.imapHost).toBe('');
+      expect(asFolderDelegate?.imapUsername).toBe('');
+      // A direct account-level delegate and the owner keep the full connection config.
+      expect(asAccountDelegate?.imapHost).toBe('imap.example.test');
+      expect(asAccountDelegate?.imapUsername).toBe('a');
+      expect(asOwner?.imapHost).toBe('imap.example.test');
+    } finally {
       await db.destroy();
     }
   });
