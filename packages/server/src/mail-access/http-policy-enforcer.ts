@@ -139,14 +139,20 @@ const RESTRICTED_SCOPE_WRITE_PATHS = new Set<string>([
   // PGP identities are strictly per-user (stored + AEAD-bound to user_id == actor),
   // and signing/decryption load only the actor's own identity — so an owner/admin
   // cannot provision a key on a delegate's behalf. A delegated sender who may reach
-  // encrypt/sign above must therefore be able to generate and rotate their OWN key;
-  // these writes still require mail.account.manage (a scope-'none' delegate is
-  // rejected before this allowlist), and the generate/rotate ports are user_id
-  // scoped, so a restricted delegate can only touch their own identity. Peer-key
-  // import and manual identity POST stay owner/admin-only (workspace-wide effect).
+  // encrypt/sign above must therefore be able to generate, rotate, update, and delete
+  // their OWN key; these writes still require mail.account.manage (a scope-'none'
+  // delegate is rejected before this allowlist), and every identity write port
+  // (generate/rotate + update/delete) is user_id scoped, so a restricted delegate can
+  // only touch their own identity — the item routes below resolve the target through
+  // the same actorUserId-scoped update/delete ports (the by-source lookup a non-owned
+  // id 404s in the port). Peer-key import, peer-key item writes, and manual identity
+  // POST stay owner/admin-only (workspace-wide effect); their paths are deliberately
+  // NOT in this set.
   '/api/v1/pgp/identities/generate',
   '/api/v1/pgp/identities/:identityId/private-key/passphrase',
   '/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase',
+  '/api/v1/pgp/identities/:id',
+  '/api/v1/pgp/identities/by-source/:sourceId',
 ]);
 
 // Message list/search routes that expose body-derived content (snippet, search

@@ -871,9 +871,25 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               // ts_rank_cd liefert 0 fuer Vektoren ohne Voll-Match — Anhang-
               // only-/Teiltreffer bleiben in der Ergebnismenge (WHERE ist
               // OR-basiert) und sortieren ans Ende, danach Datum.
+              // email_messages.search_vector blends metadata with snippet/body_text, so
+              // ranking a content-redacted row by it would let a term's occurrences in the
+              // HIDDEN body reorder metadata-matched rows — a content-derived signal. For
+              // a redacted row (contentPredicate false) rank instead by a metadata-only
+              // vector so only visible fields decide the order; content-readable rows keep
+              // the full-vector rank. undefined contentPredicate ⇒ full vector unchanged.
+              const rankVector = contentPredicate
+                ? kyselySql`CASE WHEN (${contentPredicate}) THEN email_messages.search_vector ELSE to_tsvector('simple',
+                    coalesce(email_messages.subject, '') || ' ' ||
+                    coalesce(email_messages.from_json::text, '') || ' ' ||
+                    coalesce(email_messages.to_json::text, '') || ' ' ||
+                    coalesce(email_messages.cc_json::text, '') || ' ' ||
+                    coalesce(email_messages.bcc_json::text, '') || ' ' ||
+                    coalesce(email_messages.ticket_code, '') || ' ' ||
+                    coalesce(email_messages.attachments_json::text, '')) END`
+                : kyselySql`email_messages.search_vector`;
               return query
                 .orderBy(
-                  kyselySql`ts_rank_cd(email_messages.search_vector, to_tsquery('simple', ${tsQueryText}))`,
+                  kyselySql`ts_rank_cd(${rankVector}, to_tsquery('simple', ${tsQueryText}))`,
                   'desc',
                 )
                 .orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc')

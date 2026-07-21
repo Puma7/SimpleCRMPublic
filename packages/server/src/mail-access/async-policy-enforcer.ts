@@ -1,5 +1,5 @@
 import type { MailResource } from '@simplecrm/core';
-import { workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import { workflowGraphHasNodeType, workflowGraphHasSideEffectNode } from '@simplecrm/core';
 
 import type {
   AuthenticatedPrincipal,
@@ -281,6 +281,23 @@ export async function enforceMailJobPolicy(
         });
       }
     }
+    // A workflow.execute whose CURRENT graph contains an email.delete_server node
+    // PERMANENTLY deletes the message on the IMAP server (plus a local soft-delete)
+    // under the system role when that node runs (deleteWorkflowMessageOnImap), yet the
+    // base workflow.execute policy only requires mail.content.read. So a user-attributed
+    // run reaching a delete node — an inbound/continuation workflow, or a delegate who
+    // kept content.read but lost mail.delete — could destroy server mail without the
+    // delete grant. Recheck mail.delete on the resolved message at EXECUTION time,
+    // inspecting the CURRENT graph so a delete node added after enqueue is still caught.
+    // User actors only (service jobs returned above).
+    if (job.type === 'workflow.execute' && resolved.resources.kind === 'resources') {
+      await assertWorkflowExecuteDeleteNodePrivilege(
+        job,
+        actor.actor,
+        resolved.resources.resources,
+        requiredPorts,
+      );
+    }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
     if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);
@@ -377,6 +394,40 @@ async function assertWorkflowExecuteSideEffectPrivilege(
   });
   if (loaded && workflowGraphHasSideEffectNode(loaded.graph)) {
     throw new MailAsyncAuthorizationError();
+  }
+}
+
+// R36-2: server workflow runs execute under a system role with no per-node ACL, so a
+// user-attributed workflow.execute reaching an email.delete_server node (which issues a
+// permanent IMAP messageDelete + local soft-delete) would destroy server mail while the
+// base policy only checks mail.content.read. Load the CURRENT graph and, when it holds a
+// delete node, require mail.delete on each resolved message so a delegate lacking it (or
+// whose grant was revoked after enqueue, or a delete node added after enqueue) is denied.
+// The graph is loaded via the same port the interim side-effect gate uses; a graph with
+// no delete node, an unresolvable workflowId, or an unavailable loader adds no
+// requirement — the executor blocks a missing/definition-only graph anyway, and the
+// delete node additionally needs the workspace opt-in flag.
+async function assertWorkflowExecuteDeleteNodePrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  resources: readonly MailResource[],
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (!loaded || !workflowGraphHasNodeType(loaded.graph, 'email.delete_server')) return;
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.delete',
+      resource,
+    });
   }
 }
 

@@ -3,6 +3,7 @@ import {
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
+  workflowGraphHasNodeType,
   workflowGraphHasSideEffectNode,
 } from '@simplecrm/core';
 import type { WorkflowGraphDocument } from '@simplecrm/core';
@@ -420,5 +421,75 @@ describe('workflowGraphHasSideEffectNode', () => {
     );
     expect(workflowGraphHasSideEffectNode(json)).toBe(true);
     expect(workflowGraphHasSideEffectNode('{not json')).toBe(false);
+  });
+});
+
+describe('workflowGraphHasNodeType', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('returns false for null / non-object / graph without nodes', () => {
+    expect(workflowGraphHasNodeType(null, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType(undefined, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType(42, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType({}, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType({ nodes: 'x' }, 'email.delete_server')).toBe(false);
+  });
+
+  it('matches a registry node by its runtime type, regardless of reachability', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([
+          trigger,
+          { id: 'c1', type: 'condition', data: { field: 'subject', op: 'contains', value: 'x' } },
+          { id: 'd1', type: 'registry', data: { nodeType: 'email.delete_server', config: {} } },
+        ]),
+        'email.delete_server',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches a legacy action node by its actionType', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([trigger, { id: 'a1', type: 'action', data: { actionType: 'email.delete_server' } }]),
+        'email.delete_server',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false when no node has the requested type', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([
+          trigger,
+          { id: 'r1', type: 'registry', data: { nodeType: 'ai.classify', config: {} } },
+          { id: 'r2', type: 'registry', data: { nodeType: 'email.move_imap', config: {} } },
+        ]),
+        'email.delete_server',
+      ),
+    ).toBe(false);
+  });
+
+  it('never matches trigger or condition nodes', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([{ id: 't', type: 'trigger', data: { kind: 'email.delete_server' } }]),
+        'email.delete_server',
+      ),
+    ).toBe(false);
+  });
+
+  it('accepts a JSON-string graph', () => {
+    const json = JSON.stringify(
+      graphOf([trigger, { id: 'd1', type: 'registry', data: { nodeType: 'email.delete_server', config: {} } }]),
+    );
+    expect(workflowGraphHasNodeType(json, 'email.delete_server')).toBe(true);
+    expect(workflowGraphHasNodeType('{not json', 'email.delete_server')).toBe(false);
   });
 });

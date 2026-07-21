@@ -135,6 +135,36 @@ export function workflowGraphHasSideEffectNode(graph: unknown): boolean {
   return false;
 }
 
+/**
+ * True if the graph contains at least one action/registry node whose runtime
+ * type matches `nodeType`. Scans every node regardless of reachability (like
+ * workflowGraphHasSideEffectNode), so a matching node behind a delay or an
+ * unreached branch still counts. Used by the async job enforcer to recheck a
+ * per-node permission (e.g. mail.delete for an email.delete_server node) at
+ * workflow.execute time, since server workflow runs execute under a system role
+ * with no per-node ACL. A null/empty graph returns false.
+ */
+export function workflowGraphHasNodeType(graph: unknown, nodeType: string): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type !== 'action' && node.type !== 'registry') continue;
+    if (sideEffectRuntimeType(node) === nodeType) return true;
+  }
+  return false;
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;

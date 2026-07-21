@@ -1327,6 +1327,59 @@ describe('mail ACL rollout central use', () => {
     expect(listCalls.at(-1)).not.toHaveProperty('ownerUserId');
   });
 
+  test('a restricted-scope key manager may PATCH/DELETE their OWN PGP identity, but not peer keys (R36-1)', async () => {
+    // PGP identities are strictly per-user, and every identity write port is
+    // actorUserId-scoped — so a delegated key manager who may generate/rotate their own
+    // key must also be able to update and delete it. Peer keys have a workspace-wide
+    // effect and stay owner/admin-only. The delete/update ports returning null here
+    // (not found) is irrelevant: a spy call proves the enforcer admitted the write.
+    const identityDelete = jest.fn(async (_input: { workspaceId: string; actorUserId: string; id: number }) => null);
+    const identityUpdate = jest.fn(async (_input: { workspaceId: string; actorUserId: string; id: number }) => null);
+    const peerKeyDelete = jest.fn(async (_input: { workspaceId: string; id: number }) => null);
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() {
+          return { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+        },
+      }),
+      pgpIdentities: {
+        delete: identityDelete,
+        update: identityUpdate,
+      } as unknown as ServerApiPorts['pgpIdentities'],
+      pgpPeerKeys: {
+        delete: peerKeyDelete,
+      } as unknown as ServerApiPorts['pgpPeerKeys'],
+    });
+
+    // Identity DELETE is admitted for a restricted delegate — it reaches the
+    // actorUserId-scoped delete port (a non-owned id 404s inside the port).
+    await api.handle({ method: 'DELETE', path: '/api/v1/pgp/identities/9001', principal: principal() });
+    expect(identityDelete).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: 9001 }),
+    );
+
+    // Identity PATCH (rotate/update) is admitted too, and likewise actorUserId-scoped.
+    await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/pgp/identities/9001',
+      principal: principal(),
+      body: { email: 'me@example.test' },
+    });
+    expect(identityUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: WORKSPACE_A, actorUserId: USER_A, id: 9001 }),
+    );
+
+    // Peer-key DELETE has a workspace-wide effect and stays owner/admin-only — a
+    // restricted delegate is denied by the scope gate before the handler runs.
+    await expect(api.handle({
+      method: 'DELETE',
+      path: '/api/v1/pgp/peer-keys/9002',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(peerKeyDelete).not.toHaveBeenCalled();
+  });
+
   test('thread-alias PATCH authorizes the unchanged stored thread, not just the replacement', async () => {
     const deniedMessages = new Set<string>();
     const mailAccess: MailAccessService = {

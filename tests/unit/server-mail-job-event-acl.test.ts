@@ -443,6 +443,61 @@ describe('server mail job and event ACL', () => {
     }), ports)).resolves.toBeUndefined();
   });
 
+  test('rechecks mail.delete for a workflow.execute whose current graph deletes on the server (R36-2)', async () => {
+    // An email.delete_server node PERMANENTLY deletes the message on the IMAP server
+    // (plus a local soft-delete) under the system role, yet the base workflow.execute
+    // policy only requires mail.content.read. Recheck mail.delete on the resolved
+    // message so a user-attributed run (inbound/continuation, or a delegate who lost
+    // mail.delete) cannot destroy server mail through the workflow.
+    const deleteGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.delete_server' } }] };
+    const noDeleteGraph = { nodes: [{ type: 'trigger' }, { type: 'registry', data: { nodeType: 'ai.classify' } }] };
+    const graphs = new Map<number, unknown>([[720, deleteGraph], [721, noDeleteGraph]]);
+
+    // Delete-node graph + mail.delete revoked → denied at execution.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 720, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.delete retained, both the base mail.content.read and the mail.delete
+    // supplemental are asserted on the message.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 720, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.delete']);
+
+    // The recheck runs on EVERY workflow.execute, so a delayed continuation
+    // (re-enqueued with a delayedJobId resolving to the same message) is gated too.
+    const delayed = makePolicyPorts({
+      workflowGraphs: graphs,
+      delayedJobs: new Map([[87, { kind: 'message', resource: messageResource(12) }]]),
+      denyPermissions: new Set(['mail.delete']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 720, delayedJobId: 87 },
+    }), delayed)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A graph WITHOUT a delete node adds no mail.delete requirement.
+    const noDelete = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 721, messageId: 12 },
+    }), noDelete);
+    expect(noDelete.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // Trusted-service runs return before the supplemental — no mail.delete grant needed.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 720, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
   test('rechecks side-effect privilege for MANUAL-marked workflow child jobs, not compose-originated ones', async () => {
     const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
     // ai.pick_canned is covered separately: a user actor now always returns a
