@@ -110,6 +110,7 @@ export function MailDelegationPanel() {
   const loadingRef = useRef(true)
   const authorizationReadyRef = useRef(false)
   const formRef = useRef<FormSnapshot>({ accountId, folderId, resourceType, subjectId, subjectType })
+  const aclReloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   formRef.current = { accountId, folderId, resourceType, subjectId, subjectType }
 
   const accounts = useMemo(() => accountOptions(resources), [resources])
@@ -247,10 +248,23 @@ export function MailDelegationPanel() {
   useEffect(() => {
     const subscription = subscribeServerEvents({
       onEvent(event) {
-        if (isMailAclRefreshEvent(event)) void load()
+        if (!isMailAclRefreshEvent(event)) return
+        // A group binding/membership change fans out one ACL event per member;
+        // debounce so a burst collapses into one reload instead of one per event.
+        if (aclReloadTimerRef.current !== null) clearTimeout(aclReloadTimerRef.current)
+        aclReloadTimerRef.current = setTimeout(() => {
+          aclReloadTimerRef.current = null
+          void load()
+        }, 250)
       },
     })
-    return () => subscription.unsubscribe()
+    return () => {
+      subscription.unsubscribe()
+      if (aclReloadTimerRef.current !== null) {
+        clearTimeout(aclReloadTimerRef.current)
+        aclReloadTimerRef.current = null
+      }
+    }
   }, [load])
 
   const applyProfile = (next: MailPermissionProfile | "custom") => {

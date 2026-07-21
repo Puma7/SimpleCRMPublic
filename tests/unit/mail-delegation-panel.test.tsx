@@ -176,8 +176,13 @@ describe('MailDelegationPanel', () => {
     });
 
     const subscription = mockSubscribe.mock.calls.at(-1)?.[0] as { onEvent: (event: unknown) => void };
+    // Reloads are debounced, so fire the two ACL events far enough apart that each
+    // triggers its own load — exercising the stale-vs-current (generation) handling.
+    // A single burst would coalesce into one reload (the storm the debounce prevents).
     act(() => subscription.onEvent({ type: 'email_acl.changed', payload: { targetUserId: 'manager' } }));
+    await flushAclReload();
     act(() => subscription.onEvent({ type: 'email_acl.changed', payload: { targetUserId: 'manager' } }));
+    await flushAclReload();
 
     expect(screen.getByLabelText('Konto')).toHaveValue('');
     expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
@@ -360,4 +365,10 @@ function deferred<T>() {
     resolve = fulfill;
   });
   return { promise, resolve };
+}
+
+// The reload after an ACL event is debounced (250ms); advance past it so the
+// coalesced reload fires.
+async function flushAclReload() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
 }

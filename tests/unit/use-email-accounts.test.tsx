@@ -61,10 +61,15 @@ describe('useEmailAccounts ACL invalidation', () => {
 
     emitAclChanged();
 
+    // State is cleared synchronously on the event (fail-closed), before the reload.
     expect(screen.getByTestId('accounts')).toHaveTextContent('none');
     expect(screen.getByTestId('selected-account')).toHaveTextContent('none');
     expect(screen.getByTestId('mail-view')).toHaveTextContent('inbox');
     expect(screen.getByTestId('loading')).toHaveTextContent('true');
+
+    // The debounced reload then fires as account request #3.
+    await flushAclReload();
+    await waitFor(() => expect(accountRequest).toBe(3));
 
     await act(async () => current.resolve([]));
     await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'));
@@ -95,6 +100,10 @@ describe('useEmailAccounts ACL invalidation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry accounts' }));
     await waitFor(() => expect(accountRequest).toBe(2));
     emitAclChanged();
+
+    // The debounced reload fires as account request #3.
+    await flushAclReload();
+    await waitFor(() => expect(accountRequest).toBe(3));
 
     await act(async () => current.reject(new Error('transient account failure')));
     await waitFor(() => expect(screen.getByTestId('loading')).toHaveTextContent('false'));
@@ -139,6 +148,35 @@ describe('useEmailAccounts ACL invalidation', () => {
       expect(result.value.unsubscribe).toHaveBeenCalledTimes(1);
     }
   });
+
+  test('coalesces a burst of ACL events into a single reload', async () => {
+    let accountRequest = 0;
+    mockInvoke.mockImplementation((channel: string) => {
+      if (channel === 'email:list-accounts') {
+        accountRequest += 1;
+        return Promise.resolve([account(101)]);
+      }
+      if (channel === 'email:list-team-members') return Promise.resolve([]);
+      throw new Error(`Unexpected channel ${channel}`);
+    });
+
+    renderHookHarness();
+    await waitFor(() => expect(screen.getByTestId('accounts')).toHaveTextContent('101'));
+    expect(accountRequest).toBe(1); // initial mount load
+
+    // A group edit fans out one ACL event per member; fire a burst within the window.
+    const subscription = mockSubscribe.mock.calls.at(-1)?.[0] as { onEvent: (event: unknown) => void };
+    act(() => {
+      for (let i = 0; i < 5; i += 1) {
+        subscription.onEvent({ type: 'email_acl.changed', entityType: 'email_acl', payload: {} });
+      }
+    });
+    // Exactly one coalesced reload, not one per event.
+    await flushAclReload();
+    await waitFor(() => expect(accountRequest).toBe(2));
+    await flushAclReload();
+    expect(accountRequest).toBe(2);
+  });
 });
 
 function HookHarness() {
@@ -167,6 +205,12 @@ function renderHookHarness(strict = false) {
 function emitAclChanged() {
   const subscription = mockSubscribe.mock.calls.at(-1)?.[0] as { onEvent: (event: unknown) => void };
   act(() => subscription.onEvent({ type: 'email_acl.changed', entityType: 'email_acl', payload: {} }));
+}
+
+// The reload after an ACL event is debounced (250ms); the state clear stays
+// synchronous. Advance past the debounce so the coalesced reload actually fires.
+async function flushAclReload() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
 }
 
 async function defaultInvoke(channel: string) {
