@@ -359,10 +359,13 @@ export function createPostgresMailDelegationPort(
     if (!subject.ok) return subject;
     const resource = await validateResource(trx, workspaceId, input.resource);
     if (!resource.ok) return resource;
-    const manage = await canManageResource(trx, workspaceId, actor, input.resource, []);
+    // Lock the actor's authorizing grant rows FOR UPDATE (forUpdate: true) while creating /
+    // replacing a delegated binding, so a concurrent revocation of the actor's own authority
+    // serializes with this write rather than racing it under read-committed (R48-4).
+    const manage = await canManageResource(trx, workspaceId, actor, input.resource, [], true);
     if (!manage) return { ok: false as const, code: 'permission_denied' };
     if (!actor.isOwner && !actor.isAdmin) {
-      const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, input.resource);
+      const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, input.resource, true);
       if (input.permissions.some((permission) => !held.has(permission))) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
@@ -503,9 +506,10 @@ async function canManageResource(
   actor: MailDelegationActor,
   resource: MailDelegationResource,
   permissions: readonly MailPermission[],
+  forUpdate = false,
 ): Promise<boolean> {
   if (actor.isOwner || actor.isAdmin) return true;
-  const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, resource);
+  const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, resource, forUpdate);
   return held.has(MANAGE_PERMISSION) && permissions.every((permission) => held.has(permission));
 }
 
@@ -514,14 +518,21 @@ async function heldPermissionsForResource(
   workspaceId: string,
   userId: string,
   resource: MailDelegationResource,
+  forUpdate = false,
 ): Promise<ReadonlySet<MailPermission>> {
-  return heldPermissionsFromRows(await heldGrantRowsForActor(trx, workspaceId, userId), resource);
+  return heldPermissionsFromRows(await heldGrantRowsForActor(trx, workspaceId, userId, forUpdate), resource);
 }
 
 async function heldGrantRowsForActor(
   trx: Trx,
   workspaceId: string,
   userId: string,
+  // When set (mutation paths only), lock the actor's authorizing rows FOR UPDATE so a
+  // concurrent revocation — deleteBinding of the actor's own grant, or removeMember of the
+  // actor's group — blocks until this grant commits. Closes the TOCTOU where a delegated
+  // grant commits against authority being revoked, under read-committed (R48-4). Read-only
+  // callers pass false to avoid locking on list/read paths.
+  forUpdate = false,
 ): Promise<Array<{
   subject_type: 'user' | 'group';
   subject_id: string;
@@ -530,14 +541,15 @@ async function heldGrantRowsForActor(
   folder_id: number | null;
   permission_key: MailPermission;
 }>> {
-  const groupRows = await trx
+  let groupQuery = trx
     .selectFrom('user_group_members')
     .select(['group_id'])
     .where('workspace_id', '=', workspaceId)
-    .where('user_id', '=', userId)
-    .execute() as Array<{ group_id: number }>;
+    .where('user_id', '=', userId);
+  if (forUpdate) groupQuery = groupQuery.forUpdate();
+  const groupRows = await groupQuery.execute() as Array<{ group_id: number }>;
   const subjectIds = new Set<string>([userId, ...groupRows.map((row) => String(row.group_id))]);
-  const rows = await trx
+  let bindingsQuery = trx
     .selectFrom('mail_acl_bindings')
     .innerJoin('mail_acl_binding_permissions', 'mail_acl_binding_permissions.binding_id', 'mail_acl_bindings.id')
     .select([
@@ -562,8 +574,9 @@ async function heldGrantRowsForActor(
           eb('mail_acl_bindings.subject_id', 'in', groupRows.map((row) => String(row.group_id))),
         ]),
       ]);
-    })
-    .execute() as unknown as Array<{
+    });
+  if (forUpdate) bindingsQuery = bindingsQuery.forUpdate();
+  const rows = await bindingsQuery.execute() as unknown as Array<{
       subject_type: 'user' | 'group';
       subject_id: string;
       resource_type: 'account' | 'folder' | 'message';

@@ -1382,6 +1382,15 @@ async function handleUpdateEmailThreadAlias(
   });
   if (!parsed.ok) return parsed.response;
 
+  // Capture the current thread pair before the update so a REPOINT (either thread id
+  // changed) can also refresh delegates who could see the OLD pair: the primary .updated
+  // event resolves against the NEW threads (metadata lookup on the live row), so a delegate
+  // who saw both old threads but not one replacement would otherwise keep the obsolete
+  // grouping until a manual refresh (R48-3).
+  const previousAlias = ports.emailThreadAliases.get
+    ? await ports.emailThreadAliases.get({ workspaceId: principal.workspaceId, id })
+    : null;
+
   const result = await ports.emailThreadAliases.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1394,6 +1403,28 @@ async function handleUpdateEmailThreadAlias(
   const alias = result.alias;
   await auditEmailThreadAlias(ports, principal, 'email_thread_alias.updated', alias, { fields: Object.keys(parsed.values).sort() });
   await publishEmailThreadAlias(ports, principal.workspaceId, 'email_thread_alias.updated', alias, principal.userId);
+  if (
+    previousAlias
+    && (previousAlias.aliasThreadId !== alias.aliasThreadId || previousAlias.canonicalThreadId !== alias.canonicalThreadId)
+  ) {
+    // The alias was repointed. Send delegates of the OLD thread pair a .deleted refresh
+    // carrying the previous threads/account: .deleted authorizes against BOTH payload
+    // threads via the tombstone two-sided rule (R47-4) and is already a client thread-alias
+    // refresh signal, so old-pair delegates drop the stale grouping without a new event
+    // type. New-pair delegates get the .updated above. Best-effort.
+    await publishEmailThreadAlias(
+      ports,
+      principal.workspaceId,
+      'email_thread_alias.deleted',
+      {
+        ...alias,
+        aliasThreadId: previousAlias.aliasThreadId,
+        canonicalThreadId: previousAlias.canonicalThreadId,
+        accountId: previousAlias.accountId,
+      },
+      principal.userId,
+    );
+  }
   return data(200, sanitizeEmailThreadAlias(alias));
 }
 
@@ -1554,6 +1585,13 @@ async function handleUpdateEmailAccountSignature(
   });
   if (!parsed.ok) return parsed.response;
 
+  // Capture the current account before the update so a move (account A → B) can also
+  // refresh the OLD account's delegates: the primary .updated event resolves to the NEW
+  // account, so account A's signature editor / compose cache would otherwise keep the
+  // moved-away signature until a manual reload (R48-1), mirroring the canned-response
+  // reparenting notification (R41-4).
+  const previous = await ports.emailAccountSignatures.get({ workspaceId: principal.workspaceId, id });
+
   const result = await ports.emailAccountSignatures.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1566,6 +1604,19 @@ async function handleUpdateEmailAccountSignature(
   const signature = result.signature;
   await auditEmailAccountSignature(ports, principal, 'email_account_signature.updated', signature, { fields: Object.keys(parsed.values).sort() });
   await publishEmailAccountSignature(ports, principal.workspaceId, 'email_account_signature.updated', signature, principal.userId);
+  if (previous && previous.accountId !== null && previous.accountId !== signature.accountId) {
+    // The signature left account A — send A's delegates a .deleted refresh (a client-side
+    // account-signature refresh signal, like .updated) carrying the PREVIOUS account so
+    // their list/compose cache drops it. The .deleted event resolves against the payload
+    // account (unlike the metadata-lookup .updated), so it reaches account A. Best-effort.
+    await publishEmailAccountSignature(
+      ports,
+      principal.workspaceId,
+      'email_account_signature.deleted',
+      { ...signature, accountId: previous.accountId, accountSourceSqliteId: previous.accountSourceSqliteId },
+      principal.userId,
+    );
+  }
   return data(200, sanitizeEmailAccountSignature(signature));
 }
 
