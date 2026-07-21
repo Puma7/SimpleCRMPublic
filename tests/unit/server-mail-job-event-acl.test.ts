@@ -597,7 +597,7 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
-  test('rechecks mail.draft.edit for workflow release/hold_outbound and static send_draft nodes (R40-4/R41-3)', async () => {
+  test('rechecks mail.draft.edit for workflow release/hold_outbound and static/variable-pinned send_draft nodes (R40-4/R41-3/R42-1)', async () => {
     // release_outbound / hold_outbound mutate the workflow message; send_draft with a static
     // config.draftId arms a SEPARATE target draft — all under the system role, all mutating a
     // draft the base content.read policy never covers.
@@ -607,9 +607,15 @@ describe('server mail job and event ACL', () => {
     const sendStaticGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } }] };
     const sendVariableGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } }] };
     const sendMissingGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 999 } } }] };
+    // A logic.set_variable node statically pins the draftIdVariable → the target id (13) is
+    // knowable at policy time and must be authorized (R42-1).
+    const sendVariablePinnedGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: 13 } } },
+      { type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+    ] };
     const graphs = new Map<number, unknown>([
       [750, releaseGraph], [751, sendStaticGraph], [752, sendVariableGraph], [753, sendMissingGraph],
-      [754, holdGraph], [755, legacyHoldGraph],
+      [754, holdGraph], [755, legacyHoldGraph], [756, sendVariablePinnedGraph],
     ]);
 
     // release_outbound: mail.draft.edit revoked → denied; retained → content.read on the
@@ -658,15 +664,34 @@ describe('server mail job and event ACL', () => {
     }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
       .rejects.toMatchObject({ nonRetryable: true });
 
-    // send_draft with a runtime draftIdVariable (no static id) adds no pre-execution
-    // draft.edit requirement here (the id is only known at execution; the actual send is
-    // blocked downstream by the mail.send.scheduled recheck).
+    // send_draft with a runtime draftIdVariable that NO set_variable node pins (its value
+    // comes from genuine runtime data) adds no pre-execution draft.edit requirement here —
+    // the id is only known at execution; the actual send is blocked downstream by the
+    // mail.send.scheduled recheck.
     const sendVariable = makePolicyPorts({ workflowGraphs: graphs });
     await enforceMailJobPolicy(job({
       type: 'workflow.execute',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 752, messageId: 12 },
     }), sendVariable);
     expect(sendVariable.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // send_draft whose draftIdVariable is statically pinned by a logic.set_variable node:
+    // the target id (13) IS knowable at policy time → draft.edit is asserted on it; revoked
+    // → denied (R42-1).
+    const sendVariablePinned = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 756, messageId: 12 },
+    }), sendVariablePinned);
+    expect(sendVariablePinned.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.draft.edit',
+      resource: { type: 'message', accountId: '7', folderId: '8', messageId: '13' },
+    }));
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 756, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
 
     // A static target that resolves to nothing (deleted/foreign) fails closed.
     await expect(enforceMailJobPolicy(job({

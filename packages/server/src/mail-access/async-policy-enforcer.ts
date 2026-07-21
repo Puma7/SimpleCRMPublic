@@ -1,6 +1,7 @@
 import type { MailResource } from '@simplecrm/core';
 import {
   collectWorkflowSendDraftStaticDraftIds,
+  collectWorkflowSendDraftVariableStaticDraftIds,
   workflowGraphHasAnyNodeType,
   workflowGraphHasNodeType,
   workflowGraphHasSideEffectNode,
@@ -580,14 +581,16 @@ async function assertWorkflowExecuteOutboundDraftMutationNodePrivilege(
   }
 }
 
-// R40-4 (B): an email.send_draft node arms an EXISTING draft for send — rewriting its
-// body/subject/ticket, clearing its review hold, and stamping the outbound-review approval
-// marker — under the SYSTEM role. Its target is a SEPARATE draft (not the workflow's
-// message): a static config.draftId (resolvable here) or a runtime draftIdVariable (only
-// known at execution — that case's actual send is still blocked downstream by the
-// mail.send.scheduled recheck, and its variable target is the run's own just-created
-// draft). For each STATIC target id in the current graph, resolve it and require
-// mail.draft.edit so a user-attributed run cannot mutate an arbitrary other user's draft.
+// R40-4 (B) + R42-1: an email.send_draft node arms an EXISTING draft for send — rewriting
+// its body/subject/ticket, clearing its review hold, and stamping the outbound-review
+// approval marker — under the SYSTEM role. Its target is a SEPARATE draft (not the
+// workflow's message): a static config.draftId, OR a config.draftIdVariable that a
+// logic.set_variable node in the same graph pins to a static id — both statically
+// resolvable here. For every such target id resolve it and require mail.draft.edit, so a
+// user-attributed run cannot mutate an arbitrary other user's draft before the node runs.
+// A variable fed from genuine runtime data (a create_draft output, a {{…}} template, an
+// external field) stays unknown at policy time; that residual case's actual send is still
+// blocked downstream by the mail.send.scheduled recheck.
 async function assertWorkflowExecuteSendDraftStaticTargetPrivilege(
   job: QueuedJob,
   actor: MailAccessActor,
@@ -601,7 +604,10 @@ async function assertWorkflowExecuteSendDraftStaticTargetPrivilege(
     workflowId,
   });
   if (!loaded) return;
-  const draftIds = collectWorkflowSendDraftStaticDraftIds(loaded.graph);
+  const draftIds = [...new Set([
+    ...collectWorkflowSendDraftStaticDraftIds(loaded.graph),
+    ...collectWorkflowSendDraftVariableStaticDraftIds(loaded.graph),
+  ])];
   for (const draftId of draftIds) {
     const targets = await ports.mailResourceLookup.resolve({
       workspaceId: job.workspaceId,

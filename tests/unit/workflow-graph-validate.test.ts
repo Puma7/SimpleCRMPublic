@@ -1,6 +1,7 @@
 import {
   WORKFLOW_TEMPLATES,
   collectWorkflowSendDraftStaticDraftIds,
+  collectWorkflowSendDraftVariableStaticDraftIds,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
@@ -597,5 +598,50 @@ describe('collectWorkflowSendDraftStaticDraftIds', () => {
     expect(collectWorkflowSendDraftStaticDraftIds({})).toEqual([]);
     expect(collectWorkflowSendDraftStaticDraftIds({ nodes: 'x' })).toEqual([]);
     expect(collectWorkflowSendDraftStaticDraftIds('{not json')).toEqual([]);
+  });
+});
+
+describe('collectWorkflowSendDraftVariableStaticDraftIds', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('resolves a draftIdVariable pinned by a logic.set_variable node (number and numeric string)', () => {
+    expect(
+      collectWorkflowSendDraftVariableStaticDraftIds(graphOf([
+        trigger,
+        { id: 'v1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'reply.draft', value: 42 } } },
+        { id: 's1', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'reply.draft' } } },
+        // The bare `set_variable` action alias with a numeric string, feeding the default `draft.id`.
+        { id: 'v2', type: 'action', data: { actionType: 'set_variable', config: { name: 'draft.id', value: '7' } } },
+        { id: 's2', type: 'registry', data: { nodeType: 'email.send_draft', config: {} } },
+      ])).sort((a, b) => a - b),
+    ).toEqual([7, 42]);
+  });
+
+  it('ignores dynamic/interpolated values, static config.draftId nodes, and mismatched variable names', () => {
+    expect(
+      collectWorkflowSendDraftVariableStaticDraftIds(graphOf([
+        trigger,
+        // Interpolated value → unknown at policy time.
+        { id: 'vi', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: '{{customer.draftId}}' } } },
+        { id: 'si', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+        // send_draft hard-codes draftId → runtime consults that, NOT the variable.
+        { id: 'vs', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'other', value: 5 } } },
+        { id: 'ss', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 9, draftIdVariable: 'other' } } },
+        // set_variable exists but no send_draft reads that variable name.
+        { id: 'vm', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'unused', value: 3 } } },
+      ])),
+    ).toEqual([]);
+  });
+
+  it('returns [] for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(collectWorkflowSendDraftVariableStaticDraftIds(null)).toEqual([]);
+    expect(collectWorkflowSendDraftVariableStaticDraftIds({})).toEqual([]);
+    expect(collectWorkflowSendDraftVariableStaticDraftIds({ nodes: 'x' })).toEqual([]);
+    expect(collectWorkflowSendDraftVariableStaticDraftIds('{not json')).toEqual([]);
   });
 });

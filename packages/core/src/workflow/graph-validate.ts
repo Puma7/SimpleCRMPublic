@@ -246,6 +246,85 @@ export function collectWorkflowSendDraftStaticDraftIds(graph: unknown): number[]
   return [...ids];
 }
 
+/** A concrete positive-integer literal (a number, or a plain numeric string with no
+ * `{{…}}` interpolation token), else null. Used to statically resolve a workflow
+ * variable that a `logic.set_variable` node pins to a known draft id. */
+function staticPositiveIntOrNull(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '' || trimmed.includes('{{')) return null;
+    const parsed = Number(trimmed);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * Collect target draft ids for `email.send_draft` nodes that select their target through
+ * a workflow VARIABLE — `config.draftIdVariable`, or the default `draft.id` when neither
+ * draftId nor draftIdVariable is set — whose value is pinned to a STATIC positive-integer
+ * literal by a `logic.set_variable` node in the same graph. R40-4(B)
+ * (collectWorkflowSendDraftStaticDraftIds) resolves only a hard-coded `config.draftId`;
+ * but a run can also set a known draft id via `logic.set_variable` and feed it to
+ * send_draft, in which case the id is still statically knowable from the graph. The async
+ * job enforcer resolves these too and requires mail.draft.edit on them, so a user-attributed
+ * run cannot mutate an arbitrary other user's draft through the variable path before the
+ * node runs under the system role (R42-1). Only concrete integer literals are resolved: a
+ * variable fed from interpolated/runtime data (a `{{…}}` template, a create_draft output,
+ * an external field) is genuinely unknown at policy time — that residual case's actual SEND
+ * is still blocked downstream by the mail.send.scheduled recheck. A send_draft node that
+ * hard-codes `config.draftId` consults that id at runtime, NOT the variable, so it is left
+ * to the static collector. Deduplicated.
+ */
+export function collectWorkflowSendDraftVariableStaticDraftIds(graph: unknown): number[] {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return [];
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+
+  // 1) Map each variable name to the static positive-int values a logic.set_variable node
+  //    assigns it (registry `logic.set_variable` or the bare `set_variable` action alias).
+  const variableValues = new Map<string, Set<number>>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') continue;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    const id = staticPositiveIntOrNull(config.value);
+    if (id === null) continue;
+    const set = variableValues.get(name) ?? new Set<number>();
+    set.add(id);
+    variableValues.set(name, set);
+  }
+  if (variableValues.size === 0) return [];
+
+  // 2) For each send_draft node that consults a variable (no static draftId), pull the
+  //    statically-pinned values of the variable it reads.
+  const ids = new Set<number>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (sideEffectRuntimeType(node) !== 'email.send_draft') continue;
+    const config = nodeConfig(node);
+    if (config.draftId !== undefined && config.draftId !== null) continue;
+    const varName = (typeof config.draftIdVariable === 'string' ? config.draftIdVariable.trim() : '') || 'draft.id';
+    for (const id of variableValues.get(varName) ?? []) ids.add(id);
+  }
+  return [...ids];
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;

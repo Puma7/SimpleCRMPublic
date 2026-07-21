@@ -2190,34 +2190,39 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
           });
           if (accountScopePredicate || messageScopePredicate) {
             const msgPred = messageScopePredicate ?? kyselySql<boolean>`false`;
+            const accountPred = accountScopePredicate ?? kyselySql<boolean>`false`;
             // A scope-visible message on EITHER side used to satisfy this alias-list
             // predicate, so an accountless alias bridging one in-scope thread to an
             // out-of-scope one still returned the full row — leaking the hidden thread's
             // id/source/confidence. Require visibility on BOTH aliased threads instead
             // (matching the item-GET and edge-list routes, which authorize all related
-            // resources). An empty/merged-away thread (no messages) must NOT block the
-            // row, so per side: (thread has no messages) OR (delegate sees a message in
-            // it). Owner/admin (scope 'all') produce no predicates, so the whole guard is
+            // resources). Per side, the delegate must see a message in the thread — OR
+            // the thread is empty/merged-away (no messages) AND the alias's own account
+            // is in the delegate's scope, which keeps empty account-scoped aliases
+            // manageable without letting the nominal account column stand in for
+            // visibility of a NON-empty thread that belongs to another account (the leak:
+            // account_id=A alias over B-only threads must NOT list for an A-only delegate).
+            // Owner/admin (scope 'all') produce no predicates, so the whole guard is
             // skipped for them — byte-for-byte unchanged.
             const threadVisible = (threadColumn: 'alias_thread_id' | 'canonical_thread_id') => kyselySql<boolean>`(
-              not exists (
-                select 1 from email_messages alias_scope_message
-                where alias_scope_message.workspace_id = ${input.workspaceId}::uuid
-                  and alias_scope_message.thread_id = ${kyselySql.ref(`email_thread_aliases.${threadColumn}`)}
-              )
-              or exists (
+              exists (
                 select 1 from email_messages alias_scope_message
                 where alias_scope_message.workspace_id = ${input.workspaceId}::uuid
                   and alias_scope_message.thread_id = ${kyselySql.ref(`email_thread_aliases.${threadColumn}`)}
                   and ${msgPred}
               )
+              or (
+                not exists (
+                  select 1 from email_messages alias_scope_message
+                  where alias_scope_message.workspace_id = ${input.workspaceId}::uuid
+                    and alias_scope_message.thread_id = ${kyselySql.ref(`email_thread_aliases.${threadColumn}`)}
+                )
+                and ${accountPred}
+              )
             )`;
             query = query.where(kyselySql<boolean>`(
-              ${accountScopePredicate ?? kyselySql<boolean>`false`}
-              or (
-                ${threadVisible('alias_thread_id')}
-                and ${threadVisible('canonical_thread_id')}
-              )
+              ${threadVisible('alias_thread_id')}
+              and ${threadVisible('canonical_thread_id')}
             )`);
           }
           query = query.orderBy('id', 'asc').limit(limit + 1);
