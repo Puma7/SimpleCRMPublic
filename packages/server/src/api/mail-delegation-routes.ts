@@ -417,7 +417,7 @@ async function auditAndPublish(
     // user must still receive its email_acl.changed even if a sibling delivery throws) and
     // a transient publish failure never surfaces as a misleading request error. Mirrors
     // the group-membership (publishGroupAclInvalidation) and account-deletion fanouts.
-    await Promise.allSettled(
+    const publishResults = await Promise.allSettled(
       uniqueTargets.map((targetUserId) => (
         ports.events?.publish({
           type: 'email_acl.changed',
@@ -445,6 +445,17 @@ async function auditAndPublish(
         })
       )),
     );
+    // A rejected publish must not surface as a request error (the mutation already
+    // committed), but silently discarding it hides a dropped invalidation — the affected
+    // client then re-authorizes only on socket reconnect/replay (or a manual reload). Log
+    // each rejection so the drop is observable, matching the audit-failure log below (R50-3).
+    publishResults.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.warn(
+          `[mail-delegation] email_acl.changed publish failed for user ${uniqueTargets[index]} (binding ${bindingId ?? 'n/a'}); mutation already committed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        );
+      }
+    });
   }
 
   // Best-effort record-keeping (see the comment above): the binding mutation already

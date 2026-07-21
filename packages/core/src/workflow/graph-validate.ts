@@ -419,6 +419,61 @@ export function workflowGraphAssignsDynamicCreateDraftAccount(graph: unknown): b
   });
 }
 
+/**
+ * True if an `email.send_draft` node selects its target through a workflow VARIABLE that a
+ * `logic.set_variable` node assigns a value that is NOT a static positive-integer literal —
+ * i.e. an interpolated/runtime-computed draft id the static collectors
+ * (collectWorkflowSendDraftStaticDraftIds / collectWorkflowSendDraftVariableStaticDraftIds)
+ * cannot resolve. The executor loads and MUTATES that draft (clears body/subject, removes the
+ * outbound hold, arms scheduled_send_at, writes the release marker) under the SYSTEM role with
+ * no per-actor ACL before the downstream mail.send.scheduled recheck — which only blocks SMTP,
+ * not the mutation. So a non-owner/admin run carrying such a dynamic target is denied
+ * fail-closed (R50-4, the send_draft analog of R46-2). Owner/admin — who may edit any draft —
+ * are exempt at the enforcer, not here. A static id (config.draftId, or a static-pinned
+ * variable) returns false (authorized via R40-4/R42-1 instead), and the common
+ * create_draft→draft.id→send_draft chain returns false too, since `draft.id` there is produced
+ * by create_draft's output, not by a set_variable node.
+ */
+export function workflowGraphAssignsDynamicSendDraftTarget(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+
+  // 1) The variable names send_draft nodes read their target from (variable path only — a
+  //    static config.draftId consults that literal at runtime, not the variable).
+  const targetVarNames = new Set<string>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (sideEffectRuntimeType(node) !== 'email.send_draft') continue;
+    const config = nodeConfig(node);
+    if (config.draftId !== undefined && config.draftId !== null) continue;
+    const varName = (typeof config.draftIdVariable === 'string' ? config.draftIdVariable.trim() : '') || 'draft.id';
+    targetVarNames.add(varName);
+  }
+  if (targetVarNames.size === 0) return false;
+
+  // 2) True if a set_variable node assigns one of those target variables a non-static value.
+  return nodes.some((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') return false;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    if (!targetVarNames.has(name)) return false;
+    return staticPositiveIntOrNull(config.value) === null;
+  });
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;

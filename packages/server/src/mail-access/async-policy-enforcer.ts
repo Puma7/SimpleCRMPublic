@@ -5,6 +5,7 @@ import {
   collectWorkflowSendDraftVariableStaticDraftIds,
   isPotentiallyDangerousAttachment,
   workflowGraphAssignsDynamicCreateDraftAccount,
+  workflowGraphAssignsDynamicSendDraftTarget,
   workflowGraphHasAnyNodeType,
   workflowGraphHasNodeType,
   workflowGraphHasSideEffectNode,
@@ -675,6 +676,15 @@ async function assertWorkflowExecuteSendDraftStaticTargetPrivilege(
     workflowId,
   });
   if (!loaded) return;
+  // R50-4: a send_draft target fed from a runtime/interpolated variable is not statically
+  // resolvable below, yet the node loads and mutates that draft (rewrites body/subject,
+  // clears the hold, arms scheduled_send_at, stamps the approval marker) under the SYSTEM
+  // role before the downstream mail.send.scheduled recheck — which only blocks SMTP, not the
+  // mutation. Deny a non-owner/admin run carrying such a dynamic target fail-closed, the
+  // send_draft analog of R46-2's create_draft account guard. Owner/admin may edit any draft.
+  if (!actor.isOwner && !actor.isAdmin && workflowGraphAssignsDynamicSendDraftTarget(loaded.graph)) {
+    throw new MailAsyncAuthorizationError();
+  }
   const draftIds = [...new Set([
     ...collectWorkflowSendDraftStaticDraftIds(loaded.graph),
     ...collectWorkflowSendDraftVariableStaticDraftIds(loaded.graph),

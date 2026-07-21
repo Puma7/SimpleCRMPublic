@@ -1348,8 +1348,9 @@ async function handleEmailAccountDelete(
   // it cannot be authorized for delegates.) Each delegate's publish is independent —
   // allSettled so a failure delivering one does not skip the remaining delegates (or
   // the audit/publish below).
-  await Promise.allSettled(
-    (result.affectedUserIds ?? []).map((targetUserId) => ports.events?.publish({
+  const aclInvalidationTargets = result.affectedUserIds ?? [];
+  const aclInvalidationResults = await Promise.allSettled(
+    aclInvalidationTargets.map((targetUserId) => ports.events?.publish({
       type: 'email_acl.changed',
       workspaceId: principal.workspaceId,
       entityType: 'email_acl',
@@ -1362,6 +1363,15 @@ async function handleEmailAccountDelete(
       },
     }) ?? Promise.resolve()),
   );
+  // Log a dropped invalidation rather than discarding it silently — the affected client
+  // then re-authorizes only on socket reconnect/replay (R50-3).
+  aclInvalidationResults.forEach((publishResult, index) => {
+    if (publishResult.status === 'rejected') {
+      console.warn(
+        `[mail-routes] email_acl.changed publish failed for user ${aclInvalidationTargets[index]} (deleted account ${result.account.id}); deletion already committed: ${publishResult.reason instanceof Error ? publishResult.reason.message : String(publishResult.reason)}`,
+      );
+    }
+  });
   await auditEmailAccount(ports, principal, 'email_account.deleted', result.account, {
     emailAddress: result.account.emailAddress,
   });

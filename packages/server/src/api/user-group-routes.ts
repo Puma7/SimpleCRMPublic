@@ -154,8 +154,9 @@ async function publishGroupAclInvalidation(
   // skip the remaining members' invalidations (the group/binding mutation already
   // committed, so a revoked member must still receive its email_acl.changed even if a
   // sibling delivery throws). Mirrors the account-deletion delegate fanout.
-  await Promise.allSettled(
-    [...new Set(targetUserIds)].sort().map((targetUserId) => (
+  const orderedTargets = [...new Set(targetUserIds)].sort();
+  const publishResults = await Promise.allSettled(
+    orderedTargets.map((targetUserId) => (
       ports.events?.publish({
         type: 'email_acl.changed',
         workspaceId: principal.workspaceId,
@@ -167,6 +168,15 @@ async function publishGroupAclInvalidation(
       }) ?? Promise.resolve()
     )),
   );
+  // Log a dropped invalidation rather than discarding it silently — the affected client
+  // then re-authorizes only on socket reconnect/replay (R50-3).
+  publishResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      console.warn(
+        `[user-group] email_acl.changed publish failed for user ${orderedTargets[index]} (group ${groupId}); mutation already committed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+      );
+    }
+  });
 }
 
 async function handleDeleteGroup(
