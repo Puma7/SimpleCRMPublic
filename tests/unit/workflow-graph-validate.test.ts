@@ -1,5 +1,6 @@
 import {
   WORKFLOW_TEMPLATES,
+  collectWorkflowSendDraftStaticDraftIds,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
@@ -555,5 +556,46 @@ describe('workflowGraphHasAnyNodeType', () => {
   it('returns false for null / non-object / graph without nodes', () => {
     expect(workflowGraphHasAnyNodeType(null, TRIAGE)).toBe(false);
     expect(workflowGraphHasAnyNodeType({ nodes: 'x' }, TRIAGE)).toBe(false);
+  });
+});
+
+describe('collectWorkflowSendDraftStaticDraftIds', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('collects positive-integer config.draftId from email.send_draft nodes, deduped', () => {
+    expect(
+      collectWorkflowSendDraftStaticDraftIds(graphOf([
+        trigger,
+        { id: 's1', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } },
+        { id: 's2', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } },
+        { id: 's3', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 20 } } },
+      ])).sort((a, b) => a - b),
+    ).toEqual([13, 20]);
+  });
+
+  it('ignores runtime draftIdVariable, missing/invalid ids, and non-send_draft nodes', () => {
+    expect(
+      collectWorkflowSendDraftStaticDraftIds(graphOf([
+        trigger,
+        { id: 'v', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+        { id: 'z', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 0 } } },
+        { id: 'n', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: -4 } } },
+        { id: 'f', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 1.5 } } },
+        { id: 's', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: '7' } } },
+        { id: 'o', type: 'registry', data: { nodeType: 'email.create_draft', config: { draftId: 99 } } },
+      ])),
+    ).toEqual([]);
+  });
+
+  it('returns [] for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(collectWorkflowSendDraftStaticDraftIds(null)).toEqual([]);
+    expect(collectWorkflowSendDraftStaticDraftIds({})).toEqual([]);
+    expect(collectWorkflowSendDraftStaticDraftIds({ nodes: 'x' })).toEqual([]);
+    expect(collectWorkflowSendDraftStaticDraftIds('{not json')).toEqual([]);
   });
 });

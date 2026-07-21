@@ -1,5 +1,10 @@
 import type { MailResource } from '@simplecrm/core';
-import { workflowGraphHasAnyNodeType, workflowGraphHasNodeType, workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import {
+  collectWorkflowSendDraftStaticDraftIds,
+  workflowGraphHasAnyNodeType,
+  workflowGraphHasNodeType,
+  workflowGraphHasSideEffectNode,
+} from '@simplecrm/core';
 
 import type {
   AuthenticatedPrincipal,
@@ -311,6 +316,13 @@ export async function enforceMailJobPolicy(
         resolved.resources.resources,
         requiredPorts,
       );
+      await assertWorkflowExecuteReleaseOutboundNodePrivilege(
+        job,
+        actor.actor,
+        resolved.resources.resources,
+        requiredPorts,
+      );
+      await assertWorkflowExecuteSendDraftStaticTargetPrivilege(job, actor.actor, requiredPorts);
     }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
@@ -525,6 +537,79 @@ async function assertWorkflowExecuteDraftCreateNodePrivilege(
       permission: 'mail.draft.create',
       resource,
     });
+  }
+}
+
+// R40-4 (A): an email.release_outbound node clears the workflow message's outbound-review
+// hold — and in autoSend mode rewrites its body/subject/ticket and arms scheduled_send_at
+// — under the SYSTEM role. Its target is always the workflow's own message
+// (context.messageId), i.e. resolved.resources here, and the base policy only requires
+// mail.content.read. So a user-attributed run whose actor lacks/lost mail.draft.edit could
+// mutate the draft (and stamp the outbound-review approval marker) through the node.
+// Recheck mail.draft.edit on the resolved message when the CURRENT graph holds a release
+// node. (The eventual SMTP send is separately blocked by the mail.send.scheduled recheck.)
+async function assertWorkflowExecuteReleaseOutboundNodePrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  resources: readonly MailResource[],
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (!loaded || !workflowGraphHasNodeType(loaded.graph, 'email.release_outbound')) return;
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.draft.edit',
+      resource,
+    });
+  }
+}
+
+// R40-4 (B): an email.send_draft node arms an EXISTING draft for send — rewriting its
+// body/subject/ticket, clearing its review hold, and stamping the outbound-review approval
+// marker — under the SYSTEM role. Its target is a SEPARATE draft (not the workflow's
+// message): a static config.draftId (resolvable here) or a runtime draftIdVariable (only
+// known at execution — that case's actual send is still blocked downstream by the
+// mail.send.scheduled recheck, and its variable target is the run's own just-created
+// draft). For each STATIC target id in the current graph, resolve it and require
+// mail.draft.edit so a user-attributed run cannot mutate an arbitrary other user's draft.
+async function assertWorkflowExecuteSendDraftStaticTargetPrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (!loaded) return;
+  const draftIds = collectWorkflowSendDraftStaticDraftIds(loaded.graph);
+  for (const draftId of draftIds) {
+    const targets = await ports.mailResourceLookup.resolve({
+      workspaceId: job.workspaceId,
+      target: { kind: 'message', id: draftId },
+    });
+    // A configured static draft id that resolves to nothing (deleted/foreign) fails
+    // closed rather than letting the node mutate an unverified draft.
+    if (targets.length === 0) throw new MailAsyncAuthorizationError();
+    for (const resource of targets) {
+      await ports.mailAccess.assertPermission({
+        workspaceId: job.workspaceId,
+        actor,
+        permission: 'mail.draft.edit',
+        resource,
+      });
+    }
   }
 }
 

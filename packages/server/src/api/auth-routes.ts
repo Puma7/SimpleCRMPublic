@@ -395,7 +395,11 @@ async function handleSaveUser(
     const elevated = !wasElevated && isElevated;
     const disabled = previousUser.disabledAt === null && result.user.disabledAt !== null;
     if (demoted || elevated || disabled) {
-      await ports.events?.publish({
+      // Best-effort: auth.saveUser + the audit write already committed, so a transient
+      // event-port rejection must NOT surface as a 500 — that would report a committed,
+      // sensitive role/disable change as failed and invite a retry that repeats the
+      // mutation. The event only asks the affected user's open client to reload.
+      await publishUserAclInvalidationBestEffort(ports, {
         type: 'email_acl.changed',
         workspaceId: principal.workspaceId,
         entityType: 'email_acl',
@@ -453,7 +457,9 @@ async function handleDeleteUser(
   // workspace only happens when some other event arrives. Publish a self-targeted
   // email_acl.changed so the renderer clears loaded mail immediately (and the event
   // wakes the socket's revalidation, which then closes the now-invalid session).
-  await ports.events?.publish({
+  // Best-effort: the deletion already committed, so a transient event-port rejection
+  // must not turn it into a 500 (a retry would then hit cannot_delete/not_found).
+  await publishUserAclInvalidationBestEffort(ports, {
     type: 'email_acl.changed',
     workspaceId: principal.workspaceId,
     entityType: 'email_acl',
@@ -463,6 +469,24 @@ async function handleDeleteUser(
     payload: { targetUserId: id, state: 'changed' },
   });
   return data(200, { deleted: true, id });
+}
+
+// Publish a self-targeted email_acl.changed invalidation as BEST-EFFORT: the user
+// mutation (role/disable/delete) has already committed, so a transient event-port
+// rejection must never surface as a request failure — that would report a committed,
+// sensitive change as failed and invite a retry that repeats it. The event only tells
+// the affected user's open client to clear/reload mail; log and swallow on failure.
+async function publishUserAclInvalidationBestEffort(
+  ports: ServerApiPorts,
+  event: Parameters<NonNullable<ServerApiPorts['events']>['publish']>[0],
+): Promise<void> {
+  try {
+    await ports.events?.publish(event);
+  } catch (error) {
+    console.warn(
+      `[auth] email_acl.changed publish failed for user ${event.entityId}; user mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function handleChangePassword(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

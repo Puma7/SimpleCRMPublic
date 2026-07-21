@@ -278,8 +278,8 @@ async function handleEventSocket(
   // socket when the session is no longer valid. Mirrors the per-request HTTP path.
   const PRINCIPAL_REVALIDATE_MS = 10_000;
   let principalCheckedAt = Date.now();
-  const revalidatePrincipal = async (): Promise<boolean> => {
-    if (Date.now() - principalCheckedAt < PRINCIPAL_REVALIDATE_MS) return true;
+  const revalidatePrincipal = async (force = false): Promise<boolean> => {
+    if (!force && Date.now() - principalCheckedAt < PRINCIPAL_REVALIDATE_MS) return true;
     principalCheckedAt = Date.now();
     const fresh = await resolvePrincipal(request);
     if (!fresh || fresh.workspaceId !== principal.workspaceId) return false;
@@ -296,7 +296,15 @@ async function handleEventSocket(
   };
   const deliver = async (event: ServerEvent): Promise<void> => {
     if (closed) return;
-    if (!(await revalidatePrincipal())) {
+    // A self-targeted email_acl.changed IS the demote/disable/delete signal for this
+    // socket's user, so the cached principal it would be filtered against is exactly the
+    // one that may now be stale. Bypass the TTL and re-resolve NOW: a demotion downgrades
+    // the actor before the next mail event is authorized (no lingering admin bypass), and
+    // a disable/delete makes revalidatePrincipal return false → the revoke fallback below
+    // closes the socket immediately, instead of leaving up to PRINCIPAL_REVALIDATE_MS of
+    // bypass / an open deleted-user socket on the live stream.
+    const forceRevalidate = isSelfTargetedAclInvalidation(event, principal.userId);
+    if (!(await revalidatePrincipal(forceRevalidate))) {
       if (!closed) {
         closed = true;
         // The just-revoked/disabled user's own socket is the one that most needs the
@@ -444,6 +452,23 @@ export async function publishDemotionAclInvalidationIfNeeded(
     payload: { targetUserId: fresh.userId, state: 'changed' },
   });
   return true;
+}
+
+/**
+ * A self-targeted email_acl.changed is the demote/disable/delete signal for THIS
+ * socket's own user. The live delivery path forces an immediate principal re-resolve
+ * (bypassing the revalidation TTL) for these so a demotion downgrades the actor before
+ * the next mail event is authorized and a disable/delete closes the socket now, instead
+ * of leaving up to the TTL window of stale admin bypass. Owners/admins also receive
+ * OTHER users' email_acl.changed events — those must NOT force a re-resolve, hence the
+ * strict self-target (payload.targetUserId === userId) check.
+ */
+export function isSelfTargetedAclInvalidation(event: ServerEvent, userId: string): boolean {
+  return (
+    event.type === 'email_acl.changed'
+    && event.entityType === 'email_acl'
+    && event.payload.targetUserId === userId
+  );
 }
 
 function waitForWebSocketClient(): Promise<void> {

@@ -39,6 +39,7 @@ import { mailAclMigration } from './0038_mail_acl';
 import { mailAclRolloutMigration } from './0039_mail_acl_rollout';
 import { scheduledSendProvenanceMigration } from './0040_scheduled_send_provenance';
 import { mailAclBindingMessageFkCascadeMigration } from './0041_mail_acl_binding_message_fk_cascade';
+import { quarantineLegacyProvenancelessJobsMigration } from './0042_quarantine_legacy_provenanceless_jobs';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -84,6 +85,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   mailAclRolloutMigration,
   scheduledSendProvenanceMigration,
   mailAclBindingMessageFkCascadeMigration,
+  quarantineLegacyProvenancelessJobsMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

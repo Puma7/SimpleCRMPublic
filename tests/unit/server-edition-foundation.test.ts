@@ -372,6 +372,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0039_mail_acl_rollout',
   '0040_scheduled_send_provenance',
   '0041_mail_acl_binding_message_fk_cascade',
+  '0042_quarantine_legacy_provenanceless_jobs',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -17103,6 +17104,41 @@ describe('server edition foundation', () => {
         payload: { targetUserId: 'target', state: 'changed' },
       }),
     ]);
+  });
+
+  test('a rejecting event port does not fail a committed user delete or role change (R40-1)', async () => {
+    const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt: null,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const admin = { userId: 'owner-x', workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+    // The user mutation + audit commit BEFORE the ACL invalidation publishes, so a
+    // transient event-port rejection must not turn a committed, sensitive change into a
+    // 500 (which would invite a retry that repeats the mutation).
+    const makeApi = () => createServerApi({
+      ...makeServerApiPorts({ authUsers: [userRecord('owner-x', 'owner'), userRecord('target', 'admin')] }),
+      events: { async publish() { throw new Error('event bus down'); } },
+    });
+
+    // Deleting a user still returns 200 even though the invalidation publish rejects.
+    await expect(makeApi().handle({
+      method: 'DELETE',
+      path: '/api/v1/auth/users/target',
+      principal: admin,
+    })).resolves.toMatchObject({ status: 200, body: { data: { deleted: true, id: 'target' } } });
+
+    // Demoting a user (admin -> user) likewise returns 200 despite the publish rejecting.
+    await expect(makeApi().handle({
+      method: 'PATCH',
+      path: '/api/v1/auth/users/target',
+      principal: admin,
+      body: { email: 'target@example.com', displayName: 'target', role: 'user' },
+    })).resolves.toMatchObject({ status: 200 });
   });
 
   test('server auth invitation routes create single-use links and accept with user-owned password', async () => {

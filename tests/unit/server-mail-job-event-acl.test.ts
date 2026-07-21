@@ -16,6 +16,7 @@ import {
 } from '../../packages/server/src/mail-access/async-policy-enforcer';
 import {
   createBoundedEventSequenceDedupe,
+  isSelfTargetedAclInvalidation,
   publishDemotionAclInvalidationIfNeeded,
 } from '../../packages/server/src/api/fastify-adapter';
 
@@ -594,6 +595,66 @@ describe('server mail job and event ACL', () => {
       payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 740, messageId: 12 }),
     }), service);
     expect(service.assertions).toEqual([]);
+  });
+
+  test('rechecks mail.draft.edit for workflow release_outbound and static send_draft nodes (R40-4)', async () => {
+    // release_outbound mutates the workflow message; send_draft with a static config.draftId
+    // arms a SEPARATE target draft — both under the system role, both mutating a draft the
+    // base content.read policy never covers.
+    const releaseGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } }] };
+    const sendStaticGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } }] };
+    const sendVariableGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } }] };
+    const sendMissingGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 999 } } }] };
+    const graphs = new Map<number, unknown>([
+      [750, releaseGraph], [751, sendStaticGraph], [752, sendVariableGraph], [753, sendMissingGraph],
+    ]);
+
+    // release_outbound: mail.draft.edit revoked → denied; retained → content.read on the
+    // workflow message + draft.edit on it.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 750, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+    const release = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 750, messageId: 12 },
+    }), release);
+    expect(release.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.edit']);
+
+    // send_draft static config.draftId=13: draft.edit is asserted on the TARGET draft 13
+    // (not the workflow message 12); revoked → denied.
+    const sendStatic = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 751, messageId: 12 },
+    }), sendStatic);
+    expect(sendStatic.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.draft.edit',
+      resource: { type: 'message', accountId: '7', folderId: '8', messageId: '13' },
+    }));
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 751, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // send_draft with a runtime draftIdVariable (no static id) adds no pre-execution
+    // draft.edit requirement here (the id is only known at execution; the actual send is
+    // blocked downstream by the mail.send.scheduled recheck).
+    const sendVariable = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 752, messageId: 12 },
+    }), sendVariable);
+    expect(sendVariable.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // A static target that resolves to nothing (deleted/foreign) fails closed.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 753, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs }))).rejects.toMatchObject({ nonRetryable: true });
   });
 
   test('rechecks side-effect privilege for MANUAL-marked workflow child jobs, not compose-originated ones', async () => {
@@ -1237,6 +1298,33 @@ describe('server mail job and event ACL', () => {
       ).resolves.toBe(false);
       expect(published).toHaveLength(0);
     }
+  });
+
+  test('isSelfTargetedAclInvalidation matches only this user\'s own email_acl.changed (R40-5)', () => {
+    const acl = (payload: Record<string, unknown>, overrides: Partial<ServerEvent> = {}): ServerEvent => ({
+      sequence: 1,
+      type: 'email_acl.changed',
+      workspaceId: 'workspace-a',
+      entityType: 'email_acl',
+      entityId: 'user-a',
+      actorUserId: 'admin-a',
+      occurredAt: '2026-07-21T10:00:00.000Z',
+      payload,
+      ...overrides,
+    });
+    // Self-targeted → force a socket re-resolve (bypass the revalidation TTL).
+    expect(isSelfTargetedAclInvalidation(acl({ targetUserId: 'user-a', state: 'changed' }), 'user-a')).toBe(true);
+    // Another user's ACL change (delivered to owners/admins) must NOT force a re-resolve.
+    expect(isSelfTargetedAclInvalidation(acl({ targetUserId: 'user-b', state: 'changed' }), 'user-a')).toBe(false);
+    // Non-ACL events and wrong entityType never force a re-resolve.
+    expect(isSelfTargetedAclInvalidation(
+      acl({ targetUserId: 'user-a' }, { type: 'email_message.updated' as ServerEvent['type'] }),
+      'user-a',
+    )).toBe(false);
+    expect(isSelfTargetedAclInvalidation(
+      acl({ targetUserId: 'user-a' }, { entityType: 'email_message' as ServerEvent['entityType'] }),
+      'user-a',
+    )).toBe(false);
   });
 
   test('ACL invalidation events reach scoped non-admin delegation managers when the payload carries the binding resource', async () => {

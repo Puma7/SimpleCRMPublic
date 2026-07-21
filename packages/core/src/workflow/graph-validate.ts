@@ -211,6 +211,41 @@ export function workflowGraphHasAnyNodeType(graph: unknown, nodeTypes: ReadonlyS
   return false;
 }
 
+/**
+ * Collect the STATIC target draft ids of every `email.send_draft` node — i.e. those
+ * that hard-code `config.draftId` (a positive integer). A send_draft node arms an
+ * EXISTING draft for send (rewrites its body/subject and clears its review hold), so the
+ * async job enforcer resolves these ids to require mail.draft.edit on the target before
+ * the node runs under the system role. Nodes that select their target via
+ * `config.draftIdVariable` (a runtime workflow variable) are NOT included — that id is
+ * only known at execution, so it cannot be resolved at policy time. Deduplicated.
+ */
+export function collectWorkflowSendDraftStaticDraftIds(graph: unknown): number[] {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return [];
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+  const ids = new Set<number>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type !== 'action' && node.type !== 'registry') continue;
+    if (sideEffectRuntimeType(node) !== 'email.send_draft') continue;
+    const draftId = nodeConfig(node).draftId;
+    if (typeof draftId === 'number' && Number.isInteger(draftId) && draftId > 0) {
+      ids.add(draftId);
+    }
+  }
+  return [...ids];
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;

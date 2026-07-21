@@ -48,6 +48,19 @@ type AttachmentExportEntry = {
   status: 'ok' | 'missing' | 'unsafe_path' | 'blocked_suspicious';
 };
 
+/**
+ * Bytes that will actually be written into the export archive: only status==='ok'
+ * entries stream their file bytes (writeExportArchive skips every other status), so
+ * this — not the sum of all declared sizes — is what the export size cap must compare
+ * against. Missing / unsafe_path / blocked_suspicious entries contribute only a manifest
+ * line, not their declared bytes.
+ */
+export function exportableAttachmentBytes(
+  attachments: readonly Pick<AttachmentExportEntry, 'status' | 'sizeBytes'>[],
+): number {
+  return attachments.reduce((sum, entry) => (entry.status === 'ok' ? sum + entry.sizeBytes : sum), 0);
+}
+
 type PostgresEmailGdprExportPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   attachmentsRoot: string;
@@ -67,7 +80,11 @@ export function createPostgresEmailGdprExportPort(
       const attachments = input.skipAttachments
         ? []
         : await prepareAttachments(options, input.workspaceId, input.mailScope);
-      const attachmentBytes = attachments.reduce((sum, entry) => sum + entry.sizeBytes, 0);
+      // Only status==='ok' entries stream their bytes into the archive (writeExportArchive
+      // skips every other status), so the size cap must count ONLY those. Counting the
+      // declared sizes of missing / unsafe_path / blocked_suspicious entries would reject
+      // an export whose actual archive stays well under the limit.
+      const attachmentBytes = exportableAttachmentBytes(attachments);
       if (!input.skipAttachments && attachmentBytes > MAX_EXPORT_ATTACH_BYTES) {
         return {
           ok: false,
