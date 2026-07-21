@@ -181,15 +181,17 @@ export async function enforceMailJobPolicy(
     // A scheduled reply-send marks the reply parent done by default, a mail.triage
     // mutation the base mail.send policy never covers — recheck it on the parent.
     await assertScheduledSendReplyParentTriage(job, actor.actor, requiredPorts);
-    // Reply generation (mail.draft.create) and message classification (mail.triage)
-    // both read the message body — snippet/body_text, even in metadataMessageText —
-    // and may send it to the AI provider before persisting their result, so the base
-    // draft.create / triage permission is not enough; also require mail.content.read
-    // on the message. This runs at EXECUTION time, so a content grant revoked after
-    // workflow.execute queued the ai.classify child (while the user retained triage)
-    // is caught here rather than slipping through the queue window.
+    // Reply generation (mail.draft.create), message classification (mail.triage),
+    // and message-attributed workflow HTTP requests (mail.metadata.read) all read the
+    // message body — snippet/body_text/combined_text — and send it onward (to the AI
+    // provider, or into the interpolated URL/body of an outbound HTTP call), so the
+    // base permission is not enough; also require mail.content.read on the message.
+    // This runs at EXECUTION time, so a content grant revoked after workflow.execute
+    // queued the child (while the user retained the base grant) is caught here rather
+    // than slipping through the queue window. (A message-less http_request resolves to
+    // non_mail and returns above, so this only gates message-attributed ones.)
     if (
-      (job.type === 'ai.reply_suggestion' || job.type === 'ai.classify')
+      (job.type === 'ai.reply_suggestion' || job.type === 'ai.classify' || job.type === 'workflow.http_request')
       && resolved.resources.kind === 'resources'
     ) {
       for (const resource of resolved.resources.resources) {

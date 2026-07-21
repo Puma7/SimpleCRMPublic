@@ -11946,11 +11946,15 @@ describe('server edition foundation', () => {
       context: { outbound: { messageId: 72, subject: 'Auto send', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
     });
 
-    // (a) Hold released, scheduled_send_at primed so the cron picks it up now.
+    // (a) Hold released, scheduled_send_at primed so the cron picks it up now. This
+    //     run carries no initiating user (automatic), so it keeps trusted-service
+    //     (system) provenance.
     expect(rows.messages[0]).toMatchObject({
       outbound_hold: false,
       outbound_block_reason: null,
       scheduled_send_at: now,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: 'simplecrm:trusted-service:v1',
       updated_at: now,
     });
     // (b) Approval marker is written so reviewOutbound.review bypasses the
@@ -11966,6 +11970,66 @@ describe('server edition foundation', () => {
     expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
       ['email.release_outbound', 'default', 'outbound_hold_released_auto_send'],
     ]);
+  });
+
+  test('email.release_outbound autoSend attributes the scheduled send to the initiating user', async () => {
+    const now = new Date('2026-07-04T11:00:35.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        trigger_name: 'outbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 72,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 720,
+        subject: 'Auto send',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'ok',
+        body_text: 'ok',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        outbound_hold: true,
+        outbound_block_reason: 'review',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 27,
+      messageId: 72,
+      triggerName: 'outbound',
+      actorUserId: USER_A_ID,
+      context: { outbound: { messageId: 72, subject: 'Auto send', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    // A compose-originated run carries the initiating user, so the scheduled send is
+    // attributed to THEM (not trusted-service). The scheduled-send ticker then
+    // re-verifies that user's CURRENT mail.send at send time and fails closed if it
+    // was revoked after the workflow was queued.
+    expect(rows.messages[0]).toMatchObject({
+      outbound_hold: false,
+      scheduled_send_at: now,
+      scheduled_send_actor_user_id: USER_A_ID,
+      scheduled_send_trusted_service_principal: null,
+    });
   });
 
   test('email.release_outbound autoSend strips the held-banner from body + bakes ticket-code into subject + skips marker if peer outbound runs are still open', async () => {

@@ -632,6 +632,35 @@ describe('server mail job and event ACL', () => {
     })).rejects.toMatchObject({ nonRetryable: true });
   });
 
+  test('message-attributed workflow.http_request requires content-read', async () => {
+    // The request interpolates body_text/snippet/combined_text into the outbound URL
+    // and body, so a metadata-only delegate whose content.read was revoked after the
+    // workflow queued this child must be blocked at execution.
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.http_request',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.metadata.read',
+      'mail.content.read',
+    ]);
+
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.http_request',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A message-less http_request resolves to non_mail — no content gate applies.
+    const messageless = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.http_request',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
+    }), messageless)).resolves.toBeUndefined();
+    expect(messageless.assertions).toEqual([]);
+  });
+
   test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {
     const ports = makePolicyPorts({ denyAllMailAccess: true });
     const servicePayloads = {

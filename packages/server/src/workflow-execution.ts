@@ -2324,6 +2324,21 @@ function workflowJobProvenance(context: ServerWorkflowContext): Record<string, u
   return context.trustedService ? buildTrustedServiceJobPayload({}) : {};
 }
 
+// Provenance columns for a workflow-armed scheduled send. When the run has an
+// initiating user (compose-originated), attribute the send to THAT user so the
+// scheduled-send ticker re-verifies their CURRENT mail.send at send time — a
+// delegate who lost mail.send after the workflow was queued is then denied
+// (fail-closed) instead of the send going out under the system principal. Only
+// automatic/inbound runs with no actor keep trusted-service (system) provenance.
+function scheduledSendProvenanceColumns(context: ServerWorkflowContext): {
+  scheduled_send_actor_user_id: string | null;
+  scheduled_send_trusted_service_principal: string | null;
+} {
+  return context.actorUserId
+    ? { scheduled_send_actor_user_id: context.actorUserId, scheduled_send_trusted_service_principal: null }
+    : { scheduled_send_actor_user_id: null, scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE };
+}
+
 async function scheduleAiReplySuggestionJob(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
@@ -4480,8 +4495,7 @@ async function releaseWorkflowOutboundHold(
       outbound_hold: false,
       outbound_block_reason: null,
       scheduled_send_at: now,
-      scheduled_send_actor_user_id: null,
-      scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE,
+      ...scheduledSendProvenanceColumns(context),
       // Persist the cleaned body so the customer does not see the internal
       // review banner, and the persisted ticket-prefixed subject so the
       // fingerprint matches at send time.
@@ -4684,8 +4698,7 @@ async function sendWorkflowDraft(
         outbound_hold: false,
         outbound_block_reason: null,
         scheduled_send_at: now,
-        scheduled_send_actor_user_id: null,
-        scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE,
+        ...scheduledSendProvenanceColumns(context),
         body_text: cleaned.plain,
         body_html: cleaned.html || null,
         subject: finalSubject,
@@ -4730,8 +4743,7 @@ async function sendWorkflowDraft(
         outbound_hold: false,
         outbound_block_reason: null,
         scheduled_send_at: now,
-        scheduled_send_actor_user_id: null,
-        scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE,
+        ...scheduledSendProvenanceColumns(context),
         updated_at: now,
       })
       .where('workspace_id', '=', context.workspaceId)
