@@ -350,6 +350,48 @@ describe('server mail delegation API', () => {
     }));
   });
 
+  test('a rejecting invalidation publish for one target still fans out to the rest and does not fail the committed replace (R44-1)', async () => {
+    // A group-binding replace can revoke several members at once. The mutation already
+    // committed, so one target's transient publish failure must neither skip the remaining
+    // members' invalidations nor surface as a request error.
+    let publishCalls = 0;
+    const events = { publish: jest.fn(async () => {
+      publishCalls += 1;
+      if (publishCalls === 1) throw new Error('event bus hiccup');
+      return undefined;
+    }) };
+    const mailDelegation = delegationPort({
+      replaceBinding: async (input) => ({
+        ok: true,
+        binding: binding(901, input.permissions),
+        affectedUserIds: [AGENT, MANAGER],
+      }),
+    });
+    const api = createServerApi(ports({ mailDelegation, events }));
+
+    const response = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/access/bindings',
+      principal: owner,
+      body: {
+        subject: { type: 'group', id: GROUP },
+        resource: { type: 'folder', accountId: ACCOUNT, folderId: FOLDER },
+        permissions: ['mail.metadata.read', 'mail.triage'],
+      },
+    });
+
+    // The committed replace is NOT reported as a failure despite the first publish rejecting.
+    expect(response.status).toBe(201);
+    // Both members were still published (allSettled continues past the failure).
+    expect(events.publish).toHaveBeenCalledTimes(2);
+    expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ targetUserId: AGENT }),
+    }));
+    expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ targetUserId: MANAGER }),
+    }));
+  });
+
   test('a rejecting audit port does not fail the committed binding mutation (R37-1)', async () => {
     const audit = { record: jest.fn(async () => { throw new Error('audit backend down'); }) };
     const events = { publish: jest.fn(async () => undefined) };

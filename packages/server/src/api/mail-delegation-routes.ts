@@ -411,32 +411,40 @@ async function auditAndPublish(
   // mailbox state. (Audit is best-effort record-keeping; the invalidation is not.)
   if (bindingId !== undefined) {
     const uniqueTargets = [...new Set(details.affectedUserIds)].sort();
-    for (const targetUserId of uniqueTargets) {
-      await ports.events?.publish({
-        type: 'email_acl.changed',
-        workspaceId: principal.workspaceId,
-        entityType: 'email_acl',
-        entityId: String(bindingId),
-        actorUserId: principal.userId,
-        occurredAt: new Date().toISOString(),
-        payload: {
-          bindingId,
-          targetUserId,
-          state: details.deleted ? 'deleted' : 'changed',
-          // Carry the binding's resource (when known) so the event filter can also
-          // deliver to a non-admin mail.delegation.manage holder scoped to it — their
-          // delegation panel otherwise stays stale and can revert a peer's newer edit.
-          // The resource + targetUserId are already enumerable by such a manager, so
-          // this leaks nothing. Absent on delete/empty-replace (binding gone) and on
-          // group-membership changes (no single resource): those stay subject-only.
-          ...(resource ? {
-            resourceType: resource.type,
-            accountId: resource.accountId,
-            ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
-          } : {}),
-        },
-      });
-    }
+    // Each target's publish is independent — allSettled so one failed delivery does not
+    // skip the remaining targets' invalidations (a replace/delete can revoke several
+    // group members at once, and the binding mutation already committed, so every revoked
+    // user must still receive its email_acl.changed even if a sibling delivery throws) and
+    // a transient publish failure never surfaces as a misleading request error. Mirrors
+    // the group-membership (publishGroupAclInvalidation) and account-deletion fanouts.
+    await Promise.allSettled(
+      uniqueTargets.map((targetUserId) => (
+        ports.events?.publish({
+          type: 'email_acl.changed',
+          workspaceId: principal.workspaceId,
+          entityType: 'email_acl',
+          entityId: String(bindingId),
+          actorUserId: principal.userId,
+          occurredAt: new Date().toISOString(),
+          payload: {
+            bindingId,
+            targetUserId,
+            state: details.deleted ? 'deleted' : 'changed',
+            // Carry the binding's resource (when known) so the event filter can also
+            // deliver to a non-admin mail.delegation.manage holder scoped to it — their
+            // delegation panel otherwise stays stale and can revert a peer's newer edit.
+            // The resource + targetUserId are already enumerable by such a manager, so
+            // this leaks nothing. Absent on delete/empty-replace (binding gone) and on
+            // group-membership changes (no single resource): those stay subject-only.
+            ...(resource ? {
+              resourceType: resource.type,
+              accountId: resource.accountId,
+              ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
+            } : {}),
+          },
+        })
+      )),
+    );
   }
 
   // Best-effort record-keeping (see the comment above): the binding mutation already

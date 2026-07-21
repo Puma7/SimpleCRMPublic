@@ -798,6 +798,48 @@ describe('mail ACL rollout central use', () => {
     expect(verifyMessage).toHaveBeenCalledTimes(1);
   });
 
+  test('pgp detect POST requires content-read in addition to triage (R44-3)', async () => {
+    // detectMessage reads body_text/body_html to report whether an armored PGP message is
+    // present, so — like verify — a triage-only delegate without content access must be
+    // blocked before the handler runs.
+    const detectMessage = jest.fn(async () => ({ ok: true as const, result: { detected: true } }));
+    const withMailAccess = (mailAccess: MailAccessService) => createServerApi({
+      ...makeCentralPorts(mailAccess),
+      pgpMessages: { detectMessage } as unknown as ServerApiPorts['pgpMessages'],
+    });
+
+    const denyContentRead = withMailAccess({
+      async assertPermission(input) {
+        if (input.permission === 'mail.content.read') throw new MailAccessDeniedError();
+      },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await expect(denyContentRead.handle({
+      method: 'POST',
+      path: `/api/v1/pgp/messages/${MESSAGE_A}/detect`,
+      body: {},
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(detectMessage).not.toHaveBeenCalled();
+
+    const calls: string[] = [];
+    const allowAll = withMailAccess({
+      async assertPermission(input) { calls.push(`assert:${input.permission}:${input.resource.type}`); },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await allowAll.handle({
+      method: 'POST',
+      path: `/api/v1/pgp/messages/${MESSAGE_A}/detect`,
+      body: {},
+      principal: principal(),
+    });
+    expect(calls).toEqual(expect.arrayContaining([
+      'assert:mail.triage:message',
+      'assert:mail.content.read:message',
+    ]));
+    expect(detectMessage).toHaveBeenCalledTimes(1);
+  });
+
   test('spam decision item GET requires content-read in addition to metadata', async () => {
     // sanitizeDecision returns the whole breakdown, whose featureKeys are derived
     // from the hidden body/HTML, so a metadata-only delegate that obtains a decision
