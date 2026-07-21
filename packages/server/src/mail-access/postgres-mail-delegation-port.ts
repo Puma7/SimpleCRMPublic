@@ -319,7 +319,12 @@ export function createPostgresMailDelegationPort(
           const existing = await findBindingById(trx, input.workspaceId, input.bindingId);
           if (!existing) return { ok: false as const, code: 'binding_not_found' as const };
           const resource = rowResource(existing);
-          if (!await canManageResource(trx, input.workspaceId, input.actor, resource, [])) {
+          // Lock the actor's authorizing grant rows (forUpdate: true), like the create/replace
+          // path: deleting a binding is still an ACL mutation, so a manager whose own authority
+          // is concurrently revoked must not slip an unauthorized deletion through under
+          // read-committed (R49-1). The revoking admin is isOwner/isAdmin and short-circuits
+          // canManageResource without taking an authority lock, so this cannot deadlock it.
+          if (!await canManageResource(trx, input.workspaceId, input.actor, resource, [], true)) {
             return { ok: false as const, code: 'permission_denied' as const };
           }
           const affectedUserIds = await affectedUsersForSubject(trx, input.workspaceId, rowSubject(existing));
