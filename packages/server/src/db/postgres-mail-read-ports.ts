@@ -311,6 +311,11 @@ type EmailMessageApiRow =
     // caller lacks mail.content.read on it. Absent ⇒ fully readable (owner/admin
     // or content-authorized), so nothing is redacted.
     content_readable?: boolean;
+    // Present only for a scoped list/conversation/thread caller: false ⇒ the row's
+    // reply_parent_message_id points to a message OUTSIDE the caller's scope, so the id
+    // must be nulled to avoid disclosing the hidden parent's existence/id. Absent ⇒ scope
+    // 'all' (owner/admin) ⇒ the id passes through unchanged.
+    reply_parent_visible?: boolean;
   };
 
 type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
@@ -824,6 +829,26 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
 
             if (contentPredicate) {
               query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+            }
+            const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+              accountId: 'reply_parent.account_id',
+              folderId: 'reply_parent.folder_id',
+              messageId: 'reply_parent.id',
+            });
+            if (replyParentScopePredicate) {
+              // reply_parent_message_id may point to a message the scoped caller cannot see
+              // (cross-account replies are allowed); expose only WHETHER the parent is
+              // scope-visible so the mapper can null the id otherwise. Scope 'all' ⇒
+              // predicate undefined ⇒ column absent ⇒ id returned unchanged (owner/admin).
+              query = query.select(kyselySql<boolean>`(
+                email_messages.reply_parent_message_id is null
+                or exists (
+                  select 1 from email_messages reply_parent
+                  where reply_parent.id = email_messages.reply_parent_message_id
+                    and reply_parent.workspace_id = email_messages.workspace_id
+                    and (${replyParentScopePredicate})
+                )
+              )`.as('reply_parent_visible'));
             }
             if (messageScopePredicate) query = query.where(messageScopePredicate);
             query = query.limit(page.limit);
@@ -1442,6 +1467,25 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           });
           if (contentPredicate) {
             query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+          }
+          const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'reply_parent.account_id',
+            folderId: 'reply_parent.folder_id',
+            messageId: 'reply_parent.id',
+          });
+          if (replyParentScopePredicate) {
+            // A reply parent can live outside the scoped caller's view (cross-account
+            // replies are allowed); expose only whether it is scope-visible so the mapper
+            // can null the id otherwise. Scope 'all' ⇒ undefined ⇒ id unchanged.
+            query = query.select(kyselySql<boolean>`(
+              email_messages.reply_parent_message_id is null
+              or exists (
+                select 1 from email_messages reply_parent
+                where reply_parent.id = email_messages.reply_parent_message_id
+                  and reply_parent.workspace_id = email_messages.workspace_id
+                  and (${replyParentScopePredicate})
+              )
+            )`.as('reply_parent_visible'));
           }
           if (scopePredicate) query = query.where(scopePredicate);
           const rows = await query
@@ -2296,6 +2340,25 @@ async function selectConversationMessages(
   });
   if (contentPredicate) {
     query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+  }
+  const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+    accountId: 'reply_parent.account_id',
+    folderId: 'reply_parent.folder_id',
+    messageId: 'reply_parent.id',
+  });
+  if (replyParentScopePredicate) {
+    // A reply parent can live outside the scoped caller's view (cross-account replies are
+    // allowed); expose only whether it is scope-visible so the mapper can null the id
+    // otherwise. Scope 'all' ⇒ undefined ⇒ id unchanged (owner/admin).
+    query = query.select(kyselySql<boolean>`(
+      email_messages.reply_parent_message_id is null
+      or exists (
+        select 1 from email_messages reply_parent
+        where reply_parent.id = email_messages.reply_parent_message_id
+          and reply_parent.workspace_id = email_messages.workspace_id
+          and (${replyParentScopePredicate})
+      )
+    )`.as('reply_parent_visible'));
   }
   if (scopePredicate) query = query.where(scopePredicate);
   query = query.limit(limit);
@@ -5178,7 +5241,15 @@ function mapEmailMessageRow(
     // list/conversation/thread reads; single-message get is separately gated on
     // mail.content.read, so its undefined content_readable leaves this untouched.
     draftAttachmentPathsJson: row.content_readable === false ? null : row.draft_attachment_paths_json,
-    replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
+    // reply_parent_message_id can reference a message OUTSIDE a restricted delegate's scope
+    // (compose authorizes only the CREATOR against the parent, and the FK permits
+    // cross-account parents). reply_parent_visible===false ⇒ the parent is not scope-visible,
+    // so null the id to avoid disclosing the hidden parent's existence/id. undefined ⇒ scope
+    // 'all' (or the single-message get, gated at the route) ⇒ the id is returned unchanged.
+    replyParentMessageId:
+      row.reply_parent_message_id === null || row.reply_parent_visible === false
+        ? null
+        : Number(row.reply_parent_message_id),
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }
