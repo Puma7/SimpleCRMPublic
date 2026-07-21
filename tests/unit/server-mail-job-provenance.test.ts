@@ -199,6 +199,47 @@ describe('server mail job provenance', () => {
     }, WORKSPACE_ID, new Date('2026-07-20T10:00:00.000Z')).actorUserId).toBe(USER_ID);
   });
 
+  test('production job plan builders propagate the manual-admin marker into async-child continuations', () => {
+    // R35-3: a manual admin-gated run that pauses on an async child must keep the marker
+    // on the resumed workflow.execute, or a since-demoted initiator's writing nodes would
+    // run unchecked. The marker is sourced from the executing job's top-level payload.
+    const markedContinuation = { workflowId: 23, resumeNodeId: 'next' };
+    expect(buildAiClassificationJobPlan({
+      workspaceId: WORKSPACE_ID,
+      messageId: 12,
+      actorUserId: USER_ID,
+      labels: ['billing'],
+      [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
+      continuation: markedContinuation,
+    }, WORKSPACE_ID).continuation?.manualAdminExecute).toBe(true);
+    expect(buildWorkflowHttpRequestJobPlan({
+      workspaceId: WORKSPACE_ID,
+      messageId: 12,
+      actorUserId: USER_ID,
+      method: 'GET',
+      url: 'https://example.test/hook',
+      [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
+      continuation: markedContinuation,
+    }, WORKSPACE_ID).continuation?.manualAdminExecute).toBe(true);
+    expect(buildWorkflowForwardCopyJobPlan({
+      workspaceId: WORKSPACE_ID,
+      workflowId: 23,
+      messageId: 12,
+      actorUserId: USER_ID,
+      to: 'ops@example.test',
+      [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
+      continuation: markedContinuation,
+    }, WORKSPACE_ID).continuation?.manualAdminExecute).toBe(true);
+    // Without the marker on the executing job, the continuation stays unmarked.
+    expect(buildAiClassificationJobPlan({
+      workspaceId: WORKSPACE_ID,
+      messageId: 12,
+      actorUserId: USER_ID,
+      labels: ['billing'],
+      continuation: markedContinuation,
+    }, WORKSPACE_ID).continuation?.manualAdminExecute).toBeUndefined();
+  });
+
   test('production job plan builders preserve trusted service provenance through system continuations', () => {
     const payload = buildTrustedServiceJobPayload({
       workspaceId: WORKSPACE_ID,

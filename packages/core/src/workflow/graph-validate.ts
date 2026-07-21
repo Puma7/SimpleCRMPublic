@@ -68,13 +68,18 @@ const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'email.read_tracking_evidence',
   'email.sender_filter',
   'returns.evaluate',
+  // jtl.lookup reads the workspace's OWN synced JTL tables (local Postgres, workspace-
+  // scoped) — no external reach — so it stays read-only. jtl.order_context is NOT here:
+  // it runs a caller-configurable SELECT against the workspace's external MSSQL/ERP
+  // connection (executeReadOnlyQuery), so a non-admin live run could read arbitrary ERP
+  // tables — reaching an external system counts as side-effecting.
   'jtl.lookup',
-  'jtl.order_context',
   'jtl.prepare_action',
-  // NOTE: ai.classify is intentionally NOT here — it persists a tag on the message
-  // (addClassificationTag), a mail.triage mutation, so a graph containing it is
-  // side-effecting and a non-admin live run must be blocked.
-  'ai.reply_suggestion',
+  // NOTE: neither ai.classify NOR ai.reply_suggestion is here. ai.classify persists a
+  // tag (addClassificationTag, a mail.triage mutation); ai.reply_suggestion enqueues a
+  // child that calls the external AI provider and writes email_messages.reply_suggestion_*
+  // under the system role. Both are side-effecting, so a graph containing either must
+  // block a non-admin live run.
 ]);
 
 /** Resolve the runtime type of an action/registry node (mirrors nodeRuntimeType). */

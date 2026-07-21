@@ -18,7 +18,7 @@ import {
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
 } from './db/workspace-context';
-import { buildTrustedServiceJobPayload } from './jobs/policy';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
 
 /** Per-attachment read cap (compressed bytes). The decompressed side has its own
@@ -35,6 +35,9 @@ export type WorkflowDmarcIngestContinuation = Readonly<{
   triggerName?: string;
   actorUserId?: string;
   trustedService?: boolean;
+  // See AiClassificationContinuation.manualAdminExecute — carried across the async
+  // DMARC-ingest boundary so the resumed workflow.execute keeps its owner/admin recheck.
+  manualAdminExecute?: boolean;
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -229,6 +232,8 @@ async function enqueueDmarcIngestContinuation(
         messageId: input.messageId,
         ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
         ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
+        // Keep the resumed workflow.execute marked so the owner/admin recheck still fires.
+        ...(continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
         context: {
           resumeNodeId: continuation.resumeNodeId,
           eventStrings: continuation.eventStrings ?? {},

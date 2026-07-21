@@ -305,13 +305,17 @@ export async function enforceMailJobPolicy(
 // that verifies only mail.export / mail.triage / mail.attachment.read — NOT the
 // admin the graph required — so a demoted admin who retains those grants would
 // still run the effect.
-// (ai.reply_suggestion is excluded: it has a direct user route and is read-only.)
+// (ai.reply_suggestion IS included: its child ensure() calls the external AI provider
+// and writes email_messages.reply_suggestion_* under the system role — not read-only —
+// so a manual admin-gated run whose initiator was demoted before the child executes
+// must be re-denied here too. It keeps its own mail.content.read supplemental as well.)
 const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'workflow.http_request',
   'ai.agent',
   'ai.pick_canned',
   'ai.review',
   'ai.transform_text',
+  'ai.reply_suggestion',
   'workflow.forward_copy',
   'ai.classify',
   'workflow.dmarc_ingest',

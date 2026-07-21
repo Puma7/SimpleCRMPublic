@@ -692,6 +692,11 @@ function optionalClassificationContinuation(
       ...optionalString(value as JobPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
       ...(actorUserId ? { actorUserId } : optionalString(value as JobPayload, 'actorUserId')),
       ...(trustedService && !actorUserId ? { trustedService: true } : {}),
+      // Propagate the manual-admin marker across the async-child boundary: the executing
+      // child job carries it (workflowJobProvenance stamped it), and the resumed
+      // workflow.execute must stay marked so assertWorkflowExecuteSideEffectPrivilege
+      // re-checks a since-demoted initiator instead of treating it as an unmarked run.
+      ...optionalManualAdminExecute(payload),
       resumeNodeId: requiredString(value as JobPayload, 'resumeNodeId'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(value as JobPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(value as JobPayload, 'eventVariables') }),
@@ -719,6 +724,9 @@ function optionalWorkflowHttpContinuation(
       ...optionalString(continuationPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
       ...(actorUserId ? { actorUserId } : optionalString(continuationPayload, 'actorUserId')),
       ...(trustedService && !actorUserId ? { trustedService: true } : {}),
+      // Propagate the manual-admin marker across the async-child boundary (see
+      // optionalClassificationContinuation) so the resumed workflow.execute stays marked.
+      ...optionalManualAdminExecute(payload),
       ...resumeNodeId,
       ...errorResumeNodeId,
       ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),

@@ -367,6 +367,23 @@ describe('workflowGraphHasSideEffectNode', () => {
     ).toBe(true);
   });
 
+  it('flags jtl.order_context and ai.reply_suggestion side-effecting, keeps jtl.lookup read-only', () => {
+    // jtl.order_context runs a caller-configurable SELECT against the workspace's
+    // external MSSQL/ERP connection; ai.reply_suggestion enqueues a child that calls the
+    // external AI provider and writes email_messages.reply_suggestion_* — both reach
+    // outside/write, so a non-admin live run must be blocked.
+    for (const nodeType of ['jtl.order_context', 'ai.reply_suggestion']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'n1', type: 'registry', data: { nodeType, config: {} } }])),
+      ).toBe(true);
+    }
+    // jtl.lookup only reads the workspace's own synced JTL tables (local Postgres,
+    // workspace-scoped) — no external reach — so it stays read-only.
+    expect(
+      workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'jl', type: 'registry', data: { nodeType: 'jtl.lookup', config: {} } }])),
+    ).toBe(false);
+  });
+
   it('flags a writing registry node (email.delete_server)', () => {
     expect(
       workflowGraphHasSideEffectNode(

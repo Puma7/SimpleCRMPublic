@@ -10,7 +10,7 @@ import {
 } from './db/workspace-context';
 import { createPinnedFetch, type GuardedFetch } from './jobs/pinned-fetch';
 import { assertWebhookUrlAllowed, guardedFetch } from './jobs/webhook-handlers';
-import { buildTrustedServiceJobPayload } from './jobs/policy';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
 
 export type WorkflowHttpMethod = 'GET' | 'POST';
@@ -20,6 +20,9 @@ export type WorkflowHttpRequestContinuation = Readonly<{
   triggerName?: string;
   actorUserId?: string;
   trustedService?: boolean;
+  // See AiClassificationContinuation.manualAdminExecute — carried across the async
+  // HTTP boundary so the resumed workflow.execute keeps its owner/admin recheck.
+  manualAdminExecute?: boolean;
   resumeNodeId?: string;
   errorResumeNodeId?: string;
   completeOnSuccess?: boolean;
@@ -174,6 +177,8 @@ async function enqueueWorkflowHttpContinuation(
     ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
     ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
     ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
+    // Keep the resumed workflow.execute marked so the owner/admin recheck still fires.
+    ...(continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
     context: {
       ...(resumeNodeId
         ? { resumeNodeId }

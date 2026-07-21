@@ -506,11 +506,23 @@ describe('server mail job and event ACL', () => {
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 101 },
     }), makePolicyPorts({ denyMessages: new Set(['101']) }))).rejects.toMatchObject({ nonRetryable: true });
 
-    // ai.reply_suggestion is NOT gated: it has a direct user route, is
-    // message-required, and only adds its content-read supplemental.
+    // ai.reply_suggestion: an UNMARKED (compose/inbound) job is not admin-gated — it has
+    // a direct user route and only adds its content-read supplemental — so it resolves
+    // for a delegate holding the grants...
     await expect(enforceMailJobPolicy(job({
       type: 'ai.reply_suggestion',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+    // ...but a MANUAL admin-gated (marked) reply-suggestion child is re-denied for a
+    // since-demoted initiator (its ensure() calls the external AI provider and writes
+    // reply_suggestion_* under the system role — not read-only), while an owner passes.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, [MARK]: true },
+    }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12, [MARK]: true },
     }), makePolicyPorts())).resolves.toBeUndefined();
   });
 

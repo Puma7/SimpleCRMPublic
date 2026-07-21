@@ -24,7 +24,7 @@ import {
 } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
-import { buildTrustedServiceJobPayload } from './jobs/policy';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
@@ -48,6 +48,9 @@ export type WorkflowForwardCopyContinuation = Readonly<{
   triggerName?: string;
   actorUserId?: string;
   trustedService?: boolean;
+  // See AiClassificationContinuation.manualAdminExecute — carried across the async
+  // forward-copy boundary so the resumed workflow.execute keeps its owner/admin recheck.
+  manualAdminExecute?: boolean;
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -855,6 +858,8 @@ async function enqueueForwardCopyContinuationInTransaction(
     messageId: input.messageId,
     ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
     ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
+    // Keep the resumed workflow.execute marked so the owner/admin recheck still fires.
+    ...(continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
     context: {
       resumeNodeId: continuation.resumeNodeId,
       eventStrings: continuation.eventStrings ?? {},

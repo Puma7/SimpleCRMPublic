@@ -16,7 +16,7 @@ import type {
   WorkflowKnowledgeChunksTable,
 } from './db/schema';
 import type { AiTextTransformApiPort } from './api/types';
-import { buildTrustedServiceJobPayload } from './jobs/policy';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
 import { evaluateAiBudgetSafe, readAiBudgetLimitsFromEnv } from './ai-budget';
 import { callAiChat } from './ai-providers';
@@ -61,6 +61,10 @@ export type AiClassificationContinuation = Readonly<{
   triggerName?: string;
   actorUserId?: string;
   trustedService?: boolean;
+  // True when the paused run is a MANUAL admin-gated workflow.execute; carried across
+  // the async-child boundary so the resumed workflow.execute stays marked and its
+  // owner/admin recheck still fires for a since-demoted initiator.
+  manualAdminExecute?: boolean;
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -1364,6 +1368,9 @@ async function enqueueContinuation(
     ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
     ...(input.continuation.actorUserId ? { actorUserId: input.continuation.actorUserId } : {}),
     ...(input.continuation.triggerName ? { triggerName: input.continuation.triggerName } : {}),
+    // Keep the resumed workflow.execute marked so assertWorkflowExecuteSideEffectPrivilege
+    // re-checks a since-demoted admin instead of skipping it as an unmarked run.
+    ...(input.continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
     context: {
       resumeNodeId: input.continuation.resumeNodeId,
       eventStrings: input.continuation.eventStrings ?? {},
