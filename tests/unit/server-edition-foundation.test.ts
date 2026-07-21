@@ -371,6 +371,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0038_mail_acl',
   '0039_mail_acl_rollout',
   '0040_scheduled_send_provenance',
+  '0041_mail_acl_binding_message_fk_cascade',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
