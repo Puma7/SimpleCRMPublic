@@ -607,6 +607,31 @@ describe('server mail job and event ACL', () => {
     expect(service.scopePermissions).not.toContain('mail.draft.create');
   });
 
+  test('resolves the job actor via a scoped getUser lookup, not a full user-list scan', async () => {
+    const base = makePolicyPorts();
+    const getUser = jest.fn(async (input: { workspaceId: string; userId: string }) => (
+      input.userId === 'user-a' ? { id: 'user-a', role: 'user' as const, disabledAt: null } : null
+    ));
+    const listUsers = jest.fn(async () => {
+      throw new Error('listUsers must not be scanned when getUser is available');
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), { ...base, auth: { getUser, listUsers } })).resolves.toBeUndefined();
+    expect(getUser).toHaveBeenCalledWith({ workspaceId: 'workspace-a', userId: 'user-a' });
+    expect(listUsers).not.toHaveBeenCalled();
+
+    // A disabled user resolved via getUser is still rejected.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), {
+      ...base,
+      auth: { async getUser() { return { id: 'user-a', role: 'user' as const, disabledAt: '2026-07-19T10:00:00.000Z' }; } },
+    })).rejects.toMatchObject({ nonRetryable: true });
+  });
+
   test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {
     const ports = makePolicyPorts({ denyAllMailAccess: true });
     const servicePayloads = {

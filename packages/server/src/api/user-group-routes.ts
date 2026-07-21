@@ -169,16 +169,21 @@ async function handleDeleteGroup(
   groupId: number,
 ): Promise<ApiResponse> {
   if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
-  // Capture members before the delete cascades their membership away, so we can
-  // invalidate their mailbox state afterwards.
-  const members = await ports.userGroups!.listMembers({ workspaceId: principal.workspaceId, groupId });
-  const group = await ports.userGroups!.delete({
+  // Capture members and delete in ONE transaction (the port locks the group row and
+  // returns the members the committed cascade removed), so a member added
+  // concurrently can't be revoked without an invalidation.
+  const result = await ports.userGroups!.delete({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id: groupId,
   });
-  if (!group) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
+  if (!result) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
+  const { group, memberUserIds } = result;
 
+  // Publish the invalidation BEFORE auditing: the delete already committed, so a
+  // transient audit-port failure must not drop the events a revoked member needs to
+  // clear their loaded mailbox state.
+  await publishGroupAclInvalidation(ports, principal, groupId, memberUserIds, 'deleted');
   await ports.audit?.record({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -187,13 +192,6 @@ async function handleDeleteGroup(
     entityId: String(group.id),
     metadata: { name: group.name },
   });
-  await publishGroupAclInvalidation(
-    ports,
-    principal,
-    groupId,
-    (members ?? []).map((member) => member.userId),
-    'deleted',
-  );
   return data(200, { deleted: true, group });
 }
 

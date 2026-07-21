@@ -299,6 +299,21 @@ async function handleEventSocket(
     if (!(await revalidatePrincipal())) {
       if (!closed) {
         closed = true;
+        // The just-revoked/disabled user's own socket is the one that most needs the
+        // invalidation, but the filtered path needs a valid principal we no longer
+        // have. Push a self-targeted email_acl.changed on the RAW path before closing
+        // so the client clears already-loaded mail; the ws library flushes this data
+        // frame ahead of the queued close frame. The payload carries only the user's
+        // own id, so the unfiltered send leaks nothing.
+        sendWebSocketJson(socket, {
+          type: 'email_acl.changed',
+          workspaceId: principal.workspaceId,
+          entityType: 'email_acl',
+          entityId: principal.userId,
+          actorUserId: principal.userId,
+          occurredAt: new Date().toISOString(),
+          payload: { targetUserId: principal.userId, state: 'changed' },
+        });
         socket.close(1008, 'session revoked');
       }
       return;

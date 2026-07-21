@@ -292,6 +292,14 @@ export type AuthApiPort = {
   getInitialSetupState?(): Promise<AuthSetupState>;
   createInitialOwner?(input: InitialOwnerInput): Promise<InitialOwnerCreateResult>;
   listUsers?(input: { workspaceId: string }): Promise<readonly AuthUserAdminRecord[]>;
+  // Workspace-scoped single-user lookup (role + disabled state only), so callers
+  // that resolve one user by id — e.g. queued-job actor authorization — need not
+  // fetch the whole workspace user list.
+  getUser?(input: { workspaceId: string; userId: string }): Promise<{
+    id: string;
+    role: 'owner' | 'admin' | 'user';
+    disabledAt: string | null;
+  } | null>;
   saveUser?(input: AuthUserSaveInput): Promise<AuthUserSaveResult>;
   deleteUser?(input: {
     workspaceId: string;
@@ -698,6 +706,14 @@ export type UserGroupRemoveMemberResult =
   | { ok: true }
   | { ok: false; code: 'group_not_found' };
 
+export type UserGroupDeleteResult = {
+  group: UserGroupRecord;
+  // Member user ids captured inside the delete transaction (under a FOR UPDATE lock
+  // on the group row), so the caller can invalidate exactly the memberships the
+  // committed cascade removed — no separate, racy listMembers snapshot.
+  memberUserIds: string[];
+};
+
 export type UserGroupApiPort = {
   list(input: { workspaceId: string }): Promise<UserGroupRecord[]>;
   create(input: {
@@ -717,7 +733,7 @@ export type UserGroupApiPort = {
     workspaceId: string;
     actorUserId: string;
     id: number;
-  }): Promise<UserGroupRecord | null>;
+  }): Promise<UserGroupDeleteResult | null>;
   listMembers(input: {
     workspaceId: string;
     groupId: number;

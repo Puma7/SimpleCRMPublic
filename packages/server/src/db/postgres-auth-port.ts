@@ -141,6 +141,25 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       return rows.map(mapAdminUser);
     },
 
+    async getUser(input) {
+      const row = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'admin' },
+        async (trx) => trx
+          .selectFrom('users')
+          .select(['id', 'role', 'disabled_at'])
+          .where('id', '=', input.userId)
+          .executeTakeFirst(),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (!row) return null;
+      return {
+        id: row.id,
+        role: row.role,
+        disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
+      };
+    },
+
     async saveUser(input) {
       return withWorkspaceTransaction(
         options.db,

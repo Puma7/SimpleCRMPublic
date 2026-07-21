@@ -398,6 +398,40 @@ async function auditAndPublish(
   const bindingId = details.bindingId ?? binding?.id;
   const subject = details.subject ?? binding?.subject;
   const resource = details.resource ?? binding?.resource;
+  // Publish invalidations BEFORE auditing. The binding mutation already committed in
+  // the caller, so a transient audit-port failure must not abort before the
+  // email_acl.changed events fire — a revoked user relies on them to clear loaded
+  // mailbox state. (Audit is best-effort record-keeping; the invalidation is not.)
+  if (bindingId !== undefined) {
+    const uniqueTargets = [...new Set(details.affectedUserIds)].sort();
+    for (const targetUserId of uniqueTargets) {
+      await ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId: principal.workspaceId,
+        entityType: 'email_acl',
+        entityId: String(bindingId),
+        actorUserId: principal.userId,
+        occurredAt: new Date().toISOString(),
+        payload: {
+          bindingId,
+          targetUserId,
+          state: details.deleted ? 'deleted' : 'changed',
+          // Carry the binding's resource (when known) so the event filter can also
+          // deliver to a non-admin mail.delegation.manage holder scoped to it — their
+          // delegation panel otherwise stays stale and can revert a peer's newer edit.
+          // The resource + targetUserId are already enumerable by such a manager, so
+          // this leaks nothing. Absent on delete/empty-replace (binding gone) and on
+          // group-membership changes (no single resource): those stay subject-only.
+          ...(resource ? {
+            resourceType: resource.type,
+            accountId: resource.accountId,
+            ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
+          } : {}),
+        },
+      });
+    }
+  }
+
   await ports.audit?.record({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -415,35 +449,6 @@ async function auditAndPublish(
       permissionNames: [...details.permissions].sort(),
     },
   });
-
-  if (bindingId === undefined) return;
-  const uniqueTargets = [...new Set(details.affectedUserIds)].sort();
-  for (const targetUserId of uniqueTargets) {
-    await ports.events?.publish({
-      type: 'email_acl.changed',
-      workspaceId: principal.workspaceId,
-      entityType: 'email_acl',
-      entityId: String(bindingId),
-      actorUserId: principal.userId,
-      occurredAt: new Date().toISOString(),
-      payload: {
-        bindingId,
-        targetUserId,
-        state: details.deleted ? 'deleted' : 'changed',
-        // Carry the binding's resource (when known) so the event filter can also
-        // deliver to a non-admin mail.delegation.manage holder scoped to it — their
-        // delegation panel otherwise stays stale and can revert a peer's newer edit.
-        // The resource + targetUserId are already enumerable by such a manager, so
-        // this leaks nothing. Absent on delete/empty-replace (binding gone) and on
-        // group-membership changes (no single resource): those stay subject-only.
-        ...(resource ? {
-          resourceType: resource.type,
-          accountId: resource.accountId,
-          ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
-        } : {}),
-      },
-    });
-  }
 }
 
 function actor(principal: AuthenticatedPrincipal) {

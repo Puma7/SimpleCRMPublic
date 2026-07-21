@@ -50,6 +50,14 @@ export type MailAsyncPolicyPorts = Readonly<{
       role: 'owner' | 'admin' | 'user';
       disabledAt: string | null;
     }[]>;
+    // Workspace-scoped single-user lookup used to resolve a queued job's actor
+    // without scanning the whole user list. Optional so ports that only expose
+    // listUsers still work (via the fallback in resolveUserActor).
+    getUser?: (input: { workspaceId: string; userId: string }) => Promise<{
+      id: string;
+      role: 'owner' | 'admin' | 'user';
+      disabledAt: string | null;
+    } | null>;
   }>;
 }>;
 
@@ -488,8 +496,15 @@ async function resolveUserActor(
   userId: string,
   ports: MailAsyncPolicyPorts,
 ): Promise<MailAccessActor> {
-  if (!ports.auth?.listUsers) throw new MailAsyncAuthorizationError();
-  const user = (await ports.auth.listUsers({ workspaceId })).find((candidate) => candidate.id === userId);
+  // Prefer a workspace-scoped by-id lookup so authorizing one job does not scan the
+  // entire workspace user list (O(user count) per job). Fall back to listUsers for
+  // ports that don't expose getUser.
+  const user = ports.auth?.getUser
+    ? await ports.auth.getUser({ workspaceId, userId })
+    : ports.auth?.listUsers
+      ? (await ports.auth.listUsers({ workspaceId })).find((candidate) => candidate.id === userId) ?? null
+      : undefined;
+  if (user === undefined) throw new MailAsyncAuthorizationError();
   if (!user || user.disabledAt) throw new MailAsyncAuthorizationError();
   return {
     workspaceId,
