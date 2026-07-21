@@ -1024,6 +1024,45 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions.some((entry) => entry.permission === 'mail.attachment.read')).toBe(false);
   });
 
+  test('scheduled send requires mail.attachment.suspicious_download for a risky stored attachment (R47-1)', async () => {
+    const path = 'workspace-a/synced/owned.pdf'; // owning message 12, held mail.attachment.read
+    // An executable display name additionally requires suspicious_download, mirroring the
+    // download/raw-EML routes — else the delegate exfiltrates bytes those routes deny.
+    const withGrant = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [path]]]),
+      attachmentPathFilenames: new Map([[path, ['invoice.exe']]]),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), withGrant);
+    expect(withGrant.assertions.some((e) => e.permission === 'mail.attachment.suspicious_download')).toBe(true);
+
+    // The same risky attachment with suspicious_download revoked → denied, even though
+    // plain mail.attachment.read is held (so revoking the grant stops an armed draft).
+    const revoked = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [path]]]),
+      attachmentPathFilenames: new Map([[path, ['invoice.exe']]]),
+      denyPermissions: new Set(['mail.attachment.suspicious_download']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), revoked)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A SAFE display name needs no suspicious grant: a delegate lacking it still sends.
+    const safe = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [path]]]),
+      attachmentPathFilenames: new Map([[path, ['owned.pdf']]]),
+      denyPermissions: new Set(['mail.attachment.suspicious_download']),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), safe);
+    expect(safe.assertions.some((e) => e.permission === 'mail.attachment.suspicious_download')).toBe(false);
+  });
+
   test('reply generation requires content-read in addition to draft-create', async () => {
     const allowed = makePolicyPorts();
     await expect(enforceMailJobPolicy(job({
@@ -1657,7 +1696,7 @@ describe('server mail job and event ACL', () => {
     }), adminContext)).resolves.toMatchObject({ type: 'email_account.deleted' });
   });
 
-  test('delivers accountless thread-alias deletions to owners/admins, account-scoped ones to the account', async () => {
+  test('authorizes thread-alias deletions against BOTH deleted threads (R47-4)', async () => {
     const ports = makePolicyPorts();
     const userContext = {
       principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
@@ -1668,25 +1707,35 @@ describe('server mail job and event ACL', () => {
       ports,
     };
 
-    // Accountless (workspace-global) alias tombstone: accountId null cannot resolve
-    // an account, so it delivers to owners/admins only rather than dropping for all.
-    const accountless = event({
-      type: 'email_thread_alias.deleted',
-      entityType: 'email_thread_alias',
-      entityId: '30',
-      payload: { accountId: null, threadId: 'thread-x', state: 'deleted' },
-    });
-    await expect(filterMailEventForPrincipal(accountless, userContext)).resolves.toBeNull();
-    await expect(filterMailEventForPrincipal(accountless, adminContext))
-      .resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
-
-    // An account-scoped tombstone still resolves to its account and reaches that
-    // account's delegate.
+    // Accountless alias whose BOTH threads the delegate can see: the tombstone resolves
+    // two-sided to those threads' messages (mode 'all'), so the delegate receives the
+    // deletion refresh — the old plain-account tombstone dropped it (owner/admin only).
     await expect(filterMailEventForPrincipal(event({
       type: 'email_thread_alias.deleted',
       entityType: 'email_thread_alias',
+      entityId: '30',
+      payload: { accountId: null, aliasThreadId: 'thread-vis-a', canonicalThreadId: 'thread-vis-b', state: 'deleted' },
+    }), userContext)).resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
+
+    // Accountless alias whose threads the delegate CANNOT see and with no account to fall
+    // back on → no resources → owner/admin only (never dropped for everyone).
+    const invisible = event({
+      type: 'email_thread_alias.deleted',
+      entityType: 'email_thread_alias',
       entityId: '31',
-      payload: { accountId: 7, threadId: 'thread-y', state: 'deleted' },
+      payload: { accountId: null, aliasThreadId: 'thread-x', canonicalThreadId: 'thread-y', state: 'deleted' },
+    });
+    await expect(filterMailEventForPrincipal(invisible, userContext)).resolves.toBeNull();
+    await expect(filterMailEventForPrincipal(invisible, adminContext))
+      .resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
+
+    // An account-scoped tombstone whose threads are already merged away (empty) falls back
+    // to its account, reaching that account's delegate.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_alias.deleted',
+      entityType: 'email_thread_alias',
+      entityId: '32',
+      payload: { accountId: 7, aliasThreadId: 'thread-empty-1', canonicalThreadId: 'thread-empty-2', state: 'deleted' },
     }), userContext)).resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
   });
 
@@ -1911,6 +1960,7 @@ function makePolicyPorts(options: {
   delayedJobs?: ReadonlyMap<number, DelayedJobClassification>;
   replyParents?: ReadonlyMap<number, { replyParentMessageId: number | null; markParentDone: boolean } | null>;
   scheduledDraftAttachmentPaths?: ReadonlyMap<number, readonly string[] | null>;
+  attachmentPathFilenames?: ReadonlyMap<string, readonly string[]>;
   workflowGraphs?: ReadonlyMap<number, unknown>;
   scope?: { kind: 'all' } | { kind: 'none' }
     | { kind: 'restricted'; accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] };
@@ -1956,7 +2006,17 @@ function makePolicyPorts(options: {
       },
     },
     mailResourceLookup: {
-      async resolve(input: { target: { kind: string; id?: number | string; entity?: string; path?: string } }) {
+      async resolve(input: {
+        target: {
+          kind: string;
+          id?: number | string;
+          entity?: string;
+          path?: string;
+          accountId?: number | null;
+          aliasThreadId?: string;
+          canonicalThreadId?: string;
+        };
+      }) {
         lookups.push(input.target);
         if (input.target.kind === 'attachment_path') {
           // 'workspace-a/synced/owned.pdf' → message 12; foreign → message 101; else none.
@@ -1996,6 +2056,18 @@ function makePolicyPorts(options: {
           const accountId = options.folderAccounts?.get(Number(input.target.id));
           return accountId ? [{ type: 'folder' as const, accountId, folderId: String(input.target.id) }] : [];
         }
+        if (input.target.kind === 'thread_alias_tombstone') {
+          // Two-sided deletion tombstone (R47-4): resolve EACH named thread to its
+          // messages, falling back to the payload account only for an empty thread.
+          // 'thread-vis-*' belong to account 7; anything else is an empty/merged thread.
+          const perThread = (threadId: string | undefined) =>
+            threadId === 'thread-vis-a' || threadId === 'thread-vis-b'
+              ? [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: threadId === 'thread-vis-a' ? '12' : '13' }]
+              : input.target.accountId === 7
+                ? [{ type: 'account' as const, accountId: '7' }]
+                : [];
+          return [...perThread(input.target.aliasThreadId), ...perThread(input.target.canonicalThreadId)];
+        }
         return [];
       },
       async classifyWorkflowDelayedJob(input: { delayedJobId: number }) {
@@ -2007,6 +2079,9 @@ function makePolicyPorts(options: {
       },
       async resolveScheduledDraftAttachmentPaths(input: { draftId: number }) {
         return options.scheduledDraftAttachmentPaths?.get(input.draftId) ?? null;
+      },
+      async resolveAttachmentPathFilenames(input: { path: string }) {
+        return options.attachmentPathFilenames?.get(input.path) ?? [];
       },
       async loadWorkflowGraphForPolicy(input: { workflowId: number }) {
         return options.workflowGraphs?.has(input.workflowId)

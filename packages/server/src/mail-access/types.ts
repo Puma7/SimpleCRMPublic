@@ -137,7 +137,18 @@ export type MailResourceLookupTarget =
   }>
   // Canned responses may be global (account_id null); the resolver returns an
   // account resource for account-scoped rows and [] for global/missing rows.
-  | Readonly<{ kind: 'canned_response'; id: number }>;
+  | Readonly<{ kind: 'canned_response'; id: number }>
+  // A DELETED thread-alias tombstone (email_thread_alias.deleted): the alias row is gone,
+  // so authorize against BOTH threads named in the event payload — falling back to the
+  // payload account only for an EMPTY thread — reproducing the create/update two-sided
+  // visibility rule (the enforcer applies mode 'all'). Both threads empty + accountless
+  // → [] (the enforcer then routes to the owner/admin-only gate). (R47-4)
+  | Readonly<{
+    kind: 'thread_alias_tombstone';
+    aliasThreadId: string;
+    canonicalThreadId: string;
+    accountId: number | null;
+  }>;
 
 export interface MailResourceLookupPort {
   resolve(input: Readonly<{
@@ -163,6 +174,15 @@ export interface MailResourceLookupPort {
     workspaceId: string;
     draftId: number;
   }>): Promise<readonly string[] | null>;
+  // The display filenames (email_message_attachments.filename_display) of every stored
+  // attachment row whose storage_path equals `path`. Used to classify a compose/scheduled
+  // send attachment path with isPotentiallyDangerousAttachment so the send paths enforce
+  // mail.attachment.suspicious_download in parity with the download/raw-EML routes (which
+  // gate the same bytes). Empty for a path with no owning row (e.g. a draft-local upload).
+  resolveAttachmentPathFilenames?(input: Readonly<{
+    workspaceId: string;
+    path: string;
+  }>): Promise<readonly string[]>;
   // A workflow's current graph (email_workflows.graph_json), used to reclassify
   // its side-effecting nodes at execution time. null if the workflow is gone.
   loadWorkflowGraphForPolicy?(input: Readonly<{

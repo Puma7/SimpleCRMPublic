@@ -3,6 +3,7 @@ import {
   collectWorkflowCreateDraftStaticAccountIds,
   collectWorkflowSendDraftStaticDraftIds,
   collectWorkflowSendDraftVariableStaticDraftIds,
+  isPotentiallyDangerousAttachment,
   workflowGraphAssignsDynamicCreateDraftAccount,
   workflowGraphHasAnyNodeType,
   workflowGraphHasNodeType,
@@ -107,7 +108,11 @@ const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Obj
   'email_thread_edge.deleted': ['parentMessageId', 'childMessageId', 'state'],
   'email_thread_alias.created': ['accountId', 'threadId', 'state'],
   'email_thread_alias.updated': ['accountId', 'threadId', 'state'],
-  'email_thread_alias.deleted': ['accountId', 'threadId', 'state'],
+  // The deletion tombstone additionally carries both thread ids so the filter can
+  // authorize against BOTH threads (the alias row is gone by then). Only delegates who
+  // can already see both threads receive the event, so exposing the ids leaks nothing
+  // new. (R47-4)
+  'email_thread_alias.deleted': ['accountId', 'threadId', 'state', 'aliasThreadId', 'canonicalThreadId'],
   'email_thread.updated': ['threadId', 'state'],
   'email_account_signature.created': ['accountId', 'signatureId', 'state'],
   'email_account_signature.updated': ['accountId', 'signatureId', 'state'],
@@ -791,6 +796,24 @@ async function assertScheduledSendDraftAndAttachmentAccess(
         resource,
       });
     }
+    // A stored attachment whose display name is an executable/script type additionally
+    // requires mail.attachment.suspicious_download — mirroring the immediate compose/send
+    // + download/raw-EML routes — so revoking that grant after a draft is armed stops the
+    // scheduled send from transmitting (and exfiltrating) the risky bytes.
+    const filenames = (await ports.mailResourceLookup.resolveAttachmentPathFilenames?.({
+      workspaceId: job.workspaceId,
+      path,
+    })) ?? [];
+    if (filenames.some(isPotentiallyDangerousAttachment)) {
+      for (const resource of owners) {
+        await ports.mailAccess.assertPermission({
+          workspaceId: job.workspaceId,
+          actor,
+          permission: 'mail.attachment.suspicious_download',
+          resource,
+        });
+      }
+    }
   }
 }
 
@@ -1012,11 +1035,41 @@ async function resolveResources(input: {
     const second = await lookup(input, { kind: 'message', id: requirePositiveInt(input.select(resolution.secondMessageId)) });
     return { kind: 'resources', resources: [...first.resources, ...second.resources], mode: 'all' };
   }
+  if (resolution.kind === 'event_thread_alias_tombstone') {
+    const aliasThreadId = input.select(resolution.aliasThreadId);
+    const canonicalThreadId = input.select(resolution.canonicalThreadId);
+    const rawAccount = input.select(resolution.accountId);
+    // A tombstone missing either thread id (e.g. a pre-upgrade event) can't be authorized
+    // two-sided — fall back to owner/admin so the refresh still reaches privileged clients.
+    if (typeof aliasThreadId !== 'string' || typeof canonicalThreadId !== 'string') {
+      return { kind: 'owner_admin' };
+    }
+    const resources = await input.ports.mailResourceLookup.resolve({
+      workspaceId: input.workspaceId,
+      target: {
+        kind: 'thread_alias_tombstone',
+        aliasThreadId,
+        canonicalThreadId,
+        accountId: rawAccount === undefined || rawAccount === null ? null : requirePositiveInt(rawAccount),
+      },
+    });
+    // Both threads empty + accountless → no resources → owner/admin only (matching the
+    // prior accountless-tombstone behaviour and the metadata lookup's empty fallback).
+    return resources.length === 0
+      ? { kind: 'owner_admin' }
+      : { kind: 'resources', resources, mode: 'all' };
+  }
   if (resolution.kind === 'notice_lookup') return { kind: 'scope' };
   if (resolution.kind === 'optional_account') {
     const raw = input.select(resolution.accountId);
     if (raw === undefined || raw === null) {
       return resolution.whenAbsent === 'owner_admin' ? { kind: 'owner_admin' } : { kind: 'scope' };
+    }
+    if (resolution.whenPresent === 'account_parent_aware') {
+      // A folder/message delegate who reaches this account only through a child grant is
+      // authorized too, matching the read port's parent-aware visibility (e.g. the parent
+      // account's canned templates a child-scoped draft.create editor can read). (R47-3)
+      return { kind: 'account_visible', accountId: String(requirePositiveInt(raw)) };
     }
     return lookup(input, { kind: 'account', id: requirePositiveInt(raw) });
   }

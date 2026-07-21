@@ -31,6 +31,12 @@ export type MailResourceResolution =
     // workspace_global → the nonempty-scope gate; owner_admin → owner/admin only
     // (used for accountless deletion tombstones that have no account to resolve).
     whenAbsent: 'workspace_global' | 'owner_admin';
+    // How to authorize a PRESENT accountId. Default 'account' → a plain account resource
+    // (owner/admin or a direct account grant). 'account_parent_aware' ALSO admits a
+    // folder/message delegate who reaches the account only through a child grant, matching
+    // the read port's parent-aware visibility — used where the row is legitimately visible
+    // to such a delegate (e.g. account-scoped canned responses read via the parent).
+    whenPresent?: 'account' | 'account_parent_aware';
   }>
   | Readonly<{ kind: 'folder_lookup'; folderId: PolicyValueSelector }>
   | Readonly<{ kind: 'message_lookup'; messageId: PolicyValueSelector }>
@@ -96,7 +102,17 @@ export type MailResourceResolution =
   | Readonly<{ kind: 'owner_admin_or_event_user'; userId: PolicyValueSelector }>
   // Event-only: authorize BOTH messages named in a deletion tombstone (e.g. a
   // thread edge's parent + child) so neither id leaks to a partial-access viewer.
-  | Readonly<{ kind: 'event_message_pair'; firstMessageId: PolicyValueSelector; secondMessageId: PolicyValueSelector }>;
+  | Readonly<{ kind: 'event_message_pair'; firstMessageId: PolicyValueSelector; secondMessageId: PolicyValueSelector }>
+  // Event-only: a DELETED thread-alias tombstone. The alias row is gone, so authorize
+  // against BOTH threads named in the payload (mode 'all'), falling back to the payload
+  // account only for an empty thread — the same two-sided rule the live create/update
+  // events use — so a delegate who could see both threads still gets the refresh. (R47-4)
+  | Readonly<{
+    kind: 'event_thread_alias_tombstone';
+    aliasThreadId: PolicyValueSelector;
+    canonicalThreadId: PolicyValueSelector;
+    accountId: PolicyValueSelector;
+  }>;
 
 export type MailRouteExemptionReason =
   | 'signed_public_tracking'
@@ -772,11 +788,18 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
     return { kind: 'account', accountId: eventPayloadValue('accountId') };
   }
   if (type === 'email_thread_alias.deleted') {
-    // An accountless (workspace-global) alias tombstone carries accountId null, so
-    // resolving a required account would throw and drop the deletion refresh for
-    // everyone — including owners/admins. Authorize account-scoped tombstones
-    // against their account and deliver accountless ones to owners/admins only.
-    return { kind: 'optional_account', accountId: eventPayloadValue('accountId'), whenAbsent: 'owner_admin' };
+    // The alias row is gone, so authorize against BOTH threads named in the tombstone
+    // payload — the same two-sided rule the create/update events use (eventMetadataLookup
+    // below) — falling back to the payload account only for an empty thread. This delivers
+    // the deletion refresh to any delegate who could see both threads (accountless via the
+    // messages, or account-scoped via a child grant), where the old plain-account tombstone
+    // dropped it. Both threads empty + accountless → owner/admin only. (R47-4)
+    return {
+      kind: 'event_thread_alias_tombstone',
+      aliasThreadId: eventPayloadValue('aliasThreadId'),
+      canonicalThreadId: eventPayloadValue('canonicalThreadId'),
+      accountId: eventPayloadValue('accountId'),
+    };
   }
 
   if (type.startsWith('spam_learning_event.') || type.startsWith('spam_decision.')) {
@@ -825,12 +848,17 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
     return { kind: 'thread_lookup', threadId: eventValue('entityId') };
   }
   if (type.startsWith('email_canned_response.')) {
-    // Account-scoped canned responses authorize against their account (from the
-    // event payload); global templates (accountId absent) stay workspace-global.
+    // Account-scoped canned responses authorize against their account (from the event
+    // payload); global templates (accountId absent) stay workspace-global. Use
+    // parent-aware account visibility so a folder/message-scoped mail.draft.create editor
+    // — who the read port's cannedResponseVisibilityPredicate deliberately shows the
+    // parent account's templates — still receives create/update/delete events for them
+    // (a plain account resource rejects such a child grant, dropping the refresh). (R47-3)
     return {
       kind: 'optional_account',
       accountId: eventPayloadValue('accountId'),
       whenAbsent: 'workspace_global',
+      whenPresent: 'account_parent_aware',
     };
   }
   if (type.startsWith('email_remote_content_allowlist.')) {

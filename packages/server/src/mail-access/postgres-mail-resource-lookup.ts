@@ -59,6 +59,14 @@ export function createPostgresMailResourceLookupPort(
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async resolveAttachmentPathFilenames(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => resolveAttachmentPathFilenames(trx, input.workspaceId, input.path),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
     async loadWorkflowGraphForPolicy(input) {
       return withWorkspaceTransaction(
         options.db,
@@ -136,6 +144,22 @@ async function resolveScheduledDraftAttachmentPaths(
     .executeTakeFirst();
   if (!draft) return null;
   return parseStoredDraftAttachmentPaths(draft.draft_attachment_paths_json);
+}
+
+async function resolveAttachmentPathFilenames(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  path: string,
+): Promise<readonly string[]> {
+  const rows = await trx
+    .selectFrom('email_message_attachments')
+    .select(['filename_display'])
+    .where('workspace_id', '=', workspaceId)
+    .where('storage_path', '=', path)
+    .execute();
+  return rows
+    .map((row) => row.filename_display)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
 }
 
 // Normalize the stored draft_attachment_paths_json (jsonb, or a JSON string) into a
@@ -303,7 +327,53 @@ async function resolveTarget(
     if (row.account_id === null && row.account_source_sqlite_id === null) return [];
     return resolveAccountColumns(trx, workspaceId, row.account_id, row.account_source_sqlite_id);
   }
+  if (target.kind === 'thread_alias_tombstone') {
+    // The alias row is already deleted, so authorize against BOTH threads named in the
+    // event payload (falling back to the payload account only for an EMPTY thread) —
+    // identical to the create/update metadata lookup above, which reads the same fields
+    // off the live row. (R47-4)
+    const accountFallback = await resolveAccountColumns(trx, workspaceId, target.accountId, null);
+    return resolveTwoSidedThreadAliasResources(
+      trx,
+      workspaceId,
+      target.aliasThreadId,
+      target.canonicalThreadId,
+      accountFallback,
+    );
+  }
   return resolveMetadataTarget(trx, workspaceId, target);
+}
+
+// Both threads of an alias expose each other, so authorization must require visibility
+// into BOTH (the enforcer applies mode 'all'). Resolve each thread's messages, falling
+// back to the supplied account resources ONLY for an EMPTY thread (merged away / not yet
+// populated) so an appropriately-scoped account delegate (or owner/admin) can still manage
+// it while a NON-empty foreign thread stays gated on its own messages (the R42-2/R43-1
+// rule). Both threads empty + no account fallback → [] → the enforcer routes to the
+// workspace-global / owner-admin gate. Shared by the live-row metadata lookup and the
+// deletion tombstone.
+async function resolveTwoSidedThreadAliasResources(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  aliasThreadId: string,
+  canonicalThreadId: string,
+  accountFallback: readonly MailResource[],
+): Promise<MailResource[]> {
+  const messages = await trx
+    .selectFrom('email_messages')
+    .select(['id as message_id', 'account_id', 'folder_id', 'thread_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('thread_id', 'in', [aliasThreadId, canonicalThreadId])
+    .orderBy('id', 'asc')
+    .execute();
+  const resources: MailResource[] = [];
+  for (const threadId of [aliasThreadId, canonicalThreadId]) {
+    const threadResources = messages
+      .filter((message) => message.thread_id === threadId)
+      .flatMap(resourceFromMessageRow);
+    resources.push(...(threadResources.length > 0 ? threadResources : accountFallback));
+  }
+  return resources;
 }
 
 async function resolveMetadataTarget(
@@ -367,21 +437,13 @@ async function resolveMetadataTarget(
       row.account_id,
       row.account_source_sqlite_id,
     );
-    const messages = await trx
-      .selectFrom('email_messages')
-      .select(['id as message_id', 'account_id', 'folder_id', 'thread_id'])
-      .where('workspace_id', '=', workspaceId)
-      .where('thread_id', 'in', [row.alias_thread_id, row.canonical_thread_id])
-      .orderBy('id', 'asc')
-      .execute();
-    const resources: MailResource[] = [];
-    for (const threadId of [row.alias_thread_id, row.canonical_thread_id]) {
-      const threadResources = messages
-        .filter((message) => message.thread_id === threadId)
-        .flatMap(resourceFromMessageRow);
-      resources.push(...(threadResources.length > 0 ? threadResources : accountFallback));
-    }
-    return resources;
+    return resolveTwoSidedThreadAliasResources(
+      trx,
+      workspaceId,
+      row.alias_thread_id,
+      row.canonical_thread_id,
+      accountFallback,
+    );
   }
 
   if (target.entity === 'account_signature') {

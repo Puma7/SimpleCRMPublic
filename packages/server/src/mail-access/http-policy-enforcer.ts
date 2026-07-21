@@ -455,7 +455,16 @@ export function portsWithMailAccessContext(
     ...scopeListPort(ports, 'emailAccountSignatures', mailScope),
     ...scopeListPort(ports, 'emailRemoteContentAllowlist', mailScope),
     ...scopeListPort(ports, 'emailReadReceipts', mailScope),
-    ...scopeListPort(ports, 'emailTeamMembers', mailScope),
+    ...(ports.emailTeamMembers ? {
+      emailTeamMembers: {
+        ...ports.emailTeamMembers,
+        list: (input) => ports.emailTeamMembers!.list(scopedInput(input)),
+        // get() must receive the scope too, else a restricted delegate who fetches a
+        // single team member by id bypasses list()'s signature redaction and reads that
+        // member's outbound signatureHtml body directly. (R47-2)
+        get: (input) => ports.emailTeamMembers!.get(scopedInput(input)),
+      },
+    } : {}),
     ...scopeListPort(ports, 'emailThreadEdges', mailScope),
     ...(ports.emailThreadAliases ? {
       emailThreadAliases: {
@@ -610,6 +619,7 @@ async function resolveHttpResources(
     resolution.kind === 'owner_admin_only'
     || resolution.kind === 'owner_admin_or_event_user'
     || resolution.kind === 'event_message_pair'
+    || resolution.kind === 'event_thread_alias_tombstone'
   ) {
     throw new MailAccessDeniedError();
   }
@@ -619,6 +629,9 @@ async function resolveHttpResources(
     const raw = selectorValue(req, canonicalPath, resolution.accountId);
     // An absent OR explicitly null accountId is a workspace-global write.
     if (raw === undefined || raw === null) return { kind: 'scope' };
+    // 'account_parent_aware' is an event-only delivery widening (canned-response events);
+    // no HTTP route sets it, so fail closed rather than admit a child grant on the account.
+    if (resolution.whenPresent === 'account_parent_aware') throw new MailAccessDeniedError();
     return lookupSingle(ports, workspaceId, { kind: 'account', id: requirePositiveInt(raw) });
   }
   if (resolution.kind === 'optional_message_lookup') {
@@ -829,6 +842,25 @@ async function assertSupplementalHttpPermissions(
             permission: 'mail.attachment.read',
             resource,
           });
+        }
+        // A stored attachment whose display name is an executable/script type needs the
+        // supplemental mail.attachment.suspicious_download grant on top of read — else a
+        // delegate with only mail.attachment.read could send (and so exfiltrate to an
+        // address they control) the same bytes the download and raw-EML routes deny.
+        // Classify the owning rows' filename_display, mirroring those routes.
+        const filenames = (await ports.mailResourceLookup!.resolveAttachmentPathFilenames?.({
+          workspaceId,
+          path: rawPath,
+        })) ?? [];
+        if (filenames.some(isPotentiallyDangerousAttachment)) {
+          for (const resource of owners) {
+            await ports.mailAccess!.assertPermission({
+              workspaceId,
+              actor,
+              permission: 'mail.attachment.suspicious_download',
+              resource,
+            });
+          }
         }
       }
     }

@@ -458,7 +458,13 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           }
 
           const rows = await query.execute();
-          return pageString(rows, limit, (row) => row.id, mapEmailTeamMemberRow);
+          const restricted = effectiveMailScope(input.mailScope).kind === 'restricted';
+          return pageString(
+            rows,
+            limit,
+            (row) => row.id,
+            (row) => redactTeamMemberSignatureForScope(mapEmailTeamMemberRow(row), restricted),
+          );
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -474,7 +480,9 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
             .executeTakeFirst();
-          return row ? mapEmailTeamMemberRow(row) : null;
+          if (!row) return null;
+          const restricted = effectiveMailScope(input.mailScope).kind === 'restricted';
+          return redactTeamMemberSignatureForScope(mapEmailTeamMemberRow(row), restricted);
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -3942,6 +3950,19 @@ function mapEmailTeamMemberRow(row: Pick<EmailTeamMemberRow, typeof emailTeamMem
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
   };
+}
+
+// A restricted-scope delegate (folder/message/account-scoped mail.metadata.read) may
+// enumerate team members for assignment labels (id/displayName/role/sortOrder) but must
+// NOT receive every workspace member's outbound signature body: personal/account
+// signature APIs gate signatureHtml behind stronger compose access. Owner/admin resolve
+// to scope 'all' and keep it; the write handlers use mapEmailTeamMemberRow directly and
+// are unaffected. (R47-2)
+function redactTeamMemberSignatureForScope(
+  record: EmailTeamMemberRecord,
+  restricted: boolean,
+): EmailTeamMemberRecord {
+  return restricted ? { ...record, signatureHtml: null } : record;
 }
 
 function mapEmailThreadRow(row: Pick<EmailThreadRow, typeof emailThreadSelectColumns[number]>): EmailThreadRecord {

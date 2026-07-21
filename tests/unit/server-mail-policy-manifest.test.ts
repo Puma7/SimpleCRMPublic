@@ -226,13 +226,27 @@ describe('server mail policy manifest', () => {
     expect(cannedEvents.every(({ permission }) => permission === 'mail.draft.create')).toBe(true);
   });
 
-  test('canned-response events resolve to their account, falling back to workspace-global for templates', () => {
+  test('canned-response events resolve parent-aware to their account, falling back to workspace-global for templates', () => {
     const cannedEvents = MAIL_EVENT_POLICY_MANIFEST.filter(({ type }) => type.startsWith('email_canned_response.'));
     expect(cannedEvents.length).toBeGreaterThan(0);
+    // R47-3: whenPresent 'account_parent_aware' delivers create/update/delete events to a
+    // folder/message-scoped draft.create editor who can read the parent account's templates.
     expect(cannedEvents.every(({ resource }) => resource.kind === 'optional_account'
       && resource.whenAbsent === 'workspace_global'
+      && resource.whenPresent === 'account_parent_aware'
       && resource.accountId.source === 'event_payload'
       && resource.accountId.field === 'accountId')).toBe(true);
+  });
+
+  test('thread-alias deletion authorizes against both deleted threads (R47-4)', () => {
+    const tombstone = MAIL_EVENT_POLICY_MANIFEST.find(({ type }) => type === 'email_thread_alias.deleted');
+    expect(tombstone).toBeDefined();
+    expect(tombstone!.resource).toMatchObject({
+      kind: 'event_thread_alias_tombstone',
+      aliasThreadId: { source: 'event_payload', field: 'aliasThreadId' },
+      canonicalThreadId: { source: 'event_payload', field: 'canonicalThreadId' },
+      accountId: { source: 'event_payload', field: 'accountId' },
+    });
   });
 
   test('rejects duplicate route, job and event policy keys', () => {
