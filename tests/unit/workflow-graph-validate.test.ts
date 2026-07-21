@@ -342,19 +342,40 @@ describe('workflowGraphHasSideEffectNode', () => {
     expect(workflowGraphHasSideEffectNode({ nodes: 'x' })).toBe(false);
   });
 
-  it('ignores triggers, conditions, logic.* helpers and known read-only nodes', () => {
+  it('ignores triggers, conditions, in-memory logic.* helpers and known read-only nodes', () => {
     expect(
       workflowGraphHasSideEffectNode(
         graphOf([
           trigger,
           { id: 'c1', type: 'condition', data: { field: 'subject', op: 'contains', value: 'x' } },
           { id: 'l1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'v', value: '1' } } },
-          { id: 'l2', type: 'registry', data: { nodeType: 'logic.delay', config: { delaySeconds: 60 } } },
           { id: 'r1', type: 'registry', data: { nodeType: 'email.read_tracking_evidence', config: {} } },
           { id: 'r3', type: 'registry', data: { nodeType: 'email.sender_filter', config: {} } },
         ]),
       ),
     ).toBe(false);
+  });
+
+  it('exempts every in-memory logic.* helper but never logic.delay', () => {
+    for (const nodeType of ['logic.stop', 'logic.set_variable', 'logic.merge', 'logic.threshold', 'logic.switch', 'logic.loop']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType, config: {} } }])),
+      ).toBe(false);
+    }
+  });
+
+  it('flags logic.delay as side-effecting (it schedules a delayed job + future workflow.execute)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([trigger, { id: 'd', type: 'registry', data: { nodeType: 'logic.delay', config: { delaySeconds: 60 } } }]),
+      ),
+    ).toBe(true);
+  });
+
+  it('fails closed on an unrecognized logic.* type (allowlist, not prefix)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'x', type: 'registry', data: { nodeType: 'logic.webhook', config: {} } }])),
+    ).toBe(true);
   });
 
   it('flags ai.classify as side-effecting (it persists a tag)', () => {

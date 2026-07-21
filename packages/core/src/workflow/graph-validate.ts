@@ -59,9 +59,10 @@ function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
  * external system. Kept as a fail-closed ALLOWLIST on purpose: any node type
  * NOT listed here is treated as side-effecting, so a newly added node is
  * writing until it is reviewed and added. Cross-check with executeServerNode
- * (packages/server/src/workflow-execution.ts) when node types change. `logic.*`
- * helpers (stop/merge/loop/set_variable/delay/threshold/switch) are covered by
- * the prefix check below and are intentionally not enumerated here.
+ * (packages/server/src/workflow-execution.ts) when node types change. The genuinely
+ * in-memory `logic.*` helpers are enumerated in LOGIC_INMEMORY_NODE_TYPES below;
+ * `logic.delay` is NOT among them (it persists a workflow_delayed_jobs row and
+ * enqueues a future workflow.execute — a side effect), so it is not exempt.
  */
 const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'email.auth_check',
@@ -82,6 +83,22 @@ const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   // block a non-admin live run.
 ]);
 
+// The `logic.*` helpers that only branch, stop, iterate, or set in-run variables —
+// they touch no persisted state and reach no external system, so they are exempt from
+// the side-effect guard. Enumerated as a fail-closed ALLOWLIST (like the set above)
+// rather than a `logic.` prefix match: `logic.delay` schedules a delayed job + a future
+// workflow.execute (executeServerNode → scheduleWorkflowDelay), and any future `logic.*`
+// type must be reviewed before it is treated as read-only. Kept in sync with the
+// logic.* branches in executeServerNode (packages/server/src/workflow-execution.ts).
+const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'logic.stop',
+  'logic.set_variable',
+  'logic.merge',
+  'logic.threshold',
+  'logic.switch',
+  'logic.loop',
+]);
+
 /** Resolve the runtime type of an action/registry node (mirrors nodeRuntimeType). */
 function sideEffectRuntimeType(node: WorkflowGraphNode): string {
   const data = node.data as Record<string, unknown> | undefined;
@@ -100,8 +117,9 @@ function sideEffectRuntimeType(node: WorkflowGraphNode): string {
  * True if the graph has at least one node that mutates persisted state, sends
  * mail, or reaches an external system when run live. Triggers and conditions
  * never count; action/registry nodes count unless their runtime type is a known
- * read-only/branch type or a `logic.*` helper. An unknown canvas type fails
- * closed (counts as side-effecting).
+ * read-only/branch type or an in-memory `logic.*` helper (LOGIC_INMEMORY_NODE_TYPES
+ * — logic.delay is excluded because it schedules a delayed job). An unknown canvas
+ * type fails closed (counts as side-effecting).
  *
  * Scans every node regardless of reachability, so a writing node behind a delay
  * or an unreached branch still trips the guard. Server workflow runs execute
@@ -128,7 +146,7 @@ export function workflowGraphHasSideEffectNode(graph: unknown): boolean {
     if (node.type === 'trigger' || node.type === 'condition') continue;
     if (node.type !== 'action' && node.type !== 'registry') return true;
     const type = sideEffectRuntimeType(node);
-    if (type.startsWith('logic.')) continue;
+    if (LOGIC_INMEMORY_NODE_TYPES.has(type)) continue;
     if (READ_ONLY_WORKFLOW_NODE_TYPES.has(type)) continue;
     return true;
   }
