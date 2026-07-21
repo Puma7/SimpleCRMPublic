@@ -23,6 +23,13 @@ export const quarantineLegacyProvenancelessJobsMigration: SqlMigration = {
   id: '0042_quarantine_legacy_provenanceless_jobs',
   description: 'Unstick + quarantine pre-upgrade provenance-less delayed workflow.execute jobs',
   upSql: [
+    // Establish a transaction-local system context. The runner executes every statement
+    // of one migration inside a single transaction as simplecrm_app, which is subject to
+    // FORCE ROW LEVEL SECURITY on workflow_delayed_jobs / job_queue. Without this the
+    // UPDATE/DELETE below match zero rows across all workspaces and silently no-op while
+    // the migration is still recorded as applied. Mirrors 0033/0038/0039.
+    `SELECT set_config('app.role', 'system', true),
+       set_config('app.cross_workspace_access', 'on', true);`,
     // 1) Mark the orphaned delayed rows failed (nothing will ever re-enqueue them), so
     //    the stuck 'pending' state becomes an explicit, admin-visible 'failed'.
     `UPDATE workflow_delayed_jobs d

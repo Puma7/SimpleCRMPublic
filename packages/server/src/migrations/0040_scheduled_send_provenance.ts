@@ -25,6 +25,13 @@ export const scheduledSendProvenanceMigration: SqlMigration = {
   upSql: [
     'ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_actor_user_id text;',
     'ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_trusted_service_principal text;',
+    // Establish a transaction-local system context. The runner executes every statement
+    // of one migration inside a single transaction as simplecrm_app, which is subject to
+    // FORCE ROW LEVEL SECURITY on email_messages / sync_info. Without this the data
+    // UPDATE/DELETE below match zero rows across all workspaces and silently no-op while
+    // the migration is still recorded as applied. Mirrors 0033/0038/0039.
+    `SELECT set_config('app.role', 'system', true),
+       set_config('app.cross_workspace_access', 'on', true);`,
     `UPDATE email_messages
       SET scheduled_send_at = NULL,
           outbound_hold = true,

@@ -28042,6 +28042,58 @@ describe('server edition foundation', () => {
     });
   });
 
+  test('reparenting a canned response also notifies the previous account scope', async () => {
+    const events: ServerEvent[] = [];
+    const ACCOUNT_OLD = 8100;
+    const ACCOUNT_NEW = 8200;
+    const cannedBase = {
+      id: 90,
+      sourceSqliteId: 90,
+      title: 'Greeting',
+      body: 'Hallo',
+      accountSourceSqliteId: null,
+      overrideKey: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    } as const;
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      emailCannedResponses: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return { ...cannedBase, accountId: ACCOUNT_OLD };
+        },
+        async update() {
+          return { ...cannedBase, accountId: ACCOUNT_NEW };
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    // The mocked update reparents the row (returns the new account); the body only
+    // needs to be a valid mutation so the handler reaches update + publish.
+    const reparented = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/canned-responses/90',
+      body: { body: 'Hallo zwei' },
+      principal,
+    });
+    expect(reparented.status).toBe(200);
+
+    const cannedEvents = events.filter((event) => event.type === 'email_canned_response.updated');
+    expect(cannedEvents).toHaveLength(2);
+    // First event carries the new account so its delegates learn of the response;
+    // the second carries the previous account so a delegate scoped there refreshes
+    // and drops the row now that it no longer resolves under their scope.
+    expect((cannedEvents[0].payload as { accountId: number | null }).accountId).toBe(ACCOUNT_NEW);
+    expect((cannedEvents[1].payload as { accountId: number | null }).accountId).toBe(ACCOUNT_OLD);
+    expect((cannedEvents[0].payload as { id: number }).id).toBe(90);
+    expect((cannedEvents[1].payload as { id: number }).id).toBe(90);
+  });
+
   test('server email canned response and remote allowlist mutation routes reject unsafe payloads and conflicts', async () => {
     const readOnlyApi = createServerApi(makeServerApiPorts({
       emailCannedResponses: {

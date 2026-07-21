@@ -373,6 +373,45 @@ describe('server mail delegation API', () => {
     expect(audit.record).toHaveBeenCalled();
   });
 
+  test('empty-permission PATCH delete carries the deleted resource so scoped peer managers are invalidated (R41-2)', async () => {
+    const events = { publish: jest.fn(async () => undefined) };
+    const mailDelegation = delegationPort({
+      // An empty permission list deletes the binding: binding is null, but the port
+      // returns the deleted row's resource as tombstone data.
+      replaceBindingById: async () => ({
+        ok: true as const,
+        binding: null,
+        resource: { type: 'folder' as const, accountId: ACCOUNT, folderId: FOLDER },
+        deletedBindingId: 900,
+        affectedUserIds: [AGENT],
+        deleted: true as const,
+      }),
+    });
+    const api = createServerApi(ports({ mailDelegation, events }));
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/access/bindings/900',
+      principal: owner,
+      body: { permissions: [] },
+    });
+    expect(res.status).toBe(200);
+    // The empty-PATCH deletion invalidation now carries the deleted binding's resource
+    // (like the dedicated DELETE path), so a peer non-admin mail.delegation.manage holder
+    // scoped to that folder is refreshed rather than left with the stale row.
+    expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      payload: expect.objectContaining({
+        targetUserId: AGENT,
+        state: 'deleted',
+        resourceType: 'folder',
+        accountId: ACCOUNT,
+        folderId: FOLDER,
+      }),
+    }));
+  });
+
   test('binding deletion carries the deleted resource so scoped peer managers are invalidated', async () => {
     const events = { publish: jest.fn(async () => undefined) };
     const mailDelegation = delegationPort({

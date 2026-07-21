@@ -346,7 +346,13 @@ export function createPostgresMailDelegationPort(
       existing?: BindingRow;
     },
   ): Promise<
-    | { ok: true; binding: MailDelegationBinding | null; affectedUserIds: readonly string[]; deleted: boolean }
+    | {
+      ok: true;
+      binding: MailDelegationBinding | null;
+      resource?: MailDelegationResource;
+      affectedUserIds: readonly string[];
+      deleted: boolean;
+    }
     | { ok: false; code: MailDelegationMutationCode }
   > {
     const subject = await validateSubject(trx, workspaceId, input.subject);
@@ -367,12 +373,15 @@ export function createPostgresMailDelegationPort(
     const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
     if (input.permissions.length === 0) {
       if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
-      // Surface the deleted row's id so the route can still publish the
-      // email_acl.changed invalidation (binding is null on delete).
+      // Surface the deleted row's id AND its resource so the route can still publish the
+      // email_acl.changed invalidation (binding is null on delete) WITH the tombstone
+      // resource — the delivery filter needs it to reach a PEER non-admin
+      // mail.delegation.manage holder scoped to that account/folder (like the dedicated
+      // DELETE path), whose panel would otherwise keep the deleted row until a refresh.
       return {
         ok: true as const,
         binding: null,
-        ...(existing ? { deletedBindingId: existing.id } : {}),
+        ...(existing ? { deletedBindingId: existing.id, resource: input.resource } : {}),
         affectedUserIds,
         deleted: Boolean(existing),
       };

@@ -597,16 +597,19 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
-  test('rechecks mail.draft.edit for workflow release_outbound and static send_draft nodes (R40-4)', async () => {
-    // release_outbound mutates the workflow message; send_draft with a static config.draftId
-    // arms a SEPARATE target draft — both under the system role, both mutating a draft the
-    // base content.read policy never covers.
+  test('rechecks mail.draft.edit for workflow release/hold_outbound and static send_draft nodes (R40-4/R41-3)', async () => {
+    // release_outbound / hold_outbound mutate the workflow message; send_draft with a static
+    // config.draftId arms a SEPARATE target draft — all under the system role, all mutating a
+    // draft the base content.read policy never covers.
     const releaseGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } }] };
+    const holdGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.hold_outbound', config: {} } }] };
+    const legacyHoldGraph = { nodes: [{ type: 'action', data: { actionType: 'hold_outbound', reason: 'x' } }] };
     const sendStaticGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } }] };
     const sendVariableGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } }] };
     const sendMissingGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 999 } } }] };
     const graphs = new Map<number, unknown>([
       [750, releaseGraph], [751, sendStaticGraph], [752, sendVariableGraph], [753, sendMissingGraph],
+      [754, holdGraph], [755, legacyHoldGraph],
     ]);
 
     // release_outbound: mail.draft.edit revoked → denied; retained → content.read on the
@@ -622,6 +625,21 @@ describe('server mail job and event ACL', () => {
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 750, messageId: 12 },
     }), release);
     expect(release.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.edit']);
+
+    // hold_outbound (registry) and the legacy canvas action alias are gated the same way.
+    for (const workflowId of [754, 755]) {
+      await expect(enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId, messageId: 12 },
+      }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+        .rejects.toMatchObject({ nonRetryable: true });
+      const heldAllowed = makePolicyPorts({ workflowGraphs: graphs });
+      await enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId, messageId: 12 },
+      }), heldAllowed);
+      expect(heldAllowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.edit']);
+    }
 
     // send_draft static config.draftId=13: draft.edit is asserted on the TARGET draft 13
     // (not the workflow message 12); revoked → denied.

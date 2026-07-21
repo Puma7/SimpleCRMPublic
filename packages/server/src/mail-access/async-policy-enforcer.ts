@@ -316,7 +316,7 @@ export async function enforceMailJobPolicy(
         resolved.resources.resources,
         requiredPorts,
       );
-      await assertWorkflowExecuteReleaseOutboundNodePrivilege(
+      await assertWorkflowExecuteOutboundDraftMutationNodePrivilege(
         job,
         actor.actor,
         resolved.resources.resources,
@@ -540,15 +540,23 @@ async function assertWorkflowExecuteDraftCreateNodePrivilege(
   }
 }
 
-// R40-4 (A): an email.release_outbound node clears the workflow message's outbound-review
-// hold — and in autoSend mode rewrites its body/subject/ticket and arms scheduled_send_at
-// — under the SYSTEM role. Its target is always the workflow's own message
-// (context.messageId), i.e. resolved.resources here, and the base policy only requires
-// mail.content.read. So a user-attributed run whose actor lacks/lost mail.draft.edit could
-// mutate the draft (and stamp the outbound-review approval marker) through the node.
-// Recheck mail.draft.edit on the resolved message when the CURRENT graph holds a release
-// node. (The eventual SMTP send is separately blocked by the mail.send.scheduled recheck.)
-async function assertWorkflowExecuteReleaseOutboundNodePrivilege(
+// R40-4 (A) + R41-3: outbound-hold nodes mutate the workflow's own message
+// (context.messageId, i.e. resolved.resources) under the SYSTEM role — email.release_outbound
+// clears the review hold (and in autoSend mode rewrites body/subject/ticket, arms
+// scheduled_send_at, and stamps the outbound-review approval marker), while
+// email.hold_outbound persists outbound_hold + outbound_block_reason. The base policy only
+// requires mail.content.read, so a user-attributed run whose actor lacks/lost
+// mail.draft.edit could still mutate the draft through either node. Recheck mail.draft.edit
+// on the resolved message when the CURRENT graph holds any of them. Both the registry
+// dotted form and the legacy canvas action alias are covered (sideEffectRuntimeType returns
+// the bare actionType for action nodes). (The eventual SMTP send, for release, is separately
+// blocked by the mail.send.scheduled recheck.)
+const WORKFLOW_OUTBOUND_DRAFT_MUTATION_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'email.release_outbound', 'release_outbound',
+  'email.hold_outbound', 'hold_outbound',
+]);
+
+async function assertWorkflowExecuteOutboundDraftMutationNodePrivilege(
   job: QueuedJob,
   actor: MailAccessActor,
   resources: readonly MailResource[],
@@ -561,7 +569,7 @@ async function assertWorkflowExecuteReleaseOutboundNodePrivilege(
     workspaceId: job.workspaceId,
     workflowId,
   });
-  if (!loaded || !workflowGraphHasNodeType(loaded.graph, 'email.release_outbound')) return;
+  if (!loaded || !workflowGraphHasAnyNodeType(loaded.graph, WORKFLOW_OUTBOUND_DRAFT_MUTATION_NODE_TYPES)) return;
   for (const resource of resources) {
     await ports.mailAccess.assertPermission({
       workspaceId: job.workspaceId,

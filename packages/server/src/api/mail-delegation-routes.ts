@@ -181,7 +181,10 @@ async function handlePatch(
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {
     bindingId,
     subject: result.binding?.subject,
-    resource: result.binding?.resource,
+    // On an empty-permission PATCH the row is deleted (binding is null), so fall back to
+    // the port's tombstone resource so the email_acl.changed event still carries it and
+    // reaches a peer mail.delegation.manage holder scoped to that account/folder (R41-2).
+    resource: result.binding?.resource ?? result.resource,
     permissions: parsed.permissions,
     affectedUserIds: result.affectedUserIds,
     deleted: result.deleted,

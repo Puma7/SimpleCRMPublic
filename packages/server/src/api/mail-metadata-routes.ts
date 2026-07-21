@@ -972,6 +972,14 @@ async function handleUpdateEmailCannedResponse(
   });
   if (!parsed.ok) return parsed.response;
 
+  // Capture the pre-update account so a reparent can notify the previous account's
+  // delegates too (see the second publish below). Read before the mutation because
+  // the update overwrites accountId in place.
+  const previous = await ports.emailCannedResponses.get({
+    workspaceId: principal.workspaceId,
+    id,
+  });
+
   const response = await ports.emailCannedResponses.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -982,6 +990,21 @@ async function handleUpdateEmailCannedResponse(
 
   await auditEmailCannedResponse(ports, principal, 'email_canned_response.updated', response, { fields: Object.keys(parsed.values).sort() });
   await publishEmailCannedResponse(ports, principal.workspaceId, 'email_canned_response.updated', response, principal.userId);
+  // A PATCH can reparent the canned response to a different account (or to/from the
+  // workspace-global scope). The event above carries only the NEW accountId, so it
+  // reaches only the new account's delegates — a delegate scoped to the PREVIOUS
+  // account would never learn the row left their scope and would keep showing a stale
+  // copy. Emit a second event carrying the previous accountId so those delegates
+  // refresh (and drop it, since it no longer resolves under their scope).
+  if (previous && previous.accountId !== response.accountId) {
+    await publishEmailCannedResponse(
+      ports,
+      principal.workspaceId,
+      'email_canned_response.updated',
+      { ...response, accountId: previous.accountId },
+      principal.userId,
+    );
+  }
   return data(200, sanitizeEmailCannedResponse(response));
 }
 

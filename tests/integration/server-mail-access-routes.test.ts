@@ -2084,7 +2084,7 @@ describe('server mailbox ACL migration', () => {
   });
 
   test('resolves account-scoped canned responses so their delegate can edit them', async () => {
-    const update = jest.fn(async () => ({
+    const cannedRecord = {
       id: 8801,
       sourceSqliteId: 8801,
       title: 'Autosave',
@@ -2095,14 +2095,18 @@ describe('server mailbox ACL migration', () => {
       sortOrder: 0,
       createdAt: null,
       updatedAt: '2026-07-19T12:00:00.000Z',
-    }));
+    };
+    const update = jest.fn(async () => cannedRecord);
+    // The PATCH handler reads the pre-update record to detect a reparent; return the
+    // same account so no second (previous-scope) event fires and the count stays 1.
+    const getCanned = jest.fn(async () => cannedRecord);
     const patchBody = { title: 'Autosave' };
     const draftCreate = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
       ['mail.draft.create', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
     ]);
     const delegateApi = createServerApi(makeHttpPorts({
       grants: draftCreate,
-      overrides: { emailCannedResponses: { update } as unknown as ServerApiPorts['emailCannedResponses'] },
+      overrides: { emailCannedResponses: { update, get: getCanned } as unknown as ServerApiPorts['emailCannedResponses'] },
     }));
 
     // 8801 is account-scoped to ACCOUNT_A; the account-level draft.create delegate
@@ -2118,7 +2122,7 @@ describe('server mailbox ACL migration', () => {
 
     // Without any grant the same PATCH is denied and the port never runs.
     const noGrantApi = createServerApi(makeHttpPorts({
-      overrides: { emailCannedResponses: { update } as unknown as ServerApiPorts['emailCannedResponses'] },
+      overrides: { emailCannedResponses: { update, get: getCanned } as unknown as ServerApiPorts['emailCannedResponses'] },
     }));
     const denied = await noGrantApi.handle({
       method: 'PATCH',
