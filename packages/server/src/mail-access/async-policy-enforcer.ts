@@ -188,12 +188,14 @@ export async function enforceMailJobPolicy(
     // A scheduled reply-send marks the reply parent done by default, a mail.triage
     // mutation the base mail.send policy never covers — recheck it on the parent.
     await assertScheduledSendReplyParentTriage(job, actor.actor, requiredPorts);
-    // The scheduled send transmits the draft's stored attachment paths through the
-    // system-backed sender, which does no per-path check — so recheck
-    // mail.attachment.read on each at execution, catching a revocation after the send
-    // was scheduled. Mirrors the HTTP compose/send enforcer (including the draft-local
-    // upload carve-out). User actors only; trusted-service sends returned above.
-    await assertScheduledSendAttachmentAccess(job, actor.actor, requiredPorts);
+    // A scheduled send transmits the STORED draft's body/recipients + attachment paths
+    // through the system-backed sender, which does no per-actor check — so at execution
+    // recheck mail.draft.edit on the draft itself (arming another user's draft for send
+    // is a draft mutation the base mail.send policy never covers) plus mail.attachment.read
+    // on each stored attachment path, catching a revocation after the send was scheduled.
+    // Mirrors the HTTP compose/send + scheduled-send enforcer. User actors only;
+    // trusted-service sends returned above.
+    await assertScheduledSendDraftAndAttachmentAccess(job, actor.actor, requiredPorts);
     // Reply generation (mail.draft.create), message classification (mail.triage),
     // message-attributed workflow HTTP requests (mail.metadata.read), and spam scoring
     // (mail.triage) all read the message body — snippet/body_text/combined_text, or the
@@ -565,52 +567,52 @@ async function assertScheduledSendReplyParentTriage(
   }
 }
 
-async function assertScheduledSendAttachmentAccess(
+async function assertScheduledSendDraftAndAttachmentAccess(
   job: QueuedJob,
   actor: MailAccessActor,
   ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
 ): Promise<void> {
   if (job.type !== 'mail.send.scheduled') return;
-  if (!ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths) return;
   const draftId = optionalPositiveInt(job.payload.draftId);
   if (draftId === null) return;
+
+  // A scheduled send transmits the STORED draft's body + recipients through the
+  // system-backed sender, so arming/executing it is a draft MUTATION, not merely a
+  // transmit. The base mail.send.scheduled policy only rechecks mail.send, so a
+  // send-only delegate who scheduled (or whose scheduled job re-runs) another user's
+  // draft would send content they cannot edit. Recheck mail.draft.edit on the draft
+  // UNCONDITIONALLY here — mirroring the HTTP compose/send + scheduled-send supplemental
+  // — which catches an attachmentless draft AND a draft.edit revoked after scheduling;
+  // draft-local uploads are covered by this same assertion. The draft is an exact
+  // stored id that must resolve to its message resource; fail closed otherwise.
+  const draftResources = await ports.mailResourceLookup.resolve({
+    workspaceId: job.workspaceId,
+    target: { kind: 'message', id: draftId },
+  });
+  if (draftResources.length === 0) throw new MailAsyncAuthorizationError();
+  for (const resource of draftResources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.draft.edit',
+      resource,
+    });
+  }
+
+  // Each NON-draft-local attachment path must additionally resolve to an existing
+  // message attachment the sender still holds mail.attachment.read on. A draft-local
+  // upload (under this draft's own folder) has no email_message_attachments row, so it
+  // resolves to no message resource and cannot be checked for attachment.read — it is
+  // already authorized by the mail.draft.edit assertion above.
+  if (!ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths) return;
   const paths = await ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths({
     workspaceId: job.workspaceId,
     draftId,
   });
   if (!paths || paths.length === 0) return;
-  // A freshly uploaded file under this draft's own upload folder has no
-  // email_message_attachments row, so it resolves to no message resource and
-  // mail.attachment.read cannot be checked on it. Do NOT exempt it purely by
-  // pathname — the EXECUTING actor (the scheduler, possibly a different delegate
-  // than the uploader, or the uploader after losing draft.edit) may hold only
-  // mail.send. Require mail.draft.edit on the draft itself instead, mirroring the
-  // HTTP compose/send enforcer, which asserts mail.draft.edit on the draft before
-  // the same carve-out. Every other path must resolve to an existing message
-  // attachment the sender still holds mail.attachment.read on.
   const draftLocalPrefix = `${job.workspaceId}/compose-drafts/${draftId}/`;
-  let draftResources: readonly MailResource[] | null = null;
   for (const path of paths) {
-    if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) {
-      if (draftResources === null) {
-        draftResources = await ports.mailResourceLookup.resolve({
-          workspaceId: job.workspaceId,
-          target: { kind: 'message', id: draftId },
-        });
-        // The draft is an exact stored id that must resolve to its message resource;
-        // fail closed rather than transmit its uploads with no re-authorization.
-        if (draftResources.length === 0) throw new MailAsyncAuthorizationError();
-      }
-      for (const resource of draftResources) {
-        await ports.mailAccess.assertPermission({
-          workspaceId: job.workspaceId,
-          actor,
-          permission: 'mail.draft.edit',
-          resource,
-        });
-      }
-      continue;
-    }
+    if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
     const owners = await ports.mailResourceLookup.resolve({
       workspaceId: job.workspaceId,
       target: { kind: 'attachment_path', path },

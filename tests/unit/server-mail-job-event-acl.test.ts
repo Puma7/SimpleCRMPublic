@@ -215,6 +215,9 @@ describe('server mail job and event ACL', () => {
       { kind: 'message', id: 12 },
       { kind: 'message', id: 12 },
       { kind: 'message', id: 12 },
+      // mail.send.scheduled also resolves the draft again for the unconditional
+      // mail.draft.edit recheck (R39-1).
+      { kind: 'message', id: 12 },
     ]);
     expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([
       // mail.spam.score: base mail.triage, then the content-read supplemental because
@@ -223,8 +226,11 @@ describe('server mail job and event ACL', () => {
       ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
       // workflow.execute (message 12): base mail.content.read.
       ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
-      // mail.send.scheduled (draft 12): base mail.send.
+      // mail.send.scheduled (draft 12): base mail.send, then the R39-1 unconditional
+      // mail.draft.edit recheck on the draft (arming a stored draft for send transmits
+      // its body + recipients, so it is a draft mutation, not just a transmit).
       ['mail.send', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      ['mail.draft.edit', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
     ]);
     expect(ports.scopePermissions).toEqual([]);
   });
@@ -758,9 +764,8 @@ describe('server mail job and event ACL', () => {
     }), ambiguousParent)).rejects.toMatchObject({ nonRetryable: true });
   });
 
-  test('scheduled send rechecks mail.attachment.read on each stored attachment path', async () => {
-    // A draft-local upload (reauthorized via mail.draft.edit) + a synced path owned by
-    // a readable message → allowed.
+  test('scheduled send rechecks mail.draft.edit on the draft and mail.attachment.read on each stored attachment path', async () => {
+    // A draft-local upload + a synced path owned by a readable message → allowed.
     const allowed = makePolicyPorts({
       scheduledDraftAttachmentPaths: new Map([[12, [
         'workspace-a/compose-drafts/12/ab-upload.pdf',
@@ -771,15 +776,24 @@ describe('server mail job and event ACL', () => {
       type: 'mail.send.scheduled',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
     }), allowed);
-    // Base mail.send on the draft + mail.attachment.read on the synced path's owning
-    // message + mail.draft.edit on the draft for the draft-local upload (a draft-local
-    // file has no owning attachment row, so it is reauthorized via draft.edit, not
-    // exempted by pathname).
+    // Base mail.send on the draft + one UNCONDITIONAL mail.draft.edit on the draft (R39-1
+    // — arming a stored draft for send transmits its body + recipients) + mail.attachment
+    // .read on the synced path's owning message. The draft-local upload needs no extra
+    // check — it is covered by the draft.edit assertion (it has no owning attachment row).
     expect(allowed.assertions.filter((entry) => entry.permission === 'mail.attachment.read')).toHaveLength(1);
     expect(allowed.assertions.filter((entry) => entry.permission === 'mail.draft.edit')).toHaveLength(1);
 
-    // A send-only delegate (or an uploader who lost draft.edit) cannot transmit a
-    // draft-local upload: the draft.edit recheck on the draft-local path fails closed.
+    // An ATTACHMENTLESS draft is still gated: a send-only delegate lacking mail.draft.edit
+    // cannot schedule/transmit another user's stored body + recipients (R39-1 — the base
+    // policy only checks mail.send, and there are no attachment paths to trigger a check).
+    const attachmentless = makePolicyPorts({ denyPermissions: new Set(['mail.draft.edit']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), attachmentless)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A send-only delegate (or an uploader who lost draft.edit) cannot transmit a draft
+    // with a draft-local upload either: the unconditional draft.edit recheck fails closed.
     const sendOnly = makePolicyPorts({
       scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/compose-drafts/12/ab-upload.pdf']]]),
       denyPermissions: new Set(['mail.draft.edit']),

@@ -700,6 +700,61 @@ describe('mail ACL rollout central use', () => {
     expect(runSecurityCheck).toHaveBeenCalledTimes(1);
   });
 
+  test('scheduling or retrying a stored draft requires mail.draft.edit, not just mail.send (R39-1)', async () => {
+    // Arming a stored draft for send transmits its body + recipients, so it is a draft
+    // mutation like /compose/send — a send-only delegate (mail.send without
+    // mail.draft.edit) must be refused before the handler runs.
+    const scheduleDraftSend = jest.fn(async () => ({ ok: true as const }));
+    const retryScheduledSendDraft = jest.fn(async () => ({ ok: true as const }));
+    const withMailAccess = (mailAccess: MailAccessService) => createServerApi({
+      ...makeCentralPorts(mailAccess),
+      emailMessages: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        scheduleDraftSend,
+        retryScheduledSendDraft,
+      } as unknown as ServerApiPorts['emailMessages'],
+    });
+    const restricted = { kind: 'restricted' as const, accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+
+    const denyDraftEdit = withMailAccess({
+      async assertPermission(input) {
+        if (input.permission === 'mail.draft.edit') throw new MailAccessDeniedError();
+      },
+      async resolveScope() { return restricted; },
+    });
+    // Schedule (PATCH sendAt) and retry are both refused before their handlers.
+    await expect(denyDraftEdit.handle({
+      method: 'PATCH',
+      path: `/api/v1/email/messages/${MESSAGE_A}/scheduled-send`,
+      body: { sendAt: '2027-01-01T00:00:00.000Z' },
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    await expect(denyDraftEdit.handle({
+      method: 'PATCH',
+      path: `/api/v1/email/messages/${MESSAGE_A}/scheduled-send/retry`,
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(scheduleDraftSend).not.toHaveBeenCalled();
+    expect(retryScheduledSendDraft).not.toHaveBeenCalled();
+
+    // With mail.draft.edit retained the enforcer asserts mail.send AND mail.draft.edit on
+    // the draft, then dispatches to the handler.
+    const calls: string[] = [];
+    const allow = withMailAccess({
+      async assertPermission(input) { calls.push(`${input.permission}:${input.resource.type}`); },
+      async resolveScope() { return restricted; },
+    });
+    await allow.handle({
+      method: 'PATCH',
+      path: `/api/v1/email/messages/${MESSAGE_A}/scheduled-send`,
+      body: { sendAt: '2027-01-01T00:00:00.000Z' },
+      principal: principal(),
+    });
+    expect(calls).toEqual(expect.arrayContaining(['mail.send:message', 'mail.draft.edit:message']));
+    expect(scheduleDraftSend).toHaveBeenCalledTimes(1);
+  });
+
   test('pgp verify POST requires content-read in addition to triage', async () => {
     // verifyMessage parses the hidden signed body and returns signature validity +
     // signer fingerprint, so a triage-only delegate without content access must be

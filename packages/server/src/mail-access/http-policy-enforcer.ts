@@ -830,6 +830,29 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  if (
+    canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send'
+    || canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send/retry'
+  ) {
+    // Scheduling (PATCH sendAt), cancelling (PATCH sendAt:null), and retrying durably
+    // ARM the EXISTING stored draft; the worker then transmits its stored body +
+    // recipients. Like /compose/send, arming another user's draft for send is a draft
+    // mutation, not just a transmit — but the base policy only requires mail.send. Also
+    // require mail.draft.edit on the draft (baseResources = the :messageId draft) so a
+    // custom send-only delegate (mail.send without mail.draft.edit) cannot schedule
+    // another user's draft out. Owner/admin bypass assertPermission, so this only gates
+    // restricted delegates. (The /scheduled-send-failure DELETE only clears a failure
+    // flag and transmits nothing, so it stays mail.send-only.)
+    for (const resource of baseResources) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.draft.edit',
+        resource,
+      });
+    }
+  }
+
   const replyParent = canonicalPath === '/api/v1/email/compose/send'
     ? optionalPositiveInt(bodyField(req.body, 'inReplyToMessageId'))
     : canonicalPath === '/api/v1/email/messages/:messageId/compose-draft'
