@@ -333,19 +333,24 @@ export async function enforceMailHttpPolicy(
         context: { permission: entry.policy.permission, scope: await resolveScope() },
       };
     }
-    // Triage mutations echo the mutated message back whole. Owner/admin read
-    // everything; a restricted delegate gets its body-derived content redacted per
-    // its independent mail.content.read scope (the read port turns this into a
-    // per-row content_readable flag on the returned row).
+    // Triage/draft-edit mutations echo the mutated message back whole. Owner/admin
+    // read everything; a restricted delegate gets its body-derived content redacted
+    // per its independent mail.content.read scope (the read port turns this into a
+    // per-row content_readable flag on the returned row). A caller whose content
+    // scope is 'all' can read everything anyway, so skip the injection — there is
+    // nothing to redact and the read port would compute no predicate.
     if (
       !actor.isOwner
       && !actor.isAdmin
       && MESSAGE_CONTENT_SCOPE_MUTATION_PATHS.has(entry.route.path)
     ) {
-      return {
-        ok: true,
-        context: { permission: entry.policy.permission, contentScope: await resolveContentScope() },
-      };
+      const mutationContentScope = await resolveContentScope();
+      if (mutationContentScope.kind !== 'all') {
+        return {
+          ok: true,
+          context: { permission: entry.policy.permission, contentScope: mutationContentScope },
+        };
+      }
     }
     return { ok: true, context: { permission: entry.policy.permission } };
   } catch (caught) {

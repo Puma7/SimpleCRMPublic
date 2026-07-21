@@ -1024,7 +1024,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             folderId: 'folder_id',
             messageId: 'id',
           });
-          const row = await trx
+          const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
               subject: input.values.subject ?? current.subject,
@@ -1059,11 +1059,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
-            .returning(emailMessageDetailColumns)
-            .$if(Boolean(draftContentPredicate), (qb) => qb.returning(
-              kyselySql<boolean>`(${draftContentPredicate!})`.as('content_readable'),
-            ))
-            .executeTakeFirstOrThrow();
+            .returning(emailMessageDetailColumns);
+          const row = await (draftContentPredicate
+            ? composeDraftUpdate.returning(kyselySql<boolean>`(${draftContentPredicate})`.as('content_readable'))
+            : composeDraftUpdate
+          ).executeTakeFirstOrThrow();
           return { ok: true as const, message: mapEmailMessageRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1739,7 +1739,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             folderId: 'folder_id',
             messageId: 'id',
           });
-          const updated = await trx
+          const spamStatusUpdate = trx
             .updateTable('email_messages')
             .set({
               ...spamStatusPatch(values.status as 'clean' | 'review' | 'spam', current.folder_kind),
@@ -1748,11 +1748,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
-            .returning(emailMessageSummaryColumns)
-            .$if(Boolean(contentPredicate), (qb) => qb.returning(
-              kyselySql<boolean>`(${contentPredicate!})`.as('content_readable'),
-            ))
-            .executeTakeFirstOrThrow();
+            .returning(emailMessageSummaryColumns);
+          const updated = await (contentPredicate
+            ? spamStatusUpdate.returning(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'))
+            : spamStatusUpdate
+          ).executeTakeFirstOrThrow();
 
           if (values.train !== false) {
             const label = learningLabelForSpamStatusTransition(
@@ -2518,7 +2518,7 @@ async function linkMessageCustomer(
     folderId: 'folder_id',
     messageId: 'id',
   });
-  const updated = await trx
+  const customerLinkUpdate = trx
     .updateTable('email_messages')
     .set({
       customer_id: input.customerId,
@@ -2527,11 +2527,11 @@ async function linkMessageCustomer(
     })
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
-    .returning(emailMessageSummaryColumns)
-    .$if(Boolean(customerLinkContentPredicate), (qb: any) => qb.returning(
-      kyselySql<boolean>`(${customerLinkContentPredicate!})`.as('content_readable'),
-    ))
-    .executeTakeFirst();
+    .returning(emailMessageSummaryColumns);
+  const updated = await (customerLinkContentPredicate
+    ? customerLinkUpdate.returning(kyselySql<boolean>`(${customerLinkContentPredicate})`.as('content_readable'))
+    : customerLinkUpdate
+  ).executeTakeFirst();
   return updated
     ? { ok: true as const, message: mapEmailMessageRow(updated, false) }
     : { ok: false as const, reason: 'not_found' as const };
@@ -2687,7 +2687,7 @@ async function assignMessageTeamMember(
     folderId: 'folder_id',
     messageId: 'id',
   });
-  const updated = await trx
+  const assignUpdate = trx
     .updateTable('email_messages')
     .set({
       assigned_to: teamMemberId,
@@ -2695,11 +2695,11 @@ async function assignMessageTeamMember(
     })
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
-    .returning(emailMessageSummaryColumns)
-    .$if(Boolean(assignContentPredicate), (qb: any) => qb.returning(
-      kyselySql<boolean>`(${assignContentPredicate!})`.as('content_readable'),
-    ))
-    .executeTakeFirst();
+    .returning(emailMessageSummaryColumns);
+  const updated = await (assignContentPredicate
+    ? assignUpdate.returning(kyselySql<boolean>`(${assignContentPredicate})`.as('content_readable'))
+    : assignUpdate
+  ).executeTakeFirst();
   return updated
     ? { ok: true as const, message: mapEmailMessageRow(updated, false) }
     : { ok: false as const, reason: 'not_found' as const };
