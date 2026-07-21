@@ -763,6 +763,34 @@ describe('mail ACL rollout central use', () => {
     })).resolves.toMatchObject({ status: 200 });
   });
 
+  test('remote-content remember flags are denied for a scoped non-admin (owner/admin only)', async () => {
+    const setRemoteContentPolicy = jest.fn();
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() {
+          return { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+        },
+      }),
+      emailMessages: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        setRemoteContentPolicy,
+      } as unknown as ServerApiPorts['emailMessages'],
+    });
+
+    // rememberSender/rememberDomain persist a workspace-wide allowlist row, so a
+    // scoped (non-admin) triage/account delegate is denied before the handler runs —
+    // it cannot weaken remote-content privacy for other accounts' messages.
+    await expect(api.handle({
+      method: 'PATCH',
+      path: `/api/v1/email/messages/${MESSAGE_A}/remote-content-policy`,
+      principal: principal(),
+      body: { policy: 'allowed_sender', rememberSender: true },
+    })).resolves.toMatchObject({ status: 404 });
+    expect(setRemoteContentPolicy).not.toHaveBeenCalled();
+  });
+
   test('thread-alias PATCH authorizes the unchanged stored thread, not just the replacement', async () => {
     const deniedMessages = new Set<string>();
     const mailAccess: MailAccessService = {

@@ -1127,21 +1127,18 @@ async function assertSupplementalHttpPermissions(
   // Setting a per-message remote-content decision is triage, but rememberSender /
   // rememberDomain additionally persist a row into email_remote_content_allowlist
   // scoped by workspace + sender/domain (NOT by account), which governs remote
-  // content loading for ALL current and future messages workspace-wide. That is
-  // account/workspace configuration, so require mail.account.manage before either
-  // remember option is honoured (the handler rejects both being true at once).
+  // content loading for ALL current and future messages workspace-wide. An
+  // account-scoped mail.account.manage grant is not enough — that delegate could
+  // weaken remote-content privacy for inaccessible accounts' messages. The dedicated
+  // allowlist routes are owner/admin-only (workspace security setting), so require
+  // the same full-workspace authority here before either remember option is honoured
+  // (the handler rejects both being true at once). Scoped triage still sets the
+  // per-message decision without the remember flags.
   if (req.method === 'PATCH' && canonicalPath === '/api/v1/email/messages/:messageId/remote-content-policy') {
     const remember = bodyField(req.body, 'rememberSender') === true
       || bodyField(req.body, 'rememberDomain') === true;
-    if (remember) {
-      for (const resource of baseResources) {
-        await ports.mailAccess!.assertPermission({
-          workspaceId,
-          actor,
-          permission: 'mail.account.manage',
-          resource,
-        });
-      }
+    if (remember && !actor.isOwner && !actor.isAdmin) {
+      throw new MailAccessDeniedError();
     }
   }
 }

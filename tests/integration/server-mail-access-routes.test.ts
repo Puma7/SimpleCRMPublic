@@ -2039,22 +2039,23 @@ describe('server mailbox ACL migration', () => {
     expect(getRawHeaders).toHaveBeenCalledTimes(1);
   });
 
-  test('requires mail.account.manage to remember a remote-content sender/domain', async () => {
+  test('requires owner/admin to remember a remote-content sender/domain', async () => {
     const setRemoteContentPolicy = jest.fn(async () => ({
       ok: true as const,
       result: { policy: 'allowed_once' as const, allowRemote: true },
       message: makeMessageRecord(MESSAGE_A),
     }));
-    const triageOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+    const withManage = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
       ['mail.triage', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.account.manage', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
     ]);
-    const triageApi = createServerApi(makeHttpPorts({
-      grants: triageOnly,
+    const manageApi = createServerApi(makeHttpPorts({
+      grants: withManage,
       overrides: { emailMessages: { setRemoteContentPolicy } as unknown as ServerApiPorts['emailMessages'] },
     }));
 
     // A plain per-message decision (no remember) stays pure triage.
-    const plainAllowed = await triageApi.handle({
+    const plainAllowed = await manageApi.handle({
       method: 'PATCH',
       path: `/api/v1/email/messages/${MESSAGE_A}/remote-content-policy`,
       principal: makePrincipal(),
@@ -2063,31 +2064,26 @@ describe('server mailbox ACL migration', () => {
     expect(plainAllowed.status).toBe(200);
     expect(setRemoteContentPolicy).toHaveBeenCalledTimes(1);
 
-    // rememberSender persists a workspace-wide allowlist row → needs account.manage.
-    const rememberDenied = await triageApi.handle({
+    // rememberSender/rememberDomain persist a workspace-wide allowlist row that governs
+    // remote content for EVERY account, so an account-scoped mail.account.manage
+    // delegate must NOT be able to set them — only owner/admin may.
+    const rememberDeniedScoped = await manageApi.handle({
       method: 'PATCH',
       path: `/api/v1/email/messages/${MESSAGE_A}/remote-content-policy`,
       principal: makePrincipal(),
       body: { policy: 'allowed_sender', rememberSender: true },
     });
-    expect(rememberDenied.status).toBe(404);
+    expect(rememberDeniedScoped.status).toBe(404);
     expect(setRemoteContentPolicy).toHaveBeenCalledTimes(1);
 
-    const withManage = new Map(triageOnly);
-    withManage.set('mail.account.manage', [
-      { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
-    ]);
-    const manageApi = createServerApi(makeHttpPorts({
-      grants: withManage,
-      overrides: { emailMessages: { setRemoteContentPolicy } as unknown as ServerApiPorts['emailMessages'] },
-    }));
-    const rememberAllowed = await manageApi.handle({
+    // An owner/admin (full-workspace authority) may set the remember flags.
+    const adminRemember = await manageApi.handle({
       method: 'PATCH',
       path: `/api/v1/email/messages/${MESSAGE_A}/remote-content-policy`,
-      principal: makePrincipal(),
+      principal: makePrincipal('admin'),
       body: { policy: 'allowed_domain', rememberDomain: true },
     });
-    expect(rememberAllowed.status).toBe(200);
+    expect(adminRemember.status).toBe(200);
     expect(setRemoteContentPolicy).toHaveBeenCalledTimes(2);
   });
 
