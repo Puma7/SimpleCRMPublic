@@ -22826,7 +22826,10 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Admin principal: ad-hoc tests (no accountId) now require owner/admin
+    // (SSRF/socket-exhaustion gate); this plumbing test exercises both stored and
+    // ad-hoc bodies, so use admin so every branch reaches the test port.
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const imap = await api.handle({
       method: 'POST',

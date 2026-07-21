@@ -341,7 +341,10 @@ describe('server mail job and event ACL', () => {
 
   test('rechecks side-effect privilege for MANUAL-marked workflow child jobs, not compose-originated ones', async () => {
     const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
-    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.pick_canned', 'ai.review', 'ai.transform_text'] as const;
+    // ai.pick_canned is covered separately: a user actor now always returns a
+    // canned-scope authorization (not undefined), so it doesn't fit this loop's
+    // toBeUndefined assertions.
+    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.review', 'ai.transform_text'] as const;
     for (const type of childTypes) {
       // A demoted (non-admin) initiator's MARKED message-less child would otherwise
       // hit the non_mail early return and run its side-effecting node unchecked.
@@ -532,6 +535,76 @@ describe('server mail job and event ACL', () => {
       type: 'ai.classify',
       payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
     }), denied)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('ai.agent with createDraft rechecks draft-create in addition to content-read', async () => {
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.agent',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.draft.create',
+    ]);
+
+    // A createDraft agent mints a reply draft under the system role, so it must fail
+    // closed when the initiating user's draft.create was revoked after enqueue.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.draft.create']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.agent',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // createDraft:false → no draft, so no draft.create recheck (content-read only).
+    const readOnly = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.agent',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: false },
+    }), readOnly)).resolves.toBeUndefined();
+    expect(readOnly.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+  });
+
+  test('ai.pick_canned rechecks draft-create for drafts and scopes the canned query to the user', async () => {
+    // A compose-originated (user) pick_canned returns the initiating user's
+    // mail.draft.create scope so the worker restricts selectCannedResponses to global
+    // + in-scope templates; with createDraft it also rechecks draft.create.
+    const allowed = makePolicyPorts();
+    const authorization = await enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.draft.create',
+    ]);
+    expect(allowed.scopePermissions).toContain('mail.draft.create');
+    expect(authorization).toEqual({
+      kind: 'ai_pick_canned_scope',
+      cannedScope: { kind: 'restricted', accountIds: [7], folderIds: [], messageIds: [] },
+    });
+
+    // Revoked draft.create after enqueue → the draft-creating pick_canned is rejected.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.draft.create']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A MANUAL-marked pick_canned for a demoted (non-admin) initiator stays admin-gated.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true },
+    }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+
+    // A trusted-service (automatic/inbound) run carries no per-user scope, so the
+    // canned query stays unrestricted (authorization undefined).
+    const service = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+    }), service)).resolves.toBeUndefined();
+    expect(service.scopePermissions).not.toContain('mail.draft.create');
   });
 
   test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {

@@ -49,7 +49,6 @@ const EMPTY_SCOPE_READ_PATHS = new Set([
   '/api/v1/email/remote-content-allowlist',
   '/api/v1/email/read-receipts',
   '/api/v1/email/team-members',
-  '/api/v1/email/team-members/:id',
   '/api/v1/email/thread-edges',
   '/api/v1/email/thread-aliases',
   '/api/v1/email/threads',
@@ -99,6 +98,12 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set([
   // 404s; a restricted delegate (draft.create on some account) still loads global
   // compose templates.
   '/api/v1/email/canned-responses/:id',
+  // Fetching a single team member by id has the same asymmetry: the collection read
+  // port returns no rows for scope 'none', but the item's unscoped get() returns the
+  // member's display name, role, and signatureHtml. Keep the item out of
+  // EMPTY_SCOPE_READ_PATHS so scope 'none' 404s; a restricted metadata.read delegate
+  // still resolves assignee/team labels the mail UI needs.
+  '/api/v1/email/team-members/:id',
   // A delegated sender (restricted mail.send scope) can reach the PGP encrypt/sign
   // endpoints, so they must also be able to check whether their recipients have
   // usable keys. Read-only, no account/message resource; scope 'none' still 404s.
@@ -736,14 +741,23 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
-  // The security-check POST reconstructs the raw message (raw_rfc822_b64, headers,
-  // body) and submits it to mailauth/Rspamd, returning Rspamd symbols and the spam
-  // breakdown — content-derived data the sibling GET /security route already gates
-  // behind mail.content.read. The base policy classifies this as a mail.triage
-  // mutation (it may persist a spam decision/status), so also require
-  // mail.content.read: a triage-only delegate without content access must not read
-  // reconstructed body content through the scan result.
-  if (req.method === 'POST' && canonicalPath === '/api/v1/email/messages/:messageId/security/check') {
+  // The security-check and spam-decision POSTs both evaluate the reconstructed
+  // message: security-check submits raw_rfc822_b64/headers/body to mailauth/Rspamd
+  // and returns Rspamd symbols + the spam breakdown; spam-decision runs
+  // evaluateSpamDecisionForMessage over body_text/body_html/headers/attachments and
+  // returns the decision breakdown whose featureKeys come from buildFeaturePreview.
+  // Both expose content-derived data the sibling read routes already gate behind
+  // mail.content.read. The base policy classifies each as a mail.triage mutation (it
+  // may persist a spam decision/status), so also require mail.content.read: a
+  // triage-only delegate without content access must not read reconstructed body
+  // content through the scan/decision result.
+  if (
+    req.method === 'POST'
+    && (
+      canonicalPath === '/api/v1/email/messages/:messageId/security/check'
+      || canonicalPath === '/api/v1/email/messages/:messageId/spam-decision'
+    )
+  ) {
     for (const resource of baseResources) {
       await ports.mailAccess!.assertPermission({
         workspaceId,

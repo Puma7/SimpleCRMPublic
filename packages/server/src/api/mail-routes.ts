@@ -545,6 +545,13 @@ async function handleMailConnectionTest(
   if (parsed.values.accountId != null) {
     const denied = await assertConnectionTestAccountAccess(ports, principal, parsed.values.accountId);
     if (denied) return denied;
+  } else if (!requireAdmin(principal)) {
+    // Ad-hoc test (no stored account): the handler opens a server-side TCP/TLS
+    // connection to a caller-supplied host:port — an SSRF probe of internal
+    // services that also ties up a socket for the connect timeout. Only owner/admin
+    // can create mail accounts, so restrict ad-hoc credential probing to them;
+    // stored-account tests keep the per-account mail.account.manage check above.
+    return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
 
   const input = {

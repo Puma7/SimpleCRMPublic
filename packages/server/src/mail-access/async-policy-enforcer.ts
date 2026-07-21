@@ -141,7 +141,23 @@ export async function enforceMailJobPolicy(
     assertPostProcessRetryPrivilege(job, actor.actor);
   }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
-  if (resolved.resources.kind === 'non_mail') return resolved.authorization;
+  // A compose-originated (user) ai.pick_canned loads canned templates under the
+  // system role and feeds their titles/bodies to the AI provider; scope that query
+  // to the initiating user's mail.draft.create accounts so it cannot surface (or copy
+  // into a draft) templates from accounts they cannot reach. Service/automatic runs
+  // carry no per-user scope and stay unrestricted. Resolved here (before the non_mail
+  // early return) so a message-less pick_canned is scoped too.
+  const pickCannedAuthorization = job.type === 'ai.pick_canned' && actor.kind === 'user'
+    ? {
+      kind: 'ai_pick_canned_scope' as const,
+      cannedScope: await requiredPorts.mailAccess.resolveScope({
+        workspaceId: job.workspaceId,
+        actor: actor.actor,
+        permission: 'mail.draft.create',
+      }),
+    }
+    : undefined;
+  if (resolved.resources.kind === 'non_mail') return pickCannedAuthorization ?? resolved.authorization;
   if (actor.kind === 'service') {
     assertServiceResources(resolved.resources);
     return resolved.authorization;
@@ -177,7 +193,26 @@ export async function enforceMailJobPolicy(
         });
       }
     }
-    return resolved.authorization;
+    // A compose-originated ai.agent / ai.pick_canned with createDraft:true calls
+    // createPostgresComposeDraftInTransaction() under the SYSTEM role, minting a reply
+    // draft the base content.read policy never covers. Recheck mail.draft.create on the
+    // message at EXECUTION time so a delegate lacking it (or whose grant was revoked
+    // after the workflow.execute parent enqueued this child) cannot create drafts.
+    if (
+      (job.type === 'ai.agent' || job.type === 'ai.pick_canned')
+      && job.payload.createDraft === true
+      && resolved.resources.kind === 'resources'
+    ) {
+      for (const resource of resolved.resources.resources) {
+        await requiredPorts.mailAccess.assertPermission({
+          workspaceId: job.workspaceId,
+          actor: actor.actor,
+          permission: 'mail.draft.create',
+          resource,
+        });
+      }
+    }
+    return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
     if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);
     throw error;

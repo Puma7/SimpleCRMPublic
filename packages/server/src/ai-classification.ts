@@ -26,8 +26,10 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-read-ports';
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
+import type { MailSqlScope } from './mail-access/types';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -829,6 +831,10 @@ export type AiPickCannedJobPlan = Readonly<{
   actorUserId?: string;
   profileId?: number;
   createDraft: boolean;
+  // The initiating user's mail.draft.create scope (compose-originated runs only).
+  // Restricts the canned-template query to global + in-scope responses; absent for
+  // service/automatic runs, which see every workspace template.
+  cannedScope?: MailSqlScope;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
@@ -860,7 +866,7 @@ export function createPostgresAiPickCannedPort(
             ? null
             : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
           const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
-          const canned = await selectCannedResponses(trx, input.workspaceId);
+          const canned = await selectCannedResponses(trx, input.workspaceId, input.cannedScope);
           return { message, profile, canned };
         },
         { applySession: options.applyWorkspaceSession },
@@ -984,11 +990,22 @@ function parseCannedPickNumber(output: string, max: number): number {
 async function selectCannedResponses(
   trx: WorkspaceTransaction,
   workspaceId: string,
+  cannedScope?: MailSqlScope,
 ): Promise<CannedRow[]> {
-  const rows = await trx
+  // A compose-originated (user) pick_canned restricts the query to the initiating
+  // user's mail.draft.create scope so the AI only sees global + in-scope templates
+  // (mirrors the account-aware canned-response HTTP list). Scope 'none' → no
+  // templates (the job then fails closed); service/automatic runs pass no scope and
+  // see everything.
+  if (cannedScope?.kind === 'none') return [];
+  let query = trx
     .selectFrom('email_canned_responses')
     .select(['id', 'title', 'body'])
-    .where('workspace_id', '=', workspaceId)
+    .where('workspace_id', '=', workspaceId);
+  if (cannedScope?.kind === 'restricted') {
+    query = query.where(cannedResponseVisibilityPredicate(workspaceId, cannedScope));
+  }
+  const rows = await query
     .orderBy('sort_order', 'asc')
     .limit(50)
     .execute();

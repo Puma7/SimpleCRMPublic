@@ -202,7 +202,7 @@ const emailThreadSelectColumns = [
  * (account_id null) or belongs to an account the delegate can reach directly or
  * as the parent of a scope-visible folder/message.
  */
-function cannedResponseVisibilityPredicate(
+export function cannedResponseVisibilityPredicate(
   workspaceId: string,
   scope: { accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] },
 ): RawBuilder<boolean> {

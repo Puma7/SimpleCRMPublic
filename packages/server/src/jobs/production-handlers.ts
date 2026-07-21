@@ -198,7 +198,7 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     },
     'ai.pick_canned': async (job) => {
       if (!options.aiPickCanned) throw new Error('AI pick-canned job port is not configured');
-      await options.aiPickCanned.pickCanned(buildAiPickCannedJobPlan(job.payload, job.workspaceId));
+      await options.aiPickCanned.pickCanned(buildAiPickCannedJobPlan(job.payload, job.workspaceId, job.mailAuthorization));
     },
     'ai.classify': async (job) => {
       if (!options.aiClassification) throw new Error('AI classification job port is not configured');
@@ -352,6 +352,7 @@ export function buildAiAgentJobPlan(
 export function buildAiPickCannedJobPlan(
   payload: JobPayload,
   jobWorkspaceId: string,
+  mailAuthorization?: MailJobAuthorization,
 ): AiPickCannedJobPlan {
   return {
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
@@ -359,6 +360,9 @@ export function buildAiPickCannedJobPlan(
     ...optionalString(payload, 'actorUserId'),
     ...optionalPositiveInteger(payload, 'profileId'),
     createDraft: optionalBoolean(payload, 'createDraft', false),
+    ...(mailAuthorization?.kind === 'ai_pick_canned_scope'
+      ? { cannedScope: mailAuthorization.cannedScope }
+      : {}),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),

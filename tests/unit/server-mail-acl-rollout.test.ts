@@ -909,6 +909,87 @@ describe('mail ACL rollout central use', () => {
     expect(getCanned).not.toHaveBeenCalled();
   });
 
+  test('scope-none user cannot read a team member by id', async () => {
+    // Same asymmetry as the canned item: the collection read port returns no rows for
+    // scope 'none', but the item's unscoped get() returns the member's display name,
+    // role, and signatureHtml. The item requires a nonempty metadata.read scope (kept
+    // out of EMPTY_SCOPE_READ_PATHS), so scope 'none' 404s before the handler runs.
+    const getTeamMember = jest.fn(async () => ({
+      id: 9,
+      sourceSqliteId: 9,
+      name: 'Member',
+      email: 'member@example.test',
+      role: 'agent',
+      signatureHtml: '<p>secret sig</p>',
+      createdAt: null,
+      updatedAt: '2026-07-20T10:00:00.000Z',
+    }));
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() { return { kind: 'none' }; },
+      } as unknown as MailAccessService),
+      emailTeamMembers: {
+        async list() { return { items: [], nextCursor: null }; },
+        get: getTeamMember,
+      } as unknown as ServerApiPorts['emailTeamMembers'],
+    });
+
+    await expect(api.handle({
+      method: 'GET',
+      path: '/api/v1/email/team-members/9',
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(getTeamMember).not.toHaveBeenCalled();
+  });
+
+  test('spam-decision POST requires content-read in addition to triage', async () => {
+    // evaluateSpamDecisionForMessage reads body_text/body_html/headers/attachments and
+    // returns the decision breakdown (featureKeys via buildFeaturePreview), so a
+    // triage-only delegate without content access must be blocked before the handler —
+    // mirroring the sibling security-check POST.
+    const evaluateSpamDecision = jest.fn(async () => null);
+    const withMailAccess = (mailAccess: MailAccessService) => createServerApi({
+      ...makeCentralPorts(mailAccess),
+      emailMessages: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        evaluateSpamDecision,
+      } as unknown as ServerApiPorts['emailMessages'],
+    });
+
+    const denyContentRead = withMailAccess({
+      async assertPermission(input) {
+        if (input.permission === 'mail.content.read') throw new MailAccessDeniedError();
+      },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await expect(denyContentRead.handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/spam-decision`,
+      body: { applyStatus: false },
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(evaluateSpamDecision).not.toHaveBeenCalled();
+
+    const calls: string[] = [];
+    const allowAll = withMailAccess({
+      async assertPermission(input) { calls.push(`assert:${input.permission}:${input.resource.type}`); },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    await allowAll.handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/spam-decision`,
+      body: { applyStatus: false },
+      principal: principal(),
+    });
+    expect(calls).toEqual(expect.arrayContaining([
+      'assert:mail.triage:message',
+      'assert:mail.content.read:message',
+    ]));
+    expect(evaluateSpamDecision).toHaveBeenCalledTimes(1);
+  });
+
   test('remote-content remember flags are denied for a scoped non-admin (owner/admin only)', async () => {
     const setRemoteContentPolicy = jest.fn();
     const api = createServerApi({

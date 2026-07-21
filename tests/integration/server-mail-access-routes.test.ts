@@ -2098,11 +2098,12 @@ describe('server mailbox ACL migration', () => {
         },
       },
     }));
-    const principal = makePrincipal();
+    // Ad-hoc credential tests (no accountId) now require owner/admin, so use an owner
+    // here — the route stays ACL-exempt, the gate lives in the handler.
     const authSetup = await api.handle({
       method: 'POST',
       path: '/api/v1/email/accounts/test-imap',
-      principal,
+      principal: makePrincipal('owner'),
       body: {
         imapHost: 'imap.example.test',
         imapPort: 993,
@@ -2114,7 +2115,7 @@ describe('server mailbox ACL migration', () => {
     const adminSecurity = await api.handle({
       method: 'GET',
       path: '/api/v1/email/settings/security',
-      principal,
+      principal: makePrincipal(),
     });
     const health = await api.handle({ method: 'GET', path: '/health' });
 
@@ -2122,6 +2123,30 @@ describe('server mailbox ACL migration', () => {
     expect(testImap).toHaveBeenCalledTimes(1);
     expect(adminSecurity).toMatchObject({ status: 403, body: { error: { code: 'forbidden' } } });
     expect(health).toMatchObject({ status: 200, body: { data: { status: 'ok' } } });
+  });
+
+  test('requires owner/admin for ad-hoc connection tests without a stored account', async () => {
+    // An ad-hoc test opens a server-side TCP/TLS connection to a caller-supplied
+    // host:port (SSRF probe + socket exhaustion). An ordinary user cannot create mail
+    // accounts, so ad-hoc probing is owner/admin-only; the port must not run for a
+    // plain user.
+    const testSmtp = jest.fn(async () => ({ success: true as const }));
+    const api = createServerApi(makeHttpPorts({
+      overrides: { mailConnectionTests: { async testImap() { return { success: true }; }, async testPop3() { return { success: true }; }, testSmtp } },
+    }));
+    const adHocBody = { host: 'internal.example.test', port: 587, secure: false, user: 'user', password: 'secret' };
+
+    const denied = await api.handle({
+      method: 'POST', path: '/api/v1/email/accounts/test-smtp', principal: makePrincipal(), body: adHocBody,
+    });
+    expect(denied).toMatchObject({ status: 403, body: { error: { code: 'forbidden' } } });
+    expect(testSmtp).not.toHaveBeenCalled();
+
+    const allowed = await api.handle({
+      method: 'POST', path: '/api/v1/email/accounts/test-smtp', principal: makePrincipal('admin'), body: adHocBody,
+    });
+    expect(allowed.status).toBe(200);
+    expect(testSmtp).toHaveBeenCalledTimes(1);
   });
 
   test('requires mail.account.manage to test a stored account by id', async () => {
