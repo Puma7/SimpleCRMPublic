@@ -664,6 +664,54 @@ async function callerHasMessageContentRead(
   }
 }
 
+// Batched form of callerHasMessageContentRead for the bulk spam-training gate (R45-2).
+// Resolves the caller's mail.content.read scope ONCE, then checks every selected message
+// against it in memory — instead of a resource lookup PLUS a separate grant-resolution
+// transaction PER message (so training the 500-message max no longer incurs ~1000 sequential
+// DB ops). The set membership (account OR folder OR message id) mirrors mailScopePredicate,
+// which is exactly what assertPermission('mail.content.read') reduces to for a message
+// resource (grantAllowsResource), so the batched gate is neither more nor less permissive.
+// Fails closed on any unresolvable message; any single miss downgrades the whole batch.
+async function callerCanTrainAllMessages(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  messageIds: readonly number[],
+): Promise<boolean> {
+  if (principal.role === 'owner' || principal.role === 'admin') return true;
+  if (!ports.mailAccess || !ports.mailResourceLookup) return false;
+  const actor: MailAccessActor = {
+    workspaceId: principal.workspaceId,
+    userId: principal.userId,
+    isOwner: false,
+    isAdmin: false,
+  };
+  const scope = await ports.mailAccess.resolveScope({
+    workspaceId: principal.workspaceId,
+    actor,
+    permission: 'mail.content.read',
+  });
+  if (scope.kind === 'all') return true;
+  if (scope.kind === 'none') return false;
+  const accountIds = new Set(scope.accountIds);
+  const folderIds = new Set(scope.folderIds);
+  const scopedMessageIds = new Set(scope.messageIds);
+  for (const messageId of messageIds) {
+    const resources = await ports.mailResourceLookup.resolve({
+      workspaceId: principal.workspaceId,
+      target: { kind: 'message', id: messageId },
+    });
+    if (resources.length === 0) return false;
+    const inScope = resources.every((resource) => (
+      resource.type === 'message'
+      && (accountIds.has(Number(resource.accountId))
+        || folderIds.has(Number(resource.folderId))
+        || scopedMessageIds.has(Number(resource.messageId)))
+    ));
+    if (!inScope) return false;
+  }
+  return true;
+}
+
 async function handleEmailOAuthApp(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1738,15 +1786,11 @@ async function handleMessageBulkSetSpamStatus(req: ApiRequest, ports: ServerApiP
   // lacking mail.content.read on any selected message must not train on it — downgrade
   // the whole batch to a status-only mutation rather than leaking content per message.
   let values = parsed.values;
-  if (parsed.values.train !== false) {
-    let canTrainAll = true;
-    for (const messageId of parsed.messageIds) {
-      if (!(await callerHasMessageContentRead(ports, principal, messageId))) {
-        canTrainAll = false;
-        break;
-      }
-    }
-    if (!canTrainAll) values = { ...parsed.values, train: false as const };
+  if (
+    parsed.values.train !== false
+    && !(await callerCanTrainAllMessages(ports, principal, parsed.messageIds))
+  ) {
+    values = { ...parsed.values, train: false as const };
   }
   const result = await ports.emailMessages.bulkSetSpamStatus({
     workspaceId: principal.workspaceId,

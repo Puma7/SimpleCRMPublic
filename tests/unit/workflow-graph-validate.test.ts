@@ -1,5 +1,6 @@
 import {
   WORKFLOW_TEMPLATES,
+  collectWorkflowCreateDraftStaticAccountIds,
   collectWorkflowSendDraftStaticDraftIds,
   collectWorkflowSendDraftVariableStaticDraftIds,
   findOutboundGraphTraps,
@@ -643,5 +644,53 @@ describe('collectWorkflowSendDraftVariableStaticDraftIds', () => {
     expect(collectWorkflowSendDraftVariableStaticDraftIds({})).toEqual([]);
     expect(collectWorkflowSendDraftVariableStaticDraftIds({ nodes: 'x' })).toEqual([]);
     expect(collectWorkflowSendDraftVariableStaticDraftIds('{not json')).toEqual([]);
+  });
+});
+
+describe('collectWorkflowCreateDraftStaticAccountIds', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('resolves email.account_id pinned by a logic.set_variable node when the graph creates a draft', () => {
+    expect(
+      collectWorkflowCreateDraftStaticAccountIds(graphOf([
+        trigger,
+        { id: 'v1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+        { id: 'd1', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+        // The bare set_variable action alias with a numeric string is also resolved.
+        { id: 'v2', type: 'action', data: { actionType: 'set_variable', config: { name: 'email.account_id', value: '4' } } },
+      ])).sort((a, b) => a - b),
+    ).toEqual([4, 9]);
+  });
+
+  it('ignores dynamic/interpolated values, other variable names, and graphs without a create_draft node', () => {
+    // Interpolated value → unknown at policy time.
+    expect(collectWorkflowCreateDraftStaticAccountIds(graphOf([
+      trigger,
+      { id: 'vi', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{customer.accountId}}' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toEqual([]);
+    // A set_variable on a different name is irrelevant to create_draft's fixed variable.
+    expect(collectWorkflowCreateDraftStaticAccountIds(graphOf([
+      trigger,
+      { id: 'vo', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: 9 } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toEqual([]);
+    // Pinned account but no create_draft node → nothing to authorize.
+    expect(collectWorkflowCreateDraftStaticAccountIds(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+    ]))).toEqual([]);
+  });
+
+  it('returns [] for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(collectWorkflowCreateDraftStaticAccountIds(null)).toEqual([]);
+    expect(collectWorkflowCreateDraftStaticAccountIds({})).toEqual([]);
+    expect(collectWorkflowCreateDraftStaticAccountIds({ nodes: 'x' })).toEqual([]);
+    expect(collectWorkflowCreateDraftStaticAccountIds('{not json')).toEqual([]);
   });
 });

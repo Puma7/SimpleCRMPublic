@@ -1317,6 +1317,62 @@ describe('mail ACL rollout central use', () => {
     ]);
   });
 
+  test('bulk spam training resolves the content scope ONCE and batches the readability check (R45-2)', async () => {
+    // The gate used to call resolve + a grant-resolution transaction PER message; it now
+    // resolves the mail.content.read scope once and checks every message against it. Two
+    // selected messages must incur exactly ONE content-read scope resolution and NO
+    // per-message content-read assertion, while the train-downgrade semantics are preserved.
+    const makeApi = (
+      scope: { kind: 'restricted'; accountIds: number[]; folderIds: number[]; messageIds: number[] },
+      sink: { scopeCalls: string[]; contentAsserts: string[]; train: Array<boolean | undefined> },
+    ) => createServerApi({
+      ...makeCentralPorts({
+        async assertPermission(input: { permission: string }) {
+          if (input.permission === 'mail.content.read') sink.contentAsserts.push(input.permission);
+        },
+        async resolveScope(input: { permission: string }) {
+          if (input.permission === 'mail.content.read') sink.scopeCalls.push(input.permission);
+          return scope;
+        },
+      } as unknown as MailAccessService),
+      emailMessages: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        async bulkSetSpamStatus(input: { values: { train?: boolean } }) {
+          sink.train.push(input.values.train);
+          return { updated: 0 };
+        },
+      } as unknown as ServerApiPorts['emailMessages'],
+    });
+
+    // Both messages resolve to ACCOUNT_A (makeCentralPorts), which is in scope → train kept,
+    // exactly ONE content-read scope resolution, and NO per-message content-read assertion.
+    const inScopeSink = { scopeCalls: [] as string[], contentAsserts: [] as string[], train: [] as Array<boolean | undefined> };
+    const inScope = makeApi({ kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] }, inScopeSink);
+    const kept = await inScope.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/bulk/spam-status',
+      principal: principal(),
+      body: { messageIds: [MESSAGE_A, MESSAGE_A + 1], status: 'spam', train: true },
+    });
+    expect(kept.status).toBe(200);
+    expect(inScopeSink.train).toEqual([true]);
+    expect(inScopeSink.scopeCalls).toEqual(['mail.content.read']);
+    expect(inScopeSink.contentAsserts).toEqual([]);
+
+    // A scope excluding the messages → whole batch downgraded to train:false (semantics kept).
+    const outScopeSink = { scopeCalls: [] as string[], contentAsserts: [] as string[], train: [] as Array<boolean | undefined> };
+    const outScope = makeApi({ kind: 'restricted', accountIds: [ACCOUNT_A + 999], folderIds: [], messageIds: [] }, outScopeSink);
+    const downgraded = await outScope.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/bulk/spam-status',
+      principal: principal(),
+      body: { messageIds: [MESSAGE_A, MESSAGE_A + 1], status: 'spam', train: true },
+    });
+    expect(downgraded.status).toBe(200);
+    expect(outScopeSink.train).toEqual([false]);
+  });
+
   test('spam-decision POST requires content-read in addition to triage', async () => {
     // evaluateSpamDecisionForMessage reads body_text/body_html/headers/attachments and
     // returns the decision breakdown (featureKeys via buildFeaturePreview), so a

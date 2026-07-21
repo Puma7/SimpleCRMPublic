@@ -597,6 +597,62 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
+  test('rechecks mail.draft.create on a create_draft account pinned by set_variable, incl. message-less runs (R45-1)', async () => {
+    // email.create_draft mints a draft under the account named by the email.account_id
+    // variable; a set_variable pinning it to account 9 (≠ the context message's account 7)
+    // must be authorized against account 9 — and even a message-less run (which skips the
+    // resource-gated draft.create recheck) is gated here.
+    const pinnedGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+      { type: 'registry', data: { nodeType: 'email.create_draft' } },
+    ] };
+    const missingAccountGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 999 } } },
+      { type: 'registry', data: { nodeType: 'email.create_draft' } },
+    ] };
+    const graphs = new Map<number, unknown>([[745, pinnedGraph], [746, missingAccountGraph]]);
+
+    // Pinned account 9 is authorized (in addition to the context message's account).
+    const allowed = makePolicyPorts({ workflowGraphs: graphs, resolvableAccountIds: new Set([9]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 745, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.draft.create',
+      resource: { type: 'account', accountId: '9' },
+    }));
+
+    // Revoking mail.draft.create → denied (account 9 resolves, then the assertion fails).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 745, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, resolvableAccountIds: new Set([9]), denyPermissions: new Set(['mail.draft.create']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // A MESSAGE-LESS run (no context message) is still gated on the pinned account.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 745 },
+    }), makePolicyPorts({ workflowGraphs: graphs, resolvableAccountIds: new Set([9]), denyPermissions: new Set(['mail.draft.create']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // A pinned account that resolves to nothing (deleted/foreign) fails closed.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 746, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // Trusted-service runs return before the supplemental.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.create']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 745, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
   test('rechecks mail.draft.edit for workflow release/hold_outbound and static/variable-pinned send_draft nodes (R40-4/R41-3/R42-1)', async () => {
     // release_outbound / hold_outbound mutate the workflow message; send_draft with a static
     // config.draftId arms a SEPARATE target draft — all under the system role, all mutating a
@@ -1830,6 +1886,7 @@ function makePolicyPorts(options: {
   scope?: { kind: 'all' } | { kind: 'none' }
     | { kind: 'restricted'; accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] };
   folderAccounts?: ReadonlyMap<number, string>;
+  resolvableAccountIds?: ReadonlySet<number>;
 } = {}) {
   const lookups: unknown[] = [];
   const delayedJobLookups: number[] = [];
@@ -1882,8 +1939,11 @@ function makePolicyPorts(options: {
           }
           return [];
         }
-        if (input.target.kind === 'account' && input.target.id === 7) {
-          return [{ type: 'account' as const, accountId: '7' }];
+        if (
+          input.target.kind === 'account'
+          && (input.target.id === 7 || options.resolvableAccountIds?.has(Number(input.target.id)))
+        ) {
+          return [{ type: 'account' as const, accountId: String(input.target.id) }];
         }
         if (input.target.kind === 'message' && [12, 13, 101].includes(Number(input.target.id))) {
           return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: String(input.target.id) }];

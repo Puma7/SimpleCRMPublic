@@ -1,5 +1,6 @@
 import type { MailResource } from '@simplecrm/core';
 import {
+  collectWorkflowCreateDraftStaticAccountIds,
   collectWorkflowSendDraftStaticDraftIds,
   collectWorkflowSendDraftVariableStaticDraftIds,
   workflowGraphHasAnyNodeType,
@@ -161,6 +162,12 @@ export async function enforceMailJobPolicy(
     await assertWorkflowExecuteSideEffectPrivilege(job, actor.actor, requiredPorts);
     assertWorkflowChildSideEffectPrivilege(job, actor.actor);
     assertPostProcessRetryPrivilege(job, actor.actor);
+    // Runs BEFORE the message-less early return: a message-less create_draft run resolves to
+    // non_mail (returns below) yet still mints a draft under the account named by a
+    // set_variable-pinned email.account_id. Authorize that account here so the check is not
+    // skipped. (The default-account case — email.account_id = the context message's account —
+    // is covered by the resource-gated draft.create recheck further down.)
+    await assertWorkflowExecuteDraftCreateStaticAccountPrivilege(job, actor.actor, requiredPorts);
   }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
   // A compose-originated (user) ai.pick_canned loads canned templates under the
@@ -539,6 +546,56 @@ async function assertWorkflowExecuteDraftCreateNodePrivilege(
       permission: 'mail.draft.create',
       resource,
     });
+  }
+}
+
+// R45-1: email.create_draft mints a NEW draft row under the account named by the
+// `email.account_id` workflow variable — seeded from the trigger message's account but
+// overwritable by a logic.set_variable node — under the SYSTEM role with no per-actor ACL.
+// The resource-gated draft.create recheck above only authorizes the CONTEXT message's account
+// (the default seed), so a set_variable pinning email.account_id to a DIFFERENT account lets a
+// delegate mint a draft in an account they cannot reach (and a message-less run skips that
+// recheck entirely). For each account the current graph statically pins email.account_id to,
+// resolve it and require mail.draft.create. A variable fed from genuine runtime data stays
+// unknown at policy time and — unlike send_draft, whose SMTP send is rechecked downstream —
+// create_draft has no later recheck, so that residual case is not covered here. Runs in the
+// pre-resolution user block so it also covers message-less runs; converts a denial to the
+// nonRetryable async error since it fires outside the main try/catch.
+async function assertWorkflowExecuteDraftCreateStaticAccountPrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (!loaded) return;
+  const accountIds = collectWorkflowCreateDraftStaticAccountIds(loaded.graph);
+  if (accountIds.length === 0) return;
+  try {
+    for (const accountId of accountIds) {
+      const targets = await ports.mailResourceLookup.resolve({
+        workspaceId: job.workspaceId,
+        target: { kind: 'account', id: accountId },
+      });
+      // A pinned account that resolves to nothing (deleted/foreign) fails closed.
+      if (targets.length === 0) throw new MailAsyncAuthorizationError();
+      for (const resource of targets) {
+        await ports.mailAccess.assertPermission({
+          workspaceId: job.workspaceId,
+          actor,
+          permission: 'mail.draft.create',
+          resource,
+        });
+      }
+    }
+  } catch (error) {
+    if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);
+    throw error;
   }
 }
 

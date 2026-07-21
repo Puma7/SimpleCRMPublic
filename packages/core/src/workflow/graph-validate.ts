@@ -325,6 +325,56 @@ export function collectWorkflowSendDraftVariableStaticDraftIds(graph: unknown): 
   return [...ids];
 }
 
+/**
+ * Collect the ACCOUNT ids an `email.create_draft` node would mint a draft under when the
+ * `email.account_id` workflow variable is pinned to a STATIC positive-integer literal by a
+ * `logic.set_variable` node in the same graph. email.create_draft reads its target account
+ * PURELY from `context.variables['email.account_id']` (seeded from the trigger message's
+ * account but overwritable by a set_variable node), and the executor inserts the draft row
+ * under that account under the SYSTEM role with NO per-actor ACL. The async job enforcer
+ * resolves these statically-pinned accounts and requires mail.draft.create on each, so a
+ * user-attributed run cannot mint a draft in an account the actor cannot reach (R45-1;
+ * mirrors R42-1's send_draft variable target). Only concrete integer literals are resolved —
+ * a variable fed from genuine runtime data is unknown at policy time, and unlike send_draft
+ * (whose eventual SMTP send is rechecked downstream) create_draft has no later recheck, so
+ * that residual case is not covered here. Deduplicated.
+ */
+export function collectWorkflowCreateDraftStaticAccountIds(graph: unknown): number[] {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return [];
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+
+  // Only relevant when the graph actually creates a draft — create_draft reads the FIXED
+  // 'email.account_id' variable, so its statically-pinned values are the target accounts.
+  const createsDraft = nodes.some((raw) => (
+    raw !== null && typeof raw === 'object'
+    && sideEffectRuntimeType(raw as WorkflowGraphNode) === 'email.create_draft'
+  ));
+  if (!createsDraft) return [];
+
+  const ids = new Set<number>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') continue;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    if (name !== 'email.account_id') continue;
+    const id = staticPositiveIntOrNull(config.value);
+    if (id !== null) ids.add(id);
+  }
+  return [...ids];
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;
