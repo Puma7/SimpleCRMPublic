@@ -34331,10 +34331,11 @@ describe('server edition foundation', () => {
         async update(input) { updateCalls.push(input); return { ok: true, job: existingJob }; },
       },
     }));
-    // A live send node makes the backing workflow.execute side-effecting; a logic
-    // node keeps it read-only.
+    // A live send node makes the backing workflow.execute side-effecting; an in-memory
+    // logic node (logic.set_variable) keeps it read-only. NB: only the enumerated
+    // in-memory logic.* helpers are exempt — an unrecognized logic.* type fails closed.
     const sideEffectGraph = { nodes: [{ id: 'send-1', type: 'action', data: { nodeType: 'email.send' } }], edges: [] };
-    const readOnlyGraph = { nodes: [{ id: 'branch-1', type: 'action', data: { nodeType: 'logic.branch' } }], edges: [] };
+    const readOnlyGraph = { nodes: [{ id: 'branch-1', type: 'action', data: { nodeType: 'logic.set_variable' } }], edges: [] };
     const manager = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
     const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 

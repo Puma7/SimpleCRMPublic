@@ -183,6 +183,34 @@ export function workflowGraphHasNodeType(graph: unknown, nodeType: string): bool
   return false;
 }
 
+/**
+ * Like workflowGraphHasNodeType but matches ANY runtime type in `nodeTypes`. Used by
+ * the async job enforcer to recheck a shared per-node permission across a family of
+ * node types (e.g. mail.triage for the triage-class mutation nodes). The set must
+ * include both the registry dotted form (email.tag) AND any legacy canvas action alias
+ * (tag), since sideEffectRuntimeType returns the bare actionType for action nodes.
+ */
+export function workflowGraphHasAnyNodeType(graph: unknown, nodeTypes: ReadonlySet<string>): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type !== 'action' && node.type !== 'registry') continue;
+    if (nodeTypes.has(sideEffectRuntimeType(node))) return true;
+  }
+  return false;
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;

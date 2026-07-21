@@ -3,6 +3,7 @@ import {
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
+  workflowGraphHasAnyNodeType,
   workflowGraphHasNodeType,
   workflowGraphHasSideEffectNode,
 } from '@simplecrm/core';
@@ -512,5 +513,47 @@ describe('workflowGraphHasNodeType', () => {
     );
     expect(workflowGraphHasNodeType(json, 'email.delete_server')).toBe(true);
     expect(workflowGraphHasNodeType('{not json', 'email.delete_server')).toBe(false);
+  });
+});
+
+describe('workflowGraphHasAnyNodeType', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+  const TRIAGE = new Set(['email.tag', 'tag', 'email.archive', 'archive']);
+
+  it('matches any registry node whose runtime type is in the set', () => {
+    expect(
+      workflowGraphHasAnyNodeType(
+        graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType: 'email.tag', config: {} } }]),
+        TRIAGE,
+      ),
+    ).toBe(true);
+  });
+
+  it('matches a legacy action node by its bare actionType', () => {
+    expect(
+      workflowGraphHasAnyNodeType(
+        graphOf([trigger, { id: 'a', type: 'action', data: { actionType: 'archive' } }]),
+        TRIAGE,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false when no node type is in the set', () => {
+    expect(
+      workflowGraphHasAnyNodeType(
+        graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } }]),
+        TRIAGE,
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false for null / non-object / graph without nodes', () => {
+    expect(workflowGraphHasAnyNodeType(null, TRIAGE)).toBe(false);
+    expect(workflowGraphHasAnyNodeType({ nodes: 'x' }, TRIAGE)).toBe(false);
   });
 });

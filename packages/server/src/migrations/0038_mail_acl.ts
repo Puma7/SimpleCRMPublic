@@ -72,9 +72,18 @@ export const mailAclMigration: SqlMigration = {
   CONSTRAINT mail_acl_bindings_folder_fk
     FOREIGN KEY (workspace_id, account_id, folder_id)
     REFERENCES email_folders(workspace_id, account_id, id) ON DELETE CASCADE,
+  -- ON UPDATE CASCADE: a message-level binding references the message's CURRENT
+  -- (account_id, folder_id), but a message legitimately moves — updateRelayedMessageContent
+  -- reroutes a failed relay retry to a new account/folder, and the SQLite importer
+  -- rewrites account_id/folder_id on re-import conflict. Without CASCADE the composite
+  -- key vanishes and the move is rejected once a binding exists. Cascading keeps the
+  -- per-message grant pointing at the same message (message_id fixed) at its new
+  -- location, so both the SQL scope and the in-memory grant matcher (which compares
+  -- current account/folder) stay correct. Folder/account bindings have NULL columns
+  -- here (MATCH SIMPLE) and are untouched, so a folder grant does not follow the message.
   CONSTRAINT mail_acl_bindings_message_fk
     FOREIGN KEY (workspace_id, account_id, folder_id, message_id)
-    REFERENCES email_messages(workspace_id, account_id, folder_id, id) ON DELETE CASCADE,
+    REFERENCES email_messages(workspace_id, account_id, folder_id, id) ON UPDATE CASCADE ON DELETE CASCADE,
   CONSTRAINT mail_acl_bindings_created_by_fk
     FOREIGN KEY (workspace_id, created_by)
     REFERENCES users(workspace_id, id) ON DELETE SET NULL (created_by)

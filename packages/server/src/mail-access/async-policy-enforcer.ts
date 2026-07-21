@@ -1,5 +1,5 @@
 import type { MailResource } from '@simplecrm/core';
-import { workflowGraphHasNodeType, workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import { workflowGraphHasAnyNodeType, workflowGraphHasNodeType, workflowGraphHasSideEffectNode } from '@simplecrm/core';
 
 import type {
   AuthenticatedPrincipal,
@@ -297,6 +297,12 @@ export async function enforceMailJobPolicy(
         resolved.resources.resources,
         requiredPorts,
       );
+      await assertWorkflowExecuteTriageNodePrivilege(
+        job,
+        actor.actor,
+        resolved.resources.resources,
+        requiredPorts,
+      );
     }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
@@ -426,6 +432,56 @@ async function assertWorkflowExecuteDeleteNodePrivilege(
       workspaceId: job.workspaceId,
       actor,
       permission: 'mail.delete',
+      resource,
+    });
+  }
+}
+
+// R38-1: the triage-class workflow nodes — tag / category / archive / mark-seen /
+// assign / spam-status / spam / IMAP-move / customer-link — mutate the message row (or
+// its tag/category child rows, or its IMAP flags/folder) under the system role with no
+// per-actor ACL, exactly like email.delete_server. The base workflow.execute policy
+// only requires mail.content.read, so a user-attributed run (user-triggered sync) whose
+// actor kept content.read but lacks/lost mail.triage would still mutate. Each of these
+// nodes' HTTP equivalent requires mail.triage (verified against policy-manifest), so
+// recheck mail.triage on the resolved message when the CURRENT graph contains any of
+// them. The set carries BOTH the registry dotted form and the legacy canvas action
+// alias, because sideEffectRuntimeType returns the bare actionType for action nodes.
+// (email.delete_server → mail.delete is handled above; email.create_draft →
+// mail.draft.create is a separate gap and intentionally NOT here.)
+const WORKFLOW_TRIAGE_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'email.tag', 'tag',
+  'email.set_category', 'set_category',
+  'email.tag_attachment_meta', 'tag_attachment_meta',
+  'email.set_priority',
+  'email.mark_seen', 'mark_seen',
+  'email.archive', 'archive',
+  'email.set_spam_status',
+  'email.mark_spam',
+  'email.move_imap',
+  'email.assign',
+  'crm.link_customer', 'link_customer',
+]);
+
+async function assertWorkflowExecuteTriageNodePrivilege(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  resources: readonly MailResource[],
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'workflow.execute') return;
+  const workflowId = optionalPositiveInt(job.payload.workflowId);
+  if (workflowId === null || !ports.mailResourceLookup.loadWorkflowGraphForPolicy) return;
+  const loaded = await ports.mailResourceLookup.loadWorkflowGraphForPolicy({
+    workspaceId: job.workspaceId,
+    workflowId,
+  });
+  if (!loaded || !workflowGraphHasAnyNodeType(loaded.graph, WORKFLOW_TRIAGE_NODE_TYPES)) return;
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.triage',
       resource,
     });
   }

@@ -498,6 +498,55 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
+  test('rechecks mail.triage for a workflow.execute whose current graph mutates via triage-class nodes (R38-1)', async () => {
+    // Triage-class nodes (tag/category/archive/mark_seen/assign/spam/move) mutate the
+    // message under the system role, yet the base policy only requires content.read. A
+    // user-attributed run whose actor kept content.read but lacks mail.triage must be denied.
+    const tagGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.tag' } }] };
+    const legacyArchiveGraph = { nodes: [{ type: 'action', data: { actionType: 'archive' } }] };
+    const draftGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.create_draft' } }] };
+    const graphs = new Map<number, unknown>([[730, tagGraph], [731, legacyArchiveGraph], [732, draftGraph]]);
+
+    // Triage-node graph + mail.triage revoked → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.triage']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.triage retained: base content.read + the triage supplemental.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.triage']);
+
+    // A LEGACY canvas action node (bare actionType 'archive') is caught too.
+    const legacy = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.triage']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 731, messageId: 12 },
+    }), legacy)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A non-triage node (email.create_draft needs mail.draft.create, not triage) adds
+    // no triage requirement here — content.read only.
+    const draftOnly = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 732, messageId: 12 },
+    }), draftOnly);
+    expect(draftOnly.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // Trusted-service runs return before the supplemental.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.triage']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 730, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
   test('rechecks side-effect privilege for MANUAL-marked workflow child jobs, not compose-originated ones', async () => {
     const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
     // ai.pick_canned is covered separately: a user actor now always returns a
