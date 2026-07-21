@@ -27570,14 +27570,27 @@ describe('server edition foundation', () => {
     expect(unavailableTag.status).toBe(503);
     expect((unavailableTag.body as any).error.code).toBe('email_message_tags_unavailable');
 
+    // The top-level POST /tags now authorizes against the body's messageId (message
+    // resource), so a non-object body carries no message and is denied before the
+    // payload validator runs. The message-scoped route still exercises the validator
+    // (its message comes from the path).
     const invalidTagPayload = await writableApi.handle({
       method: 'POST',
-      path: '/api/v1/email/tags',
+      path: '/api/v1/email/messages/11/tags',
       body: [],
       principal,
     });
     expect(invalidTagPayload.status).toBe(400);
     expect((invalidTagPayload.body as any).error.code).toBe('invalid_email_tag_payload');
+
+    // A non-object body on the top-level route cannot resolve its target message.
+    const unresolvableTopLevelTag = await writableApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      body: [],
+      principal,
+    });
+    expect(unresolvableTopLevelTag.status).toBe(404);
 
     const mismatchedTagMessage = await writableApi.handle({
       method: 'POST',

@@ -614,6 +614,44 @@ async function assertConnectionTestAccountAccess(
   return null;
 }
 
+// Whether the caller may read the given message's body content. Owner/admin always
+// can; a delegate needs mail.content.read on the message resource. Used by the
+// spam-status handler to decide whether training (which reads the body and can ship
+// raw content to Rspamd) may run. Fails closed on a missing/unresolvable resource.
+async function callerHasMessageContentRead(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  messageId: number,
+): Promise<boolean> {
+  if (principal.role === 'owner' || principal.role === 'admin') return true;
+  if (!ports.mailAccess || !ports.mailResourceLookup) return false;
+  const actor: MailAccessActor = {
+    workspaceId: principal.workspaceId,
+    userId: principal.userId,
+    isOwner: false,
+    isAdmin: false,
+  };
+  const resources = await ports.mailResourceLookup.resolve({
+    workspaceId: principal.workspaceId,
+    target: { kind: 'message', id: messageId },
+  });
+  if (resources.length === 0) return false;
+  try {
+    for (const resource of resources) {
+      await ports.mailAccess.assertPermission({
+        workspaceId: principal.workspaceId,
+        actor,
+        permission: 'mail.content.read',
+        resource,
+      });
+    }
+    return true;
+  } catch (caught) {
+    if (caught instanceof MailAccessDeniedError) return false;
+    throw caught;
+  }
+}
+
 async function handleEmailOAuthApp(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1656,11 +1694,26 @@ async function handleMessageBulkSetSpamStatus(req: ApiRequest, ports: ServerApiP
   }
   const parsed = parseEmailMessageBulkSpamStatusMutationBody(req.body);
   if (!parsed.ok) return parsed.response;
+  // As on the single-message route, training reads every selected message's body and
+  // can ship it to Rspamd. mail.triage authorizes the status flip, but a delegate
+  // lacking mail.content.read on any selected message must not train on it — downgrade
+  // the whole batch to a status-only mutation rather than leaking content per message.
+  let values = parsed.values;
+  if (parsed.values.train !== false) {
+    let canTrainAll = true;
+    for (const messageId of parsed.messageIds) {
+      if (!(await callerHasMessageContentRead(ports, principal, messageId))) {
+        canTrainAll = false;
+        break;
+      }
+    }
+    if (!canTrainAll) values = { ...parsed.values, train: false as const };
+  }
   const result = await ports.emailMessages.bulkSetSpamStatus({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     messageIds: parsed.messageIds,
-    values: parsed.values,
+    values,
     ...(parsed.accountId === undefined ? {} : { accountId: parsed.accountId }),
   });
   return data(200, result);
@@ -2487,26 +2540,37 @@ async function handleMessageSpamStatusMutation(
   const parsed = parseEmailMessageSpamStatusMutationBody(req.body);
   if (!parsed.ok) return parsed.response;
 
+  // Training derives features from the message body and, when Rspamd learning is
+  // enabled, ships the raw RFC822 + headers + both bodies to the configured Rspamd
+  // endpoint — a content read. mail.triage authorizes flipping the spam flag, but a
+  // delegate lacking mail.content.read on the message must not trigger the training
+  // egress, so downgrade to a status-only mutation. Reached by both the direct
+  // PATCH and the /actions spam quick-actions, which converge on this handler.
+  const values = parsed.values.train !== false
+    && !(await callerHasMessageContentRead(ports, principal, messageId))
+    ? { ...parsed.values, train: false as const }
+    : parsed.values;
+
   const message = await ports.emailMessages.setSpamStatus({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     messageId,
-    values: parsed.values,
+    values,
   });
   if (!message) return error(404, 'email_message_not_found', 'Email message nicht gefunden');
 
   await auditEmailMessageSpamStatus(ports, principal, message, {
     status: message.spamStatus,
-    train: parsed.values.train !== false,
-    source: parsed.values.source ?? 'manual',
-    featureKeyCount: parsed.values.featureKeys?.length ?? 0,
+    train: values.train !== false,
+    source: values.source ?? 'manual',
+    featureKeyCount: values.featureKeys?.length ?? 0,
   });
   await publishEmailMessageUpdated(ports, principal.workspaceId, message, principal.userId, {
     spamStatus: message.spamStatus,
     isSpam: message.isSpam,
-    train: parsed.values.train !== false,
-    source: parsed.values.source ?? 'manual',
-    featureKeyCount: parsed.values.featureKeys?.length ?? 0,
+    train: values.train !== false,
+    source: values.source ?? 'manual',
+    featureKeyCount: values.featureKeys?.length ?? 0,
   });
   return data(200, sanitizeEmailMessage(message, false));
 }

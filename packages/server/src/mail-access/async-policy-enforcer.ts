@@ -222,6 +222,26 @@ export async function enforceMailJobPolicy(
         });
       }
     }
+    // A compose- or workflow-originated ai.review mutates its message under the
+    // SYSTEM role when the model returns BLOCK: an outbound review sets
+    // outbound_hold/outbound_block_reason on the draft (a draft edit), while an
+    // inbound review adds the ki-review-block tag (a triage action). The base
+    // mail.content.read policy covers neither, so recheck the matching mutation
+    // permission at EXECUTION time — a delegate whose draft.edit/triage was revoked
+    // after the parent enqueued this child cannot mutate the message through it.
+    if (job.type === 'ai.review' && resolved.resources.kind === 'resources') {
+      const reviewMutationPermission = job.payload.direction === 'outbound'
+        ? 'mail.draft.edit' as const
+        : 'mail.triage' as const;
+      for (const resource of resolved.resources.resources) {
+        await requiredPorts.mailAccess.assertPermission({
+          workspaceId: job.workspaceId,
+          actor: actor.actor,
+          permission: reviewMutationPermission,
+          resource,
+        });
+      }
+    }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
     if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);

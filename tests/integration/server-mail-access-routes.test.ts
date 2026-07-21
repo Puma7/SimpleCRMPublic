@@ -1552,6 +1552,103 @@ describe('server mailbox ACL migration', () => {
     expect(observedContentScopes.slice(6, 9)).toEqual([undefined, undefined, undefined]);
   });
 
+  test('downgrades spam training when the caller lacks content-read on the message', async () => {
+    const observedTrain: Array<boolean | undefined> = [];
+    const overrides: Partial<ServerApiPorts> = {
+      emailMessages: {
+        list: async () => ({ items: [], nextCursor: null }),
+        get: async () => null,
+        async setSpamStatus(input) {
+          observedTrain.push(input.values.train);
+          return makeMessageRecord(MESSAGE_A);
+        },
+        async bulkSetSpamStatus(input) {
+          observedTrain.push(input.values.train);
+          return { count: 1 };
+        },
+      } as unknown as ServerApiPorts['emailMessages'],
+    };
+    const triageGrant = {
+      resourceType: 'message' as const,
+      accountId: ACCOUNT_A,
+      folderId: FOLDER_A,
+      messageId: MESSAGE_A,
+    };
+    // Training reads each message body and can ship it to Rspamd, so a metadata-only
+    // delegate (mail.triage, no mail.content.read) has train forced off — on the
+    // single route and the bulk route — even though train defaults to true.
+    const metadataOnly = createServerApi(makeHttpPorts({
+      grants: new Map([['mail.triage', [triageGrant]]]),
+      overrides,
+    }));
+    const contentAuthorized = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.triage', [triageGrant]],
+        ['mail.content.read', [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ]),
+      overrides,
+    }));
+
+    await metadataOnly.handle({ method: 'PATCH', path: `/api/v1/email/messages/${MESSAGE_A}/spam-status`, principal: makePrincipal(), body: { status: 'spam' } });
+    await metadataOnly.handle({ method: 'PATCH', path: '/api/v1/email/messages/bulk/spam-status', principal: makePrincipal(), body: { messageIds: [MESSAGE_A], status: 'spam' } });
+    await contentAuthorized.handle({ method: 'PATCH', path: `/api/v1/email/messages/${MESSAGE_A}/spam-status`, principal: makePrincipal(), body: { status: 'spam', train: true } });
+    await contentAuthorized.handle({ method: 'PATCH', path: '/api/v1/email/messages/bulk/spam-status', principal: makePrincipal(), body: { messageIds: [MESSAGE_A], status: 'spam', train: true } });
+
+    // metadata-only single + bulk → forced false; content-authorized single + bulk → kept true.
+    expect(observedTrain).toEqual([false, false, true, true]);
+  });
+
+  test('injects the content scope into a draft-edit PATCH so restricted callers get a redacted draft', async () => {
+    const observedContentScopes: Array<MailSqlScope | undefined> = [];
+    const overrides: Partial<ServerApiPorts> = {
+      emailMessages: {
+        list: async () => ({ items: [], nextCursor: null }),
+        get: async () => null,
+        async updateComposeDraft(input) {
+          observedContentScopes.push((input as typeof input & { mailContentScope?: MailSqlScope }).mailContentScope);
+          return { ok: true as const, message: makeMessageRecord(MESSAGE_A) };
+        },
+      } as unknown as ServerApiPorts['emailMessages'],
+    };
+    const editGrant = {
+      resourceType: 'message' as const,
+      accountId: ACCOUNT_A,
+      folderId: FOLDER_A,
+      messageId: MESSAGE_A,
+    };
+    const path = `/api/v1/email/messages/${MESSAGE_A}/compose-draft`;
+    // A draft.edit delegate lacking mail.content.read gets its content scope injected
+    // ('none'), so the read port redacts the echoed draft body it never authored.
+    const editOnly = createServerApi(makeHttpPorts({
+      grants: new Map([['mail.draft.edit', [editGrant]]]),
+      overrides,
+    }));
+    const contentAuthorized = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.draft.edit', [editGrant]],
+        ['mail.content.read', [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ]),
+      overrides,
+    }));
+    const ownerApi = createServerApi(makeHttpPorts({
+      grants: new Map([['mail.draft.edit', [editGrant]]]),
+      overrides,
+    }));
+
+    const restricted = await editOnly.handle({ method: 'PATCH', path, principal: makePrincipal(), body: {} });
+    const authorized = await contentAuthorized.handle({ method: 'PATCH', path, principal: makePrincipal(), body: {} });
+    const owner = await ownerApi.handle({ method: 'PATCH', path, principal: makePrincipal('owner'), body: {} });
+    expect(restricted.status).toBe(200);
+    expect(authorized.status).toBe(200);
+    expect(owner.status).toBe(200);
+
+    expect(observedContentScopes).toEqual([
+      { kind: 'none' },
+      { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] },
+      undefined,
+    ]);
+  });
+
   test('denies non-GET mail-scope writes for restricted account, folder, and message grants', async () => {
     const restrictedGrantCases: Array<readonly [
       string,

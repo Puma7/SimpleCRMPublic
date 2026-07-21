@@ -224,6 +224,44 @@ describe('server mail job and event ACL', () => {
     expect(ports.scopePermissions).toEqual([]);
   });
 
+  test('ai.review rechecks the message mutation permission at execution time', async () => {
+    // Outbound review sets outbound_hold/outbound_block_reason on the draft under the
+    // system role → recheck mail.draft.edit after the base mail.content.read.
+    const outbound = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'outbound' },
+    }), outbound);
+    expect(outbound.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.draft.edit',
+    ]);
+
+    // Inbound review adds the ki-review-block tag → recheck mail.triage instead.
+    const inbound = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'inbound' },
+    }), inbound);
+    expect(inbound.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.triage',
+    ]);
+
+    // A delegate whose draft.edit was revoked after the parent enqueued this child is
+    // refused before the handler runs, so it cannot hold the draft it can no longer edit.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'outbound' },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.draft.edit']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // Likewise an inbound review that lost mail.triage cannot add the block tag.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'inbound' },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.triage']) }))).rejects.toMatchObject({ nonRetryable: true });
+  });
+
   test('workflow execution resolves delayed-job mail, rejects mismatches, and validates non-mail provenance', async () => {
     const ports = makePolicyPorts({
       denyMessages: new Set(['101']),

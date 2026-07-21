@@ -425,7 +425,13 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
   assign('/api/v1/email/folders/:id', { GET: permissionPolicy('mail.metadata.read', folderPath()) });
   assign('/api/v1/email/tags', {
     GET: permissionPolicy('mail.metadata.read', mailScope()),
-    POST: permissionPolicy('mail.triage', mailScope()),
+    // The documented top-level tag POST requires a messageId in its body and shares
+    // handleCreateEmailMessageTag with POST /messages/:messageId/tags. Authorize it
+    // against that message (like the message-scoped route) instead of the workspace
+    // scope, so an account/folder/message-scoped delegate can tag a message it can
+    // reach — otherwise the restricted-scope write gate denies a tag the renderer
+    // can add for the same message.
+    POST: permissionPolicy('mail.triage', messageBody()),
   });
   assign('/api/v1/email/tags/:id', {
     GET: permissionPolicy('mail.metadata.read', metadataPath('message_tag')),

@@ -2457,6 +2457,10 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     messageId: number;
     values: EmailComposeDraftUpdateInput;
+    // Present for a draft-edit delegate lacking mail.content.read on the target: the
+    // read port redacts the echoed draft's body-derived fields per this scope so the
+    // edit response cannot be used to read stored draft content.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailComposeDraftMutationResult>;
   scheduleDraftSend?(input: {
     workspaceId: string;

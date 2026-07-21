@@ -1005,6 +1005,61 @@ describe('mail ACL rollout central use', () => {
     expect(getTeamMember).not.toHaveBeenCalled();
   });
 
+  test('top-level tag creation authorizes the body message, not the workspace scope', async () => {
+    // POST /api/v1/email/tags shares handleCreateEmailMessageTag with POST
+    // /messages/:messageId/tags and takes the messageId in its body, so it must
+    // authorize that message (mail.triage on the message resource) — a message-scoped
+    // delegate can then tag a message it can reach, which the workspace-scope write
+    // gate would otherwise deny.
+    const createTag = jest.fn(async () => ({
+      ok: true as const,
+      tag: {
+        id: 55,
+        sourceSqliteId: 55,
+        messageSourceSqliteId: 404,
+        messageId: MESSAGE_A,
+        tag: 'Priority',
+        createdAt: null,
+        updatedAt: '2026-07-20T10:00:00.000Z',
+      },
+    }));
+    const withTags = (mailAccess: MailAccessService) => createServerApi({
+      ...makeCentralPorts(mailAccess),
+      emailMessageTags: { create: createTag } as unknown as ServerApiPorts['emailMessageTags'],
+    });
+
+    const calls: string[] = [];
+    const allow = withTags({
+      async assertPermission(input) { calls.push(`assert:${input.permission}:${input.resource.type}`); },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    const created = await allow.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      principal: principal(),
+      body: { messageId: MESSAGE_A, tag: 'Priority' },
+    });
+    expect(created.status).toBe(201);
+    expect(calls).toContain('assert:mail.triage:message');
+    expect(createTag).toHaveBeenCalledTimes(1);
+
+    // A delegate without mail.triage on that message is denied before the handler.
+    const deny = withTags({
+      async assertPermission(input) {
+        if (input.permission === 'mail.triage') throw new MailAccessDeniedError();
+      },
+      async resolveScope() { return { kind: 'all' }; },
+    } as unknown as MailAccessService);
+    const denied = await deny.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      principal: principal(),
+      body: { messageId: MESSAGE_A, tag: 'Priority' },
+    });
+    expect(denied.status).toBe(404);
+    expect(createTag).toHaveBeenCalledTimes(1);
+  });
+
   test('scope-none user cannot read a category by id', async () => {
     // Same asymmetry as the team member above: the collection read port returns no
     // rows for scope 'none', but the item's unscoped get() returns the category name
@@ -1037,6 +1092,72 @@ describe('mail ACL rollout central use', () => {
       principal: principal(),
     })).resolves.toMatchObject({ status: 404 });
     expect(getCategory).not.toHaveBeenCalled();
+  });
+
+  test('imap auth notices are filtered to accounts a restricted delegate can read', async () => {
+    // getByPrefix returns every account's notices workspace-wide; a restricted
+    // delegate reaches this route (RESTRICTED_SCOPE_READ_PATHS) but must only see
+    // notices for accounts it can read — mailResourceLookup resolves each account and
+    // assertPermission(mail.metadata.read) denies account 999.
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission(input) {
+          if (
+            typeof input.resource === 'object' && input.resource !== null
+            && (input.resource as { type?: unknown }).type === 'account'
+            && (input.resource as { accountId?: unknown }).accountId === '999'
+          ) {
+            throw new MailAccessDeniedError();
+          }
+        },
+        async resolveScope() { return { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] }; },
+      } as unknown as MailAccessService),
+      syncInfo: {
+        async getByPrefix() {
+          return [
+            { key: `imap_auth_notice:${ACCOUNT_A}`, value: JSON.stringify({ accountId: ACCOUNT_A, message: 'Auth failed A', at: '2026-07-20T10:00:00.000Z' }), updatedAt: '2026-07-20T10:00:00.000Z' },
+            { key: 'imap_auth_notice:999', value: JSON.stringify({ accountId: 999, message: 'Auth failed B', at: '2026-07-20T11:00:00.000Z' }), updatedAt: '2026-07-20T11:00:00.000Z' },
+          ];
+        },
+      } as unknown as ServerApiPorts['syncInfo'],
+    });
+
+    const res = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/notices/imap-auth',
+      principal: principal(),
+    });
+    expect(res.status).toBe(200);
+    expect((res.body as { data: { items: unknown[] } }).data.items).toEqual([
+      { accountId: ACCOUNT_A, message: 'Auth failed A', at: '2026-07-20T10:00:00.000Z' },
+    ]);
+  });
+
+  test('imap auth notices reach the account-scoped resolver, not owner/admin only', async () => {
+    // Owner sees every account's notice with no per-account filtering.
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() { return { kind: 'all' }; },
+      } as unknown as MailAccessService),
+      syncInfo: {
+        async getByPrefix() {
+          return [
+            { key: 'imap_auth_notice:999', value: JSON.stringify({ accountId: 999, message: 'Auth failed B', at: '2026-07-20T11:00:00.000Z' }), updatedAt: '2026-07-20T11:00:00.000Z' },
+          ];
+        },
+      } as unknown as ServerApiPorts['syncInfo'],
+    });
+
+    const res = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/notices/imap-auth',
+      principal: principal('owner'),
+    });
+    expect(res.status).toBe(200);
+    expect((res.body as { data: { items: unknown[] } }).data.items).toEqual([
+      { accountId: 999, message: 'Auth failed B', at: '2026-07-20T11:00:00.000Z' },
+    ]);
   });
 
   test('spam-decision POST requires content-read in addition to triage', async () => {

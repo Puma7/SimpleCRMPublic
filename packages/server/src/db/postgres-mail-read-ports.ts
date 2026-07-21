@@ -1019,6 +1019,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const snippet = bodyText.trim()
             ? (bodyText.length > 220 ? `${bodyText.slice(0, 217)}...` : bodyText)
             : current.snippet;
+          const draftContentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'account_id',
+            folderId: 'folder_id',
+            messageId: 'id',
+          });
           const row = await trx
             .updateTable('email_messages')
             .set({
@@ -1055,6 +1060,9 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .returning(emailMessageDetailColumns)
+            .$if(Boolean(draftContentPredicate), (qb) => qb.returning(
+              kyselySql<boolean>`(${draftContentPredicate!})`.as('content_readable'),
+            ))
             .executeTakeFirstOrThrow();
           return { ok: true as const, message: mapEmailMessageRow(row, true) };
         },
@@ -5044,8 +5052,12 @@ function mapEmailMessageRow(
       ? { searchSnippet: String(row.search_snippet) }
       : {}),
     ...(includeBody ? {
-      bodyText: row.body_text,
-      bodyHtml: row.body_html,
+      // content_readable===false ⇒ the caller lacks mail.content.read on this row, so
+      // blank the body even when the caller requested it (e.g. a draft-edit response
+      // echoing the stored draft). Undefined ⇒ the route already gates content.read
+      // (single-message get), so the body is returned unchanged.
+      bodyText: row.content_readable === false ? null : row.body_text,
+      bodyHtml: row.content_readable === false ? null : row.body_html,
     } : {}),
     updatedAt: timestampToIso(row.updated_at),
   };

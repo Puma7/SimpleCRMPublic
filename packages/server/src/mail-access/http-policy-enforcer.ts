@@ -105,6 +105,13 @@ const RESTRICTED_SCOPE_READ_PATHS = new Set([
   // hierarchy. Keep it out of EMPTY so scope 'none' 404s; a restricted metadata.read
   // delegate still resolves category labels the mail UI needs.
   '/api/v1/email/categories/:id',
+  // IMAP auth-failure notices are per-account and their dismissal is account-manage
+  // authorized, so an account-scoped delegate must be able to read the notices for
+  // the accounts it manages — otherwise the always-mounted banner silently shows
+  // nothing. Kept out of EMPTY so scope 'none' 404s; the handler additionally filters
+  // the returned notices to accounts the caller can read (handleImapAuthNotices), so
+  // a restricted delegate never sees another account's failure.
+  '/api/v1/email/notices/imap-auth',
   // A delegated sender (restricted mail.send scope) can reach the PGP encrypt/sign
   // endpoints, so they must also be able to check whether their recipients have
   // usable keys. Read-only, no account/message resource; scope 'none' still 404s.
@@ -160,6 +167,10 @@ const MESSAGE_CONTENT_SCOPE_MUTATION_PATHS = new Set<string>([
   '/api/v1/email/messages/:messageId/customer-link',
   '/api/v1/email/messages/:messageId/assignment',
   '/api/v1/email/messages/:messageId/spam-status',
+  // A draft-edit PATCH echoes the whole stored draft back (body included), so a
+  // draft.edit delegate lacking mail.content.read could PATCH {} and read it. Resolve
+  // the content scope so the read port redacts the echoed draft's body-derived fields.
+  '/api/v1/email/messages/:messageId/compose-draft',
 ]);
 
 export async function enforceMailHttpPolicy(
@@ -508,6 +519,9 @@ function portsWithContentRedactedMutations(
       } : {}),
       ...(messages.setSpamStatus ? {
         setSpamStatus: (input) => messages.setSpamStatus!({ ...input, mailContentScope: contentScope }),
+      } : {}),
+      ...(messages.updateComposeDraft ? {
+        updateComposeDraft: (input) => messages.updateComposeDraft!({ ...input, mailContentScope: contentScope }),
       } : {}),
     },
   };
