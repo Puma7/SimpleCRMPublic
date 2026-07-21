@@ -13466,6 +13466,27 @@ describe('server edition foundation', () => {
     expect(helperBlock).toMatch(/reason: 'scheduled_send_claimed'/);
   });
 
+  test('account deletion locks its bound groups FOR UPDATE before snapshotting members (R52-2)', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-read-ports.ts'), 'utf8');
+    // The email-account delete transaction: from the affectedUserIds snapshot through the cascade.
+    const start = source.indexOf('const affectedUserIds = await withWorkspaceTransaction');
+    const end = source.indexOf('if (options.secrets) {', start);
+    const block = source.slice(start, end);
+    expect(start).toBeGreaterThanOrEqual(0);
+
+    // Computes the account's bound groups from mail_acl_bindings and locks their user_groups
+    // rows FOR UPDATE — serializing against a concurrent addMember's FOR KEY SHARE lock.
+    expect(block).toMatch(/selectFrom\('mail_acl_bindings'\)[\s\S]*select\('subject_group_id'\)[\s\S]*\.distinct\(\)/);
+    expect(block).toMatch(/selectFrom\('user_groups'\)[\s\S]*\.forUpdate\(\)/);
+    // The lock precedes the member snapshot (user_group_members join), which precedes the cascade.
+    const lockIdx = block.indexOf('.forUpdate()');
+    const snapshotIdx = block.indexOf("leftJoin('user_group_members as gm'");
+    const cascadeIdx = block.indexOf("deleteFrom('email_accounts')");
+    expect(lockIdx).toBeGreaterThanOrEqual(0);
+    expect(lockIdx).toBeLessThan(snapshotIdx);
+    expect(snapshotIdx).toBeLessThan(cascadeIdx);
+  });
+
   test('scheduled-send schedule validation runs non-persistently after claim check and persists approval in the locked transaction', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-read-ports.ts'), 'utf8');
     const scheduleStart = source.indexOf('async scheduleDraftSend(input)');

@@ -335,6 +335,55 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions).toEqual([]);
   });
 
+  test('workflow.forward_copy with includeAttachments rechecks attachment.read + suspicious_download (R52-1)', async () => {
+    // A forward with includeAttachments SMTP-sends the source message's stored attachment bytes,
+    // which the download / GDPR-export / compose-send / scheduled-send paths gate behind
+    // mail.attachment.read (+ suspicious_download for executable/script filenames). export + send
+    // alone do NOT establish attachment access, so a delegate lacking those grants is refused.
+
+    // includeAttachments true + mail.attachment.read revoked → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.attachment.read']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // includeAttachments true + a safe attachment → export, send, attachment.read (no suspicious).
+    const safe = makePolicyPorts({ messageAttachmentFilenames: new Map([[12, ['brief.pdf']]]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), safe);
+    expect(safe.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.export', 'mail.send', 'mail.attachment.read',
+    ]);
+
+    // A dangerous forwarded filename (.exe) additionally requires mail.attachment.suspicious_download.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), makePolicyPorts({
+      messageAttachmentFilenames: new Map([[12, ['invoice.exe']]]),
+      denyPermissions: new Set(['mail.attachment.suspicious_download']),
+    }))).rejects.toMatchObject({ nonRetryable: true });
+
+    const dangerous = makePolicyPorts({ messageAttachmentFilenames: new Map([[12, ['invoice.exe']]]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), dangerous);
+    expect(dangerous.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.export', 'mail.send', 'mail.attachment.read', 'mail.attachment.suspicious_download',
+    ]);
+
+    // includeAttachments absent → no attachment rechecks (readForwardCopyAttachments sends nothing).
+    const noAttach = makePolicyPorts({ messageAttachmentFilenames: new Map([[12, ['invoice.exe']]]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), noAttach);
+    expect(noAttach.assertions.map((entry) => entry.permission)).toEqual(['mail.export', 'mail.send']);
+  });
+
   test('workflow execution resolves delayed-job mail, rejects mismatches, and validates non-mail provenance', async () => {
     const ports = makePolicyPorts({
       denyMessages: new Set(['101']),
@@ -2003,6 +2052,7 @@ function makePolicyPorts(options: {
   replyParents?: ReadonlyMap<number, { replyParentMessageId: number | null; markParentDone: boolean } | null>;
   scheduledDraftAttachmentPaths?: ReadonlyMap<number, readonly string[] | null>;
   attachmentPathFilenames?: ReadonlyMap<string, readonly string[]>;
+  messageAttachmentFilenames?: ReadonlyMap<number, readonly string[]>;
   workflowGraphs?: ReadonlyMap<number, unknown>;
   scope?: { kind: 'all' } | { kind: 'none' }
     | { kind: 'restricted'; accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] };
@@ -2124,6 +2174,9 @@ function makePolicyPorts(options: {
       },
       async resolveAttachmentPathFilenames(input: { path: string }) {
         return options.attachmentPathFilenames?.get(input.path) ?? [];
+      },
+      async resolveMessageAttachmentFilenames(input: { messageId: number }) {
+        return options.messageAttachmentFilenames?.get(input.messageId) ?? [];
       },
       async loadWorkflowGraphForPolicy(input: { workflowId: number }) {
         return options.workflowGraphs?.has(input.workflowId)

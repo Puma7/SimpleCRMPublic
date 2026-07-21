@@ -183,6 +183,14 @@ export interface MailResourceLookupPort {
     workspaceId: string;
     path: string;
   }>): Promise<readonly string[]>;
+  // The display filenames of every stored attachment row of a MESSAGE (by id), used to
+  // classify a workflow forward_copy's forwarded attachments with isPotentiallyDangerousAttachment
+  // so the forward gate enforces mail.attachment.suspicious_download in parity with the
+  // download/raw-EML/scheduled-send routes. Empty for a message with no attachment rows. (R52-1)
+  resolveMessageAttachmentFilenames?(input: Readonly<{
+    workspaceId: string;
+    messageId: number;
+  }>): Promise<readonly string[]>;
   // A workflow's current graph (email_workflows.graph_json), used to reclassify
   // its side-effecting nodes at execution time. null if the workflow is gone.
   loadWorkflowGraphForPolicy?(input: Readonly<{

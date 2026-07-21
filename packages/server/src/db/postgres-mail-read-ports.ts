@@ -684,6 +684,35 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
           role: 'user',
         },
         async (trx) => {
+          // Lock the groups bound to this account BEFORE snapshotting members, mirroring
+          // group.delete (postgres-user-group-port). A concurrent addMember INSERT holds a
+          // FOR KEY SHARE lock on the group's user_groups row via the FK; FOR UPDATE conflicts
+          // with it, so an in-flight insert either committed before the snapshot (its member is
+          // captured) or blocks until this deletion commits (it then joins a group whose account
+          // binding is already gone — no access ever granted, no invalidation owed). Without this,
+          // under READ COMMITTED a member added between the snapshot and the cascade is excluded
+          // from affectedUserIds yet cascade-revoked, receiving no email_acl.changed (and
+          // email_account.deleted is owner/admin-only). (R52-2)
+          const boundGroupRows = await trx
+            .selectFrom('mail_acl_bindings')
+            .select('subject_group_id')
+            .distinct()
+            .where('workspace_id', '=', input.workspaceId)
+            .where('account_id', '=', Number(current.id))
+            .where('subject_group_id', 'is not', null)
+            .execute();
+          const boundGroupIds = boundGroupRows
+            .map((row) => row.subject_group_id)
+            .filter((id): id is number => id !== null);
+          if (boundGroupIds.length > 0) {
+            await trx
+              .selectFrom('user_groups')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', 'in', boundGroupIds)
+              .forUpdate()
+              .execute();
+          }
           // Capture the delegates holding any binding on this account BEFORE the
           // cascade delete removes those bindings, so the handler can invalidate
           // their loaded mailbox state (the account.deleted event reaches only

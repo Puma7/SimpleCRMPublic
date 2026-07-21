@@ -305,6 +305,17 @@ export async function enforceMailJobPolicy(
           resource,
         });
       }
+      // A forward_copy with includeAttachments ALSO transmits (SMTP-sends) the SOURCE message's
+      // stored attachment bytes — the same bytes the download / GDPR-export / compose-send /
+      // scheduled-send paths gate behind mail.attachment.read (+ suspicious_download for
+      // executable/script filenames). The base mail.export + mail.send here do NOT establish
+      // ordinary attachment access, so recheck it, mirroring the scheduled-send gate. (R52-1)
+      await assertForwardCopyAttachmentAccess(
+        job,
+        actor.actor,
+        resolved.resources.resources,
+        requiredPorts,
+      );
     }
     // A workflow.execute whose CURRENT graph contains an email.delete_server node
     // PERMANENTLY deletes the message on the IMAP server (plus a local soft-delete)
@@ -864,6 +875,48 @@ async function assertScheduledSendDraftAndAttachmentAccess(
           resource,
         });
       }
+    }
+  }
+}
+
+// R52-1: a user-attributed workflow.forward_copy with includeAttachments reads every stored
+// attachment of the SOURCE message (readForwardCopyAttachments) and SMTP-sends the bytes under the
+// account's system identity. The base gate requires only mail.export + mail.send, neither of which
+// establishes attachment access — so a delegate keeping export/send but lacking mail.attachment.read
+// (and mail.attachment.suspicious_download for executable/script filenames) could exfiltrate
+// attachment bytes the download/GDPR-export/compose-send/scheduled-send paths deny. Recheck both,
+// mirroring assertScheduledSendDraftAndAttachmentAccess. includeAttachments false/absent ⇒
+// readForwardCopyAttachments returns [] ⇒ no bytes sent ⇒ nothing to gate.
+async function assertForwardCopyAttachmentAccess(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  resources: readonly MailResource[],
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.payload.includeAttachments !== true) return;
+  // The forward_copy resources ARE the source message resource(s) that own the attachments.
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.attachment.read',
+      resource,
+    });
+  }
+  const messageId = optionalPositiveInt(job.payload.messageId);
+  if (messageId === null || !ports.mailResourceLookup.resolveMessageAttachmentFilenames) return;
+  const filenames = await ports.mailResourceLookup.resolveMessageAttachmentFilenames({
+    workspaceId: job.workspaceId,
+    messageId,
+  });
+  if (filenames.some(isPotentiallyDangerousAttachment)) {
+    for (const resource of resources) {
+      await ports.mailAccess.assertPermission({
+        workspaceId: job.workspaceId,
+        actor,
+        permission: 'mail.attachment.suspicious_download',
+        resource,
+      });
     }
   }
 }

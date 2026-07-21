@@ -67,6 +67,14 @@ export function createPostgresMailResourceLookupPort(
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async resolveMessageAttachmentFilenames(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => resolveMessageAttachmentFilenames(trx, input.workspaceId, input.messageId),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
     async loadWorkflowGraphForPolicy(input) {
       return withWorkspaceTransaction(
         options.db,
@@ -156,6 +164,22 @@ async function resolveAttachmentPathFilenames(
     .select(['filename_display'])
     .where('workspace_id', '=', workspaceId)
     .where('storage_path', '=', path)
+    .execute();
+  return rows
+    .map((row) => row.filename_display)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
+}
+
+async function resolveMessageAttachmentFilenames(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number,
+): Promise<readonly string[]> {
+  const rows = await trx
+    .selectFrom('email_message_attachments')
+    .select(['filename_display'])
+    .where('workspace_id', '=', workspaceId)
+    .where('message_id', '=', messageId)
     .execute();
   return rows
     .map((row) => row.filename_display)
