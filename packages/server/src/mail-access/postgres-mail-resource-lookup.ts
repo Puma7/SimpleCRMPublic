@@ -141,6 +141,7 @@ async function classifyWorkflowDelayedJob(
       .onRef('message.id', '=', 'delayed_job.message_id'))
     .select([
       'delayed_job.message_id as delayed_message_id',
+      'delayed_job.message_source_sqlite_id as delayed_message_source_sqlite_id',
       'message.id as message_id',
       'message.account_id as account_id',
       'message.folder_id as folder_id',
@@ -149,7 +150,18 @@ async function classifyWorkflowDelayedJob(
     .where('delayed_job.id', '=', delayedJobId)
     .executeTakeFirst();
   if (!row) return { kind: 'missing' };
-  if (row.delayed_message_id === null) return { kind: 'non_mail' };
+  if (row.delayed_message_id === null) {
+    // message_id is FK-nulled on message delete (ON DELETE SET NULL), but
+    // message_source_sqlite_id survives. A row that still carries a source-message
+    // reference was a mail job whose backing message was deleted — treat it as an
+    // orphaned/invalid mail job (fail closed) rather than non_mail, so
+    // resolveWorkflowExecuteResources rejects it instead of skipping the mail ACL
+    // and resuming side-effecting nodes from stored context under the system role.
+    // Only a row with NO source-message reference is a genuine non-mail job.
+    return row.delayed_message_source_sqlite_id === null
+      ? { kind: 'non_mail' }
+      : { kind: 'invalid' };
+  }
   const resource = resourceFromMessageRow(row)[0];
   return resource ? { kind: 'message', resource } : { kind: 'invalid' };
 }

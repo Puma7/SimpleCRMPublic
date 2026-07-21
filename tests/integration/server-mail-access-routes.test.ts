@@ -2990,7 +2990,8 @@ describe('server mailbox ACL migration', () => {
           (7801, '${WORKSPACE_A}', 7801, 7201, 31, 7201, ${MESSAGE_A}, 'allowed', '2026-07-21T12:00:00Z', '{}'::jsonb, 'pending'),
           (7802, '${WORKSPACE_A}', 7802, 7201, 32, 7201, ${MESSAGE_A_SECOND}, 'hidden', '2026-07-21T12:01:00Z', '{}'::jsonb, 'pending'),
           (7803, '${WORKSPACE_A}', 7803, 7201, NULL, 7201, NULL, 'non-mail', '2026-07-21T12:02:00Z', '{}'::jsonb, 'pending'),
-          (7804, '${WORKSPACE_B}', 7804, 7202, 41, 7202, ${MESSAGE_B}, 'cross-workspace', '2026-07-21T12:03:00Z', '{}'::jsonb, 'pending')
+          (7804, '${WORKSPACE_B}', 7804, 7202, 41, 7202, ${MESSAGE_B}, 'cross-workspace', '2026-07-21T12:03:00Z', '{}'::jsonb, 'pending'),
+          (7805, '${WORKSPACE_A}', 7805, 7201, 33, 7201, NULL, 'orphaned-mail', '2026-07-21T12:04:00Z', '{}'::jsonb, 'pending')
         ON CONFLICT DO NOTHING
       `);
       await client.query('RESET app.role; RESET app.cross_workspace_access');
@@ -3015,6 +3016,14 @@ describe('server mailbox ACL migration', () => {
         workspaceId: WORKSPACE_A,
         delayedJobId: 7803,
       })).resolves.toEqual({ kind: 'non_mail' });
+      // Orphaned mail job: the backing message was deleted, so message_id is nulled
+      // (ON DELETE SET NULL) but message_source_sqlite_id (33) survives. It must fail
+      // closed as 'invalid' — NOT 'non_mail' — otherwise resolveWorkflowExecuteResources
+      // skips the mail ACL and could resume side-effecting nodes under the system role.
+      await expect(resourceLookup.classifyWorkflowDelayedJob({
+        workspaceId: WORKSPACE_A,
+        delayedJobId: 7805,
+      })).resolves.toEqual({ kind: 'invalid' });
       await expect(resourceLookup.classifyWorkflowDelayedJob({
         workspaceId: WORKSPACE_A,
         delayedJobId: 7804,

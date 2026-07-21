@@ -749,6 +749,44 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // PGP verification parses the hidden signed body and returns signature validity
+  // plus the signer fingerprint (verifyMessage), so it discloses content-derived
+  // data. The base policy makes it a mail.triage mutation (it persists the shared
+  // pgp_status / signer fingerprint, exactly like security-check), so ALSO require
+  // mail.content.read: the mutation hardening must supplement — not replace — the
+  // read gate, else a triage-only delegate without content access could verify a
+  // message body they cannot open. Detect stays triage-only: it classifies PGP
+  // structure from headers, not the decrypted content.
+  if (req.method === 'POST' && canonicalPath === '/api/v1/pgp/messages/:messageId/verify') {
+    for (const resource of baseResources) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.content.read',
+        resource,
+      });
+    }
+  }
+
+  // A spam decision's breakdown (sanitizeDecision returns it whole) embeds the
+  // body/HTML-derived featureKeys from buildFeaturePreview — suspicious/business
+  // terms, form/script signals — so fetching a decision item discloses content.
+  // The item GET is resource-authorized on mail.metadata.read (metadataPath), so a
+  // metadata-only delegate who obtains a decision id from the spam_decision.created
+  // event can reach it; also require mail.content.read on the decision's resource.
+  // The collection GET is scope-gated (mailScope) and stays owner/admin-only, so it
+  // has no parallel exposure.
+  if (req.method === 'GET' && canonicalPath === '/api/v1/spam/decisions/:id') {
+    for (const resource of baseResources) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.content.read',
+        resource,
+      });
+    }
+  }
+
   // A move whose target is "trash" runs the same softDeleteMessageRows operation
   // as the dedicated mail.delete-protected /soft-delete route, so require
   // mail.delete on top of the base mail.triage. The handler trims `view`, so
