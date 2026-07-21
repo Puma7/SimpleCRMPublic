@@ -70,6 +70,7 @@ type ResolvedResources =
   | Readonly<{ kind: 'non_mail' }>
   | Readonly<{ kind: 'scope' }>
   | Readonly<{ kind: 'owner_admin' }>
+  | Readonly<{ kind: 'owner_admin_or_user'; userId: string }>
   | Readonly<{ kind: 'resources'; resources: readonly MailResource[]; mode: 'all' | 'any' }>;
 
 type ResolvedJobResources = Readonly<{
@@ -114,6 +115,12 @@ const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Obj
   'conversation_lock.heartbeat': ['messageId', 'state', 'reason'],
   'conversation_lock.released': ['messageId', 'state', 'reason'],
   'conversation_lock.force_takeover': ['messageId', 'state', 'reason'],
+  // PGP identity events deliver to the owning user (and owners/admins); userId is the
+  // event filter's authorization key and the client's "whose identity changed" signal.
+  // Nothing else (email/fingerprint/key material) survives sanitization.
+  'pgp_identity.created': ['userId'],
+  'pgp_identity.updated': ['userId'],
+  'pgp_identity.deleted': ['userId'],
   'spam_learning_event.created': ['messageId', 'accountId', 'state'],
   'spam_decision.created': ['messageId', 'accountId', 'state'],
   'spam_decision.updated': ['messageId', 'accountId', 'state'],
@@ -181,6 +188,12 @@ export async function enforceMailJobPolicy(
     // A scheduled reply-send marks the reply parent done by default, a mail.triage
     // mutation the base mail.send policy never covers — recheck it on the parent.
     await assertScheduledSendReplyParentTriage(job, actor.actor, requiredPorts);
+    // The scheduled send transmits the draft's stored attachment paths through the
+    // system-backed sender, which does no per-path check — so recheck
+    // mail.attachment.read on each at execution, catching a revocation after the send
+    // was scheduled. Mirrors the HTTP compose/send enforcer (including the draft-local
+    // upload carve-out). User actors only; trusted-service sends returned above.
+    await assertScheduledSendAttachmentAccess(job, actor.actor, requiredPorts);
     // Reply generation (mail.draft.create), message classification (mail.triage),
     // message-attributed workflow HTTP requests (mail.metadata.read), and spam scoring
     // (mail.triage) all read the message body — snippet/body_text/combined_text, or the
@@ -380,6 +393,42 @@ async function assertScheduledSendReplyParentTriage(
       permission: 'mail.triage',
       resource,
     });
+  }
+}
+
+async function assertScheduledSendAttachmentAccess(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'mail.send.scheduled') return;
+  if (!ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths) return;
+  const draftId = optionalPositiveInt(job.payload.draftId);
+  if (draftId === null) return;
+  const paths = await ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths({
+    workspaceId: job.workspaceId,
+    draftId,
+  });
+  if (!paths || paths.length === 0) return;
+  // A freshly uploaded file under this draft's own upload folder was covered by the
+  // mail.draft.edit held when it was attached; every other path must resolve to an
+  // existing message attachment the sender still holds mail.attachment.read on.
+  const draftLocalPrefix = `${job.workspaceId}/compose-drafts/${draftId}/`;
+  for (const path of paths) {
+    if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+    const owners = await ports.mailResourceLookup.resolve({
+      workspaceId: job.workspaceId,
+      target: { kind: 'attachment_path', path },
+    });
+    if (owners.length === 0) throw new MailAsyncAuthorizationError();
+    for (const resource of owners) {
+      await ports.mailAccess.assertPermission({
+        workspaceId: job.workspaceId,
+        actor,
+        permission: 'mail.attachment.read',
+        resource,
+      });
+    }
   }
 }
 
@@ -588,6 +637,14 @@ async function resolveResources(input: {
     return { kind: 'scope' };
   }
   if (resolution.kind === 'owner_admin_only') return { kind: 'owner_admin' };
+  if (resolution.kind === 'owner_admin_or_event_user') {
+    const rawUserId = input.select(resolution.userId);
+    // A missing owner id falls back to owner/admin-only rather than delivering to no
+    // one — the event is still authorized for admins.
+    return typeof rawUserId === 'string' && rawUserId.length > 0
+      ? { kind: 'owner_admin_or_user', userId: rawUserId }
+      : { kind: 'owner_admin' };
+  }
   if (resolution.kind === 'event_message_pair') {
     const first = await lookup(input, { kind: 'message', id: requirePositiveInt(input.select(resolution.firstMessageId)) });
     const second = await lookup(input, { kind: 'message', id: requirePositiveInt(input.select(resolution.secondMessageId)) });
@@ -747,6 +804,12 @@ async function assertResolvedResources(input: {
   if (input.resources.kind === 'non_mail') return;
   if (input.resources.kind === 'owner_admin') {
     if (!input.actor.isOwner && !input.actor.isAdmin) throw new MailAsyncAuthorizationError();
+    return;
+  }
+  if (input.resources.kind === 'owner_admin_or_user') {
+    if (!input.actor.isOwner && !input.actor.isAdmin && input.actor.userId !== input.resources.userId) {
+      throw new MailAsyncAuthorizationError();
+    }
     return;
   }
   if (input.resources.kind === 'scope') {

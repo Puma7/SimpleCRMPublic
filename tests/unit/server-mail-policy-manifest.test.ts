@@ -458,22 +458,26 @@ describe('server mail policy manifest', () => {
     }
   });
 
-  test('restricts PGP and spam-list events to owners/admins, matching their read routes', () => {
-    // pgp_identity/pgp_peer_key and spam_list_entry mutations; spam_learning_event
+  test('restricts PGP peer-key and spam-list events to owners/admins, PGP identity events to the owning user', () => {
+    // pgp_peer_key and spam_list_entry mutations stay owner/admin; spam_learning_event
     // and spam_decision carry a message/account and are resolved separately above.
+    // pgp_identity events are per-user and deliver to the owning user too.
     const eventTypes = SERVER_EVENT_TYPES.filter((type) => (
       (type.startsWith('pgp_') || type.startsWith('spam_'))
       && !type.startsWith('spam_learning_event.')
       && !type.startsWith('spam_decision.')
     ));
     expect(eventTypes).not.toHaveLength(0);
-    expect(eventTypes.some((type) => type.startsWith('pgp_'))).toBe(true);
+    expect(eventTypes.some((type) => type.startsWith('pgp_identity.'))).toBe(true);
+    expect(eventTypes.some((type) => type.startsWith('pgp_peer_key.'))).toBe(true);
     expect(eventTypes.some((type) => type.startsWith('spam_list_entry.'))).toBe(true);
     for (const type of eventTypes) {
       expect(assertMailEventPolicy(type)).toEqual({
         type,
         permission: 'mail.metadata.read',
-        resource: { kind: 'owner_admin_only' },
+        resource: type.startsWith('pgp_identity.')
+          ? { kind: 'owner_admin_or_event_user', userId: { source: 'event_payload', field: 'userId' } }
+          : { kind: 'owner_admin_only' },
       });
     }
   });

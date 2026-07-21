@@ -564,9 +564,14 @@ async function resolveHttpResources(
   ) {
     return { kind: 'scope' };
   }
-  // owner_admin_only and event_message_pair are event-stream resolutions
-  // (tombstones for deleted entities); no HTTP route uses them, so fail closed.
-  if (resolution.kind === 'owner_admin_only' || resolution.kind === 'event_message_pair') {
+  // owner_admin_only, owner_admin_or_event_user and event_message_pair are
+  // event-stream resolutions (tombstones / per-user delivery); no HTTP route uses
+  // them, so fail closed.
+  if (
+    resolution.kind === 'owner_admin_only'
+    || resolution.kind === 'owner_admin_or_event_user'
+    || resolution.kind === 'event_message_pair'
+  ) {
     throw new MailAccessDeniedError();
   }
   if (resolution.kind === 'event_message_then_account_lookup') return { kind: 'resources', resources: [], mode: 'all' };
@@ -895,14 +900,20 @@ async function assertSupplementalHttpPermissions(
   }
 
   // PGP verification parses the hidden signed body and returns signature validity
-  // plus the signer fingerprint (verifyMessage), so it discloses content-derived
-  // data. The base policy makes it a mail.triage mutation (it persists the shared
-  // pgp_status / signer fingerprint, exactly like security-check), so ALSO require
-  // mail.content.read: the mutation hardening must supplement — not replace — the
-  // read gate, else a triage-only delegate without content access could verify a
-  // message body they cannot open. Detect stays triage-only: it classifies PGP
-  // structure from headers, not the decrypted content.
-  if (req.method === 'POST' && canonicalPath === '/api/v1/pgp/messages/:messageId/verify') {
+  // plus the signer fingerprint (verifyMessage); detection reads body_text/body_html
+  // and returns whether PGP content is present (detectMessage → detectInboundPgpStatus).
+  // Both therefore disclose content-derived data. The base policy makes each a
+  // mail.triage mutation (they persist the shared pgp_status / signer fingerprint,
+  // exactly like security-check), so ALSO require mail.content.read: the mutation
+  // hardening must supplement — not replace — the read gate, else a triage-only
+  // delegate without content access could probe a message body they cannot open.
+  if (
+    req.method === 'POST'
+    && (
+      canonicalPath === '/api/v1/pgp/messages/:messageId/verify'
+      || canonicalPath === '/api/v1/pgp/messages/:messageId/detect'
+    )
+  ) {
     for (const resource of baseResources) {
       await ports.mailAccess!.assertPermission({
         workspaceId,

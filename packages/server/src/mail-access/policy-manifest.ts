@@ -75,6 +75,10 @@ export type MailResourceResolution =
   // Event-only: the underlying entity no longer exists (e.g. account deletion),
   // so there is nothing to authorize against — deliver to owners/admins only.
   | Readonly<{ kind: 'owner_admin_only' }>
+  // Event-only: deliver to owners/admins OR the user the event belongs to (from a
+  // payload user id). Used for per-user PGP identity events, whose HTTP list route
+  // admits the owning delegate and returns only their own identities.
+  | Readonly<{ kind: 'owner_admin_or_event_user'; userId: PolicyValueSelector }>
   // Event-only: authorize BOTH messages named in a deletion tombstone (e.g. a
   // thread edge's parent + child) so neither id leaks to a partial-access viewer.
   | Readonly<{ kind: 'event_message_pair'; firstMessageId: PolicyValueSelector; secondMessageId: PolicyValueSelector }>;
@@ -760,8 +764,17 @@ function eventResourceResolution(type: ServerEventType): MailResourceResolution 
   if (type.startsWith('spam_learning_event.') || type.startsWith('spam_decision.')) {
     return spamEventResource();
   }
+  if (type.startsWith('pgp_identity.')) {
+    // PGP identities are strictly per-user (user_id bound); the HTTP list route
+    // /api/v1/pgp/identities is deliberately admitted for restricted callers and
+    // returns only that user's own identities, and a non-admin account manager may
+    // generate / rotate their OWN identity. Deliver the resulting created/updated/
+    // deleted event to that owning user (payload.userId) so their PgpPanel reloads —
+    // as well as to owners/admins. Peer-key events stay owner/admin only below.
+    return { kind: 'owner_admin_or_event_user', userId: eventPayloadValue('userId') };
+  }
   if (type.startsWith('spam_') || type.startsWith('pgp_')) {
-    // spam list-entry and PGP identity/peer-key activity. Their HTTP list routes
+    // spam list-entry and PGP peer-key activity. Their HTTP list routes
     // (mail.metadata.read on mail_scope, not in RESTRICTED_SCOPE_READ_PATHS) admit
     // only full-scope owner/admin callers, but a workspace_global event resolves to
     // any nonempty scope — so a single-account metadata delegate would otherwise

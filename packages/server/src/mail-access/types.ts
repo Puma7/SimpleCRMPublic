@@ -156,6 +156,13 @@ export interface MailResourceLookupPort {
     workspaceId: string;
     draftId: number;
   }>): Promise<Readonly<{ replyParentMessageId: number | null; markParentDone: boolean }> | null>;
+  // A scheduled-send draft's stored attachment paths
+  // (email_messages.draft_attachment_paths_json), used to recheck mail.attachment.read
+  // on each path before a scheduled send transmits it. null if the draft is gone.
+  resolveScheduledDraftAttachmentPaths?(input: Readonly<{
+    workspaceId: string;
+    draftId: number;
+  }>): Promise<readonly string[] | null>;
   // A workflow's current graph (email_workflows.graph_json), used to reclassify
   // its side-effecting nodes at execution time. null if the workflow is gone.
   loadWorkflowGraphForPolicy?(input: Readonly<{

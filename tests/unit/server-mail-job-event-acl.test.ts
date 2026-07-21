@@ -567,6 +567,54 @@ describe('server mail job and event ACL', () => {
     }), ambiguousParent)).rejects.toMatchObject({ nonRetryable: true });
   });
 
+  test('scheduled send rechecks mail.attachment.read on each stored attachment path', async () => {
+    // A draft-local upload (carve-out) + a synced path owned by a readable message → allowed.
+    const allowed = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [
+        'workspace-a/compose-drafts/12/ab-upload.pdf',
+        'workspace-a/synced/owned.pdf',
+      ]]]),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), allowed);
+    // Base mail.send on the draft + a single mail.attachment.read on the synced path's
+    // owning message (the draft-local upload is carved out).
+    expect(allowed.assertions.filter((entry) => entry.permission === 'mail.attachment.read')).toHaveLength(1);
+
+    // The sender lost mail.attachment.read on the message that owns a synced path.
+    const revoked = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/synced/foreign.pdf']]]),
+      denyMessages: new Set(['101']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), revoked)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A path with no owning attachment row that is not draft-local is denied.
+    const unowned = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/other/secret.pdf']]]),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), unowned)).rejects.toMatchObject({ nonRetryable: true });
+
+    // Trusted-service scheduled sends carry no per-user actor, so attachment paths are
+    // not rechecked (the enforcer returns before the user supplemental).
+    const service = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/synced/foreign.pdf']]]),
+      denyMessages: new Set(['101']),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', draftId: 12, accountId: 7 }),
+    }), service);
+    expect(service.assertions.some((entry) => entry.permission === 'mail.attachment.read')).toBe(false);
+  });
+
   test('reply generation requires content-read in addition to draft-create', async () => {
     const allowed = makePolicyPorts();
     await expect(enforceMailJobPolicy(job({
@@ -880,6 +928,46 @@ describe('server mail job and event ACL', () => {
     // An unrelated non-manager user never receives another subject's invalidation.
     await expect(filterMailEventForPrincipal(aclEvent, {
       principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'user' as const },
+      ports,
+    })).resolves.toBeNull();
+  });
+
+  test('delivers PGP identity events to the owning user and owners/admins, peer-key events owner/admin only', async () => {
+    const ports = makePolicyPorts();
+    const identityEvent = event({
+      type: 'pgp_identity.created',
+      entityType: 'pgp_identity',
+      entityId: '5',
+      payload: { id: 5, userId: 'user-a', fingerprint: 'ABC' },
+    });
+
+    // The identity's owning user receives it (a non-admin delegate who generated their
+    // own key), so their PgpPanel reloads.
+    await expect(filterMailEventForPrincipal(identityEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    })).resolves.not.toBeNull();
+    // An owner/admin who is not the owner still receives it.
+    await expect(filterMailEventForPrincipal(identityEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-b', role: 'admin' as const },
+      ports,
+    })).resolves.not.toBeNull();
+    // An unrelated non-admin user does not receive another user's identity event.
+    await expect(filterMailEventForPrincipal(identityEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'user' as const },
+      ports,
+    })).resolves.toBeNull();
+
+    // Peer-key events are workspace-wide and stay owner/admin only — even the acting
+    // user (a non-admin) does not receive one.
+    const peerKeyEvent = event({
+      type: 'pgp_peer_key.created',
+      entityType: 'pgp_peer_key',
+      entityId: '9',
+      payload: { id: 9, userId: 'user-a' },
+    });
+    await expect(filterMailEventForPrincipal(peerKeyEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
       ports,
     })).resolves.toBeNull();
   });
@@ -1328,6 +1416,7 @@ function makePolicyPorts(options: {
   denyPermissions?: ReadonlySet<string>;
   delayedJobs?: ReadonlyMap<number, DelayedJobClassification>;
   replyParents?: ReadonlyMap<number, { replyParentMessageId: number | null; markParentDone: boolean } | null>;
+  scheduledDraftAttachmentPaths?: ReadonlyMap<number, readonly string[] | null>;
   workflowGraphs?: ReadonlyMap<number, unknown>;
 } = {}) {
   const lookups: unknown[] = [];
@@ -1369,8 +1458,18 @@ function makePolicyPorts(options: {
       },
     },
     mailResourceLookup: {
-      async resolve(input: { target: { kind: string; id: number | string; entity?: string } }) {
+      async resolve(input: { target: { kind: string; id?: number | string; entity?: string; path?: string } }) {
         lookups.push(input.target);
+        if (input.target.kind === 'attachment_path') {
+          // 'workspace-a/synced/owned.pdf' → message 12; foreign → message 101; else none.
+          if (input.target.path === 'workspace-a/synced/owned.pdf') {
+            return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: '12' }];
+          }
+          if (input.target.path === 'workspace-a/synced/foreign.pdf') {
+            return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: '101' }];
+          }
+          return [];
+        }
         if (input.target.kind === 'account' && input.target.id === 7) {
           return [{ type: 'account' as const, accountId: '7' }];
         }
@@ -1400,6 +1499,9 @@ function makePolicyPorts(options: {
       },
       async resolveScheduledDraftReplyParent(input: { draftId: number }) {
         return options.replyParents?.get(input.draftId) ?? null;
+      },
+      async resolveScheduledDraftAttachmentPaths(input: { draftId: number }) {
+        return options.scheduledDraftAttachmentPaths?.get(input.draftId) ?? null;
       },
       async loadWorkflowGraphForPolicy(input: { workflowId: number }) {
         return options.workflowGraphs?.has(input.workflowId)

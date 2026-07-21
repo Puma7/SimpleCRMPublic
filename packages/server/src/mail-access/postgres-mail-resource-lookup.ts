@@ -51,6 +51,14 @@ export function createPostgresMailResourceLookupPort(
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async resolveScheduledDraftAttachmentPaths(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        (trx) => resolveScheduledDraftAttachmentPaths(trx, input.workspaceId, input.draftId),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
     async loadWorkflowGraphForPolicy(input) {
       return withWorkspaceTransaction(
         options.db,
@@ -113,6 +121,47 @@ async function resolveScheduledDraftReplyParent(
     .where('key', '=', `compose_mark_parent_done:${draftId}`)
     .executeTakeFirst();
   return { replyParentMessageId, markParentDone: markRow?.value !== '0' };
+}
+
+async function resolveScheduledDraftAttachmentPaths(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  draftId: number,
+): Promise<readonly string[] | null> {
+  const draft = await trx
+    .selectFrom('email_messages')
+    .select(['draft_attachment_paths_json'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', draftId)
+    .executeTakeFirst();
+  if (!draft) return null;
+  return parseStoredDraftAttachmentPaths(draft.draft_attachment_paths_json);
+}
+
+// Normalize the stored draft_attachment_paths_json (jsonb, or a JSON string) into a
+// deduped list of path strings. Mirrors parseDraftAttachmentPaths in
+// mail-scheduled-send.ts, which the sender uses to read the same column.
+function parseStoredDraftAttachmentPaths(value: unknown): string[] {
+  let parsed: unknown = value;
+  if (typeof value === 'string') {
+    if (value.trim() === '') return [];
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(parsed)) return [];
+  const paths: string[] = [];
+  for (const item of parsed) {
+    const path = typeof item === 'string'
+      ? item.trim()
+      : item && typeof item === 'object'
+        ? String((item as { path?: unknown }).path ?? '').trim()
+        : '';
+    if (path && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
 }
 
 async function loadWorkflowGraphForPolicy(
@@ -187,7 +236,7 @@ async function resolveTarget(
       : [folderResource(Number(row.account_id), Number(row.id))];
   }
   if (target.kind === 'message') {
-    const resource = await resolveMessageByIdOrSource(trx, workspaceId, target.id);
+    const resource = await resolveMessageById(trx, workspaceId, target.id);
     return resource ? [resource] : [];
   }
   if (target.kind === 'attachment') {
@@ -394,12 +443,17 @@ async function resolveMetadataTarget(
 }
 
 /**
- * Resolve a PUBLIC message reference from a URL/target — the number may be a PG
- * id or a legacy source_sqlite_id. Fails closed on an ambiguous reference (one
- * message's PG id AND a different message's source_sqlite_id both match) so it
- * never authorizes against the wrong message. Mirrors resolveEmailAccountReference.
+ * Resolve a message target strictly by its PostgreSQL id. Every caller of the
+ * `{kind:'message'}` target passes a PG id — the HTTP `:messageId` path param and
+ * job/event `messageId` are the same ids the handlers query with (emailMessages.get
+ * filters on `id`), and there is no message by-source route. An earlier id-or-source
+ * fallback returned no resource whenever one message's PG id collided with another
+ * message's source_sqlite_id after migration, 404ing the legitimate row for everyone
+ * (owner/admin and queued jobs included); resolve by id only. (Stored metadata
+ * columns that ARE source references are handled column-aware in
+ * resolveMessageByStoredColumns.)
  */
-async function resolveMessageByIdOrSource(
+async function resolveMessageById(
   trx: WorkspaceTransaction,
   workspaceId: string,
   id: number,
@@ -410,14 +464,7 @@ async function resolveMessageByIdOrSource(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', id)
     .executeTakeFirst();
-  const bySource = await trx
-    .selectFrom('email_messages')
-    .select(['id as message_id', 'account_id', 'folder_id'])
-    .where('workspace_id', '=', workspaceId)
-    .where('source_sqlite_id', '=', id)
-    .executeTakeFirst();
-  if (byId && bySource && Number(byId.message_id) !== Number(bySource.message_id)) return null;
-  return resourceFromMessageRow(byId ?? bySource)[0] ?? null;
+  return byId ? resourceFromMessageRow(byId)[0] ?? null : null;
 }
 
 /**
