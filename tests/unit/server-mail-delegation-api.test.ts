@@ -331,14 +331,22 @@ describe('server mail delegation API', () => {
     }));
     expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/@|body|filename/i);
     expect(events.publish).toHaveBeenCalledTimes(2);
+    // R20-1: the invalidation now also carries the binding's resource so the event
+    // filter can deliver it to a scoped mail.delegation.manage holder on that folder.
     expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({
       type: 'email_acl.changed',
       entityType: 'email_acl',
       entityId: '901',
-      payload: { bindingId: 901, targetUserId: AGENT, state: 'changed' },
+      payload: {
+        bindingId: 901, targetUserId: AGENT, state: 'changed',
+        resourceType: 'folder', accountId: ACCOUNT, folderId: FOLDER,
+      },
     }));
     expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({
-      payload: { bindingId: 901, targetUserId: MANAGER, state: 'changed' },
+      payload: {
+        bindingId: 901, targetUserId: MANAGER, state: 'changed',
+        resourceType: 'folder', accountId: ACCOUNT, folderId: FOLDER,
+      },
     }));
   });
 });
