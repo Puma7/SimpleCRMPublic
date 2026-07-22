@@ -373,6 +373,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0040_scheduled_send_provenance',
   '0041_mail_acl_binding_message_fk_cascade',
   '0042_quarantine_legacy_provenanceless_jobs',
+  '0043_atomic_task_calendar',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -19329,6 +19330,7 @@ describe('server edition foundation', () => {
         recurrenceRule: 'RRULE:FREQ=DAILY',
         taskId: 51,
       },
+      viewer: principal,
     }]);
 
     const updated = await api.handle({
@@ -19351,6 +19353,7 @@ describe('server edition foundation', () => {
         colorCode: null,
         taskId: null,
       },
+      viewer: principal,
     }]);
 
     const deleted = await api.handle({
@@ -19364,6 +19367,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       actorUserId: USER_A_ID,
       id: 61,
+      viewer: principal,
     }]);
 
     expect(auditEvents.map((event) => event.action)).toEqual([
@@ -20486,6 +20490,7 @@ describe('server edition foundation', () => {
     expect((calendarEvents.body as any).data.nextCursor).toBe(30);
     expect(calendarEventCalls).toEqual([{
       workspaceId: WORKSPACE_A_ID,
+      viewer: principal,
       limit: 5,
       cursor: 1,
       search: 'Demo',

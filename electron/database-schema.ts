@@ -142,7 +142,7 @@ export const createCalendarEventsTable = `
     task_id INTEGER,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (task_id) REFERENCES ${TASKS_TABLE}(id) ON DELETE SET NULL
+    FOREIGN KEY (task_id) REFERENCES ${TASKS_TABLE}(id) ON DELETE CASCADE
   );
 `;
 
@@ -904,6 +904,7 @@ export const indexes = [
     // Added indexes for calendar events
     `CREATE INDEX IF NOT EXISTS idx_calendar_events_start_date ON ${CALENDAR_EVENTS_TABLE}(start_date);`,
     `CREATE INDEX IF NOT EXISTS idx_calendar_events_end_date ON ${CALENDAR_EVENTS_TABLE}(end_date);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_task_unique ON ${CALENDAR_EVENTS_TABLE}(task_id) WHERE task_id IS NOT NULL;`,
     // Add indexes for deals and tasks
     `CREATE INDEX IF NOT EXISTS idx_deals_customer_id ON ${DEALS_TABLE}(customer_id);`,
     `CREATE INDEX IF NOT EXISTS idx_deals_stage ON ${DEALS_TABLE}(stage);`,

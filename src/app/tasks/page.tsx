@@ -312,41 +312,32 @@ export default function TasksPage() {
     }
 
     try {
-      const result = await taskService.createTask(payload)
+      const dueDateSnapshot = newTask.due_date
+      const calendarEventCreated = Boolean(addToCalendar && dueDateSnapshot)
+      const result = calendarEventCreated
+        ? await calendarService.addTaskEvent({
+            title: trimmedTitle,
+            description: trimmedDescription || undefined,
+            dueDate: dueDateSnapshot,
+            customerName: selectedCustomerName || undefined,
+            createTask: {
+              customerId: Number(newTask.customer_id),
+              title: trimmedTitle,
+              description: trimmedDescription || null,
+              priority: newTask.priority,
+              completed: Boolean(newTask.completed),
+              ...assignmentPayload,
+            },
+          }).then((calendarResult) => ({
+            success: calendarResult.success && Number.isInteger(calendarResult.taskId),
+            id: calendarResult.taskId,
+            error: Number.isInteger(calendarResult.taskId)
+              ? undefined
+              : "Aufgabe und Kalendertermin konnten nicht gemeinsam erstellt werden.",
+          }))
+        : await taskService.createTask(payload)
 
       if (result.success) {
-        const dueDateSnapshot = newTask.due_date
-        const customerNameSnapshot = selectedCustomerName
-        const taskId = typeof result.id === 'number' ? result.id : null
-        let calendarEventCreated = false
-        let calendarError: Error | null = null
-
-        if (addToCalendar && dueDateSnapshot) {
-          try {
-            const calendarResult = await calendarService.addTaskEvent({
-              title: trimmedTitle,
-              description: trimmedDescription || undefined,
-              dueDate: dueDateSnapshot,
-              customerName: customerNameSnapshot || undefined,
-            })
-            if (typeof calendarResult.id !== 'number') {
-              throw new Error("Kalenderereignis wurde erstellt, aber es wurde keine Ereignis-ID zurückgegeben.")
-            }
-
-            if (taskId !== null) {
-              const updateResponse = await taskService.updateTask(taskId, { calendar_event_id: calendarResult.id })
-              if (!updateResponse.success) {
-                throw new Error(updateResponse.error || "Kalender-ID konnte nicht der Aufgabe zugeordnet werden.")
-              }
-            }
-
-            calendarEventCreated = true
-          } catch (error) {
-            calendarError = error instanceof Error ? error : new Error("Kalendereintrag fehlgeschlagen")
-            console.error("Kalendereintrag konnte nicht erstellt werden:", error)
-          }
-        }
-
         const actionButton = dueDateSnapshot
           ? (
             <ToastAction
@@ -358,22 +349,13 @@ export default function TasksPage() {
           )
           : undefined
 
-        if (calendarError) {
-          toast({
-            title: "Aufgabe gespeichert",
-            description: "Die Aufgabe wurde gespeichert, der Kalendereintrag konnte jedoch nicht erstellt werden.",
-            variant: "destructive",
-            action: actionButton,
-          })
-        } else {
-          toast({
-            title: calendarEventCreated ? "Aufgabe geplant" : "Aufgabe gespeichert",
-            description: calendarEventCreated
-              ? "Die Aufgabe wurde gespeichert und dem Kalender hinzugefügt."
-              : "Die Aufgabe wurde gespeichert.",
-            action: calendarEventCreated ? actionButton : undefined,
-          })
-        }
+        toast({
+          title: calendarEventCreated ? "Aufgabe geplant" : "Aufgabe gespeichert",
+          description: calendarEventCreated
+            ? "Die Aufgabe wurde gespeichert und dem Kalender hinzugefügt."
+            : "Die Aufgabe wurde gespeichert.",
+          action: calendarEventCreated ? actionButton : undefined,
+        })
 
         setIsAddTaskOpen(false)
         setNewTask(createEmptyTask())
@@ -423,33 +405,6 @@ export default function TasksPage() {
         t.id === id ? { ...t, completed: nextCompleted } : t
       ))
 
-      if (task.calendar_event_id) {
-        try {
-          await calendarService.updateTaskEvent(task.calendar_event_id, {
-            completed: nextCompleted,
-          })
-        } catch (calendarError) {
-          console.error("Kalenderereignis konnte nicht aktualisiert werden:", calendarError)
-          const message = calendarError instanceof Error ? calendarError.message : String(calendarError)
-          toast({
-            title: "Kalender nicht erreichbar",
-            description: "Der Kalendereintrag konnte nicht aktualisiert werden.",
-            variant: "destructive",
-          })
-
-          const shouldUnlink = /nicht gefunden|not found|no such/i.test(message)
-          if (shouldUnlink) {
-            try {
-              await taskService.updateTask(id, { calendar_event_id: null })
-              setTasks(prev => prev.map(t =>
-                t.id === id ? { ...t, calendar_event_id: null } : t
-              ))
-            } catch (unlinkError) {
-              console.error("Kalender-Verknüpfung konnte nicht entfernt werden:", unlinkError)
-            }
-          }
-        }
-      }
     } catch (error) {
       console.error("Aufgabe konnte nicht aktualisiert werden:", error)
       toast({

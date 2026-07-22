@@ -33,7 +33,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CalendarEvent, CalendarRBCEvent, RecurrenceRule, OnEventResizeArgs, OnEventDropArgs } from '@/types';
-import { calendarService, TASK_EVENT_COMPLETED_COLOR, TASK_EVENT_DEFAULT_COLOR } from '@/services/data/calendarService';
+import { TASK_EVENT_COMPLETED_COLOR, TASK_EVENT_DEFAULT_COLOR } from '@/services/data/calendarService';
 import { taskService } from '@/services/data/taskService';
 import { IPCChannels } from '@shared/ipc/channels';
 import {
@@ -68,18 +68,57 @@ const MAX_FETCH_RETRIES = 3;
 const RETRY_DELAY_MS = 3000;
 
 // Database API
+type CalendarSchedule =
+  | { mode: 'none' }
+  | { mode: 'existing'; taskId: number }
+  | {
+      mode: 'create';
+      task: {
+        customerId: number;
+        title: string;
+        description?: string | null;
+        priority?: string;
+        completed?: boolean;
+      };
+    };
+
+type CalendarDatabaseEvent = {
+  id?: number;
+  title: string;
+  description?: string | null;
+  start_date: string;
+  end_date: string;
+  all_day?: boolean;
+  color_code?: string | null;
+  event_type?: string | null;
+  recurrence_rule?: string | null;
+};
+
+type CalendarMutationResult = {
+  success: boolean;
+  id: number;
+  lastInsertRowid?: number;
+  task?: { id: number | string } | null;
+};
+
+const normalizeAllDayEnd = (startDate: string, endDate: string, allDay: boolean | undefined): string => {
+  if (!allDay || Date.parse(startDate) !== Date.parse(endDate)) return endDate;
+  return new Date(Date.parse(startDate) + 24 * 60 * 60 * 1000).toISOString();
+};
+
+const toCalendarTimestamp = (date: Date, allDay: boolean | undefined): string => {
+  if (!allDay) return date.toISOString();
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())).toISOString();
+};
+
 interface DatabaseAPI {
   getCalendarEvents: () => Promise<CalendarEvent[]>;
-  addCalendarEvent: (event: any) => Promise<any>; // Using 'any' to accommodate both CalendarEvent and CalendarRBCEvent formats
-  updateCalendarEvent: (event: any) => Promise<void>; // Using 'any' to accommodate both formats
+  addCalendarEvent: (event: CalendarDatabaseEvent, schedule?: CalendarSchedule) => Promise<CalendarMutationResult>;
+  updateCalendarEvent: (event: CalendarDatabaseEvent, schedule?: CalendarSchedule) => Promise<CalendarMutationResult>;
   deleteCalendarEvent: (id: number) => Promise<void>;
 }
 
 // Using DragDropInfo imported from @/types
-
-const toTaskDueDateString = (date: Date): string => {
-  return format(date, 'yyyy-MM-dd');
-};
 
 const toEventFormData = (event: CalendarRBCEvent): EventFormData => ({
   id: event.id,
@@ -265,19 +304,18 @@ export default function CalendarPage() {
         return [];
       }
     },
-    addCalendarEvent: async (event) => {
+    addCalendarEvent: async (event, schedule) => {
       try {
         // Debug the event data we're sending to SQLite
         console.log('Calendar event data being sent to SQLite:', JSON.stringify(event, null, 2));
 
         // Convert date objects to ISO strings to avoid SQLite binding issues
-        const sqliteCompatibleEvent: Record<string, any> = {
+        const sqliteCompatibleEvent: CalendarDatabaseEvent = {
           title: event.title,
           description: event.description || '',
-          // Ensure start and end are Dates before calling toISOString()
-          start_date: event.start_date ?? (event.start instanceof Date ? event.start.toISOString() : event.start),
-          end_date: event.end_date ?? (event.end instanceof Date ? event.end.toISOString() : event.end),
-          all_day: event.allDay || false,
+          start_date: event.start_date,
+          end_date: normalizeAllDayEnd(event.start_date, event.end_date, event.all_day),
+          all_day: event.all_day ?? false,
           color_code: event.color_code || '#3174ad',
           event_type: event.event_type || '',
           recurrence_rule: null
@@ -297,26 +335,29 @@ export default function CalendarPage() {
 
         const result = await invokeRenderer(
           IPCChannels.Calendar.AddCalendarEvent,
-          sqliteCompatibleEvent
-        );
+          {
+            event: sqliteCompatibleEvent,
+            ...(schedule ? { schedule } : {}),
+          }
+        ) as CalendarMutationResult;
         return result;
       } catch (error) {
         console.error('Error adding calendar event:', error);
         throw error;
       }
     },
-    updateCalendarEvent: async (event) => {
+    updateCalendarEvent: async (event, schedule) => {
       try {
         console.log('Updating calendar event:', JSON.stringify(event, null, 2));
 
         // Convert date objects to ISO strings
-        const sqliteCompatibleEvent: Record<string, any> = {
-          id: event.id,
+        if (!event.id) throw new Error('Kalenderereignis-ID fehlt.');
+        const sqliteCompatibleEvent: CalendarDatabaseEvent = {
           title: event.title,
           description: event.description || '',
           // Ensure start_date and end_date are strings (ISOs)
           start_date: typeof event.start_date === 'string' ? event.start_date : new Date(event.start_date).toISOString(),
-          end_date: typeof event.end_date === 'string' ? event.end_date : new Date(event.end_date).toISOString(),
+          end_date: normalizeAllDayEnd(event.start_date, event.end_date, event.all_day),
           all_day: event.all_day || false,
           color_code: event.color_code || '#3174ad',
           event_type: event.event_type || '',
@@ -335,10 +376,14 @@ export default function CalendarPage() {
 
         console.log('Converted SQLite-compatible event for update:', JSON.stringify(sqliteCompatibleEvent, null, 2));
 
-        await invokeRenderer(
+        return await invokeRenderer(
           IPCChannels.Calendar.UpdateCalendarEvent,
-          sqliteCompatibleEvent
-        );
+          {
+            id: event.id,
+            event: sqliteCompatibleEvent,
+            ...(schedule ? { schedule } : {}),
+          }
+        ) as CalendarMutationResult;
       } catch (error) {
         console.error('Error updating calendar event:', error);
         throw error;
@@ -537,8 +582,8 @@ export default function CalendarPage() {
         id: typeof updatedEvent.id === 'string' ? parseInt(updatedEvent.id) : updatedEvent.id,
         title: updatedEvent.title,
         description: updatedEvent.description || '',
-        start_date: updatedEvent.start.toISOString(),
-        end_date: updatedEvent.end.toISOString(),
+        start_date: toCalendarTimestamp(updatedEvent.start, updatedEvent.allDay),
+        end_date: toCalendarTimestamp(updatedEvent.end, updatedEvent.allDay),
         all_day: updatedEvent.allDay || false,
         color_code: updatedEvent.color_code || '#3174ad',
         event_type: updatedEvent.event_type || '',
@@ -571,7 +616,7 @@ export default function CalendarPage() {
         variant: "destructive",
       });
     }
-  }, [dbApi, calendarService, toast]);
+  }, [dbApi, toast]);
 
   const handleEventResize = useCallback(
     ({ event, start, end, isAllDay }: OnEventResizeArgs) => {
@@ -596,7 +641,6 @@ export default function CalendarPage() {
   );
 
   const handleAddEvent = useCallback(async ({ event: newEventData, task }: EventFormSubmitPayload) => {
-    let createdTaskId: number | null = null;
     try {
       if (!newEventData.title || !newEventData.start || !newEventData.end) {
         toast({ title: "Fehler", description: "Titel, Start und Ende sind erforderlich.", variant: "destructive" });
@@ -614,43 +658,40 @@ export default function CalendarPage() {
         return;
       }
 
-      const taskDueDate = toTaskDueDateString(newEventData.start);
-
-      if (task) {
-        const taskCreateResult = await taskService.createTask({
-          customer_id: task.customer_id,
-          title: newEventData.title,
-          description: task.description ?? newEventData.description ?? '',
-          due_date: taskDueDate,
-          priority: task.priority,
-          completed: task.completed ?? false,
-          calendar_event_id: null,
-        });
-
-        if (!taskCreateResult.success || typeof taskCreateResult.id !== 'number') {
-          throw new Error(taskCreateResult.error || 'Aufgabe konnte nicht erstellt werden.');
-        }
-
-        createdTaskId = taskCreateResult.id;
-      }
-
       // Convert from React Big Calendar event format to database format
-      const dbEvent = {
+      const dbEvent: CalendarDatabaseEvent = {
         title: newEventData.title,
         description: newEventData.description,
-        start_date: newEventData.start.toISOString(),
-        end_date: newEventData.end.toISOString(),
+        start_date: toCalendarTimestamp(newEventData.start, newEventData.allDay),
+        end_date: toCalendarTimestamp(newEventData.end, newEventData.allDay),
         all_day: newEventData.allDay || false,
         color_code: newEventData.color_code,
         event_type: newEventData.event_type,
         recurrence_rule: newEventData.recurrence_rule ? JSON.stringify(newEventData.recurrence_rule) : null,
-        task_id: createdTaskId,
       };
+
+      const schedule: CalendarSchedule = task
+        ? {
+            mode: 'create',
+            task: {
+              customerId: task.customer_id,
+              title: newEventData.title,
+              description: task.description ?? newEventData.description ?? '',
+              priority: task.priority,
+              completed: task.completed ?? false,
+            },
+          }
+        : { mode: 'none' };
 
       console.log('Adding new calendar event to DB:', dbEvent);
       
-      const data = await dbApi.addCalendarEvent(dbEvent);
-      const insertedEventId = data.id || data.lastInsertRowid || Date.now();
+      const data = await dbApi.addCalendarEvent(dbEvent, schedule);
+      const insertedEventId = data.id || data.lastInsertRowid;
+      if (!insertedEventId) throw new Error('Kalenderereignis-ID fehlt.');
+      const createdTaskId = data.task?.id === undefined ? null : Number(data.task.id);
+      if (task && (!createdTaskId || Number.isNaN(createdTaskId))) {
+        throw new Error('Die verknüpfte Aufgabe fehlt in der atomaren Antwort.');
+      }
       
       // Convert the returned data to RBC format
       const newEvent: CalendarRBCEvent = {
@@ -670,22 +711,6 @@ export default function CalendarPage() {
 
       setEvents(prev => [...prev, newEvent]);
 
-      if (createdTaskId) {
-        try {
-          await taskService.updateTask(createdTaskId, { calendar_event_id: Number(insertedEventId) }, { syncCalendar: false });
-          await calendarService.updateTaskEvent(Number(insertedEventId), {
-            title: newEventData.title,
-            description: newEventData.description,
-            dueDate: taskDueDate,
-            customerName: task?.customer_name ?? undefined,
-            completed: task?.completed ?? false,
-            colorCode: newEventData.color_code,
-          });
-        } catch (linkError) {
-          console.error('Failed to finalize task/calendar linkage:', linkError);
-        }
-      }
-
       toast({ title: "Erfolg", description: "Ereignis wurde erstellt" });
       setIsAddModalOpen(false);
       setEventFormData(null);
@@ -698,22 +723,11 @@ export default function CalendarPage() {
         description: `Ereignis konnte nicht erstellt werden: ${errorMessage}`,
         variant: "destructive",
       });
-
-      if (createdTaskId) {
-        try {
-          await taskService.deleteTask(createdTaskId);
-        } catch (cleanupError) {
-          console.error('Failed to roll back task creation after calendar failure:', cleanupError);
-        }
-      }
     }
   }, [dbApi, toast]);
 
   const handleUpdateEvent = useCallback(async ({ event: updatedEventData, task }: EventFormSubmitPayload) => {
     if (!selectedEvent) return;
-
-    let linkedTaskId = selectedEvent.task_id ?? null;
-    let createdTaskId: number | null = null;
 
     try {
       if (!updatedEventData.title || !updatedEventData.start || !updatedEventData.end) {
@@ -736,67 +750,41 @@ export default function CalendarPage() {
         ? parseInt(String(updatedEventData.id ?? selectedEvent.id))
         : Number(updatedEventData.id ?? selectedEvent.id);
 
-      const taskDueDate = toTaskDueDateString(updatedEventData.start);
-
-      if (task) {
-        if (task.id) {
-          try {
-            await taskService.updateTask(task.id, {
-              title: updatedEventData.title,
-              description: task.description ?? updatedEventData.description ?? '',
-              due_date: taskDueDate,
-              priority: task.priority,
-              completed: task.completed ?? false,
-            }, { syncCalendar: false });
-          } catch (taskUpdateError) {
-            throw new Error(taskUpdateError instanceof Error ? taskUpdateError.message : String(taskUpdateError));
-          }
-          linkedTaskId = task.id;
-        } else {
-          const taskCreateResult = await taskService.createTask({
-            customer_id: task.customer_id,
-            title: updatedEventData.title,
-            description: task.description ?? updatedEventData.description ?? '',
-            due_date: taskDueDate,
-            priority: task.priority,
-            completed: task.completed ?? false,
-            calendar_event_id: null,
-          });
-
-          if (!taskCreateResult.success || typeof taskCreateResult.id !== 'number') {
-            throw new Error(taskCreateResult.error || 'Aufgabe konnte nicht erstellt werden.');
-          }
-
-          linkedTaskId = taskCreateResult.id;
-          createdTaskId = taskCreateResult.id;
-        }
-      } else if (selectedEvent.task_id) {
-        try {
-          await taskService.updateTask(selectedEvent.task_id, { calendar_event_id: null }, { syncCalendar: false });
-        } catch (unlinkError) {
-          console.error('Failed to unlink task from calendar event:', unlinkError);
-        }
-        linkedTaskId = null;
-      }
-
       // Convert from RBC format to database format
-      const dbEvent = {
+      const dbEvent: CalendarDatabaseEvent = {
         id: numericEventId,
         title: updatedEventData.title,
         description: updatedEventData.description || '',
-        start_date: updatedEventData.start.toISOString(),
-        end_date: updatedEventData.end.toISOString(),
+        start_date: toCalendarTimestamp(updatedEventData.start, updatedEventData.allDay),
+        end_date: toCalendarTimestamp(updatedEventData.end, updatedEventData.allDay),
         all_day: updatedEventData.allDay || false,
         color_code: updatedEventData.color_code || '#3174ad',
         event_type: updatedEventData.event_type || '',
         recurrence_rule: updatedEventData.recurrence_rule ? JSON.stringify(updatedEventData.recurrence_rule) : null,
-        task_id: linkedTaskId,
-        updated_at: new Date().toISOString()
       };
+
+      const schedule: CalendarSchedule = task?.id
+        ? { mode: 'existing', taskId: task.id }
+        : task
+          ? {
+              mode: 'create',
+              task: {
+                customerId: task.customer_id,
+                title: updatedEventData.title,
+                description: task.description ?? updatedEventData.description ?? '',
+                priority: task.priority,
+                completed: task.completed ?? false,
+              },
+            }
+          : { mode: 'none' };
 
       console.log('Updating calendar event in DB:', dbEvent);
       
-      await dbApi.updateCalendarEvent(dbEvent);
+      const data = await dbApi.updateCalendarEvent(dbEvent, schedule);
+      const linkedTaskId = data.task?.id === undefined ? null : Number(data.task.id);
+      if (task && (!linkedTaskId || Number.isNaN(linkedTaskId))) {
+        throw new Error('Die verknüpfte Aufgabe fehlt in der atomaren Antwort.');
+      }
 
       setEvents(prev => prev.map(event =>
         event.id === selectedEvent.id ? {
@@ -806,22 +794,6 @@ export default function CalendarPage() {
           task_id: linkedTaskId,
         } : event
       ));
-
-      if (linkedTaskId) {
-        try {
-          await taskService.updateTask(linkedTaskId, { calendar_event_id: numericEventId }, { syncCalendar: false });
-          await calendarService.updateTaskEvent(numericEventId, {
-            title: updatedEventData.title,
-            description: updatedEventData.description,
-            dueDate: taskDueDate,
-            customerName: task?.customer_name ?? undefined,
-            completed: task?.completed ?? false,
-            colorCode: updatedEventData.color_code,
-          });
-        } catch (linkError) {
-          console.error('Failed to synchronize task after event update:', linkError);
-        }
-      }
 
       if (!task && selectedEvent.task_id) {
         toast({ title: "Hinweis", description: "Die Aufgabe bleibt bestehen, ist aber nicht mehr mit dem Termin verknüpft." });
@@ -840,30 +812,13 @@ export default function CalendarPage() {
         description: `Ereignis konnte nicht aktualisiert werden: ${errorMessage}`,
         variant: "destructive",
       });
-
-      if (createdTaskId) {
-        try {
-          await taskService.deleteTask(createdTaskId);
-        } catch (cleanupError) {
-          console.error('Failed to clean up newly created task after event update failure:', cleanupError);
-        }
-      }
     }
-  }, [calendarService, dbApi, selectedEvent, toast]);
+  }, [dbApi, selectedEvent, toast]);
 
   const handleDeleteEvent = useCallback(async (id: number | string) => {
     try {
       console.log('Deleting calendar event with ID:', id);
       const numericId = typeof id === 'string' ? parseInt(id) : id;
-
-      const eventToDelete = events.find(event => String(event.id) === String(id));
-      if (eventToDelete?.task_id) {
-        try {
-          await taskService.updateTask(eventToDelete.task_id, { calendar_event_id: null }, { syncCalendar: false });
-        } catch (unlinkError) {
-          console.error('Failed to unlink task before deleting event:', unlinkError);
-        }
-      }
 
       await dbApi.deleteCalendarEvent(numericId);
       

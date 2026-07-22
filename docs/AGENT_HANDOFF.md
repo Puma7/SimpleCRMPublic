@@ -1,7 +1,7 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-22 (customer company in tasks and follow-ups)
-**Integration branch:** `codex/customer-company-task-followup`
+**Last updated:** 2026-07-22 (atomic task/calendar mutations)
+**Integration branch:** `codex/atomic-task-calendar`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 **Current audit:** [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
@@ -60,6 +60,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers, RLS-sichere MFA-Mutationen und multi-replizierter Login-Challenge-State gehärtet; siehe aktuellen Auditbericht |
 | E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 | CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
+| Aufgaben/Kalender | `calendar_events.task_id` ist die kanonische 1:1-Verknuepfung; Erstellen, Verschieben, Entkoppeln und Loeschen laufen in PostgreSQL und SQLite atomar |
 
 ---
 
@@ -76,6 +77,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | E-Mail-Evidenz | `packages/server/src/email-tracking.ts`, `src/components/email/message-evidence-panel.tsx`, `docs/EMAIL_EVIDENCE_TRACKING.md` |
 | Native ABI manager | `scripts/native-runtime-manager.mjs`, `scripts/run-with-electron-native.mjs` |
 | Electron E2E session | `tests/e2e/helpers/electron-session.ts` |
+| Atomic task/calendar | `packages/core/src/crm/task-calendar.ts`, `packages/server/src/db/postgres-core-crm-read-ports.ts`, `electron/sqlite-service.ts` |
 
 ---
 

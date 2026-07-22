@@ -1,3 +1,4 @@
+import type { TaskScheduleInput } from '@simplecrm/core';
 import type {
   ActivityLogListSort,
   ActivityLogListResult,
@@ -81,6 +82,11 @@ export async function handleExtendedCrmReadRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
+  const calendarEntryMatch = /^\/api\/v1\/calendar-entries(?:\/([^/]+))?$/.exec(req.path);
+  if (calendarEntryMatch) {
+    return handleCalendarEntryMutation(req, ports, calendarEntryMatch[1]);
+  }
+
   if (req.path === '/api/v1/jtl/sync/status') {
     return handleJtlSyncStatus(req, ports);
   }
@@ -121,6 +127,287 @@ export async function handleExtendedCrmReadRoute(
   }
 
   return null;
+}
+
+async function handleCalendarEntryMutation(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.calendarEntries) {
+    return unavailable('calendar_entries_unavailable', 'Calendar entry API nicht konfiguriert');
+  }
+
+  const id = rawId === undefined ? undefined : positiveIntFromPath(rawId);
+  if (id === null) {
+    return error(400, 'invalid_calendar_entry_id', 'Calendar entry id muss eine positive Ganzzahl sein');
+  }
+
+  if (id === undefined && req.method === 'POST') {
+    const parsed = parseCalendarEntryMutationBody(req.body, true);
+    if (!parsed.ok) return parsed.response;
+    const result = await ports.calendarEntries.create({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      event: parsed.event,
+      ...(parsed.schedule ? { schedule: parsed.schedule } : {}),
+      viewer: principal,
+    });
+    if (!result.ok) return calendarEntryMutationError(result.code);
+    await recordCalendarEntryMutation(
+      ports,
+      principal,
+      'created',
+      result.event,
+      result.task,
+      parsed.schedule?.mode === 'create' ? 'created' : 'updated',
+    );
+    return data(201, { event: sanitizeCalendarEvent(result.event), task: result.task });
+  }
+
+  if (id !== undefined && req.method === 'PATCH') {
+    const parsed = parseCalendarEntryMutationBody(req.body, false);
+    if (!parsed.ok) return parsed.response;
+    const result = await ports.calendarEntries.update({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      id,
+      event: parsed.event,
+      ...(parsed.schedule ? { schedule: parsed.schedule } : {}),
+      viewer: principal,
+    });
+    if (!result.ok) return calendarEntryMutationError(result.code);
+    await recordCalendarEntryMutation(
+      ports,
+      principal,
+      'updated',
+      result.event,
+      result.task,
+      parsed.schedule?.mode === 'create' ? 'created' : 'updated',
+      result.detachedTask,
+    );
+    return data(200, {
+      event: sanitizeCalendarEvent(result.event),
+      task: result.task,
+      ...(result.detachedTask ? { detachedTask: result.detachedTask } : {}),
+    });
+  }
+
+  if (id !== undefined && req.method === 'DELETE') {
+    const result = await ports.calendarEntries.delete({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      id,
+      viewer: principal,
+    });
+    if (!result.ok) return calendarEntryMutationError(result.code);
+    await recordCalendarEntryMutation(ports, principal, 'deleted', result.event, result.task);
+    return data(200, { event: sanitizeCalendarEvent(result.event), task: result.task });
+  }
+
+  return methodNotAllowed();
+}
+
+async function recordCalendarEntryMutation(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  action: 'created' | 'updated' | 'deleted',
+  event: CalendarEventRecord,
+  task: { id: number } | null,
+  taskAction: 'created' | 'updated' = 'updated',
+  detachedTask?: { id: number } | null,
+): Promise<void> {
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action: `calendar_entry.${action}`,
+    entityType: 'calendar_event',
+    entityId: String(event.id),
+    metadata: {
+      eventId: event.id,
+      taskId: task?.id ?? null,
+      detachedTaskId: detachedTask?.id ?? null,
+    },
+  });
+  await publishCalendarEvent(
+    ports,
+    `calendar_event.${action}` as 'calendar_event.created' | 'calendar_event.updated' | 'calendar_event.deleted',
+    principal.workspaceId,
+    event,
+    principal.userId,
+  );
+  if (task) {
+    await ports.events?.publish({
+      type: taskAction === 'created' ? 'task.created' : 'task.updated',
+      workspaceId: principal.workspaceId,
+      entityType: 'task',
+      entityId: String(task.id),
+      actorUserId: principal.userId,
+      occurredAt: new Date().toISOString(),
+      payload: { id: task.id, calendarEventId: action === 'deleted' ? null : event.id },
+    });
+  }
+  if (detachedTask && detachedTask.id !== task?.id) {
+    await ports.events?.publish({
+      type: 'task.updated',
+      workspaceId: principal.workspaceId,
+      entityType: 'task',
+      entityId: String(detachedTask.id),
+      actorUserId: principal.userId,
+      occurredAt: new Date().toISOString(),
+      payload: { id: detachedTask.id, calendarEventId: null },
+    });
+  }
+}
+
+function calendarEntryMutationError(code: string): ApiResponse {
+  if (code === 'calendar_event_not_found') return error(404, code, 'Calendar entry nicht gefunden');
+  if (code === 'task_not_found') return error(404, code, 'Task nicht gefunden');
+  if (code === 'customer_not_found') return error(404, code, 'Customer nicht gefunden');
+  if (code === 'assigned_user_not_found') return error(404, code, 'Zugewiesener Benutzer nicht gefunden');
+  if (code === 'assigned_group_not_found') return error(404, code, 'Zugewiesene Gruppe nicht gefunden');
+  if (code === 'forbidden') return error(403, code, 'Keine Berechtigung fuer diesen Task');
+  if (code === 'task_already_scheduled') return error(409, code, 'Task ist bereits mit einem Calendar entry verknuepft');
+  return error(400, 'invalid_date_range', 'endDate muss nach startDate liegen');
+}
+
+function parseCalendarEntryMutationBody(
+  body: unknown,
+  create: boolean,
+):
+  | { ok: true; event: CalendarEventMutationInput; schedule?: TaskScheduleInput }
+  | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  if (!isPlainObject(body)) {
+    return { ok: false, response: error(400, 'invalid_calendar_entry_payload', 'Payload muss ein JSON-Objekt sein') };
+  }
+  const unknownFields = Object.keys(body).filter((key) => key !== 'event' && key !== 'schedule');
+  if (unknownFields.length > 0 || !isPlainObject(body.event)) {
+    return {
+      ok: false,
+      response: error(400, 'validation_error', 'Calendar entry payload ist ungueltig', {
+        fields: unknownFields.map((field) => ({ field, message: 'Feld ist nicht erlaubt' })),
+      }),
+    };
+  }
+
+  const parsedEvent = parseCalendarEventMutationBody(body.event, {
+    requireAtLeastOneField: true,
+    requireTitle: create,
+    requireStartAndEnd: create,
+  });
+  if (!parsedEvent.ok) return parsedEvent;
+  if (parsedEvent.values.taskId !== undefined) {
+    return {
+      ok: false,
+      response: error(400, 'validation_error', 'Task-Verknuepfungen muessen ueber schedule gesetzt werden'),
+    };
+  }
+  delete parsedEvent.values.taskId;
+
+  const schedule = parseTaskSchedule(body.schedule);
+  if (!schedule.ok) return schedule;
+  return {
+    ok: true,
+    event: parsedEvent.values,
+    ...(schedule.value ? { schedule: schedule.value } : {}),
+  };
+}
+
+function parseTaskSchedule(raw: unknown):
+  | { ok: true; value?: TaskScheduleInput }
+  | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  if (raw === undefined) return { ok: true };
+  if (!isPlainObject(raw) || typeof raw.mode !== 'string') {
+    return { ok: false, response: error(400, 'validation_error', 'schedule ist ungueltig') };
+  }
+  if (raw.mode === 'none' && Object.keys(raw).length === 1) {
+    return { ok: true, value: { mode: 'none' } };
+  }
+  if (raw.mode === 'existing') {
+    const taskId = normalizePositiveBodyInt(raw.taskId, 'taskId');
+    if (!taskId.ok || Object.keys(raw).some((key) => key !== 'mode' && key !== 'taskId')) {
+      return { ok: false, response: error(400, 'validation_error', 'Bestehender Task-Link ist ungueltig') };
+    }
+    return { ok: true, value: { mode: 'existing', taskId: taskId.value } };
+  }
+  if (raw.mode !== 'create' || !isPlainObject(raw.task)) {
+    return { ok: false, response: error(400, 'validation_error', 'schedule.mode ist ungueltig') };
+  }
+  if (Object.keys(raw).some((key) => key !== 'mode' && key !== 'task')) {
+    return { ok: false, response: error(400, 'validation_error', 'schedule enthaelt unerlaubte Felder') };
+  }
+
+  const task = raw.task;
+  const allowed = new Set([
+    'customerId', 'title', 'description', 'priority', 'completed',
+    'assignmentScope', 'assignedUserId', 'assignedGroupId',
+  ]);
+  if (Object.keys(task).some((key) => !allowed.has(key))) {
+    return { ok: false, response: error(400, 'validation_error', 'Task-Payload enthaelt unerlaubte Felder') };
+  }
+  const title = normalizeRequiredBodyText(task.title, 300);
+  if (!title.ok) return { ok: false, response: error(400, 'validation_error', title.message) };
+  const customerId = task.customerId === undefined
+    ? undefined
+    : normalizePositiveBodyInt(task.customerId, 'customerId');
+  if (customerId && !customerId.ok) return { ok: false, response: error(400, 'validation_error', customerId.message) };
+  const assignmentScope = task.assignmentScope ?? 'global';
+  if (assignmentScope !== 'global' && assignmentScope !== 'user' && assignmentScope !== 'group') {
+    return { ok: false, response: error(400, 'validation_error', 'assignmentScope ist ungueltig') };
+  }
+  if (task.completed !== undefined && typeof task.completed !== 'boolean') {
+    return { ok: false, response: error(400, 'validation_error', 'completed muss ein Boolean sein') };
+  }
+  if (task.description !== undefined && typeof task.description !== 'string' && task.description !== null) {
+    return { ok: false, response: error(400, 'validation_error', 'description muss ein String oder null sein') };
+  }
+  if (task.priority !== undefined && (typeof task.priority !== 'string' || !task.priority.trim())) {
+    return { ok: false, response: error(400, 'validation_error', 'priority muss ein nichtleerer String sein') };
+  }
+  if (
+    task.assignedUserId !== undefined
+    && task.assignedUserId !== null
+    && (typeof task.assignedUserId !== 'string' || !task.assignedUserId.trim())
+  ) {
+    return { ok: false, response: error(400, 'validation_error', 'assignedUserId ist ungueltig') };
+  }
+  const assignedGroupId = task.assignedGroupId === undefined || task.assignedGroupId === null
+    ? task.assignedGroupId
+    : normalizePositiveBodyInt(task.assignedGroupId, 'assignedGroupId');
+  if (assignedGroupId && typeof assignedGroupId === 'object' && !assignedGroupId.ok) {
+    return { ok: false, response: error(400, 'validation_error', assignedGroupId.message) };
+  }
+  if (assignmentScope === 'user' && (typeof task.assignedUserId !== 'string' || !task.assignedUserId.trim())) {
+    return { ok: false, response: error(400, 'validation_error', 'assignedUserId ist fuer user erforderlich') };
+  }
+  if (assignmentScope === 'group' && (!assignedGroupId || typeof assignedGroupId !== 'object' || !assignedGroupId.ok)) {
+    return { ok: false, response: error(400, 'validation_error', 'assignedGroupId ist fuer group erforderlich') };
+  }
+
+  return {
+    ok: true,
+    value: {
+      mode: 'create',
+      task: {
+        ...(customerId && customerId.ok ? { customerId: customerId.value } : {}),
+        title: title.value,
+        ...(typeof task.description === 'string' || task.description === null ? { description: task.description } : {}),
+        ...(typeof task.priority === 'string' && task.priority.trim() ? { priority: task.priority.trim() } : {}),
+        ...(typeof task.completed === 'boolean' ? { completed: task.completed } : {}),
+        assignmentScope,
+        ...(typeof task.assignedUserId === 'string' || task.assignedUserId === null
+          ? { assignedUserId: typeof task.assignedUserId === 'string' ? task.assignedUserId.trim() : null }
+          : {}),
+        ...(assignedGroupId === null
+          ? { assignedGroupId: null }
+          : assignedGroupId && typeof assignedGroupId === 'object' && assignedGroupId.ok
+            ? { assignedGroupId: assignedGroupId.value }
+          : {}),
+      },
+    },
+  };
 }
 
 async function handleJtlSyncStatus(
@@ -252,6 +539,7 @@ async function handleNumericList(
       if (!ports.calendarEvents) return unavailable('calendar_events_unavailable', 'Calendar event API nicht konfiguriert');
       const result = await ports.calendarEvents.list({
         workspaceId: principal.workspaceId,
+        viewer: principal,
         ...base.filters,
         ...filters.filters,
       });
@@ -362,7 +650,7 @@ async function handleNumericGet(
     }
     case 'calendarEvents': {
       if (!ports.calendarEvents) return unavailable('calendar_events_unavailable', 'Calendar event API nicht konfiguriert');
-      const item = await ports.calendarEvents.get({ workspaceId: principal.workspaceId, id });
+      const item = await ports.calendarEvents.get({ workspaceId: principal.workspaceId, id, viewer: principal });
       return item ? data(200, sanitizeCalendarEvent(item)) : error(404, 'calendar_event_not_found', 'Calendar event nicht gefunden');
     }
     case 'customerCustomFields': {
@@ -468,7 +756,9 @@ async function handleCreateCalendarEvent(
   ports: ServerApiPorts,
   principal: AuthenticatedPrincipal,
 ): Promise<ApiResponse> {
-  if (!ports.calendarEvents?.create) return unavailable('calendar_events_unavailable', 'Calendar event API nicht konfiguriert');
+  if (!ports.calendarEntries && !ports.calendarEvents?.create) {
+    return unavailable('calendar_events_unavailable', 'Calendar event API nicht konfiguriert');
+  }
 
   const parsed = parseCalendarEventMutationBody(req.body, {
     requireAtLeastOneField: true,
@@ -477,10 +767,35 @@ async function handleCreateCalendarEvent(
   });
   if (!parsed.ok) return parsed.response;
 
-  const result = await ports.calendarEvents.create({
+  if (ports.calendarEntries) {
+    const { taskId, ...eventValues } = parsed.values;
+    const atomicResult = await ports.calendarEntries.create({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      event: eventValues,
+      ...(taskId === undefined ? {} : {
+        schedule: taskId === null
+          ? { mode: 'none' as const }
+          : { mode: 'existing' as const, taskId },
+      }),
+      viewer: principal,
+    });
+    if (!atomicResult.ok) return calendarEntryMutationError(atomicResult.code);
+    await recordCalendarEntryMutation(
+      ports,
+      principal,
+      'created',
+      atomicResult.event,
+      atomicResult.task,
+    );
+    return data(201, atomicResult.event);
+  }
+
+  const result = await ports.calendarEvents!.create!({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     values: parsed.values,
+    viewer: principal,
   });
   if (!result.ok) {
     return result.code === 'task_not_found'
@@ -513,7 +828,9 @@ async function handleUpdateCalendarEvent(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
-  if (!ports.calendarEvents?.update) return unavailable('calendar_events_unavailable', 'Calendar event API nicht konfiguriert');
+  if (!ports.calendarEntries && !ports.calendarEvents?.update) {
+    return unavailable('calendar_events_unavailable', 'Calendar event API nicht konfiguriert');
+  }
 
   const parsed = parseCalendarEventMutationBody(req.body, {
     requireAtLeastOneField: true,
@@ -522,11 +839,39 @@ async function handleUpdateCalendarEvent(
   });
   if (!parsed.ok) return parsed.response;
 
-  const result = await ports.calendarEvents.update({
+  if (ports.calendarEntries) {
+    const { taskId, ...eventValues } = parsed.values;
+    const atomicResult = await ports.calendarEntries.update({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      id,
+      event: eventValues,
+      ...(taskId === undefined ? {} : {
+        schedule: taskId === null
+          ? { mode: 'none' as const }
+          : { mode: 'existing' as const, taskId },
+      }),
+      viewer: principal,
+    });
+    if (!atomicResult.ok) return calendarEntryMutationError(atomicResult.code);
+    await recordCalendarEntryMutation(
+      ports,
+      principal,
+      'updated',
+      atomicResult.event,
+      atomicResult.task,
+      'updated',
+      atomicResult.detachedTask,
+    );
+    return data(200, atomicResult.event);
+  }
+
+  const result = await ports.calendarEvents!.update!({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id,
     values: parsed.values,
+    viewer: principal,
   });
   if (!result) return error(404, 'calendar_event_not_found', 'Calendar event nicht gefunden');
   if (!result.ok) {
@@ -557,12 +902,24 @@ async function handleDeleteCalendarEvent(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  if (ports.calendarEntries) {
+    const atomicResult = await ports.calendarEntries.delete({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      id,
+      viewer: principal,
+    });
+    if (!atomicResult.ok) return calendarEntryMutationError(atomicResult.code);
+    await recordCalendarEntryMutation(ports, principal, 'deleted', atomicResult.event, atomicResult.task);
+    return data(200, { deleted: true, calendarEvent: atomicResult.event });
+  }
   if (!ports.calendarEvents?.delete) return unavailable('calendar_events_unavailable', 'Calendar event API nicht konfiguriert');
 
   const event = await ports.calendarEvents.delete({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id,
+    viewer: principal,
   });
   if (!event) return error(404, 'calendar_event_not_found', 'Calendar event nicht gefunden');
 

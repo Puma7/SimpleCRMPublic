@@ -1,4 +1,13 @@
-import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import {
+  sql as kyselySql,
+  type Expression,
+  type ExpressionBuilder,
+  type Kysely,
+  type RawBuilder,
+  type Selectable,
+  type SqlBool,
+  type Updateable,
+} from 'kysely';
 
 import type {
   ActivityLogApiPort,
@@ -29,6 +38,7 @@ import type {
   SavedViewListResult,
   SavedViewMutationInput,
   SavedViewRecord,
+  TaskViewer,
 } from '../api/types';
 import type {
   ActivityLogTable,
@@ -298,6 +308,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
             .selectFrom('calendar_events')
             .select(calendarEventSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
+            .where((eb) => calendarEventVisibilityExpression(eb, input.workspaceId, input.viewer))
             .orderBy('id', 'asc')
             .limit(limit + 1);
 
@@ -331,6 +342,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
             .select(calendarEventSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where((eb) => calendarEventVisibilityExpression(eb, input.workspaceId, input.viewer))
             .executeTakeFirst();
           return row ? mapCalendarEventRow(row) : null;
         },
@@ -355,7 +367,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
         async (trx) => {
           let task: TaskReference | null = null;
           if (values.taskId !== undefined && values.taskId !== null) {
-            task = await resolveTaskReference(trx, input.workspaceId, values.taskId);
+            task = await resolveTaskReference(trx, input.workspaceId, values.taskId, input.viewer);
             if (!task) return { ok: false, code: 'task_not_found' };
           }
 
@@ -406,6 +418,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
             .select(['start_date', 'end_date'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where((eb) => calendarEventVisibilityExpression(eb, input.workspaceId, input.viewer))
             .executeTakeFirst();
           if (!current) return null;
           if (hasEffectiveCalendarEventDateRangeError(values, current)) {
@@ -417,7 +430,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
             if (values.taskId === null) {
               task = null;
             } else {
-              task = await resolveTaskReference(trx, input.workspaceId, values.taskId);
+              task = await resolveTaskReference(trx, input.workspaceId, values.taskId, input.viewer);
               if (!task) return { ok: false, code: 'task_not_found' };
             }
           }
@@ -431,6 +444,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where((eb) => calendarEventVisibilityExpression(eb, input.workspaceId, input.viewer))
             .returning(calendarEventSelectColumns)
             .executeTakeFirst();
           return row ? { ok: true, event: mapCalendarEventRow(row) } : null;
@@ -451,6 +465,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
             .deleteFrom('calendar_events')
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
+            .where((eb) => calendarEventVisibilityExpression(eb, input.workspaceId, input.viewer))
             .returning(calendarEventSelectColumns)
             .executeTakeFirst();
           return row ? mapCalendarEventRow(row) : null;
@@ -1189,18 +1204,58 @@ async function resolveTaskReference(
   trx: WorkspaceTransaction,
   workspaceId: string,
   taskId: number,
+  viewer?: TaskViewer,
 ): Promise<TaskReference | null> {
   const row = await trx
     .selectFrom('tasks')
     .select(['id', 'source_sqlite_id'])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', taskId)
+    .where((eb) => taskVisibilityForCalendarExpression(eb, workspaceId, viewer))
     .executeTakeFirst();
   if (!row) return null;
   return {
     id: Number(row.id),
     sourceSqliteId: Number(row.source_sqlite_id),
   };
+}
+
+function calendarEventVisibilityExpression(
+  eb: ExpressionBuilder<ServerDatabase, 'calendar_events'>,
+  workspaceId: string,
+  viewer: TaskViewer | undefined,
+): Expression<SqlBool> {
+  if (!viewer || viewer.role === 'owner' || viewer.role === 'admin') return eb.lit(true);
+  return eb.or([
+    eb('task_id', 'is', null),
+    eb.exists(
+      eb.selectFrom('tasks')
+        .select('tasks.id')
+        .whereRef('tasks.id', '=', 'calendar_events.task_id')
+        .whereRef('tasks.workspace_id', '=', 'calendar_events.workspace_id')
+        .where((taskEb) => taskVisibilityForCalendarExpression(taskEb, workspaceId, viewer)),
+    ),
+  ]);
+}
+
+function taskVisibilityForCalendarExpression(
+  eb: ExpressionBuilder<ServerDatabase, 'tasks'>,
+  workspaceId: string,
+  viewer: TaskViewer | undefined,
+): Expression<SqlBool> {
+  if (!viewer || viewer.role === 'owner' || viewer.role === 'admin') return eb.lit(true);
+  return eb.or([
+    eb('assignment_scope', '=', 'global'),
+    eb.and([eb('assignment_scope', '=', 'user'), eb('assigned_user_id', '=', viewer.userId)]),
+    eb.and([
+      eb('assignment_scope', '=', 'group'),
+      eb('assigned_group_id', 'in',
+        eb.selectFrom('user_group_members')
+          .select('group_id')
+          .where('workspace_id', '=', workspaceId)
+          .where('user_id', '=', viewer.userId)),
+    ]),
+  ]);
 }
 
 function serverCreatedCalendarEventSourceSqliteId(): RawBuilder<number> {

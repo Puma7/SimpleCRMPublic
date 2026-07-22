@@ -2,9 +2,10 @@ import { IPCChannels } from '../../shared/ipc/channels';
 import { registerIpcHandler } from './register';
 import {
   getAllCalendarEvents,
-  createCalendarEvent,
-  updateCalendarEvent,
-  deleteCalendarEvent,
+  createCalendarEntry,
+  updateCalendarEntry,
+  deleteCalendarEntry,
+  type SqliteCalendarEntryMutationInput,
 } from '../sqlite-service';
 
 interface CalendarHandlersOptions {
@@ -18,7 +19,7 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   const disposers: Disposer[] = [];
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Calendar.GetCalendarEvents, async (_event, params: any = {}) => {
+    registerIpcHandler(IPCChannels.Calendar.GetCalendarEvents, async (_event, params: { startDate?: string; endDate?: string } = {}) => {
       try {
         const { startDate, endDate } = params ?? {};
         return getAllCalendarEvents(startDate, endDate);
@@ -30,11 +31,10 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Calendar.AddCalendarEvent, async (_event, eventData: any) => {
+    registerIpcHandler(IPCChannels.Calendar.AddCalendarEvent, async (_event, eventData: SqliteCalendarEntryMutationInput | SqliteCalendarEntryMutationInput['event']) => {
       try {
-        const result = createCalendarEvent(eventData);
-        const id = Number(result.lastInsertRowid ?? 0);
-        return { ...result, success: true as const, id };
+        const input = 'event' in eventData ? eventData : { event: eventData };
+        return createCalendarEntry(input);
       } catch (error) {
         logger.error('IPC Error adding calendar event:', error);
         return { success: false, error: (error as Error).message };
@@ -43,36 +43,30 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Calendar.UpdateCalendarEvent, async (_event, payload: any) => {
+    registerIpcHandler(IPCChannels.Calendar.UpdateCalendarEvent, async (_event, payload: {
+      id: number;
+      event?: SqliteCalendarEntryMutationInput['event'];
+      eventData?: SqliteCalendarEntryMutationInput['event'];
+      schedule?: SqliteCalendarEntryMutationInput['schedule'];
+    }) => {
       try {
         if (!payload) {
           throw new Error('No payload provided for calendar update.');
         }
 
-        const { id, eventData, ...rest } = payload;
-        const eventIdRaw = id ?? (rest?.id ?? undefined);
-        const eventId =
-          typeof eventIdRaw === 'number'
-            ? eventIdRaw
-            : typeof eventIdRaw === 'string'
-              ? Number(eventIdRaw)
-              : undefined;
-        const normalizedEventData = eventData ?? (eventId !== undefined ? rest : undefined);
-
-        if (typeof eventId !== 'number') {
+        if (!Number.isInteger(payload.id) || payload.id <= 0) {
           throw new Error('Missing calendar event ID for update.');
         }
 
+        const normalizedEventData = payload.event ?? payload.eventData;
         if (!normalizedEventData || Object.keys(normalizedEventData).length === 0) {
           throw new Error('Missing calendar event data for update.');
         }
 
-        const sanitizedEventData = { ...normalizedEventData } as Record<string, any>;
-        if ('id' in sanitizedEventData) {
-          delete sanitizedEventData.id;
-        }
-
-        return updateCalendarEvent(eventId, sanitizedEventData);
+        return updateCalendarEntry(payload.id, {
+          event: normalizedEventData,
+          ...(payload.schedule ? { schedule: payload.schedule } : {}),
+        });
       } catch (error) {
         logger.error('IPC Error updating calendar event:', error);
         return { success: false, error: (error as Error).message };
@@ -83,7 +77,7 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   disposers.push(
     registerIpcHandler(IPCChannels.Calendar.DeleteCalendarEvent, async (_event, eventId: number) => {
       try {
-        return deleteCalendarEvent(eventId);
+        return deleteCalendarEntry(eventId);
       } catch (error) {
         logger.error('IPC Error deleting calendar event:', error);
         return { success: false, error: (error as Error).message };

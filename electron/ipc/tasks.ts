@@ -15,6 +15,26 @@ interface TaskHandlersOptions {
 
 type Disposer = () => void;
 
+type TaskListParams = {
+  limit?: number;
+  offset?: number;
+  filter?: {
+    completed?: boolean;
+    priority?: string;
+    query?: string;
+  };
+};
+
+type TaskUpdatePayload = {
+  id: number;
+  taskData: Record<string, unknown>;
+};
+
+type TaskTogglePayload = {
+  taskId: number;
+  completed: boolean;
+};
+
 export function registerTaskHandlers(options: TaskHandlersOptions) {
   const { logger } = options;
   const disposers: Disposer[] = [];
@@ -84,7 +104,7 @@ export function registerTaskHandlers(options: TaskHandlersOptions) {
    */
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Tasks.GetAll, async (_event, params: any = {}) => {
+    registerIpcHandler(IPCChannels.Tasks.GetAll, async (_event, params: TaskListParams = {}) => {
       try {
         const { limit, offset, filter } = params ?? {};
         return getAllTasks(limit, offset, filter);
@@ -107,7 +127,7 @@ export function registerTaskHandlers(options: TaskHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Tasks.Create, async (_event, taskData: any) => {
+    registerIpcHandler(IPCChannels.Tasks.Create, async (_event, taskData: Record<string, unknown>) => {
       try {
         return createTask(taskData);
       } catch (error) {
@@ -118,7 +138,7 @@ export function registerTaskHandlers(options: TaskHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Tasks.Update, async (_event, payload: any) => {
+    registerIpcHandler(IPCChannels.Tasks.Update, async (_event, payload: TaskUpdatePayload) => {
       try {
         const { id, taskData } = payload ?? {};
         return updateTask(id, taskData);
@@ -130,7 +150,7 @@ export function registerTaskHandlers(options: TaskHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Tasks.ToggleCompletion, async (_event, payload: any) => {
+    registerIpcHandler(IPCChannels.Tasks.ToggleCompletion, async (_event, payload: TaskTogglePayload) => {
       try {
         const { taskId, completed } = payload ?? {};
         return updateTaskCompletion(taskId, completed);

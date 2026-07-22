@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Expression, type ExpressionBuilder, type Kysely, type RawBuilder, type Selectable, type SqlBool, type Updateable } from 'kysely';
+import type { TaskScheduleInput } from '@simplecrm/core';
 
 import type {
   DealApiPort,
@@ -15,6 +16,9 @@ import type {
   ProductListResult,
   ProductMutationInput,
   ProductRecord,
+  CalendarEntryApiPort,
+  CalendarEntryMutationPortResult,
+  CalendarEventRecord,
   TaskApiPort,
   TaskListResult,
   TaskMutationInput,
@@ -25,6 +29,7 @@ import type {
 import type {
   DealProductsTable,
   DealsTable,
+  CalendarEventsTable,
   ProductsTable,
   ServerDatabase,
   TasksTable,
@@ -44,6 +49,7 @@ type ProductRow = Selectable<ProductsTable>;
 type DealRow = Selectable<DealsTable>;
 type DealProductRow = Selectable<DealProductsTable>;
 type TaskRow = Selectable<TasksTable>;
+type CalendarEventRow = Selectable<CalendarEventsTable>;
 type CustomerReference = Readonly<{
   id: number;
   sourceSqliteId: number;
@@ -138,6 +144,7 @@ const taskJoinedSelectColumns = [
   'tasks.assigned_user_id as assigned_user_id',
   'tasks.assigned_group_id as assigned_group_id',
   'tasks.updated_at as updated_at',
+  'calendar_events.id as calendarEventId',
   kyselySql<string | null>`coalesce(nullif(btrim(customers.name), ''), nullif(btrim(customers.first_name), ''), nullif(btrim(customers.company), ''))`.as('customerName'),
   kyselySql<string | null>`nullif(btrim(customers.company), '')`.as('customerCompany'),
 ] as const;
@@ -145,7 +152,28 @@ const taskJoinedSelectColumns = [
 type TaskJoinedRow = Pick<TaskRow, typeof taskSelectColumns[number]> & Readonly<{
   customerName: string | null;
   customerCompany: string | null;
+  calendarEventId: number | null;
 }>;
+
+const taskCalendarEventSelectColumns = [
+  'id',
+  'source_sqlite_id',
+  'title',
+  'description',
+  'start_date',
+  'end_date',
+  'all_day',
+  'color_code',
+  'event_type',
+  'recurrence_rule',
+  'task_source_sqlite_id',
+  'task_id',
+  'created_at',
+  'updated_at',
+] as const;
+
+const TASK_EVENT_DEFAULT_COLOR = '#3174ad';
+const TASK_EVENT_COMPLETED_COLOR = '#94a3b8';
 
 export function createPostgresProductReadPort(options: PostgresCoreCrmReadPortOptions): ProductApiPort {
   return {
@@ -613,6 +641,9 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .leftJoin('customers', (join) => join
               .onRef('customers.id', '=', 'tasks.customer_id')
               .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
+            .leftJoin('calendar_events', (join) => join
+              .onRef('calendar_events.task_id', '=', 'tasks.id')
+              .onRef('calendar_events.workspace_id', '=', 'tasks.workspace_id'))
             .select(taskJoinedSelectColumns)
             .where('tasks.workspace_id', '=', input.workspaceId)
             .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
@@ -655,6 +686,9 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .leftJoin('customers', (join) => join
               .onRef('customers.id', '=', 'tasks.customer_id')
               .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
+            .leftJoin('calendar_events', (join) => join
+              .onRef('calendar_events.task_id', '=', 'tasks.id')
+              .onRef('calendar_events.workspace_id', '=', 'tasks.workspace_id'))
             .select(taskJoinedSelectColumns)
             .where('tasks.workspace_id', '=', input.workspaceId)
             .where('tasks.id', '=', input.id)
@@ -732,6 +766,10 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
           role: 'user',
         },
         async (trx) => {
+          const current = await selectTaskById(trx, input.workspaceId, input.id, input.viewer);
+          if (!current) return null;
+          await lockTaskCalendarEvent(trx, input.workspaceId, current);
+
           const customer = values.customerId === undefined
             ? undefined
             : await resolveCustomerReference(trx, input.workspaceId, values.customerId);
@@ -755,7 +793,11 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .returning('id')
             .executeTakeFirst();
           if (!row) return null;
-          const task = await selectTaskById(trx, input.workspaceId, Number(row.id));
+          let task = await selectTaskById(trx, input.workspaceId, Number(row.id));
+          if (task) {
+            await syncTaskCalendarEvent(trx, input.workspaceId, task);
+            task = await selectTaskById(trx, input.workspaceId, Number(row.id));
+          }
           return task ? { ok: true, task } : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -772,6 +814,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
         async (trx) => {
           const task = await selectTaskById(trx, input.workspaceId, input.id, input.viewer);
           if (!task) return null;
+          await lockTaskCalendarEvent(trx, input.workspaceId, task);
           const row = await trx
             .deleteFrom('tasks')
             .where('workspace_id', '=', input.workspaceId)
@@ -780,6 +823,233 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .returning('id')
             .executeTakeFirst();
           return row ? task : null;
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPortOptions): CalendarEntryApiPort {
+  return {
+    async create(input): Promise<CalendarEntryMutationPortResult> {
+      const start = parseCalendarDate(input.event.startDate);
+      const end = parseCalendarDate(input.event.endDate);
+      if (!start || !end || end.getTime() <= start.getTime()) {
+        return { ok: false, code: 'invalid_date_range' };
+      }
+
+      try {
+        return await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
+          async (trx) => {
+            const scheduled = await resolveCalendarSchedule(
+              trx,
+              input.workspaceId,
+              input.schedule,
+              start,
+              input.viewer,
+            );
+            if (!scheduled.ok) return scheduled;
+
+            const task = scheduled.task;
+            const now = new Date();
+            const row = await trx
+              .insertInto('calendar_events')
+              .values({
+                workspace_id: input.workspaceId,
+                source_sqlite_id: serverCreatedCalendarEventSourceSqliteId(),
+                title: task?.title ?? input.event.title?.trim() ?? '',
+                description: task?.description ?? input.event.description ?? null,
+                start_date: start,
+                end_date: end,
+                all_day: input.event.allDay ?? false,
+                color_code: task
+                  ? (task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR)
+                  : input.event.colorCode ?? null,
+                event_type: task ? 'task' : input.event.eventType ?? null,
+                recurrence_rule: task ? null : input.event.recurrenceRule ?? null,
+                task_source_sqlite_id: task?.sourceSqliteId ?? null,
+                task_id: task?.id ?? null,
+                source_row: serverApiSourceRow(),
+                created_at: now,
+                updated_at: now,
+              })
+              .returning(taskCalendarEventSelectColumns)
+              .executeTakeFirstOrThrow();
+            return {
+              ok: true,
+              event: mapTaskCalendarEventRow(row),
+              task: task ? await selectTaskById(trx, input.workspaceId, task.id) : null,
+            };
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      } catch (error) {
+        if (isTaskCalendarUniqueViolation(error)) return { ok: false, code: 'task_already_scheduled' };
+        throw error;
+      }
+    },
+
+    async update(input): Promise<CalendarEntryMutationPortResult> {
+      try {
+        return await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
+          async (trx) => {
+            const current = await trx
+              .selectFrom('calendar_events')
+              .select(taskCalendarEventSelectColumns)
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.id)
+              .forUpdate()
+              .executeTakeFirst();
+            if (!current) return { ok: false, code: 'calendar_event_not_found' };
+
+            const currentTask = current.task_id === null
+              ? null
+              : await selectTaskById(trx, input.workspaceId, Number(current.task_id), input.viewer);
+            if (current.task_id !== null && !currentTask) return { ok: false, code: 'forbidden' };
+
+            const start = input.event.startDate === undefined
+              ? new Date(current.start_date)
+              : parseCalendarDate(input.event.startDate);
+            const end = input.event.endDate === undefined
+              ? new Date(current.end_date)
+              : parseCalendarDate(input.event.endDate);
+            if (!start || !end || end.getTime() <= start.getTime()) {
+              return { ok: false, code: 'invalid_date_range' };
+            }
+
+            let task = currentTask;
+            if (input.schedule !== undefined) {
+              if (input.schedule.mode === 'none') {
+                task = null;
+              } else {
+                const scheduled = await resolveCalendarSchedule(
+                  trx,
+                  input.workspaceId,
+                  input.schedule,
+                  start,
+                  input.viewer,
+                  input.id,
+                );
+                if (!scheduled.ok) return scheduled;
+                task = scheduled.task;
+              }
+            }
+
+            let detachedTaskId: number | null = null;
+            if (currentTask && currentTask.id !== task?.id) {
+              await clearTaskDueDate(trx, input.workspaceId, currentTask.id);
+              detachedTaskId = currentTask.id;
+            }
+
+            if (task) {
+              const taskPatch: Partial<Updateable<TasksTable>> = {
+                due_date: start,
+                last_modified: new Date(),
+                updated_at: new Date(),
+              };
+              if (input.event.title !== undefined) taskPatch.title = input.event.title.trim();
+              if (input.event.description !== undefined) taskPatch.description = input.event.description;
+              await trx
+                .updateTable('tasks')
+                .set(taskPatch)
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', task.id)
+                .execute();
+              task = await selectTaskById(trx, input.workspaceId, task.id);
+              if (!task) throw new Error('updated task could not be reloaded');
+            }
+
+            const row = await trx
+              .updateTable('calendar_events')
+              .set({
+                ...(input.event.title === undefined ? {} : { title: input.event.title.trim() }),
+                ...(input.event.description === undefined ? {} : { description: input.event.description }),
+                ...(input.event.startDate === undefined ? {} : { start_date: start }),
+                ...(input.event.endDate === undefined ? {} : { end_date: end }),
+                ...(input.event.allDay === undefined ? {} : { all_day: input.event.allDay }),
+                ...(input.event.colorCode === undefined ? {} : { color_code: input.event.colorCode }),
+                ...(input.event.eventType === undefined ? {} : { event_type: input.event.eventType }),
+                ...(input.event.recurrenceRule === undefined ? {} : { recurrence_rule: input.event.recurrenceRule }),
+                ...(input.schedule?.mode === 'none' ? {
+                  event_type: input.event.eventType ?? null,
+                  recurrence_rule: input.event.recurrenceRule ?? null,
+                } : {}),
+                ...(input.schedule === undefined ? {} : {
+                  task_source_sqlite_id: task?.sourceSqliteId ?? null,
+                  task_id: task?.id ?? null,
+                }),
+                ...(task ? {
+                  title: task.title,
+                  description: task.description,
+                  color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
+                  event_type: 'task',
+                  recurrence_rule: null,
+                } : {}),
+                updated_at: new Date(),
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.id)
+              .returning(taskCalendarEventSelectColumns)
+              .executeTakeFirstOrThrow();
+            const linkedTask = task
+              ? await selectTaskById(trx, input.workspaceId, task.id)
+              : null;
+            if (task && !linkedTask) throw new Error('linked task could not be reloaded');
+            const detachedTask = detachedTaskId === null
+              ? null
+              : await selectTaskById(trx, input.workspaceId, detachedTaskId);
+
+            return {
+              ok: true,
+              event: mapTaskCalendarEventRow(row),
+              task: linkedTask,
+              ...(detachedTask ? { detachedTask } : {}),
+            };
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      } catch (error) {
+        if (isTaskCalendarUniqueViolation(error)) return { ok: false, code: 'task_already_scheduled' };
+        throw error;
+      }
+    },
+
+    async delete(input): Promise<CalendarEntryMutationPortResult> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
+        async (trx) => {
+          const current = await trx
+            .selectFrom('calendar_events')
+            .select(taskCalendarEventSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .forUpdate()
+            .executeTakeFirst();
+          if (!current) return { ok: false, code: 'calendar_event_not_found' };
+
+          const task = current.task_id === null
+            ? null
+            : await selectTaskById(trx, input.workspaceId, Number(current.task_id), input.viewer);
+          if (current.task_id !== null && !task) return { ok: false, code: 'forbidden' };
+
+          await trx
+            .deleteFrom('calendar_events')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .execute();
+          if (task) await clearTaskDueDate(trx, input.workspaceId, task.id);
+
+          return {
+            ok: true,
+            event: mapTaskCalendarEventRow(current),
+            task: task ? await selectTaskById(trx, input.workspaceId, task.id) : null,
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -798,12 +1068,203 @@ async function selectTaskById(
     .leftJoin('customers', (join) => join
       .onRef('customers.id', '=', 'tasks.customer_id')
       .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
+    .leftJoin('calendar_events', (join) => join
+      .onRef('calendar_events.task_id', '=', 'tasks.id')
+      .onRef('calendar_events.workspace_id', '=', 'tasks.workspace_id'))
     .select(taskJoinedSelectColumns)
     .where('tasks.workspace_id', '=', workspaceId)
     .where('tasks.id', '=', id)
     .where((eb) => taskVisibilityExpression(eb, workspaceId, viewer))
     .executeTakeFirst();
   return row ? mapTaskRow(row) : null;
+}
+
+async function syncTaskCalendarEvent(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  task: TaskRecord,
+): Promise<void> {
+  if (task.calendarEventId === null || task.calendarEventId === undefined) return;
+  if (task.dueDate === null) {
+    await trx
+      .deleteFrom('calendar_events')
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', task.calendarEventId)
+      .execute();
+    return;
+  }
+
+  const start = taskCalendarStart(task.dueDate);
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  await trx
+    .updateTable('calendar_events')
+    .set({
+      title: task.title,
+      description: task.description,
+      start_date: start,
+      end_date: end,
+      all_day: true,
+      color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
+      event_type: 'task',
+      recurrence_rule: null,
+      updated_at: new Date(),
+    })
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', task.calendarEventId)
+    .where('task_id', '=', task.id)
+    .execute();
+}
+
+async function lockTaskCalendarEvent(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  task: TaskRecord,
+): Promise<void> {
+  if (task.calendarEventId === null || task.calendarEventId === undefined) return;
+  await trx
+    .selectFrom('calendar_events')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', task.calendarEventId)
+    .where('task_id', '=', task.id)
+    .forUpdate()
+    .executeTakeFirst();
+}
+
+function taskCalendarStart(dueDate: string): Date {
+  const day = dueDate.slice(0, 10);
+  if (!hasValidCalendarDate(day)) {
+    throw new Error('task dueDate must be a valid timestamp');
+  }
+  return new Date(`${day}T00:00:00.000Z`);
+}
+
+type CalendarScheduleResolution =
+  | { ok: true; task: TaskRecord | null }
+  | Extract<CalendarEntryMutationPortResult, { ok: false }>;
+
+async function resolveCalendarSchedule(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  schedule: TaskScheduleInput | undefined,
+  dueDate: Date,
+  viewer: TaskViewer,
+  currentEventId?: number,
+): Promise<CalendarScheduleResolution> {
+  if (!schedule || schedule.mode === 'none') return { ok: true, task: null };
+
+  if (schedule.mode === 'existing') {
+    const task = await selectTaskById(trx, workspaceId, schedule.taskId, viewer);
+    if (!task) return { ok: false, code: 'task_not_found' };
+    if (task.calendarEventId !== null && task.calendarEventId !== undefined && task.calendarEventId !== currentEventId) {
+      return { ok: false, code: 'task_already_scheduled' };
+    }
+    const now = new Date();
+    await trx
+      .updateTable('tasks')
+      .set({ due_date: dueDate, last_modified: now, updated_at: now })
+      .where('workspace_id', '=', workspaceId)
+      .where('id', '=', task.id)
+      .execute();
+    return { ok: true, task: await selectTaskById(trx, workspaceId, task.id) };
+  }
+
+  const customer = schedule.task.customerId === undefined
+    ? undefined
+    : await resolveCustomerReference(trx, workspaceId, schedule.task.customerId);
+  if (customer === null) return { ok: false, code: 'customer_not_found' };
+
+  const assignment = await resolveTaskAssignmentColumns(trx, workspaceId, schedule.task);
+  if (!assignment.ok) return { ok: false, code: assignment.code };
+
+  const now = new Date();
+  const row = await trx
+    .insertInto('tasks')
+    .values({
+      workspace_id: workspaceId,
+      source_sqlite_id: serverCreatedTaskSourceSqliteId(),
+      customer_source_sqlite_id: customer?.sourceSqliteId ?? null,
+      customer_id: customer?.id ?? null,
+      ...assignment.columns,
+      title: schedule.task.title.trim(),
+      description: schedule.task.description ?? null,
+      due_date: dueDate,
+      priority: schedule.task.priority ?? 'Medium',
+      completed: schedule.task.completed ?? false,
+      snoozed_until: null,
+      created_date: now,
+      last_modified: now,
+      source_row: serverApiSourceRow(),
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const task = await selectTaskById(trx, workspaceId, Number(row.id));
+  if (!task) throw new Error('created task could not be reloaded');
+  return { ok: true, task };
+}
+
+async function clearTaskDueDate(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  taskId: number,
+): Promise<void> {
+  const now = new Date();
+  await trx
+    .updateTable('tasks')
+    .set({ due_date: null, last_modified: now, updated_at: now })
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', taskId)
+    .execute();
+}
+
+function parseCalendarDate(value: string | undefined): Date | null {
+  if (value === undefined || !hasValidCalendarDate(value)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function hasValidCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+}
+
+function mapTaskCalendarEventRow(
+  row: Pick<CalendarEventRow, typeof taskCalendarEventSelectColumns[number]>,
+): CalendarEventRecord {
+  return {
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    title: row.title,
+    description: row.description,
+    startDate: timestampToIso(row.start_date),
+    endDate: timestampToIso(row.end_date),
+    allDay: row.all_day,
+    colorCode: row.color_code,
+    eventType: row.event_type,
+    recurrenceRule: row.recurrence_rule,
+    taskSourceSqliteId: row.task_source_sqlite_id === null ? null : Number(row.task_source_sqlite_id),
+    taskId: row.task_id === null ? null : Number(row.task_id),
+    createdAt: timestampToIsoOrNull(row.created_at),
+    updatedAt: timestampToIso(row.updated_at),
+  };
+}
+
+function isTaskCalendarUniqueViolation(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const record = error as { code?: unknown; constraint?: unknown };
+  return record.code === '23505' && record.constraint === 'calendar_events_workspace_task_unique_idx';
+}
+
+function serverCreatedCalendarEventSourceSqliteId(): RawBuilder<number> {
+  return kyselySql<number>`-nextval(pg_get_serial_sequence('calendar_events', 'id'))`;
 }
 
 async function listDealProductsForDeal(
@@ -1350,6 +1811,7 @@ function mapTaskRow(row: TaskJoinedRow): TaskRecord {
     assignmentScope: row.assignment_scope,
     assignedUserId: row.assigned_user_id === null ? null : String(row.assigned_user_id),
     assignedGroupId: row.assigned_group_id === null ? null : Number(row.assigned_group_id),
+    calendarEventId: row.calendarEventId === null ? null : Number(row.calendarEventId),
     updatedAt: timestampToIso(row.updated_at),
   };
 }

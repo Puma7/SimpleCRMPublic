@@ -4,4 +4,5 @@ export * from './platform';
 export * from './runtime';
 export * from './server-edition';
 export * from './email';
+export * from './crm';
 export * from './workflow';

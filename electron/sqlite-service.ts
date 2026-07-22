@@ -104,6 +104,7 @@ import {
     createSavedViewsTable,
 } from './database-schema';
 import { Product, DealProduct } from './types';
+import type { TaskScheduleInput } from '@simplecrm/core';
 
 function getDatabasePath(): string {
   try {
@@ -706,6 +707,60 @@ function runMigrations() {
             console.log('Adding task_id column to calendar events table...');
             db.exec(`ALTER TABLE ${CALENDAR_EVENTS_TABLE} ADD COLUMN task_id INTEGER`);
             console.log('Migration completed: Added task_id column to calendar events table');
+        }
+
+        if (!getSyncInfo('atomic_task_calendar_v1')) {
+            db.exec(`
+                UPDATE ${CALENDAR_EVENTS_TABLE}
+                   SET task_id = (
+                       SELECT task.id
+                         FROM ${TASKS_TABLE} AS task
+                        WHERE task.calendar_event_id = ${CALENDAR_EVENTS_TABLE}.id
+                        ORDER BY task.id DESC
+                        LIMIT 1
+                   )
+                 WHERE task_id IS NULL
+                   AND EXISTS (
+                       SELECT 1
+                         FROM ${TASKS_TABLE} AS task
+                        WHERE task.calendar_event_id = ${CALENDAR_EVENTS_TABLE}.id
+                   );
+
+                UPDATE ${CALENDAR_EVENTS_TABLE}
+                   SET task_id = NULL,
+                       event_type = NULL,
+                       recurrence_rule = NULL,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE task_id IS NOT NULL
+                   AND NOT EXISTS (
+                       SELECT 1
+                         FROM ${TASKS_TABLE} AS task
+                        WHERE task.id = ${CALENDAR_EVENTS_TABLE}.task_id
+                   );
+
+                WITH ranked AS (
+                    SELECT id,
+                           row_number() OVER (
+                               PARTITION BY task_id
+                               ORDER BY COALESCE(updated_at, created_at, '') DESC, id DESC
+                           ) AS link_rank
+                      FROM ${CALENDAR_EVENTS_TABLE}
+                     WHERE task_id IS NOT NULL
+                )
+                UPDATE ${CALENDAR_EVENTS_TABLE}
+                   SET task_id = NULL,
+                       event_type = NULL,
+                       recurrence_rule = NULL,
+                       updated_at = CURRENT_TIMESTAMP
+                 WHERE id IN (SELECT id FROM ranked WHERE link_rank > 1);
+
+                UPDATE ${TASKS_TABLE} SET calendar_event_id = NULL WHERE calendar_event_id IS NOT NULL;
+
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_task_unique
+                    ON ${CALENDAR_EVENTS_TABLE}(task_id)
+                    WHERE task_id IS NOT NULL;
+            `);
+            setSyncInfo('atomic_task_calendar_v1', '1');
         }
 
         // Migration: Add customerNumber column to customers table if it doesn't exist
@@ -2406,13 +2461,13 @@ export function updateDealValueBasedOnCalculationMethod(dealId: number): { succe
 interface CalendarEventData {
     id?: number; // Optional for creation
     title: string;
-    description?: string;
+    description?: string | null;
     start_date: string; // ISO String
     end_date: string; // ISO String
-    all_day: number; // 0 or 1
-    color_code?: string;
-    event_type?: string;
-    recurrence_rule?: string; // Store as JSON string
+    all_day: boolean | number; // boolean or SQLite 0/1
+    color_code?: string | null;
+    event_type?: string | null;
+    recurrence_rule?: string | Record<string, unknown> | null; // Store as JSON string
     task_id?: number | null; // Optional link to a task row
 }
 
@@ -2555,6 +2610,315 @@ export function updateCalendarEvent(id: number, eventData: Partial<Omit<Calendar
 export function deleteCalendarEvent(id: number): Database.RunResult {
     const stmt = getDb().prepare(`DELETE FROM ${CALENDAR_EVENTS_TABLE} WHERE id = ?`);
     return stmt.run(id);
+}
+
+type SqliteCalendarEventValues = {
+    title?: string;
+    description?: string | null;
+    start_date?: string;
+    end_date?: string;
+    all_day?: boolean | number;
+    color_code?: string | null;
+    event_type?: string | null;
+    recurrence_rule?: string | Record<string, unknown> | null;
+    task_id?: number | null;
+};
+
+export type SqliteCalendarEntryMutationInput = {
+    event: SqliteCalendarEventValues;
+    schedule?: TaskScheduleInput;
+};
+
+type SqliteCalendarEventRecord = {
+    id: number;
+    title: string;
+    description: string | null;
+    start_date: string;
+    end_date: string;
+    all_day: number;
+    color_code: string | null;
+    event_type: string | null;
+    recurrence_rule: string | null;
+    task_id: number | null;
+    created_at: string | null;
+    updated_at: string | null;
+};
+
+type SqliteTaskRecord = {
+    id: number;
+    customer_id: number;
+    title: string;
+    description: string | null;
+    due_date: string | null;
+    priority: string;
+    completed: number;
+    calendar_event_id: number | null;
+    [key: string]: unknown;
+};
+
+export type SqliteCalendarEntryMutationResult = {
+    success: true;
+    id: number;
+    event: SqliteCalendarEventRecord;
+    task: SqliteTaskRecord | null;
+    detachedTask?: SqliteTaskRecord | null;
+};
+
+const TASK_EVENT_DEFAULT_COLOR = '#3174ad';
+const TASK_EVENT_COMPLETED_COLOR = '#94a3b8';
+
+function calendarDueDate(startDate: string): string {
+  const dueDate = startDate.slice(0, 10);
+  if (!hasValidCalendarDate(dueDate)) {
+    throw new Error('Invalid calendar start date');
+  }
+  return dueDate;
+}
+
+function taskCalendarBounds(dueDate: string): { startDate: string; endDate: string } {
+    const day = dueDate.slice(0, 10);
+    if (!hasValidCalendarDate(day)) {
+        throw new Error('Invalid task due date');
+    }
+    const start = new Date(`${day}T00:00:00.000Z`);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    return { startDate: start.toISOString(), endDate: end.toISOString() };
+}
+
+function hasValidCalendarDate(value: string): boolean {
+    const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+    if (!match) return false;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    return parsed.getUTCFullYear() === year
+        && parsed.getUTCMonth() === month - 1
+        && parsed.getUTCDate() === day;
+}
+
+function readCalendarEvent(id: number): SqliteCalendarEventRecord | undefined {
+    return getDb()
+        .prepare(`SELECT * FROM ${CALENDAR_EVENTS_TABLE} WHERE id = ?`)
+        .get(id) as SqliteCalendarEventRecord | undefined;
+}
+
+function readTask(taskId: number): SqliteTaskRecord | undefined {
+    return getTaskById(taskId) as SqliteTaskRecord | undefined;
+}
+
+function assertCalendarRange(startDate: string, endDate: string): void {
+    const start = Date.parse(startDate);
+    const end = Date.parse(endDate);
+    if (
+        !hasValidCalendarDate(startDate)
+        || !hasValidCalendarDate(endDate)
+        || !Number.isFinite(start)
+        || !Number.isFinite(end)
+        || end <= start
+    ) {
+        throw new Error('Invalid calendar date range');
+    }
+}
+
+function syncLinkedCalendarEvent(taskId: number): void {
+    const task = readTask(taskId);
+    if (!task?.calendar_event_id) return;
+
+    if (!task.due_date) {
+        deleteCalendarEvent(task.calendar_event_id);
+        return;
+    }
+
+    const { startDate, endDate } = taskCalendarBounds(task.due_date.slice(0, 10));
+    updateCalendarEvent(task.calendar_event_id, {
+        title: task.title,
+        description: task.description ?? '',
+        start_date: startDate,
+        end_date: endDate,
+        all_day: 1,
+        color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
+        event_type: 'task',
+        recurrence_rule: null,
+        task_id: task.id,
+    });
+}
+
+export function createCalendarEntry(input: SqliteCalendarEntryMutationInput): SqliteCalendarEntryMutationResult {
+    const connection = getDb();
+    return connection.transaction((): SqliteCalendarEntryMutationResult => {
+        const title = String(input.event.title ?? '').trim();
+        const startDate = String(input.event.start_date ?? '');
+        const endDate = String(input.event.end_date ?? '');
+        if (!title) throw new Error('Calendar title is required');
+        assertCalendarRange(startDate, endDate);
+
+        const schedule = input.schedule ?? { mode: 'none' as const };
+        let taskId: number | null = null;
+
+        if (schedule.mode === 'create') {
+            const taskResult = createTask({
+                customer_id: schedule.task.customerId,
+                title: schedule.task.title,
+                description: schedule.task.description ?? '',
+                due_date: calendarDueDate(startDate),
+                priority: schedule.task.priority ?? 'Medium',
+                completed: schedule.task.completed ?? false,
+                calendar_event_id: null,
+            });
+            if (!taskResult.success || !taskResult.id) {
+                throw new Error(taskResult.error ?? 'Task could not be created');
+            }
+            taskId = taskResult.id;
+        } else if (schedule.mode === 'existing') {
+            const task = readTask(schedule.taskId);
+            if (!task) throw new Error('Task not found');
+            taskId = task.id;
+            connection.prepare(`
+                UPDATE ${TASKS_TABLE}
+                   SET due_date = ?, last_modified = ?
+                 WHERE id = ?
+            `).run(calendarDueDate(startDate), new Date().toISOString(), taskId);
+        }
+
+        const task = taskId ? readTask(taskId) : null;
+        const eventResult = createCalendarEvent({
+            ...input.event,
+            title: task?.title ?? title,
+            description: task?.description ?? input.event.description ?? '',
+            color_code: task
+                ? (task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR)
+                : input.event.color_code,
+            event_type: task ? 'task' : input.event.event_type,
+            recurrence_rule: task ? null : input.event.recurrence_rule,
+            task_id: taskId,
+        });
+        const eventId = Number(eventResult.lastInsertRowid);
+        const event = readCalendarEvent(eventId);
+        const linkedTask = taskId ? readTask(taskId) : null;
+        if (!event) throw new Error('Calendar entry was not persisted');
+
+        return { success: true, id: eventId, event, task: linkedTask ?? null };
+    })();
+}
+
+export function updateCalendarEntry(
+    id: number,
+    input: SqliteCalendarEntryMutationInput,
+): SqliteCalendarEntryMutationResult {
+    const connection = getDb();
+    return connection.transaction((): SqliteCalendarEntryMutationResult => {
+        const current = readCalendarEvent(id);
+        if (!current) throw new Error('Calendar entry not found');
+
+        const merged = { ...current, ...input.event };
+        assertCalendarRange(String(merged.start_date), String(merged.end_date));
+        let taskId = current.task_id;
+        let detachedTaskId: number | null = null;
+
+        if (input.schedule?.mode === 'create') {
+            const taskResult = createTask({
+                customer_id: input.schedule.task.customerId,
+                title: input.schedule.task.title,
+                description: input.schedule.task.description ?? '',
+                due_date: calendarDueDate(String(merged.start_date)),
+                priority: input.schedule.task.priority ?? 'Medium',
+                completed: input.schedule.task.completed ?? false,
+                calendar_event_id: null,
+            });
+            if (!taskResult.success || !taskResult.id) {
+                throw new Error(taskResult.error ?? 'Task could not be created');
+            }
+            taskId = taskResult.id;
+        } else if (input.schedule?.mode === 'existing') {
+            if (!readTask(input.schedule.taskId)) throw new Error('Task not found');
+            taskId = input.schedule.taskId;
+        } else if (input.schedule?.mode === 'none') {
+            taskId = null;
+        }
+
+        if (current.task_id && current.task_id !== taskId) {
+            detachedTaskId = current.task_id;
+            connection.prepare(`
+                UPDATE ${TASKS_TABLE}
+                   SET due_date = NULL, last_modified = ?
+                 WHERE id = ?
+            `).run(new Date().toISOString(), current.task_id);
+        }
+
+        if (taskId) {
+            const taskFields: string[] = [];
+            const taskValues: Record<string, unknown> = {
+                id: taskId,
+                last_modified: new Date().toISOString(),
+            };
+            if (input.event.title !== undefined) {
+                taskFields.push('title = @title');
+                taskValues.title = String(input.event.title).trim();
+            }
+            if (input.event.description !== undefined) {
+                taskFields.push('description = @description');
+                taskValues.description = input.event.description;
+            }
+            if (input.event.start_date !== undefined || input.schedule?.mode === 'existing') {
+                taskFields.push('due_date = @due_date');
+                taskValues.due_date = calendarDueDate(String(merged.start_date));
+            }
+            taskFields.push('last_modified = @last_modified');
+            connection.prepare(`UPDATE ${TASKS_TABLE} SET ${taskFields.join(', ')} WHERE id = @id`).run(taskValues);
+        }
+
+        const task = taskId ? readTask(taskId) : null;
+        updateCalendarEvent(id, {
+            ...input.event,
+            title: task?.title ?? String(merged.title),
+            description: task?.description ?? merged.description,
+            color_code: task
+                ? (task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR)
+                : merged.color_code,
+            event_type: task
+                ? 'task'
+                : input.schedule?.mode === 'none'
+                    ? input.event.event_type ?? null
+                    : merged.event_type,
+            recurrence_rule: task
+                ? null
+                : input.schedule?.mode === 'none'
+                    ? input.event.recurrence_rule ?? null
+                    : merged.recurrence_rule,
+            task_id: taskId,
+        });
+
+        const event = readCalendarEvent(id);
+        if (!event) throw new Error('Calendar entry was not persisted');
+        return {
+            success: true,
+            id,
+            event,
+            task: taskId ? readTask(taskId) ?? null : null,
+            ...(detachedTaskId ? { detachedTask: readTask(detachedTaskId) ?? null } : {}),
+        };
+    })();
+}
+
+export function deleteCalendarEntry(id: number): { success: boolean; error?: string } {
+    const connection = getDb();
+    return connection.transaction(() => {
+        const current = readCalendarEvent(id);
+        if (!current) return { success: false, error: 'Calendar entry not found' };
+
+        deleteCalendarEvent(id);
+        if (current.task_id) {
+            connection.prepare(`
+                UPDATE ${TASKS_TABLE}
+                   SET due_date = NULL,
+                       calendar_event_id = NULL,
+                       last_modified = ?
+                 WHERE id = ?
+            `).run(new Date().toISOString(), current.task_id);
+        }
+        return { success: true };
+    })();
 }
 
 // --- Deal Operations ---
@@ -2738,10 +3102,12 @@ export function getTasksForDeal(dealId: number): any[] {
   // Returns all tasks for the customer associated with this deal
   const stmt = getDb().prepare(`
     SELECT t.*,
+           ce.id AS calendar_event_id,
            COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
            NULLIF(TRIM(c.company), '') AS customer_company
     FROM ${TASKS_TABLE} t
     LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
+    LEFT JOIN ${CALENDAR_EVENTS_TABLE} ce ON ce.task_id = t.id
     WHERE t.customer_id = (SELECT customer_id FROM ${DEALS_TABLE} WHERE id = ?)
     ORDER BY t.due_date ASC
   `);
@@ -2780,10 +3146,12 @@ export function getAllTasks(
 ): any[] {
   let sql = `
     SELECT t.*,
+           ce.id AS calendar_event_id,
            COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
            NULLIF(TRIM(c.company), '') AS customer_company
     FROM ${TASKS_TABLE} t
     LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
+    LEFT JOIN ${CALENDAR_EVENTS_TABLE} ce ON ce.task_id = t.id
     WHERE 1=1
   `;
 
@@ -2818,10 +3186,12 @@ export function getAllTasks(
 export function getTaskById(taskId: number): any {
   const stmt = getDb().prepare(`
     SELECT t.*,
+           ce.id AS calendar_event_id,
            COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
            NULLIF(TRIM(c.company), '') AS customer_company
     FROM ${TASKS_TABLE} t
     LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
+    LEFT JOIN ${CALENDAR_EVENTS_TABLE} ce ON ce.task_id = t.id
     WHERE t.id = ?
   `);
   return stmt.get(taskId);
@@ -2897,36 +3267,61 @@ export function createTask(taskData: any): { success: boolean; id?: number; erro
 
 export function updateTask(taskId: number, taskData: any): { success: boolean; error?: string } {
   try {
-    // Update last_modified timestamp
-    taskData.last_modified = new Date().toISOString();
+    const connection = getDb();
+    return connection.transaction(() => {
+      if (!readTask(taskId)) {
+        return { success: false, error: 'Task not found' };
+      }
 
-    // Convert boolean completed to integer if provided
-    if (taskData.completed !== undefined) {
-      taskData.completed = taskData.completed ? 1 : 0;
-    }
+      const allowedColumns = new Set([
+        'customer_id',
+        'title',
+        'description',
+        'due_date',
+        'priority',
+        'completed',
+        'snoozed_until',
+      ]);
+      const values: Record<string, unknown> = {
+        id: taskId,
+        last_modified: new Date().toISOString(),
+      };
+      const fields: string[] = [];
 
-    // Build dynamic update query based on provided fields
-    const fields = Object.keys(taskData)
-      .filter(key => key !== 'id' && taskData[key] !== undefined)
-      .map(key => `${key} = @${key}`)
-      .join(', ');
+      for (const [key, value] of Object.entries(taskData ?? {})) {
+        if (!allowedColumns.has(key) || value === undefined) continue;
+        fields.push(`${key} = @${key}`);
+        values[key] = key === 'completed' ? (value ? 1 : 0) : value;
+      }
 
-    if (!fields.length) {
-      return { success: false, error: 'No fields to update' };
-    }
+      if (fields.length > 0) {
+        fields.push('last_modified = @last_modified');
+        connection.prepare(`
+          UPDATE ${TASKS_TABLE}
+             SET ${fields.join(', ')}
+           WHERE id = @id
+        `).run(values);
+      }
 
-    const stmt = getDb().prepare(`
-      UPDATE ${TASKS_TABLE}
-      SET ${fields}
-      WHERE id = @id
-    `);
+      if (taskData?.calendar_event_id !== undefined) {
+        connection.prepare(`UPDATE ${CALENDAR_EVENTS_TABLE} SET task_id = NULL WHERE task_id = ?`).run(taskId);
+        if (taskData.calendar_event_id !== null) {
+          const eventId = Number(taskData.calendar_event_id);
+          if (!Number.isInteger(eventId) || eventId <= 0 || !readCalendarEvent(eventId)) {
+            throw new Error('Calendar entry not found');
+          }
+          connection.prepare(`UPDATE ${CALENDAR_EVENTS_TABLE} SET task_id = ? WHERE id = ?`).run(taskId, eventId);
+        }
+        connection.prepare(`UPDATE ${TASKS_TABLE} SET calendar_event_id = NULL WHERE id = ?`).run(taskId);
+      }
 
-    const result = stmt.run({
-      id: taskId,
-      ...taskData
-    });
+      if (fields.length === 0 && taskData?.calendar_event_id === undefined) {
+        return { success: false, error: 'No fields to update' };
+      }
 
-    return { success: result.changes > 0, error: result.changes === 0 ? 'Task not found' : undefined };
+      syncLinkedCalendarEvent(taskId);
+      return { success: true };
+    })();
   } catch (error) {
     console.error(`Error updating task ${taskId}:`, error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -2935,31 +3330,28 @@ export function updateTask(taskId: number, taskData: any): { success: boolean; e
 
 export function updateTaskCompletion(taskId: number, completed: boolean): { success: boolean; error?: string } {
   try {
-    const task = getDb().prepare(`SELECT customer_id, title FROM ${TASKS_TABLE} WHERE id = ?`).get(taskId) as any;
-    const now = new Date().toISOString();
+    const connection = getDb();
+    return connection.transaction(() => {
+      const task = readTask(taskId);
+      if (!task) return { success: false, error: 'Task not found' };
 
-    const stmt = getDb().prepare(`
-      UPDATE ${TASKS_TABLE}
-      SET completed = ?, last_modified = ?
-      WHERE id = ?
-    `);
+      connection.prepare(`
+        UPDATE ${TASKS_TABLE}
+           SET completed = ?, last_modified = ?
+         WHERE id = ?
+      `).run(completed ? 1 : 0, new Date().toISOString(), taskId);
+      syncLinkedCalendarEvent(taskId);
 
-    const result = stmt.run(completed ? 1 : 0, now, taskId);
-
-    if (result.changes > 0 && task && completed) {
-      try {
+      if (completed) {
         createActivityLog({
           customer_id: task.customer_id,
           task_id: taskId,
           activity_type: 'task_completed',
           title: `Aufgabe erledigt: ${task.title}`,
         });
-      } catch (e) {
-        console.error('Failed to log task completion activity:', e);
       }
-    }
-
-    return { success: result.changes > 0, error: result.changes === 0 ? 'Task not found' : undefined };
+      return { success: true };
+    })();
   } catch (error) {
     console.error(`Error updating task completion for ${taskId}:`, error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -2968,10 +3360,12 @@ export function updateTaskCompletion(taskId: number, completed: boolean): { succ
 
 export function deleteTask(taskId: number): { success: boolean; error?: string } {
   try {
-    const stmt = getDb().prepare(`DELETE FROM ${TASKS_TABLE} WHERE id = ?`);
-    const result = stmt.run(taskId);
-
-    return { success: result.changes > 0, error: result.changes === 0 ? 'Task not found' : undefined };
+    const connection = getDb();
+    return connection.transaction(() => {
+      connection.prepare(`DELETE FROM ${CALENDAR_EVENTS_TABLE} WHERE task_id = ?`).run(taskId);
+      const result = connection.prepare(`DELETE FROM ${TASKS_TABLE} WHERE id = ?`).run(taskId);
+      return { success: result.changes > 0, error: result.changes === 0 ? 'Task not found' : undefined };
+    })();
   } catch (error) {
     console.error(`Error deleting task ${taskId}:`, error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
@@ -2982,10 +3376,12 @@ export function deleteTask(taskId: number): { success: boolean; error?: string }
 export function getTasksForCustomer(customerId: number): any[] {
     const stmt = getDb().prepare(`
         SELECT t.*,
+               ce.id AS calendar_event_id,
                COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
                NULLIF(TRIM(c.company), '') AS customer_company
         FROM ${TASKS_TABLE} t
         LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
+        LEFT JOIN ${CALENDAR_EVENTS_TABLE} ce ON ce.task_id = t.id
         WHERE t.customer_id = ?
         ORDER BY t.due_date ASC
     `);

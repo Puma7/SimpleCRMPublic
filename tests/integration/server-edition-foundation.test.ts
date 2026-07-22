@@ -987,6 +987,7 @@ describe('server edition repository boundaries', () => {
       expect(spec.paths['/deals/{id}/stage']).toBeDefined();
       expect(spec.paths['/tasks/{id}/toggle']).toBeDefined();
       expect(spec.paths['/calendar-events']).toBeDefined();
+      expect(spec.paths['/calendar-entries']).toBeDefined();
       expect(spec.paths['/email/messages/{id}/actions']).toBeDefined();
       expect(spec.paths['/email/messages/{id}/move']).toBeDefined();
       expect(spec.paths['/pgp/identities']).toBeDefined();
@@ -1094,6 +1095,11 @@ describe('server edition repository boundaries', () => {
       expect(JSON.parse(calendarEvents.body).data.items[0].title).toBe('Demo event 30');
       expect(calendarEventCalls).toEqual([{
         workspaceId: 'workspace-a',
+        viewer: {
+          userId: 'user-a',
+          workspaceId: 'workspace-a',
+          role: 'user',
+        },
         limit: 50,
         eventType: 'call',
         taskId: 10,
