@@ -1,0 +1,226 @@
+FAIL integration tests/integration/server-mail-access-routes.test.ts (21.94 s)
+  ● server mailbox ACL migration › rollout migration creates RLS shadow state only for existing workspaces and missing rows default to enforce
+
+    error: column "telemetry_healthy" does not exist
+
+      2214 |       const createdAfterRollout = await port.getReadiness(WORKSPACE_NEW_AFTER_ROLLOUT);
+      2215 |       await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    > 2216 |       const storedRows = await client.query<{
+           |                          ^
+      2217 |         workspace_id: string;
+      2218 |         mode: string;
+      2219 |         telemetry_healthy: boolean;
+
+      at node_modules/.pnpm/pg@8.22.0/node_modules/pg/lib/client.js:652:17
+      at Object.<anonymous> (tests/integration/server-mail-access-routes.test.ts:2216:26)
+
+  ● server mailbox ACL migration › exclusive enforce waits for every earlier shared shadow evaluation and observes their mismatches
+
+    Timed out waiting for enforce to wait on shared shadow evaluations
+
+      388 |       await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      389 |     }
+    > 390 |     throw new Error(`Timed out waiting for ${description}`);
+          |           ^
+      391 |   }
+      392 |
+      393 |   async function ensureScopedGrantFixtures(): Promise<void> {
+
+      at waitForAdvisoryLockWaiters (tests/integration/server-mail-access-routes.test.ts:390:11)
+      at Object.<anonymous> (tests/integration/server-mail-access-routes.test.ts:2389:7)
+
+  ● server mailbox ACL migration › exclusive reset waits for an earlier shadow evaluation and then clears its observation atomically
+
+    Timed out waiting for reset to wait on the shared shadow evaluation
+
+      388 |       await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      389 |     }
+    > 390 |     throw new Error(`Timed out waiting for ${description}`);
+          |           ^
+      391 |   }
+      392 |
+      393 |   async function ensureScopedGrantFixtures(): Promise<void> {
+
+      at waitForAdvisoryLockWaiters (tests/integration/server-mail-access-routes.test.ts:390:11)
+      at Object.<anonymous> (tests/integration/server-mail-access-routes.test.ts:2448:7)
+
+  ● server mailbox ACL migration › single-connection rollout evaluation reuses its transaction and does not borrow a nested pool connection
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 0
+
+      Object {
+        "evaluated": 1n,
+    -   "telemetryHealthy": true,
+      }
+
+      2494 |         },
+      2495 |       })).resolves.toBeUndefined();
+    > 2496 |       await expect(state.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+           |                                                              ^
+      2497 |         evaluated: 1n,
+      2498 |         telemetryHealthy: true,
+      2499 |       });
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/integration/server-mail-access-routes.test.ts:2496:62)
+
+  ● server mailbox ACL migration › counter saturation marks telemetry unhealthy without changing allowed shadow decisions and reset starts a healthy window
+
+    expect(received).resolves.toBeUndefined()
+
+    Received promise rejected instead of resolved
+    Rejected to value: [error: bigint out of range]
+
+      2533 |
+      2534 |       for (let index = 0; index < 2; index += 1) {
+    > 2535 |         await expect(service.assertPermission({
+           |               ^
+      2536 |           workspaceId: WORKSPACE_A,
+      2537 |           actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+      2538 |           permission: 'mail.content.read',
+
+      at expect (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2116:15)
+      at Object.expect (tests/integration/server-mail-access-routes.test.ts:2535:15)
+
+  ● server mailbox ACL migration › RLS zero-row counter updates are unhealthy, explicit, and cannot mutate another workspace
+
+    expect(received).resolves.toEqual(expected) // deep equality
+
+    Expected: {"code": "counter_update_zero_rows", "healthy": false}
+    Received: undefined
+
+      2587 |       await normalState.resetShadowCounters({ workspaceId: WORKSPACE_A });
+      2588 |       const workspaceBBefore = await normalState.getReadiness(WORKSPACE_B);
+    > 2589 |       await expect(misScopedState.increment(WORKSPACE_A, { evaluated: 1n })).resolves.toEqual({
+           |                                                                                       ^
+      2590 |         healthy: false,
+      2591 |         code: 'counter_update_zero_rows',
+      2592 |       });
+
+      at Object.toEqual (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toEqual (tests/integration/server-mail-access-routes.test.ts:2589:87)
+
+FAIL unit tests/unit/server-mail-acl-rollout.test.ts
+  ● MailAccessRolloutService › counter exceptions and failed diagnostic persistence preserve a shadow legacy allow
+
+    expect(received).resolves.toBeUndefined()
+
+    Received promise rejected instead of resolved
+    Rejected to value: [Error: counter unavailable]
+
+      419 |     });
+      420 |
+    > 421 |     await expect(fixture.service.assertPermission({
+          |           ^
+      422 |       workspaceId: WORKSPACE_A,
+      423 |       actor: USER_ACTOR,
+      424 |       permission: 'mail.content.read',
+
+      at expect (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2116:15)
+      at Object.expect (tests/unit/server-mail-acl-rollout.test.ts:421:11)
+
+  ● MailAccessRolloutService › counter exceptions preserve a shadow legacy deny instead of replacing it with telemetry failure
+
+    expect(received).rejects.toBeInstanceOf(expected)
+
+    Expected constructor: MailAccessDeniedError
+    Received constructor: Error
+
+      443 |       permission: 'mail.metadata.read',
+      444 |       resource: messageResource(),
+    > 445 |     })).rejects.toBeInstanceOf(MailAccessDeniedError);
+          |                 ^
+      446 |
+      447 |     expect(fixture.unhealthyMarks).toEqual(['counter_update_failed']);
+      448 |     expect(fixture.diagnostics).toEqual(['counter_update_failed']);
+
+      at Object.toBeInstanceOf (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2155:20)
+      at Object.toBeInstanceOf (tests/unit/server-mail-acl-rollout.test.ts:445:17)
+
+  ● MailAccessRolloutService › zero-row telemetry leaves the legacy decision unchanged and reports a bounded diagnostic
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 3
+    + Received  + 1
+
+    - Array [
+    -   "counter_update_zero_rows",
+    - ]
+    + Array []
+
+      463 |       resource: messageResource(),
+      464 |     })).resolves.toBeUndefined();
+    > 465 |     expect(fixture.diagnostics).toEqual(['counter_update_zero_rows']);
+          |                                 ^
+      466 |   });
+      467 |
+      468 |   test('non-comparable new ACL allow and deny survive counter and logger failures exactly', async () => {
+
+      at Object.toEqual (tests/unit/server-mail-acl-rollout.test.ts:465:33)
+
+  ● MailAccessRolloutService › non-comparable new ACL allow and deny survive counter and logger failures exactly
+
+    expect(received).resolves.toBeUndefined()
+
+    Received promise rejected instead of resolved
+    Rejected to value: [Error: counter unavailable]
+
+      480 |     });
+      481 |
+    > 482 |     await expect(allowed.service.assertPermission({
+          |           ^
+      483 |       workspaceId: WORKSPACE_A,
+      484 |       actor: USER_ACTOR,
+      485 |       permission: 'mail.delete',
+
+      at expect (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2116:15)
+      at Object.expect (tests/unit/server-mail-acl-rollout.test.ts:482:11)
+
+  ● mail ACL rollout central use › readiness and one-way transition admin API are owner/admin-only and audited
+
+    expect(received).resolves.toMatchObject(expected)
+
+    - Expected  - 3
+    + Received  + 5
+
+      Object {
+        "body": Object {
+    -     "data": ObjectContaining {
+    -       "diagnosticCode": null,
+    +     "data": Object {
+    +       "enforced": false,
+            "evaluated": "7",
+            "legacyAllowNewDeny": "0",
+            "legacyDenyNewAllow": "0",
+            "mode": "shadow",
+            "notComparable": "2",
+    +       "observationStartedAt": "2026-07-20T10:00:00.000Z",
+    +       "observationUpdatedAt": "2026-07-20T10:05:00.000Z",
+            "ready": true,
+    -       "telemetryHealthy": true,
+    +       "workspaceId": "11111111-1111-4111-8111-111111111111",
+          },
+        },
+        "status": 200,
+      }
+
+      590 |       path: '/api/v1/email/acl-rollout/readiness',
+      591 |       principal: principal('admin'),
+    > 592 |     })).resolves.toMatchObject({
+          |                  ^
+      593 |       status: 200,
+      594 |       body: {
+      595 |         data: expect.objectContaining({
+
+      at Object.toMatchObject (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toMatchObject (tests/unit/server-mail-acl-rollout.test.ts:592:18)
+
+Test Suites: 2 failed, 2 total
+Tests:       11 failed, 46 passed, 57 total
+Snapshots:   0 total
+Time:        22.966 s
+Ran all test suites within paths "tests/unit/server-mail-acl-rollout.test.ts", "tests/integration/server-mail-access-routes.test.ts" in 2 projects.

@@ -1,0 +1,108 @@
+FAIL unit tests/unit/server-mail-job-provenance.test.ts
+  ● server mail job provenance › source inventory covers every initiating mail policy producer with actor or trusted-service provenance
+
+    expect(received).toMatch(expected)
+
+    Expected pattern: /actorUserId|workflowJobProvenance|with[A-Za-z]+Provenance|buildTrustedServiceJobPayload/
+    Received string:  "packages/server/src/mail-compose-send.ts:workflow.execute
+      body_html: bodyHtml,
+                  snippet: snippetFromText(plain) ?? OUTBOUND_REVIEW_REASON,
+                  outbound_hold: true,
+                  outbound_block_reason: OUTBOUND_REVIEW_REASON,
+                  folder_kind: 'draft',
+                  seen_local: false,
+                  archived: false,
+                  is_spam: false,
+                  soft_deleted: false,
+                  updated_at: now,
+                })
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', input.draftMessageId)
+                .execute();·
+              let firstRunId: number | null = null;
+              for (const workflow of workflows) {
+                const workflowId = Number(workflow.id);
+                const workflowSourceSqliteId = workflow.source_sqlite_id === null
+                  ? -workflowId
+                  : Number(workflow.source_sqlite_id);
+                const run = await trx
+                  .insertInto('email_workflow_runs')
+                  .values({
+                    workspace_id: input.workspaceId,
+                    source_sqlite_id: null,
+                    workflow_source_sqlite_id: workflowSourceSqliteId,
+                    message_source_sqlite_id: Number(draft.source_sqlite_id),
+                    workflow_id: workflowId,
+                    message_id: input.draftMessageId,
+                    direction: 'outbound',
+                    status: 'queued',
+                    // jsonb column: stringify the array so node-postgres sends
+                    // valid JSON instead of a Postgres array literal ({...}).
+                    log_json: JSON.stringify(['queued:server_compose_outbound_review']),
+                    source_row: serverApiSourceRow(),
+                    imported_in_run_id: null,
+                    started_at: null,
+                    finished_at: null,
+                    updated_at: now,
+                  })
+                  .returning('id')
+                  .executeTakeFirstOrThrow();
+                const runId = Number(run.id);
+                if (firstRunId === null) firstRunId = runId;·
+                await trx
+                  .insertInto('job_queue')
+                  .values({
+                    type: 'workflow.execute',
+                    payload: outboundWorkflowJobPayload(input, workflowId, runId),
+                    run_after: now,
+                    max_attempts: 5,
+                    workspace_id: input.workspaceId,
+                    updated_at: now,
+                  })
+                  .execute();
+              }·
+              return {
+                allowed: false,
+                error: OUTBOUND_REVIEW_REASON,
+                workflowRunId: firstRunId,
+              };
+            },
+            { applySession: options.applyWorkspaceSession },
+          );
+        },
+      };
+    }·
+    function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions): ComposeSenderStore {
+      const sendingLockTokens = new Map<string, string>();
+      return {
+        async getDraft(input) {
+          return withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => {
+              const row = await trx
+                .selectFrom('email_messages')
+                .select([
+                  'id',
+                  'account_id',
+                  'uid',
+                  'folder_kind',
+                  'subject',
+                  'body_text',
+           "
+
+      238 |     for (const producer of producers) {
+      239 |       expect(`${producer.file}:${producer.type}\n${producer.block}`)
+    > 240 |         .toMatch(/actorUserId|workflowJobProvenance|with[A-Za-z]+Provenance|buildTrustedServiceJobPayload/);
+          |          ^
+      241 |     }
+      242 |   });
+      243 | });
+
+      at Object.toMatch (tests/unit/server-mail-job-provenance.test.ts:240:10)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 5 passed, 6 total
+Snapshots:   0 total
+Time:        1.478 s
+Ran all test suites matching tests/unit/server-mail-job-provenance.test.ts.

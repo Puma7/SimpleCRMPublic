@@ -1,8 +1,16 @@
 import {
   WORKFLOW_TEMPLATES,
+  collectWorkflowCreateDraftStaticAccountIds,
+  collectWorkflowSendDraftStaticDraftIds,
+  collectWorkflowSendDraftVariableStaticDraftIds,
+  workflowGraphAssignsDynamicCreateDraftAccount,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   outboundGraphReleasesMail,
+  workflowGraphHasAnyNodeType,
+  workflowGraphHasDeleteEquivalentMoveImap,
+  workflowGraphHasNodeType,
+  workflowGraphHasSideEffectNode,
 } from '@simplecrm/core';
 import type { WorkflowGraphDocument } from '@simplecrm/core';
 // The electron / renderer transport carries a parallel copy of the validator.
@@ -320,5 +328,460 @@ describe('shipped outbound templates never trap mail', () => {
 
   it.each(outboundTemplates.map((t) => [t.id, t]))('%s releases mail', (_id, template) => {
     expect(findOutboundGraphTraps((template as { graph: WorkflowGraphDocument }).graph)).toEqual([]);
+  });
+});
+
+describe('workflowGraphHasSideEffectNode', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('returns false for null / non-object / graph without nodes', () => {
+    expect(workflowGraphHasSideEffectNode(null)).toBe(false);
+    expect(workflowGraphHasSideEffectNode(undefined)).toBe(false);
+    expect(workflowGraphHasSideEffectNode(42)).toBe(false);
+    expect(workflowGraphHasSideEffectNode({})).toBe(false);
+    expect(workflowGraphHasSideEffectNode({ nodes: 'x' })).toBe(false);
+  });
+
+  it('ignores triggers, conditions, in-memory logic.* helpers and known read-only nodes', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([
+          trigger,
+          { id: 'c1', type: 'condition', data: { field: 'subject', op: 'contains', value: 'x' } },
+          { id: 'l1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'v', value: '1' } } },
+          { id: 'r1', type: 'registry', data: { nodeType: 'email.read_tracking_evidence', config: {} } },
+          { id: 'r3', type: 'registry', data: { nodeType: 'email.sender_filter', config: {} } },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
+  it('exempts every in-memory logic.* helper but never logic.delay', () => {
+    for (const nodeType of ['logic.stop', 'logic.set_variable', 'logic.merge', 'logic.threshold', 'logic.switch', 'logic.loop']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType, config: {} } }])),
+      ).toBe(false);
+    }
+  });
+
+  it('flags logic.delay as side-effecting (it schedules a delayed job + future workflow.execute)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([trigger, { id: 'd', type: 'registry', data: { nodeType: 'logic.delay', config: { delaySeconds: 60 } } }]),
+      ),
+    ).toBe(true);
+  });
+
+  it('fails closed on an unrecognized logic.* type (allowlist, not prefix)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'x', type: 'registry', data: { nodeType: 'logic.webhook', config: {} } }])),
+    ).toBe(true);
+  });
+
+  it('flags ai.classify as side-effecting (it persists a tag)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([
+          trigger,
+          { id: 'r2', type: 'registry', data: { nodeType: 'ai.classify', config: {} } },
+        ]),
+      ),
+    ).toBe(true);
+  });
+
+  it('flags jtl.order_context and ai.reply_suggestion side-effecting, keeps jtl.lookup read-only', () => {
+    // jtl.order_context runs a caller-configurable SELECT against the workspace's
+    // external MSSQL/ERP connection; ai.reply_suggestion enqueues a child that calls the
+    // external AI provider and writes email_messages.reply_suggestion_* — both reach
+    // outside/write, so a non-admin live run must be blocked.
+    for (const nodeType of ['jtl.order_context', 'ai.reply_suggestion']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'n1', type: 'registry', data: { nodeType, config: {} } }])),
+      ).toBe(true);
+    }
+    // jtl.lookup only reads the workspace's own synced JTL tables (local Postgres,
+    // workspace-scoped) — no external reach — so it stays read-only.
+    expect(
+      workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'jl', type: 'registry', data: { nodeType: 'jtl.lookup', config: {} } }])),
+    ).toBe(false);
+  });
+
+  it('flags a writing registry node (email.delete_server)', () => {
+    expect(
+      workflowGraphHasSideEffectNode(
+        graphOf([trigger, { id: 'd1', type: 'registry', data: { nodeType: 'email.delete_server', config: {} } }]),
+      ),
+    ).toBe(true);
+  });
+
+  it('flags a legacy action node by actionType (tag / archive / forward_copy)', () => {
+    for (const actionType of ['tag', 'archive', 'forward_copy', 'mark_seen', 'set_category']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'a1', type: 'action', data: { actionType } }])),
+      ).toBe(true);
+    }
+  });
+
+  it('flags CRM writes, http.request, sync.run and subflow', () => {
+    for (const nodeType of ['crm.update_deal', 'http.request', 'sync.run', 'workflow.subflow', 'mssql.query']) {
+      expect(
+        workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType, config: {} } }])),
+      ).toBe(true);
+    }
+  });
+
+  it('fails closed on an unknown canvas type', () => {
+    expect(
+      workflowGraphHasSideEffectNode(graphOf([trigger, { id: 'x', type: 'mystery-node', data: {} }])),
+    ).toBe(true);
+  });
+
+  it('accepts a JSON-string graph', () => {
+    const json = JSON.stringify(
+      graphOf([trigger, { id: 'a1', type: 'action', data: { actionType: 'archive' } }]),
+    );
+    expect(workflowGraphHasSideEffectNode(json)).toBe(true);
+    expect(workflowGraphHasSideEffectNode('{not json')).toBe(false);
+  });
+});
+
+describe('workflowGraphHasDeleteEquivalentMoveImap', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({ version: 1, nodes, edges: [] });
+  const moveNode = (config: Record<string, unknown>) => ({ id: 'm1', type: 'registry' as const, data: { nodeType: 'email.move_imap', config } });
+
+  it('returns false for null / non-object / graph without move_imap', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(null)).toBe(false);
+    expect(workflowGraphHasDeleteEquivalentMoveImap({ nodes: 'x' })).toBe(false);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger]))).toBe(false);
+  });
+
+  it('flags a literal trash target (any of the runtime aliases, normalized)', () => {
+    for (const folder of ['Trash', 'Deleted Items', 'Papierkorb', 'Gelöschte Elemente', 'deleted']) {
+      expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: folder })]))).toBe(true);
+    }
+    // Alternate config keys the runtime also reads.
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folder: 'Trash' })]))).toBe(true);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ targetFolderPath: 'Papierkorb' })]))).toBe(true);
+  });
+
+  it('does NOT flag a literal non-trash move (stays triage-only)', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: 'Archive' })]))).toBe(false);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: 'Projekte/Kunde A' })]))).toBe(false);
+    // Absent target defaults to 'Spam' at runtime — not trash.
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({})]))).toBe(false);
+  });
+
+  it('flags an interpolated target (may resolve to trash at runtime → fail closed)', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: '{{customer.folder}}' })]))).toBe(true);
+    expect(workflowGraphHasDeleteEquivalentMoveImap(graphOf([trigger, moveNode({ folderPath: 'Prefix {{var}}' })]))).toBe(true);
+  });
+
+  it('matches a legacy action node by its actionType', () => {
+    expect(workflowGraphHasDeleteEquivalentMoveImap(
+      graphOf([trigger, { id: 'a1', type: 'action', data: { actionType: 'email.move_imap', config: { folderPath: 'Trash' } } }]),
+    )).toBe(true);
+  });
+});
+
+describe('workflowGraphHasNodeType', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('returns false for null / non-object / graph without nodes', () => {
+    expect(workflowGraphHasNodeType(null, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType(undefined, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType(42, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType({}, 'email.delete_server')).toBe(false);
+    expect(workflowGraphHasNodeType({ nodes: 'x' }, 'email.delete_server')).toBe(false);
+  });
+
+  it('matches a registry node by its runtime type, regardless of reachability', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([
+          trigger,
+          { id: 'c1', type: 'condition', data: { field: 'subject', op: 'contains', value: 'x' } },
+          { id: 'd1', type: 'registry', data: { nodeType: 'email.delete_server', config: {} } },
+        ]),
+        'email.delete_server',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches a legacy action node by its actionType', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([trigger, { id: 'a1', type: 'action', data: { actionType: 'email.delete_server' } }]),
+        'email.delete_server',
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false when no node has the requested type', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([
+          trigger,
+          { id: 'r1', type: 'registry', data: { nodeType: 'ai.classify', config: {} } },
+          { id: 'r2', type: 'registry', data: { nodeType: 'email.move_imap', config: {} } },
+        ]),
+        'email.delete_server',
+      ),
+    ).toBe(false);
+  });
+
+  it('never matches trigger or condition nodes', () => {
+    expect(
+      workflowGraphHasNodeType(
+        graphOf([{ id: 't', type: 'trigger', data: { kind: 'email.delete_server' } }]),
+        'email.delete_server',
+      ),
+    ).toBe(false);
+  });
+
+  it('accepts a JSON-string graph', () => {
+    const json = JSON.stringify(
+      graphOf([trigger, { id: 'd1', type: 'registry', data: { nodeType: 'email.delete_server', config: {} } }]),
+    );
+    expect(workflowGraphHasNodeType(json, 'email.delete_server')).toBe(true);
+    expect(workflowGraphHasNodeType('{not json', 'email.delete_server')).toBe(false);
+  });
+});
+
+describe('workflowGraphHasAnyNodeType', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+  const TRIAGE = new Set(['email.tag', 'tag', 'email.archive', 'archive']);
+
+  it('matches any registry node whose runtime type is in the set', () => {
+    expect(
+      workflowGraphHasAnyNodeType(
+        graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType: 'email.tag', config: {} } }]),
+        TRIAGE,
+      ),
+    ).toBe(true);
+  });
+
+  it('matches a legacy action node by its bare actionType', () => {
+    expect(
+      workflowGraphHasAnyNodeType(
+        graphOf([trigger, { id: 'a', type: 'action', data: { actionType: 'archive' } }]),
+        TRIAGE,
+      ),
+    ).toBe(true);
+  });
+
+  it('returns false when no node type is in the set', () => {
+    expect(
+      workflowGraphHasAnyNodeType(
+        graphOf([trigger, { id: 'n', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } }]),
+        TRIAGE,
+      ),
+    ).toBe(false);
+  });
+
+  it('returns false for null / non-object / graph without nodes', () => {
+    expect(workflowGraphHasAnyNodeType(null, TRIAGE)).toBe(false);
+    expect(workflowGraphHasAnyNodeType({ nodes: 'x' }, TRIAGE)).toBe(false);
+  });
+});
+
+describe('collectWorkflowSendDraftStaticDraftIds', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('collects positive-integer config.draftId from email.send_draft nodes, deduped', () => {
+    expect(
+      collectWorkflowSendDraftStaticDraftIds(graphOf([
+        trigger,
+        { id: 's1', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } },
+        { id: 's2', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } },
+        { id: 's3', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 20 } } },
+      ])).sort((a, b) => a - b),
+    ).toEqual([13, 20]);
+  });
+
+  it('ignores runtime draftIdVariable, missing/invalid ids, and non-send_draft nodes', () => {
+    expect(
+      collectWorkflowSendDraftStaticDraftIds(graphOf([
+        trigger,
+        { id: 'v', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+        { id: 'z', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 0 } } },
+        { id: 'n', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: -4 } } },
+        { id: 'f', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 1.5 } } },
+        { id: 's', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: '7' } } },
+        { id: 'o', type: 'registry', data: { nodeType: 'email.create_draft', config: { draftId: 99 } } },
+      ])),
+    ).toEqual([]);
+  });
+
+  it('returns [] for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(collectWorkflowSendDraftStaticDraftIds(null)).toEqual([]);
+    expect(collectWorkflowSendDraftStaticDraftIds({})).toEqual([]);
+    expect(collectWorkflowSendDraftStaticDraftIds({ nodes: 'x' })).toEqual([]);
+    expect(collectWorkflowSendDraftStaticDraftIds('{not json')).toEqual([]);
+  });
+});
+
+describe('collectWorkflowSendDraftVariableStaticDraftIds', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('resolves a draftIdVariable pinned by a logic.set_variable node (number and numeric string)', () => {
+    expect(
+      collectWorkflowSendDraftVariableStaticDraftIds(graphOf([
+        trigger,
+        { id: 'v1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'reply.draft', value: 42 } } },
+        { id: 's1', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'reply.draft' } } },
+        // The bare `set_variable` action alias with a numeric string, feeding the default `draft.id`.
+        { id: 'v2', type: 'action', data: { actionType: 'set_variable', config: { name: 'draft.id', value: '7' } } },
+        { id: 's2', type: 'registry', data: { nodeType: 'email.send_draft', config: {} } },
+      ])).sort((a, b) => a - b),
+    ).toEqual([7, 42]);
+  });
+
+  it('ignores dynamic/interpolated values, static config.draftId nodes, and mismatched variable names', () => {
+    expect(
+      collectWorkflowSendDraftVariableStaticDraftIds(graphOf([
+        trigger,
+        // Interpolated value → unknown at policy time.
+        { id: 'vi', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: '{{customer.draftId}}' } } },
+        { id: 'si', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+        // send_draft hard-codes draftId → runtime consults that, NOT the variable.
+        { id: 'vs', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'other', value: 5 } } },
+        { id: 'ss', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 9, draftIdVariable: 'other' } } },
+        // set_variable exists but no send_draft reads that variable name.
+        { id: 'vm', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'unused', value: 3 } } },
+      ])),
+    ).toEqual([]);
+  });
+
+  it('returns [] for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(collectWorkflowSendDraftVariableStaticDraftIds(null)).toEqual([]);
+    expect(collectWorkflowSendDraftVariableStaticDraftIds({})).toEqual([]);
+    expect(collectWorkflowSendDraftVariableStaticDraftIds({ nodes: 'x' })).toEqual([]);
+    expect(collectWorkflowSendDraftVariableStaticDraftIds('{not json')).toEqual([]);
+  });
+});
+
+describe('collectWorkflowCreateDraftStaticAccountIds', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('resolves email.account_id pinned by a logic.set_variable node when the graph creates a draft', () => {
+    expect(
+      collectWorkflowCreateDraftStaticAccountIds(graphOf([
+        trigger,
+        { id: 'v1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+        { id: 'd1', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+        // The bare set_variable action alias with a numeric string is also resolved.
+        { id: 'v2', type: 'action', data: { actionType: 'set_variable', config: { name: 'email.account_id', value: '4' } } },
+      ])).sort((a, b) => a - b),
+    ).toEqual([4, 9]);
+  });
+
+  it('ignores dynamic/interpolated values, other variable names, and graphs without a create_draft node', () => {
+    // Interpolated value → unknown at policy time.
+    expect(collectWorkflowCreateDraftStaticAccountIds(graphOf([
+      trigger,
+      { id: 'vi', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{customer.accountId}}' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toEqual([]);
+    // A set_variable on a different name is irrelevant to create_draft's fixed variable.
+    expect(collectWorkflowCreateDraftStaticAccountIds(graphOf([
+      trigger,
+      { id: 'vo', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: 9 } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toEqual([]);
+    // Pinned account but no create_draft node → nothing to authorize.
+    expect(collectWorkflowCreateDraftStaticAccountIds(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+    ]))).toEqual([]);
+  });
+
+  it('returns [] for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(collectWorkflowCreateDraftStaticAccountIds(null)).toEqual([]);
+    expect(collectWorkflowCreateDraftStaticAccountIds({})).toEqual([]);
+    expect(collectWorkflowCreateDraftStaticAccountIds({ nodes: 'x' })).toEqual([]);
+    expect(collectWorkflowCreateDraftStaticAccountIds('{not json')).toEqual([]);
+  });
+});
+
+describe('workflowGraphAssignsDynamicCreateDraftAccount', () => {
+  const trigger = { id: 't1', type: 'trigger', data: { kind: 'inbound' } } as const;
+  const graphOf = (nodes: WorkflowGraphDocument['nodes']): WorkflowGraphDocument => ({
+    version: 1,
+    nodes,
+    edges: [],
+  });
+
+  it('is true when a create_draft graph assigns email.account_id a runtime/interpolated value', () => {
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{customer.account_id}}' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(true);
+    // A non-numeric static value is also unresolvable → treated as dynamic (fail closed).
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'action', data: { actionType: 'set_variable', config: { name: 'email.account_id', value: 'abc' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(true);
+  });
+
+  it('is false for a static-integer pin, a different variable, or a graph without create_draft', () => {
+    // Static positive-int pin → authorized elsewhere, not dynamic.
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(false);
+    // Dynamic assignment to a DIFFERENT variable is irrelevant.
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: '{{x}}' } } },
+      { id: 'd', type: 'registry', data: { nodeType: 'email.create_draft', config: {} } },
+    ]))).toBe(false);
+    // No create_draft node → nothing to guard.
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(graphOf([
+      trigger,
+      { id: 'v', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{x}}' } } },
+    ]))).toBe(false);
+  });
+
+  it('returns false for null / non-object / graph without nodes / bad JSON string', () => {
+    expect(workflowGraphAssignsDynamicCreateDraftAccount(null)).toBe(false);
+    expect(workflowGraphAssignsDynamicCreateDraftAccount({})).toBe(false);
+    expect(workflowGraphAssignsDynamicCreateDraftAccount({ nodes: 'x' })).toBe(false);
+    expect(workflowGraphAssignsDynamicCreateDraftAccount('{not json')).toBe(false);
   });
 });

@@ -1,0 +1,159 @@
+Running one project: unit
+FAIL unit tests/unit/server-mail-delegation-port.test.ts
+  ● createPostgresMailDelegationPort › bulk-hydrates delegation pages with a constant query count
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 6
+    Received: 7
+
+      116 |     });
+      117 |
+    > 118 |     expect(selectQueryCount(small)).toBe(6);
+          |                                     ^
+      119 |     expect(selectQueryCount(large)).toBe(6);
+      120 |     expect(smallResult).toMatchObject({ ok: true, nextCursor: null });
+      121 |     expect(largeResult).toMatchObject({ ok: true, nextCursor: null });
+
+      at Object.toBe (tests/unit/server-mail-delegation-port.test.ts:118:37)
+
+  ● createPostgresMailDelegationPort › returns deterministic bounded pages after the validated id cursor
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  -   1
+    + Received  + 105
+
+      Object {
+        "bindings": Array [
+          Object {
+    +       "id": 1,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 101,
+    +         "label": "Account 1",
+    +         "type": "account",
+    +       },
+    +       "subject": Object {
+    +         "id": "user-1",
+    +         "label": "User 1",
+    +         "type": "user",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +     Object {
+    +       "id": 2,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 102,
+    +         "folderId": 202,
+    +         "label": "Folder 2",
+    +         "type": "folder",
+    +       },
+    +       "subject": Object {
+    +         "id": 1002,
+    +         "label": "Group 2",
+    +         "type": "group",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +     Object {
+            "id": 3,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 103,
+    +         "label": "Account 3",
+    +         "type": "account",
+    +       },
+    +       "subject": Object {
+    +         "id": "user-3",
+    +         "label": "User 3",
+    +         "type": "user",
+            },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+          Object {
+            "id": 4,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 104,
+    +         "folderId": 204,
+    +         "label": "Folder 4",
+    +         "type": "folder",
+    +       },
+    +       "subject": Object {
+    +         "id": 1004,
+    +         "label": "Group 4",
+    +         "type": "group",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+          },
+    +     Object {
+    +       "id": 5,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+            ],
+    -   "nextCursor": 4,
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 105,
+    +         "label": "Account 5",
+    +         "type": "account",
+    +       },
+    +       "subject": Object {
+    +         "id": "user-5",
+    +         "label": "User 5",
+    +         "type": "user",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +     Object {
+    +       "id": 6,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 106,
+    +         "folderId": 206,
+    +         "label": "Folder 6",
+    +         "type": "folder",
+    +       },
+    +       "subject": Object {
+    +         "id": 1006,
+    +         "label": "Group 6",
+    +         "type": "group",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +   ],
+        "ok": true,
+      }
+
+      138 |     });
+      139 |
+    > 140 |     expect(result).toMatchObject({
+          |                    ^
+      141 |       ok: true,
+      142 |       bindings: [{ id: 3 }, { id: 4 }],
+      143 |       nextCursor: 4,
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-port.test.ts:140:20)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 3 passed, 5 total
+Snapshots:   0 total
+Time:        0.894 s, estimated 1 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-port.test.ts".

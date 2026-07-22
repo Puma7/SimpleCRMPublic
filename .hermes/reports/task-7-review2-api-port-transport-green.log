@@ -1,0 +1,7 @@
+Running one project: unit
+
+Test Suites: 3 passed, 3 total
+Tests:       152 passed, 152 total
+Snapshots:   0 total
+Time:        2.143 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-api.test.ts", "tests/unit/server-mail-delegation-port.test.ts", "tests/unit/renderer-transport.test.ts".

@@ -35,6 +35,11 @@ import { pr156FinalAuditMigration } from './0034_pr156_final_audit';
 import { emailTrackingPerMessageMigration } from './0035_email_tracking_per_message';
 import { userSignaturesMigration } from './0036_user_signatures';
 import { userGroupPermissionsMigration } from './0037_user_group_permissions';
+import { mailAclMigration } from './0038_mail_acl';
+import { mailAclRolloutMigration } from './0039_mail_acl_rollout';
+import { scheduledSendProvenanceMigration } from './0040_scheduled_send_provenance';
+import { mailAclBindingMessageFkCascadeMigration } from './0041_mail_acl_binding_message_fk_cascade';
+import { quarantineLegacyProvenancelessJobsMigration } from './0042_quarantine_legacy_provenanceless_jobs';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -76,6 +81,11 @@ export const serverMigrations: readonly SqlMigration[] = [
   emailTrackingPerMessageMigration,
   userSignaturesMigration,
   userGroupPermissionsMigration,
+  mailAclMigration,
+  mailAclRolloutMigration,
+  scheduledSendProvenanceMigration,
+  mailAclBindingMessageFkCascadeMigration,
+  quarantineLegacyProvenancelessJobsMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

@@ -3,6 +3,7 @@ import {
   definitionToJson,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
   type WorkflowNodeCatalogEntry,
   type WorkflowTemplate,
@@ -22,6 +23,8 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   ServerApiPorts,
   WorkflowListResult,
   WorkflowMutationInput,
@@ -31,11 +34,13 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requireCapability,
   requirePrincipal,
 } from './http';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
+import { MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from '../jobs/policy';
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -43,6 +48,55 @@ const WEBHOOK_BODY_JSON_MAX = 64 * 1024;
 const WEBHOOK_DEDUP_MS = 5 * 60 * 1000;
 const MAX_WEBHOOK_WORKFLOWS = 500;
 const WEBHOOK_AUTOMATION_SCOPE = 'workflows';
+
+type WorkflowMailRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration & { source: string };
+}>;
+
+function workflowMailRoute(
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+): WorkflowMailRouteRegistration {
+  return {
+    registration: {
+      source: 'workflow-mail-routes',
+      path,
+      methods,
+      pattern,
+    },
+  };
+}
+
+export const WORKFLOW_MAIL_ROUTE_REGISTRATIONS: readonly WorkflowMailRouteRegistration[] = Object.freeze([
+  workflowMailRoute('/api/v1/workflows/:id/execute', ['POST'], /^\/api\/v1\/workflows\/([^/]+)\/execute$/),
+  workflowMailRoute('/api/v1/workflows/by-source/:sourceId/execute', ['POST'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/execute$/),
+  workflowMailRoute('/api/v1/email/messages/:messageId/workflow-runs', ['GET'], /^\/api\/v1\/email\/messages\/([^/]+)\/workflow-runs$/),
+  workflowMailRoute('/api/v1/workflows/:id/runs', ['GET'], /^\/api\/v1\/workflows\/([^/]+)\/runs$/),
+  workflowMailRoute('/api/v1/workflows/by-source/:sourceId/runs', ['GET'], /^\/api\/v1\/workflows\/by-source\/([^/]+)\/runs$/),
+  workflowMailRoute('/api/v1/workflow-runs', ['GET'], /^\/api\/v1\/workflow-runs$/),
+  workflowMailRoute('/api/v1/workflow-runs/:id', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-runs/:id/steps', ['GET'], /^\/api\/v1\/workflow-runs\/([^/]+)\/steps$/),
+  workflowMailRoute('/api/v1/workflow-runs/by-source/:sourceId', ['GET'], /^\/api\/v1\/workflow-runs\/by-source\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-runs/by-source/:sourceId/steps', ['GET'], /^\/api\/v1\/workflow-runs\/by-source\/([^/]+)\/steps$/),
+  workflowMailRoute('/api/v1/workflow-run-steps', ['GET'], /^\/api\/v1\/workflow-run-steps$/),
+  workflowMailRoute('/api/v1/workflow-run-steps/:id', ['GET'], /^\/api\/v1\/workflow-run-steps\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-message-applied', ['GET'], /^\/api\/v1\/workflow-message-applied$/),
+  workflowMailRoute('/api/v1/workflow-message-applied/:id', ['GET'], /^\/api\/v1\/workflow-message-applied\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-forward-dedup', ['GET'], /^\/api\/v1\/workflow-forward-dedup$/),
+  workflowMailRoute('/api/v1/workflow-forward-dedup/:id', ['GET'], /^\/api\/v1\/workflow-forward-dedup\/([^/]+)$/),
+  workflowMailRoute('/api/v1/workflow-delayed-jobs', ['GET', 'POST'], /^\/api\/v1\/workflow-delayed-jobs$/),
+  workflowMailRoute('/api/v1/workflow-delayed-jobs/:id', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/workflow-delayed-jobs\/([^/]+)$/),
+]);
+
+export const WORKFLOW_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  WORKFLOW_MAIL_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: registration.source,
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 type WorkflowReadResource = 'aiProfiles' | 'aiPrompts' | 'workflows';
 
@@ -438,6 +492,21 @@ async function handleWorkflowExecute(
     return error(403, 'forbidden', 'Live-Ausführung erfordert Adminrechte oder Workflow-Berechtigung');
   }
 
+  // Interim escalation guard: server workflow runs execute under a system role
+  // with no per-node ACL, so a live run whose graph contains a writing node
+  // (mutates mail/CRM state, sends mail, or reaches an external system) could
+  // let a non-admin perform mailbox operations they otherwise can't. Until
+  // per-node authorization lands, restrict such live runs to admins. Dry-runs
+  // and read-/notify-only graphs stay open to delegated `workflows.manage`
+  // holders.
+  if (!dryRun && !requireAdmin(principal) && workflowGraphHasSideEffectNode(workflow.graph)) {
+    return error(
+      403,
+      'forbidden',
+      'Live-Ausführung von Workflows mit schreibenden Knoten erfordert Adminrechte',
+    );
+  }
+
   if (dryRun) {
     if (!ports.workflowExecution?.dryRun) {
       return error(503, 'workflow_dry_run_unavailable', 'Workflow Dry-Run API nicht konfiguriert');
@@ -467,6 +536,12 @@ async function handleWorkflowExecute(
       triggerName: 'manual',
       actorUserId: principal.userId,
       context: {},
+      // Mark this manual live execution (the only workflow.execute producer that
+      // required owner/admin at enqueue) so the worker re-verifies current owner/admin
+      // for its side-effecting graph — catching a demotion between here and execution.
+      // Stamped unconditionally: the recheck loads the CURRENT graph, so this also
+      // catches a read-only graph edited to add a writing node before it runs.
+      [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
     },
   });
 

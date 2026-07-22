@@ -332,6 +332,12 @@ async function handleSaveUser(
   const parsed = parseUserSaveBody(req.body, pathUserId);
   if ('response' in parsed) return parsed.response;
 
+  // Capture the pre-save role/active state so we can detect a privilege reduction
+  // (demotion or disable) after the write and publish a targeted invalidation.
+  const previousUser = parsed.values.id
+    ? (await ports.auth.listUsers?.({ workspaceId: principal.workspaceId }))?.find((row) => row.id === parsed.values.id)
+    : undefined;
+
   const { loginPin, ...saveValues } = parsed.values;
   const result = await ports.auth.saveUser({
     workspaceId: principal.workspaceId,
@@ -369,6 +375,41 @@ async function handleSaveUser(
       loginPinChanged: loginPin !== undefined,
     },
   });
+
+  // A mail-relevant role change or a disable changes the privileges under which this
+  // user's client resolves its mailbox. The live event stream only re-resolves the
+  // socket principal when an event arrives, so on a quiet workspace the invalidation
+  // would never fire. Publish it from the mutation path — the event itself wakes the
+  // stream, and the email_acl.changed filter delivers to the subject by userId
+  // regardless of the socket's stale role:
+  //  - demotion (owner/admin -> user) or disable REVOKES access: the renderer clears
+  //    mail loaded under the old privileges (a now-disabled socket is also re-resolved
+  //    and closed on the same wake-up);
+  //  - elevation (user -> owner/admin) GRANTS access: the re-resolved socket now reads
+  //    the full mailbox, so the renderer reloads instead of showing the old restricted/
+  //    empty state until a manual refresh.
+  if (previousUser) {
+    const wasElevated = previousUser.role === 'owner' || previousUser.role === 'admin';
+    const isElevated = result.user.role === 'owner' || result.user.role === 'admin';
+    const demoted = wasElevated && !isElevated;
+    const elevated = !wasElevated && isElevated;
+    const disabled = previousUser.disabledAt === null && result.user.disabledAt !== null;
+    if (demoted || elevated || disabled) {
+      // Best-effort: auth.saveUser + the audit write already committed, so a transient
+      // event-port rejection must NOT surface as a 500 — that would report a committed,
+      // sensitive role/disable change as failed and invite a retry that repeats the
+      // mutation. The event only asks the affected user's open client to reload.
+      await publishUserAclInvalidationBestEffort(ports, {
+        type: 'email_acl.changed',
+        workspaceId: principal.workspaceId,
+        entityType: 'email_acl',
+        entityId: result.user.id,
+        actorUserId: principal.userId,
+        occurredAt: new Date().toISOString(),
+        payload: { targetUserId: result.user.id, state: 'changed' },
+      });
+    }
+  }
 
   const refreshed = await ports.auth.listUsers?.({ workspaceId: principal.workspaceId });
   const savedUser = refreshed?.find((row) => row.id === result.user.id) ?? result.user;
@@ -408,7 +449,44 @@ async function handleDeleteUser(
     entityId: id,
     metadata: {},
   });
+  // Deletion revokes this account's access entirely (row removed, refresh tokens
+  // dropped) — a strictly stronger reduction than the demote/disable path in
+  // handleSaveUser, which already publishes this event. Without it, the deleted
+  // user's still-open mail renderer keeps mailbox data loaded under the old
+  // privileges until the event stream re-resolves its socket, which on a quiet
+  // workspace only happens when some other event arrives. Publish a self-targeted
+  // email_acl.changed so the renderer clears loaded mail immediately (and the event
+  // wakes the socket's revalidation, which then closes the now-invalid session).
+  // Best-effort: the deletion already committed, so a transient event-port rejection
+  // must not turn it into a 500 (a retry would then hit cannot_delete/not_found).
+  await publishUserAclInvalidationBestEffort(ports, {
+    type: 'email_acl.changed',
+    workspaceId: principal.workspaceId,
+    entityType: 'email_acl',
+    entityId: id,
+    actorUserId: principal.userId,
+    occurredAt: new Date().toISOString(),
+    payload: { targetUserId: id, state: 'changed' },
+  });
   return data(200, { deleted: true, id });
+}
+
+// Publish a self-targeted email_acl.changed invalidation as BEST-EFFORT: the user
+// mutation (role/disable/delete) has already committed, so a transient event-port
+// rejection must never surface as a request failure — that would report a committed,
+// sensitive change as failed and invite a retry that repeats it. The event only tells
+// the affected user's open client to clear/reload mail; log and swallow on failure.
+async function publishUserAclInvalidationBestEffort(
+  ports: ServerApiPorts,
+  event: Parameters<NonNullable<ServerApiPorts['events']>['publish']>[0],
+): Promise<void> {
+  try {
+    await ports.events?.publish(event);
+  } catch (error) {
+    console.warn(
+      `[auth] email_acl.changed publish failed for user ${event.entityId}; user mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function handleChangePassword(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

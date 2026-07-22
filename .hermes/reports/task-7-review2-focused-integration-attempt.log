@@ -1,0 +1,7 @@
+Running one project: integration
+
+Test Suites: 2 passed, 2 total
+Tests:       28 passed, 28 total
+Snapshots:   0 total
+Time:        15.261 s, estimated 22 s
+Ran all test suites within paths "tests/integration/server-mail-access-routes.test.ts", "tests/integration/server-mail-job-event-acl.test.ts".

@@ -87,6 +87,7 @@ export {
   isFollowUpTimelineRefreshEvent,
   isJtlReferenceRefreshEvent,
   isMailAccountDataRefreshEvent,
+  isMailAclRefreshEvent,
   isMailAiProfileRefreshEvent,
   isMailComposeAuxDataRefreshEvent,
   isMailListRefreshEvent,

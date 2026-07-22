@@ -1,0 +1,25 @@
+Running one project: unit
+FAIL unit tests/unit/server-mail-delegation-port.test.ts
+  ● createPostgresMailDelegationPort › locks an existing binding row before patch and delete replacement semantics
+
+    expect(received).toHaveLength(expected)
+
+    Expected length: 1
+    Received length: 0
+    Received array:  []
+
+      192 |     });
+      193 |
+    > 194 |     expect(patchTrx.calls.filter(([operation]) => operation === 'forUpdate')).toHaveLength(1);
+          |                                                                               ^
+      195 |     expect(deleteTrx.calls.filter(([operation]) => operation === 'forUpdate')).toHaveLength(1);
+      196 |   });
+      197 | });
+
+      at Object.toHaveLength (tests/unit/server-mail-delegation-port.test.ts:194:79)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 5 passed, 6 total
+Snapshots:   0 total
+Time:        1.109 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-port.test.ts".

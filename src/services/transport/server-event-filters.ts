@@ -127,6 +127,10 @@ const MAIL_ACCOUNT_REFRESH_EVENT_TYPES = new Set([
   "email_account.deleted",
 ])
 
+const MAIL_ACL_REFRESH_EVENT_TYPES = new Set([
+  "email_acl.changed",
+])
+
 const MAIL_TEAM_MEMBER_REFRESH_EVENT_TYPES = new Set([
   "email_team_member.created",
   "email_team_member.updated",
@@ -320,6 +324,7 @@ export function isMailTrackingRefreshEvent(event: ServerEvent, messageId?: numbe
 }
 
 export function isMailAccountDataRefreshEvent(event: ServerEvent): boolean {
+  if (isMailAclRefreshEvent(event)) return true
   if (event.entityType === "email_account") {
     return MAIL_ACCOUNT_REFRESH_EVENT_TYPES.has(event.type)
   }
@@ -330,6 +335,10 @@ export function isMailAccountDataRefreshEvent(event: ServerEvent): boolean {
     return MAIL_ACCOUNT_SIGNATURE_REFRESH_EVENT_TYPES.has(event.type)
   }
   return false
+}
+
+export function isMailAclRefreshEvent(event: ServerEvent): boolean {
+  return event.entityType === "email_acl" && MAIL_ACL_REFRESH_EVENT_TYPES.has(event.type)
 }
 
 export function isMailComposeAuxDataRefreshEvent(event: ServerEvent): boolean {

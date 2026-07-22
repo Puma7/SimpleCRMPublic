@@ -1,0 +1,71 @@
+Running one project: integration
+FAIL integration tests/integration/server-mail-access-routes.test.ts (12.419 s)
+  ● server mailbox ACL migration › PostgreSQL mail delegation port › uses a constant real query count for small and large pages and filters authorization before limit
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 3
+    + Received  + 3
+
+      Object {
+        "bindings": Array [
+          Object {
+    -       "id": 9501,
+    +       "id": "9501",
+          },
+          Object {
+    -       "id": 9502,
+    +       "id": "9502",
+          },
+        ],
+    -   "nextCursor": 9502,
+    +   "nextCursor": "9502",
+        "ok": true,
+      }
+
+      1935 |         });
+      1936 |
+    > 1937 |         expect(small).toMatchObject({ ok: true, bindings: [{ id: 9501 }, { id: 9502 }], nextCursor: 9502 });
+           |                       ^
+      1938 |         expect(large).toMatchObject({ ok: true, nextCursor: 9520 });
+      1939 |         expect(smallSelects).toBe(6);
+      1940 |         expect(largeSelects).toBe(6);
+
+      at Object.toMatchObject (tests/integration/server-mail-access-routes.test.ts:1937:23)
+
+  ● server mailbox ACL migration › PostgreSQL mail delegation port › lists only manageable resources and minimized same-workspace active subjects without metadata grants
+
+    TypeError: port.listResourceOptions is not a function
+
+      1954 |       const actor = { userId: DELEGATION_MANAGER, isOwner: false, isAdmin: false };
+      1955 |       try {
+    > 1956 |         const accounts = await port.listResourceOptions({
+           |                                     ^
+      1957 |           workspaceId: DELEGATION_WORKSPACE,
+      1958 |           actor,
+      1959 |           resourceType: 'account',
+
+      at Object.listResourceOptions (tests/integration/server-mail-access-routes.test.ts:1956:37)
+
+  ● server mailbox ACL migration › PostgreSQL mail delegation port › serializes parallel creates into one full binding without duplicate or 500
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      2086 |         );
+      2087 |
+    > 2088 |         expect(results.every((result) => result.status === 'fulfilled')).toBe(true);
+           |                                                                          ^
+      2089 |         expect(new Set(stored.map((row) => row.id)).size).toBe(1);
+      2090 |         expect([['mail.metadata.read'], ['mail.send']]).toContainEqual(stored.map((row) => row.permission_key));
+      2091 |       } finally {
+
+      at Object.toBe (tests/integration/server-mail-access-routes.test.ts:2088:74)
+
+Test Suites: 1 failed, 1 total
+Tests:       3 failed, 24 passed, 27 total
+Snapshots:   0 total
+Time:        12.508 s, estimated 13 s
+Ran all test suites within paths "tests/integration/server-mail-access-routes.test.ts".

@@ -80,6 +80,10 @@ import {
   type RlsCheckPgClient,
 } from '../../packages/server/src/cli/rls-check';
 import {
+  MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
+  POST_PROCESS_RETRY_JOB_MARKER_FIELD,
+} from '../../packages/server/src/jobs';
+import {
   SERVER_POSTGRES_MAJOR,
   CI_SMOKE_ACCESS_TOKEN_SECRET,
   CI_SMOKE_MASTER_KEY,
@@ -128,6 +132,7 @@ import {
   buildMailVacationAutoReplyJobPlan,
   buildScheduledSendJobPlan,
   buildSpamScoringPlan,
+  buildTrustedServiceJobPayload,
   buildWorkflowExecutionJobPlan,
   buildWorkflowForwardCopyJobPlan,
   buildWorkflowDmarcIngestJobPlan,
@@ -155,7 +160,7 @@ import {
   createWebhookJobHandlers,
   cleanupStaleConversationLocksCommand,
   createSecretEnvelopeMetadata,
-  createServerApi,
+  createServerApi as createAclServerApi,
   decryptPgpPrivateKeyWithPassphrase,
   decryptSecretValue,
   deserializePgpPrivateKeyEnvelope,
@@ -201,6 +206,7 @@ import {
   createEmailReadReceiptResponderPort,
   createPostgresReadReceiptOutboundReviewPort,
   createScheduledSendJobPort,
+  startScheduledSendTicker,
   createServerImapSentCopyAppenderPort,
   createServerWorkflowImapActionPort,
   createServerMailConnectionTestPort,
@@ -362,6 +368,11 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0035_email_tracking_per_message',
   '0036_user_signatures',
   '0037_user_group_permissions',
+  '0038_mail_acl',
+  '0039_mail_acl_rollout',
+  '0040_scheduled_send_provenance',
+  '0041_mail_acl_binding_message_fk_cascade',
+  '0042_quarantine_legacy_provenanceless_jobs',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -377,6 +388,47 @@ type CapturedAuditEvent = {
   entityId?: string | null;
   metadata?: Record<string, unknown>;
 };
+
+function createServerApi(ports: ServerApiPorts): ReturnType<typeof createAclServerApi> {
+  return createAclServerApi(withFoundationMailAcl(ports));
+}
+
+function withFoundationMailAcl(ports: ServerApiPorts): ServerApiPorts {
+  return {
+    ...ports,
+    mailAccess: {
+      async assertPermission() {
+        return undefined;
+      },
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    },
+    mailResourceLookup: {
+      async resolve(input) {
+        const target = input.target;
+        if (target.kind === 'account') {
+          return [{ type: 'account', accountId: String(target.id) }];
+        }
+        if (target.kind === 'folder') {
+          return [{ type: 'folder', accountId: '7', folderId: String(target.id) }];
+        }
+        if (target.kind === 'thread') {
+          return [{ type: 'message', accountId: '7', folderId: '7', messageId: '42' }];
+        }
+        if (target.kind === 'metadata' && target.entity === 'account_signature') {
+          return [{ type: 'account', accountId: '7' }];
+        }
+        return [{
+          type: 'message',
+          accountId: '7',
+          folderId: '7',
+          messageId: String(target.id),
+        }];
+      },
+    },
+  };
+}
 
 describe('server edition foundation', () => {
   test('pins the server-edition baseline to PostgreSQL 18 and Node 22', () => {
@@ -1770,12 +1822,16 @@ describe('server edition foundation', () => {
     expect(sql).toContain('draft_attachment_paths_json text');
     expect(sql).toContain('reply_parent_message_id bigint REFERENCES email_messages(id) ON DELETE SET NULL');
     expect(sql).toContain('scheduled_send_at timestamptz');
+    expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_actor_user_id text');
+    expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_trusted_service_principal text');
     expect(sql).toContain('trash_prev_archived boolean');
     expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS trash_prev_folder_kind text');
     expect(sql).toContain('ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS scheduled_send_at timestamptz');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_search_gin_idx ON email_messages USING gin (search_vector)');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_account_folder_date_idx');
     expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_scheduled_send_idx');
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_scheduled_send_actor_idx');
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS email_messages_workspace_scheduled_send_service_idx');
     expect(sql).toContain('legacy_assigned_to_user_id text');
     expect(sql).toContain('auth_spf text');
     expect(sql).toContain('rspamd_score double precision');
@@ -1898,6 +1954,7 @@ describe('server edition foundation', () => {
       'mail.send.scheduled',
       'ai.reply_suggestion',
       'ai.agent',
+      'ai.pick_canned',
       'ai.classify',
       'ai.review',
       'ai.transform_text',
@@ -1963,9 +2020,94 @@ describe('server edition foundation', () => {
     expect(sessionCommands.map((command) => command.params[3])).toEqual(['on', 'on']);
   });
 
+  test('failTerminal marks the denied delayed workflow.execute row failed in the same workspace only', async () => {
+    const { db, rows, delayedRows } = makeFakePostgresJobQueueDb();
+    rows.push(makeFakePostgresJobQueueRow({
+      id: 55,
+      type: 'workflow.execute',
+      workspace_id: WORKSPACE_A_ID,
+      locked_by: 'worker-a',
+      payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, actorUserId: 'user-a', delayedJobId: 88 },
+    }));
+    delayedRows.push(
+      { id: 88, workspace_id: WORKSPACE_A_ID, status: 'pending', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+      // Same delayed id in a different workspace must stay untouched (RLS/workspace isolation).
+      { id: 88, workspace_id: WORKSPACE_B_ID, status: 'pending', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+    );
+    const port = createPostgresJobQueuePort({
+      db,
+      now: () => new Date('2026-06-05T08:30:00.000Z'),
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.failTerminal({
+      job: makeQueuedJob({
+        id: 55,
+        type: 'workflow.execute',
+        workspaceId: WORKSPACE_A_ID,
+        payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, actorUserId: 'user-a', delayedJobId: 88 },
+      }),
+      error: new Error('mail_access_denied'),
+      now: new Date('2026-06-05T08:30:00.000Z'),
+    });
+
+    expect(delayedRows.find((row) => row.workspace_id === WORKSPACE_A_ID)?.status).toBe('failed');
+    expect(delayedRows.find((row) => row.workspace_id === WORKSPACE_B_ID)?.status).toBe('pending');
+  });
+
+  test('failTerminal leaves non-workflow jobs and already-finalized delayed rows untouched', async () => {
+    const { db, rows, delayedRows } = makeFakePostgresJobQueueDb();
+    rows.push(
+      makeFakePostgresJobQueueRow({
+        id: 61,
+        type: 'mail.send.scheduled',
+        workspace_id: WORKSPACE_A_ID,
+        locked_by: 'worker-a',
+        // A non-workflow.execute job must not touch workflow_delayed_jobs even with a stray id.
+        payload: { workspaceId: WORKSPACE_A_ID, delayedJobId: 88 },
+      }),
+      makeFakePostgresJobQueueRow({
+        id: 62,
+        type: 'workflow.execute',
+        workspace_id: WORKSPACE_A_ID,
+        locked_by: 'worker-a',
+        payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, delayedJobId: 89 },
+      }),
+    );
+    delayedRows.push(
+      { id: 88, workspace_id: WORKSPACE_A_ID, status: 'pending', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+      // Already finalized: the status guard must not clobber a 'done' row back to 'failed'.
+      { id: 89, workspace_id: WORKSPACE_A_ID, status: 'done', updated_at: new Date('2026-06-05T08:00:00.000Z') },
+    );
+    const port = createPostgresJobQueuePort({
+      db,
+      now: () => new Date('2026-06-05T08:30:00.000Z'),
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.failTerminal({
+      job: makeQueuedJob({ id: 61, type: 'mail.send.scheduled', workspaceId: WORKSPACE_A_ID, payload: { workspaceId: WORKSPACE_A_ID, delayedJobId: 88 } }),
+      error: new Error('mail_access_denied'),
+      now: new Date('2026-06-05T08:30:00.000Z'),
+    });
+    await port.failTerminal({
+      job: makeQueuedJob({ id: 62, type: 'workflow.execute', workspaceId: WORKSPACE_A_ID, payload: { workspaceId: WORKSPACE_A_ID, workflowId: 7, delayedJobId: 89 } }),
+      error: new Error('mail_access_denied'),
+      now: new Date('2026-06-05T08:30:00.000Z'),
+    });
+
+    // Non-workflow job left the pending row alone; the workflow job hit an already-done row (guard).
+    expect(delayedRows.find((row) => row.id === 88)?.status).toBe('pending');
+    expect(delayedRows.find((row) => row.id === 89)?.status).toBe('done');
+  });
+
   test('job worker completes successful jobs and records failures for missing or throwing handlers', async () => {
     const queue = makeJobQueuePort([
-      makeQueuedJob({ id: 1, type: 'mail.sync.imap' }),
+      makeQueuedJob({
+        id: 1,
+        type: 'mail.sync.imap',
+        payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', accountId: 7 }),
+      }),
       makeQueuedJob({ id: 2, type: 'mail.send.scheduled' }),
       makeQueuedJob({ id: 3, type: 'webhook.fire' }),
     ]);
@@ -1977,6 +2119,24 @@ describe('server edition foundation', () => {
       handlers: {
         'mail.sync.imap': async (job) => {
           handled.push(job.id);
+        },
+      },
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' };
+        },
+      },
+      mailResourceLookup: {
+        async resolve() {
+          return [{ type: 'account', accountId: '7' }];
+        },
+      },
+      auth: {
+        async listUsers() {
+          return [];
         },
       },
     })).resolves.toMatchObject({ status: 'completed' });
@@ -2411,11 +2571,16 @@ describe('server edition foundation', () => {
       delayedJobId: 87,
       triggerName: ' mail.received ',
       context: { source: 'sync' },
-    }, WORKSPACE_A_ID)).toEqual({
+    }, WORKSPACE_A_ID, {
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 87,
+      messageId: 11,
+    })).toEqual({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 23,
       messageId: 11,
       delayedJobId: 87,
+      authorizedDelayedJobMessageId: 11,
       triggerName: 'mail.received',
       context: { source: 'sync' },
     });
@@ -8167,7 +8332,7 @@ describe('server edition foundation', () => {
   test('postgres workflow execution job port schedules and resumes delay nodes', async () => {
     const now = new Date('2026-07-04T10:45:00.000Z');
     const executeAt = new Date('2026-07-04T10:47:00.000Z');
-    const { db, rows } = makeWorkflowExecutionDb({
+    const { db, rows, rowLocks } = makeWorkflowExecutionDb({
       workflows: [{
         id: 26,
         workspace_id: WORKSPACE_A_ID,
@@ -8193,20 +8358,36 @@ describe('server edition foundation', () => {
         },
         execution_mode: 'graph',
       }],
-      messages: [{
-        id: 14,
-        workspace_id: WORKSPACE_A_ID,
-        source_sqlite_id: 140,
-        subject: 'Delay test',
-        from_json: { value: [{ address: 'customer@example.com' }] },
-        to_json: { value: [{ address: 'agent@example.com' }] },
-        cc_json: null,
-        snippet: 'Delay test',
-        body_text: 'Hallo',
-        body_html: null,
-        has_attachments: false,
-        attachments_json: null,
-      }],
+      messages: [
+        {
+          id: 14,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 140,
+          subject: 'Delay test',
+          from_json: { value: [{ address: 'customer@example.com' }] },
+          to_json: { value: [{ address: 'agent@example.com' }] },
+          cc_json: null,
+          snippet: 'Delay test',
+          body_text: 'Hallo',
+          body_html: null,
+          has_attachments: false,
+          attachments_json: null,
+        },
+        {
+          id: 15,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 150,
+          subject: 'Hidden delay test',
+          from_json: { value: [{ address: 'hidden@example.com' }] },
+          to_json: { value: [{ address: 'agent@example.com' }] },
+          cc_json: null,
+          snippet: 'Hidden delay test',
+          body_text: 'Hidden content',
+          body_html: null,
+          has_attachments: false,
+          attachments_json: null,
+        },
+      ],
     });
     const port = createPostgresWorkflowExecutionJobPort({
       db,
@@ -8262,18 +8443,40 @@ describe('server edition foundation', () => {
       ['delay-1', 'logic.delay', 'ok', `delayed_until:${executeAt.toISOString()}`],
     ]);
 
+    rows.delayedJobs[0]!.message_id = 15;
+    rows.delayedJobs[0]!.message_source_sqlite_id = 150;
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 26,
+      delayedJobId: 1,
+      authorizedDelayedJobMessageId: 14,
+      triggerName: 'manual',
+      context: payload.context as Record<string, unknown>,
+    });
+
+    expect(rows.delayedJobs[0]).toMatchObject({ status: 'pending' });
+    expect(rows.tags).toEqual([]);
+    expect(rows.runs[1]).toMatchObject({
+      status: 'error',
+      log_json: ['error:delayed_job_authorization_mismatch'],
+      finished_at: now,
+    });
+
+    rows.delayedJobs[0]!.message_id = 14;
+    rows.delayedJobs[0]!.message_source_sqlite_id = 140;
     await port.execute({
       workspaceId: WORKSPACE_A_ID,
       workflowId: 26,
       messageId: 14,
       delayedJobId: 1,
+      authorizedDelayedJobMessageId: 14,
       triggerName: 'manual',
       context: payload.context as Record<string, unknown>,
     });
 
     expect(rows.delayedJobs[0]).toMatchObject({ status: 'done', updated_at: now });
     expect(rows.tags.map((tag) => tag.tag)).toEqual(['resumed']);
-    expect(rows.runs[1]).toMatchObject({
+    expect(rows.runs[2]).toMatchObject({
       status: 'ok',
       log_json: ['graph_resume:tag-1'],
       finished_at: now,
@@ -8282,6 +8485,7 @@ describe('server edition foundation', () => {
       ['delay-1', 'logic.delay', 'ok', 'default'],
       ['tag-1', 'email.tag', 'ok', 'default'],
     ]);
+    expect(rowLocks).toContain('workflow_delayed_jobs');
   });
 
   test('postgres workflow execution job port enqueues AI reply suggestion nodes', async () => {
@@ -11825,11 +12029,15 @@ describe('server edition foundation', () => {
       context: { outbound: { messageId: 72, subject: 'Auto send', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
     });
 
-    // (a) Hold released, scheduled_send_at primed so the cron picks it up now.
+    // (a) Hold released, scheduled_send_at primed so the cron picks it up now. This
+    //     run carries no initiating user (automatic), so it keeps trusted-service
+    //     (system) provenance.
     expect(rows.messages[0]).toMatchObject({
       outbound_hold: false,
       outbound_block_reason: null,
       scheduled_send_at: now,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: 'simplecrm:trusted-service:v1',
       updated_at: now,
     });
     // (b) Approval marker is written so reviewOutbound.review bypasses the
@@ -11845,6 +12053,66 @@ describe('server edition foundation', () => {
     expect(rows.steps.map((step) => [step.node_type, step.port, step.message])).toEqual([
       ['email.release_outbound', 'default', 'outbound_hold_released_auto_send'],
     ]);
+  });
+
+  test('email.release_outbound autoSend attributes the scheduled send to the initiating user', async () => {
+    const now = new Date('2026-07-04T11:00:35.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        trigger_name: 'outbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'outbound' } },
+            { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'release' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 72,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 720,
+        subject: 'Auto send',
+        from_json: null,
+        to_json: { value: [{ address: 'kunde@example.com' }] },
+        cc_json: null,
+        snippet: 'ok',
+        body_text: 'ok',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        outbound_hold: true,
+        outbound_block_reason: 'review',
+      }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 27,
+      messageId: 72,
+      triggerName: 'outbound',
+      actorUserId: USER_A_ID,
+      context: { outbound: { messageId: 72, subject: 'Auto send', bodyText: 'ok', to: 'kunde@example.com', attachmentCount: 0 } },
+    });
+
+    // A compose-originated run carries the initiating user, so the scheduled send is
+    // attributed to THEM (not trusted-service). The scheduled-send ticker then
+    // re-verifies that user's CURRENT mail.send at send time and fails closed if it
+    // was revoked after the workflow was queued.
+    expect(rows.messages[0]).toMatchObject({
+      outbound_hold: false,
+      scheduled_send_at: now,
+      scheduled_send_actor_user_id: USER_A_ID,
+      scheduled_send_trusted_service_principal: null,
+    });
   });
 
   test('email.release_outbound autoSend strips the held-banner from body + bakes ticket-code into subject + skips marker if peer outbound runs are still open', async () => {
@@ -12854,6 +13122,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       accountId: 7,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
@@ -12862,7 +13131,7 @@ describe('server edition foundation', () => {
     expect(composeCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
-        actorUserId: 'system',
+        actorUserId: USER_A_ID,
         values: {
           accountId: 7,
           draftMessageId: 101,
@@ -12876,7 +13145,7 @@ describe('server edition foundation', () => {
       },
       {
         workspaceId: WORKSPACE_A_ID,
-        actorUserId: 'system',
+        actorUserId: USER_A_ID,
         values: {
           accountId: 7,
           draftMessageId: 103,
@@ -12888,7 +13157,7 @@ describe('server edition foundation', () => {
       },
       {
         workspaceId: WORKSPACE_A_ID,
-        actorUserId: 'system',
+        actorUserId: USER_A_ID,
         values: {
           accountId: 7,
           draftMessageId: 104,
@@ -12901,6 +13170,7 @@ describe('server edition foundation', () => {
     expect(storeCalls).toEqual([
       ['claimDueDrafts', {
         workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
         accountId: 7,
         dueBefore: new Date('2026-06-03T12:00:00.000Z'),
         limit: 10,
@@ -12965,6 +13235,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       accountId: 7,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
@@ -12978,6 +13249,169 @@ describe('server edition foundation', () => {
     expect(Object.prototype.hasOwnProperty.call(composeCalls[2]!, 'trackingOverride')).toBe(false);
   });
 
+  test('scheduled-send job port uses actor loaded from persisted claimed draft after restart', async () => {
+    const composeCalls: unknown[] = [];
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send(input) {
+          composeCalls.push(input);
+          return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 205,
+            accountId: 7,
+            subject: 'Persisted actor',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'persisted@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            trackingOverride: null,
+            claimedSendAt: new Date('2026-06-03T11:30:00.000Z'),
+            actorUserId: USER_A_ID,
+            trustedServicePrincipal: null,
+          }];
+        },
+        async finalizeSentDraft() {},
+        async releaseClaimedDraft() {},
+        async restoreClaimedDraft() {},
+        async giveUpDraft() {},
+        async recordFailedAttempt() { return { failures: 1, gaveUp: false }; },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(composeCalls).toEqual([expect.objectContaining({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+    })]);
+  });
+
+  test('trusted-workflow scheduled-send validates service provenance but sends with system actor', async () => {
+    const composeCalls: unknown[] = [];
+    const handler = createProductionJobHandlers({
+      now: () => new Date('2026-06-03T12:00:00.000Z'),
+      scheduledSend: createScheduledSendJobPort({
+        composeSender: {
+          async send(input) {
+            composeCalls.push(input);
+            return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+          },
+        },
+        store: {
+          async claimDueDrafts() {
+            return [{
+              id: 207,
+              accountId: 7,
+              subject: 'Trusted workflow',
+              bodyText: 'Hello',
+              bodyHtml: null,
+              toJson: { value: [{ address: 'workflow@example.com' }] },
+              ccJson: null,
+              bccJson: null,
+              draftAttachmentPathsJson: null,
+              replyParentMessageId: null,
+              trackingOverride: null,
+              claimedSendAt: new Date('2026-06-03T11:30:00.000Z'),
+            }];
+          },
+          async finalizeSentDraft() {},
+          async releaseClaimedDraft() {},
+          async restoreClaimedDraft() {},
+          async giveUpDraft() {},
+          async recordFailedAttempt() { return { failures: 1, gaveUp: false }; },
+        },
+      }),
+    });
+    const taskList = buildGraphileTaskList(handler, {
+      mailResourceLookup: {
+        async resolve(input) {
+          expect(input.target).toEqual({ kind: 'message', id: 207 });
+          return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: '207' }];
+        },
+      },
+      mailAccess: {
+        async assertPermission() {
+          throw new Error('trusted service must not run user permission checks');
+        },
+        async resolveScope() {
+          throw new Error('trusted service must not run user scope checks');
+        },
+      },
+    });
+
+    await expect(taskList['mail.send.scheduled']?.(
+      buildTrustedServiceJobPayload({
+        workspaceId: WORKSPACE_A_ID,
+        draftId: 207,
+        accountId: 7,
+      }),
+    )).resolves.toBeUndefined();
+
+    expect(composeCalls).toEqual([expect.objectContaining({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: 'system',
+      values: expect.objectContaining({
+        accountId: 7,
+        draftMessageId: 207,
+        to: 'workflow@example.com',
+      }),
+    })]);
+  });
+
+  test('scheduled-send job port refuses to send without user or trusted-service provenance', async () => {
+    const composeCalls: unknown[] = [];
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send(input) {
+          composeCalls.push(input);
+          return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [{
+            id: 204,
+            accountId: 7,
+            subject: 'No provenance',
+            bodyText: 'Hello',
+            bodyHtml: null,
+            toJson: { value: [{ address: 'no-provenance@example.com' }] },
+            ccJson: null,
+            bccJson: null,
+            draftAttachmentPathsJson: null,
+            replyParentMessageId: null,
+            trackingOverride: null,
+            claimedSendAt: new Date('2026-06-03T11:30:00.000Z'),
+          }];
+        },
+        async finalizeSentDraft() {},
+        async releaseClaimedDraft() {},
+        async restoreClaimedDraft() {},
+        async giveUpDraft() {},
+        async recordFailedAttempt() { return { failures: 1, gaveUp: false }; },
+      },
+    });
+
+    await expect(port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    })).rejects.toThrow('scheduled_send_provenance_required');
+
+    expect(composeCalls).toEqual([]);
+  });
+
   test('scheduled-send Postgres store atomically claims due drafts with SKIP LOCKED', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
     expect(source).toMatch(/FOR UPDATE SKIP LOCKED/);
@@ -12988,6 +13422,83 @@ describe('server edition foundation', () => {
     expect(source).toMatch(/recoverOrphanedScheduledClaims/);
     expect(source).toMatch(/persistScheduledSendClaims/);
     expect(source).toMatch(/m\.tracking_override/);
+    expect(source).toMatch(/scheduled_send_actor_user_id/);
+    expect(source).toMatch(/scheduled_send_trusted_service_principal/);
+  });
+
+  test('scheduled-send provenance is cleared by terminal and import paths', () => {
+    const scheduledSource = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
+    const composeSource = readFileSync(resolve(__dirname, '../../packages/server/src/mail-compose-send.ts'), 'utf8');
+    const importSource = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-core-mail-import.ts'), 'utf8');
+
+    expect(scheduledSource).toMatch(/scheduled_send_actor_user_id: null/);
+    expect(scheduledSource).toMatch(/scheduled_send_trusted_service_principal: null/);
+    expect(composeSource).toMatch(/scheduled_send_at: null,[\s\S]*scheduled_send_actor_user_id: null,[\s\S]*scheduled_send_trusted_service_principal: null/);
+    expect(importSource).toMatch(/scheduled_send_at = EXCLUDED\.scheduled_send_at,[\s\S]*scheduled_send_actor_user_id = NULL,[\s\S]*scheduled_send_trusted_service_principal = NULL/);
+  });
+
+  test('scheduled-send mutations lock the draft and reject active claim markers before changing schedule state', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-read-ports.ts'), 'utf8');
+    const scheduleStart = source.indexOf('async scheduleDraftSend(input)');
+    const scheduleEnd = source.indexOf('async getScheduledSendDraftState(input)');
+    const retryStart = source.indexOf('async retryScheduledSendDraft(input)');
+    const retryEnd = source.indexOf('async getSecurity(input)');
+    const helperStart = source.indexOf('async function assertNoActiveScheduledSendClaimTx');
+    const helperEnd = source.indexOf('async function clearScheduledSendDraftMeta');
+    const scheduleBlock = source.slice(scheduleStart, scheduleEnd);
+    const retryBlock = source.slice(retryStart, retryEnd);
+    const helperBlock = source.slice(helperStart, helperEnd);
+
+    expect(scheduleBlock).toMatch(/selectLocalDraftForMutation\(trx,\s*input\.workspaceId,\s*input\.messageId,\s*\{\s*forUpdate:\s*true\s*\}\)/);
+    expect(scheduleBlock).toMatch(/assertNoActiveScheduledSendClaimTx\(trx,\s*input\.workspaceId,\s*input\.messageId\)/);
+    expect(scheduleBlock.indexOf('selectLocalDraftForMutation')).toBeGreaterThanOrEqual(0);
+    expect(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx')).toBeGreaterThan(scheduleBlock.indexOf('selectLocalDraftForMutation'));
+    expect(scheduleBlock.indexOf('updateTable')).toBeGreaterThan(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+
+    expect(retryBlock).toMatch(/selectLocalDraftForMutation\(trx,\s*input\.workspaceId,\s*input\.messageId,\s*\{\s*forUpdate:\s*true\s*\}\)/);
+    expect(retryBlock).toMatch(/assertNoActiveScheduledSendClaimTx\(trx,\s*input\.workspaceId,\s*input\.messageId\)/);
+    expect(retryBlock.indexOf('assertNoActiveScheduledSendClaimTx')).toBeGreaterThan(retryBlock.indexOf('selectLocalDraftForMutation'));
+    expect(retryBlock.indexOf('clearScheduledSendDraftMeta')).toBeGreaterThan(retryBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+    expect(retryBlock.indexOf('updateTable')).toBeGreaterThan(retryBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+
+    expect(helperBlock).toMatch(/scheduledSendClaimedAtKey\(messageId\)/);
+    expect(helperBlock).toMatch(/\.forUpdate\(\)/);
+    expect(helperBlock).toMatch(/reason: 'scheduled_send_claimed'/);
+  });
+
+  test('account deletion locks its bound groups FOR UPDATE before snapshotting members (R52-2)', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-read-ports.ts'), 'utf8');
+    // The email-account delete transaction: from the affectedUserIds snapshot through the cascade.
+    const start = source.indexOf('const affectedUserIds = await withWorkspaceTransaction');
+    const end = source.indexOf('if (options.secrets) {', start);
+    const block = source.slice(start, end);
+    expect(start).toBeGreaterThanOrEqual(0);
+
+    // Computes the account's bound groups from mail_acl_bindings and locks their user_groups
+    // rows FOR UPDATE — serializing against a concurrent addMember's FOR KEY SHARE lock.
+    expect(block).toMatch(/selectFrom\('mail_acl_bindings'\)[\s\S]*select\('subject_group_id'\)[\s\S]*\.distinct\(\)/);
+    expect(block).toMatch(/selectFrom\('user_groups'\)[\s\S]*\.forUpdate\(\)/);
+    // The lock precedes the member snapshot (user_group_members join), which precedes the cascade.
+    const lockIdx = block.indexOf('.forUpdate()');
+    const snapshotIdx = block.indexOf("leftJoin('user_group_members as gm'");
+    const cascadeIdx = block.indexOf("deleteFrom('email_accounts')");
+    expect(lockIdx).toBeGreaterThanOrEqual(0);
+    expect(lockIdx).toBeLessThan(snapshotIdx);
+    expect(snapshotIdx).toBeLessThan(cascadeIdx);
+  });
+
+  test('scheduled-send schedule validation runs non-persistently after claim check and persists approval in the locked transaction', () => {
+    const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-read-ports.ts'), 'utf8');
+    const scheduleStart = source.indexOf('async scheduleDraftSend(input)');
+    const scheduleEnd = source.indexOf('async getScheduledSendDraftState(input)');
+    const scheduleBlock = source.slice(scheduleStart, scheduleEnd);
+
+    expect(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx')).toBeGreaterThan(scheduleBlock.indexOf('selectLocalDraftForMutation'));
+    expect(scheduleBlock.indexOf('options.outboundValidation.validate')).toBeGreaterThan(scheduleBlock.indexOf('assertNoActiveScheduledSendClaimTx'));
+    expect(scheduleBlock).toMatch(/persistence:\s*'none'/);
+    expect(scheduleBlock.indexOf('persistManualOutboundApproval')).toBeGreaterThan(scheduleBlock.indexOf('options.outboundValidation.validate'));
+    expect(scheduleBlock.indexOf('updateTable')).toBeGreaterThan(scheduleBlock.indexOf('persistManualOutboundApproval'));
+    expect(scheduleBlock).toMatch(/manualApprovalPersistenceRequired/);
   });
 
   test('thread list predicates align scheduled_send filters with message list', () => {
@@ -13000,6 +13511,64 @@ describe('server edition foundation', () => {
   test('scheduled-send ticker isolates workspace failures', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-scheduled-send.ts'), 'utf8');
     expect(source).toMatch(/scheduled send ticker workspace/);
+  });
+
+  test('scheduled-send ticker enforces central mail job policy before claiming or sending due drafts', async () => {
+    const composeCalls: unknown[] = [];
+    const warnings: unknown[] = [];
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnings.push(args);
+    });
+    const db = makeScheduledSendTickerDb([{
+      workspace_id: WORKSPACE_A_ID,
+      id: 206,
+      account_id: 7,
+      scheduled_send_actor_user_id: USER_A_ID,
+      scheduled_send_trusted_service_principal: null,
+    }]);
+    try {
+      const runtime = startScheduledSendTicker({
+        db,
+        pollIntervalMs: 60_000,
+        applyWorkspaceSession: async () => undefined,
+        composeSender: {
+          async send(input) {
+            composeCalls.push(input);
+            return { ok: true as const, messageId: input.values.draftMessageId, accountId: input.values.accountId };
+          },
+        },
+        auth: {
+          async listUsers() {
+            return [{ id: USER_A_ID, role: 'user' as const, disabledAt: null }];
+          },
+        },
+        mailResourceLookup: {
+          async resolve() {
+            return [{ type: 'message', accountId: '7', folderId: '8', messageId: '206' }];
+          },
+        },
+        mailAccess: {
+          async assertPermission() {
+            throw new Error('mail_access_denied');
+          },
+          async resolveScope() {
+            return { kind: 'none' as const };
+          },
+        },
+      });
+      await new Promise((resolveDone) => setTimeout(resolveDone, 20));
+      runtime.stop();
+    } finally {
+      warnSpy.mockRestore();
+    }
+
+    expect(composeCalls).toEqual([]);
+    // Two transactions now: the due-draft scan + the bounded-retry
+    // recordFailedAttempt that backs the denied draft off (so it can't starve
+    // the global ticker) and gives up after MAX_SCHEDULED_SEND_FAILURES.
+    expect(db.transactionCount).toBe(2);
+    expect(String(warnings[0]?.[0] ?? '')).toContain('authorization denied');
+    expect(String(warnings[0]?.[0] ?? '')).toContain('attempt 1');
   });
 
   test('postgres job queue replaces pending scheduled-send jobs per draft', () => {
@@ -13061,6 +13630,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
     });
@@ -13119,6 +13689,7 @@ describe('server edition foundation', () => {
 
     await port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
     });
@@ -13170,6 +13741,7 @@ describe('server edition foundation', () => {
 
     await expect(port.processDue({
       workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
       dueBefore: new Date('2026-06-03T12:00:00.000Z'),
       limit: 10,
     })).rejects.toThrow('db connection lost mid-transition');
@@ -16289,7 +16861,8 @@ describe('server edition foundation', () => {
     );
 
     expect(listSection).toContain('const priorityCursor =');
-    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)');
+    expect(listSection).toContain('isMessageCursorVisible(trx, input.workspaceId, requestedCursor, cursorScopePredicate)');
+    expect(listSection).toContain('fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor, cursorScopePredicate)');
     expect(listSection).toContain('query = applyMessageCursor(');
     expect(source).toContain("if (view === 'snoozed')");
     expect(source).toContain("if (sort === 'date_asc')");
@@ -16324,7 +16897,8 @@ describe('server edition foundation', () => {
     // normale Cursor greifen (sonst haengt die Liste dauerhaft auf Seite 1,
     // weil der Cursor ignoriert wird und nextCursor null bleibt).
     expect(listSection).toContain("const relevanceSort = input.sort === 'relevance' && Boolean(search);");
-    expect(listSection).toContain('const effectiveCursor = relevanceSort ? undefined : input.cursor;');
+    expect(listSection).toContain('const requestedCursor = relevanceSort ? undefined : input.cursor;');
+    expect(listSection).toContain('const effectiveCursor =');
   });
 
   test('postgres mail search matches metadata-only attachment names via attachments_json', () => {
@@ -16515,6 +17089,158 @@ describe('server edition foundation', () => {
     });
     expect(JSON.stringify(created.body)).not.toContain('agent-passphrase');
     expect(JSON.stringify(auditEvents)).not.toContain('agent-passphrase');
+  });
+
+  test('demoting or disabling a user publishes a targeted ACL invalidation from the mutation path', async () => {
+    const record = (id: string, role: 'owner' | 'admin' | 'user', disabledAt: string | null = null) => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const admin = { userId: 'admin-x', workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+    const runSave = async (
+      authUsers: ReturnType<typeof record>[],
+      id: string,
+      body: Record<string, unknown>,
+    ) => {
+      const events: ServerEvent[] = [];
+      const api = createServerApi(makeServerApiPorts({ authUsers, events }));
+      const res = await api.handle({ method: 'PATCH', path: `/api/v1/auth/users/${id}`, principal: admin, body });
+      return { status: res.status, acl: events.filter((event) => event.type === 'email_acl.changed') };
+    };
+
+    // Demotion (admin -> user) publishes a self-targeted invalidation so the demoted
+    // user's client clears mail loaded under the old role even on a quiet stream.
+    const demote = await runSave(
+      [record('owner-x', 'owner'), record('target', 'admin')],
+      'target',
+      { email: 'target@example.com', displayName: 'target', role: 'user' },
+    );
+    expect(demote.status).toBe(200);
+    expect(demote.acl).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: 'target',
+        payload: { targetUserId: 'target', state: 'changed' },
+      }),
+    ]);
+
+    // Elevation (user -> admin) also publishes: the promoted user's client must reload
+    // to show the now-accessible mailbox instead of the old restricted/empty state.
+    const promote = await runSave(
+      [record('owner-x', 'owner'), record('target', 'user')],
+      'target',
+      { email: 'target@example.com', displayName: 'target', role: 'admin' },
+    );
+    expect(promote.status).toBe(200);
+    expect(promote.acl).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: 'target',
+        payload: { targetUserId: 'target', state: 'changed' },
+      }),
+    ]);
+
+    // Disable (active -> disabled) also publishes.
+    const disable = await runSave(
+      [record('owner-x', 'owner'), record('target', 'user')],
+      'target',
+      { email: 'target@example.com', displayName: 'target', role: 'user', isActive: false },
+    );
+    expect(disable.status).toBe(200);
+    expect(disable.acl.map((event) => (event.payload as { targetUserId?: string }).targetUserId)).toEqual(['target']);
+
+    // A plain rename on a user (no privilege reduction) publishes nothing.
+    const rename = await runSave(
+      [record('owner-x', 'owner'), record('target', 'user')],
+      'target',
+      { email: 'target@example.com', displayName: 'Renamed', role: 'user' },
+    );
+    expect(rename.status).toBe(200);
+    expect(rename.acl).toEqual([]);
+
+    // A still-elevated admin -> admin edit publishes nothing.
+    const stillAdmin = await runSave(
+      [record('owner-x', 'owner'), record('target', 'admin')],
+      'target',
+      { email: 'target@example.com', displayName: 'Target', role: 'admin' },
+    );
+    expect(stillAdmin.status).toBe(200);
+    expect(stillAdmin.acl).toEqual([]);
+  });
+
+  test('deleting a user publishes a self-targeted ACL invalidation (R37-4)', async () => {
+    const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt: null,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const events: ServerEvent[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      authUsers: [userRecord('owner-x', 'owner'), userRecord('target', 'user')],
+      events,
+    }));
+    const admin = { userId: 'owner-x', workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+
+    // Deletion revokes all access — a strictly stronger reduction than demote/disable,
+    // which already invalidates. Without this event the deleted user's open renderer
+    // keeps mail loaded until some unrelated event arrives on a quiet stream.
+    const res = await api.handle({ method: 'DELETE', path: '/api/v1/auth/users/target', principal: admin });
+    expect(res.status).toBe(200);
+    expect((res.body as any).data).toMatchObject({ deleted: true, id: 'target' });
+    expect(events.filter((event) => event.type === 'email_acl.changed')).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: 'target',
+        payload: { targetUserId: 'target', state: 'changed' },
+      }),
+    ]);
+  });
+
+  test('a rejecting event port does not fail a committed user delete or role change (R40-1)', async () => {
+    const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt: null,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const admin = { userId: 'owner-x', workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+    // The user mutation + audit commit BEFORE the ACL invalidation publishes, so a
+    // transient event-port rejection must not turn a committed, sensitive change into a
+    // 500 (which would invite a retry that repeats the mutation).
+    const makeApi = () => createServerApi({
+      ...makeServerApiPorts({ authUsers: [userRecord('owner-x', 'owner'), userRecord('target', 'admin')] }),
+      events: { async publish() { throw new Error('event bus down'); } },
+    });
+
+    // Deleting a user still returns 200 even though the invalidation publish rejects.
+    await expect(makeApi().handle({
+      method: 'DELETE',
+      path: '/api/v1/auth/users/target',
+      principal: admin,
+    })).resolves.toMatchObject({ status: 200, body: { data: { deleted: true, id: 'target' } } });
+
+    // Demoting a user (admin -> user) likewise returns 200 despite the publish rejecting.
+    await expect(makeApi().handle({
+      method: 'PATCH',
+      path: '/api/v1/auth/users/target',
+      principal: admin,
+      body: { email: 'target@example.com', displayName: 'target', role: 'user' },
+    })).resolves.toMatchObject({ status: 200 });
   });
 
   test('server auth invitation routes create single-use links and accept with user-owned password', async () => {
@@ -20569,7 +21295,7 @@ describe('server edition foundation', () => {
         },
         async bulkDeleteLocalDrafts(input) {
           bulkDraftDeleteCalls.push(input);
-          return { count: input.messageIds.length };
+          return { ok: true as const, count: input.messageIds.length };
         },
         async snooze(input) {
           snoozeCalls.push(input);
@@ -20740,6 +21466,11 @@ describe('server edition foundation', () => {
     expect((rawHeaders.body as any).data.emlSource).toBe('reconstructed');
     expect((rawHeaders.body as any).data.messageIdHeader).toBe('<message-11@example.com>');
     expect(messageRawHeadersCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, id: 11 }]);
+    // Raw EML embeds attachment bytes, so the enforcer lists the message's
+    // attachments to gate suspicious downloads (R12-3). Reset the shared tracker
+    // so the dedicated attachments assertion below stays isolated.
+    expect(attachmentListCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, messageId: 11 }]);
+    attachmentListCalls.length = 0;
 
     const readReceiptState = await api.handle({
       method: 'GET',
@@ -21134,6 +21865,7 @@ describe('server edition foundation', () => {
 
   test('server mail compose draft and scheduled-send routes normalize legacy payloads', async () => {
     const calls: unknown[] = [];
+    const queueCalls: unknown[] = [];
     const syncWrites: unknown[] = [];
     const draftRecord = (id: number): EmailMessageRecord => ({
       ...makeEmailMessageRecord(id, true),
@@ -21197,6 +21929,14 @@ describe('server edition foundation', () => {
             accountId: input.values.accountId,
             warning: 'Server-Kopie per IMAP APPEND ist im Test nicht aktiv.',
           };
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+        async clearScheduledSendJob(input) {
+          queueCalls.push(['clearScheduledSendJob', input]);
         },
       },
       syncInfo: {
@@ -21404,6 +22144,7 @@ describe('server edition foundation', () => {
       }],
       ['scheduleDraftSend', {
         workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
         messageId: 44,
         sendAt: '2026-06-04T15:00:00.000Z',
       }],
@@ -21421,6 +22162,7 @@ describe('server edition foundation', () => {
       }],
       ['retryScheduledSendDraft', {
         workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
         messageId: 44,
       }],
       ['updateComposeDraft', {
@@ -21428,6 +22170,221 @@ describe('server edition foundation', () => {
         messageId: 98,
         values: { subject: 'Nope' },
       }],
+    ]);
+    expect(queueCalls).toEqual([
+      {
+        workspaceId: WORKSPACE_A_ID,
+        type: 'mail.send.scheduled',
+        payload: {
+          workspaceId: WORKSPACE_A_ID,
+          draftId: 44,
+          actorUserId: USER_A_ID,
+          dueBefore: '2026-06-04T15:00:00.000Z',
+        },
+        runAfter: new Date('2026-06-04T15:00:00.000Z'),
+      },
+      {
+        workspaceId: WORKSPACE_A_ID,
+        type: 'mail.send.scheduled',
+        payload: {
+          workspaceId: WORKSPACE_A_ID,
+          draftId: 44,
+          actorUserId: USER_A_ID,
+        },
+        runAfter: expect.any(Date),
+      },
+    ]);
+  });
+
+  test('scheduled-send routes return conflict and skip queue side effects when a draft is claimed', async () => {
+    const calls: unknown[] = [];
+    const queueCalls: unknown[] = [];
+    const claimed = {
+      ok: false as const,
+      reason: 'scheduled_send_claimed' as const,
+      message: 'Scheduled send is already being processed',
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async scheduleDraftSend(input) {
+          calls.push(['scheduleDraftSend', input]);
+          return claimed;
+        },
+        async retryScheduledSendDraft(input) {
+          calls.push(['retryScheduledSendDraft', input]);
+          return claimed;
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+        async clearScheduledSendJob(input) {
+          queueCalls.push(['clearScheduledSendJob', input]);
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    const scheduled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z' },
+      principal,
+    });
+    const cancelled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: null },
+      principal,
+    });
+    const retried = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send/retry',
+      principal,
+    });
+
+    expect([scheduled.status, cancelled.status, retried.status]).toEqual([409, 409, 409]);
+    expect([
+      (scheduled.body as any).error.code,
+      (cancelled.body as any).error.code,
+      (retried.body as any).error.code,
+    ]).toEqual([
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
+    ]);
+    expect(queueCalls).toEqual([]);
+    expect(calls).toEqual([
+      ['scheduleDraftSend', {
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
+        messageId: 44,
+        sendAt: '2026-06-04T15:00:00.000Z',
+      }],
+      ['scheduleDraftSend', {
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
+        messageId: 44,
+        sendAt: null,
+      }],
+      ['retryScheduledSendDraft', {
+        workspaceId: WORKSPACE_A_ID,
+        actorUserId: USER_A_ID,
+        messageId: 44,
+      }],
+    ]);
+  });
+
+  test('scheduled-send schedule/retry succeed even when the queue accelerator enqueue fails (R37-5)', async () => {
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async scheduleDraftSend() {
+          return { ok: true as const };
+        },
+        async retryScheduledSendDraft() {
+          return { ok: true as const };
+        },
+      },
+      jobQueue: {
+        async enqueue() {
+          throw new Error('queue backend down');
+        },
+        async clearScheduledSendJob() {
+          throw new Error('queue backend down');
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    // The durable schedule (scheduled_send_at + provenance) already committed and the
+    // ticker polls it directly, so the queue enqueue is only a prompt-send accelerator;
+    // a transient enqueue failure must NOT report the schedule/retry as failed (a 500)
+    // while the email actually gets sent.
+    const scheduled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z' },
+      principal,
+    });
+    expect(scheduled.status).toBe(200);
+    expect((scheduled.body as any).data).toMatchObject({ success: true });
+
+    const retried = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send/retry',
+      principal,
+    });
+    expect(retried.status).toBe(200);
+    expect((retried.body as any).data).toMatchObject({ success: true });
+
+    // The cancel path (sendAt: null → clearScheduledSendJob) is likewise resilient.
+    const cancelled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: null },
+      principal,
+    });
+    expect(cancelled.status).toBe(200);
+  });
+
+  test('claimed scheduled-send draft edit and delete routes return conflict', async () => {
+    const claimed = {
+      ok: false as const,
+      reason: 'scheduled_send_claimed' as const,
+      message: 'Scheduled send is already being processed',
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async updateComposeDraft() {
+          return claimed;
+        },
+        async bulkDeleteLocalDrafts() {
+          return claimed;
+        },
+        async deleteLocalDraft() {
+          return claimed;
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    const updated = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/compose-draft',
+      body: { subject: 'Mutated after claim' },
+      principal,
+    });
+    const bulkDeleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/messages/bulk/local-drafts',
+      body: { messageIds: [44] },
+      principal,
+    });
+    const deleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/messages/44/local-draft',
+      principal,
+    });
+
+    expect([updated.status, bulkDeleted.status, deleted.status]).toEqual([409, 409, 409]);
+    expect([
+      (updated.body as any).error.code,
+      (bulkDeleted.body as any).error.code,
+      (deleted.body as any).error.code,
+    ]).toEqual([
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
+      'email_scheduled_send_claimed',
     ]);
   });
 
@@ -21505,11 +22462,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(invalid.status).toBe(400);
-    expect((invalid.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(invalid.status).toBe(404);
+    expect((invalid.body as any).error.code).toBe('mail_resource_not_found');
 
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
       method: 'POST',
@@ -21835,6 +22789,43 @@ describe('server edition foundation', () => {
     });
   });
 
+  test('account deletion publishes delegate ACL invalidations before the audit write', async () => {
+    // The delete has already committed by the time the handler runs its side
+    // effects, so a transient audit-port failure must not abort before the targeted
+    // email_acl.changed invalidations fire — otherwise a delegate keeps a now-gone
+    // account loaded. The invalidation loop therefore runs before auditEmailAccount.
+    const account = makeEmailAccountRecord(1);
+    const events: ServerEvent[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      audit: {
+        async record() { throw new Error('audit port down'); },
+      } as unknown as ServerApiPorts['audit'],
+      emailAccounts: {
+        async list() { return { items: [] }; },
+        async get() { return account; },
+        async delete() { return { ok: true as const, account, affectedUserIds: ['delegate-x'] }; },
+      } as unknown as ServerApiPorts['emailAccounts'],
+    }));
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
+
+    // The audit write throws (and aborts the audit + account.deleted publish that
+    // follow it), but the delegate invalidation was already emitted beforehand.
+    await api.handle({ method: 'DELETE', path: '/api/v1/email/accounts/1', principal })
+      .catch(() => undefined);
+    expect(events.filter((event) => event.type === 'email_acl.changed')).toEqual([
+      expect.objectContaining({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        entityId: '1',
+        payload: expect.objectContaining({ targetUserId: 'delegate-x', state: 'deleted' }),
+      }),
+    ]);
+    // The audit failure aborted before the generic account.deleted event, proving
+    // the invalidation ordering actually protects it.
+    expect(events.some((event) => event.type === 'email_account.deleted')).toBe(false);
+  });
+
   test('server mail account sync route enqueues workspace-scoped mail sync jobs', async () => {
     const queueCalls: unknown[] = [];
     const accountGetCalls: unknown[] = [];
@@ -21910,7 +22901,7 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/0/sync',
       principal,
     });
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(404);
 
     const wrongMethod = await api.handle({
       method: 'GET',
@@ -22040,7 +23031,7 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/0/sync-lock',
       principal,
     });
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(404);
 
     const wrongMethod = await api.handle({
       method: 'POST',
@@ -22127,7 +23118,7 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/0/vacation-test',
       principal,
     });
-    expect(invalid.status).toBe(400);
+    expect(invalid.status).toBe(404);
 
     const wrongMethod = await api.handle({
       method: 'GET',
@@ -22180,7 +23171,10 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Admin principal: ad-hoc tests (no accountId) now require owner/admin
+    // (SSRF/socket-exhaustion gate); this plumbing test exercises both stored and
+    // ad-hoc bodies, so use admin so every branch reaches the test port.
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const imap = await api.handle({
       method: 'POST',
@@ -24367,7 +25361,8 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // OAuth app credentials and account linking are admin-only.
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const empty = await api.handle({
       method: 'GET',
@@ -24494,6 +25489,9 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Remembering a sender/domain writes the workspace-wide allowlist, so it now
+    // requires owner/admin (R21-2). Same userId so actorUserId assertions hold.
+    const admin = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const consumed = await api.handle({
       method: 'POST',
@@ -24516,7 +25514,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/messages/11/remote-content-policy',
       body: { policy: 'always', rememberSender: true },
-      principal,
+      principal: admin,
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('validation_error');
@@ -24525,7 +25523,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/messages/11/remote-content-policy',
       body: { policy: 'allowed_sender', rememberSender: true },
-      principal,
+      principal: admin,
     });
     expect(updated.status).toBe(200);
     expect((updated.body as any).data).toEqual({ success: true, policy: 'allowed_sender', allowRemote: true });
@@ -24572,32 +25570,32 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/accounts/nope',
       principal,
     });
-    expect(invalidAccountId.status).toBe(400);
-    expect((invalidAccountId.body as any).error.code).toBe('invalid_email_account_id');
+    expect(invalidAccountId.status).toBe(404);
+    expect((invalidAccountId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidMessageId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/messages/0',
       principal,
     });
-    expect(invalidMessageId.status).toBe(400);
-    expect((invalidMessageId.body as any).error.code).toBe('invalid_email_message_id');
+    expect(invalidMessageId.status).toBe(404);
+    expect((invalidMessageId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidAttachmentId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/attachments/nope',
       principal,
     });
-    expect(invalidAttachmentId.status).toBe(400);
-    expect((invalidAttachmentId.body as any).error.code).toBe('invalid_email_attachment_id');
+    expect(invalidAttachmentId.status).toBe(404);
+    expect((invalidAttachmentId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidAttachmentContentId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/attachments/nope/content',
       principal,
     });
-    expect(invalidAttachmentContentId.status).toBe(400);
-    expect((invalidAttachmentContentId.body as any).error.code).toBe('invalid_email_attachment_id');
+    expect(invalidAttachmentContentId.status).toBe(404);
+    expect((invalidAttachmentContentId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidSeen = await api.handle({
       method: 'GET',
@@ -25378,7 +26376,7 @@ describe('server edition foundation', () => {
       body: { status: 'spam' },
       principal,
     });
-    expect(invalidId.status).toBe(400);
+    expect(invalidId.status).toBe(404);
 
     const invalidPayload = await writableApi.handle({
       method: 'PATCH',
@@ -25809,7 +26807,7 @@ describe('server edition foundation', () => {
       body: {},
       principal,
     });
-    expect(invalidId.status).toBe(400);
+    expect(invalidId.status).toBe(404);
 
     const invalidPayload = await writableApi.handle({
       method: 'POST',
@@ -25872,7 +26870,7 @@ describe('server edition foundation', () => {
       body: {},
       principal,
     });
-    expect(invalidId.status).toBe(400);
+    expect(invalidId.status).toBe(404);
 
     const invalidPayload = await writableApi.handle({
       method: 'POST',
@@ -26285,16 +27283,16 @@ describe('server edition foundation', () => {
       path: '/api/v1/email/folders/nope',
       principal,
     });
-    expect(invalidFolderId.status).toBe(400);
-    expect((invalidFolderId.body as any).error.code).toBe('invalid_email_folder_id');
+    expect(invalidFolderId.status).toBe(404);
+    expect((invalidFolderId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidMessageScopedId = await api.handle({
       method: 'GET',
       path: '/api/v1/email/messages/nope/tags',
       principal,
     });
-    expect(invalidMessageScopedId.status).toBe(400);
-    expect((invalidMessageScopedId.body as any).error.code).toBe('invalid_email_message_id');
+    expect(invalidMessageScopedId.status).toBe(404);
+    expect((invalidMessageScopedId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidThreadFilter = await api.handle({
       method: 'GET',
@@ -26816,14 +27814,27 @@ describe('server edition foundation', () => {
     expect(unavailableTag.status).toBe(503);
     expect((unavailableTag.body as any).error.code).toBe('email_message_tags_unavailable');
 
+    // The top-level POST /tags now authorizes against the body's messageId (message
+    // resource), so a non-object body carries no message and is denied before the
+    // payload validator runs. The message-scoped route still exercises the validator
+    // (its message comes from the path).
     const invalidTagPayload = await writableApi.handle({
       method: 'POST',
-      path: '/api/v1/email/tags',
+      path: '/api/v1/email/messages/11/tags',
       body: [],
       principal,
     });
     expect(invalidTagPayload.status).toBe(400);
     expect((invalidTagPayload.body as any).error.code).toBe('invalid_email_tag_payload');
+
+    // A non-object body on the top-level route cannot resolve its target message.
+    const unresolvableTopLevelTag = await writableApi.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      body: [],
+      principal,
+    });
+    expect(unresolvableTopLevelTag.status).toBe(404);
 
     const mismatchedTagMessage = await writableApi.handle({
       method: 'POST',
@@ -27131,6 +28142,58 @@ describe('server edition foundation', () => {
       scope: 'domain',
       value: 'cdn.example.com',
     });
+  });
+
+  test('reparenting a canned response also notifies the previous account scope', async () => {
+    const events: ServerEvent[] = [];
+    const ACCOUNT_OLD = 8100;
+    const ACCOUNT_NEW = 8200;
+    const cannedBase = {
+      id: 90,
+      sourceSqliteId: 90,
+      title: 'Greeting',
+      body: 'Hallo',
+      accountSourceSqliteId: null,
+      overrideKey: null,
+      sortOrder: 0,
+      createdAt: null,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    } as const;
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      emailCannedResponses: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return { ...cannedBase, accountId: ACCOUNT_OLD };
+        },
+        async update() {
+          return { ...cannedBase, accountId: ACCOUNT_NEW };
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+
+    // The mocked update reparents the row (returns the new account); the body only
+    // needs to be a valid mutation so the handler reaches update + publish.
+    const reparented = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/canned-responses/90',
+      body: { body: 'Hallo zwei' },
+      principal,
+    });
+    expect(reparented.status).toBe(200);
+
+    const cannedEvents = events.filter((event) => event.type === 'email_canned_response.updated');
+    expect(cannedEvents).toHaveLength(2);
+    // First event carries the new account so its delegates learn of the response;
+    // the second carries the previous account so a delegate scoped there refreshes
+    // and drops the row now that it no longer resolves under their scope.
+    expect((cannedEvents[0].payload as { accountId: number | null }).accountId).toBe(ACCOUNT_NEW);
+    expect((cannedEvents[1].payload as { accountId: number | null }).accountId).toBe(ACCOUNT_OLD);
+    expect((cannedEvents[0].payload as { id: number }).id).toBe(90);
+    expect((cannedEvents[1].payload as { id: number }).id).toBe(90);
   });
 
   test('server email canned response and remote allowlist mutation routes reject unsafe payloads and conflicts', async () => {
@@ -27799,6 +28862,7 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
       body: {
+        accountId: 7,
         aliasThreadId: ' thread-alias ',
         canonicalThreadId: ' thread-root ',
         confidence: ' medium ',
@@ -27811,6 +28875,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       actorUserId: USER_A_ID,
       values: {
+        accountId: 7,
         aliasThreadId: 'thread-alias',
         canonicalThreadId: 'thread-root',
         confidence: 'medium',
@@ -28075,8 +29140,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidEdgePayload.status).toBe(400);
-    expect((invalidEdgePayload.body as any).error.code).toBe('invalid_email_thread_edge_payload');
+    expect(invalidEdgePayload.status).toBe(404);
+    expect((invalidEdgePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeEdgePayload = await writableApi.handle({
       method: 'POST',
@@ -28088,12 +29153,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeEdgePayload.status).toBe(400);
-    expect((unsafeEdgePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'parentMessageId', message: 'parentMessageId muss eine positive Ganzzahl sein' },
-      { field: 'childMessageId', message: 'childMessageId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeEdgePayload.status).toBe(404);
+    expect((unsafeEdgePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const selfEdge = await writableApi.handle({
       method: 'POST',
@@ -28134,7 +29195,7 @@ describe('server edition foundation', () => {
     const unavailableAlias = await readOnlyApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
-      body: { aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
+      body: { accountId: 1, aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
       principal,
     });
     expect(unavailableAlias.status).toBe(503);
@@ -28158,10 +29219,16 @@ describe('server edition foundation', () => {
     expect(unavailableSplit.status).toBe(503);
     expect((unavailableSplit.body as any).error.code).toBe('email_thread_split_unavailable');
 
+    // The supplemental thread-target authorization now resolves aliasThreadId /
+    // canonicalThreadId before the handler validates the body (mirroring the
+    // thread-merge route), so blank thread IDs are denied uniformly (404) rather
+    // than surfacing per-field 400s — the alias row must never persist against
+    // thread IDs the caller has no triage on.
     const unsafeAliasPayload = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
       body: {
+        accountId: 1,
         workspaceId: WORKSPACE_B_ID,
         aliasThreadId: ' ',
         canonicalThreadId: ' ',
@@ -28170,19 +29237,13 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeAliasPayload.status).toBe(400);
-    expect((unsafeAliasPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'aliasThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'canonicalThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'confidence', message: 'Feld darf nicht leer sein' },
-      { field: 'source', message: 'Feld darf nicht leer sein' },
-    ]));
+    expect(unsafeAliasPayload.status).toBe(404);
+    expect((unsafeAliasPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const sameAlias = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
-      body: { aliasThreadId: 'same-thread', canonicalThreadId: 'same-thread' },
+      body: { accountId: 1, aliasThreadId: 'same-thread', canonicalThreadId: 'same-thread' },
       principal,
     });
     expect(sameAlias.status).toBe(400);
@@ -28194,8 +29255,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidMergePayload.status).toBe(400);
-    expect((invalidMergePayload.body as any).error.code).toBe('invalid_email_thread_merge_payload');
+    expect(invalidMergePayload.status).toBe(404);
+    expect((invalidMergePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeMergePayload = await writableApi.handle({
       method: 'POST',
@@ -28208,13 +29269,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeMergePayload.status).toBe(400);
-    expect((unsafeMergePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'aliasThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'canonicalThreadId', message: 'Feld darf nicht leer sein' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeMergePayload.status).toBe(404);
+    expect((unsafeMergePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidSplitPayload = await writableApi.handle({
       method: 'POST',
@@ -28222,8 +29278,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidSplitPayload.status).toBe(400);
-    expect((invalidSplitPayload.body as any).error.code).toBe('invalid_email_thread_split_payload');
+    expect(invalidSplitPayload.status).toBe(404);
+    expect((invalidSplitPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeSplitPayload = await writableApi.handle({
       method: 'POST',
@@ -28234,11 +29290,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeSplitPayload.status).toBe(400);
-    expect((unsafeSplitPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeSplitPayload.status).toBe(404);
+    expect((unsafeSplitPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const sameMerge = await writableApi.handle({
       method: 'POST',
@@ -28279,7 +29332,7 @@ describe('server edition foundation', () => {
     const conflictingAlias = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/email/thread-aliases',
-      body: { aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
+      body: { accountId: 1, aliasThreadId: 'thread-a', canonicalThreadId: 'thread-b' },
       principal,
     });
     expect(conflictingAlias.status).toBe(409);
@@ -28856,8 +29909,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidSignaturePayload.status).toBe(400);
-    expect((invalidSignaturePayload.body as any).error.code).toBe('invalid_email_account_signature_payload');
+    expect(invalidSignaturePayload.status).toBe(404);
+    expect((invalidSignaturePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeSignaturePayload = await writableApi.handle({
       method: 'POST',
@@ -28869,12 +29922,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeSignaturePayload.status).toBe(400);
-    expect((unsafeSignaturePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-      { field: 'signatureHtml', message: 'signatureHtml muss ein String oder null sein' },
-    ]));
+    expect(unsafeSignaturePayload.status).toBe(404);
+    expect((unsafeSignaturePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingAccount = await writableApi.handle({
       method: 'POST',
@@ -28931,8 +29980,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidReceiptPayload.status).toBe(400);
-    expect((invalidReceiptPayload.body as any).error.code).toBe('invalid_email_read_receipt_payload');
+    expect(invalidReceiptPayload.status).toBe(404);
+    expect((invalidReceiptPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeReceiptPayload = await writableApi.handle({
       method: 'POST',
@@ -28946,14 +29995,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeReceiptPayload.status).toBe(400);
-    expect((unsafeReceiptPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'direction', message: 'Feld darf nicht leer sein' },
-      { field: 'recipient', message: 'recipient muss ein String oder null sein' },
-      { field: 'at', message: 'at muss ein valides Datum sein' },
-    ]));
+    expect(unsafeReceiptPayload.status).toBe(404);
+    expect((unsafeReceiptPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingMessage = await writableApi.handle({
       method: 'POST',
@@ -29130,8 +30173,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidPayload.status).toBe(400);
-    expect((invalidPayload.body as any).error.code).toBe('invalid_email_internal_note_payload');
+    expect(invalidPayload.status).toBe(404);
+    expect((invalidPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingBody = await writableApi.handle({
       method: 'POST',
@@ -29164,12 +30207,8 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafePayload.status).toBe(400);
-    expect((unsafePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'body', message: 'Feld darf nicht leer sein' },
-    ]));
+    expect(unsafePayload.status).toBe(404);
+    expect((unsafePayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const missingMessage = await writableApi.handle({
       method: 'POST',
@@ -30006,7 +31045,8 @@ describe('server edition foundation', () => {
       query: { accountId: 'nope' },
       principal,
     });
-    expect(invalidReplyAccount.status).toBe(400);
+    expect(invalidReplyAccount.status).toBe(404);
+    expect((invalidReplyAccount.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidSnooze = await writableApi.handle({
       method: 'PATCH',
@@ -30429,6 +31469,9 @@ describe('server edition foundation', () => {
         applyStatus: true,
         runSecurityCheck: true,
         enqueueInboundWorkflows: true,
+        // R18-5: server-only marker so the worker re-verifies current owner/admin
+        // status before running the retry's system-role side effects.
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: true,
       },
       maxAttempts: 3,
     }]);
@@ -31821,7 +32864,7 @@ describe('server edition foundation', () => {
     const invalidPayload = await api.handle({
       method: 'POST',
       path: '/api/v1/workflows/by-source/-23/execute',
-      body: { messageId: 0, extra: true },
+      body: { dryRun: 'yes', extra: true },
       principal,
     });
     expect(invalidPayload.status).toBe(400);
@@ -31895,6 +32938,9 @@ describe('server edition foundation', () => {
           triggerName: 'manual',
           actorUserId: USER_A_ID,
           context: {},
+          // R22-2: the manual live-execute route marks its job so the worker
+          // re-verifies owner/admin against the current graph (demotion guard).
+          [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true,
         },
       },
     ]);
@@ -33323,12 +34369,22 @@ describe('server edition foundation', () => {
     const api = createServerApi(makeServerApiPorts({
       auditEvents,
       events,
+      // The delayed job is backed by a read-only-graph workflow, so a non-admin
+      // manager's resume/context edit passes the side-effect admin gate.
+      workflows: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 23 ? makeWorkflowRecord(23) : null;
+        },
+      },
       workflowDelayedJobs: {
         async list() {
           return { items: [], nextCursor: null };
         },
-        async get() {
-          return null;
+        async get(input) {
+          return input.id === 87 ? withRuntimeLeaks(createdJob) : null;
         },
         async create(input) {
           createCalls.push(input);
@@ -33344,7 +34400,8 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Delayed-job PATCH/DELETE now require the workflows.manage capability.
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -33443,6 +34500,77 @@ describe('server edition foundation', () => {
     expect(JSON.stringify(events)).not.toContain('updated-delayed-context-secret');
   });
 
+  test('non-admin cannot redirect a side-effecting delayed job resume node into a writing node', async () => {
+    const updateCalls: unknown[] = [];
+    const existingJob: WorkflowDelayedJobRecord = {
+      ...makeWorkflowDelayedJobRecord(87, true),
+      workflowId: 23,
+      messageId: 11,
+      resumeNodeId: 'wait-1',
+      executeAt: '2026-06-03T12:00:00.000Z',
+      context: { secret: 'ctx' },
+      status: 'pending',
+    };
+    const makeApi = (graph: unknown) => createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? { ...makeWorkflowRecord(23), graph } : null; },
+      },
+      workflowDelayedJobs: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get(input) { return input.id === 87 ? existingJob : null; },
+        async update(input) { updateCalls.push(input); return { ok: true, job: existingJob }; },
+      },
+    }));
+    // A live send node makes the backing workflow.execute side-effecting; an in-memory
+    // logic node (logic.set_variable) keeps it read-only. NB: only the enumerated
+    // in-memory logic.* helpers are exempt — an unrecognized logic.* type fails closed.
+    const sideEffectGraph = { nodes: [{ id: 'send-1', type: 'action', data: { nodeType: 'email.send' } }], edges: [] };
+    const readOnlyGraph = { nodes: [{ id: 'branch-1', type: 'action', data: { nodeType: 'logic.set_variable' } }], edges: [] };
+    const manager = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
+    const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    // Non-admin manager redirecting a side-effecting job's resume node → 403, update
+    // port never reached (execution would otherwise run the node as the admin).
+    const denied = await makeApi(sideEffectGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { resumeNodeId: 'send-1' },
+      principal: manager,
+    });
+    expect(denied.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    // Reschedule / cancel edits stay open to the manager even for a side-effecting job.
+    const rescheduled = await makeApi(sideEffectGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { executeAt: '2026-06-05T12:00:00.000Z' },
+      principal: manager,
+    });
+    expect(rescheduled.status).toBe(200);
+
+    // Admin may redirect the same side-effecting job.
+    const adminRedirect = await makeApi(sideEffectGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { resumeNodeId: 'send-1' },
+      principal: admin,
+    });
+    expect(adminRedirect.status).toBe(200);
+
+    // No over-restriction: a manager may still redirect a read-only-graph job.
+    updateCalls.length = 0;
+    const readOnlyRedirect = await makeApi(readOnlyGraph).handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { resumeNodeId: 'branch-1' },
+      principal: manager,
+    });
+    expect(readOnlyRedirect.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+  });
+
   test('server workflow delayed job mutation routes reject unsafe payloads and missing references', async () => {
     const readOnlyApi = createServerApi(makeServerApiPorts({
       workflowDelayedJobs: {
@@ -33477,7 +34605,9 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    // Delayed-job PATCH/DELETE now require the workflows.manage capability, so
+    // grant it here to exercise the payload-validation paths below.
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -33502,7 +34632,7 @@ describe('server edition foundation', () => {
       body: {
         workspaceId: WORKSPACE_B_ID,
         workflowId: 0,
-        messageId: 0,
+        messageId: null,
         resumeNodeId: ' ',
         executeAt: 'not-a-date',
         context: 'not-json-object',
@@ -33514,7 +34644,6 @@ describe('server edition foundation', () => {
     expect((unsafePayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
       { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
       { field: 'workflowId', message: 'workflowId muss eine positive Ganzzahl sein' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
       { field: 'resumeNodeId', message: 'resumeNodeId darf nicht leer sein' },
       { field: 'executeAt', message: 'executeAt muss ein valides Datum sein' },
       { field: 'context', message: 'context muss ein JSON-Objekt oder Array sein' },
@@ -33950,6 +35079,8 @@ describe('server edition foundation', () => {
       cursor: 40,
       search: 'fingerprint',
       email: 'identity@example.com',
+      // R21-1: a non-owner/admin caller's identity list is scoped to their own.
+      ownerUserId: 'user-a',
     }]);
 
     const peerKeys = await api.handle({
@@ -34755,8 +35886,8 @@ describe('server edition foundation', () => {
       body: { passphrase: 'passphrase' },
       principal,
     });
-    expect(invalidId.status).toBe(400);
-    expect((invalidId.body as any).error.code).toBe('invalid_pgp_message_id');
+    expect(invalidId.status).toBe(404);
+    expect((invalidId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidPayload = await api.handle({
       method: 'POST',
@@ -34838,12 +35969,12 @@ describe('server edition foundation', () => {
       api.handle({ method: 'POST', path: '/api/v1/pgp/messages/45/verify', principal }),
       api.handle({ method: 'POST', path: '/api/v1/pgp/messages/nope/verify', principal }),
     ]);
-    expect(failures.map((response) => response.status)).toEqual([200, 400, 400, 404, 400]);
+    expect(failures.map((response) => response.status)).toEqual([200, 400, 400, 404, 404]);
     expect((failures[0].body as any).data).toEqual({ valid: false, status: 'key_missing' });
     expect((failures[1].body as any).error.code).toBe('pgp_message_not_signed');
     expect((failures[2].body as any).error.message).toBe('bad signature armor');
     expect((failures[3].body as any).error.code).toBe('pgp_message_not_found');
-    expect((failures[4].body as any).error.code).toBe('invalid_pgp_message_id');
+    expect((failures[4].body as any).error.code).toBe('mail_resource_not_found');
 
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
       method: 'POST',
@@ -34904,11 +36035,11 @@ describe('server edition foundation', () => {
       api.handle({ method: 'POST', path: '/api/v1/pgp/messages/nope/detect', principal }),
       api.handle({ method: 'GET', path: '/api/v1/pgp/messages/41/detect', principal }),
     ]);
-    expect(results.map((response) => response.status)).toEqual([200, 200, 404, 400, 405]);
+    expect(results.map((response) => response.status)).toEqual([200, 200, 404, 404, 405]);
     expect((results[0].body as any).data).toEqual({ detected: true, status: 'signed_unknown_key' });
     expect((results[1].body as any).data).toEqual({ detected: false, status: null });
     expect((results[2].body as any).error.code).toBe('pgp_message_not_found');
-    expect((results[3].body as any).error.code).toBe('invalid_pgp_message_id');
+    expect((results[3].body as any).error.code).toBe('mail_resource_not_found');
     expect((results[4].body as any).error.code).toBe('method_not_allowed');
 
     const unavailable = await createServerApi(makeServerApiPorts()).handle({
@@ -35715,8 +36846,8 @@ describe('server edition foundation', () => {
       path: '/api/v1/spam/decisions/nope',
       principal,
     });
-    expect(invalidId.status).toBe(400);
-    expect((invalidId.body as any).error.code).toBe('invalid_spam_decision_id');
+    expect(invalidId.status).toBe(404);
+    expect((invalidId.body as any).error.code).toBe('mail_resource_not_found');
 
     const invalidFeatureKey = await api.handle({
       method: 'GET',
@@ -36329,7 +37460,7 @@ describe('server edition foundation', () => {
     const unavailableLearning = await readOnlyApi.handle({
       method: 'POST',
       path: '/api/v1/spam/learning-events',
-      body: { accountId: 1, label: 'spam' },
+      body: { accountId: 1, messageId: 1, label: 'spam' },
       principal,
     });
     expect(unavailableLearning.status).toBe(503);
@@ -36340,8 +37471,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidLearningPayload.status).toBe(400);
-    expect((invalidLearningPayload.body as any).error.code).toBe('invalid_spam_learning_event_payload');
+    expect(invalidLearningPayload.status).toBe(404);
+    expect((invalidLearningPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeLearningPayload = await writableApi.handle({
       method: 'POST',
@@ -36356,16 +37487,13 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeLearningPayload.status).toBe(400);
-    expect((unsafeLearningPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'label', message: 'label muss spam oder ham sein' },
-      { field: 'source', message: 'source darf nicht leer sein' },
-      { field: 'featureKeys', message: 'featureKeys muss JSON-kompatibel sein' },
-    ]));
+    expect(unsafeLearningPayload.status).toBe(404);
+    expect((unsafeLearningPayload.body as any).error.code).toBe('mail_resource_not_found');
 
+    // Account-only spam writes are now authorized against the submitted account
+    // (message optional), so an account-present payload reaches the handler and
+    // is rejected by body validation (missing label) with a 400 instead of being
+    // denied 404 by the enforcer for a missing message.
     const missingLearningFields = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/learning-events',
@@ -36377,7 +37505,7 @@ describe('server edition foundation', () => {
     const missingLearningAccount = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/learning-events',
-      body: { accountId: 99, label: 'spam' },
+      body: { accountId: 99, messageId: 1, label: 'spam' },
       principal,
     });
     expect(missingLearningAccount.status).toBe(404);
@@ -36404,7 +37532,7 @@ describe('server edition foundation', () => {
     const unavailableDecision = await readOnlyApi.handle({
       method: 'POST',
       path: '/api/v1/spam/decisions',
-      body: { accountId: 1, score: 50, status: 'review', source: 'local' },
+      body: { accountId: 1, messageId: 1, score: 50, status: 'review', source: 'local' },
       principal,
     });
     expect(unavailableDecision.status).toBe(503);
@@ -36415,8 +37543,8 @@ describe('server edition foundation', () => {
       body: [],
       principal,
     });
-    expect(invalidDecisionPayload.status).toBe(400);
-    expect((invalidDecisionPayload.body as any).error.code).toBe('invalid_spam_decision_payload');
+    expect(invalidDecisionPayload.status).toBe(404);
+    expect((invalidDecisionPayload.body as any).error.code).toBe('mail_resource_not_found');
 
     const unsafeDecisionPayload = await writableApi.handle({
       method: 'POST',
@@ -36433,18 +37561,11 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(unsafeDecisionPayload.status).toBe(400);
-    expect((unsafeDecisionPayload.body as any).error.details.fields).toEqual(expect.arrayContaining([
-      { field: 'workspaceId', message: 'Feld ist nicht erlaubt' },
-      { field: 'accountId', message: 'accountId muss eine positive Ganzzahl sein' },
-      { field: 'messageId', message: 'messageId muss eine positive Ganzzahl sein' },
-      { field: 'score', message: 'score muss eine Ganzzahl zwischen 0 und 100 sein' },
-      { field: 'status', message: 'status muss clean, review oder spam sein' },
-      { field: 'source', message: 'source darf nicht leer sein' },
-      { field: 'breakdown', message: 'breakdown muss ein JSON-Objekt, JSON-Array oder null sein' },
-      { field: 'modelVersion', message: 'modelVersion muss eine positive Ganzzahl sein' },
-    ]));
+    expect(unsafeDecisionPayload.status).toBe(404);
+    expect((unsafeDecisionPayload.body as any).error.code).toBe('mail_resource_not_found');
 
+    // As above: an account-present decision payload is now authorized against the
+    // account and rejected by body validation (missing source) with a 400.
     const missingDecisionFields = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/decisions',
@@ -36456,7 +37577,7 @@ describe('server edition foundation', () => {
     const missingDecisionAccount = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/spam/decisions',
-      body: { accountId: 99, score: 50, status: 'review', source: 'local' },
+      body: { accountId: 99, messageId: 1, score: 50, status: 'review', source: 'local' },
       principal,
     });
     expect(missingDecisionAccount.status).toBe(404);
@@ -36486,7 +37607,7 @@ describe('server edition foundation', () => {
       body: { score: 20 },
       principal,
     });
-    expect(invalidDecisionId.status).toBe(400);
+    expect(invalidDecisionId.status).toBe(404);
 
     const emptyDecisionPatch = await writableApi.handle({
       method: 'PATCH',
@@ -37034,6 +38155,17 @@ function makeServerApiPorts(input: {
         };
         authUsers = authUsers.map((candidate) => candidate.id === updated.id ? updated : candidate);
         return { ok: true, user: updated };
+      },
+      async deleteUser(input) {
+        const existing = authUsers.find((candidate) => candidate.id === input.id);
+        if (!existing) return { ok: false, code: 'not_found' as const };
+        if (existing.role === 'owner') {
+          const otherActiveOwners = authUsers.filter((candidate) =>
+            candidate.id !== existing.id && candidate.role === 'owner' && candidate.disabledAt === null).length;
+          if (otherActiveOwners < 1) return { ok: false, code: 'last_owner_required' as const };
+        }
+        authUsers = authUsers.filter((candidate) => candidate.id !== input.id);
+        return { ok: true as const };
       },
       async createInvitation(input) {
         if (authUsers.some((candidate) => candidate.email.toLowerCase() === input.email.toLowerCase())) {
@@ -38122,6 +39254,52 @@ function makePostgresEventDb(): {
   return { db, rows, sessionCommands };
 }
 
+function makeScheduledSendTickerDb(rows: Array<Record<string, unknown>>): Kysely<ServerDatabase> & { transactionCount: number } {
+  // Chainable no-op builder for the bounded-retry store writes (sync_info reads,
+  // schedule updates, claim deletes) the denial path performs via
+  // recordFailedAttempt. executeTakeFirst → undefined so the failure counter
+  // starts at 0.
+  const chain: Record<string, unknown> = {};
+  for (const method of ['select', 'selectAll', 'where', 'whereRef', 'orderBy', 'limit', 'offset',
+    'set', 'values', 'onConflict', 'columns', 'doUpdateSet', 'doNothing', 'returning']) {
+    chain[method] = () => chain;
+  }
+  chain.execute = async () => [];
+  chain.executeTakeFirst = async () => undefined;
+  return {
+    transactionCount: 0,
+    // Satisfies the workspace-session SET LOCAL statement run inside each
+    // withWorkspaceTransaction (kyselySql`...`.execute(trx)).
+    executeQuery: async () => ({ rows: [] }),
+    selectFrom(table: string) {
+      if (table === 'email_messages') return new FakeScheduledSendTickerSelect(rows);
+      return chain;
+    },
+    insertInto: () => chain,
+    updateTable: () => chain,
+    deleteFrom: () => chain,
+    transaction() {
+      this.transactionCount += 1;
+      return {
+        execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(this),
+      };
+    },
+  } as unknown as Kysely<ServerDatabase> & { transactionCount: number };
+}
+
+class FakeScheduledSendTickerSelect {
+  constructor(private readonly rows: Array<Record<string, unknown>>) {}
+
+  select() { return this; }
+  where() { return this; }
+  orderBy() { return this; }
+  limit() { return this; }
+
+  async execute() {
+    return this.rows;
+  }
+}
+
 function makeFakePostgresEventNotifications() {
   const subscribers = new Set<(notification: { workspaceId: string; sequence: number }) => void | Promise<void>>();
   const sent: Array<{ workspaceId: string; sequence: number }> = [];
@@ -38202,9 +39380,13 @@ type FakePostgresJobQueueRow = {
 function makeFakePostgresJobQueueDb(): {
   db: Kysely<ServerDatabase>;
   rows: FakePostgresJobQueueRow[];
+  delayedRows: FakeWorkflowDelayedJobRow[];
   sessionCommands: ReturnType<typeof buildWorkspaceSessionCommand>[];
 } {
   const rows: FakePostgresJobQueueRow[] = [];
+  // Models the workflow_delayed_jobs rows a terminally-denied delayed workflow.execute
+  // continuation must mark failed (R51-3); empty unless a test seeds it.
+  const delayedRows: FakeWorkflowDelayedJobRow[] = [];
   const sessionCommands: ReturnType<typeof buildWorkspaceSessionCommand>[] = [];
   const db = {
     selectFrom(table: string) {
@@ -38212,6 +39394,7 @@ function makeFakePostgresJobQueueDb(): {
       return new FakePostgresJobQueueSelect(rows);
     },
     updateTable(table: string) {
+      if (table === 'workflow_delayed_jobs') return new FakeWorkflowDelayedJobUpdate(delayedRows);
       if (table !== 'job_queue') throw new Error(`unexpected job queue update table: ${table}`);
       return new FakePostgresJobQueueUpdate(rows);
     },
@@ -38222,7 +39405,49 @@ function makeFakePostgresJobQueueDb(): {
     },
   } as unknown as Kysely<ServerDatabase>;
 
-  return { db, rows, sessionCommands };
+  return { db, rows, delayedRows, sessionCommands };
+}
+
+type FakeWorkflowDelayedJobRow = {
+  id: number;
+  workspace_id: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  updated_at: Date;
+};
+
+// Minimal fake for the single UPDATE failJobTerminal issues against workflow_delayed_jobs
+// (SET status/updated_at WHERE workspace_id = .. AND id = .. AND status IN (..)).
+class FakeWorkflowDelayedJobUpdate {
+  private values: Partial<Pick<FakeWorkflowDelayedJobRow, 'status' | 'updated_at'>> = {};
+
+  private workspaceId: string | null = null;
+
+  private idEquals: number | null = null;
+
+  private statusIn: readonly string[] | null = null;
+
+  constructor(private readonly rows: FakeWorkflowDelayedJobRow[]) {}
+
+  set(values: Partial<Pick<FakeWorkflowDelayedJobRow, 'status' | 'updated_at'>>): this {
+    this.values = values;
+    return this;
+  }
+
+  where(column: string, operator: string, value: unknown): this {
+    if (column === 'workspace_id' && operator === '=') this.workspaceId = String(value);
+    if (column === 'id' && operator === '=') this.idEquals = Number(value);
+    if (column === 'status' && operator === 'in') this.statusIn = value as readonly string[];
+    return this;
+  }
+
+  async execute(): Promise<void> {
+    for (const row of this.rows) {
+      if (this.workspaceId !== null && row.workspace_id !== this.workspaceId) continue;
+      if (this.idEquals !== null && row.id !== this.idEquals) continue;
+      if (this.statusIn !== null && !this.statusIn.includes(row.status)) continue;
+      Object.assign(row, this.values);
+    }
+  }
 }
 
 function makeFakePostgresJobQueueRow(input: Partial<FakePostgresJobQueueRow> = {}): FakePostgresJobQueueRow {
@@ -38577,6 +39802,16 @@ function makeJobQueuePort(initialJobs: QueuedJob[]): JobQueuePort & {
       return {
         ...input.job,
         attempts: input.job.attempts + 1,
+        lockedAt: null,
+        lockedBy: null,
+        lastError: failures[failures.length - 1],
+      };
+    },
+    async failTerminal(input) {
+      failures.push(input.error instanceof Error ? input.error.message : String(input.error));
+      return {
+        ...input.job,
+        attempts: input.job.maxAttempts,
         lockedAt: null,
         lockedBy: null,
         lastError: failures[failures.length - 1],

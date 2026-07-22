@@ -1,0 +1,2240 @@
+import {
+  buildGraphileTaskList,
+  buildTrustedServiceJobPayload,
+  type JobHandlerRegistry,
+  MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
+  POST_PROCESS_RETRY_JOB_MARKER_FIELD,
+  type QueuedJob,
+  SERVER_JOB_POLICIES,
+  TRUSTED_SERVICE_JOB_MARKER_FIELD,
+} from '../../packages/server/src/jobs';
+import type { ServerEvent, ServerEventPort } from '../../packages/server/src/api';
+import {
+  createPrincipalFilteredEventPort,
+  enforceMailJobPolicy,
+  filterMailEventForPrincipal,
+} from '../../packages/server/src/mail-access/async-policy-enforcer';
+import {
+  createBoundedEventSequenceDedupe,
+  isSelfTargetedAclInvalidation,
+  publishDemotionAclInvalidationIfNeeded,
+} from '../../packages/server/src/api/fastify-adapter';
+
+describe('server mail job and event ACL', () => {
+  test('graphile task-list surfaces revoked mail authorization as a job failure before handler invocation', async () => {
+    const calls: string[] = [];
+    const taskList = buildGraphileTaskList(
+      {
+        'ai.reply_suggestion': async () => {
+          calls.push('handler');
+        },
+      } satisfies JobHandlerRegistry,
+      {
+        mailAccess: {
+          async assertPermission() {
+            throw new Error('mail_access_denied');
+          },
+          async resolveScope() {
+            return { kind: 'none' };
+          },
+        },
+        mailResourceLookup: {
+          async resolve() {
+            return [{ type: 'message', accountId: '7', folderId: '8', messageId: '12' }];
+          },
+        },
+      },
+    );
+    const queries: Array<{ sql: string; values?: readonly unknown[] }> = [];
+    const helpers = {
+      job: { id: 'graphile-job-99' },
+      withPgClient: async (callback: (client: {
+        query(sql: string, values?: readonly unknown[]): Promise<unknown>;
+      }) => Promise<unknown>) => callback({
+        async query(sql, values) {
+          queries.push({ sql, values });
+          return { rows: [] };
+        },
+      }),
+    };
+
+    // The task must REJECT (not resolve): a resolved graphile task is treated as
+    // success and deletes the job with no last_error, silently dropping the
+    // side-effect. Rethrowing lets graphile retry / mark it permanently failed.
+    await expect(taskList['ai.reply_suggestion']?.(
+      { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+      helpers as never,
+    )).rejects.toThrow();
+    await expect(taskList['ai.reply_suggestion']?.(
+      { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+      helpers as never,
+    )).rejects.toThrow();
+
+    expect(calls).toEqual([]);
+    expect(queries).toEqual([]);
+  });
+
+  test('graphile task-list carries the authorized delayed message linkage to workflow execution', async () => {
+    let handledJob: QueuedJob | null = null;
+    const ports = makePolicyPorts({
+      delayedJobs: new Map([[87, { kind: 'message', resource: messageResource(12) }]]),
+    });
+    const taskList = buildGraphileTaskList(
+      {
+        'workflow.execute': async (job) => { handledJob = job; },
+      } satisfies JobHandlerRegistry,
+      ports,
+    );
+
+    await expect(taskList['workflow.execute']?.({
+      workspaceId: 'workspace-a',
+      actorUserId: 'user-a',
+      workflowId: 7,
+      delayedJobId: 87,
+    })).resolves.toBeUndefined();
+
+    expect(handledJob).toMatchObject({
+      mailAuthorization: {
+        kind: 'workflow_execute_delayed_message',
+        delayedJobId: 87,
+        messageId: 12,
+      },
+    });
+  });
+
+  test('graphile task-list refuses scheduled send before handler when initiating actor is degranted', async () => {
+    const calls: string[] = [];
+    const taskList = buildGraphileTaskList(
+      {
+        'mail.send.scheduled': async () => {
+          calls.push('handler');
+        },
+      } satisfies JobHandlerRegistry,
+      makePolicyPorts({ denyAllMailAccess: true }),
+    );
+
+    // Rejects rather than silently resolving — the denial must be visible so the
+    // scheduled send is retried / marked failed, not dropped without a trace.
+    await expect(taskList['mail.send.scheduled']?.({
+      workspaceId: 'workspace-a',
+      actorUserId: 'user-a',
+      draftId: 12,
+      accountId: 7,
+    })).rejects.toThrow();
+    await expect(taskList['mail.send.scheduled']?.({
+      workspaceId: 'workspace-a',
+      actorUserId: 'disabled-user',
+      draftId: 12,
+      accountId: 7,
+    })).rejects.toThrow();
+
+    expect(calls).toEqual([]);
+  });
+
+  test('job actor modes fail closed for missing deleted disabled actors and only accept canonical service payloads', async () => {
+    const ports = makePolicyPorts();
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', messageId: 12 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'deleted-user', messageId: 12 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'disabled-user', messageId: 12 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), { ...ports, auth: undefined })).rejects.toMatchObject({ nonRetryable: true });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorKind: 'service', messageId: 12 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', principal: 'simplecrm:service', messageId: 12 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', [TRUSTED_SERVICE_JOB_MARKER_FIELD]: 'forged', messageId: 12 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+    }), ports)).resolves.toBeUndefined();
+
+    expect(ports.assertions).toEqual([]);
+  });
+
+  test('job resource matrix resolves account message optional fallback message-or-account and mail-scope centrally', async () => {
+    const ports = makePolicyPorts();
+
+    await enforceMailJobPolicy(job({
+      type: 'mail.sync.imap',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', accountId: 7 }),
+    }), ports);
+    await enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), ports);
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), ports);
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
+    }), ports);
+    await enforceMailJobPolicy(job({
+      // owner: a message-less side-effect child (ai.agent) requires owner/admin
+      // (R12-2); it then resolves to non_mail with no lookup/assertion.
+      type: 'ai.agent',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a' },
+    }), ports);
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), ports);
+    await enforceMailJobPolicy(job({
+      type: 'lock.cleanup',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a' }),
+    }), ports);
+
+    expect(ports.lookups).toEqual([
+      { kind: 'account', id: 7 },
+      { kind: 'message', id: 12 },
+      { kind: 'message', id: 12 },
+      { kind: 'message', id: 12 },
+      // mail.send.scheduled also resolves the draft again for the unconditional
+      // mail.draft.edit recheck (R39-1).
+      { kind: 'message', id: 12 },
+    ]);
+    expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([
+      // mail.spam.score: base mail.triage, then the content-read supplemental because
+      // scoring reads the body and ships raw content to Rspamd (user-attributed only).
+      ['mail.triage', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      // workflow.execute (message 12): base mail.content.read.
+      ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      // mail.send.scheduled (draft 12): base mail.send, then the R39-1 unconditional
+      // mail.draft.edit recheck on the draft (arming a stored draft for send transmits
+      // its body + recipients, so it is a draft mutation, not just a transmit).
+      ['mail.send', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      ['mail.draft.edit', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+    ]);
+    expect(ports.scopePermissions).toEqual([]);
+  });
+
+  test('ai.review rechecks the message mutation permission at execution time', async () => {
+    // Outbound review sets outbound_hold/outbound_block_reason on the draft under the
+    // system role → recheck mail.draft.edit after the base mail.content.read.
+    const outbound = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'outbound' },
+    }), outbound);
+    expect(outbound.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.draft.edit',
+    ]);
+
+    // Inbound review adds the ki-review-block tag → recheck mail.triage instead.
+    const inbound = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'inbound' },
+    }), inbound);
+    expect(inbound.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.triage',
+    ]);
+
+    // A delegate whose draft.edit was revoked after the parent enqueued this child is
+    // refused before the handler runs, so it cannot hold the draft it can no longer edit.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'outbound' },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.draft.edit']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // Likewise an inbound review that lost mail.triage cannot add the block tag.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.review',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, direction: 'inbound' },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.triage']) }))).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('mail.spam.score requires content-read for user-attributed jobs, not trusted-service', async () => {
+    // User-attributed scoring reads the body and ships raw RFC822/headers/bodies to
+    // Rspamd, so a triage delegate that lost content.read is refused at execution.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // With content.read retained, both the base triage and the content-read supplemental are asserted.
+    const allowed = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.triage',
+      'mail.content.read',
+    ]);
+
+    // Trusted-service inbound scoring carries no per-user actor, so it stays authorized
+    // without a content-read grant — the normal IMAP-sync path is unaffected.
+    const service = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
+  test('workflow.forward_copy requires mail.send for user-attributed jobs, not trusted-service', async () => {
+    // Forwarding a copy is an SMTP SEND of the message (content + attachments) under
+    // the account's system identity, so a delegate whose mail.send was revoked (but who
+    // kept mail.export) is refused at execution — a forward cannot be used to exfiltrate
+    // content after send was revoked.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.send']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.send retained, both the base mail.export and the mail.send supplemental
+    // are asserted on the forwarded message.
+    const allowed = makePolicyPorts();
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.export',
+      'mail.send',
+    ]);
+
+    // Trusted-service forwards carry no per-user actor, so they stay authorized without
+    // a mail.send grant — the enforcer returns before the user supplemental.
+    const service = makePolicyPorts({ denyPermissions: new Set(['mail.send']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
+  test('workflow.forward_copy with includeAttachments rechecks attachment.read + suspicious_download (R52-1)', async () => {
+    // A forward with includeAttachments SMTP-sends the source message's stored attachment bytes,
+    // which the download / GDPR-export / compose-send / scheduled-send paths gate behind
+    // mail.attachment.read (+ suspicious_download for executable/script filenames). export + send
+    // alone do NOT establish attachment access, so a delegate lacking those grants is refused.
+
+    // includeAttachments true + mail.attachment.read revoked → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), makePolicyPorts({ denyPermissions: new Set(['mail.attachment.read']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // includeAttachments true + a safe attachment → export, send, attachment.read (no suspicious).
+    const safe = makePolicyPorts({ messageAttachmentFilenames: new Map([[12, ['brief.pdf']]]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), safe);
+    expect(safe.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.export', 'mail.send', 'mail.attachment.read',
+    ]);
+
+    // A dangerous forwarded filename (.exe) additionally requires mail.attachment.suspicious_download.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), makePolicyPorts({
+      messageAttachmentFilenames: new Map([[12, ['invoice.exe']]]),
+      denyPermissions: new Set(['mail.attachment.suspicious_download']),
+    }))).rejects.toMatchObject({ nonRetryable: true });
+
+    const dangerous = makePolicyPorts({ messageAttachmentFilenames: new Map([[12, ['invoice.exe']]]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, includeAttachments: true },
+    }), dangerous);
+    expect(dangerous.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.export', 'mail.send', 'mail.attachment.read', 'mail.attachment.suspicious_download',
+    ]);
+
+    // includeAttachments absent → no attachment rechecks (readForwardCopyAttachments sends nothing).
+    const noAttach = makePolicyPorts({ messageAttachmentFilenames: new Map([[12, ['invoice.exe']]]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), noAttach);
+    expect(noAttach.assertions.map((entry) => entry.permission)).toEqual(['mail.export', 'mail.send']);
+  });
+
+  test('workflow execution resolves delayed-job mail, rejects mismatches, and validates non-mail provenance', async () => {
+    const ports = makePolicyPorts({
+      denyMessages: new Set(['101']),
+      delayedJobs: new Map([
+        [87, { kind: 'message', resource: messageResource(12) }],
+        [88, { kind: 'message', resource: messageResource(101) }],
+        [89, { kind: 'non_mail' }],
+      ]),
+    });
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 87 },
+    }), ports)).resolves.toEqual({
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 87,
+      messageId: 12,
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 88 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        workflowId: 7,
+        messageId: 12,
+        delayedJobId: 88,
+      },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 999 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId: 89 },
+    }), ports)).resolves.toEqual({
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 89,
+      messageId: null,
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', workflowId: 7, delayedJobId: 89 },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 7, delayedJobId: 88 }),
+    }), ports)).resolves.toEqual({
+      kind: 'workflow_execute_delayed_message',
+      delayedJobId: 88,
+      messageId: 101,
+    });
+
+    for (const delayedJobId of [null, '', 0, {}, false]) {
+      await expect(enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, delayedJobId },
+      }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    }
+    for (const messageId of [null, '', 0, {}, false]) {
+      await expect(enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 7, messageId },
+      }), ports)).rejects.toMatchObject({ nonRetryable: true });
+    }
+
+    expect(ports.delayedJobLookups).toEqual([87, 88, 88, 999, 89, 88]);
+  });
+
+  test('rechecks workflow.execute side-effect privilege only for MANUAL admin-gated runs', async () => {
+    const sideEffecting = { nodes: [{ type: 'action', data: { nodeType: 'email.delete_server' } }] };
+    const readOnly = { nodes: [{ type: 'trigger' }, { type: 'action', data: { nodeType: 'email.sender_filter' } }] };
+    const ports = makePolicyPorts({
+      workflowGraphs: new Map<number, unknown>([[700, sideEffecting], [701, readOnly]]),
+    });
+    const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
+
+    // MARKED (manual live-execute) + non-admin + side-effecting graph → denied: a
+    // demoted admin cannot complete a run they queued while admin.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 700, [MARK]: true },
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+
+    // UNMARKED (compose-originated outbound review) + non-admin + side-effecting graph
+    // → ALLOWED: the sender holds mail.send, and this message-less job resolves to
+    // non_mail. This is the R22-2 regression the marker fixes (previously denied).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 700 },
+    }), ports)).resolves.toBeUndefined();
+
+    // Owner may run a marked side-effecting workflow.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', workflowId: 700, [MARK]: true },
+    }), ports)).resolves.toBeUndefined();
+
+    // Marked + non-admin + read-only graph → allowed (no side-effect node).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 701, [MARK]: true },
+    }), ports)).resolves.toBeUndefined();
+
+    // Trusted service payload bypasses the recheck.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 700 }),
+    }), ports)).resolves.toBeUndefined();
+  });
+
+  test('rechecks mail.delete for a workflow.execute whose current graph deletes on the server (R36-2)', async () => {
+    // An email.delete_server node PERMANENTLY deletes the message on the IMAP server
+    // (plus a local soft-delete) under the system role, yet the base workflow.execute
+    // policy only requires mail.content.read. Recheck mail.delete on the resolved
+    // message so a user-attributed run (inbound/continuation, or a delegate who lost
+    // mail.delete) cannot destroy server mail through the workflow.
+    const deleteGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.delete_server' } }] };
+    const noDeleteGraph = { nodes: [{ type: 'trigger' }, { type: 'registry', data: { nodeType: 'ai.classify' } }] };
+    const graphs = new Map<number, unknown>([[720, deleteGraph], [721, noDeleteGraph]]);
+
+    // Delete-node graph + mail.delete revoked → denied at execution.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 720, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.delete retained, both the base mail.content.read and the mail.delete
+    // supplemental are asserted on the message.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 720, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.delete']);
+
+    // The recheck runs on EVERY workflow.execute, so a delayed continuation
+    // (re-enqueued with a delayedJobId resolving to the same message) is gated too.
+    const delayed = makePolicyPorts({
+      workflowGraphs: graphs,
+      delayedJobs: new Map([[87, { kind: 'message', resource: messageResource(12) }]]),
+      denyPermissions: new Set(['mail.delete']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 720, delayedJobId: 87 },
+    }), delayed)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A graph WITHOUT a delete node adds no mail.delete requirement.
+    const noDelete = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 721, messageId: 12 },
+    }), noDelete);
+    expect(noDelete.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // Trusted-service runs return before the supplemental — no mail.delete grant needed.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 720, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
+  test('rechecks mail.delete for a workflow.execute whose current graph moves to trash (R51-4)', async () => {
+    // Moving a message to a trash folder makes the runtime soft-delete it — a delete-equivalent
+    // — yet email.move_imap is classified triage-only. Recheck mail.delete on the resolved message
+    // when the CURRENT graph moves to a trash alias (or an interpolated target that MAY be trash),
+    // so a triage-but-not-delete delegate cannot remove the message from the active mailbox.
+    const trashGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.move_imap', config: { folderPath: 'Trash' } } }] };
+    const archiveGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.move_imap', config: { folderPath: 'Archive' } } }] };
+    const dynamicGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.move_imap', config: { folderPath: '{{customer.folder}}' } } }] };
+    const graphs = new Map<number, unknown>([[730, trashGraph], [731, archiveGraph], [732, dynamicGraph]]);
+
+    // Trash move + mail.delete revoked → denied at execution.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.delete retained, both the delete (trash-move) and triage (move is triage-class)
+    // supplementals are asserted on the message, in addition to the base content.read.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.delete', 'mail.triage']);
+
+    // A literal NON-trash move (Archive) adds no mail.delete requirement — only the triage recheck.
+    const nonTrash = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 731, messageId: 12 },
+    }), nonTrash);
+    expect(nonTrash.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.triage']);
+
+    // An interpolated target ({{...}}) may resolve to trash at runtime → fail closed (mail.delete required).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 732, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.delete']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('rechecks mail.triage for a workflow.execute whose current graph mutates via triage-class nodes (R38-1)', async () => {
+    // Triage-class nodes (tag/category/archive/mark_seen/assign/spam/move) mutate the
+    // message under the system role, yet the base policy only requires content.read. A
+    // user-attributed run whose actor kept content.read but lacks mail.triage must be denied.
+    const tagGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.tag' } }] };
+    const legacyArchiveGraph = { nodes: [{ type: 'action', data: { actionType: 'archive' } }] };
+    const draftGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.create_draft' } }] };
+    const graphs = new Map<number, unknown>([[730, tagGraph], [731, legacyArchiveGraph], [732, draftGraph]]);
+
+    // Triage-node graph + mail.triage revoked → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.triage']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.triage retained: base content.read + the triage supplemental.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 730, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.triage']);
+
+    // A LEGACY canvas action node (bare actionType 'archive') is caught too.
+    const legacy = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.triage']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 731, messageId: 12 },
+    }), legacy)).rejects.toMatchObject({ nonRetryable: true });
+
+    // email.create_draft is not a triage node — it adds NO mail.triage requirement.
+    // (It has its own mail.draft.create recheck, exercised in the R39-2 test below, so
+    // here the assertions are content.read + draft.create — never triage.)
+    const draftOnly = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 732, messageId: 12 },
+    }), draftOnly);
+    expect(draftOnly.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.create']);
+    expect(draftOnly.assertions.some((entry) => entry.permission === 'mail.triage')).toBe(false);
+
+    // Trusted-service runs return before the supplemental.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.triage']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 730, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
+  test('rechecks mail.draft.create for a workflow.execute whose current graph creates a draft (R39-2)', async () => {
+    // An email.create_draft node persists a compose/reply draft on the message under the
+    // system role (createWorkflowComposeDraft), yet the base policy only requires
+    // content.read. A user-attributed run whose actor lacks/lost mail.draft.create must
+    // be denied.
+    const draftGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.create_draft' } }] };
+    const noDraftGraph = { nodes: [{ type: 'trigger' }, { type: 'registry', data: { nodeType: 'ai.classify' } }] };
+    const graphs = new Map<number, unknown>([[740, draftGraph], [741, noDraftGraph]]);
+
+    // Draft-create-node graph + mail.draft.create revoked → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 740, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.create']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // With mail.draft.create retained: base content.read + the draft.create supplemental.
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 740, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.create']);
+
+    // A graph without a draft-create node adds no draft.create requirement.
+    const noDraft = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 741, messageId: 12 },
+    }), noDraft);
+    expect(noDraft.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // Trusted-service runs return before the supplemental.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.create']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 740, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
+  test('rechecks mail.draft.create on a create_draft account pinned by set_variable, incl. message-less runs (R45-1)', async () => {
+    // email.create_draft mints a draft under the account named by the email.account_id
+    // variable; a set_variable pinning it to account 9 (≠ the context message's account 7)
+    // must be authorized against account 9 — and even a message-less run (which skips the
+    // resource-gated draft.create recheck) is gated here.
+    const pinnedGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 9 } } },
+      { type: 'registry', data: { nodeType: 'email.create_draft' } },
+    ] };
+    const missingAccountGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: 999 } } },
+      { type: 'registry', data: { nodeType: 'email.create_draft' } },
+    ] };
+    const graphs = new Map<number, unknown>([[745, pinnedGraph], [746, missingAccountGraph]]);
+
+    // Pinned account 9 is authorized (in addition to the context message's account).
+    const allowed = makePolicyPorts({ workflowGraphs: graphs, resolvableAccountIds: new Set([9]) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 745, messageId: 12 },
+    }), allowed);
+    expect(allowed.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.draft.create',
+      resource: { type: 'account', accountId: '9' },
+    }));
+
+    // Revoking mail.draft.create → denied (account 9 resolves, then the assertion fails).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 745, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, resolvableAccountIds: new Set([9]), denyPermissions: new Set(['mail.draft.create']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // A MESSAGE-LESS run (no context message) is still gated on the pinned account.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 745 },
+    }), makePolicyPorts({ workflowGraphs: graphs, resolvableAccountIds: new Set([9]), denyPermissions: new Set(['mail.draft.create']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // A pinned account that resolves to nothing (deleted/foreign) fails closed.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 746, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // Trusted-service runs return before the supplemental.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.create']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 745, messageId: 12 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
+  test('denies a non-owner create_draft run whose email.account_id is runtime-computed; exempts owner (R46-2)', async () => {
+    // A set_variable assigning email.account_id an interpolated value cannot be resolved (and
+    // authorized) at policy time, so a non-owner/admin run is denied fail-closed; owner/admin
+    // may create a draft under any account and are exempt.
+    const dynamicGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.account_id', value: '{{customer.account_id}}' } } },
+      { type: 'registry', data: { nodeType: 'email.create_draft' } },
+    ] };
+    const graphs = new Map<number, unknown>([[747, dynamicGraph]]);
+
+    // Non-owner delegate (with a context message) → denied.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 747, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // A message-less non-owner run is denied too (the guard runs before the non_mail return).
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 747 },
+    }), makePolicyPorts({ workflowGraphs: graphs }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // Owner run is NOT denied by the dynamic guard (completes without throwing).
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', workflowId: 747, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs }));
+  });
+
+  test('rechecks mail.draft.edit for workflow release/hold_outbound and static/variable-pinned send_draft nodes (R40-4/R41-3/R42-1)', async () => {
+    // release_outbound / hold_outbound mutate the workflow message; send_draft with a static
+    // config.draftId arms a SEPARATE target draft — all under the system role, all mutating a
+    // draft the base content.read policy never covers.
+    const releaseGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } }] };
+    const holdGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.hold_outbound', config: {} } }] };
+    const legacyHoldGraph = { nodes: [{ type: 'action', data: { actionType: 'hold_outbound', reason: 'x' } }] };
+    const sendStaticGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } }] };
+    const sendVariableGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } }] };
+    const sendMissingGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 999 } } }] };
+    // A logic.set_variable node statically pins the draftIdVariable → the target id (13) is
+    // knowable at policy time and must be authorized (R42-1).
+    const sendVariablePinnedGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: 13 } } },
+      { type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+    ] };
+    const graphs = new Map<number, unknown>([
+      [750, releaseGraph], [751, sendStaticGraph], [752, sendVariableGraph], [753, sendMissingGraph],
+      [754, holdGraph], [755, legacyHoldGraph], [756, sendVariablePinnedGraph],
+    ]);
+
+    // release_outbound: mail.draft.edit revoked → denied; retained → content.read on the
+    // workflow message + draft.edit on it.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 750, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+    const release = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 750, messageId: 12 },
+    }), release);
+    expect(release.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.edit']);
+
+    // hold_outbound (registry) and the legacy canvas action alias are gated the same way.
+    for (const workflowId of [754, 755]) {
+      await expect(enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId, messageId: 12 },
+      }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+        .rejects.toMatchObject({ nonRetryable: true });
+      const heldAllowed = makePolicyPorts({ workflowGraphs: graphs });
+      await enforceMailJobPolicy(job({
+        type: 'workflow.execute',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId, messageId: 12 },
+      }), heldAllowed);
+      expect(heldAllowed.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read', 'mail.draft.edit']);
+    }
+
+    // send_draft static config.draftId=13: draft.edit is asserted on the TARGET draft 13
+    // (not the workflow message 12); revoked → denied.
+    const sendStatic = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 751, messageId: 12 },
+    }), sendStatic);
+    expect(sendStatic.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.draft.edit',
+      resource: { type: 'message', accountId: '7', folderId: '8', messageId: '13' },
+    }));
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 751, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // send_draft with a runtime draftIdVariable that NO set_variable node pins (its value
+    // comes from genuine runtime data) adds no pre-execution draft.edit requirement here —
+    // the id is only known at execution; the actual send is blocked downstream by the
+    // mail.send.scheduled recheck.
+    const sendVariable = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 752, messageId: 12 },
+    }), sendVariable);
+    expect(sendVariable.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+
+    // send_draft whose draftIdVariable is statically pinned by a logic.set_variable node:
+    // the target id (13) IS knowable at policy time → draft.edit is asserted on it; revoked
+    // → denied (R42-1).
+    const sendVariablePinned = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 756, messageId: 12 },
+    }), sendVariablePinned);
+    expect(sendVariablePinned.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.draft.edit',
+      resource: { type: 'message', accountId: '7', folderId: '8', messageId: '13' },
+    }));
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 756, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) })))
+      .rejects.toMatchObject({ nonRetryable: true });
+
+    // A static target that resolves to nothing (deleted/foreign) fails closed.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', workflowId: 753, messageId: 12 },
+    }), makePolicyPorts({ workflowGraphs: graphs }))).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('rechecks side-effect privilege for MANUAL-marked workflow child jobs, not compose-originated ones', async () => {
+    const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
+    // ai.pick_canned is covered separately: a user actor now always returns a
+    // canned-scope authorization (not undefined), so it doesn't fit this loop's
+    // toBeUndefined assertions.
+    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.review', 'ai.transform_text'] as const;
+    for (const type of childTypes) {
+      // A demoted (non-admin) initiator's MARKED message-less child would otherwise
+      // hit the non_mail early return and run its side-effecting node unchecked.
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', [MARK]: true },
+      }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+
+      // UNMARKED (compose-originated) child for a non-admin sender → allowed: the
+      // message-less job resolves to non_mail and the sender was authorized at send.
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
+      }), makePolicyPorts())).resolves.toBeUndefined();
+
+      // Owner/admin may run it; trusted-service (automatic/inbound) children bypass.
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', [MARK]: true },
+      }), makePolicyPorts())).resolves.toBeUndefined();
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a' }),
+      }), makePolicyPorts())).resolves.toBeUndefined();
+    }
+
+    // Message-scoped MARKED side-effect children (forward_copy = SMTP send,
+    // ai.classify = message tag, dmarc_ingest = parsed DMARC) stay admin-gated: the
+    // marker denies the demoted admin before the per-message check.
+    for (const type of ['workflow.forward_copy', 'ai.classify', 'workflow.dmarc_ingest'] as const) {
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, [MARK]: true },
+      }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+      // UNMARKED (compose-originated) → not admin-gated, but STILL bound by the
+      // per-message ACL (allowed here because the delegate holds the grant).
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+      }), makePolicyPorts())).resolves.toBeUndefined();
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12, [MARK]: true },
+      }), makePolicyPorts())).resolves.toBeUndefined();
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+      }), makePolicyPorts())).resolves.toBeUndefined();
+    }
+
+    // An UNMARKED message-scoped child is still bound by per-message ACL: an
+    // out-of-scope message is denied even without the admin marker.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.forward_copy',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 101 },
+    }), makePolicyPorts({ denyMessages: new Set(['101']) }))).rejects.toMatchObject({ nonRetryable: true });
+
+    // ai.reply_suggestion: an UNMARKED (compose/inbound) job is not admin-gated — it has
+    // a direct user route and only adds its content-read supplemental — so it resolves
+    // for a delegate holding the grants...
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+    // ...but a MANUAL admin-gated (marked) reply-suggestion child is re-denied for a
+    // since-demoted initiator (its ensure() calls the external AI provider and writes
+    // reply_suggestion_* under the system role — not read-only), while an owner passes.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, [MARK]: true },
+    }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12, [MARK]: true },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+  });
+
+  test('re-verifies current admin status for marked post-process retry spam-score jobs', async () => {
+    // A retry job carries the server-only marker (stamped only by the admin-only
+    // post-process/retry route). An initiator demoted to a plain user before the
+    // worker claims it must be re-denied before the system-role security check /
+    // status writes / inbound-workflow enqueue run — retaining mail.triage is not
+    // enough.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        messageId: 12,
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: true,
+      },
+    }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+
+    // An owner/admin initiator passes the recheck and still rechecks the base grant.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'owner-a',
+        messageId: 12,
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: true,
+      },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+
+    // An ordinary (unmarked) inbound spam-score job stays allowed for a plain user
+    // with triage — the recheck applies only to the admin-only retry marker.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+
+    // A forged marker on a request-shaped payload cannot be used to demand admin —
+    // but more importantly, a plain user forging it only makes the check STRICTER,
+    // never weaker; the value must be exactly boolean true to trip the recheck.
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.spam.score',
+      payload: {
+        workspaceId: 'workspace-a',
+        actorUserId: 'user-a',
+        messageId: 12,
+        [POST_PROCESS_RETRY_JOB_MARKER_FIELD]: 'true',
+      },
+    }), makePolicyPorts())).resolves.toBeUndefined();
+  });
+
+  test('rechecks reply-parent triage before a scheduled reply-send marks the parent done', async () => {
+    const markDone = new Map([[12, { replyParentMessageId: 101, markParentDone: true }]]);
+    const ports = makePolicyPorts({ replyParents: markDone });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), ports)).resolves.toBeUndefined();
+    expect(ports.assertions.map((entry) => [entry.permission, (entry.resource as { messageId?: string }).messageId]))
+      .toContainEqual(['mail.triage', '101']);
+
+    // markParentDone false → the parent is not marked done, so no triage recheck.
+    const noMark = makePolicyPorts({ replyParents: new Map([[13, { replyParentMessageId: 101, markParentDone: false }]]) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 13, accountId: 7 },
+    }), noMark)).resolves.toBeUndefined();
+    expect(noMark.assertions.some((entry) => entry.permission === 'mail.triage')).toBe(false);
+
+    // A sender lacking triage on the parent is rejected when it would be marked done.
+    const denied = makePolicyPorts({ replyParents: markDone, denyMessages: new Set(['101']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A reply parent whose stored id does not resolve to exactly one message
+    // (an imported-id collision returns []) fails closed rather than skipping the
+    // triage recheck and letting the send mark an unverified parent done.
+    const ambiguousParent = makePolicyPorts({
+      replyParents: new Map([[12, { replyParentMessageId: 999, markParentDone: true }]]),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), ambiguousParent)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('scheduled send rechecks mail.draft.edit on the draft and mail.attachment.read on each stored attachment path', async () => {
+    // A draft-local upload + a synced path owned by a readable message → allowed.
+    const allowed = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [
+        'workspace-a/compose-drafts/12/ab-upload.pdf',
+        'workspace-a/synced/owned.pdf',
+      ]]]),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), allowed);
+    // Base mail.send on the draft + one UNCONDITIONAL mail.draft.edit on the draft (R39-1
+    // — arming a stored draft for send transmits its body + recipients) + mail.attachment
+    // .read on the synced path's owning message. The draft-local upload needs no extra
+    // check — it is covered by the draft.edit assertion (it has no owning attachment row).
+    expect(allowed.assertions.filter((entry) => entry.permission === 'mail.attachment.read')).toHaveLength(1);
+    expect(allowed.assertions.filter((entry) => entry.permission === 'mail.draft.edit')).toHaveLength(1);
+
+    // An ATTACHMENTLESS draft is still gated: a send-only delegate lacking mail.draft.edit
+    // cannot schedule/transmit another user's stored body + recipients (R39-1 — the base
+    // policy only checks mail.send, and there are no attachment paths to trigger a check).
+    const attachmentless = makePolicyPorts({ denyPermissions: new Set(['mail.draft.edit']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), attachmentless)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A send-only delegate (or an uploader who lost draft.edit) cannot transmit a draft
+    // with a draft-local upload either: the unconditional draft.edit recheck fails closed.
+    const sendOnly = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/compose-drafts/12/ab-upload.pdf']]]),
+      denyPermissions: new Set(['mail.draft.edit']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), sendOnly)).rejects.toMatchObject({ nonRetryable: true });
+
+    // The sender lost mail.attachment.read on the message that owns a synced path.
+    const revoked = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/synced/foreign.pdf']]]),
+      denyMessages: new Set(['101']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), revoked)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A path with no owning attachment row that is not draft-local is denied.
+    const unowned = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/other/secret.pdf']]]),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), unowned)).rejects.toMatchObject({ nonRetryable: true });
+
+    // Trusted-service scheduled sends carry no per-user actor, so attachment paths are
+    // not rechecked (the enforcer returns before the user supplemental).
+    const service = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, ['workspace-a/synced/foreign.pdf']]]),
+      denyMessages: new Set(['101']),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', draftId: 12, accountId: 7 }),
+    }), service);
+    expect(service.assertions.some((entry) => entry.permission === 'mail.attachment.read')).toBe(false);
+  });
+
+  test('scheduled send requires mail.attachment.suspicious_download for a risky stored attachment (R47-1)', async () => {
+    const path = 'workspace-a/synced/owned.pdf'; // owning message 12, held mail.attachment.read
+    // An executable display name additionally requires suspicious_download, mirroring the
+    // download/raw-EML routes — else the delegate exfiltrates bytes those routes deny.
+    const withGrant = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [path]]]),
+      attachmentPathFilenames: new Map([[path, ['invoice.exe']]]),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), withGrant);
+    expect(withGrant.assertions.some((e) => e.permission === 'mail.attachment.suspicious_download')).toBe(true);
+
+    // The same risky attachment with suspicious_download revoked → denied, even though
+    // plain mail.attachment.read is held (so revoking the grant stops an armed draft).
+    const revoked = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [path]]]),
+      attachmentPathFilenames: new Map([[path, ['invoice.exe']]]),
+      denyPermissions: new Set(['mail.attachment.suspicious_download']),
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), revoked)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A SAFE display name needs no suspicious grant: a delegate lacking it still sends.
+    const safe = makePolicyPorts({
+      scheduledDraftAttachmentPaths: new Map([[12, [path]]]),
+      attachmentPathFilenames: new Map([[path, ['owned.pdf']]]),
+      denyPermissions: new Set(['mail.attachment.suspicious_download']),
+    });
+    await enforceMailJobPolicy(job({
+      type: 'mail.send.scheduled',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+    }), safe);
+    expect(safe.assertions.some((e) => e.permission === 'mail.attachment.suspicious_download')).toBe(false);
+  });
+
+  test('reply generation requires content-read in addition to draft-create', async () => {
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.draft.create',
+      'mail.content.read',
+    ]);
+
+    // draft.create alone is not enough — a delegate lacking content.read cannot
+    // queue generation that reads the message body.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.reply_suggestion',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('classification requires content-read in addition to triage', async () => {
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.triage',
+      'mail.content.read',
+    ]);
+
+    // triage alone is not enough — a content grant revoked after workflow.execute
+    // queued this ai.classify child (while the user retained triage) is caught at
+    // execution: classification reads snippet/body_text and may send it to the AI
+    // provider before persisting the tag.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('ai.agent with createDraft rechecks draft-create in addition to content-read', async () => {
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.agent',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.draft.create',
+    ]);
+
+    // A createDraft agent mints a reply draft under the system role, so it must fail
+    // closed when the initiating user's draft.create was revoked after enqueue.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.draft.create']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.agent',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // createDraft:false → no draft, so no draft.create recheck (content-read only).
+    const readOnly = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.agent',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: false },
+    }), readOnly)).resolves.toBeUndefined();
+    expect(readOnly.assertions.map((entry) => entry.permission)).toEqual(['mail.content.read']);
+  });
+
+  test('ai.pick_canned rechecks draft-create for drafts and scopes the canned query to the user', async () => {
+    // A compose-originated (user) pick_canned returns the initiating user's
+    // mail.draft.create scope so the worker restricts selectCannedResponses to global
+    // + in-scope templates; with createDraft it also rechecks draft.create.
+    const allowed = makePolicyPorts();
+    const authorization = await enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), allowed);
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.content.read',
+      'mail.draft.create',
+    ]);
+    expect(allowed.scopePermissions).toContain('mail.draft.create');
+    expect(authorization).toEqual({
+      kind: 'ai_pick_canned_scope',
+      cannedScope: { kind: 'restricted', accountIds: [7], folderIds: [], messageIds: [] },
+    });
+
+    // Revoked draft.create after enqueue → the draft-creating pick_canned is rejected.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.draft.create']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, createDraft: true },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A MANUAL-marked pick_canned for a demoted (non-admin) initiator stays admin-gated.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12, [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true },
+    }), makePolicyPorts())).rejects.toMatchObject({ nonRetryable: true });
+
+    // A trusted-service (automatic/inbound) run carries no per-user scope, so the
+    // canned query stays unrestricted (authorization undefined).
+    const service = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.pick_canned',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 12 }),
+    }), service)).resolves.toBeUndefined();
+    expect(service.scopePermissions).not.toContain('mail.draft.create');
+  });
+
+  test('resolves the job actor via a scoped getUser lookup, not a full user-list scan', async () => {
+    const base = makePolicyPorts();
+    const getUser = jest.fn(async (input: { workspaceId: string; userId: string }) => (
+      input.userId === 'user-a' ? { id: 'user-a', role: 'user' as const, disabledAt: null } : null
+    ));
+    const listUsers = jest.fn(async () => {
+      throw new Error('listUsers must not be scanned when getUser is available');
+    });
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), { ...base, auth: { getUser, listUsers } })).resolves.toBeUndefined();
+    expect(getUser).toHaveBeenCalledWith({ workspaceId: 'workspace-a', userId: 'user-a' });
+    expect(listUsers).not.toHaveBeenCalled();
+
+    // A disabled user resolved via getUser is still rejected.
+    await expect(enforceMailJobPolicy(job({
+      type: 'ai.classify',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), {
+      ...base,
+      auth: { async getUser() { return { id: 'user-a', role: 'user' as const, disabledAt: '2026-07-19T10:00:00.000Z' }; } },
+    })).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('message-attributed workflow.http_request requires content-read', async () => {
+    // The request interpolates body_text/snippet/combined_text into the outbound URL
+    // and body, so a metadata-only delegate whose content.read was revoked after the
+    // workflow queued this child must be blocked at execution.
+    const allowed = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.http_request',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), allowed)).resolves.toBeUndefined();
+    expect(allowed.assertions.map((entry) => entry.permission)).toEqual([
+      'mail.metadata.read',
+      'mail.content.read',
+    ]);
+
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.content.read']) });
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.http_request',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), denied)).rejects.toMatchObject({ nonRetryable: true });
+
+    // A message-less http_request resolves to non_mail — no content gate applies.
+    const messageless = makePolicyPorts();
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.http_request',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a' },
+    }), messageless)).resolves.toBeUndefined();
+    expect(messageless.assertions).toEqual([]);
+  });
+
+  test('formerly service-only mail jobs reject absent or forged provenance and accept only canonical service provenance', async () => {
+    const ports = makePolicyPorts({ denyAllMailAccess: true });
+    const servicePayloads = {
+      'mail.vacation.auto_reply': { workspaceId: 'workspace-a', messageId: 12 },
+      'workflow.dmarc_ingest': { workspaceId: 'workspace-a', messageId: 12, workflowId: 7 },
+      'mail.send.scheduled': { workspaceId: 'workspace-a', draftId: 12, accountId: 7 },
+      'lock.cleanup': { workspaceId: 'workspace-a' },
+    } as const;
+
+    for (const [type, payload] of Object.entries(servicePayloads)) {
+      await expect(enforceMailJobPolicy(job({ type, payload }), ports))
+        .rejects.toMatchObject({ nonRetryable: true });
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: { ...payload, [TRUSTED_SERVICE_JOB_MARKER_FIELD]: 'forged' },
+      }), ports)).rejects.toMatchObject({ nonRetryable: true });
+      await expect(enforceMailJobPolicy(job({
+        type,
+        payload: buildTrustedServiceJobPayload(payload),
+      }), ports)).resolves.toBeUndefined();
+    }
+
+    expect(ports.assertions).toEqual([]);
+    expect(ports.scopePermissions).toEqual([]);
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.vacation.auto_reply',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', messageId: 9999 }),
+    }), ports)).rejects.toMatchObject({ nonRetryable: true });
+  });
+
+  test('vacation and DMARC jobs accept initiating actor provenance and recheck mail grants', async () => {
+    const ports = makePolicyPorts();
+
+    await expect(enforceMailJobPolicy(job({
+      type: 'mail.vacation.auto_reply',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', messageId: 12 },
+    }), ports)).resolves.toBeUndefined();
+    // dmarc_ingest is a workflow side-effect child (R16-1), so a plain user actor
+    // is denied; an owner initiator passes the gate and still rechecks the grant.
+    await expect(enforceMailJobPolicy(job({
+      type: 'workflow.dmarc_ingest',
+      payload: { workspaceId: 'workspace-a', actorUserId: 'owner-a', messageId: 12, workflowId: 7 },
+    }), ports)).resolves.toBeUndefined();
+
+    expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual([
+      ['mail.send', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+      ['mail.attachment.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+    ]);
+  });
+
+  test('inventories user-or-service mail job policies so every producer has user or trusted-service provenance', () => {
+    const initiating = SERVER_JOB_POLICIES
+      .filter((entry) => entry.kind === 'mail' && entry.actorMode !== 'service')
+      .map((entry) => entry.type)
+      .sort();
+
+    expect(initiating).toEqual([
+      'ai.agent',
+      'ai.classify',
+      'ai.pick_canned',
+      'ai.reply_suggestion',
+      'ai.review',
+      'ai.transform_text',
+      'mail.send.scheduled',
+      'mail.spam.score',
+      'mail.sync.imap',
+      'mail.sync.pop3',
+      'mail.vacation.auto_reply',
+      'workflow.dmarc_ingest',
+      'workflow.execute',
+      'workflow.forward_copy',
+      'workflow.http_request',
+    ]);
+  });
+
+  test('event filter accepts canonical non-mail, denies unknown runtime types, and allows negative account-signature source ids', async () => {
+    const ports = makePolicyPorts();
+    const context = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'customer.updated',
+      entityType: 'customer',
+      entityId: 'customer-1',
+    }), context)).resolves.toMatchObject({ type: 'customer.updated' });
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_secret.leaked',
+      entityType: 'email_message',
+      entityId: '12',
+    }) as ServerEvent, context)).resolves.toBeNull();
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account_signature.updated',
+      entityType: 'email_account_signature',
+      entityId: '-71',
+      payload: { accountId: 7, signatureId: -71 },
+    }), context)).resolves.toMatchObject({
+      type: 'email_account_signature.updated',
+      entityId: '-71',
+      payload: { accountId: 7, signatureId: -71 },
+    });
+
+    expect(ports.lookups).toContainEqual({ kind: 'metadata', entity: 'account_signature', id: -71 });
+  });
+
+  test('ACL invalidation events reach the subject and delegation managers, sanitized, and are withheld from unrelated users', async () => {
+    const ports = makePolicyPorts();
+    const aclEvent = event({
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      entityId: '901',
+      payload: {
+        bindingId: 901,
+        targetUserId: 'user-a',
+        state: 'deleted',
+        email: 'hidden@example.test',
+        body: 'hidden',
+        filename: 'hidden.pdf',
+      },
+    });
+
+    // The affected subject receives the sanitized invalidation so their client
+    // clears loaded mail state.
+    const subjectDelivered = await filterMailEventForPrincipal(aclEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    });
+    expect(subjectDelivered).not.toBeNull();
+    expect(subjectDelivered!.payload).toEqual({ bindingId: 901, targetUserId: 'user-a', state: 'deleted' });
+
+    // R18-3: a delegation manager (owner/admin) who is NOT the subject also receives
+    // it so their delegation panel reloads instead of holding a stale binding list.
+    // The payload stays sanitized to the enumerable bindingId/targetUserId/state —
+    // the hidden email/body/filename fields never survive.
+    const managerDelivered = await filterMailEventForPrincipal(aclEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'admin' as const },
+      ports,
+    });
+    expect(managerDelivered).not.toBeNull();
+    expect(managerDelivered!.payload).toEqual({ bindingId: 901, targetUserId: 'user-a', state: 'deleted' });
+
+    // An unrelated non-manager user never receives another subject's invalidation.
+    await expect(filterMailEventForPrincipal(aclEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'user' as const },
+      ports,
+    })).resolves.toBeNull();
+  });
+
+  test('delivers PGP identity events to the owning user and owners/admins, peer-key events owner/admin only', async () => {
+    const ports = makePolicyPorts();
+    const identityEvent = event({
+      type: 'pgp_identity.created',
+      entityType: 'pgp_identity',
+      entityId: '5',
+      payload: { id: 5, userId: 'user-a', fingerprint: 'ABC' },
+    });
+
+    // The identity's owning user receives it (a non-admin delegate who generated their
+    // own key), so their PgpPanel reloads.
+    await expect(filterMailEventForPrincipal(identityEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    })).resolves.not.toBeNull();
+    // An owner/admin who is not the owner still receives it.
+    await expect(filterMailEventForPrincipal(identityEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-b', role: 'admin' as const },
+      ports,
+    })).resolves.not.toBeNull();
+    // An unrelated non-admin user does not receive another user's identity event.
+    await expect(filterMailEventForPrincipal(identityEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-b', role: 'user' as const },
+      ports,
+    })).resolves.toBeNull();
+
+    // Peer-key events are workspace-wide and stay owner/admin only — even the acting
+    // user (a non-admin) does not receive one.
+    const peerKeyEvent = event({
+      type: 'pgp_peer_key.created',
+      entityType: 'pgp_peer_key',
+      entityId: '9',
+      payload: { id: 9, userId: 'user-a' },
+    });
+    await expect(filterMailEventForPrincipal(peerKeyEvent, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    })).resolves.toBeNull();
+  });
+
+  test('publishes a self-targeted ACL invalidation only when a socket principal loses owner/admin', async () => {
+    const published: ServerEvent[] = [];
+    const events: ServerEventPort = {
+      async publish(event) { published.push(event); },
+    };
+    const at = '2026-07-20T22:40:00.000Z';
+    const principal = (userId: string, role: 'owner' | 'admin' | 'user') => ({
+      workspaceId: 'workspace-a',
+      userId,
+      role,
+    });
+
+    // owner -> user and admin -> user each emit exactly one self-targeted, sanitized
+    // invalidation so the demoted user's client clears mail loaded under the old role.
+    for (const from of ['owner', 'admin'] as const) {
+      published.length = 0;
+      await expect(
+        publishDemotionAclInvalidationIfNeeded(principal('user-a', from), principal('user-a', 'user'), events, at),
+      ).resolves.toBe(true);
+      expect(published).toHaveLength(1);
+      expect(published[0]).toEqual({
+        type: 'email_acl.changed',
+        workspaceId: 'workspace-a',
+        entityType: 'email_acl',
+        entityId: 'user-a',
+        actorUserId: 'user-a',
+        occurredAt: at,
+        payload: { targetUserId: 'user-a', state: 'changed' },
+      });
+    }
+
+    // Non-demotion transitions publish nothing: an unchanged plain user, a still-
+    // elevated admin, and an elevation (user -> admin) must not emit an invalidation.
+    for (const [from, to] of [
+      ['user', 'user'],
+      ['admin', 'admin'],
+      ['owner', 'owner'],
+      ['user', 'admin'],
+    ] as const) {
+      published.length = 0;
+      await expect(
+        publishDemotionAclInvalidationIfNeeded(principal('user-a', from), principal('user-a', to), events, at),
+      ).resolves.toBe(false);
+      expect(published).toHaveLength(0);
+    }
+  });
+
+  test('isSelfTargetedAclInvalidation matches only this user\'s own email_acl.changed (R40-5)', () => {
+    const acl = (payload: Record<string, unknown>, overrides: Partial<ServerEvent> = {}): ServerEvent => ({
+      sequence: 1,
+      type: 'email_acl.changed',
+      workspaceId: 'workspace-a',
+      entityType: 'email_acl',
+      entityId: 'user-a',
+      actorUserId: 'admin-a',
+      occurredAt: '2026-07-21T10:00:00.000Z',
+      payload,
+      ...overrides,
+    });
+    // Self-targeted → force a socket re-resolve (bypass the revalidation TTL).
+    expect(isSelfTargetedAclInvalidation(acl({ targetUserId: 'user-a', state: 'changed' }), 'user-a')).toBe(true);
+    // Another user's ACL change (delivered to owners/admins) must NOT force a re-resolve.
+    expect(isSelfTargetedAclInvalidation(acl({ targetUserId: 'user-b', state: 'changed' }), 'user-a')).toBe(false);
+    // Non-ACL events and wrong entityType never force a re-resolve.
+    expect(isSelfTargetedAclInvalidation(
+      acl({ targetUserId: 'user-a' }, { type: 'email_message.updated' as ServerEvent['type'] }),
+      'user-a',
+    )).toBe(false);
+    expect(isSelfTargetedAclInvalidation(
+      acl({ targetUserId: 'user-a' }, { entityType: 'email_message' as ServerEvent['entityType'] }),
+      'user-a',
+    )).toBe(false);
+  });
+
+  test('ACL invalidation events reach scoped non-admin delegation managers when the payload carries the binding resource', async () => {
+    const aclEvent = (extra: Record<string, unknown>) => event({
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      entityId: '902',
+      payload: { bindingId: 902, targetUserId: 'user-a', state: 'changed', ...extra },
+    });
+    const manager = { workspaceId: 'workspace-a', userId: 'mgr', role: 'user' as const };
+
+    // A manager holding mail.delegation.manage on the binding's folder receives the
+    // invalidation; the filter authorized exactly that permission + resource.
+    const authorized = makePolicyPorts();
+    const delivered = await filterMailEventForPrincipal(
+      aclEvent({ resourceType: 'folder', accountId: 7, folderId: 8 }),
+      { principal: manager, ports: authorized },
+    );
+    expect(delivered).not.toBeNull();
+    expect(delivered!.payload).toEqual({
+      bindingId: 902, targetUserId: 'user-a', state: 'changed', resourceType: 'folder', accountId: 7, folderId: 8,
+    });
+    expect(authorized.assertions).toContainEqual(expect.objectContaining({
+      permission: 'mail.delegation.manage',
+      resource: { type: 'folder', accountId: '7', folderId: '8' },
+    }));
+
+    // A manager lacking mail.delegation.manage on that resource is withheld.
+    const denied = makePolicyPorts({ denyPermissions: new Set(['mail.delegation.manage']) });
+    await expect(filterMailEventForPrincipal(
+      aclEvent({ resourceType: 'account', accountId: 7 }),
+      { principal: manager, ports: denied },
+    )).resolves.toBeNull();
+
+    // A resource-less invalidation (delete/empty-replace, group-membership, demotion)
+    // stays subject-only: a non-subject manager gets nothing, no permission checked.
+    const resourceless = makePolicyPorts();
+    await expect(filterMailEventForPrincipal(
+      aclEvent({}),
+      { principal: manager, ports: resourceless },
+    )).resolves.toBeNull();
+    expect(resourceless.assertions).toEqual([]);
+  });
+
+  test('email_account.updated reaches a child (folder)-scoped delegate but not one scoped to another account (R44-2)', async () => {
+    const accountUpdated = event({
+      type: 'email_account.updated',
+      entityType: 'email_account',
+      entityId: '7',
+      payload: { accountId: 7 },
+    });
+    const principal = { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const };
+
+    // A delegate scoped only to folder 8 (which belongs to account 7) renders a redacted
+    // parent account 7, so the account UPDATE must reach them even though a child grant
+    // cannot authorize the parent account resource directly.
+    const childScoped = makePolicyPorts({
+      scope: { kind: 'restricted', accountIds: [], folderIds: [8], messageIds: [] },
+      folderAccounts: new Map([[8, '7']]),
+    });
+    await expect(filterMailEventForPrincipal(accountUpdated, { principal, ports: childScoped }))
+      .resolves.toMatchObject({ type: 'email_account.updated' });
+
+    // A delegate scoped only to folder 9 (account 8) has no visibility of account 7 → dropped.
+    const unrelated = makePolicyPorts({
+      scope: { kind: 'restricted', accountIds: [], folderIds: [9], messageIds: [] },
+      folderAccounts: new Map([[9, '8']]),
+    });
+    await expect(filterMailEventForPrincipal(accountUpdated, { principal, ports: unrelated }))
+      .resolves.toBeNull();
+
+    // An owner receives it regardless of scope (short-circuits before the scope check).
+    const ownerPrincipal = { workspaceId: 'workspace-a', userId: 'owner-a', role: 'owner' as const };
+    await expect(filterMailEventForPrincipal(
+      accountUpdated,
+      { principal: ownerPrincipal, ports: makePolicyPorts({ scope: { kind: 'none' } }) },
+    )).resolves.toMatchObject({ type: 'email_account.updated' });
+  });
+
+  test('event resource matrix covers account message metadata edge parents thread any spam fallback deny and workspace-global', async () => {
+    const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
+    const context = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account.updated',
+      entityType: 'email_account',
+      entityId: '7',
+      payload: { accountId: 7 },
+    }), context)).resolves.toMatchObject({ type: 'email_account.updated' });
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_message.updated',
+      entityType: 'email_message',
+      entityId: '12',
+      payload: { messageId: 12 },
+    }), context)).resolves.toMatchObject({ type: 'email_message.updated' });
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_edge.created',
+      entityType: 'email_thread_edge',
+      entityId: '55',
+      payload: { parentMessageId: 12, childMessageId: 13 },
+    }), context)).resolves.toMatchObject({ type: 'email_thread_edge.created' });
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread.updated',
+      entityType: 'email_thread',
+      entityId: 'thread-7',
+      payload: { threadId: 'thread-7' },
+    }), context)).resolves.toMatchObject({ type: 'email_thread.updated' });
+    await expect(filterMailEventForPrincipal(event({
+      type: 'spam_decision.created',
+      entityType: 'spam_decision',
+      entityId: '66',
+      payload: { messageId: 101, accountId: 7 },
+    }), context)).resolves.toBeNull();
+    await expect(filterMailEventForPrincipal(event({
+      type: 'spam_decision.created',
+      entityType: 'spam_decision',
+      entityId: '67',
+      payload: { accountId: 7 },
+    }), context)).resolves.toMatchObject({ type: 'spam_decision.created' });
+    await expect(filterMailEventForPrincipal(event({
+      type: 'spam_decision.created',
+      entityType: 'spam_decision',
+      entityId: '68',
+      payload: {},
+    }), context)).resolves.toBeNull();
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_category.updated',
+      entityType: 'email_category',
+      entityId: '5',
+      payload: { state: 'renamed' },
+    }), context)).resolves.toMatchObject({ type: 'email_category.updated' });
+
+    expect(ports.assertions.map((entry) => entry.resource)).toEqual(expect.arrayContaining([
+      { type: 'account', accountId: '7' },
+      { type: 'message', accountId: '7', folderId: '8', messageId: '12' },
+      { type: 'message', accountId: '7', folderId: '8', messageId: '13' },
+    ]));
+    expect(ports.scopePermissions).toContain('mail.metadata.read');
+  });
+
+  test('deletion events authorize against the payload tombstone, not the vanished row', async () => {
+    const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    // Metadata deletions resolve the still-present parent from the payload.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_message_tag.deleted',
+      entityType: 'email_message_tag',
+      entityId: '999',
+      payload: { messageId: 12, tagId: 3 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_message_tag.deleted' });
+    // ...but stay denied when the payload parent is inaccessible.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_internal_note.deleted',
+      entityType: 'email_internal_note',
+      entityId: '998',
+      payload: { messageId: 101, noteId: 4 },
+    }), userContext)).resolves.toBeNull();
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account_signature.deleted',
+      entityType: 'email_account_signature',
+      entityId: '997',
+      payload: { accountId: 7, signatureId: 2 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_account_signature.deleted' });
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_edge.deleted',
+      entityType: 'email_thread_edge',
+      entityId: '996',
+      payload: { parentMessageId: 12, childMessageId: 13 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_thread_edge.deleted' });
+    // Both edge messages must be authorized — an inaccessible child drops it,
+    // so the child id never leaks to a parent-only viewer.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_edge.deleted',
+      entityType: 'email_thread_edge',
+      entityId: '995',
+      payload: { parentMessageId: 12, childMessageId: 101 },
+    }), userContext)).resolves.toBeNull();
+
+    // The account itself is gone → owners/admins only.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account.deleted',
+      entityType: 'email_account',
+      entityId: '7',
+      payload: { accountId: 7 },
+    }), userContext)).resolves.toBeNull();
+    const adminContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' as const },
+      ports,
+    };
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_account.deleted',
+      entityType: 'email_account',
+      entityId: '7',
+      payload: { accountId: 7 },
+    }), adminContext)).resolves.toMatchObject({ type: 'email_account.deleted' });
+  });
+
+  test('authorizes thread-alias deletions against BOTH deleted threads (R47-4)', async () => {
+    const ports = makePolicyPorts();
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+    const adminContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' as const },
+      ports,
+    };
+
+    // Accountless alias whose BOTH threads the delegate can see: the tombstone resolves
+    // two-sided to those threads' messages (mode 'all'), so the delegate receives the
+    // deletion refresh — the old plain-account tombstone dropped it (owner/admin only).
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_alias.deleted',
+      entityType: 'email_thread_alias',
+      entityId: '30',
+      payload: { accountId: null, aliasThreadId: 'thread-vis-a', canonicalThreadId: 'thread-vis-b', state: 'deleted' },
+    }), userContext)).resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
+
+    // Accountless alias whose threads the delegate CANNOT see and with no account to fall
+    // back on → no resources → owner/admin only (never dropped for everyone).
+    const invisible = event({
+      type: 'email_thread_alias.deleted',
+      entityType: 'email_thread_alias',
+      entityId: '31',
+      payload: { accountId: null, aliasThreadId: 'thread-x', canonicalThreadId: 'thread-y', state: 'deleted' },
+    });
+    await expect(filterMailEventForPrincipal(invisible, userContext)).resolves.toBeNull();
+    await expect(filterMailEventForPrincipal(invisible, adminContext))
+      .resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
+
+    // An account-scoped tombstone whose threads are already merged away (empty) falls back
+    // to its account, reaching that account's delegate.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_thread_alias.deleted',
+      entityType: 'email_thread_alias',
+      entityId: '32',
+      payload: { accountId: 7, aliasThreadId: 'thread-empty-1', canonicalThreadId: 'thread-empty-2', state: 'deleted' },
+    }), userContext)).resolves.toMatchObject({ type: 'email_thread_alias.deleted' });
+  });
+
+  test('canned-response events authorize against their account, not any draft scope', async () => {
+    const ports = makePolicyPorts();
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    // Account-scoped canned response on an account the delegate can reach: the
+    // event resolves to that account and is delivered, sanitized to accountId
+    // only (clients treat it as a refetch signal, so title/body are stripped).
+    const delivered = await filterMailEventForPrincipal(event({
+      type: 'email_canned_response.updated',
+      entityType: 'email_canned_response',
+      entityId: '30',
+      payload: { id: 30, accountId: 7, title: 't', body: 'b', sortOrder: 0 },
+    }), userContext);
+    expect(delivered).not.toBeNull();
+    expect(delivered!.payload).toEqual({ accountId: 7 });
+
+    // A canned response on a different account is no longer authorized by an
+    // unrelated draft scope (previously workspace-global leaked its existence).
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_canned_response.updated',
+      entityType: 'email_canned_response',
+      entityId: '31',
+      payload: { id: 31, accountId: 9, title: 't', body: 'b', sortOrder: 0 },
+    }), userContext)).resolves.toBeNull();
+
+    // A global template (accountId null) stays workspace-global: delivered to any
+    // delegate holding a draft scope.
+    await expect(filterMailEventForPrincipal(event({
+      type: 'email_canned_response.created',
+      entityType: 'email_canned_response',
+      entityId: '32',
+      payload: { id: 32, accountId: null, title: 't', body: 'b', sortOrder: 0 },
+    }), userContext)).resolves.toMatchObject({ type: 'email_canned_response.created' });
+  });
+
+  test('restricts PGP identity, spam-list, and remote-content-allowlist events to owners and admins', async () => {
+    const ports = makePolicyPorts();
+    const userContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+    const adminContext = {
+      principal: { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' as const },
+      ports,
+    };
+
+    for (const evt of [
+      { type: 'pgp_identity.created', entityType: 'pgp_identity', entityId: '5', payload: { id: 5, accountId: 7 } },
+      { type: 'pgp_peer_key.updated', entityType: 'pgp_peer_key', entityId: '6', payload: { id: 6 } },
+      { type: 'spam_list_entry.updated', entityType: 'spam_list_entry', entityId: '9', payload: { id: 9 } },
+      // The remote-content allowlist is a workspace security setting whose HTTP list
+      // route excludes restricted scopes, so its events are owner/admin-only too.
+      { type: 'email_remote_content_allowlist.updated', entityType: 'email_remote_content_allowlist', entityId: '12', payload: { id: 12 } },
+    ]) {
+      // A single-account metadata delegate cannot list these via HTTP, so they must
+      // not receive the workspace-wide key/spam-policy mutation over the stream.
+      await expect(filterMailEventForPrincipal(event(evt), userContext)).resolves.toBeNull();
+      // Owners/admins still get them (their read routes admit full-scope callers).
+      await expect(filterMailEventForPrincipal(event(evt), adminContext))
+        .resolves.toMatchObject({ type: evt.type });
+    }
+  });
+
+  test('websocket replay/live dedupe keeps a bounded ordered window', () => {
+    const dedupe = createBoundedEventSequenceDedupe(3);
+
+    dedupe.add(10);
+    dedupe.add(11);
+    dedupe.add(12);
+    dedupe.add(12);
+    expect(dedupe.size()).toBe(3);
+    expect(dedupe.has(12)).toBe(true);
+
+    dedupe.add(13);
+    dedupe.add(14);
+    expect(dedupe.size()).toBe(3);
+    expect(dedupe.has(10)).toBe(false);
+    expect(dedupe.has(12)).toBe(true);
+    expect(dedupe.has(13)).toBe(true);
+    expect(dedupe.has(14)).toBe(true);
+  });
+
+  test('delayed-job events require source-message content access and sanitize live or replay payloads', async () => {
+    const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
+    const context = {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    };
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '87',
+      payload: {
+        id: 87,
+        messageId: 12,
+        status: 'pending',
+        context: { secret: 'hidden' },
+        resumeNodeId: 'wait-1',
+      },
+    }), context)).resolves.toMatchObject({
+      type: 'workflow_delayed_job.updated',
+      payload: {
+        id: 87,
+        messageId: 12,
+        status: 'pending',
+        resumeNodeId: 'wait-1',
+      },
+    });
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '88',
+      payload: { id: 88, messageId: 101, status: 'pending' },
+    }), context)).resolves.toBeNull();
+
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '89',
+      payload: { id: 89, messageId: null, status: 'pending', context: { secret: 'non-mail' } },
+    }), context)).resolves.toMatchObject({
+      type: 'workflow_delayed_job.updated',
+      payload: { id: 89, messageId: null, status: 'pending' },
+    });
+
+    // R33-2: a message delete FK-nulls message_id but LEAVES message_source_sqlite_id —
+    // the job is still MAIL (orphaned), so it must NOT be broadcast as non_mail to every
+    // workspace user; it fails closed to owner/admin only. A plain 'user' is denied...
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '95',
+      payload: { id: 95, messageId: null, messageSourceSqliteId: 41, status: 'pending', context: { secret: 'orphaned-mail' } },
+    }), context)).resolves.toBeNull();
+    // ...while an owner still receives it (fail closed ⇒ owner/admin only).
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '95',
+      payload: { id: 95, messageId: null, messageSourceSqliteId: 41, status: 'pending' },
+    }), {
+      principal: { workspaceId: 'workspace-a', userId: 'owner-a', role: 'owner' as const },
+      ports,
+    })).resolves.toMatchObject({
+      type: 'workflow_delayed_job.updated',
+      payload: { id: 95, messageSourceSqliteId: 41 },
+    });
+
+    for (const payload of [
+      { id: 90, status: 'pending' },
+      { id: 91, messageId: '', status: 'pending' },
+      { id: 92, messageId: 0, status: 'pending' },
+      { id: 93, messageId: {}, status: 'pending' },
+      { id: 94, messageId: false, status: 'pending' },
+    ]) {
+      await expect(filterMailEventForPrincipal(event({
+        type: 'workflow_delayed_job.updated',
+        entityType: 'workflow_delayed_job',
+        entityId: String(payload.id),
+        payload,
+      }), context)).resolves.toBeNull();
+    }
+
+    expect(ports.assertions.map((entry) => [entry.permission, entry.resource])).toEqual(expect.arrayContaining([
+      ['mail.content.read', { type: 'message', accountId: '7', folderId: '8', messageId: '12' }],
+    ]));
+  });
+
+  test('delayed-job live and replay filtering have identical strict optional-message semantics', async () => {
+    const rawEvents = [
+      delayedJobEvent(101, { messageId: 12, status: 'pending', context: { secret: 'visible-secret' } }),
+      delayedJobEvent(102, { messageId: 101, status: 'pending', context: { secret: 'hidden-secret' } }),
+      delayedJobEvent(103, { messageId: null, status: 'pending', context: { secret: 'non-mail-secret' } }),
+      delayedJobEvent(104, { status: 'pending', context: { secret: 'missing-id-secret' } }),
+      delayedJobEvent(105, { messageId: '', status: 'pending', context: { secret: 'empty-id-secret' } }),
+    ];
+    let sourceSubscriber: ((event: ServerEvent) => void | Promise<void>) | undefined;
+    const source: ServerEventPort = {
+      async publish() { return undefined; },
+      subscribe(subscriber) {
+        sourceSubscriber = subscriber;
+        return { unsubscribe() { sourceSubscriber = undefined; } };
+      },
+      replay() { return rawEvents; },
+    };
+    const filtered = createPrincipalFilteredEventPort(source, {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' },
+      ports: makePolicyPorts({ denyMessages: new Set(['101']) }),
+    });
+    const live: ServerEvent[] = [];
+    filtered.subscribe?.((visible) => { live.push(visible); });
+    for (const candidate of rawEvents) await sourceSubscriber?.(candidate);
+    const replay = await filtered.replay?.({ workspaceId: 'workspace-a' });
+
+    expect(live).toEqual(replay);
+    expect(live.map((visible) => visible.entityId)).toEqual(['101', '103']);
+    expect(live.map((visible) => visible.payload)).toEqual([
+      { id: 101, messageId: 12, status: 'pending' },
+      { id: 103, messageId: null, status: 'pending' },
+    ]);
+    expect(JSON.stringify(live)).not.toMatch(/hidden-secret|missing-id-secret|empty-id-secret|101.*hidden/);
+  });
+});
+
+type DelayedJobClassification =
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'non_mail' }>
+  | Readonly<{ kind: 'message'; resource: ReturnType<typeof messageResource> }>;
+
+function makePolicyPorts(options: {
+  denyAllMailAccess?: boolean;
+  denyMessages?: ReadonlySet<string>;
+  denyPermissions?: ReadonlySet<string>;
+  delayedJobs?: ReadonlyMap<number, DelayedJobClassification>;
+  replyParents?: ReadonlyMap<number, { replyParentMessageId: number | null; markParentDone: boolean } | null>;
+  scheduledDraftAttachmentPaths?: ReadonlyMap<number, readonly string[] | null>;
+  attachmentPathFilenames?: ReadonlyMap<string, readonly string[]>;
+  messageAttachmentFilenames?: ReadonlyMap<number, readonly string[]>;
+  workflowGraphs?: ReadonlyMap<number, unknown>;
+  scope?: { kind: 'all' } | { kind: 'none' }
+    | { kind: 'restricted'; accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] };
+  folderAccounts?: ReadonlyMap<number, string>;
+  resolvableAccountIds?: ReadonlySet<number>;
+} = {}) {
+  const lookups: unknown[] = [];
+  const delayedJobLookups: number[] = [];
+  const assertions: Array<{ permission: string; resource: unknown; actor: unknown }> = [];
+  const scopePermissions: string[] = [];
+  return {
+    lookups,
+    delayedJobLookups,
+    assertions,
+    scopePermissions,
+    auth: {
+      async listUsers() {
+        return [
+          { id: 'user-a', role: 'user' as const, disabledAt: null },
+          { id: 'owner-a', role: 'owner' as const, disabledAt: null },
+          { id: 'disabled-user', role: 'user' as const, disabledAt: '2026-07-19T10:00:00.000Z' },
+        ];
+      },
+    },
+    mailAccess: {
+      async assertPermission(input: { permission: string; resource: unknown; actor: unknown }) {
+        if (options.denyAllMailAccess) throw new Error('mail_access_denied');
+        if (options.denyPermissions?.has(input.permission)) throw new Error('mail_access_denied');
+        if (
+          typeof input.resource === 'object'
+          && input.resource !== null
+          && (input.resource as { type?: unknown }).type === 'message'
+          && options.denyMessages?.has(String((input.resource as { messageId?: unknown }).messageId))
+        ) {
+          throw new Error('mail_access_denied');
+        }
+        assertions.push(input);
+      },
+      async resolveScope(input: { permission: string }) {
+        if (options.denyAllMailAccess) throw new Error('mail_access_denied');
+        scopePermissions.push(input.permission);
+        return options.scope ?? { kind: 'restricted' as const, accountIds: [7], folderIds: [], messageIds: [] };
+      },
+    },
+    mailResourceLookup: {
+      async resolve(input: {
+        target: {
+          kind: string;
+          id?: number | string;
+          entity?: string;
+          path?: string;
+          accountId?: number | null;
+          aliasThreadId?: string;
+          canonicalThreadId?: string;
+        };
+      }) {
+        lookups.push(input.target);
+        if (input.target.kind === 'attachment_path') {
+          // 'workspace-a/synced/owned.pdf' → message 12; foreign → message 101; else none.
+          if (input.target.path === 'workspace-a/synced/owned.pdf') {
+            return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: '12' }];
+          }
+          if (input.target.path === 'workspace-a/synced/foreign.pdf') {
+            return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: '101' }];
+          }
+          return [];
+        }
+        if (
+          input.target.kind === 'account'
+          && (input.target.id === 7 || options.resolvableAccountIds?.has(Number(input.target.id)))
+        ) {
+          return [{ type: 'account' as const, accountId: String(input.target.id) }];
+        }
+        if (input.target.kind === 'message' && [12, 13, 101].includes(Number(input.target.id))) {
+          return [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: String(input.target.id) }];
+        }
+        if (input.target.kind === 'metadata' && input.target.entity === 'account_signature' && input.target.id === -71) {
+          return [{ type: 'account' as const, accountId: '7' }];
+        }
+        if (input.target.kind === 'metadata' && input.target.entity === 'thread_edge' && input.target.id === 55) {
+          return [
+            { type: 'message' as const, accountId: '7', folderId: '8', messageId: '12' },
+            { type: 'message' as const, accountId: '7', folderId: '8', messageId: '13' },
+          ];
+        }
+        if (input.target.kind === 'thread' && input.target.id === 'thread-7') {
+          return [
+            { type: 'message' as const, accountId: '7', folderId: '8', messageId: '101' },
+            { type: 'message' as const, accountId: '7', folderId: '8', messageId: '12' },
+          ];
+        }
+        if (input.target.kind === 'folder') {
+          const accountId = options.folderAccounts?.get(Number(input.target.id));
+          return accountId ? [{ type: 'folder' as const, accountId, folderId: String(input.target.id) }] : [];
+        }
+        if (input.target.kind === 'thread_alias_tombstone') {
+          // Two-sided deletion tombstone (R47-4): resolve EACH named thread to its
+          // messages, falling back to the payload account only for an empty thread.
+          // 'thread-vis-*' belong to account 7; anything else is an empty/merged thread.
+          const perThread = (threadId: string | undefined) =>
+            threadId === 'thread-vis-a' || threadId === 'thread-vis-b'
+              ? [{ type: 'message' as const, accountId: '7', folderId: '8', messageId: threadId === 'thread-vis-a' ? '12' : '13' }]
+              : input.target.accountId === 7
+                ? [{ type: 'account' as const, accountId: '7' }]
+                : [];
+          return [...perThread(input.target.aliasThreadId), ...perThread(input.target.canonicalThreadId)];
+        }
+        return [];
+      },
+      async classifyWorkflowDelayedJob(input: { delayedJobId: number }) {
+        delayedJobLookups.push(input.delayedJobId);
+        return options.delayedJobs?.get(input.delayedJobId) ?? { kind: 'missing' as const };
+      },
+      async resolveScheduledDraftReplyParent(input: { draftId: number }) {
+        return options.replyParents?.get(input.draftId) ?? null;
+      },
+      async resolveScheduledDraftAttachmentPaths(input: { draftId: number }) {
+        return options.scheduledDraftAttachmentPaths?.get(input.draftId) ?? null;
+      },
+      async resolveAttachmentPathFilenames(input: { path: string }) {
+        return options.attachmentPathFilenames?.get(input.path) ?? [];
+      },
+      async resolveMessageAttachmentFilenames(input: { messageId: number }) {
+        return options.messageAttachmentFilenames?.get(input.messageId) ?? [];
+      },
+      async loadWorkflowGraphForPolicy(input: { workflowId: number }) {
+        return options.workflowGraphs?.has(input.workflowId)
+          ? { graph: options.workflowGraphs.get(input.workflowId) }
+          : null;
+      },
+    },
+  };
+}
+
+function messageResource(messageId: number) {
+  return { type: 'message' as const, accountId: '7', folderId: '8', messageId: String(messageId) };
+}
+
+function delayedJobEvent(id: number, payload: Record<string, unknown>): ServerEvent {
+  return event({
+    type: 'workflow_delayed_job.updated',
+    entityType: 'workflow_delayed_job',
+    entityId: String(id),
+    payload: { id, ...payload },
+  });
+}
+
+function event(input: {
+  type: string;
+  entityType: string;
+  entityId: string;
+  payload?: Record<string, unknown>;
+}): ServerEvent {
+  return {
+    sequence: 1,
+    type: input.type as ServerEvent['type'],
+    workspaceId: 'workspace-a',
+    entityType: input.entityType as ServerEvent['entityType'],
+    entityId: input.entityId,
+    actorUserId: 'actor-a',
+    occurredAt: '2026-07-19T10:00:00.000Z',
+    payload: input.payload ?? {},
+  };
+}
+
+function job(input: {
+  type: string;
+  payload: Record<string, unknown>;
+  workspaceId?: string;
+}): QueuedJob {
+  return {
+    id: 1,
+    type: input.type,
+    payload: input.payload,
+    runAfter: '2026-07-19T10:00:00.000Z',
+    attempts: 0,
+    maxAttempts: 5,
+    lockedAt: null,
+    lockedBy: 'worker-a',
+    lastError: null,
+    workspaceId: input.workspaceId ?? 'workspace-a',
+    createdAt: '2026-07-19T10:00:00.000Z',
+    updatedAt: '2026-07-19T10:00:00.000Z',
+  };
+}

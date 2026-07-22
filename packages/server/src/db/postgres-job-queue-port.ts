@@ -3,14 +3,15 @@ import { sql as kyselySql, type Kysely, type RawBuilder } from 'kysely';
 
 import {
   assertValidJobType,
-  formatJobError,
   nextRunAfterForFailure,
   normalizeMaxAttempts,
+} from '../jobs/policy';
+import {
   type EnqueueJobInput,
   type FailJobInput,
   type JobQueuePort,
   type QueuedJob,
-} from '../jobs';
+} from '../jobs/types';
 import { scheduledSendDraftIdFromPayload } from '../jobs/scheduled-send-job-key';
 import type { JobQueueRow, ServerDatabase } from './schema';
 import {
@@ -105,6 +106,13 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
         workspaceId: input.job.workspaceId,
         role: 'system',
       }, (db) => failJob(db, input, input.now ?? now()), { applySession: options.applyWorkspaceSession });
+    },
+
+    async failTerminal(input) {
+      return withWorkspaceTransaction(options.db, {
+        workspaceId: input.job.workspaceId,
+        role: 'system',
+      }, (db) => failJobTerminal(db, input, input.now ?? now()), { applySession: options.applyWorkspaceSession });
     },
 
     async releaseStaleLocks(input) {
@@ -268,6 +276,58 @@ async function failJob(
   return row ? mapJob(row) : null;
 }
 
+async function failJobTerminal(
+  db: WorkspaceTransaction,
+  input: FailJobInput,
+  now: Date,
+): Promise<QueuedJob | null> {
+  const row = await db
+    .updateTable('job_queue')
+    .set({
+      attempts: input.job.maxAttempts,
+      locked_at: null,
+      locked_by: null,
+      last_error: formatJobError(input.error),
+      run_after: now,
+      updated_at: now,
+    })
+    .where('id', '=', input.job.id)
+    .where('locked_by', '=', input.job.lockedBy)
+    .returningAll()
+    .executeTakeFirst();
+
+  // A terminally-denied delayed workflow.execute continuation (its initiating user was
+  // disabled or lost a required mail permission before resume → MailAsyncAuthorizationError)
+  // only marks job_queue above; its handler never runs, so the referenced
+  // workflow_delayed_jobs row would stay 'pending' forever — no ticker scans pending delayed
+  // rows, leaving the workflow permanently stuck and falsely shown as pending. Migration 0042
+  // repaired only the legacy provenance-less rows; a correctly-provenanced job denied at
+  // runtime is the case that remains. Mark the referenced delayed row failed in the SAME
+  // transaction so the terminal failure is atomic. Gated on actually holding the terminal
+  // job_queue row (row != null ⇒ we still owned the lock), the job type, and a valid
+  // delayedJobId, so it no-ops for every other job that hits failTerminal; the status guard
+  // avoids clobbering an already-finalized ('done'/'failed') delayed row. (R51-3)
+  if (row && input.job.type === 'workflow.execute') {
+    const rawDelayedJobId = input.job.payload.delayedJobId;
+    const delayedJobId = typeof rawDelayedJobId === 'number'
+      && Number.isInteger(rawDelayedJobId)
+      && rawDelayedJobId > 0
+      ? rawDelayedJobId
+      : undefined;
+    if (delayedJobId !== undefined) {
+      await db
+        .updateTable('workflow_delayed_jobs')
+        .set({ status: 'failed', updated_at: now })
+        .where('workspace_id', '=', input.job.workspaceId)
+        .where('id', '=', delayedJobId)
+        .where('status', 'in', ['pending', 'running'])
+        .execute();
+    }
+  }
+
+  return row ? mapJob(row) : null;
+}
+
 export function mapJob(row: JobQueueRow): QueuedJob {
   return {
     id: Number(row.id),
@@ -297,4 +357,9 @@ function accountSyncJobPayloadPredicate(accountId: number): RawBuilder<boolean> 
 
 function toDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
+}
+
+function formatJobError(error: unknown): string {
+  if (error instanceof Error) return error.message.slice(0, 4000);
+  return String(error).slice(0, 4000);
 }

@@ -16,6 +16,7 @@ import type {
   WorkflowKnowledgeChunksTable,
 } from './db/schema';
 import type { AiTextTransformApiPort } from './api/types';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import { recordAiUsageSafe, type AiTokenUsage } from './ai-usage';
 import { evaluateAiBudgetSafe, readAiBudgetLimitsFromEnv } from './ai-budget';
 import { callAiChat } from './ai-providers';
@@ -25,8 +26,10 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
+import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-read-ports';
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
+import type { MailSqlScope } from './mail-access/types';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -56,6 +59,12 @@ export type AiClassificationContextMode = 'metadata' | 'full';
 export type AiClassificationContinuation = Readonly<{
   workflowId: number;
   triggerName?: string;
+  actorUserId?: string;
+  trustedService?: boolean;
+  // True when the paused run is a MANUAL admin-gated workflow.execute; carried across
+  // the async-child boundary so the resumed workflow.execute stays marked and its
+  // owner/admin recheck still fires for a since-demoted initiator.
+  manualAdminExecute?: boolean;
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -826,6 +835,10 @@ export type AiPickCannedJobPlan = Readonly<{
   actorUserId?: string;
   profileId?: number;
   createDraft: boolean;
+  // The initiating user's mail.draft.create scope (compose-originated runs only).
+  // Restricts the canned-template query to global + in-scope responses; absent for
+  // service/automatic runs, which see every workspace template.
+  cannedScope?: MailSqlScope;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
@@ -857,7 +870,7 @@ export function createPostgresAiPickCannedPort(
             ? null
             : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
           const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
-          const canned = await selectCannedResponses(trx, input.workspaceId);
+          const canned = await selectCannedResponses(trx, input.workspaceId, input.cannedScope);
           return { message, profile, canned };
         },
         { applySession: options.applyWorkspaceSession },
@@ -981,11 +994,22 @@ function parseCannedPickNumber(output: string, max: number): number {
 async function selectCannedResponses(
   trx: WorkspaceTransaction,
   workspaceId: string,
+  cannedScope?: MailSqlScope,
 ): Promise<CannedRow[]> {
-  const rows = await trx
+  // A compose-originated (user) pick_canned restricts the query to the initiating
+  // user's mail.draft.create scope so the AI only sees global + in-scope templates
+  // (mirrors the account-aware canned-response HTTP list). Scope 'none' → no
+  // templates (the job then fails closed); service/automatic runs pass no scope and
+  // see everything.
+  if (cannedScope?.kind === 'none') return [];
+  let query = trx
     .selectFrom('email_canned_responses')
     .select(['id', 'title', 'body'])
-    .where('workspace_id', '=', workspaceId)
+    .where('workspace_id', '=', workspaceId);
+  if (cannedScope?.kind === 'restricted') {
+    query = query.where(cannedResponseVisibilityPredicate(workspaceId, cannedScope));
+  }
+  const rows = await query
     .orderBy('sort_order', 'asc')
     .limit(50)
     .execute();
@@ -1338,30 +1362,40 @@ async function enqueueContinuation(
     now: Date;
   },
 ): Promise<void> {
+  const payload = workflowContinuationPayload({
+    workspaceId: input.workspaceId,
+    workflowId: input.continuation.workflowId,
+    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+    ...(input.continuation.actorUserId ? { actorUserId: input.continuation.actorUserId } : {}),
+    ...(input.continuation.triggerName ? { triggerName: input.continuation.triggerName } : {}),
+    // Keep the resumed workflow.execute marked so assertWorkflowExecuteSideEffectPrivilege
+    // re-checks a since-demoted admin instead of skipping it as an unmarked run.
+    ...(input.continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
+    context: {
+      resumeNodeId: input.continuation.resumeNodeId,
+      eventStrings: input.continuation.eventStrings ?? {},
+      eventVariables: {
+        ...(input.continuation.eventVariables ?? {}),
+        ...input.variables,
+      },
+    },
+  }, input.continuation.trustedService === true);
+
   await trx
     .insertInto('job_queue')
     .values({
       type: 'workflow.execute',
-      payload: {
-        workspaceId: input.workspaceId,
-        workflowId: input.continuation.workflowId,
-        ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
-        ...(input.continuation.triggerName ? { triggerName: input.continuation.triggerName } : {}),
-        context: {
-          resumeNodeId: input.continuation.resumeNodeId,
-          eventStrings: input.continuation.eventStrings ?? {},
-          eventVariables: {
-            ...(input.continuation.eventVariables ?? {}),
-            ...input.variables,
-          },
-        },
-      },
+      payload,
       run_after: input.now,
       max_attempts: 3,
       workspace_id: input.workspaceId,
       updated_at: input.now,
     })
     .execute();
+}
+
+function workflowContinuationPayload(payload: Record<string, unknown>, trustedService: boolean): Record<string, unknown> {
+  return trustedService && !payload.actorUserId ? buildTrustedServiceJobPayload(payload) : payload;
 }
 
 async function readProfileApiKey(

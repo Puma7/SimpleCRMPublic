@@ -1,0 +1,47 @@
+
+Running 1 test using 1 worker
+
+  x  1 tests\e2e\mail-delegation-server-client.spec.ts:112:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event (11.1s)
+
+
+  1) tests\e2e\mail-delegation-server-client.spec.ts:112:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event
+
+    Error: expect(locator).toHaveValue(expected) failed
+
+    Locator: getByLabel('Konto', { exact: true })
+    Expected: ""
+    Timeout: 10000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toHaveValue" with timeout 10000ms
+      - waiting for getByLabel('Konto', { exact: true })
+
+
+      165 |   expect(state.subjectOptionCalls).toBe(callsBeforeRevoke.subjects);
+      166 |   await expect(page.getByRole('option', { name: 'Support' })).toHaveCount(0);
+    > 167 |   await expect(page.getByLabel('Konto', { exact: true })).toHaveValue('');
+          |                                                           ^
+      168 |   await expect(page.getByRole('button', { name: 'Löschen Agent' })).toHaveCount(0);
+      169 |   await expect(page.getByRole('button', { name: 'Berechtigung speichern' })).toBeDisabled();
+      170 |   await page.waitForTimeout(250);
+        at C:\Cursor\SimpleCRM\SimpleCRMPublic\tests\e2e\mail-delegation-server-client.spec.ts:167:59
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    tests\e2e\mail-delegation-server-client.spec.ts:112:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event

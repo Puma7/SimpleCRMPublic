@@ -1,5 +1,6 @@
-import type { JobPayload } from './types';
+import type { JobPayload, MailJobAuthorization } from './types';
 import type { JobHandlerRegistry } from './worker';
+import { isTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './policy';
 import type {
   AiClassificationContextMode,
   AiAgentJobPlan,
@@ -49,6 +50,8 @@ export type ScheduledSendJobPlan = Readonly<{
   workspaceId: string;
   accountId?: number;
   draftId?: number;
+  actorUserId?: string;
+  trustedService?: boolean;
   dueBefore: Date;
   limit: number;
 }>;
@@ -84,8 +87,11 @@ export type WorkflowExecutionJobPlan = Readonly<{
   messageId?: number;
   runId?: number;
   delayedJobId?: number;
+  authorizedDelayedJobMessageId?: number | null;
   triggerName?: string;
   actorUserId?: string;
+  trustedService?: boolean;
+  manualAdminExecute?: boolean;
   context: JobPayload;
 }>;
 
@@ -192,7 +198,7 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     },
     'ai.pick_canned': async (job) => {
       if (!options.aiPickCanned) throw new Error('AI pick-canned job port is not configured');
-      await options.aiPickCanned.pickCanned(buildAiPickCannedJobPlan(job.payload, job.workspaceId));
+      await options.aiPickCanned.pickCanned(buildAiPickCannedJobPlan(job.payload, job.workspaceId, job.mailAuthorization));
     },
     'ai.classify': async (job) => {
       if (!options.aiClassification) throw new Error('AI classification job port is not configured');
@@ -208,7 +214,11 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     },
     'workflow.execute': async (job) => {
       if (!options.workflowExecution) throw new Error('workflow execution job port is not configured');
-      await options.workflowExecution.execute(buildWorkflowExecutionJobPlan(job.payload, job.workspaceId));
+      await options.workflowExecution.execute(buildWorkflowExecutionJobPlan(
+        job.payload,
+        job.workspaceId,
+        job.mailAuthorization,
+      ));
     },
     'workflow.http_request': async (job) => {
       if (!options.workflowHttpRequest) throw new Error('workflow HTTP request job port is not configured');
@@ -265,6 +275,8 @@ export function buildScheduledSendJobPlan(
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     ...optionalPositiveInteger(payload, 'accountId'),
     ...optionalPositiveInteger(payload, 'draftId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...(isTrustedServiceJobPayload(payload) ? { trustedService: true } : {}),
     dueBefore: optionalDate(payload, 'dueBefore', now),
     limit: optionalInteger(payload, 'limit', DEFAULT_SCHEDULED_SEND_LIMIT, 1, MAX_SCHEDULED_SEND_LIMIT),
   };
@@ -308,7 +320,7 @@ export function buildAiClassificationJobPlan(
     ...optionalPositiveInteger(payload, 'profileId'),
     labels: requiredStringList(payload, 'labels', 20, 80),
     contextMode: optionalClassificationContextMode(payload, 'contextMode'),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -333,13 +345,14 @@ export function buildAiAgentJobPlan(
     createDraft: optionalBoolean(payload, 'createDraft', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
 export function buildAiPickCannedJobPlan(
   payload: JobPayload,
   jobWorkspaceId: string,
+  mailAuthorization?: MailJobAuthorization,
 ): AiPickCannedJobPlan {
   return {
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
@@ -347,9 +360,12 @@ export function buildAiPickCannedJobPlan(
     ...optionalString(payload, 'actorUserId'),
     ...optionalPositiveInteger(payload, 'profileId'),
     createDraft: optionalBoolean(payload, 'createDraft', false),
+    ...(mailAuthorization?.kind === 'ai_pick_canned_scope'
+      ? { cannedScope: mailAuthorization.cannedScope }
+      : {}),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -369,7 +385,7 @@ export function buildAiReviewJobPlan(
     ...optionalString(payload, 'fallbackUserTemplate', 20_000),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -386,22 +402,43 @@ export function buildAiTransformTextJobPlan(
     targetVariable: optionalStringValue(payload, 'targetVariable', 'ai.text', 120),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
 export function buildWorkflowExecutionJobPlan(
   payload: JobPayload,
   jobWorkspaceId: string,
+  mailAuthorization?: MailJobAuthorization,
 ): WorkflowExecutionJobPlan {
+  const message = optionalPositiveInteger(payload, 'messageId');
+  const delayedJob = optionalPositiveInteger(payload, 'delayedJobId');
+  const delayedJobId = delayedJob.delayedJobId;
+  if (delayedJobId === undefined) {
+    if (mailAuthorization !== undefined) throw new Error('unexpected workflow mail authorization');
+  } else if (
+    mailAuthorization?.kind !== 'workflow_execute_delayed_message'
+    || mailAuthorization.delayedJobId !== delayedJobId
+    || (
+      message.messageId !== undefined
+      && mailAuthorization.messageId !== message.messageId
+    )
+  ) {
+    throw new Error('workflow delayed job authorization mismatch');
+  }
   return {
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     workflowId: requiredPositiveInteger(payload, 'workflowId'),
-    ...optionalPositiveInteger(payload, 'messageId'),
+    ...message,
     ...optionalPositiveInteger(payload, 'runId'),
-    ...optionalPositiveInteger(payload, 'delayedJobId'),
+    ...delayedJob,
+    ...(delayedJobId === undefined
+      ? {}
+      : { authorizedDelayedJobMessageId: mailAuthorization!.messageId }),
     ...optionalString(payload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
     ...optionalString(payload, 'actorUserId'),
+    ...optionalTrustedService(payload),
+    ...optionalManualAdminExecute(payload),
     context: optionalContext(payload, 'context'),
   };
 }
@@ -422,7 +459,7 @@ export function buildWorkflowHttpRequestJobPlan(
     timeoutMs: optionalInteger(payload, 'timeoutMs', DEFAULT_WORKFLOW_HTTP_TIMEOUT_MS, 1000, MAX_WORKFLOW_HTTP_TIMEOUT_MS),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalWorkflowHttpContinuation(payload),
+    ...optionalWorkflowHttpContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -440,7 +477,7 @@ export function buildWorkflowForwardCopyJobPlan(
     runOutboundReview: optionalBoolean(payload, 'runOutboundReview', false),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -452,8 +489,9 @@ export function buildWorkflowDmarcIngestJobPlan(
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     workflowId: requiredPositiveInteger(payload, 'workflowId'),
     messageId: requiredPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'actorUserId'),
     ...optionalString(payload, 'attachmentNameFilter', MAX_DMARC_ATTACHMENT_FILTER_LENGTH),
-    ...optionalClassificationContinuation(payload),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
   };
 }
 
@@ -642,6 +680,8 @@ function requiredStringList(
 
 function optionalClassificationContinuation(
   payload: JobPayload,
+  actorUserId?: string,
+  trustedService = false,
 ): Pick<AiClassificationJobPlan, 'continuation'> {
   const value = payload.continuation;
   if (value === undefined || value === null) return {};
@@ -650,6 +690,13 @@ function optionalClassificationContinuation(
     continuation: {
       workflowId: requiredPositiveInteger(value as JobPayload, 'workflowId'),
       ...optionalString(value as JobPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
+      ...(actorUserId ? { actorUserId } : optionalString(value as JobPayload, 'actorUserId')),
+      ...(trustedService && !actorUserId ? { trustedService: true } : {}),
+      // Propagate the manual-admin marker across the async-child boundary: the executing
+      // child job carries it (workflowJobProvenance stamped it), and the resumed
+      // workflow.execute must stay marked so assertWorkflowExecuteSideEffectPrivilege
+      // re-checks a since-demoted initiator instead of treating it as an unmarked run.
+      ...optionalManualAdminExecute(payload),
       resumeNodeId: requiredString(value as JobPayload, 'resumeNodeId'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(value as JobPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(value as JobPayload, 'eventVariables') }),
@@ -659,6 +706,8 @@ function optionalClassificationContinuation(
 
 function optionalWorkflowHttpContinuation(
   payload: JobPayload,
+  actorUserId?: string,
+  trustedService = false,
 ): Pick<WorkflowHttpRequestJobPlan, 'continuation'> {
   const value = payload.continuation;
   if (value === undefined || value === null) return {};
@@ -673,6 +722,11 @@ function optionalWorkflowHttpContinuation(
     continuation: {
       workflowId: requiredPositiveInteger(continuationPayload, 'workflowId'),
       ...optionalString(continuationPayload, 'triggerName', MAX_TRIGGER_NAME_LENGTH),
+      ...(actorUserId ? { actorUserId } : optionalString(continuationPayload, 'actorUserId')),
+      ...(trustedService && !actorUserId ? { trustedService: true } : {}),
+      // Propagate the manual-admin marker across the async-child boundary (see
+      // optionalClassificationContinuation) so the resumed workflow.execute stays marked.
+      ...optionalManualAdminExecute(payload),
       ...resumeNodeId,
       ...errorResumeNodeId,
       ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),
@@ -680,6 +734,14 @@ function optionalWorkflowHttpContinuation(
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
     },
   };
+}
+
+function optionalTrustedService(payload: JobPayload): { trustedService?: true } {
+  return isTrustedServiceJobPayload(payload) ? { trustedService: true } : {};
+}
+
+function optionalManualAdminExecute(payload: JobPayload): { manualAdminExecute?: true } {
+  return payload[MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD] === true ? { manualAdminExecute: true } : {};
 }
 
 function optionalDate(payload: JobPayload, key: string, fallback: Date): Date {

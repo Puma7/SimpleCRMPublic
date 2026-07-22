@@ -1,0 +1,251 @@
+Running one project: unit
+FAIL unit tests/unit/renderer-transport.test.ts
+  ● renderer transport › maps mail delegation IPC calls to server HTTP routes
+
+    expect(received).resolves.toEqual(expected) // deep equality
+
+    Expected: {"items": [ObjectContaining {"id": 900}], "nextCursor": 900}
+    Received: [{"id": 900, "permissions": ["mail.metadata.read"], "profile": "custom", "resource": {"accountId": 101, "label": "Support", "type": "account"}, "subject": {"id": "user-1", "label": "Alice", "type": "user"}, "updatedAt": "2026-07-19T10:00:00.000Z"}]
+
+      498 |       cursor: 800,
+      499 |       limit: 25,
+    > 500 |     })).resolves.toEqual({
+          |                  ^
+      501 |       items: [expect.objectContaining({ id: 900 })],
+      502 |       nextCursor: 900,
+      503 |     });
+
+      at Object.toEqual (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toEqual (tests/unit/renderer-transport.test.ts:500:18)
+
+FAIL unit tests/unit/server-mail-delegation-api.test.ts
+  ● server mail delegation API › lists, creates, replaces, and deletes user and group bindings
+
+    expect(jest.fn()).toHaveBeenCalledWith(...expected)
+
+    Expected: ObjectContaining {"actor": ObjectContaining {"isOwner": true, "userId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, "cursor": 800, "limit": 25, "resource": {"accountId": 101, "type": "account"}, "workspaceId": "11111111-1111-4111-8111-111111111111"}
+    Received: {"actor": {"isAdmin": false, "isOwner": true, "userId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, "resource": {"accountId": 101, "type": "account"}, "workspaceId": "11111111-1111-4111-8111-111111111111"}
+
+    Number of calls: 1
+
+      70 |     expect(patch.status).toBe(200);
+      71 |     expect(remove.status).toBe(200);
+    > 72 |     expect(mailDelegation.listBindings).toHaveBeenCalledWith(expect.objectContaining({
+         |                                         ^
+      73 |       workspaceId: WORKSPACE,
+      74 |       actor: expect.objectContaining({ userId: OWNER, isOwner: true }),
+      75 |       resource: { type: 'account', accountId: ACCOUNT },
+
+      at Object.toHaveBeenCalledWith (tests/unit/server-mail-delegation-api.test.ts:72:41)
+
+  ● server mail delegation API › rejects invalid delegation pagination before calling the port
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  -  3
+    + Received  + 22
+
+      Object {
+        "body": Object {
+    -     "error": Object {
+    -       "code": "invalid_cursor",
+    +     "data": Object {
+    +       "items": Array [
+    +         Object {
+    +           "id": 900,
+    +           "permissions": Array [
+    +             "mail.metadata.read",
+    +           ],
+    +           "profile": null,
+    +           "resource": Object {
+    +             "accountId": 101,
+    +             "label": "Support",
+    +             "type": "account",
+    +           },
+    +           "subject": Object {
+    +             "id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    +             "label": "Agent",
+    +             "type": "user",
+    +           },
+    +           "updatedAt": "2026-07-19T12:00:00.000Z",
+              },
+    +       ],
+          },
+    -   "status": 400,
+    +   },
+    +   "status": 200,
+      }
+
+      153 |     });
+      154 |
+    > 155 |     expect(invalidCursor).toMatchObject({ status: 400, body: { error: { code: 'invalid_cursor' } } });
+          |                           ^
+      156 |     expect(invalidLimit).toMatchObject({ status: 400, body: { error: { code: 'invalid_limit' } } });
+      157 |     expect(mailDelegation.listBindings).not.toHaveBeenCalled();
+      158 |   });
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-api.test.ts:155:27)
+
+FAIL unit tests/unit/server-mail-delegation-port.test.ts
+  ● createPostgresMailDelegationPort › bulk-hydrates delegation pages with a constant query count
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 1
+    + Received  + 0
+
+      Object {
+    -   "nextCursor": null,
+        "ok": true,
+      }
+
+      116 |     });
+      117 |
+    > 118 |     expect(smallResult).toMatchObject({ ok: true, nextCursor: null });
+          |                         ^
+      119 |     expect(largeResult).toMatchObject({ ok: true, nextCursor: null });
+      120 |     expect(selectQueryCount(small)).toBe(6);
+      121 |     expect(selectQueryCount(large)).toBe(6);
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-port.test.ts:118:25)
+
+  ● createPostgresMailDelegationPort › returns deterministic bounded pages after the validated id cursor
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  -   1
+    + Received  + 105
+
+      Object {
+        "bindings": Array [
+          Object {
+    +       "id": 1,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 101,
+    +         "label": "Account 1",
+    +         "type": "account",
+    +       },
+    +       "subject": Object {
+    +         "id": "user-1",
+    +         "label": "User 1",
+    +         "type": "user",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +     Object {
+    +       "id": 2,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 102,
+    +         "folderId": 202,
+    +         "label": "Folder 2",
+    +         "type": "folder",
+    +       },
+    +       "subject": Object {
+    +         "id": 1002,
+    +         "label": "Group 2",
+    +         "type": "group",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +     Object {
+            "id": 3,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 103,
+    +         "label": "Account 3",
+    +         "type": "account",
+    +       },
+    +       "subject": Object {
+    +         "id": "user-3",
+    +         "label": "User 3",
+    +         "type": "user",
+            },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+          Object {
+            "id": 4,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 104,
+    +         "folderId": 204,
+    +         "label": "Folder 4",
+    +         "type": "folder",
+    +       },
+    +       "subject": Object {
+    +         "id": 1004,
+    +         "label": "Group 4",
+    +         "type": "group",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+          },
+    +     Object {
+    +       "id": 5,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+            ],
+    -   "nextCursor": 4,
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 105,
+    +         "label": "Account 5",
+    +         "type": "account",
+    +       },
+    +       "subject": Object {
+    +         "id": "user-5",
+    +         "label": "User 5",
+    +         "type": "user",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +     Object {
+    +       "id": 6,
+    +       "permissions": Array [
+    +         "mail.metadata.read",
+    +       ],
+    +       "profile": null,
+    +       "resource": Object {
+    +         "accountId": 106,
+    +         "folderId": 206,
+    +         "label": "Folder 6",
+    +         "type": "folder",
+    +       },
+    +       "subject": Object {
+    +         "id": 1006,
+    +         "label": "Group 6",
+    +         "type": "group",
+    +       },
+    +       "updatedAt": "2026-07-20T10:00:00.000Z",
+    +     },
+    +   ],
+        "ok": true,
+      }
+
+      138 |     });
+      139 |
+    > 140 |     expect(result).toMatchObject({
+          |                    ^
+      141 |       ok: true,
+      142 |       bindings: [{ id: 3 }, { id: 4 }],
+      143 |       nextCursor: 4,
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-port.test.ts:140:20)
+
+Test Suites: 3 failed, 3 total
+Tests:       5 failed, 143 passed, 148 total
+Snapshots:   0 total
+Time:        1.585 s, estimated 2 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-port.test.ts", "tests/unit/server-mail-delegation-api.test.ts", "tests/unit/renderer-transport.test.ts".

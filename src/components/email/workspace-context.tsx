@@ -41,6 +41,7 @@ export type SettingsTab =
   | "mailSecurity"
   | "tracking"
   | "smtpRelay"
+  | "delegation"
   | "automation"
   | "team"
   | "appUsers"
@@ -222,6 +223,7 @@ const SERVER_ONLY_SETTINGS_TABS = new Set<SettingsTab>([
   "userGroups",
   "tracking",
   "smtpRelay",
+  "delegation",
 ])
 
 export function normalizeSettingsTab(
@@ -245,6 +247,7 @@ const VALID_SETTINGS_TAB_IDS: SettingsTab[] = [
   "mailSecurity",
   "tracking",
   "smtpRelay",
+  "delegation",
   "automation",
   "team",
   "appUsers",

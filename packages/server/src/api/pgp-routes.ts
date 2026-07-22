@@ -3,6 +3,8 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   EmailMessageRecord,
   PgpAttachmentDecryptFailureCode,
   PgpAttachmentVerifyFailureCode,
@@ -21,6 +23,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './http';
 
@@ -30,7 +33,57 @@ const MAX_PGP_MESSAGE_ATTACHMENTS = 20;
 const MAX_PGP_MESSAGE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_PGP_MESSAGE_ATTACHMENT_TOTAL_BYTES = 50 * 1024 * 1024;
 
+type PgpRouteHandler = (
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  params: readonly string[],
+) => Promise<ApiResponse>;
+
+type PgpRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration;
+  handler: PgpRouteHandler;
+}>;
+
+function pgpRoute(
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+  handler: PgpRouteHandler,
+): PgpRouteRegistration {
+  return { registration: { path, methods, pattern }, handler };
+}
+
 type PgpResource = 'identities' | 'peerKeys';
+
+export const PGP_MAIL_ROUTE_REGISTRATIONS: readonly PgpRouteRegistration[] = Object.freeze([
+  pgpRoute('/api/v1/pgp/identities/generate', ['POST'], /^\/api\/v1\/pgp\/identities\/generate$/, (req, ports) => handleGenerateIdentity(req, ports)),
+  pgpRoute('/api/v1/pgp/peer-keys/import', ['POST'], /^\/api\/v1\/pgp\/peer-keys\/import$/, (req, ports) => handleImportPeerKey(req, ports)),
+  pgpRoute('/api/v1/pgp/recipient-key-status', ['GET'], /^\/api\/v1\/pgp\/recipient-key-status$/, (req, ports) => handleRecipientKeyStatus(req, ports)),
+  pgpRoute('/api/v1/pgp/messages/encrypt', ['POST'], /^\/api\/v1\/pgp\/messages\/encrypt$/, (req, ports) => handleEncryptMessage(req, ports)),
+  pgpRoute('/api/v1/pgp/messages/sign', ['POST'], /^\/api\/v1\/pgp\/messages\/sign$/, (req, ports) => handleSignMessage(req, ports)),
+  pgpRoute('/api/v1/pgp/attachments/:attachmentId/decrypt', ['POST'], /^\/api\/v1\/pgp\/attachments\/([^/]+)\/decrypt$/, (req, ports, params) => handleDecryptAttachment(req, ports, params[0])),
+  pgpRoute('/api/v1/pgp/attachments/:attachmentId/verify', ['POST'], /^\/api\/v1\/pgp\/attachments\/([^/]+)\/verify$/, (req, ports, params) => handleVerifyAttachment(req, ports, params[0])),
+  pgpRoute('/api/v1/pgp/messages/:messageId/decrypt', ['POST'], /^\/api\/v1\/pgp\/messages\/([^/]+)\/decrypt$/, (req, ports, params) => handleDecryptMessage(req, ports, params[0])),
+  pgpRoute('/api/v1/pgp/messages/:messageId/detect', ['POST'], /^\/api\/v1\/pgp\/messages\/([^/]+)\/detect$/, (req, ports, params) => handleDetectMessage(req, ports, params[0])),
+  pgpRoute('/api/v1/pgp/messages/:messageId/verify', ['POST'], /^\/api\/v1\/pgp\/messages\/([^/]+)\/verify$/, (req, ports, params) => handleVerifyMessage(req, ports, params[0])),
+  pgpRoute('/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase', ['POST'], /^\/api\/v1\/pgp\/identities\/by-source\/([^/]+)\/private-key\/passphrase$/, (req, ports, params) => handleIdentitySourcePassphrase(req, ports, params[0])),
+  pgpRoute('/api/v1/pgp/identities/:identityId/private-key/passphrase', ['POST'], /^\/api\/v1\/pgp\/identities\/([^/]+)\/private-key\/passphrase$/, (req, ports, params) => handleIdentityPassphrase(req, ports, params[0])),
+  pgpRoute('/api/v1/pgp/identities/by-source/:sourceId', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/pgp\/identities\/by-source\/([^/]+)$/, (req, ports, params) => handleBySourceRoute(req, ports, 'identities', params[0])),
+  pgpRoute('/api/v1/pgp/peer-keys/by-source/:sourceId', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/pgp\/peer-keys\/by-source\/([^/]+)$/, (req, ports, params) => handleBySourceRoute(req, ports, 'peerKeys', params[0])),
+  pgpRoute('/api/v1/pgp/identities', ['GET', 'POST'], /^\/api\/v1\/pgp\/identities$/, (req, ports) => handleListRoute(req, ports, 'identities')),
+  pgpRoute('/api/v1/pgp/identities/:id', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/pgp\/identities\/([^/]+)$/, (req, ports, params) => handleGetRoute(req, ports, 'identities', params[0])),
+  pgpRoute('/api/v1/pgp/peer-keys', ['GET', 'POST'], /^\/api\/v1\/pgp\/peer-keys$/, (req, ports) => handleListRoute(req, ports, 'peerKeys')),
+  pgpRoute('/api/v1/pgp/peer-keys/:id', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/pgp\/peer-keys\/([^/]+)$/, (req, ports, params) => handleGetRoute(req, ports, 'peerKeys', params[0])),
+]);
+
+export const PGP_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  PGP_MAIL_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'pgp-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 type PgpPeerKeyMutationParseResult =
   | { ok: true; values: PgpPeerKeyMutationInput }
@@ -78,71 +131,41 @@ export async function handlePgpReadRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  if (req.path === '/api/v1/pgp/identities/generate') return handleGenerateIdentity(req, ports);
-  if (req.path === '/api/v1/pgp/peer-keys/import') return handleImportPeerKey(req, ports);
-  if (req.path === '/api/v1/pgp/recipient-key-status') return handleRecipientKeyStatus(req, ports);
-  if (req.path === '/api/v1/pgp/messages/encrypt') return handleEncryptMessage(req, ports);
-  if (req.path === '/api/v1/pgp/messages/sign') return handleSignMessage(req, ports);
-
-  const decryptAttachmentMatch = /^\/api\/v1\/pgp\/attachments\/([^/]+)\/decrypt$/.exec(req.path);
-  if (decryptAttachmentMatch) return handleDecryptAttachment(req, ports, decryptAttachmentMatch[1]);
-
-  const verifyAttachmentMatch = /^\/api\/v1\/pgp\/attachments\/([^/]+)\/verify$/.exec(req.path);
-  if (verifyAttachmentMatch) return handleVerifyAttachment(req, ports, verifyAttachmentMatch[1]);
-
-  const decryptMessageMatch = /^\/api\/v1\/pgp\/messages\/([^/]+)\/decrypt$/.exec(req.path);
-  if (decryptMessageMatch) return handleDecryptMessage(req, ports, decryptMessageMatch[1]);
-
-  const detectMessageMatch = /^\/api\/v1\/pgp\/messages\/([^/]+)\/detect$/.exec(req.path);
-  if (detectMessageMatch) return handleDetectMessage(req, ports, detectMessageMatch[1]);
-
-  const verifyMessageMatch = /^\/api\/v1\/pgp\/messages\/([^/]+)\/verify$/.exec(req.path);
-  if (verifyMessageMatch) return handleVerifyMessage(req, ports, verifyMessageMatch[1]);
-
-  const identitySourcePassphraseMatch = /^\/api\/v1\/pgp\/identities\/by-source\/([^/]+)\/private-key\/passphrase$/.exec(req.path);
-  if (identitySourcePassphraseMatch) {
-    const principal = requirePrincipal(req);
-    if ('status' in principal) return principal;
-    if (!ports.pgpIdentities) return error(503, 'pgp_identities_unavailable', 'PGP identities API nicht konfiguriert');
-    const sourceSqliteId = nonZeroIntFromPath(identitySourcePassphraseMatch[1]);
-    if (sourceSqliteId === null) {
-      return error(400, 'invalid_pgp_identity_source_sqlite_id', 'PGP identity sourceSqliteId muss eine Ganzzahl ungleich 0 sein');
-    }
-    const identity = await findPgpIdentityBySourceSqliteId(ports, principal.workspaceId, sourceSqliteId);
-    if (!identity) return error(404, 'pgp_identity_not_found', 'PGP identity nicht gefunden');
-    return handleRotateIdentityPassphrase(req, ports, principal, identity.id);
-  }
-
-  const identityPassphraseMatch = /^\/api\/v1\/pgp\/identities\/([^/]+)\/private-key\/passphrase$/.exec(req.path);
-  if (identityPassphraseMatch) {
-    const principal = requirePrincipal(req);
-    if ('status' in principal) return principal;
-    const id = positiveIntFromPath(identityPassphraseMatch[1]);
-    if (id === null) return error(400, 'invalid_pgp_identity_id', 'PGP identity id muss eine positive Ganzzahl sein');
-    return handleRotateIdentityPassphrase(req, ports, principal, id);
-  }
-
-  const identitySourceMatch = /^\/api\/v1\/pgp\/identities\/by-source\/([^/]+)$/.exec(req.path);
-  if (identitySourceMatch) return handleBySourceRoute(req, ports, 'identities', identitySourceMatch[1]);
-
-  const peerKeySourceMatch = /^\/api\/v1\/pgp\/peer-keys\/by-source\/([^/]+)$/.exec(req.path);
-  if (peerKeySourceMatch) return handleBySourceRoute(req, ports, 'peerKeys', peerKeySourceMatch[1]);
-
-  const identityMatch = /^\/api\/v1\/pgp\/identities(?:\/([^/]+))?$/.exec(req.path);
-  if (identityMatch) {
-    return identityMatch[1] === undefined
-      ? handleListRoute(req, ports, 'identities')
-      : handleGetRoute(req, ports, 'identities', identityMatch[1]);
-  }
-
-  const peerKeyMatch = /^\/api\/v1\/pgp\/peer-keys(?:\/([^/]+))?$/.exec(req.path);
-  if (peerKeyMatch) {
-    return peerKeyMatch[1] === undefined
-      ? handleListRoute(req, ports, 'peerKeys')
-      : handleGetRoute(req, ports, 'peerKeys', peerKeyMatch[1]);
+  for (const { registration, handler } of PGP_MAIL_ROUTE_REGISTRATIONS) {
+    const match = registration.pattern.exec(req.path);
+    if (match) return handler(req, ports, match.slice(1));
   }
 
   return null;
+}
+
+async function handleIdentitySourcePassphrase(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawSourceId: string | undefined,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!ports.pgpIdentities) return error(503, 'pgp_identities_unavailable', 'PGP identities API nicht konfiguriert');
+  const sourceSqliteId = nonZeroIntFromPath(rawSourceId);
+  if (sourceSqliteId === null) {
+    return error(400, 'invalid_pgp_identity_source_sqlite_id', 'PGP identity sourceSqliteId muss eine Ganzzahl ungleich 0 sein');
+  }
+  const identity = await findPgpIdentityBySourceSqliteId(ports, principal.workspaceId, sourceSqliteId);
+  if (!identity) return error(404, 'pgp_identity_not_found', 'PGP identity nicht gefunden');
+  return handleRotateIdentityPassphrase(req, ports, principal, identity.id);
+}
+
+async function handleIdentityPassphrase(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const id = positiveIntFromPath(rawId);
+  if (id === null) return error(400, 'invalid_pgp_identity_id', 'PGP identity id muss eine positive Ganzzahl sein');
+  return handleRotateIdentityPassphrase(req, ports, principal, id);
 }
 
 async function handleGenerateIdentity(
@@ -654,6 +677,11 @@ async function handleListRoute(
         ...(cursor === undefined ? {} : { cursor }),
         ...(search === undefined ? {} : { search }),
         ...(email === undefined ? {} : { email }),
+        // Owner/admin see the full workspace list (management); a delegated key
+        // manager sees only their own private identities. Private keys are per-user,
+        // so this is the correct scope for the PGP panel's fingerprints and
+        // passphrase-rotation selector, and it avoids exposing the workspace-wide list.
+        ...(requireAdmin(principal) ? {} : { ownerUserId: principal.userId }),
       });
       return data(200, sanitizeIdentityList(result));
     }

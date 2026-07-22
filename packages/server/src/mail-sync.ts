@@ -1757,6 +1757,8 @@ async function upsertPostgresMailSyncMessage(
       spam_status: input.isSpam ? 'spam' : 'clean',
       snoozed_until: null,
       scheduled_send_at: null,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: null,
       pop3_uidl: pop3Uidl,
       raw_headers: input.rawHeaders,
       raw_rfc822_b64: input.rawRfc822B64,

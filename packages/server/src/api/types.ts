@@ -3,6 +3,7 @@ import type {
   EmailEvidenceConfidence,
   EmailEvidenceEventType,
   EmailEvidenceSummary,
+  MailPermission,
   WorkflowNodeCatalogEntry,
   WorkflowTemplate,
 } from '@simplecrm/core';
@@ -14,10 +15,31 @@ import type { MssqlSettingsInput, MssqlSettingsPort } from '../mssql-settings';
 import type { JtlOrderLookupApiPort } from '../jtl-order-lookup';
 import type { LoginPenalty } from '../auth';
 import type { ServerMaintenancePort } from '../maintenance/service';
+import type {
+  MailAccessService,
+  MailAclRolloutReadiness,
+  MailAclRolloutCounterResetResult,
+  MailAclRolloutTransitionResult,
+  MailResourceLookupPort,
+  MailSqlScope,
+} from '../mail-access/types';
 
 export type ServerMaintenanceApiPort = ServerMaintenancePort;
 
 export type HttpMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
+
+export type CanonicalApiRoute = Readonly<{
+  source: string;
+  method: HttpMethod;
+  path: string;
+  pattern: RegExp;
+}>;
+
+export type CanonicalApiRouteRegistration = Readonly<{
+  path: string;
+  pattern: RegExp;
+  methods: readonly HttpMethod[];
+}>;
 
 export type AuthenticatedPrincipal = {
   userId: string;
@@ -53,6 +75,28 @@ export type ApiErrorBody = {
     details?: unknown;
   };
 };
+
+export type MailRouteAccessContext = Readonly<{
+  permission: MailPermission;
+  scope?: MailSqlScope;
+  // The caller's mail.content.read scope, resolved for message list/search routes
+  // (which authorize on mail.metadata.read). Rows outside it have their body-derived
+  // content — snippet, search snippet, and body-text search matches — redacted, so a
+  // metadata-only delegate cannot read previews or probe message bodies.
+  contentScope?: MailSqlScope;
+  // The caller's mail.attachment.read scope, resolved for message search routes.
+  // Attachment CONTENT search clauses (extracted attachment text: a.content_text and
+  // the a.search_vector that embeds it) match only on rows inside this scope, so a
+  // content.read-but-not-attachment.read delegate cannot probe attachment bodies via
+  // search. Attachment FILENAMES stay searchable (message metadata).
+  attachmentScope?: MailSqlScope;
+  // The caller's mail.draft.create scope, resolved for the account-signature routes (which
+  // authorize on mail.metadata.read). Account signatures whose account is outside it have
+  // their signatureHtml body redacted, so a metadata-only delegate cannot read outbound
+  // signature bodies while a composer (draft.create on the account) still receives them,
+  // matching how canned-response and per-user signatures gate on draft.create. (R48-2)
+  signatureScope?: MailSqlScope;
+}>;
 
 export type ApiDataBody<T> = {
   data: T;
@@ -260,6 +304,14 @@ export type AuthApiPort = {
   getInitialSetupState?(): Promise<AuthSetupState>;
   createInitialOwner?(input: InitialOwnerInput): Promise<InitialOwnerCreateResult>;
   listUsers?(input: { workspaceId: string }): Promise<readonly AuthUserAdminRecord[]>;
+  // Workspace-scoped single-user lookup (role + disabled state only), so callers
+  // that resolve one user by id — e.g. queued-job actor authorization — need not
+  // fetch the whole workspace user list.
+  getUser?(input: { workspaceId: string; userId: string }): Promise<{
+    id: string;
+    role: 'owner' | 'admin' | 'user';
+    disabledAt: string | null;
+  } | null>;
   saveUser?(input: AuthUserSaveInput): Promise<AuthUserSaveResult>;
   deleteUser?(input: {
     workspaceId: string;
@@ -320,113 +372,117 @@ export type ConversationLockRecord = {
   email?: string;
 };
 
-export type ServerEventType =
-  | 'conversation_lock.acquired'
-  | 'conversation_lock.heartbeat'
-  | 'conversation_lock.released'
-  | 'conversation_lock.force_takeover'
-  | 'customer.created'
-  | 'customer.updated'
-  | 'customer.deleted'
-  | 'product.created'
-  | 'product.updated'
-  | 'product.deleted'
-  | 'deal.created'
-  | 'deal.updated'
-  | 'deal.deleted'
-  | 'deal_product.created'
-  | 'deal_product.updated'
-  | 'deal_product.deleted'
-  | 'task.created'
-  | 'task.updated'
-  | 'task.deleted'
-  | 'calendar_event.created'
-  | 'calendar_event.updated'
-  | 'calendar_event.deleted'
-  | 'custom_field.created'
-  | 'custom_field.updated'
-  | 'custom_field.deleted'
-  | 'custom_field_value.created'
-  | 'custom_field_value.updated'
-  | 'custom_field_value.deleted'
-  | 'saved_view.created'
-  | 'saved_view.updated'
-  | 'saved_view.deleted'
-  | 'activity_log.created'
-  | 'jtl_reference.created'
-  | 'jtl_reference.updated'
-  | 'jtl_reference.deleted'
-  | 'jtl_order.created'
-  | 'spam_list_entry.created'
-  | 'spam_list_entry.updated'
-  | 'spam_list_entry.deleted'
-  | 'spam_learning_event.created'
-  | 'spam_decision.created'
-  | 'spam_decision.updated'
-  | 'spam_decision.deleted'
-  | 'pgp_identity.created'
-  | 'pgp_identity.updated'
-  | 'pgp_identity.deleted'
-  | 'pgp_peer_key.created'
-  | 'pgp_peer_key.updated'
-  | 'pgp_peer_key.deleted'
-  | 'ai_profile.created'
-  | 'ai_profile.updated'
-  | 'ai_profile.deleted'
-  | 'ai_prompt.created'
-  | 'ai_prompt.updated'
-  | 'ai_prompt.deleted'
-  | 'workflow.created'
-  | 'workflow.updated'
-  | 'workflow.deleted'
-  | 'workflow_version.created'
-  | 'workflow_version.updated'
-  | 'workflow_version.deleted'
-  | 'workflow_knowledge_base.created'
-  | 'workflow_knowledge_base.updated'
-  | 'workflow_knowledge_base.deleted'
-  | 'workflow_knowledge_chunk.created'
-  | 'workflow_knowledge_chunk.updated'
-  | 'workflow_knowledge_chunk.deleted'
-  | 'workflow_delayed_job.created'
-  | 'workflow_delayed_job.updated'
-  | 'workflow_delayed_job.deleted'
-  | 'automation_api_key.created'
-  | 'automation_api_key.revoked'
-  | 'email_account.created'
-  | 'email_account.updated'
-  | 'email_account.deleted'
-  | 'email_message.updated'
-  | 'email_message_tag.created'
-  | 'email_message_tag.deleted'
-  | 'email_category.created'
-  | 'email_category.updated'
-  | 'email_category.deleted'
-  | 'email_message_category.created'
-  | 'email_message_category.deleted'
-  | 'email_internal_note.created'
-  | 'email_internal_note.updated'
-  | 'email_internal_note.deleted'
-  | 'email_canned_response.created'
-  | 'email_canned_response.updated'
-  | 'email_canned_response.deleted'
-  | 'email_remote_content_allowlist.created'
-  | 'email_remote_content_allowlist.updated'
-  | 'email_remote_content_allowlist.deleted'
-  | 'email_team_member.created'
-  | 'email_team_member.updated'
-  | 'email_team_member.deleted'
-  | 'email_thread_edge.created'
-  | 'email_thread_edge.deleted'
-  | 'email_thread_alias.created'
-  | 'email_thread_alias.updated'
-  | 'email_thread_alias.deleted'
-  | 'email_thread.updated'
-  | 'email_tracking.updated'
-  | 'email_account_signature.created'
-  | 'email_account_signature.updated'
-  | 'email_account_signature.deleted'
-  | 'email_read_receipt.created';
+export const SERVER_EVENT_TYPES = Object.freeze([
+  'conversation_lock.acquired',
+  'conversation_lock.heartbeat',
+  'conversation_lock.released',
+  'conversation_lock.force_takeover',
+  'customer.created',
+  'customer.updated',
+  'customer.deleted',
+  'product.created',
+  'product.updated',
+  'product.deleted',
+  'deal.created',
+  'deal.updated',
+  'deal.deleted',
+  'deal_product.created',
+  'deal_product.updated',
+  'deal_product.deleted',
+  'task.created',
+  'task.updated',
+  'task.deleted',
+  'calendar_event.created',
+  'calendar_event.updated',
+  'calendar_event.deleted',
+  'custom_field.created',
+  'custom_field.updated',
+  'custom_field.deleted',
+  'custom_field_value.created',
+  'custom_field_value.updated',
+  'custom_field_value.deleted',
+  'saved_view.created',
+  'saved_view.updated',
+  'saved_view.deleted',
+  'activity_log.created',
+  'jtl_reference.created',
+  'jtl_reference.updated',
+  'jtl_reference.deleted',
+  'jtl_order.created',
+  'spam_list_entry.created',
+  'spam_list_entry.updated',
+  'spam_list_entry.deleted',
+  'spam_learning_event.created',
+  'spam_decision.created',
+  'spam_decision.updated',
+  'spam_decision.deleted',
+  'pgp_identity.created',
+  'pgp_identity.updated',
+  'pgp_identity.deleted',
+  'pgp_peer_key.created',
+  'pgp_peer_key.updated',
+  'pgp_peer_key.deleted',
+  'ai_profile.created',
+  'ai_profile.updated',
+  'ai_profile.deleted',
+  'ai_prompt.created',
+  'ai_prompt.updated',
+  'ai_prompt.deleted',
+  'workflow.created',
+  'workflow.updated',
+  'workflow.deleted',
+  'workflow_version.created',
+  'workflow_version.updated',
+  'workflow_version.deleted',
+  'workflow_knowledge_base.created',
+  'workflow_knowledge_base.updated',
+  'workflow_knowledge_base.deleted',
+  'workflow_knowledge_chunk.created',
+  'workflow_knowledge_chunk.updated',
+  'workflow_knowledge_chunk.deleted',
+  'workflow_delayed_job.created',
+  'workflow_delayed_job.updated',
+  'workflow_delayed_job.deleted',
+  'automation_api_key.created',
+  'automation_api_key.revoked',
+  'email_account.created',
+  'email_account.updated',
+  'email_account.deleted',
+  'email_message.updated',
+  'email_message_tag.created',
+  'email_message_tag.deleted',
+  'email_category.created',
+  'email_category.updated',
+  'email_category.deleted',
+  'email_message_category.created',
+  'email_message_category.deleted',
+  'email_internal_note.created',
+  'email_internal_note.updated',
+  'email_internal_note.deleted',
+  'email_canned_response.created',
+  'email_canned_response.updated',
+  'email_canned_response.deleted',
+  'email_remote_content_allowlist.created',
+  'email_remote_content_allowlist.updated',
+  'email_remote_content_allowlist.deleted',
+  'email_team_member.created',
+  'email_team_member.updated',
+  'email_team_member.deleted',
+  'email_thread_edge.created',
+  'email_thread_edge.deleted',
+  'email_thread_alias.created',
+  'email_thread_alias.updated',
+  'email_thread_alias.deleted',
+  'email_thread.updated',
+  'email_tracking.updated',
+  'email_account_signature.created',
+  'email_account_signature.updated',
+  'email_account_signature.deleted',
+  'email_read_receipt.created',
+  'email_acl.changed',
+] as const);
+
+export type ServerEventType = (typeof SERVER_EVENT_TYPES)[number];
 
 export type ServerEventEntityType =
   | 'email_message'
@@ -467,7 +523,8 @@ export type ServerEventEntityType =
   | 'email_thread_alias'
   | 'email_thread'
   | 'email_account_signature'
-  | 'email_read_receipt';
+  | 'email_read_receipt'
+  | 'email_acl';
 
 export type ServerEvent = Readonly<{
   sequence?: number;
@@ -661,6 +718,14 @@ export type UserGroupRemoveMemberResult =
   | { ok: true }
   | { ok: false; code: 'group_not_found' };
 
+export type UserGroupDeleteResult = {
+  group: UserGroupRecord;
+  // Member user ids captured inside the delete transaction (under a FOR UPDATE lock
+  // on the group row), so the caller can invalidate exactly the memberships the
+  // committed cascade removed — no separate, racy listMembers snapshot.
+  memberUserIds: string[];
+};
+
 export type UserGroupApiPort = {
   list(input: { workspaceId: string }): Promise<UserGroupRecord[]>;
   create(input: {
@@ -680,7 +745,7 @@ export type UserGroupApiPort = {
     workspaceId: string;
     actorUserId: string;
     id: number;
-  }): Promise<UserGroupRecord | null>;
+  }): Promise<UserGroupDeleteResult | null>;
   listMembers(input: {
     workspaceId: string;
     groupId: number;
@@ -707,6 +772,105 @@ export type UserGroupApiPort = {
     groupId: number;
     permissions: readonly string[];
   }): Promise<{ ok: true; permissions: string[] } | { ok: false; code: 'group_not_found' }>;
+};
+
+export type MailDelegationSubject =
+  | { type: 'user'; id: string; label?: string }
+  | { type: 'group'; id: number; label?: string };
+
+export type MailDelegationResource =
+  | { type: 'account'; accountId: number; label?: string }
+  | { type: 'folder'; accountId: number; folderId: number; label?: string };
+
+export type MailDelegationResourceOption =
+  | { type: 'account'; accountId: number; label: string }
+  | { type: 'folder'; accountId: number; folderId: number; accountLabel: string; label: string };
+
+export type MailDelegationSubjectOption =
+  | { type: 'user'; id: string; label: string }
+  | { type: 'group'; id: number; label: string };
+
+export type MailDelegationBinding = {
+  id: number;
+  subject: MailDelegationSubject;
+  resource: MailDelegationResource;
+  permissions: readonly MailPermission[];
+  profile: string | null;
+  updatedAt: string;
+};
+
+export type MailDelegationActor = {
+  userId: string;
+  isOwner: boolean;
+  isAdmin: boolean;
+};
+
+export type MailDelegationMutationCode =
+  | 'binding_not_found'
+  | 'binding_conflict'
+  | 'permission_denied'
+  | 'privilege_escalation'
+  | 'resource_not_found'
+  | 'subject_not_found'
+  | 'owner_admin_subject_forbidden';
+
+export type MailDelegationApiPort = {
+  listResourceOptions(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    resourceType: MailDelegationResource['type'];
+    cursor?: number;
+    limit: number;
+  }): Promise<{
+    ok: true;
+    resources: readonly MailDelegationResourceOption[];
+    nextCursor: number | null;
+  }>;
+  listSubjectOptions(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    resource: MailDelegationResource;
+    subjectType: MailDelegationSubject['type'];
+    cursor?: string;
+    limit: number;
+  }): Promise<
+    | { ok: true; subjects: readonly MailDelegationSubjectOption[]; nextCursor: string | null }
+    | { ok: false; code: 'permission_denied' | 'resource_not_found' }
+  >;
+  listBindings(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    resource?: MailDelegationResource;
+    cursor?: number;
+    limit: number;
+  }): Promise<
+    | { ok: true; bindings: readonly MailDelegationBinding[]; nextCursor: number | null }
+    | { ok: false; code: 'permission_denied' | 'resource_not_found' }
+  >;
+  replaceBinding(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    subject: MailDelegationSubject;
+    resource: MailDelegationResource;
+    permissions: readonly MailPermission[];
+  }): Promise<
+    | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted?: boolean }
+    | { ok: false; code: MailDelegationMutationCode }
+  >;
+  replaceBindingById(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    bindingId: number;
+    permissions: readonly MailPermission[];
+  }): Promise<
+    | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted: boolean }
+    | { ok: false; code: MailDelegationMutationCode }
+  >;
+  deleteBinding(input: {
+    workspaceId: string;
+    actor: MailDelegationActor;
+    bindingId: number;
+  }): Promise<{ ok: true; bindingId: number; resource: MailDelegationResource; affectedUserIds: readonly string[] } | { ok: false; code: MailDelegationMutationCode }>;
 };
 
 export type CustomerApiPort = {
@@ -1617,16 +1781,30 @@ export type EmailAccountMutationInput = {
 };
 
 export type EmailAccountMutationPortResult =
-  | { ok: true; account: EmailAccountRecord }
+  | {
+    ok: true;
+    account: EmailAccountRecord;
+    // Delete only: the delegates (direct + group members) who held a binding on
+    // the account before its ACL bindings cascade-deleted, so the handler can
+    // publish a targeted email_acl.changed invalidation to each — the
+    // email_account.deleted event itself reaches owners/admins only.
+    affectedUserIds?: readonly string[];
+  }
   | { ok: false; code: 'secret_port_unavailable' };
 
 export type EmailAccountApiPort = {
   list(input: {
     workspaceId: string;
+    mailScope?: MailSqlScope;
   }): Promise<EmailAccountListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    // Present for a scoped delegate: an account reached ONLY as the parent of a
+    // scoped folder/message (not named by a direct account-level grant) is redacted
+    // to a minimal identity record so its connection config never leaks — matching
+    // the list port's parent-only redaction. Absent/'all' (owner/admin) => full record.
+    mailScope?: MailSqlScope;
   }): Promise<EmailAccountRecord | null>;
   create?(input: {
     workspaceId: string;
@@ -1953,6 +2131,7 @@ export type EmailReportingApiPort = {
     workspaceId: string;
     accountId?: number;
     now?: Date;
+    mailScope?: MailSqlScope;
   }): Promise<EmailReportingSnapshot>;
 };
 
@@ -2065,7 +2244,11 @@ export type EmailMessageBulkMutationResult = {
 
 export type EmailMessageDraftDeleteResult =
   | { ok: true; count: number }
-  | { ok: false; reason: 'not_found' | 'not_local_draft' };
+  | {
+    ok: false;
+    reason: 'not_found' | 'not_local_draft' | 'scheduled_send_claimed';
+    message?: string;
+  };
 
 export type EmailComposeDraftCreateInput = {
   accountId: number;
@@ -2094,7 +2277,7 @@ export type EmailComposeDraftMutationResult =
   | { ok: true; message: EmailMessageRecord }
   | {
     ok: false;
-    reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked';
+    reason: 'not_found' | 'not_local_draft' | 'account_not_found' | 'outbound_blocked' | 'scheduled_send_claimed';
     message?: string;
   };
 
@@ -2198,6 +2381,7 @@ export type EmailOutboundValidationResult =
   | {
     allowed: true;
     reason: null;
+    manualApprovalPersistenceRequired?: boolean;
   }
   | {
     allowed: false;
@@ -2205,10 +2389,13 @@ export type EmailOutboundValidationResult =
     workflowRunId?: number | null;
   };
 
+export type EmailOutboundValidationPersistenceMode = 'persist' | 'none';
+
 export type EmailOutboundValidationApiPort = {
   validate(input: {
     workspaceId: string;
     actorUserId: string;
+    persistence?: EmailOutboundValidationPersistenceMode;
     values: EmailOutboundValidationInput;
   }): Promise<EmailOutboundValidationResult>;
 };
@@ -2253,6 +2440,9 @@ export type EmailRemoteContentPolicyMutationResult =
 export type EmailMessageApiPort = {
   list(input: {
     workspaceId: string;
+    mailScope?: MailSqlScope;
+    mailContentScope?: MailSqlScope;
+    mailAttachmentScope?: MailSqlScope;
     accountId?: number;
     folderPath?: string;
     folderKind?: string;
@@ -2275,6 +2465,13 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     id: number;
     includeBody: boolean;
+    // Present only for a restricted-scope delegate (owner/admin resolve to scope 'all',
+    // which skips the wrapper): the read port computes reply_parent_visible from mailScope
+    // so a scope-invisible reply-parent id is nulled (R50-1), and attachment_readable from
+    // mailAttachmentScope so draft attachment paths are redacted for a caller lacking
+    // mail.attachment.read (R50-2). Absent ⇒ scope 'all' ⇒ neither predicate ⇒ full row.
+    mailScope?: MailSqlScope;
+    mailAttachmentScope?: MailSqlScope;
   }): Promise<EmailMessageRecord | null>;
   createComposeDraft?(input: {
     workspaceId: string;
@@ -2285,9 +2482,14 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     messageId: number;
     values: EmailComposeDraftUpdateInput;
+    // Present for a draft-edit delegate lacking mail.content.read on the target: the
+    // read port redacts the echoed draft's body-derived fields per this scope so the
+    // edit response cannot be used to read stored draft content.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailComposeDraftMutationResult>;
   scheduleDraftSend?(input: {
     workspaceId: string;
+    actorUserId: string;
     messageId: number;
     sendAt: string | null;
   }): Promise<EmailComposeDraftMutationResult>;
@@ -2305,6 +2507,7 @@ export type EmailMessageApiPort = {
   }): Promise<{ success: true }>;
   retryScheduledSendDraft?(input: {
     workspaceId: string;
+    actorUserId: string;
     messageId: number;
   }): Promise<EmailComposeDraftMutationResult>;
   getSecurity?(input: {
@@ -2328,6 +2531,7 @@ export type EmailMessageApiPort = {
   getFolderCounts?(input: {
     workspaceId: string;
     accountId?: number;
+    mailScope?: MailSqlScope;
   }): Promise<EmailMailFolderCounts>;
   consumeRemoteContentPolicy?(input: {
     workspaceId: string;
@@ -2341,6 +2545,8 @@ export type EmailMessageApiPort = {
   }): Promise<EmailRemoteContentPolicyMutationResult>;
   listConversation?(input: {
     workspaceId: string;
+    mailScope?: MailSqlScope;
+    mailContentScope?: MailSqlScope;
     accountId?: number;
     excludeMessageId?: number;
     ticketCode?: string;
@@ -2353,6 +2559,8 @@ export type EmailMessageApiPort = {
     threadId: string;
     offset?: number;
     limit: number;
+    mailScope?: MailSqlScope;
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageListResult>;
   bulkSoftDelete?(input: {
     workspaceId: string;
@@ -2381,7 +2589,7 @@ export type EmailMessageApiPort = {
   bulkDeleteLocalDrafts?(input: {
     workspaceId: string;
     messageIds: readonly number[];
-  }): Promise<EmailMessageBulkMutationResult>;
+  }): Promise<EmailMessageDraftDeleteResult>;
   deleteLocalDraft?(input: {
     workspaceId: string;
     messageId: number;
@@ -2434,6 +2642,9 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     messageId: number;
     customerId: number | null;
+    // Present for a metadata-only delegate lacking mail.content.read on the target:
+    // the read port redacts the returned row's body-derived fields per this scope.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageMetadataMutationResult>;
   backfillCustomerLinks?(input: {
     workspaceId: string;
@@ -2444,12 +2655,16 @@ export type EmailMessageApiPort = {
     workspaceId: string;
     messageId: number;
     teamMemberId: string | null;
+    // See linkCustomer: redacts the returned row's content for metadata-only callers.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageMetadataMutationResult>;
   setSpamStatus?(input: {
     workspaceId: string;
     actorUserId: string;
     messageId: number;
     values: EmailMessageSpamStatusMutationInput;
+    // See linkCustomer: redacts the returned row's content for metadata-only callers.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageRecord | null>;
   evaluateSpamDecision?(input: {
     workspaceId: string;
@@ -2489,6 +2704,23 @@ export type EmailAttachmentListResult = {
   items: readonly EmailAttachmentRecord[];
 };
 
+export type EmailSourceAttachmentMeta = {
+  filename: string | null;
+  contentType: string | null;
+};
+
+export type EmailSourceAttachmentSummary = {
+  // Every MIME part the parser recorded in email_messages.attachments_json —
+  // including parts DROPPED by the ingest size cap that never became stored
+  // email_message_attachments rows. Used to gate the raw-EML download against
+  // dangerous attachments listForMessage() can't see.
+  items: readonly EmailSourceAttachmentMeta[];
+  // Count of stored email_message_attachments rows. items.length > storedCount
+  // means at least one source part was dropped (over-cap / empty / unreadable)
+  // and is reachable only via the raw MIME.
+  storedCount: number;
+};
+
 export type EmailAttachmentApiPort = {
   listForMessage(input: {
     workspaceId: string;
@@ -2498,6 +2730,13 @@ export type EmailAttachmentApiPort = {
     workspaceId: string;
     id: number;
   }): Promise<EmailAttachmentRecord | null>;
+  // Source attachment metadata (all MIME parts, incl. size-cap-dropped ones) plus
+  // the stored-row count, for the raw-EML suspicious-download gate. null when the
+  // message does not exist. Optional so lightweight port implementations may omit it.
+  listSourceAttachments?(input: {
+    workspaceId: string;
+    messageId: number;
+  }): Promise<EmailSourceAttachmentSummary | null>;
 };
 
 export type EmailAttachmentContentApiPort = {
@@ -2516,6 +2755,12 @@ export type EmailGdprExportApiPort = {
     workspaceId: string;
     skipAttachments?: boolean;
     includeSensitiveTracking?: boolean;
+    mailScope?: MailSqlScope;
+    // Present only for a restricted-scope delegate (owner/admin resolve to scope 'all', which
+    // skips the wrapper): the export omits attachment bytes outside this mail.attachment.read
+    // scope, so a mail.export delegate lacking attachment.read cannot bulk-exfiltrate attachment
+    // content the dedicated attachment routes would deny. Absent ⇒ scope 'all' ⇒ no gating. (R51-1)
+    mailAttachmentScope?: MailSqlScope;
   }): Promise<EmailGdprExportResult>;
 };
 
@@ -2534,10 +2779,17 @@ export type EmailNumericRecordApiPort<TRecord, TListFilters extends object = obj
     workspaceId: string;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
+    // The caller's mail.draft.create scope, injected only for the account-signature port so
+    // it can redact signatureHtml per-account for a metadata-only delegate (R48-2). Other
+    // ports ignore it.
+    mailSignatureScope?: MailSqlScope;
   } & TListFilters): Promise<EmailNumericCursorListResult<TRecord>>;
   get(input: {
     workspaceId: string;
     id: number;
+    mailScope?: MailSqlScope;
+    mailSignatureScope?: MailSqlScope;
   }): Promise<TRecord | null>;
 };
 
@@ -2547,10 +2799,12 @@ export type EmailStringRecordApiPort<TRecord, TListFilters extends object = obje
     cursor?: string;
     offset?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   } & TListFilters): Promise<EmailStringCursorListResult<TRecord>>;
   get(input: {
     workspaceId: string;
     id: string;
+    mailScope?: MailSqlScope;
   }): Promise<TRecord | null>;
 };
 
@@ -2805,6 +3059,7 @@ export type EmailMessageCategoryApiPort = EmailNumericRecordApiPort<EmailMessage
   listCounts?(input: {
     workspaceId: string;
     accountId?: number;
+    mailScope?: MailSqlScope;
   }): Promise<readonly EmailCategoryCountRecord[]>;
 };
 
@@ -3100,6 +3355,10 @@ export type EmailUserSignatureApiPort = {
   listForUser(input: {
     workspaceId: string;
     userId: string;
+    // When present (restricted-scope caller), only signatures for accounts the
+    // caller can reach — directly or as the parent of a visible folder/message —
+    // are returned. Absent for owner/admin (full access).
+    mailScope?: MailSqlScope;
   }): Promise<EmailUserSignatureListResult>;
   upsert(input: {
     workspaceId: string;
@@ -3301,6 +3560,7 @@ export type EmailThreadAliasApiPort = EmailNumericRecordApiPort<EmailThreadAlias
   listWarnings?(input: {
     workspaceId: string;
     limit?: number;
+    mailScope?: MailSqlScope;
   }): Promise<readonly EmailThreadAliasWarningRecord[]>;
   merge?(input: {
     workspaceId: string;
@@ -3677,11 +3937,13 @@ export type WorkflowRunApiPort = {
     includeLog: boolean;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunListResult>;
   get(input: {
     workspaceId: string;
     id: number;
     includeLog: boolean;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunRecord | null>;
 };
 
@@ -3713,11 +3975,13 @@ export type WorkflowRunStepApiPort = {
     includeDetail: boolean;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunStepListResult>;
   get(input: {
     workspaceId: string;
     id: number;
     includeDetail: boolean;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowRunStepRecord | null>;
 };
 
@@ -3741,10 +4005,12 @@ export type WorkflowMessageAppliedApiPort = {
     workflowId?: number;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowMessageAppliedListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowMessageAppliedRecord | null>;
 };
 
@@ -3770,10 +4036,12 @@ export type WorkflowForwardDedupApiPort = {
     dest?: string;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowForwardDedupListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowForwardDedupRecord | null>;
 };
 
@@ -3927,27 +4195,32 @@ export type WorkflowDelayedJobApiPort = {
     includeContext: boolean;
     cursor?: number;
     limit: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobListResult>;
   get(input: {
     workspaceId: string;
     id: number;
     includeContext: boolean;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobRecord | null>;
   create?(input: {
     workspaceId: string;
     actorUserId: string;
     values: WorkflowDelayedJobMutationInput;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobMutationPortResult>;
   update?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
     values: WorkflowDelayedJobMutationInput;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
+    mailScope?: MailSqlScope;
   }): Promise<WorkflowDelayedJobRecord | null>;
 };
 
@@ -4015,6 +4288,10 @@ export type PgpIdentityApiPort = {
     email?: string;
     cursor?: number;
     limit: number;
+    // When set, restrict the list to identities owned by this user. Passed by the
+    // HTTP route for non-owner/admin callers so a delegated key manager sees only
+    // their own (private) identities, never the workspace-wide list.
+    ownerUserId?: string;
   }): Promise<PgpIdentityListResult>;
   get(input: {
     workspaceId: string;
@@ -4576,6 +4853,18 @@ export type HealthCheckApiPort = {
   pingDatabase(): Promise<void>;
 };
 
+export type MailAclRolloutAdminApiPort = {
+  getReadiness(workspaceId: string): Promise<MailAclRolloutReadiness>;
+  transitionToEnforce(input: {
+    workspaceId: string;
+    actorUserId: string;
+  }): Promise<MailAclRolloutTransitionResult>;
+  resetShadowCounters(input: {
+    workspaceId: string;
+    actorUserId: string;
+  }): Promise<MailAclRolloutCounterResetResult>;
+};
+
 export type ServerLogReadEntry = {
   time: string;
   level: 'info' | 'warn' | 'error' | 'fatal';
@@ -4979,9 +5268,13 @@ export type ServerApiPorts = {
   customerCustomFieldValues?: CustomerCustomFieldValueApiPort;
   customers?: CustomerApiPort;
   userGroups?: UserGroupApiPort;
+  mailDelegation?: MailDelegationApiPort;
   dashboard?: DashboardApiPort;
   deals?: DealApiPort;
   dealProducts?: DealProductApiPort;
+  mailAccess?: MailAccessService;
+  mailAclRollout?: MailAclRolloutAdminApiPort;
+  mailResourceLookup?: MailResourceLookupPort;
   emailAccountMailSettings?: EmailAccountMailSettingsApiPort;
   emailTracking?: EmailTrackingApiPort;
   emailAccountSignatures?: EmailAccountSignatureApiPort;

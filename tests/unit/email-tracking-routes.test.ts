@@ -62,7 +62,29 @@ function makeTrackingPort(overrides: Partial<EmailTrackingApiPort> = {}): EmailT
 }
 
 function apiFor(port: EmailTrackingApiPort) {
-  return createServerApi({ auth: {} as never, emailTracking: port } satisfies ServerApiPorts);
+  return createServerApi({
+    auth: {} as never,
+    emailTracking: port,
+    mailAccess: {
+      async assertPermission() {},
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    },
+    mailResourceLookup: {
+      async resolve(input) {
+        if (input.target.kind === 'message') {
+          return [{
+            type: 'message',
+            accountId: '7',
+            folderId: '8',
+            messageId: String(input.target.id),
+          }];
+        }
+        return [];
+      },
+    },
+  } satisfies ServerApiPorts);
 }
 
 describe('email tracking routes', () => {

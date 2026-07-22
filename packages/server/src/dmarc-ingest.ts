@@ -18,6 +18,7 @@ import {
   type WorkspaceSessionApplier,
   type WorkspaceTransaction,
 } from './db/workspace-context';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
 
 /** Per-attachment read cap (compressed bytes). The decompressed side has its own
@@ -32,6 +33,11 @@ const REPORT_ATTACHMENT_PATTERN = /\.(xml|xml\.gz|gz|zip)$/i;
 export type WorkflowDmarcIngestContinuation = Readonly<{
   workflowId: number;
   triggerName?: string;
+  actorUserId?: string;
+  trustedService?: boolean;
+  // See AiClassificationContinuation.manualAdminExecute — carried across the async
+  // DMARC-ingest boundary so the resumed workflow.execute keeps its owner/admin recheck.
+  manualAdminExecute?: boolean;
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -41,6 +47,7 @@ export type WorkflowDmarcIngestJobPlan = Readonly<{
   workspaceId: string;
   workflowId: number;
   messageId: number;
+  actorUserId?: string;
   /** Optional case-insensitive substring the attachment name must contain
    *  (in addition to the xml/gz/zip extension gate). */
   attachmentNameFilter?: string;
@@ -219,24 +226,29 @@ async function enqueueDmarcIngestContinuation(
     options.db,
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => {
+      const payload = workflowContinuationPayload({
+        workspaceId: input.workspaceId,
+        workflowId: continuation.workflowId,
+        messageId: input.messageId,
+        ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
+        ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
+        // Keep the resumed workflow.execute marked so the owner/admin recheck still fires.
+        ...(continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
+        context: {
+          resumeNodeId: continuation.resumeNodeId,
+          eventStrings: continuation.eventStrings ?? {},
+          eventVariables: {
+            ...(continuation.eventVariables ?? {}),
+            ...dmarcIngestVariables(summary, aggregate),
+          },
+        },
+      }, continuation.trustedService === true);
+
       await trx
         .insertInto('job_queue')
         .values({
           type: 'workflow.execute',
-          payload: {
-            workspaceId: input.workspaceId,
-            workflowId: continuation.workflowId,
-            messageId: input.messageId,
-            ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
-            context: {
-              resumeNodeId: continuation.resumeNodeId,
-              eventStrings: continuation.eventStrings ?? {},
-              eventVariables: {
-                ...(continuation.eventVariables ?? {}),
-                ...dmarcIngestVariables(summary, aggregate),
-              },
-            },
-          },
+          payload,
           run_after: now,
           max_attempts: 3,
           workspace_id: input.workspaceId,
@@ -246,6 +258,10 @@ async function enqueueDmarcIngestContinuation(
     },
     { applySession: options.applyWorkspaceSession },
   );
+}
+
+function workflowContinuationPayload(payload: Record<string, unknown>, trustedService: boolean): Record<string, unknown> {
+  return trustedService && !payload.actorUserId ? buildTrustedServiceJobPayload(payload) : payload;
 }
 
 function dmarcIngestVariables(

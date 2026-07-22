@@ -26,10 +26,13 @@ import type {
   WorkflowVersionMutationInput,
   WorkflowVersionRecord,
 } from './types';
+import { workflowGraphHasSideEffectNode } from '@simplecrm/core';
 import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
+  requireCapability,
   requirePrincipal,
 } from './http';
 
@@ -909,6 +912,13 @@ async function handleDelayedJobGet(
 async function handleDelayedJobCreate(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Creating a delayed job forges queued workflow.execute runtime state (a
+  // workflow-management operation), just like the update/delete handlers below.
+  // A delayed job may carry no messageId, so the route policy resolves non_mail
+  // and the mail ACL cannot gate it — enforce the capability here.
+  if (!requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Workflow-Berechtigung erforderlich');
+  }
   if (!ports.workflowDelayedJobs?.create) return unavailable('workflow_delayed_jobs_unavailable', 'Workflow delayed job API nicht konfiguriert');
 
   const parsed = parseDelayedJobMutationBody(req.body, {
@@ -943,6 +953,12 @@ async function handleDelayedJobUpdate(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  // Mutating a delayed job can redirect or cancel a queued workflow.execute
+  // (resume node, context, workflow, status) — a workflow-management operation,
+  // not something mail.content.read alone should allow.
+  if (!requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Workflow-Berechtigung erforderlich');
+  }
   if (!ports.workflowDelayedJobs?.update) return unavailable('workflow_delayed_jobs_unavailable', 'Workflow delayed job API nicht konfiguriert');
 
   const parsed = parseDelayedJobMutationBody(req.body, {
@@ -952,6 +968,33 @@ async function handleDelayedJobUpdate(
     requireStatus: false,
   });
   if (!parsed.ok) return parsed.response;
+
+  // Redirecting a delayed job (resumeNodeId/context) does not re-enqueue the backing
+  // workflow.execute — that job keeps the initiating admin's actorUserId, so at
+  // resume the async side-effect gate (which only denies non-admin ACTORS) is
+  // bypassed and the chosen node runs under the admin's authority. A non-admin
+  // workflows.manage holder could thus jump an admin-originated run to a writing node
+  // the live-execution route (workflow-routes.ts) forbids them from running. Mirror
+  // that route's admin gate for redirect edits on a side-effecting workflow. Reschedule
+  // (executeAt) and cancel (status) edits stay open to workflows.manage.
+  if (
+    (parsed.values.resumeNodeId !== undefined || parsed.values.context !== undefined)
+    && !requireAdmin(principal)
+  ) {
+    if (!ports.workflows) return unavailable('workflows_unavailable', 'Workflow API nicht konfiguriert');
+    const existing = await ports.workflowDelayedJobs.get({
+      workspaceId: principal.workspaceId,
+      id,
+      includeContext: false,
+    });
+    if (!existing) return error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
+    if (existing.workflowId !== null) {
+      const workflow = await ports.workflows.get({ workspaceId: principal.workspaceId, id: existing.workflowId });
+      if (workflow && workflowGraphHasSideEffectNode(workflow.graph)) {
+        return error(403, 'forbidden', 'Umleiten von Workflows mit schreibenden Knoten erfordert Adminrechte');
+      }
+    }
+  }
 
   const result = await ports.workflowDelayedJobs.update({
     workspaceId: principal.workspaceId,
@@ -974,6 +1017,11 @@ async function handleDelayedJobDelete(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  // Deleting a delayed job removes the row backing a queued workflow.execute —
+  // a workflow-management operation, not something mail.content.read allows.
+  if (!requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Workflow-Berechtigung erforderlich');
+  }
   if (!ports.workflowDelayedJobs?.delete) return unavailable('workflow_delayed_jobs_unavailable', 'Workflow delayed job API nicht konfiguriert');
 
   const job = await ports.workflowDelayedJobs.delete({

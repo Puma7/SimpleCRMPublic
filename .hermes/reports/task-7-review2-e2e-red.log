@@ -1,0 +1,59 @@
+
+Running 1 test using 1 worker
+
+unhandled API error: TypeError: port.listResourceOptions is not a function
+    at handleResourceOptions (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\mail-delegation-routes.ts:81:29)
+    at Object.handler (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\mail-delegation-routes.ts:48:38)
+    at Object.handle (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\server-api.ts:157:45)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at dispatchFastifyRequest (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\fastify-adapter.ts:411:23)
+unhandled API error: TypeError: port.listResourceOptions is not a function
+    at handleResourceOptions (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\mail-delegation-routes.ts:81:29)
+    at Object.handler (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\mail-delegation-routes.ts:48:38)
+    at Object.handle (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\server-api.ts:157:45)
+    at processTicksAndRejections (node:internal/process/task_queues:105:5)
+    at dispatchFastifyRequest (C:\Cursor\SimpleCRM\SimpleCRMPublic\packages\server\src\api\fastify-adapter.ts:411:23)
+  x  1 tests\e2e\mail-delegation-server-client.spec.ts:112:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event (747ms)
+
+
+  1) tests\e2e\mail-delegation-server-client.spec.ts:112:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event
+
+    Error: {
+      "apiResponses": [
+        "500 http://127.0.0.1:58447/api/v1/email/access/resources?resourceType=account&limit=100",
+        "500 http://127.0.0.1:58447/api/v1/email/access/resources?resourceType=folder&limit=100",
+        "200 http://127.0.0.1:58447/api/v1/email/access/bindings?limit=100"
+      ],
+      "browserErrors": [
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)",
+        "Failed to load resource: the server responded with a status of 500 (Internal Server Error)"
+      ]
+    }
+
+      126 |   await expect(page.getByText('Delegationen werden geladen.')).toHaveCount(0);
+      127 |   if (await page.getByText('Delegationen konnten nicht geladen werden.').count()) {
+    > 128 |     throw new Error(JSON.stringify({ apiResponses, browserErrors }, null, 2));
+          |           ^
+      129 |   }
+      130 |   expect(state.forbiddenGlobalListCalls).toBe(0);
+      131 |
+        at C:\Cursor\SimpleCRM\SimpleCRMPublic\tests\e2e\mail-delegation-server-client.spec.ts:128:11
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    tests\e2e\mail-delegation-server-client.spec.ts:112:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event

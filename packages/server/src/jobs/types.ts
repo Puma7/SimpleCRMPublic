@@ -1,4 +1,21 @@
+import type { MailSqlScope } from '../mail-access/types';
+
 export type JobPayload = Record<string, unknown>;
+
+export type MailJobAuthorization =
+  | Readonly<{
+    kind: 'workflow_execute_delayed_message';
+    delayedJobId: number;
+    messageId: number | null;
+  }>
+  // The initiating user's mail.draft.create scope for a compose-originated
+  // ai.pick_canned, so the worker restricts the canned-template query (which runs
+  // under the system role) to global + in-scope responses instead of every
+  // workspace template. Absent for service/automatic runs (no per-user scope).
+  | Readonly<{
+    kind: 'ai_pick_canned_scope';
+    cannedScope: MailSqlScope;
+  }>;
 
 export type QueuedJob = Readonly<{
   id: number;
@@ -13,6 +30,7 @@ export type QueuedJob = Readonly<{
   workspaceId: string;
   createdAt: string;
   updatedAt: string;
+  mailAuthorization?: MailJobAuthorization;
 }>;
 
 export type EnqueueJobInput = Readonly<{
@@ -43,6 +61,7 @@ export type JobQueuePort = Readonly<{
   claimNext(input: ClaimJobInput): Promise<QueuedJob | null>;
   complete(job: QueuedJob): Promise<boolean>;
   fail(input: FailJobInput): Promise<QueuedJob | null>;
+  failTerminal(input: FailJobInput): Promise<QueuedJob | null>;
   releaseStaleLocks(input: {
     staleBefore: Date;
     limit?: number;

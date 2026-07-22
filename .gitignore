@@ -103,6 +103,10 @@ src/.DS_Store
 !docs/LEARNINGS_AUTH.md
 !docs/design/gdpr-erasure-spike.md
 !docs/SPIKE_JTL_CONTEXT_INJECTION.md
+!docs/superpowers/specs/
+!docs/superpowers/specs/**/*.md
+!docs/superpowers/plans/
+!docs/superpowers/plans/**/*.md
 !AGENTS.md
 
 coverage/

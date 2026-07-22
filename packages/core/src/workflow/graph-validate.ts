@@ -1,3 +1,4 @@
+import { isTrashMailboxName } from '../email/imap-mailbox-names';
 import type { WorkflowGraphDocument, WorkflowGraphNode } from './graph-types';
 
 function registryType(node: WorkflowGraphNode): string {
@@ -51,6 +52,464 @@ function isHoldNode(node: WorkflowGraphNode): boolean {
  */
 function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
   return node.type === 'condition' || registryType(node) === 'logic.threshold';
+}
+
+/**
+ * Runtime node types that only read state, branch, or produce in-run variables
+ * — they never mutate persisted mailbox/CRM state, send mail, or reach an
+ * external system. Kept as a fail-closed ALLOWLIST on purpose: any node type
+ * NOT listed here is treated as side-effecting, so a newly added node is
+ * writing until it is reviewed and added. Cross-check with executeServerNode
+ * (packages/server/src/workflow-execution.ts) when node types change. The genuinely
+ * in-memory `logic.*` helpers are enumerated in LOGIC_INMEMORY_NODE_TYPES below;
+ * `logic.delay` is NOT among them (it persists a workflow_delayed_jobs row and
+ * enqueues a future workflow.execute — a side effect), so it is not exempt.
+ */
+const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'email.auth_check',
+  'email.read_tracking_evidence',
+  'email.sender_filter',
+  'returns.evaluate',
+  // jtl.lookup reads the workspace's OWN synced JTL tables (local Postgres, workspace-
+  // scoped) — no external reach — so it stays read-only. jtl.order_context is NOT here:
+  // it runs a caller-configurable SELECT against the workspace's external MSSQL/ERP
+  // connection (executeReadOnlyQuery), so a non-admin live run could read arbitrary ERP
+  // tables — reaching an external system counts as side-effecting.
+  'jtl.lookup',
+  'jtl.prepare_action',
+  // NOTE: neither ai.classify NOR ai.reply_suggestion is here. ai.classify persists a
+  // tag (addClassificationTag, a mail.triage mutation); ai.reply_suggestion enqueues a
+  // child that calls the external AI provider and writes email_messages.reply_suggestion_*
+  // under the system role. Both are side-effecting, so a graph containing either must
+  // block a non-admin live run.
+]);
+
+// The `logic.*` helpers that only branch, stop, iterate, or set in-run variables —
+// they touch no persisted state and reach no external system, so they are exempt from
+// the side-effect guard. Enumerated as a fail-closed ALLOWLIST (like the set above)
+// rather than a `logic.` prefix match: `logic.delay` schedules a delayed job + a future
+// workflow.execute (executeServerNode → scheduleWorkflowDelay), and any future `logic.*`
+// type must be reviewed before it is treated as read-only. Kept in sync with the
+// logic.* branches in executeServerNode (packages/server/src/workflow-execution.ts).
+const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'logic.stop',
+  'logic.set_variable',
+  'logic.merge',
+  'logic.threshold',
+  'logic.switch',
+  'logic.loop',
+]);
+
+/** Resolve the runtime type of an action/registry node (mirrors nodeRuntimeType). */
+function sideEffectRuntimeType(node: WorkflowGraphNode): string {
+  const data = node.data as Record<string, unknown> | undefined;
+  if (node.type === 'registry') {
+    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
+  }
+  if (node.type === 'action') {
+    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
+    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
+    return 'action';
+  }
+  return node.type;
+}
+
+/**
+ * True if the graph has at least one node that mutates persisted state, sends
+ * mail, or reaches an external system when run live. Triggers and conditions
+ * never count; action/registry nodes count unless their runtime type is a known
+ * read-only/branch type or an in-memory `logic.*` helper (LOGIC_INMEMORY_NODE_TYPES
+ * — logic.delay is excluded because it schedules a delayed job). An unknown canvas
+ * type fails closed (counts as side-effecting).
+ *
+ * Scans every node regardless of reachability, so a writing node behind a delay
+ * or an unreached branch still trips the guard. Server workflow runs execute
+ * under a system role with no per-node ACL, so a live run initiated by a
+ * non-admin must be blocked whenever any writing node is present. A null/empty
+ * graph returns false: the server executor blocks legacy definition-only
+ * workflows, so there is nothing to escalate through.
+ */
+export function workflowGraphHasSideEffectNode(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type === 'trigger' || node.type === 'condition') continue;
+    if (node.type !== 'action' && node.type !== 'registry') return true;
+    const type = sideEffectRuntimeType(node);
+    if (LOGIC_INMEMORY_NODE_TYPES.has(type)) continue;
+    if (READ_ONLY_WORKFLOW_NODE_TYPES.has(type)) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * True if the graph contains at least one action/registry node whose runtime
+ * type matches `nodeType`. Scans every node regardless of reachability (like
+ * workflowGraphHasSideEffectNode), so a matching node behind a delay or an
+ * unreached branch still counts. Used by the async job enforcer to recheck a
+ * per-node permission (e.g. mail.delete for an email.delete_server node) at
+ * workflow.execute time, since server workflow runs execute under a system role
+ * with no per-node ACL. A null/empty graph returns false.
+ */
+export function workflowGraphHasNodeType(graph: unknown, nodeType: string): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type !== 'action' && node.type !== 'registry') continue;
+    if (sideEffectRuntimeType(node) === nodeType) return true;
+  }
+  return false;
+}
+
+/**
+ * Like workflowGraphHasNodeType but matches ANY runtime type in `nodeTypes`. Used by
+ * the async job enforcer to recheck a shared per-node permission across a family of
+ * node types (e.g. mail.triage for the triage-class mutation nodes). The set must
+ * include both the registry dotted form (email.tag) AND any legacy canvas action alias
+ * (tag), since sideEffectRuntimeType returns the bare actionType for action nodes.
+ */
+export function workflowGraphHasAnyNodeType(graph: unknown, nodeTypes: ReadonlySet<string>): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type !== 'action' && node.type !== 'registry') continue;
+    if (nodeTypes.has(sideEffectRuntimeType(node))) return true;
+  }
+  return false;
+}
+
+/**
+ * Collect the STATIC target draft ids of every `email.send_draft` node — i.e. those
+ * that hard-code `config.draftId` (a positive integer). A send_draft node arms an
+ * EXISTING draft for send (rewrites its body/subject and clears its review hold), so the
+ * async job enforcer resolves these ids to require mail.draft.edit on the target before
+ * the node runs under the system role. Nodes that select their target via
+ * `config.draftIdVariable` (a runtime workflow variable) are NOT included — that id is
+ * only known at execution, so it cannot be resolved at policy time. Deduplicated.
+ */
+export function collectWorkflowSendDraftStaticDraftIds(graph: unknown): number[] {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return [];
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+  const ids = new Set<number>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type !== 'action' && node.type !== 'registry') continue;
+    if (sideEffectRuntimeType(node) !== 'email.send_draft') continue;
+    const draftId = nodeConfig(node).draftId;
+    if (typeof draftId === 'number' && Number.isInteger(draftId) && draftId > 0) {
+      ids.add(draftId);
+    }
+  }
+  return [...ids];
+}
+
+/** A concrete positive-integer literal (a number, or a plain numeric string with no
+ * `{{…}}` interpolation token), else null. Used to statically resolve a workflow
+ * variable that a `logic.set_variable` node pins to a known draft id. */
+function staticPositiveIntOrNull(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed === '' || trimmed.includes('{{')) return null;
+    const parsed = Number(trimmed);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * Collect target draft ids for `email.send_draft` nodes that select their target through
+ * a workflow VARIABLE — `config.draftIdVariable`, or the default `draft.id` when neither
+ * draftId nor draftIdVariable is set — whose value is pinned to a STATIC positive-integer
+ * literal by a `logic.set_variable` node in the same graph. R40-4(B)
+ * (collectWorkflowSendDraftStaticDraftIds) resolves only a hard-coded `config.draftId`;
+ * but a run can also set a known draft id via `logic.set_variable` and feed it to
+ * send_draft, in which case the id is still statically knowable from the graph. The async
+ * job enforcer resolves these too and requires mail.draft.edit on them, so a user-attributed
+ * run cannot mutate an arbitrary other user's draft through the variable path before the
+ * node runs under the system role (R42-1). Only concrete integer literals are resolved: a
+ * variable fed from interpolated/runtime data (a `{{…}}` template, a create_draft output,
+ * an external field) is genuinely unknown at policy time — that residual case's actual SEND
+ * is still blocked downstream by the mail.send.scheduled recheck. A send_draft node that
+ * hard-codes `config.draftId` consults that id at runtime, NOT the variable, so it is left
+ * to the static collector. Deduplicated.
+ */
+export function collectWorkflowSendDraftVariableStaticDraftIds(graph: unknown): number[] {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return [];
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+
+  // 1) Map each variable name to the static positive-int values a logic.set_variable node
+  //    assigns it (registry `logic.set_variable` or the bare `set_variable` action alias).
+  const variableValues = new Map<string, Set<number>>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') continue;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    const id = staticPositiveIntOrNull(config.value);
+    if (id === null) continue;
+    const set = variableValues.get(name) ?? new Set<number>();
+    set.add(id);
+    variableValues.set(name, set);
+  }
+  if (variableValues.size === 0) return [];
+
+  // 2) For each send_draft node that consults a variable (no static draftId), pull the
+  //    statically-pinned values of the variable it reads.
+  const ids = new Set<number>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (sideEffectRuntimeType(node) !== 'email.send_draft') continue;
+    const config = nodeConfig(node);
+    if (config.draftId !== undefined && config.draftId !== null) continue;
+    const varName = (typeof config.draftIdVariable === 'string' ? config.draftIdVariable.trim() : '') || 'draft.id';
+    for (const id of variableValues.get(varName) ?? []) ids.add(id);
+  }
+  return [...ids];
+}
+
+/**
+ * Collect the ACCOUNT ids an `email.create_draft` node would mint a draft under when the
+ * `email.account_id` workflow variable is pinned to a STATIC positive-integer literal by a
+ * `logic.set_variable` node in the same graph. email.create_draft reads its target account
+ * PURELY from `context.variables['email.account_id']` (seeded from the trigger message's
+ * account but overwritable by a set_variable node), and the executor inserts the draft row
+ * under that account under the SYSTEM role with NO per-actor ACL. The async job enforcer
+ * resolves these statically-pinned accounts and requires mail.draft.create on each, so a
+ * user-attributed run cannot mint a draft in an account the actor cannot reach (R45-1;
+ * mirrors R42-1's send_draft variable target). Only concrete integer literals are resolved —
+ * a variable fed from genuine runtime data is unknown at policy time, and unlike send_draft
+ * (whose eventual SMTP send is rechecked downstream) create_draft has no later recheck, so
+ * that residual case is not covered here. Deduplicated.
+ */
+export function collectWorkflowCreateDraftStaticAccountIds(graph: unknown): number[] {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return [];
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+
+  // Only relevant when the graph actually creates a draft — create_draft reads the FIXED
+  // 'email.account_id' variable, so its statically-pinned values are the target accounts.
+  const createsDraft = nodes.some((raw) => (
+    raw !== null && typeof raw === 'object'
+    && sideEffectRuntimeType(raw as WorkflowGraphNode) === 'email.create_draft'
+  ));
+  if (!createsDraft) return [];
+
+  const ids = new Set<number>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') continue;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    if (name !== 'email.account_id') continue;
+    const id = staticPositiveIntOrNull(config.value);
+    if (id !== null) ids.add(id);
+  }
+  return [...ids];
+}
+
+/**
+ * True if the graph creates a draft AND a `logic.set_variable` node assigns the fixed
+ * `email.account_id` variable a value that is NOT a static positive-integer literal — i.e.
+ * an interpolated/runtime-computed account id (`{{customer.account_id}}`) that
+ * collectWorkflowCreateDraftStaticAccountIds cannot resolve. Because create_draft would then
+ * mint a draft under a runtime account the async job enforcer cannot authorize at policy
+ * time, a non-owner/admin run carrying such an assignment is denied fail-closed (R46-2, the
+ * residual of R45-1). Owner/admin — who may create a draft under any account — are exempt at
+ * the enforcer, not here. A static-integer pin returns false (it is authorized instead), and
+ * a graph without an email.create_draft node returns false.
+ */
+export function workflowGraphAssignsDynamicCreateDraftAccount(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+
+  const createsDraft = nodes.some((raw) => (
+    raw !== null && typeof raw === 'object'
+    && sideEffectRuntimeType(raw as WorkflowGraphNode) === 'email.create_draft'
+  ));
+  if (!createsDraft) return false;
+
+  return nodes.some((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') return false;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    if (name !== 'email.account_id') return false;
+    // A statically-resolvable positive-int pin is authorized elsewhere; anything else
+    // (interpolated, non-numeric, absent) is not resolvable at policy time.
+    return staticPositiveIntOrNull(config.value) === null;
+  });
+}
+
+/**
+ * True if an `email.send_draft` node selects its target through a workflow VARIABLE that a
+ * `logic.set_variable` node assigns a value that is NOT a static positive-integer literal —
+ * i.e. an interpolated/runtime-computed draft id the static collectors
+ * (collectWorkflowSendDraftStaticDraftIds / collectWorkflowSendDraftVariableStaticDraftIds)
+ * cannot resolve. The executor loads and MUTATES that draft (clears body/subject, removes the
+ * outbound hold, arms scheduled_send_at, writes the release marker) under the SYSTEM role with
+ * no per-actor ACL before the downstream mail.send.scheduled recheck — which only blocks SMTP,
+ * not the mutation. So a non-owner/admin run carrying such a dynamic target is denied
+ * fail-closed (R50-4, the send_draft analog of R46-2). Owner/admin — who may edit any draft —
+ * are exempt at the enforcer, not here. A static id (config.draftId, or a static-pinned
+ * variable) returns false (authorized via R40-4/R42-1 instead), and the common
+ * create_draft→draft.id→send_draft chain returns false too, since `draft.id` there is produced
+ * by create_draft's output, not by a set_variable node.
+ */
+export function workflowGraphAssignsDynamicSendDraftTarget(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+
+  // 1) The variable names send_draft nodes read their target from (variable path only — a
+  //    static config.draftId consults that literal at runtime, not the variable).
+  const targetVarNames = new Set<string>();
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (sideEffectRuntimeType(node) !== 'email.send_draft') continue;
+    const config = nodeConfig(node);
+    if (config.draftId !== undefined && config.draftId !== null) continue;
+    const varName = (typeof config.draftIdVariable === 'string' ? config.draftIdVariable.trim() : '') || 'draft.id';
+    targetVarNames.add(varName);
+  }
+  if (targetVarNames.size === 0) return false;
+
+  // 2) True if a set_variable node assigns one of those target variables a non-static value.
+  return nodes.some((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    const node = raw as WorkflowGraphNode;
+    const type = sideEffectRuntimeType(node);
+    if (type !== 'logic.set_variable' && type !== 'set_variable') return false;
+    const config = nodeConfig(node);
+    const name = (typeof config.name === 'string' ? config.name.trim() : '') || 'var';
+    if (!targetVarNames.has(name)) return false;
+    return staticPositiveIntOrNull(config.value) === null;
+  });
+}
+
+/**
+ * True if an `email.move_imap` node moves the message to a TRASH folder — which the runtime
+ * (applyWorkflowImapMoveLocalState) treats as a soft-delete (a delete-equivalent), the same
+ * outcome as `email.delete_server`. The move target is `config.folderPath ?? config.folder ??
+ * config.targetFolderPath ?? 'Spam'`. A STATIC target is delete-equivalent iff it normalizes to
+ * one of the runtime's trash aliases (isTrashMailboxName — the SAME set the runtime uses). A target
+ * containing `{{...}}` is interpolated at runtime (serverInterpolateFieldKeysFor marks folderPath
+ * interpolate:true), so its resolved value — possibly a trash folder — is unknowable at policy time;
+ * treat it as delete-equivalent so the enforcer fails closed (a mail.delete holder still proceeds,
+ * unlike an outright deny). A literal NON-trash move stays triage-only. Used by the async enforcer
+ * to require mail.delete for such a move, matching what the runtime actually does. (R51-4)
+ */
+export function workflowGraphHasDeleteEquivalentMoveImap(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+
+  return nodes.some((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    const node = raw as WorkflowGraphNode;
+    if (sideEffectRuntimeType(node) !== 'email.move_imap') return false;
+    const config = nodeConfig(node);
+    const rawTarget = config.folderPath ?? config.folder ?? config.targetFolderPath ?? 'Spam';
+    // Interpolated ({{...}}) target ⇒ resolved at runtime ⇒ possibly trash ⇒ fail closed.
+    if (typeof rawTarget === 'string' && rawTarget.includes('{{')) return true;
+    return isTrashMailboxName(String(rawTarget));
+  });
 }
 
 function triggerKind(doc: WorkflowGraphDocument): string | null {

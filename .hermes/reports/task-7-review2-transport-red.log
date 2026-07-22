@@ -1,0 +1,25 @@
+Running one project: unit
+FAIL unit tests/unit/renderer-transport.test.ts
+  ● renderer transport › maps bounded delegation resource and subject options without auth user routes
+
+    expect(received).resolves.toEqual()
+
+    Received promise rejected instead of resolved
+    Rejected to value: [Error: No HTTP transport mapping registered for IPC channel email:list-mail-delegation-resources]
+
+      553 |     });
+      554 |
+    > 555 |     await expect(transport.invoke('email:list-mail-delegation-resources' as never, {
+          |           ^
+      556 |       resourceType: 'folder',
+      557 |       cursor: 200,
+      558 |       limit: 25,
+
+      at expect (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2116:15)
+      at Object.expect (tests/unit/renderer-transport.test.ts:555:11)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 138 passed, 139 total
+Snapshots:   0 total
+Time:        1.523 s, estimated 2 s
+Ran all test suites within paths "tests/unit/renderer-transport.test.ts".

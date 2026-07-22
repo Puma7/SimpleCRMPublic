@@ -3,6 +3,8 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   ServerApiPorts,
   SpamDecisionListResult,
   SpamDecisionMutationInput,
@@ -26,7 +28,48 @@ import {
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
+type SpamRouteHandler = (
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  params: readonly string[],
+) => Promise<ApiResponse>;
+
+type SpamRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration;
+  handler: SpamRouteHandler;
+}>;
+
+function spamRoute(
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+  handler: SpamRouteHandler,
+): SpamRouteRegistration {
+  return { registration: { path, methods, pattern }, handler };
+}
+
 type SpamResource = 'listEntries' | 'learningEvents' | 'decisions' | 'featureStats';
+
+export const SPAM_MAIL_ROUTE_REGISTRATIONS: readonly SpamRouteRegistration[] = Object.freeze([
+  spamRoute('/api/v1/spam/list-entries/upsert', ['POST'], /^\/api\/v1\/spam\/list-entries\/upsert$/, (req, ports) => handleUpsertListEntry(req, ports)),
+  spamRoute('/api/v1/spam/list-entries', ['GET', 'POST'], /^\/api\/v1\/spam\/list-entries$/, (req, ports) => handleListRoute(req, ports, 'listEntries')),
+  spamRoute('/api/v1/spam/list-entries/:id', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/spam\/list-entries\/([^/]+)$/, (req, ports, params) => handleGetByIdRoute(req, ports, 'listEntries', params[0])),
+  spamRoute('/api/v1/spam/learning-events', ['GET', 'POST'], /^\/api\/v1\/spam\/learning-events$/, (req, ports) => handleListRoute(req, ports, 'learningEvents')),
+  spamRoute('/api/v1/spam/learning-events/:id', ['GET'], /^\/api\/v1\/spam\/learning-events\/([^/]+)$/, (req, ports, params) => handleGetByIdRoute(req, ports, 'learningEvents', params[0])),
+  spamRoute('/api/v1/spam/decisions', ['GET', 'POST'], /^\/api\/v1\/spam\/decisions$/, (req, ports) => handleListRoute(req, ports, 'decisions')),
+  spamRoute('/api/v1/spam/decisions/:id', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/spam\/decisions\/([^/]+)$/, (req, ports, params) => handleGetByIdRoute(req, ports, 'decisions', params[0])),
+  spamRoute('/api/v1/spam/feature-stats', ['GET'], /^\/api\/v1\/spam\/feature-stats$/, (req, ports) => handleListRoute(req, ports, 'featureStats')),
+  spamRoute('/api/v1/spam/feature-stats/:id', ['GET'], /^\/api\/v1\/spam\/feature-stats\/([^/]+)$/, (req, ports, params) => handleFeatureStatGet(req, ports, params[0])),
+]);
+
+export const SPAM_MAIL_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  SPAM_MAIL_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'spam-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 type SpamListEntryMutationParseResult =
   | { ok: true; values: SpamListEntryMutationInput }
@@ -44,36 +87,9 @@ export async function handleSpamReadRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  if (req.path === '/api/v1/spam/list-entries/upsert') {
-    return handleUpsertListEntry(req, ports);
-  }
-
-  const listEntryMatch = /^\/api\/v1\/spam\/list-entries(?:\/([^/]+))?$/.exec(req.path);
-  if (listEntryMatch) {
-    return listEntryMatch[1] === undefined
-      ? handleListRoute(req, ports, 'listEntries')
-      : handleGetByIdRoute(req, ports, 'listEntries', listEntryMatch[1]);
-  }
-
-  const learningEventMatch = /^\/api\/v1\/spam\/learning-events(?:\/([^/]+))?$/.exec(req.path);
-  if (learningEventMatch) {
-    return learningEventMatch[1] === undefined
-      ? handleListRoute(req, ports, 'learningEvents')
-      : handleGetByIdRoute(req, ports, 'learningEvents', learningEventMatch[1]);
-  }
-
-  const decisionMatch = /^\/api\/v1\/spam\/decisions(?:\/([^/]+))?$/.exec(req.path);
-  if (decisionMatch) {
-    return decisionMatch[1] === undefined
-      ? handleListRoute(req, ports, 'decisions')
-      : handleGetByIdRoute(req, ports, 'decisions', decisionMatch[1]);
-  }
-
-  const featureStatsMatch = /^\/api\/v1\/spam\/feature-stats(?:\/([^/]+))?$/.exec(req.path);
-  if (featureStatsMatch) {
-    return featureStatsMatch[1] === undefined
-      ? handleListRoute(req, ports, 'featureStats')
-      : handleFeatureStatGet(req, ports, featureStatsMatch[1]);
+  for (const { registration, handler } of SPAM_MAIL_ROUTE_REGISTRATIONS) {
+    const match = registration.pattern.exec(req.path);
+    if (match) return handler(req, ports, match.slice(1));
   }
 
   return null;

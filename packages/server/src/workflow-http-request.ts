@@ -10,6 +10,7 @@ import {
 } from './db/workspace-context';
 import { createPinnedFetch, type GuardedFetch } from './jobs/pinned-fetch';
 import { assertWebhookUrlAllowed, guardedFetch } from './jobs/webhook-handlers';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
 
 export type WorkflowHttpMethod = 'GET' | 'POST';
@@ -17,6 +18,11 @@ export type WorkflowHttpMethod = 'GET' | 'POST';
 export type WorkflowHttpRequestContinuation = Readonly<{
   workflowId: number;
   triggerName?: string;
+  actorUserId?: string;
+  trustedService?: boolean;
+  // See AiClassificationContinuation.manualAdminExecute — carried across the async
+  // HTTP boundary so the resumed workflow.execute keeps its owner/admin recheck.
+  manualAdminExecute?: boolean;
   resumeNodeId?: string;
   errorResumeNodeId?: string;
   completeOnSuccess?: boolean;
@@ -165,33 +171,42 @@ async function enqueueWorkflowHttpContinuation(
   const continuation = input.continuation;
   if (!continuation) return;
 
+  const payload = workflowContinuationPayload({
+    workspaceId: input.workspaceId,
+    workflowId: continuation.workflowId,
+    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+    ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
+    ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
+    // Keep the resumed workflow.execute marked so the owner/admin recheck still fires.
+    ...(continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
+    context: {
+      ...(resumeNodeId
+        ? { resumeNodeId }
+        : { workflowTerminalSuccess: true }),
+      eventStrings: continuation.eventStrings ?? {},
+      eventVariables: {
+        ...(continuation.eventVariables ?? {}),
+        'http.status': status,
+        'http.body': body,
+        'http.ok': ok,
+        ...(error ? { 'http.error': error } : {}),
+      },
+    },
+  }, continuation.trustedService === true);
+
   await trx
     .insertInto('job_queue')
     .values({
       type: 'workflow.execute',
-      payload: {
-        workspaceId: input.workspaceId,
-        workflowId: continuation.workflowId,
-        ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
-        ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
-        context: {
-          ...(resumeNodeId
-            ? { resumeNodeId }
-            : { workflowTerminalSuccess: true }),
-          eventStrings: continuation.eventStrings ?? {},
-          eventVariables: {
-            ...(continuation.eventVariables ?? {}),
-            'http.status': status,
-            'http.body': body,
-            'http.ok': ok,
-            ...(error ? { 'http.error': error } : {}),
-          },
-        },
-      },
+      payload,
       run_after: now,
       max_attempts: 3,
       workspace_id: input.workspaceId,
       updated_at: now,
     })
     .execute();
+}
+
+function workflowContinuationPayload(payload: Record<string, unknown>, trustedService: boolean): Record<string, unknown> {
+  return trustedService && !payload.actorUserId ? buildTrustedServiceJobPayload(payload) : payload;
 }

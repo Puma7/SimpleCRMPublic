@@ -13,6 +13,8 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   ServerApiPorts,
   SmtpRelayAdminPort,
   SmtpRelayMutationInput,
@@ -32,6 +34,48 @@ const MAX_INT4 = 2_147_483_647;
 const DEFAULT_SUBMISSIONS_LIMIT = 50;
 const MAX_SUBMISSIONS_LIMIT = 200;
 
+type SmtpRelayRouteKind =
+  | 'collection'
+  | 'relay'
+  | 'account_add'
+  | 'account_remove'
+  | 'credential_create'
+  | 'credential_revoke'
+  | 'submissions';
+
+type SmtpRelayRouteRegistration = Readonly<{
+  kind: SmtpRelayRouteKind;
+  registration: CanonicalApiRouteRegistration;
+}>;
+
+function relayRoute(
+  kind: SmtpRelayRouteKind,
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+): SmtpRelayRouteRegistration {
+  return { kind, registration: { path, methods, pattern } };
+}
+
+export const SMTP_RELAY_ROUTE_REGISTRATIONS: readonly SmtpRelayRouteRegistration[] = Object.freeze([
+  relayRoute('collection', BASE_PATH, ['GET', 'POST'], /^\/api\/v1\/email\/relays$/),
+  relayRoute('relay', `${BASE_PATH}/:relayId`, ['PATCH', 'DELETE'], /^\/api\/v1\/email\/relays\/([^/]+)$/),
+  relayRoute('account_add', `${BASE_PATH}/:relayId/accounts`, ['POST'], /^\/api\/v1\/email\/relays\/([^/]+)\/accounts$/),
+  relayRoute('account_remove', `${BASE_PATH}/:relayId/accounts/:accountId`, ['DELETE'], /^\/api\/v1\/email\/relays\/([^/]+)\/accounts\/([^/]+)$/),
+  relayRoute('credential_create', `${BASE_PATH}/:relayId/credentials`, ['POST'], /^\/api\/v1\/email\/relays\/([^/]+)\/credentials$/),
+  relayRoute('credential_revoke', `${BASE_PATH}/:relayId/credentials/:credentialId/revoke`, ['POST'], /^\/api\/v1\/email\/relays\/([^/]+)\/credentials\/([^/]+)\/revoke$/),
+  relayRoute('submissions', `${BASE_PATH}/:relayId/submissions`, ['GET'], /^\/api\/v1\/email\/relays\/([^/]+)\/submissions$/),
+]);
+
+export const SMTP_RELAY_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  SMTP_RELAY_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'relay-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
+
 type RelayMutationParseResult =
   | { ok: true; values: SmtpRelayMutationInput }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
@@ -48,8 +92,11 @@ export async function handleSmtpRelayRoute(
     return error(503, 'smtp_relay_unavailable', 'SMTP-Relay-Verwaltung ist nicht konfiguriert');
   }
   const relays = ports.smtpRelay;
+  const matchedRoute = SMTP_RELAY_ROUTE_REGISTRATIONS.find(({ registration }) => (
+    registration.pattern.test(req.path)
+  ));
 
-  if (req.path === BASE_PATH) {
+  if (matchedRoute?.kind === 'collection') {
     // Reads expose security-sensitive config — allowed sender routes and SMTP
     // AUTH usernames — so the list is admin-only, matching the mutation paths
     // and the "admin only" contract the settings UI + docs describe.
@@ -65,8 +112,14 @@ export async function handleSmtpRelayRoute(
   const segments = req.path.slice(BASE_PATH.length + 1).split('/');
   const relayId = parseUuid(segments[0]);
   if (relayId === null) return error(400, 'invalid_relay_id', 'Relay-ID muss eine UUID sein');
+  if (!matchedRoute) {
+    if ((segments[1] === 'accounts' || segments[1] === 'credentials') && !requireAdmin(principal)) {
+      return forbidden();
+    }
+    return null;
+  }
 
-  if (segments.length === 1) {
+  if (matchedRoute.kind === 'relay') {
     if (req.method !== 'PATCH' && req.method !== 'DELETE') return methodNotAllowed();
     if (!requireAdmin(principal)) return forbidden();
     return req.method === 'PATCH'
@@ -74,41 +127,35 @@ export async function handleSmtpRelayRoute(
       : handleRelayDelete(ports, relays, principal, relayId);
   }
 
-  if (segments[1] === 'accounts') {
+  if (matchedRoute.kind === 'account_add' || matchedRoute.kind === 'account_remove') {
     if (!requireAdmin(principal)) return forbidden();
-    if (segments.length === 2) {
+    if (matchedRoute.kind === 'account_add') {
       if (req.method !== 'POST') return methodNotAllowed();
       return handleAccountAdd(req, ports, relays, principal, relayId);
     }
-    if (segments.length === 3) {
-      if (req.method !== 'DELETE') return methodNotAllowed();
-      const accountId = positiveIntFromPath(segments[2]);
-      if (accountId === null) {
-        return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
-      }
-      return handleAccountRemove(ports, relays, principal, relayId, accountId);
+    if (req.method !== 'DELETE') return methodNotAllowed();
+    const accountId = positiveIntFromPath(segments[2]);
+    if (accountId === null) {
+      return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
     }
-    return null;
+    return handleAccountRemove(ports, relays, principal, relayId, accountId);
   }
 
-  if (segments[1] === 'credentials') {
+  if (matchedRoute.kind === 'credential_create' || matchedRoute.kind === 'credential_revoke') {
     if (!requireAdmin(principal)) return forbidden();
-    if (segments.length === 2) {
+    if (matchedRoute.kind === 'credential_create') {
       if (req.method !== 'POST') return methodNotAllowed();
       return handleCredentialCreate(ports, relays, principal, relayId);
     }
-    if (segments.length === 4 && segments[3] === 'revoke') {
-      if (req.method !== 'POST') return methodNotAllowed();
-      const credentialId = parseUuid(segments[2]);
-      if (credentialId === null) {
-        return error(400, 'invalid_credential_id', 'Zugangsdaten-ID muss eine UUID sein');
-      }
-      return handleCredentialRevoke(ports, relays, principal, relayId, credentialId);
+    if (req.method !== 'POST') return methodNotAllowed();
+    const credentialId = parseUuid(segments[2]);
+    if (credentialId === null) {
+      return error(400, 'invalid_credential_id', 'Zugangsdaten-ID muss eine UUID sein');
     }
-    return null;
+    return handleCredentialRevoke(ports, relays, principal, relayId, credentialId);
   }
 
-  if (segments[1] === 'submissions' && segments.length === 2) {
+  if (matchedRoute.kind === 'submissions') {
     if (req.method !== 'GET') return methodNotAllowed();
     // Submissions reveal per-message relay provenance — admin-only like the
     // rest of the relay surface.

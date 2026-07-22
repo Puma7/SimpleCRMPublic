@@ -1,0 +1,74 @@
+Running one project: unit
+FAIL unit tests/unit/server-mail-delegation-api.test.ts
+  ● server mail delegation API › lists bounded policy resources and data-minimized subjects for delegated managers
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 12
+    + Received  +  4
+
+      Object {
+        "body": Object {
+    -     "data": Object {
+    -       "items": Array [
+    -         Object {
+    -           "accountId": 101,
+    -           "accountLabel": "Support",
+    -           "folderId": 202,
+    -           "label": "INBOX",
+    -           "type": "folder",
+    +     "error": Object {
+    +       "code": "not_found",
+    +       "message": "Route nicht gefunden",
+          },
+    -       ],
+    -       "nextCursor": null,
+        },
+    -   },
+    -   "status": 200,
+    +   "status": 404,
+      }
+
+      39 |     });
+      40 |
+    > 41 |     expect(resources).toMatchObject({
+         |                       ^
+      42 |       status: 200,
+      43 |       body: {
+      44 |         data: {
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-api.test.ts:41:23)
+
+  ● server mail delegation API › validates option resource/cursors and maps policy denial and write conflicts
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 2
+    + Received  + 2
+
+      Object {
+        "body": Object {
+          "error": Object {
+    -       "code": "validation_error",
+    +       "code": "not_found",
+          },
+        },
+    -   "status": 400,
+    +   "status": 404,
+      }
+
+      232 |     });
+      233 |
+    > 234 |     expect(invalidResourceType).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
+          |                                 ^
+      235 |     expect(invalidSubjectCursor).toMatchObject({ status: 400, body: { error: { code: 'invalid_cursor' } } });
+      236 |     expect(denied).toMatchObject({ status: 403, body: { error: { code: 'mail_delegation_denied' } } });
+      237 |     expect(conflict).toMatchObject({ status: 409, body: { error: { code: 'mail_delegation_conflict' } } });
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-api.test.ts:234:33)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 5 passed, 7 total
+Snapshots:   0 total
+Time:        1.593 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-api.test.ts".

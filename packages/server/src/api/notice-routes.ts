@@ -2,6 +2,9 @@ import type {
   ApiErrorBody,
   ApiRequest,
   ApiResponse,
+  AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   ServerApiPorts,
   SyncInfoRecord,
 } from './types';
@@ -10,6 +13,8 @@ import {
   error,
   requirePrincipal,
 } from './http';
+import { MailAccessDeniedError } from '../mail-access/service';
+import type { MailAccessActor } from '../mail-access/types';
 
 type LoadedSyncInfoRows =
   | { principal: { userId: string; workspaceId: string }; rows: readonly SyncInfoRecord[] }
@@ -35,16 +40,39 @@ type ImapAuthNotice = {
 const UID_VALIDITY_NOTICE_PREFIX = 'uidvalidity_notice:';
 const IMAP_AUTH_NOTICE_PREFIX = 'imap_auth_notice:';
 
+type NoticeRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration;
+  handler: (req: ApiRequest, ports: ServerApiPorts) => Promise<ApiResponse>;
+}>;
+
+function noticeRoute(
+  path: string,
+  handler: NoticeRouteRegistration['handler'],
+): NoticeRouteRegistration {
+  const pattern = new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  return { registration: { path, pattern, methods: ['GET', 'DELETE'] }, handler };
+}
+
+export const MAIL_NOTICE_ROUTE_REGISTRATIONS: readonly NoticeRouteRegistration[] = Object.freeze([
+  noticeRoute('/api/v1/email/notices/uid-validity', handleUidValidityNotices),
+  noticeRoute('/api/v1/email/notices/imap-auth', handleImapAuthNotices),
+]);
+
+export const MAIL_NOTICE_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  MAIL_NOTICE_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'notice-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
+
 export async function handleNoticeRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
-  if (req.path === '/api/v1/email/notices/uid-validity') {
-    return handleUidValidityNotices(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/notices/imap-auth') {
-    return handleImapAuthNotices(req, ports);
+  for (const { registration, handler } of MAIL_NOTICE_ROUTE_REGISTRATIONS) {
+    if (registration.pattern.test(req.path)) return handler(req, ports);
   }
 
   return null;
@@ -107,11 +135,20 @@ async function handleImapAuthNotices(
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
   if (req.method === 'GET') {
-    const loaded = await loadSyncInfoByPrefix(req, ports, IMAP_AUTH_NOTICE_PREFIX, 500);
-    if ('status' in loaded) return loaded;
-    return data(200, {
-      items: imapAuthNoticesFromRows(loaded.rows),
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    if (!ports.syncInfo) return error(503, 'sync_info_unavailable', 'Sync-info API nicht konfiguriert');
+    const rows = await ports.syncInfo.getByPrefix({
+      workspaceId: principal.workspaceId,
+      prefix: IMAP_AUTH_NOTICE_PREFIX,
+      limit: 500,
     });
+    // getByPrefix returns every account's notices workspace-wide, but a restricted
+    // delegate reaches this route (it is in RESTRICTED_SCOPE_READ_PATHS) and must only
+    // see notices for accounts it can read — otherwise it would learn about accounts
+    // it has no access to. Owner/admin see all.
+    const notices = await filterImapAuthNoticesByAccess(ports, principal, imapAuthNoticesFromRows(rows));
+    return data(200, { items: notices });
   }
 
   if (req.method !== 'DELETE') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
@@ -134,6 +171,57 @@ async function handleImapAuthNotices(
   });
 
   return data(200, { success: true });
+}
+
+// Keep only the notices whose account the caller may read. Owner/admin see all;
+// a restricted delegate is checked per distinct accountId against mail.metadata.read
+// on the account resource (results cached), so it never learns of accounts it cannot
+// access. Fails closed when the ACL ports are unavailable.
+async function filterImapAuthNoticesByAccess(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  notices: readonly ImapAuthNotice[],
+): Promise<ImapAuthNotice[]> {
+  if (principal.role === 'owner' || principal.role === 'admin') return [...notices];
+  if (!ports.mailAccess || !ports.mailResourceLookup) return [];
+  const actor: MailAccessActor = {
+    workspaceId: principal.workspaceId,
+    userId: principal.userId,
+    isOwner: false,
+    isAdmin: false,
+  };
+  const decisions = new Map<number, boolean>();
+  const canRead = async (accountId: number): Promise<boolean> => {
+    const cached = decisions.get(accountId);
+    if (cached !== undefined) return cached;
+    let allowed = false;
+    const resources = await ports.mailResourceLookup!.resolve({
+      workspaceId: principal.workspaceId,
+      target: { kind: 'account', id: accountId },
+    });
+    if (resources.length > 0) {
+      try {
+        for (const resource of resources) {
+          await ports.mailAccess!.assertPermission({
+            workspaceId: principal.workspaceId,
+            actor,
+            permission: 'mail.metadata.read',
+            resource,
+          });
+        }
+        allowed = true;
+      } catch (caught) {
+        if (!(caught instanceof MailAccessDeniedError)) throw caught;
+      }
+    }
+    decisions.set(accountId, allowed);
+    return allowed;
+  };
+  const visible: ImapAuthNotice[] = [];
+  for (const notice of notices) {
+    if (await canRead(notice.accountId)) visible.push(notice);
+  }
+  return visible;
 }
 
 async function loadSyncInfoByPrefix(

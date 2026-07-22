@@ -14,6 +14,7 @@ import {
   emailAddressForDelivery,
   generateTicketCode,
   interpolateWorkflowPlaceholders,
+  isTrashMailboxName,
   isUnsafeAutoReplyTarget,
   listBuiltinWorkflowNodeCatalog,
   normalizeMailboxName,
@@ -40,6 +41,7 @@ import type {
   WorkflowExecutionJobPlan,
   WorkflowExecutionJobPort,
 } from './jobs';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD, TRUSTED_SERVICE_JOB_MARKER_VALUE } from './jobs/policy';
 import {
   createAiReviewPreviewRunner,
   type AiReviewPreviewRunner,
@@ -179,6 +181,9 @@ type ServerWorkflowContext = {
   message: MessageRow | null;
   strings: WorkflowStringContext;
   variables: WorkflowVariableContext;
+  actorUserId?: string;
+  trustedService?: boolean;
+  manualAdminExecute?: boolean;
   previewOutbound?: boolean;
 };
 
@@ -318,12 +323,28 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
+          if (delayedJob && delayedJobAuthorizationMismatch(input, delayedJob.message_id)) {
+            const run = await startOrReuseRun(trx, {
+              workspaceId: input.workspaceId,
+              workflow,
+              message: null,
+              direction,
+              requestedRunId: input.runId,
+              now,
+            });
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'error',
+              log: ['error:delayed_job_authorization_mismatch'],
+              now,
+            });
+            return;
+          }
+
           const messageId = input.messageId ?? delayedJob?.message_id ?? undefined;
           if (
             input.messageId !== undefined
-            && delayedJob?.message_id !== null
-            && delayedJob?.message_id !== undefined
-            && Number(delayedJob.message_id) !== input.messageId
+            && delayedJob !== null
+            && normalizeDelayedJobMessageId(delayedJob.message_id) !== input.messageId
           ) {
             const run = await startOrReuseRun(trx, {
               workspaceId: input.workspaceId,
@@ -474,6 +495,9 @@ export function createPostgresWorkflowExecutionJobPort(
             trigger,
             direction,
             message,
+            actorUserId: input.actorUserId,
+            trustedService: input.trustedService,
+            manualAdminExecute: input.manualAdminExecute,
             jobContext,
           });
           const result = await runServerWorkflowGraph(trx, {
@@ -553,6 +577,8 @@ export function createPostgresWorkflowExecutionJobPort(
             trigger: prepared.trigger,
             direction: prepared.direction,
             message: prepared.message,
+            actorUserId: input.actorUserId,
+            trustedService: input.trustedService,
             jobContext: prepared.jobContext,
           });
           const result = await runServerWorkflowGraph(trx, {
@@ -611,12 +637,21 @@ async function prepareWorkflowRun(
     };
   }
 
+  if (delayedJob && delayedJobAuthorizationMismatch(input, delayedJob.message_id)) {
+    return {
+      ok: false,
+      workflow,
+      message: null,
+      error: 'delayed_job_authorization_mismatch',
+      log: ['error:delayed_job_authorization_mismatch'],
+    };
+  }
+
   const messageId = input.messageId ?? delayedJob?.message_id ?? undefined;
   if (
     input.messageId !== undefined
-    && delayedJob?.message_id !== null
-    && delayedJob?.message_id !== undefined
-    && Number(delayedJob.message_id) !== input.messageId
+    && delayedJob !== null
+    && normalizeDelayedJobMessageId(delayedJob.message_id) !== input.messageId
   ) {
     return {
       ok: false,
@@ -684,6 +719,20 @@ async function prepareWorkflowRun(
   };
 }
 
+function delayedJobAuthorizationMismatch(
+  input: WorkflowExecutionJobPlan,
+  actualMessageId: unknown,
+): boolean {
+  if (!Object.prototype.hasOwnProperty.call(input, 'authorizedDelayedJobMessageId')) return true;
+  return input.authorizedDelayedJobMessageId !== normalizeDelayedJobMessageId(actualMessageId);
+}
+
+function normalizeDelayedJobMessageId(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : Number.NaN;
+}
+
 function dryRunFailure(
   errorMessage: string,
   log: readonly string[],
@@ -743,6 +792,7 @@ async function loadDelayedJob(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', delayedJobId)
     .where('workflow_id', '=', workflowId)
+    .forUpdate()
     .executeTakeFirst();
   return row ?? null;
 }
@@ -2198,7 +2248,7 @@ async function applyWorkflowImapMoveLocalState(
       updated_at: now,
     });
   }
-  if (new Set(['trash', 'deleted', 'deleted items', 'papierkorb', 'geloscht', 'geloschte elemente']).has(normalized)) {
+  if (isTrashMailboxName(targetFolderPath)) {
     return softDeleteWorkflowMessage(trx, context, now);
   }
   return updateWorkflowMessage(trx, context, { updated_at: now });
@@ -2246,6 +2296,7 @@ async function scheduleWorkflowDelay(
       payload: {
         workspaceId: context.workspaceId,
         workflowId: context.workflowId,
+        ...workflowJobProvenance(context),
         ...(context.messageId === null ? {} : { messageId: context.messageId }),
         delayedJobId,
         triggerName: context.trigger,
@@ -2259,6 +2310,34 @@ async function scheduleWorkflowDelay(
     .execute();
 
   return delayedJobId;
+}
+
+function workflowJobProvenance(context: ServerWorkflowContext): Record<string, unknown> {
+  if (context.actorUserId) {
+    // Propagate the manual-admin marker onto this run's delayed continuations and
+    // side-effect children so the worker keeps re-verifying owner/admin across the
+    // whole chain (a demoted admin must not complete a run they queued while admin).
+    return {
+      actorUserId: context.actorUserId,
+      ...(context.manualAdminExecute ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
+    };
+  }
+  return context.trustedService ? buildTrustedServiceJobPayload({}) : {};
+}
+
+// Provenance columns for a workflow-armed scheduled send. When the run has an
+// initiating user (compose-originated), attribute the send to THAT user so the
+// scheduled-send ticker re-verifies their CURRENT mail.send at send time — a
+// delegate who lost mail.send after the workflow was queued is then denied
+// (fail-closed) instead of the send going out under the system principal. Only
+// automatic/inbound runs with no actor keep trusted-service (system) provenance.
+function scheduledSendProvenanceColumns(context: ServerWorkflowContext): {
+  scheduled_send_actor_user_id: string | null;
+  scheduled_send_trusted_service_principal: string | null;
+} {
+  return context.actorUserId
+    ? { scheduled_send_actor_user_id: context.actorUserId, scheduled_send_trusted_service_principal: null }
+    : { scheduled_send_actor_user_id: null, scheduled_send_trusted_service_principal: TRUSTED_SERVICE_JOB_MARKER_VALUE };
 }
 
 async function scheduleAiReplySuggestionJob(
@@ -2285,6 +2364,7 @@ async function scheduleAiReplySuggestionJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     force: force.value,
     skipIfReady: skipIfReady.value,
     trigger: trigger.value,
@@ -2347,6 +2427,7 @@ async function scheduleAiClassificationJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     labels,
     contextMode: contextMode.value,
   };
@@ -2413,6 +2494,7 @@ async function scheduleAiReviewJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     direction: context.direction,
+    ...workflowJobProvenance(context),
     blockKeyword: blockKeyword.value,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -2488,6 +2570,7 @@ async function scheduleAiTransformTextJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     targetVariable: targetVariable.value,
+    ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
@@ -2558,6 +2641,7 @@ async function scheduleAiAgentJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     systemPrompt: systemPrompt.value,
+    ...workflowJobProvenance(context),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -2630,6 +2714,7 @@ async function scheduleAiPickCannedJob(
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    ...workflowJobProvenance(context),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -2736,6 +2821,7 @@ async function scheduleWorkflowHttpRequestJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     method: method.value,
+    ...workflowJobProvenance(context),
     url: url.value,
     timeoutMs: timeoutMs.value,
     eventStrings: context.strings,
@@ -2812,6 +2898,7 @@ async function scheduleWorkflowForwardCopyJob(
     workspaceId: context.workspaceId,
     workflowId: context.workflowId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     to: to.value,
     includeAttachments: config.includeAttachments === true,
     runOutboundReview: config.runOutboundReview === true,
@@ -2881,6 +2968,7 @@ async function scheduleWorkflowDmarcIngestJob(
     workspaceId: context.workspaceId,
     workflowId: context.workflowId,
     messageId: context.messageId,
+    ...workflowJobProvenance(context),
     ...(attachmentNameFilter ? { attachmentNameFilter } : {}),
   };
   if (resumeNodeId) {
@@ -4408,6 +4496,7 @@ async function releaseWorkflowOutboundHold(
       outbound_hold: false,
       outbound_block_reason: null,
       scheduled_send_at: now,
+      ...scheduledSendProvenanceColumns(context),
       // Persist the cleaned body so the customer does not see the internal
       // review banner, and the persisted ticket-prefixed subject so the
       // fingerprint matches at send time.
@@ -4610,6 +4699,7 @@ async function sendWorkflowDraft(
         outbound_hold: false,
         outbound_block_reason: null,
         scheduled_send_at: now,
+        ...scheduledSendProvenanceColumns(context),
         body_text: cleaned.plain,
         body_html: cleaned.html || null,
         subject: finalSubject,
@@ -4654,6 +4744,7 @@ async function sendWorkflowDraft(
         outbound_hold: false,
         outbound_block_reason: null,
         scheduled_send_at: now,
+        ...scheduledSendProvenanceColumns(context),
         updated_at: now,
       })
       .where('workspace_id', '=', context.workspaceId)
@@ -4892,6 +4983,7 @@ async function enqueueWorkflowSyncRun(
       payload: {
         workspaceId: context.workspaceId,
         accountId,
+        ...workflowJobProvenance(context),
       },
       run_after: now,
       max_attempts: 3,
@@ -4959,6 +5051,7 @@ async function enqueueWorkflowSubflow(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     workflowId,
+    ...workflowJobProvenance(context),
     triggerName: normalizeWorkflowTrigger(subflow.trigger_name),
     context: {
       eventStrings: context.strings,
@@ -5886,6 +5979,9 @@ function buildWorkflowContext(input: {
   trigger: WorkflowTriggerKind;
   direction: WorkflowDirection;
   message: MessageRow | null;
+  actorUserId?: string;
+  trustedService?: boolean;
+  manualAdminExecute?: boolean;
   jobContext: Record<string, unknown>;
 }): ServerWorkflowContext {
   const eventStrings = stringRecord(input.jobContext.eventStrings);
@@ -5935,6 +6031,9 @@ function buildWorkflowContext(input: {
     message: input.message,
     strings,
     variables,
+    ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
+    ...(input.trustedService ? { trustedService: true } : {}),
+    ...(input.manualAdminExecute ? { manualAdminExecute: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
   };
 }

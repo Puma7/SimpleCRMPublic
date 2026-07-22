@@ -1,3 +1,4 @@
+import type { MailPermission } from '@simplecrm/core';
 import type { ColumnType, Generated, Selectable } from 'kysely';
 
 export type TimestampColumn = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -25,6 +26,9 @@ export type ServerDatabase = {
   user_groups: UserGroupsTable;
   user_group_members: UserGroupMembersTable;
   user_group_permissions: UserGroupPermissionsTable;
+  mail_acl_bindings: MailAclBindingsTable;
+  mail_acl_binding_permissions: MailAclBindingPermissionsTable;
+  mail_acl_rollout_state: MailAclRolloutStateTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
   customer_custom_fields: CustomerCustomFieldsTable;
@@ -418,6 +422,43 @@ export type UserGroupPermissionsTable = {
   created_at: TimestampColumn;
 };
 
+export type MailAclBindingsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  subject_type: 'user' | 'group';
+  subject_id: string;
+  resource_type: 'account' | 'folder' | 'message';
+  account_id: number;
+  folder_id: number | null;
+  message_id: number | null;
+  created_by: string | null;
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
+  subject_user_id: ColumnType<string | null, never, never>;
+  subject_group_id: ColumnType<number | null, never, never>;
+};
+
+export type MailAclBindingPermissionsTable = {
+  binding_id: number;
+  permission_key: MailPermission;
+};
+
+export type MailAclRolloutStateTable = {
+  workspace_id: string;
+  mode: 'shadow' | 'enforce';
+  evaluated: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  legacy_allow_new_deny: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  legacy_deny_new_allow: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  not_comparable: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  in_flight: ColumnType<bigint, bigint | number | string | undefined, bigint | number | string>;
+  observation_started_at: TimestampColumn | null;
+  observation_updated_at: TimestampColumn | null;
+  telemetry_healthy: ColumnType<boolean, boolean | undefined, boolean>;
+  diagnostic_code: 'counter_update_failed' | 'counter_update_zero_rows' | 'counter_saturated' | null;
+  diagnostic_at: TimestampColumn | null;
+  updated_at: TimestampColumn;
+};
+
 export type DealProductsTable = {
   id: Generated<number>;
   workspace_id: string;
@@ -696,6 +737,8 @@ export type EmailMessagesTable = {
   spam_decided_at: TimestampColumn | null;
   snoozed_until: TimestampColumn | null;
   scheduled_send_at: TimestampColumn | null;
+  scheduled_send_actor_user_id: string | null;
+  scheduled_send_trusted_service_principal: string | null;
   reply_suggestion_text: string | null;
   reply_suggestion_status: string | null;
   reply_suggestion_error: string | null;

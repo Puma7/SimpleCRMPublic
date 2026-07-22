@@ -3,6 +3,7 @@ import type { Kysely, Selectable } from 'kysely';
 import type { ServerJobQueueApiPort } from './api/types';
 import type { EmailMessagesTable, EmailWorkflowsTable, ServerDatabase } from './db';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
+import { buildTrustedServiceJobPayload } from './jobs/policy';
 
 type InboundWorkflowRow = Pick<Selectable<EmailWorkflowsTable>, 'id' | 'account_id' | 'override_key'>;
 type MessageSpamRow = Pick<
@@ -79,14 +80,13 @@ export async function enqueueInboundWorkflowsAfterSpam(
       await options.jobQueue.enqueue({
         workspaceId: input.workspaceId,
         type: 'workflow.execute',
-        payload: {
+        payload: withInboundWorkflowProvenance(input.actorUserId, {
           workspaceId: input.workspaceId,
           workflowId: Number(workflow.id),
           messageId: input.messageId,
-          ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
           triggerName: 'inbound',
           context: { skipIfMessageSpamOrReview: true },
-        },
+        }),
         maxAttempts: 3,
       });
     }
@@ -103,6 +103,10 @@ export async function enqueueInboundWorkflowsAfterSpam(
       .execute(),
     { applySession: options.applyWorkspaceSession },
   );
+}
+
+function withInboundWorkflowProvenance(actorUserId: string | undefined, payload: Record<string, unknown>): Record<string, unknown> {
+  return actorUserId ? { ...payload, actorUserId } : buildTrustedServiceJobPayload(payload);
 }
 
 function resolveScopedInboundWorkflowOverrides(rows: readonly InboundWorkflowRow[]): InboundWorkflowRow[] {

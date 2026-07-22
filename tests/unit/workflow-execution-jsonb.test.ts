@@ -15,6 +15,7 @@ import { createPostgresWorkflowExecutionJobPort } from '../../packages/server/sr
 type Captured = {
   inserts: Array<{ table: string; values: Record<string, unknown> }>;
   updates: Array<{ table: string; set: Record<string, unknown> }>;
+  selectForUpdate: string[];
 };
 
 function fakeDb(options: {
@@ -27,6 +28,10 @@ function fakeDb(options: {
     const builder: Record<string, unknown> = {};
     builder.select = () => builder;
     builder.where = () => builder;
+    builder.forUpdate = () => {
+      captured.selectForUpdate.push(table);
+      return builder;
+    };
     builder.executeTakeFirst = async () => selectResults[table];
     builder.execute = async () => [];
     return builder;
@@ -77,7 +82,7 @@ const NOW = () => new Date('2026-06-06T00:00:00.000Z');
 
 describe('workflow run finalize writes jsonb-safe log_json', () => {
   test('workflow-not-found path stringifies the run log for the UPDATE', async () => {
-    const captured: Captured = { inserts: [], updates: [] };
+    const captured: Captured = { inserts: [], updates: [], selectForUpdate: [] };
     const { db } = fakeDb({ selectResults: { email_workflows: undefined }, captured });
 
     const port = createPostgresWorkflowExecutionJobPort({
@@ -96,7 +101,7 @@ describe('workflow run finalize writes jsonb-safe log_json', () => {
   });
 
   test('delayed-job-not-found path stringifies log_json for both INSERT and UPDATE', async () => {
-    const captured: Captured = { inserts: [], updates: [] };
+    const captured: Captured = { inserts: [], updates: [], selectForUpdate: [] };
     const workflowRow = {
       id: 5,
       source_sqlite_id: 50,
@@ -134,5 +139,6 @@ describe('workflow run finalize writes jsonb-safe log_json', () => {
     expect(update).toBeDefined();
     expect(typeof update!.set.log_json).toBe('string');
     expect(JSON.parse(update!.set.log_json as string)).toEqual(['error:delayed_job_not_found']);
+    expect(captured.selectForUpdate).toEqual(['workflow_delayed_jobs']);
   });
 });

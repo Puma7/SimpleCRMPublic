@@ -1,0 +1,6 @@
+
+Test Suites: 5 passed, 5 total
+Tests:       493 passed, 493 total
+Snapshots:   0 total
+Time:        16.373 s, estimated 30 s
+Ran all test suites within paths "tests/unit/server-mail-acl-rollout.test.ts", "tests/integration/server-mail-access-routes.test.ts", "tests/unit/server-edition-foundation.test.ts", "tests/unit/server-mail-job-event-acl.test.ts", "tests/unit/server-mail-policy-manifest.test.ts" in 2 projects.

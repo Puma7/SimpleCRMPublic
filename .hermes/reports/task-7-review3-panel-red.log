@@ -1,0 +1,39 @@
+Running one project: unit
+FAIL unit tests/unit/mail-delegation-panel.test.tsx
+  ● MailDelegationPanel › turns an edited user binding into a create with reset permissions after subject type changes
+
+    expect(received).toBeNull()
+
+    Received: <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2" type="button">Abbrechen</button>
+
+      101 |     fireEvent.change(screen.getByLabelText('Subjekt'), { target: { value: 'group' } });
+      102 |
+    > 103 |     expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
+          |                                                                 ^
+      104 |     expect(screen.getByLabelText('Profil')).toHaveValue('viewer');
+      105 |     expect(screen.getByRole('checkbox', { name: 'Senden', exact: true })).not.toBeChecked();
+      106 |     fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+      at Object.toBeNull (tests/unit/mail-delegation-panel.test.tsx:103:65)
+
+  ● MailDelegationPanel › turns an edited binding into a create with reset permissions after subject id changes
+
+    expect(received).toBeNull()
+
+    Received: <button class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2" type="button">Abbrechen</button>
+
+      116 |     fireEvent.change(screen.getByLabelText('Auswahl'), { target: { value: 'user-2' } });
+      117 |
+    > 118 |     expect(screen.queryByRole('button', { name: 'Abbrechen' })).toBeNull();
+          |                                                                 ^
+      119 |     expect(screen.getByLabelText('Profil')).toHaveValue('viewer');
+      120 |     expect(screen.getByRole('checkbox', { name: 'Senden', exact: true })).not.toBeChecked();
+      121 |     fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+      at Object.toBeNull (tests/unit/mail-delegation-panel.test.tsx:118:65)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 4 passed, 6 total
+Snapshots:   0 total
+Time:        2.136 s
+Ran all test suites within paths "tests/unit/mail-delegation-panel.test.tsx".

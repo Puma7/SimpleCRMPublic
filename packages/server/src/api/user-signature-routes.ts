@@ -1,4 +1,10 @@
-import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import type {
+  ApiRequest,
+  ApiResponse,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
+  ServerApiPorts,
+} from './types';
 import {
   data,
   error,
@@ -6,6 +12,41 @@ import {
   positiveIntFromPath,
   requirePrincipal,
 } from './http';
+
+type UserSignatureRouteKind = 'list' | 'upsert';
+
+type UserSignatureRouteRegistration = Readonly<{
+  kind: UserSignatureRouteKind;
+  registration: CanonicalApiRouteRegistration;
+}>;
+
+export const USER_SIGNATURE_ROUTE_REGISTRATIONS: readonly UserSignatureRouteRegistration[] = Object.freeze([
+  {
+    kind: 'list',
+    registration: {
+      methods: ['GET'],
+      path: '/api/v1/email/user-signatures',
+      pattern: /^\/api\/v1\/email\/user-signatures$/,
+    },
+  },
+  {
+    kind: 'upsert',
+    registration: {
+      methods: ['POST'],
+      path: '/api/v1/email/user-signatures/by-account/:accountId/upsert',
+      pattern: /^\/api\/v1\/email\/user-signatures\/by-account\/([^/]+)\/upsert$/,
+    },
+  },
+]);
+
+export const USER_SIGNATURE_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  USER_SIGNATURE_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'user-signature-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
 // Self-service per-user, per-account signatures. Every authenticated user
 // manages only their own rows (scoped by principal.userId), so no admin gate.
@@ -21,7 +62,10 @@ export async function handleUserSignatureRoute(
     return error(503, 'email_user_signatures_unavailable', 'Nutzer-Signatur-API nicht konfiguriert');
   }
 
-  if (req.path === '/api/v1/email/user-signatures') {
+  const matchedRoute = USER_SIGNATURE_ROUTE_REGISTRATIONS.find(({ registration }) => (
+    registration.pattern.test(req.path)
+  ));
+  if (matchedRoute?.kind === 'list') {
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     const result = await ports.emailUserSignatures.listForUser({
       workspaceId: principal.workspaceId,
@@ -30,10 +74,10 @@ export async function handleUserSignatureRoute(
     return data(200, result);
   }
 
-  const upsertMatch = /^\/api\/v1\/email\/user-signatures\/by-account\/([^/]+)\/upsert$/.exec(req.path);
-  if (upsertMatch) {
+  if (matchedRoute?.kind === 'upsert') {
     if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-    const accountId = positiveIntFromPath(upsertMatch[1]);
+    const upsertMatch = matchedRoute.registration.pattern.exec(req.path);
+    const accountId = positiveIntFromPath(upsertMatch?.[1]);
     if (accountId === null) return error(400, 'invalid_account_id', 'account id muss eine positive Ganzzahl sein');
     // null/absent clears the signature; a string saves it.
     const signatureHtml = getStringField(req.body, 'signatureHtml');

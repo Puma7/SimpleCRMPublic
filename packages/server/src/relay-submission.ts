@@ -63,6 +63,7 @@ import {
   type ServerMailSyncParsedMessage,
 } from './mail-parse';
 import { sendSmtpMessage, type ServerSmtpSendInput } from './mail-smtp-send';
+import { buildTrustedServiceJobPayload } from './jobs/policy';
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -1104,12 +1105,14 @@ export function createPostgresRelaySubmissionStore(
             .values({
               type: 'workflow.execute',
               payload: {
-                workspaceId: input.workspaceId,
-                workflowId,
-                messageId: input.messageId,
-                runId,
-                triggerName: input.triggerName,
-                ...(input.context === undefined ? {} : { context: input.context }),
+                ...buildTrustedServiceJobPayload({
+                  workspaceId: input.workspaceId,
+                  workflowId,
+                  messageId: input.messageId,
+                  runId,
+                  triggerName: input.triggerName,
+                  ...(input.context === undefined ? {} : { context: input.context }),
+                }),
               },
               run_after: timestamp,
               max_attempts: 5,
@@ -1207,6 +1210,8 @@ async function insertRelayedMessage(
       spam_status: 'clean',
       snoozed_until: null,
       scheduled_send_at: null,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: null,
       pop3_uidl: null,
       remote_content_policy: 'blocked',
       read_receipt_requested: false,

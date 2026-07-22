@@ -11,6 +11,8 @@ export type PostgresAuditPortOptions = Readonly<{
   now?: () => Date;
 }>;
 
+export type PostgresAuditRecordInput = Parameters<AuditApiPort['record']>[0];
+
 export type AuditHashChainRow = Readonly<{
   id: number;
   workspace_id: string;
@@ -38,45 +40,11 @@ export function createPostgresAuditPort(options: PostgresAuditPortOptions): Audi
 
   return {
     async record(input) {
-      const createdAt = now();
       await withWorkspaceTransaction(options.db, {
         workspaceId: input.workspaceId,
         role: 'system',
       }, async (db) => {
-        await lockAuditHashChain(db, input.workspaceId);
-        const previous = await db
-          .selectFrom('audit_events')
-          .select('event_hash')
-          .where('workspace_id', '=', input.workspaceId)
-          .orderBy('id', 'desc')
-          .executeTakeFirst();
-        const previousHash = previous?.event_hash ?? null;
-        const metadata = input.metadata ?? {};
-        const eventHash = hashAuditEvent({
-          workspaceId: input.workspaceId,
-          actorUserId: input.actorUserId ?? null,
-          action: input.action,
-          entityType: input.entityType ?? null,
-          entityId: input.entityId ?? null,
-          metadata,
-          previousHash,
-          createdAt,
-        });
-
-        await db
-          .insertInto('audit_events')
-          .values({
-            workspace_id: input.workspaceId,
-            actor_user_id: input.actorUserId ?? null,
-            action: input.action,
-            entity_type: input.entityType ?? null,
-            entity_id: input.entityId ?? null,
-            metadata,
-            previous_hash: previousHash,
-            event_hash: eventHash,
-            created_at: createdAt,
-          })
-          .execute();
+        await recordPostgresAuditEvent(db, input, now);
       });
     },
     async list(input) {
@@ -140,6 +108,48 @@ export function createPostgresAuditPort(options: PostgresAuditPortOptions): Audi
       });
     },
   };
+}
+
+export async function recordPostgresAuditEvent(
+  db: WorkspaceTransaction,
+  input: PostgresAuditRecordInput,
+  now: () => Date = () => new Date(),
+): Promise<void> {
+  const createdAt = now();
+  await lockAuditHashChain(db, input.workspaceId);
+  const previous = await db
+    .selectFrom('audit_events')
+    .select('event_hash')
+    .where('workspace_id', '=', input.workspaceId)
+    .orderBy('id', 'desc')
+    .executeTakeFirst();
+  const previousHash = previous?.event_hash ?? null;
+  const metadata = input.metadata ?? {};
+  const eventHash = hashAuditEvent({
+    workspaceId: input.workspaceId,
+    actorUserId: input.actorUserId ?? null,
+    action: input.action,
+    entityType: input.entityType ?? null,
+    entityId: input.entityId ?? null,
+    metadata,
+    previousHash,
+    createdAt,
+  });
+
+  await db
+    .insertInto('audit_events')
+    .values({
+      workspace_id: input.workspaceId,
+      actor_user_id: input.actorUserId ?? null,
+      action: input.action,
+      entity_type: input.entityType ?? null,
+      entity_id: input.entityId ?? null,
+      metadata,
+      previous_hash: previousHash,
+      event_hash: eventHash,
+      created_at: createdAt,
+    })
+    .execute();
 }
 
 async function lockAuditHashChain(db: WorkspaceTransaction, workspaceId: string): Promise<void> {

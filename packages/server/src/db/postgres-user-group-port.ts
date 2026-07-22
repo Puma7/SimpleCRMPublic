@@ -3,6 +3,7 @@ import type { Kysely, Selectable } from 'kysely';
 import type {
   UserGroupAddMemberResult,
   UserGroupApiPort,
+  UserGroupDeleteResult,
   UserGroupMemberRecord,
   UserGroupMutationResult,
   UserGroupRecord,
@@ -113,19 +114,42 @@ export function createPostgresUserGroupPort(options: PostgresUserGroupPortOption
       );
     },
 
-    async delete(input): Promise<UserGroupRecord | null> {
+    async delete(input): Promise<UserGroupDeleteResult | null> {
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
         async (trx) => {
-          const count = await memberCount(trx, input.workspaceId, input.id);
+          // Lock the group row first. A concurrent addMember INSERT takes a
+          // FOR KEY SHARE lock on this parent via the FK; FOR UPDATE conflicts with
+          // it, so an in-flight insert either committed before we capture members
+          // (and is therefore included) or fails its FK check after we delete (never
+          // added). This closes the race where a member added between a separate
+          // snapshot and the delete would be cascade-revoked with no invalidation.
+          const locked = await trx
+            .selectFrom('user_groups')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .forUpdate()
+            .executeTakeFirst();
+          if (!locked) return null;
+
+          const memberRows = await trx
+            .selectFrom('user_group_members')
+            .select('user_id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('group_id', '=', input.id)
+            .execute();
+          const memberUserIds = memberRows.map((row) => String(row.user_id));
+
           const row = await trx
             .deleteFrom('user_groups')
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
             .returning(groupColumns)
             .executeTakeFirst();
-          return row ? mapGroupRow(row, count) : null;
+          if (!row) return null;
+          return { group: mapGroupRow(row, memberUserIds.length), memberUserIds };
         },
         readSession,
       );

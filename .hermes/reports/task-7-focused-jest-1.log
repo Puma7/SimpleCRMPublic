@@ -1,0 +1,975 @@
+Running one project: unit
+FAIL unit tests/unit/server-mail-delegation-api.test.ts
+  ● server mail delegation API › audits only IDs and permission names and publishes target-user ACL invalidations
+
+    expect(received).not.toMatch(expected)
+
+    Expected pattern: not /@|subject|body|filename/i
+    Received string:      "[[{\"workspaceId\":\"11111111-1111-4111-8111-111111111111\",\"actorUserId\":\"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\",\"action\":\"email_acl.binding_replaced\",\"entityType\":\"email_acl_binding\",\"entityId\":\"901\",\"metadata\":{\"bindingId\":901,\"subjectType\":\"group\",\"subjectId\":\"55\",\"resourceType\":\"folder\",\"accountId\":101,\"folderId\":202,\"permissionNames\":[\"mail.metadata.read\",\"mail.triage\"]}}]]"
+
+      227 |       },
+      228 |     }));
+    > 229 |     expect(JSON.stringify(audit.record.mock.calls)).not.toMatch(/@|subject|body|filename/i);
+          |                                                         ^
+      230 |     expect(events.publish).toHaveBeenCalledTimes(2);
+      231 |     expect(events.publish).toHaveBeenCalledWith(expect.objectContaining({
+      232 |       type: 'email_acl.changed',
+
+      at Object.toMatch (tests/unit/server-mail-delegation-api.test.ts:229:57)
+
+FAIL unit tests/unit/mail-delegation-panel.test.tsx
+  ● MailDelegationPanel › saves a profile-expanded binding and an individual permission override
+
+    Found multiple elements with the text: Alice
+
+    Here are the matching elements:
+
+    Ignored nodes: comments, script, style
+    <option
+      value="user-1"
+    >
+      Alice
+    </option>
+
+    Ignored nodes: comments, script, style
+    <p
+      class="truncate text-sm font-medium"
+    >
+      Alice
+    </p>
+
+    (If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+    Ignored nodes: comments, script, style
+    <body>
+      <div>
+        <section
+          class="space-y-6"
+        >
+          <div
+            class="space-y-1"
+          >
+            <h2
+              class="text-lg font-semibold tracking-tight"
+            >
+              Mailbox-Delegation
+            </h2>
+            <p
+              class="text-sm text-muted-foreground"
+            >
+              Serverseitige Konten- und Ordnerrechte für Benutzer und Gruppen.
+            </p>
+          </div>
+          <div
+            class="space-y-4 rounded-md border p-4"
+          >
+            <div
+              class="grid gap-3 sm:grid-cols-2"
+            >
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Konto
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="101"
+                  >
+                    Support
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Ressource
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="account"
+                  >
+                    Ganzes Konto
+                  </option>
+                  <option
+                    value="folder"
+                  >
+                    Ordner
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Subjekt
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="user"
+                  >
+                    Benutzer
+                  </option>
+                  <option
+                    value="group"
+                  >
+                    Gruppe
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Auswahl
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="user-1"
+                  >
+                    Alice
+                  </option>
+                </select>
+              </label>
+            </div>
+            <label
+              class="block space-y-1 text-sm font-medium"
+            >
+              Profil
+              <select
+                aria-label="Profil"
+                class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              >
+                <option
+                  value="viewer"
+                >
+                  Lesen
+                </option>
+                <option
+                  value="triage"
+                >
+                  Triage
+                </option>
+                <option
+                  value="editor"
+                >
+                  Bearbeiten
+                </option>
+                <option
+                  value="sender"
+                >
+                  Senden
+                </option>
+                <option
+                  value="manager"
+                >
+                  Verwalten
+                </option>
+                <option
+                  value="custom"
+                >
+                  Benutzerdefiniert
+                </option>
+              </select>
+            </label>
+            <div
+              class="grid gap-2 sm:grid-cols-2"
+            >
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  checked=""
+                  type="checkbox"
+                />
+                <span>
+                  Metadaten lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  checked=""
+                  type="checkbox"
+                />
+                <span>
+                  Inhalt lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  checked=""
+                  type="checkbox"
+                />
+                <span>
+                  Anhänge lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Verdächtige Anhänge laden
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Triage
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Kommentieren
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Entwurf erstellen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Entwurf bearbeiten
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Senden
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Als Konto senden
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Löschen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Exportieren
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Konto verwalten
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Delegation verwalten
+                </span>
+              </label>
+            </div>
+            <div
+              class="flex items-center gap-2"
+            >
+              <button
+                class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
+                type="button"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="lucide lucide-save mr-2 h-4 w-4"
+                  fill="none"
+                  height="24"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                  width="24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"
+                  />
+                  <path
+                    d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"
+                  />
+                  <path
+                    d="M7 3v4a1 1 0 0 0 1 1h7"
+                  />
+                </svg>
+                Berechtigung speichern
+              </button>
+              <button
+                class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
+                type="button"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="lucide lucide-refresh-cw mr-2 h-4 w-4"
+                  fill="none"
+                  height="24"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                  width="24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"
+                  />
+                  <path
+                    d="M21 3v5h-5"
+                  />
+                  <path
+                    d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"
+                  />
+                  <path
+                    d="M8 16H3v5"
+                  />
+                </svg>
+                Aktualisieren
+              </button>
+            </div>
+          </div>
+          <div
+            class="space-y-2"
+          >
+            <div
+              class="flex items-center justify-between gap-3 rounded-md border p-3"
+            >
+              <button
+                class="min-w-0 text-left"
+                type="button"
+              >
+                <p
+                  class="truncate text-sm font-medium"
+                >
+                  Alice
+                </p>
+                <p
+                  class="truncate text-xs text-muted-foreground"
+                >
+                  Support
+                   ·
+                  Metadaten lesen
+                </p>
+              </button>
+              <button
+                aria-label="Löschen Alice"
+                class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-10 w-10"
+                type="button"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="lucide lucide-trash2 lucide-trash-2 h-4 w-4"
+                  fill="none"
+                  height="24"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                  width="24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M10 11v6"
+                  />
+                  <path
+                    d="M14 11v6"
+                  />
+                  <path
+                    d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+                  />
+                  <path
+                    d="M3 6h18"
+                  />
+                  <path
+                    d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </body>
+
+      41 |     render(<MailDelegationPanel />);
+      42 |
+    > 43 |     expect(await screen.findByText('Alice')).toBeInTheDocument();
+         |                         ^
+      44 |     fireEvent.change(screen.getByLabelText('Profil'), { target: { value: 'triage' } });
+      45 |     fireEvent.click(screen.getByRole('checkbox', { name: 'Senden' }));
+      46 |     fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+      at waitForWrapper (node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27)
+      at node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+      at Object.findByText (tests/unit/mail-delegation-panel.test.tsx:43:25)
+
+  ● MailDelegationPanel › deletes a binding and refetches after ACL invalidation events
+
+    Found multiple elements with the text: Alice
+
+    Here are the matching elements:
+
+    Ignored nodes: comments, script, style
+    <option
+      value="user-1"
+    >
+      Alice
+    </option>
+
+    Ignored nodes: comments, script, style
+    <p
+      class="truncate text-sm font-medium"
+    >
+      Alice
+    </p>
+
+    (If this is intentional, then use the `*AllBy*` variant of the query (like `queryAllByText`, `getAllByText`, or `findAllByText`)).
+
+    Ignored nodes: comments, script, style
+    <body>
+      <div>
+        <section
+          class="space-y-6"
+        >
+          <div
+            class="space-y-1"
+          >
+            <h2
+              class="text-lg font-semibold tracking-tight"
+            >
+              Mailbox-Delegation
+            </h2>
+            <p
+              class="text-sm text-muted-foreground"
+            >
+              Serverseitige Konten- und Ordnerrechte für Benutzer und Gruppen.
+            </p>
+          </div>
+          <div
+            class="space-y-4 rounded-md border p-4"
+          >
+            <div
+              class="grid gap-3 sm:grid-cols-2"
+            >
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Konto
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="101"
+                  >
+                    Support
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Ressource
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="account"
+                  >
+                    Ganzes Konto
+                  </option>
+                  <option
+                    value="folder"
+                  >
+                    Ordner
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Subjekt
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="user"
+                  >
+                    Benutzer
+                  </option>
+                  <option
+                    value="group"
+                  >
+                    Gruppe
+                  </option>
+                </select>
+              </label>
+              <label
+                class="space-y-1 text-sm font-medium"
+              >
+                Auswahl
+                <select
+                  class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                >
+                  <option
+                    value="user-1"
+                  >
+                    Alice
+                  </option>
+                </select>
+              </label>
+            </div>
+            <label
+              class="block space-y-1 text-sm font-medium"
+            >
+              Profil
+              <select
+                aria-label="Profil"
+                class="h-9 w-full rounded-md border bg-background px-3 text-sm"
+              >
+                <option
+                  value="viewer"
+                >
+                  Lesen
+                </option>
+                <option
+                  value="triage"
+                >
+                  Triage
+                </option>
+                <option
+                  value="editor"
+                >
+                  Bearbeiten
+                </option>
+                <option
+                  value="sender"
+                >
+                  Senden
+                </option>
+                <option
+                  value="manager"
+                >
+                  Verwalten
+                </option>
+                <option
+                  value="custom"
+                >
+                  Benutzerdefiniert
+                </option>
+              </select>
+            </label>
+            <div
+              class="grid gap-2 sm:grid-cols-2"
+            >
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  checked=""
+                  type="checkbox"
+                />
+                <span>
+                  Metadaten lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  checked=""
+                  type="checkbox"
+                />
+                <span>
+                  Inhalt lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  checked=""
+                  type="checkbox"
+                />
+                <span>
+                  Anhänge lesen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Verdächtige Anhänge laden
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Triage
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Kommentieren
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Entwurf erstellen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Entwurf bearbeiten
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Senden
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Als Konto senden
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Löschen
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Exportieren
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Konto verwalten
+                </span>
+              </label>
+              <label
+                class="flex min-h-9 items-center gap-2 rounded-md border px-3 text-sm"
+              >
+                <input
+                  type="checkbox"
+                />
+                <span>
+                  Delegation verwalten
+                </span>
+              </label>
+            </div>
+            <div
+              class="flex items-center gap-2"
+            >
+              <button
+                class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2"
+                type="button"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="lucide lucide-save mr-2 h-4 w-4"
+                  fill="none"
+                  height="24"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                  width="24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"
+                  />
+                  <path
+                    d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"
+                  />
+                  <path
+                    d="M7 3v4a1 1 0 0 0 1 1h7"
+                  />
+                </svg>
+                Berechtigung speichern
+              </button>
+              <button
+                class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2"
+                type="button"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="lucide lucide-refresh-cw mr-2 h-4 w-4"
+                  fill="none"
+                  height="24"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                  width="24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"
+                  />
+                  <path
+                    d="M21 3v5h-5"
+                  />
+                  <path
+                    d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"
+                  />
+                  <path
+                    d="M8 16H3v5"
+                  />
+                </svg>
+                Aktualisieren
+              </button>
+            </div>
+          </div>
+          <div
+            class="space-y-2"
+          >
+            <div
+              class="flex items-center justify-between gap-3 rounded-md border p-3"
+            >
+              <button
+                class="min-w-0 text-left"
+                type="button"
+              >
+                <p
+                  class="truncate text-sm font-medium"
+                >
+                  Alice
+                </p>
+                <p
+                  class="truncate text-xs text-muted-foreground"
+                >
+                  Support
+                   ·
+                  Metadaten lesen
+                </p>
+              </button>
+              <button
+                aria-label="Löschen Alice"
+                class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground h-10 w-10"
+                type="button"
+              >
+                <svg
+                  aria-hidden="true"
+                  class="lucide lucide-trash2 lucide-trash-2 h-4 w-4"
+                  fill="none"
+                  height="24"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  viewBox="0 0 24 24"
+                  width="24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M10 11v6"
+                  />
+                  <path
+                    d="M14 11v6"
+                  />
+                  <path
+                    d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"
+                  />
+                  <path
+                    d="M3 6h18"
+                  />
+                  <path
+                    d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </body>
+
+      60 |     render(<MailDelegationPanel />);
+      61 |
+    > 62 |     expect(await screen.findByText('Alice')).toBeInTheDocument();
+         |                         ^
+      63 |     fireEvent.click(screen.getByRole('button', { name: /Löschen/ }));
+      64 |     await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('email:delete-mail-delegation-binding', 900));
+      65 |
+
+      at waitForWrapper (node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/wait-for.js:163:27)
+      at node_modules/.pnpm/@testing-library+dom@10.4.1/node_modules/@testing-library/dom/dist/query-helpers.js:86:33
+      at Object.findByText (tests/unit/mail-delegation-panel.test.tsx:62:25)
+
+FAIL unit tests/unit/server-mail-delegation-port.test.ts
+  ● createPostgresMailDelegationPort › uses a workspace-bound transaction for binding replacement
+
+    expect(received).toMatchObject(expected)
+
+    - Expected  - 4
+    + Received  + 1
+
+      Object {
+    -   "affectedUserIds": Array [
+    -     "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    -   ],
+    -   "ok": true,
+    +   "ok": false,
+      }
+
+      37 |     });
+      38 |
+    > 39 |     expect(result).toMatchObject({ ok: true, affectedUserIds: [AGENT] });
+         |                    ^
+      40 |     expect(contexts).toEqual([[WORKSPACE, ACTOR, 'admin', 'off']]);
+      41 |     expect(trx.calls).toEqual(expect.arrayContaining([
+      42 |       ['deleteFrom', 'mail_acl_binding_permissions'],
+
+      at Object.toMatchObject (tests/unit/server-mail-delegation-port.test.ts:39:20)
+
+  ● createPostgresMailDelegationPort › validates active same-workspace subjects and folder-account consistency before persisting
+
+    expect(received).resolves.toEqual()
+
+    Received promise rejected instead of resolved
+    Rejected to value: [Error: missing fake Kysely executor]
+
+      60 |     const port = createPostgresMailDelegationPort({ db: db as never });
+      61 |
+    > 62 |     await expect(port.replaceBinding({
+         |           ^
+      63 |       workspaceId: WORKSPACE,
+      64 |       actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      65 |       subject: { type: 'user', id: AGENT },
+
+      at expect (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2116:15)
+      at Object.expect (tests/unit/server-mail-delegation-port.test.ts:62:11)
+
+  ● createPostgresMailDelegationPort › blocks delegated managers from granting permissions they do not hold
+
+    expect(received).resolves.toEqual()
+
+    Received promise rejected instead of resolved
+    Rejected to value: [Error: missing fake Kysely executor]
+
+      86 |     const port = createPostgresMailDelegationPort({ db: db as never });
+      87 |
+    > 88 |     await expect(port.replaceBinding({
+         |           ^
+      89 |       workspaceId: WORKSPACE,
+      90 |       actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      91 |       subject: { type: 'user', id: AGENT },
+
+      at expect (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2116:15)
+      at Object.expect (tests/unit/server-mail-delegation-port.test.ts:88:11)
+
+Test Suites: 3 failed, 1 passed, 4 total
+Tests:       6 failed, 141 passed, 147 total
+Snapshots:   0 total
+Time:        4.392 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-api.test.ts", "tests/unit/server-mail-delegation-port.test.ts", "tests/unit/mail-delegation-panel.test.tsx", "tests/unit/renderer-transport.test.ts".

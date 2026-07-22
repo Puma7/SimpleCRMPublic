@@ -24,6 +24,7 @@ import {
 } from './db/workspace-context';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
+import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
@@ -45,6 +46,11 @@ const FORWARD_COPY_BODY_MAX = 500_000;
 export type WorkflowForwardCopyContinuation = Readonly<{
   workflowId: number;
   triggerName?: string;
+  actorUserId?: string;
+  trustedService?: boolean;
+  // See AiClassificationContinuation.manualAdminExecute — carried across the async
+  // forward-copy boundary so the resumed workflow.execute keeps its owner/admin recheck.
+  manualAdminExecute?: boolean;
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -846,34 +852,43 @@ async function enqueueForwardCopyContinuationInTransaction(
   const continuation = input.continuation;
   if (!continuation) return;
 
+  const payload = workflowContinuationPayload({
+    workspaceId: input.workspaceId,
+    workflowId: continuation.workflowId,
+    messageId: input.messageId,
+    ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
+    ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
+    // Keep the resumed workflow.execute marked so the owner/admin recheck still fires.
+    ...(continuation.manualAdminExecute === true ? { [MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD]: true } : {}),
+    context: {
+      resumeNodeId: continuation.resumeNodeId,
+      eventStrings: continuation.eventStrings ?? {},
+      eventVariables: {
+        ...(continuation.eventVariables ?? {}),
+        'forward_copy.ok': result.ok,
+        'forward_copy.to': normalizeForwardCopyRecipients(input.to).join(', ') || input.to.trim().toLowerCase(),
+        'forward_copy.duplicate': result.duplicate,
+        'forward_copy.review_pending': result.reviewPending === true,
+        ...(result.error ? { 'forward_copy.error': result.error } : {}),
+      },
+    },
+  }, continuation.trustedService === true);
+
   await trx
     .insertInto('job_queue')
     .values({
       type: 'workflow.execute',
-      payload: {
-        workspaceId: input.workspaceId,
-        workflowId: continuation.workflowId,
-        messageId: input.messageId,
-        ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
-        context: {
-          resumeNodeId: continuation.resumeNodeId,
-          eventStrings: continuation.eventStrings ?? {},
-          eventVariables: {
-            ...(continuation.eventVariables ?? {}),
-            'forward_copy.ok': result.ok,
-            'forward_copy.to': normalizeForwardCopyRecipients(input.to).join(', ') || input.to.trim().toLowerCase(),
-            'forward_copy.duplicate': result.duplicate,
-            'forward_copy.review_pending': result.reviewPending === true,
-            ...(result.error ? { 'forward_copy.error': result.error } : {}),
-          },
-        },
-      },
+      payload,
       run_after: result.now,
       max_attempts: 3,
       workspace_id: input.workspaceId,
       updated_at: result.now,
     })
     .execute();
+}
+
+function workflowContinuationPayload(payload: Record<string, unknown>, trustedService: boolean): Record<string, unknown> {
+  return trustedService && !payload.actorUserId ? buildTrustedServiceJobPayload(payload) : payload;
 }
 
 async function resolveSmtpAuth(input: {

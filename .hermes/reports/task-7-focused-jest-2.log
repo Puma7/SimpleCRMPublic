@@ -1,0 +1,47 @@
+Running one project: unit
+FAIL unit tests/unit/server-mail-delegation-port.test.ts
+  ● createPostgresMailDelegationPort › uses a workspace-bound transaction for binding replacement
+
+    TypeError: trx.insertInto(...).values(...).returningAll is not a function
+
+      205 |           updated_at: now,
+      206 |         })
+    > 207 |         .returningAll()
+          |          ^
+      208 |         .executeTakeFirstOrThrow() as BindingRow;
+      209 |     }
+      210 |
+
+      at returningAll (packages/server/src/mail-access/postgres-mail-delegation-port.ts:207:10)
+      at Object.<anonymous> (tests/unit/server-mail-delegation-port.test.ts:31:20)
+
+  ● createPostgresMailDelegationPort › blocks delegated managers from granting permissions they do not hold
+
+    expect(received).resolves.toEqual(expected) // deep equality
+
+    - Expected  - 1
+    + Received  + 1
+
+      Object {
+    -   "code": "privilege_escalation",
+    +   "code": "permission_denied",
+        "ok": false,
+      }
+
+      92 |       resource: { type: 'account', accountId: 101 },
+      93 |       permissions: ['mail.metadata.read', 'mail.send'],
+    > 94 |     })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
+         |                  ^
+      95 |   });
+      96 | });
+      97 |
+
+      at Object.toEqual (node_modules/.pnpm/expect@30.4.0/node_modules/expect/build/index.js:2140:20)
+      at Object.toEqual (tests/unit/server-mail-delegation-port.test.ts:94:18)
+
+
+Test Suites: 1 failed, 3 passed, 4 total
+Tests:       2 failed, 145 passed, 147 total
+Snapshots:   0 total
+Time:        2.398 s, estimated 4 s
+Ran all test suites within paths "tests/unit/server-mail-delegation-api.test.ts", "tests/unit/server-mail-delegation-port.test.ts", "tests/unit/mail-delegation-panel.test.tsx", "tests/unit/renderer-transport.test.ts".

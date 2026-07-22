@@ -8,6 +8,8 @@ import {
 import { randomBytes } from 'crypto';
 
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
+import type { MailSqlScope } from '../mail-access/types';
 
 import type {
   EmailAccountMailSettingsApiPort,
@@ -195,6 +197,84 @@ const emailThreadSelectColumns = [
   'updated_at',
 ] as const;
 
+/**
+ * A canned response is visible under a restricted scope when it is global
+ * (account_id null) or belongs to an account the delegate can reach directly or
+ * as the parent of a scope-visible folder/message.
+ */
+export function cannedResponseVisibilityPredicate(
+  workspaceId: string,
+  scope: { accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] },
+): RawBuilder<boolean> {
+  const branches: RawBuilder<boolean>[] = [kyselySql<boolean>`email_canned_responses.account_id is null`];
+  if (scope.accountIds.length > 0) {
+    branches.push(kyselySql<boolean>`email_canned_responses.account_id in (${kyselySql.join(scope.accountIds)})`);
+  }
+  if (scope.folderIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_folders f
+      where f.workspace_id = ${workspaceId}::uuid
+        and f.account_id = email_canned_responses.account_id
+        and f.id in (${kyselySql.join(scope.folderIds)})
+    )`);
+  }
+  if (scope.messageIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_messages m
+      where m.workspace_id = ${workspaceId}::uuid
+        and m.account_id = email_canned_responses.account_id
+        and m.id in (${kyselySql.join(scope.messageIds)})
+    )`);
+  }
+  return kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` or `)})`;
+}
+
+/** Scoped clause: the messages of email_threads.id the caller may see. */
+function scopedThreadMessages(workspaceId: string, scopePredicate: RawBuilder<boolean>): RawBuilder<unknown> {
+  return kyselySql`from email_messages m
+    where m.workspace_id = ${workspaceId}::uuid
+      and m.thread_id = email_threads.id
+      and ${scopePredicate}`;
+}
+
+/** True when the thread has at least one message visible under the scope. */
+function scopedThreadExistsPredicate(workspaceId: string, scopePredicate: RawBuilder<boolean>): RawBuilder<boolean> {
+  return kyselySql<boolean>`exists (select 1 ${scopedThreadMessages(workspaceId, scopePredicate)})`;
+}
+
+/**
+ * Under a restricted scope every representative/aggregate thread field must be
+ * recomputed from ONLY the scope-visible messages — the base email_threads row
+ * aggregates the whole thread, so its last_message_at, root message, account,
+ * subject and ticket code can be derived from messages in folders/accounts the
+ * caller cannot see. These aliases intentionally shadow the base columns of the
+ * same name selected alongside them; the later select wins. scopedThreadExists
+ * guarantees ≥1 visible message, so the representative (earliest-visible)
+ * subqueries always resolve.
+ */
+function scopedThreadAggregateSelects(workspaceId: string, scopePredicate: RawBuilder<boolean>) {
+  const scoped = scopedThreadMessages(workspaceId, scopePredicate);
+  const representative = <T>(
+    column: 'id' | 'source_sqlite_id' | 'account_id' | 'account_source_sqlite_id' | 'subject' | 'ticket_code',
+  ) => kyselySql<T>`(
+    select m.${kyselySql.ref(column)} ${scoped}
+    order by m.date_received asc nulls last, m.id asc
+    limit 1
+  )`;
+  return [
+    kyselySql<number>`(select count(*)::integer ${scoped})`.as('message_count'),
+    kyselySql<boolean>`coalesce((select bool_or(not m.seen_local) ${scoped}), false)`.as('has_unread'),
+    kyselySql<boolean>`coalesce((select bool_or(m.has_attachments) ${scoped}), false)`.as('has_attachments'),
+    kyselySql<EmailThreadRow['last_message_at']>`(select max(m.date_received) ${scoped})`.as('last_message_at'),
+    representative<EmailThreadRow['root_message_id']>('id').as('root_message_id'),
+    representative<EmailThreadRow['root_message_source_sqlite_id']>('source_sqlite_id').as('root_message_source_sqlite_id'),
+    representative<EmailThreadRow['account_id']>('account_id').as('account_id'),
+    representative<EmailThreadRow['account_source_sqlite_id']>('account_source_sqlite_id').as('account_source_sqlite_id'),
+    representative<EmailThreadRow['subject_normalized']>('subject').as('subject_normalized'),
+    representative<EmailThreadRow['ticket_code']>('ticket_code').as('ticket_code'),
+  ] as const;
+}
+
 const emailMessageTagSelectColumns = [
   'id',
   'source_sqlite_id',
@@ -311,9 +391,14 @@ export function createPostgresEmailFolderReadPort(options: PostgresMailMetadataR
           let query = trx
             .selectFrom('email_folders')
             .select(emailFolderSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_folders.account_id',
+            folderId: 'email_folders.id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
@@ -356,9 +441,10 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           let query = trx
             .selectFrom('email_team_members')
             .select(emailTeamMemberSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          if (input.mailScope?.kind === 'none') query = query.where(kyselySql<boolean>`false`);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.role !== undefined) query = query.where('role', '=', input.role);
@@ -372,7 +458,13 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           }
 
           const rows = await query.execute();
-          return pageString(rows, limit, (row) => row.id, mapEmailTeamMemberRow);
+          const restricted = effectiveMailScope(input.mailScope).kind === 'restricted';
+          return pageString(
+            rows,
+            limit,
+            (row) => row.id,
+            (row) => redactTeamMemberSignatureForScope(mapEmailTeamMemberRow(row), restricted),
+          );
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -388,7 +480,9 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
             .executeTakeFirst();
-          return row ? mapEmailTeamMemberRow(row) : null;
+          if (!row) return null;
+          const restricted = effectiveMailScope(input.mailScope).kind === 'restricted';
+          return redactTeamMemberSignatureForScope(mapEmailTeamMemberRow(row), restricted);
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -497,25 +591,76 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
           let query = trx
             .selectFrom('email_threads')
             .select(emailThreadSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'm.account_id',
+            folderId: 'm.folder_id',
+            messageId: 'm.id',
+          });
+          if (scopePredicate) {
+            query = query
+              .where(scopedThreadExistsPredicate(input.workspaceId, scopePredicate))
+              .select(scopedThreadAggregateSelects(input.workspaceId, scopePredicate));
+          }
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.offset !== undefined) query = query.offset(input.offset);
-          if (input.hasUnread !== undefined) query = query.where('has_unread', '=', input.hasUnread);
-          if (input.hasAttachments !== undefined) query = query.where('has_attachments', '=', input.hasAttachments);
+          // Under a restricted scope the base has_unread/has_attachments columns
+          // aggregate the WHOLE thread (incl. hidden messages), so filtering on
+          // them would select/hide threads based on inaccessible mail. Filter on
+          // the same scoped expression used for the returned value instead.
+          if (input.hasUnread !== undefined) {
+            query = scopePredicate
+              ? query.where(kyselySql<boolean>`coalesce((
+                  select bool_or(not m.seen_local) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false) = ${input.hasUnread}`)
+              : query.where('has_unread', '=', input.hasUnread);
+          }
+          if (input.hasAttachments !== undefined) {
+            query = scopePredicate
+              ? query.where(kyselySql<boolean>`coalesce((
+                  select bool_or(m.has_attachments) from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                ), false) = ${input.hasAttachments}`)
+              : query.where('has_attachments', '=', input.hasAttachments);
+          }
           if (input.accountId !== undefined || input.view !== undefined) {
-            query = query.where(threadMessageExistsPredicate(input.workspaceId, input.accountId, input.view));
+            query = query.where(threadMessageExistsPredicate(
+              input.workspaceId,
+              input.accountId,
+              input.view,
+              input.mailScope,
+            ));
           }
           const search = input.search?.trim();
           if (search) {
             const pattern = `%${search}%`;
-            query = query.where((eb) => eb.or([
-              eb('id', 'ilike', pattern),
-              eb('ticket_code', 'ilike', pattern),
-              eb('subject_normalized', 'ilike', pattern),
-            ]));
+            // Under a restricted scope, match ticket/subject only against
+            // scope-visible messages so search can't surface a thread by a hidden
+            // message's subject or ticket code. The thread id is not sensitive.
+            query = scopePredicate
+              ? query.where((eb) => eb.or([
+                eb('id', 'ilike', pattern),
+                kyselySql<boolean>`exists (
+                  select 1 from email_messages m
+                  where m.workspace_id = ${input.workspaceId}::uuid
+                    and m.thread_id = email_threads.id
+                    and ${scopePredicate}
+                    and (m.subject ilike ${pattern} or m.ticket_code ilike ${pattern})
+                )`,
+              ]))
+              : query.where((eb) => eb.or([
+                eb('id', 'ilike', pattern),
+                eb('ticket_code', 'ilike', pattern),
+                eb('subject_normalized', 'ilike', pattern),
+              ]));
           }
 
           const rows = await query.execute();
@@ -529,12 +674,22 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          let query = trx
             .selectFrom('email_threads')
             .select(emailThreadSelectColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
+            .where('id', '=', input.id);
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'm.account_id',
+            folderId: 'm.folder_id',
+            messageId: 'm.id',
+          });
+          if (scopePredicate) {
+            query = query
+              .where(scopedThreadExistsPredicate(input.workspaceId, scopePredicate))
+              .select(scopedThreadAggregateSelects(input.workspaceId, scopePredicate));
+          }
+          const row = await query.executeTakeFirst();
           return row ? mapEmailThreadRow(row) : null;
         },
         { applySession: options.applyWorkspaceSession },
@@ -610,17 +765,44 @@ function threadMessageExistsPredicate(
   workspaceId: string,
   accountId: number | undefined,
   view: Parameters<EmailThreadApiPort['list']>[0]['view'],
+  mailScope: MailSqlScope | undefined,
 ): RawBuilder<boolean> {
   const accountPredicate = accountId === undefined
     ? kyselySql<boolean>`true`
     : kyselySql<boolean>`m.account_id = ${accountId}`;
+  const scopePredicate = mailScopePredicate(mailScope, {
+    accountId: 'm.account_id',
+    folderId: 'm.folder_id',
+    messageId: 'm.id',
+  }) ?? kyselySql<boolean>`true`;
   return kyselySql<boolean>`exists (
     select 1
     from email_messages m
     where m.workspace_id = ${workspaceId}::uuid
       and m.thread_id = email_threads.id
       and ${accountPredicate}
+      and ${scopePredicate}
       and ${threadMessageViewPredicate(view)}
+  )`;
+}
+
+function metadataMessageScopePredicate(
+  mailScope: MailSqlScope | undefined,
+  workspaceId: string,
+  outerMessageIdColumn: string,
+  messageAlias: string,
+): RawBuilder<boolean> | undefined {
+  const scopePredicate = mailScopePredicate(mailScope, {
+    accountId: `${messageAlias}.account_id`,
+    folderId: `${messageAlias}.folder_id`,
+    messageId: `${messageAlias}.id`,
+  });
+  if (!scopePredicate) return undefined;
+  return kyselySql<boolean>`exists (
+    select 1 from email_messages as ${kyselySql.ref(messageAlias)}
+    where ${kyselySql.ref(`${messageAlias}.workspace_id`)} = ${workspaceId}::uuid
+      and ${kyselySql.ref(`${messageAlias}.id`)} = ${kyselySql.ref(outerMessageIdColumn)}
+      and ${scopePredicate}
   )`;
 }
 
@@ -671,9 +853,16 @@ export function createPostgresEmailMessageTagReadPort(options: PostgresMailMetad
           let query = trx
             .selectFrom('email_message_tags')
             .select(emailMessageTagSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_message_tags.message_id',
+            'tag_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -766,9 +955,10 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
           let query = trx
             .selectFrom('email_categories')
             .select(emailCategorySelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          if (input.mailScope?.kind === 'none') query = query.where(kyselySql<boolean>`false`);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.parentId !== undefined) query = query.where('parent_id', '=', input.parentId);
@@ -968,9 +1158,16 @@ export function createPostgresEmailMessageCategoryReadPort(options: PostgresMail
           let query = trx
             .selectFrom('email_message_categories')
             .select(emailMessageCategorySelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_message_categories.message_id',
+            'category_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -1014,6 +1211,12 @@ export function createPostgresEmailMessageCategoryReadPort(options: PostgresMail
             .groupBy('mc.category_id')
             .orderBy('mc.category_id', 'asc');
 
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'm.account_id',
+            folderId: 'm.folder_id',
+            messageId: 'm.id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
           if (input.accountId !== undefined) query = query.where('m.account_id', '=', input.accountId);
           const rows = await query.execute();
           return rows.map(mapEmailCategoryCountRow);
@@ -1098,9 +1301,16 @@ export function createPostgresEmailInternalNoteReadPort(options: PostgresMailMet
           let query = trx
             .selectFrom('email_internal_notes')
             .select(emailInternalNoteSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_internal_notes.message_id',
+            'note_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -1215,9 +1425,19 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
           let query = trx
             .selectFrom('email_canned_responses')
             .select(emailCannedResponseSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          // Canned responses are global (account_id null) or account-scoped. A
+          // restricted delegate must see globals PLUS responses for any account
+          // they can reach directly or as the parent of a scope-visible
+          // folder/message — otherwise a folder-scoped editor gets no templates.
+          const cannedScope = effectiveMailScope(input.mailScope);
+          if (cannedScope.kind === 'none') {
+            query = query.where(kyselySql<boolean>`false`);
+          } else if (cannedScope.kind === 'restricted') {
+            query = query.where(cannedResponseVisibilityPredicate(input.workspaceId, cannedScope));
+          }
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.accountId === undefined) {
@@ -1477,15 +1697,24 @@ export function createPostgresEmailAccountSignatureReadPort(options: PostgresMai
           let query = trx
             .selectFrom('email_account_signatures')
             .select(emailAccountSignatureSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('source_sqlite_id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_account_signatures.account_id',
+          });
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('source_sqlite_id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('source_sqlite_id', '>', input.cursor);
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
 
           const rows = await query.execute();
-          return pageNumeric(rows, limit, (row) => Number(row.source_sqlite_id), mapEmailAccountSignatureRow);
+          return pageNumeric(
+            rows,
+            limit,
+            (row) => Number(row.source_sqlite_id),
+            (row) => redactAccountSignatureBodyForScope(mapEmailAccountSignatureRow(row), input.mailSignatureScope),
+          );
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -1501,7 +1730,8 @@ export function createPostgresEmailAccountSignatureReadPort(options: PostgresMai
             .where('workspace_id', '=', input.workspaceId)
             .where('source_sqlite_id', '=', input.id)
             .executeTakeFirst();
-          return row ? mapEmailAccountSignatureRow(row) : null;
+          if (!row) return null;
+          return redactAccountSignatureBodyForScope(mapEmailAccountSignatureRow(row), input.mailSignatureScope);
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -1630,9 +1860,10 @@ export function createPostgresEmailRemoteContentAllowlistReadPort(
           let query = trx
             .selectFrom('email_remote_content_allowlist')
             .select(emailRemoteContentAllowlistSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          if (input.mailScope?.kind === 'none') query = query.where(kyselySql<boolean>`false`);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.scope !== undefined) query = query.where('scope', '=', input.scope);
@@ -1781,9 +2012,16 @@ export function createPostgresEmailReadReceiptReadPort(options: PostgresMailMeta
           let query = trx
             .selectFrom('email_read_receipt_log')
             .select(emailReadReceiptSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const scopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_read_receipt_log.message_id',
+            'receipt_scope_message',
+          );
+          if (scopePredicate) query = query.where(scopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
@@ -1846,9 +2084,23 @@ export function createPostgresEmailThreadEdgeReadPort(options: PostgresMailMetad
           let query = trx
             .selectFrom('email_thread_edges')
             .select(emailThreadEdgeSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const parentScopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_thread_edges.parent_message_id',
+            'edge_parent_scope_message',
+          );
+          const childScopePredicate = metadataMessageScopePredicate(
+            input.mailScope,
+            input.workspaceId,
+            'email_thread_edges.child_message_id',
+            'edge_child_scope_message',
+          );
+          if (parentScopePredicate) query = query.where(parentScopePredicate);
+          if (childScopePredicate) query = query.where(childScopePredicate);
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.parentMessageId !== undefined) query = query.where('parent_message_id', '=', input.parentMessageId);
@@ -1940,9 +2192,54 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
           let query = trx
             .selectFrom('email_thread_aliases')
             .select(emailThreadAliasSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .orderBy('id', 'asc')
-            .limit(limit + 1);
+            .where('workspace_id', '=', input.workspaceId);
+
+          const accountScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_thread_aliases.account_id',
+          });
+          const messageScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'alias_scope_message.account_id',
+            folderId: 'alias_scope_message.folder_id',
+            messageId: 'alias_scope_message.id',
+          });
+          if (accountScopePredicate || messageScopePredicate) {
+            const msgPred = messageScopePredicate ?? kyselySql<boolean>`false`;
+            const accountPred = accountScopePredicate ?? kyselySql<boolean>`false`;
+            // A scope-visible message on EITHER side used to satisfy this alias-list
+            // predicate, so an accountless alias bridging one in-scope thread to an
+            // out-of-scope one still returned the full row — leaking the hidden thread's
+            // id/source/confidence. Require visibility on BOTH aliased threads instead
+            // (matching the item-GET and edge-list routes, which authorize all related
+            // resources). Per side, the delegate must see a message in the thread — OR
+            // the thread is empty/merged-away (no messages) AND the alias's own account
+            // is in the delegate's scope, which keeps empty account-scoped aliases
+            // manageable without letting the nominal account column stand in for
+            // visibility of a NON-empty thread that belongs to another account (the leak:
+            // account_id=A alias over B-only threads must NOT list for an A-only delegate).
+            // Owner/admin (scope 'all') produce no predicates, so the whole guard is
+            // skipped for them — byte-for-byte unchanged.
+            const threadVisible = (threadColumn: 'alias_thread_id' | 'canonical_thread_id') => kyselySql<boolean>`(
+              exists (
+                select 1 from email_messages alias_scope_message
+                where alias_scope_message.workspace_id = ${input.workspaceId}::uuid
+                  and alias_scope_message.thread_id = ${kyselySql.ref(`email_thread_aliases.${threadColumn}`)}
+                  and ${msgPred}
+              )
+              or (
+                not exists (
+                  select 1 from email_messages alias_scope_message
+                  where alias_scope_message.workspace_id = ${input.workspaceId}::uuid
+                    and alias_scope_message.thread_id = ${kyselySql.ref(`email_thread_aliases.${threadColumn}`)}
+                )
+                and ${accountPred}
+              )
+            )`;
+            query = query.where(kyselySql<boolean>`(
+              ${threadVisible('alias_thread_id')}
+              and ${threadVisible('canonical_thread_id')}
+            )`);
+          }
+          query = query.orderBy('id', 'asc').limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.aliasThreadId !== undefined) query = query.where('alias_thread_id', '=', input.aliasThreadId);
@@ -1965,7 +2262,7 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const rows = await trx
+          let query = trx
             .selectFrom('email_thread_aliases')
             .innerJoin('email_messages', (join) => join
               .onRef('email_messages.workspace_id', '=', 'email_thread_aliases.workspace_id')
@@ -1979,7 +2276,47 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
               'email_thread_aliases.confidence as confidence',
             ])
             .where('email_thread_aliases.workspace_id', '=', input.workspaceId)
-            .where('email_thread_aliases.source', 'like', 'cross_account%')
+            .where('email_thread_aliases.source', 'like', 'cross_account%');
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          if (scopePredicate) {
+            // The join above already requires a scope-visible message in the ALIAS thread,
+            // but each warning also discloses canonicalThreadId — so a delegate who can read
+            // the alias thread yet cannot access the canonical thread would still learn the
+            // hidden canonical thread id. Require canonical-thread visibility too (mirroring
+            // the R42-2 both-sides alias-list gate): a scope-visible message in the canonical
+            // thread, OR an empty/merged-away canonical thread whose alias account is in
+            // scope. Owner/admin (scope 'all') produce no predicate and skip this block.
+            query = query.where(scopePredicate);
+            const canonicalMsgPred = mailScopePredicate(input.mailScope, {
+              accountId: 'canonical_scope_message.account_id',
+              folderId: 'canonical_scope_message.folder_id',
+              messageId: 'canonical_scope_message.id',
+            }) ?? kyselySql<boolean>`false`;
+            const aliasAccountPred = mailScopePredicate(input.mailScope, {
+              accountId: 'email_thread_aliases.account_id',
+            }) ?? kyselySql<boolean>`false`;
+            query = query.where(kyselySql<boolean>`(
+              exists (
+                select 1 from email_messages canonical_scope_message
+                where canonical_scope_message.workspace_id = ${input.workspaceId}::uuid
+                  and canonical_scope_message.thread_id = ${kyselySql.ref('email_thread_aliases.canonical_thread_id')}
+                  and ${canonicalMsgPred}
+              )
+              or (
+                not exists (
+                  select 1 from email_messages canonical_scope_message
+                  where canonical_scope_message.workspace_id = ${input.workspaceId}::uuid
+                    and canonical_scope_message.thread_id = ${kyselySql.ref('email_thread_aliases.canonical_thread_id')}
+                )
+                and ${aliasAccountPred}
+              )
+            )`);
+          }
+          const rows = await query
             .orderBy('email_thread_aliases.created_at', 'desc')
             .orderBy('email_thread_aliases.id', 'desc')
             .limit(limit)
@@ -2104,6 +2441,12 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
         },
         async (trx) => {
           if (values.aliasThreadId === values.canonicalThreadId) return { ok: false, code: 'invalid_alias' };
+          const account = values.accountId === undefined || values.accountId === null
+            ? null
+            : await resolveEmailAccountReference(trx, input.workspaceId, values.accountId);
+          if (values.accountId !== undefined && values.accountId !== null && !account) {
+            return { ok: false, code: 'invalid_alias' };
+          }
           const existing = await resolveThreadAliasConflict(
             trx,
             input.workspaceId,
@@ -2118,6 +2461,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             .values({
               workspace_id: input.workspaceId,
               source_sqlite_id: serverCreatedEmailThreadAliasSourceSqliteId(),
+              account_source_sqlite_id: account?.sourceSqliteId ?? null,
+              account_id: account?.id ?? null,
               alias_thread_id: values.aliasThreadId as string,
               canonical_thread_id: values.canonicalThreadId as string,
               confidence: values.confidence ?? 'high',
@@ -2328,6 +2673,13 @@ function normalizeEmailThreadAliasMutation(
   },
 ): EmailThreadAliasMutationInput {
   const normalized = { ...values };
+  if (
+    normalized.accountId !== undefined
+    && normalized.accountId !== null
+    && (!Number.isSafeInteger(normalized.accountId) || normalized.accountId <= 0)
+  ) {
+    throw new Error('email thread alias accountId must be a positive integer');
+  }
   if (normalized.aliasThreadId !== undefined) {
     normalized.aliasThreadId = normalized.aliasThreadId.trim();
     if (!normalized.aliasThreadId) throw new Error('email thread alias aliasThreadId must not be empty');
@@ -3606,6 +3958,19 @@ function mapEmailTeamMemberRow(row: Pick<EmailTeamMemberRow, typeof emailTeamMem
   };
 }
 
+// A restricted-scope delegate (folder/message/account-scoped mail.metadata.read) may
+// enumerate team members for assignment labels (id/displayName/role/sortOrder) but must
+// NOT receive every workspace member's outbound signature body: personal/account
+// signature APIs gate signatureHtml behind stronger compose access. Owner/admin resolve
+// to scope 'all' and keep it; the write handlers use mapEmailTeamMemberRow directly and
+// are unaffected. (R47-2)
+function redactTeamMemberSignatureForScope(
+  record: EmailTeamMemberRecord,
+  restricted: boolean,
+): EmailTeamMemberRecord {
+  return restricted ? { ...record, signatureHtml: null } : record;
+}
+
 function mapEmailThreadRow(row: Pick<EmailThreadRow, typeof emailThreadSelectColumns[number]>): EmailThreadRecord {
   return {
     id: row.id,
@@ -3714,6 +4079,23 @@ function mapEmailAccountSignatureRow(
     signatureHtml: row.signature_html,
     updatedAt: timestampToIso(row.updated_at),
   };
+}
+
+// A restricted delegate may hold mail.metadata.read on an account (so it may list the
+// account's signatures) without mail.draft.create (so it must NOT read the outbound
+// signature BODY, which compose/manage gate on draft.create — matching canned-response and
+// per-user signatures). Redact signatureHtml unless the caller's draft.create scope covers
+// the signature's account. undefined scope → owner/admin (the enforcer skips the wrapper) →
+// keep; 'none' → redact all; 'restricted' → keep only the accounts the caller may draft on,
+// so composers still receive their own account's signature. (R48-2)
+function redactAccountSignatureBodyForScope(
+  record: EmailAccountSignatureRecord,
+  signatureScope: MailSqlScope | undefined,
+): EmailAccountSignatureRecord {
+  const scope = effectiveMailScope(signatureScope);
+  const visible = scope.kind === 'all'
+    || (scope.kind === 'restricted' && record.accountId !== null && scope.accountIds.includes(record.accountId));
+  return visible ? record : { ...record, signatureHtml: null };
 }
 
 function mapEmailRemoteContentAllowlistRow(

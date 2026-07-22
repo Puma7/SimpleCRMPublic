@@ -149,6 +149,17 @@ import {
 } from './mail-compose-send';
 import { createServerMailConnectionTestPort } from './mail-connection-test';
 import { createPostgresEmailGdprExportPort } from './mail-gdpr-export';
+import { createPostgresMailAccessPort } from './mail-access/postgres-mail-access-port';
+import {
+  createPostgresMailAclRolloutLegacyPort,
+  createPostgresMailAclRolloutStatePort,
+} from './mail-access/postgres-mail-acl-rollout-state-port';
+import { createPostgresMailDelegationPort } from './mail-access/postgres-mail-delegation-port';
+import { createPostgresMailResourceLookupPort } from './mail-access/postgres-mail-resource-lookup';
+import {
+  MailAccessRolloutService,
+  type MailAclRolloutDiagnosticReporter,
+} from './mail-access/rollout-service';
 import {
   createPostgresEmailTrackingService,
   startEmailTrackingRetentionTicker,
@@ -205,6 +216,7 @@ export type PostgresServerApiPortsOptions = Readonly<{
   publicBaseUrl?: string;
   masterKey?: Buffer;
   emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
+  mailAclRolloutDiagnostic?: MailAclRolloutDiagnosticReporter;
 }>;
 
 export type ServerListenOptions = Readonly<{
@@ -379,6 +391,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
         queue: createPostgresJobQueuePort({ db }),
         handlers: jobHandlers,
         log: createJobWorkerLogger(serverLogStore),
+        mailAccess: ports.mailAccess,
+        mailResourceLookup: ports.mailResourceLookup,
+        auth: ports.auth,
       });
     }
 
@@ -387,6 +402,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       databaseUrl,
       options: options.jobWorker,
       handlers: jobHandlers,
+      mailAccess: ports.mailAccess,
+      mailResourceLookup: ports.mailResourceLookup,
+      auth: ports.auth,
       createGraphileQueue: options.createGraphileQueue,
       createJobWorker: options.createJobWorker,
     });
@@ -394,6 +412,9 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       scheduledSendTicker = startScheduledSendTicker({
         db,
         composeSender: ports.emailComposeSender,
+        mailAccess: ports.mailAccess,
+        mailResourceLookup: ports.mailResourceLookup,
+        auth: ports.auth,
       });
     }
     if (db) {
@@ -524,7 +545,18 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       emailTrackingIpIntelligence: options.emailTrackingIpIntelligence,
     })
     : undefined;
+  const mailAccessPort = createPostgresMailAccessPort({ db: options.db });
+  const mailAclRolloutState = createPostgresMailAclRolloutStatePort({ db: options.db });
   return {
+    mailAccess: new MailAccessRolloutService({
+      state: mailAclRolloutState,
+      legacy: createPostgresMailAclRolloutLegacyPort({ db: options.db }),
+      newAcl: mailAccessPort,
+      onTelemetryDiagnostic: options.mailAclRolloutDiagnostic ?? reportMailAclRolloutDiagnostic,
+    }),
+    mailAclRollout: mailAclRolloutState,
+    mailDelegation: createPostgresMailDelegationPort({ db: options.db }),
+    mailResourceLookup: createPostgresMailResourceLookupPort({ db: options.db }),
     activityLog: createPostgresActivityLogReadPort({ db: options.db }),
     health: {
       async pingDatabase() {
@@ -647,6 +679,10 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
   };
 }
 
+function reportMailAclRolloutDiagnostic(event: Parameters<MailAclRolloutDiagnosticReporter>[0]): void {
+  console.warn(`[mail-acl-rollout] telemetry diagnostic: ${event.code}`);
+}
+
 function accessTokenSignerFromEnv(env: ServerEditionEnv): AccessTokenSigner | undefined {
   const secret = env.ACCESS_TOKEN_SECRET;
   if (!secret) return undefined;
@@ -722,6 +758,9 @@ async function startConfiguredJobWorker(input: {
   databaseUrl?: string;
   options?: Partial<ServerJobWorkerConfig>;
   handlers: JobHandlerRegistry;
+  mailAccess: ServerApiPorts['mailAccess'];
+  mailResourceLookup: ServerApiPorts['mailResourceLookup'];
+  auth: ServerApiPorts['auth'];
   createGraphileQueue?: (options: { connectionString: string; migrateOnStart?: boolean }) => Promise<GraphileQueuePort>;
   createJobWorker?: typeof startGraphileWorkerRuntime;
 }): Promise<GraphileWorkerRuntime | undefined> {
@@ -756,6 +795,9 @@ async function startConfiguredJobWorker(input: {
       mailAccountCount: config.mailAccountCount,
       aiConcurrency: config.aiConcurrency,
     },
+    mailAccess: input.mailAccess,
+    mailResourceLookup: input.mailResourceLookup,
+    auth: input.auth,
   });
 }
 

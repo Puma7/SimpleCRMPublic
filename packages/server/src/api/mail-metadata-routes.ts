@@ -3,6 +3,8 @@ import type {
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
+  CanonicalApiRoute,
+  CanonicalApiRouteRegistration,
   EmailAccountSignatureMutationInput,
   EmailAccountSignatureRecord,
   EmailCannedResponseMutationInput,
@@ -328,185 +330,155 @@ const stringResourceRoutes: readonly StringResourceConfig<any>[] = [
   },
 ];
 
-export async function handleMailMetadataReadRoute(
+type MailMetadataRouteHandler = (
   req: ApiRequest,
   ports: ServerApiPorts,
-): Promise<ApiResponse | null> {
-  const messageTagMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/tags$/.exec(req.path);
-  if (messageTagMatch) {
-    if (req.method === 'DELETE') return handleDeleteEmailMessageTagForMessage(req, ports, messageTagMatch[1]);
-    if (req.method === 'POST') return handleCreateEmailMessageTag(req, ports, messageTagMatch[1]);
-    return handleMessageScopedNumericList(req, ports.emailMessageTags, messageTagMatch[1], {
+  params: readonly string[],
+) => Promise<ApiResponse>;
+
+type MailMetadataRouteRegistration = Readonly<{
+  registration: CanonicalApiRouteRegistration;
+  dispatchMethods?: readonly ApiRequest['method'][];
+  handler: MailMetadataRouteHandler;
+}>;
+
+function metadataRoute(
+  path: string,
+  methods: CanonicalApiRouteRegistration['methods'],
+  pattern: RegExp,
+  handler: MailMetadataRouteHandler,
+  dispatchMethods?: readonly ApiRequest['method'][],
+): MailMetadataRouteRegistration {
+  return {
+    registration: { path, methods, pattern },
+    handler,
+    ...(dispatchMethods ? { dispatchMethods } : {}),
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const metadataSpecialRouteRegistrations: readonly MailMetadataRouteRegistration[] = [
+  metadataRoute('/api/v1/email/messages/:messageId/tags', ['GET', 'POST', 'DELETE'], /^\/api\/v1\/email\/messages\/([^/]+)\/tags$/, (req, ports, params) => {
+    if (req.method === 'DELETE') return handleDeleteEmailMessageTagForMessage(req, ports, params[0]);
+    if (req.method === 'POST') return handleCreateEmailMessageTag(req, ports, params[0]);
+    return handleMessageScopedNumericList(req, ports.emailMessageTags, params[0], {
       unavailableCode: 'email_message_tags_unavailable',
       unavailableMessage: 'Email tag API nicht konfiguriert',
       sanitize: sanitizeEmailMessageTag,
     });
-  }
+  }),
+  metadataRoute('/api/v1/email/messages/:messageId/categories', ['GET', 'POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/categories$/, (req, ports, params) => (
+    req.method === 'POST'
+      ? handleCreateEmailMessageCategory(req, ports, params[0])
+      : handleMessageScopedNumericList(req, ports.emailMessageCategories, params[0], {
+        unavailableCode: 'email_message_categories_unavailable',
+        unavailableMessage: 'Email message category API nicht konfiguriert',
+        sanitize: sanitizeEmailMessageCategory,
+      })
+  )),
+  metadataRoute('/api/v1/email/messages/:messageId/internal-notes', ['GET', 'POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/internal-notes$/, (req, ports, params) => (
+    req.method === 'POST'
+      ? handleCreateEmailInternalNote(req, ports, params[0])
+      : handleMessageScopedNumericList(req, ports.emailInternalNotes, params[0], {
+        unavailableCode: 'email_internal_notes_unavailable',
+        unavailableMessage: 'Email internal note API nicht konfiguriert',
+        sanitize: sanitizeEmailInternalNote,
+      })
+  )),
+  metadataRoute('/api/v1/email/internal-notes', ['POST'], /^\/api\/v1\/email\/internal-notes$/, (req, ports) => handleCreateEmailInternalNote(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/internal-notes/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/internal-notes\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailInternalNote(req, ports, params[0])
+      : handleDeleteEmailInternalNote(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/tags', ['POST'], /^\/api\/v1\/email\/tags$/, (req, ports) => handleCreateEmailMessageTag(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/tags/:id', ['DELETE'], /^\/api\/v1\/email\/tags\/([^/]+)$/, (req, ports, params) => handleDeleteEmailMessageTag(req, ports, params[0]), ['DELETE']),
+  metadataRoute('/api/v1/email/categories', ['POST'], /^\/api\/v1\/email\/categories$/, (req, ports) => handleCreateEmailCategory(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/categories/reorder', ['PATCH'], /^\/api\/v1\/email\/categories\/reorder$/, (req, ports) => handleReorderEmailCategories(req, ports)),
+  metadataRoute('/api/v1/email/categories/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/categories\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailCategory(req, ports, params[0])
+      : handleDeleteEmailCategory(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/message-categories', ['POST'], /^\/api\/v1\/email\/message-categories$/, (req, ports) => handleCreateEmailMessageCategory(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/message-categories/:id', ['DELETE'], /^\/api\/v1\/email\/message-categories\/([^/]+)$/, (req, ports, params) => handleDeleteEmailMessageCategory(req, ports, params[0]), ['DELETE']),
+  metadataRoute('/api/v1/email/canned-responses', ['POST'], /^\/api\/v1\/email\/canned-responses$/, (req, ports) => handleCreateEmailCannedResponse(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/canned-responses/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/canned-responses\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailCannedResponse(req, ports, params[0])
+      : handleDeleteEmailCannedResponse(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/remote-content-allowlist', ['POST'], /^\/api\/v1\/email\/remote-content-allowlist$/, (req, ports) => handleCreateEmailRemoteContentAllowlist(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/remote-content-allowlist/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/remote-content-allowlist\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailRemoteContentAllowlist(req, ports, params[0])
+      : handleDeleteEmailRemoteContentAllowlist(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/team-members', ['POST'], /^\/api\/v1\/email\/team-members$/, (req, ports) => handleCreateEmailTeamMember(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/team-members/:teamMemberId/upsert', ['POST'], /^\/api\/v1\/email\/team-members\/([^/]+)\/upsert$/, (req, ports, params) => handleUpsertEmailTeamMember(req, ports, params[0]), ['POST']),
+  metadataRoute('/api/v1/email/team-members/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/team-members\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailTeamMember(req, ports, params[0])
+      : handleDeleteEmailTeamMember(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/thread-edges', ['POST'], /^\/api\/v1\/email\/thread-edges$/, (req, ports) => handleCreateEmailThreadEdge(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/thread-edges/:id', ['DELETE'], /^\/api\/v1\/email\/thread-edges\/([^/]+)$/, (req, ports, params) => handleDeleteEmailThreadEdge(req, ports, params[0]), ['DELETE']),
+  metadataRoute('/api/v1/email/thread-aliases', ['POST'], /^\/api\/v1\/email\/thread-aliases$/, (req, ports) => handleCreateEmailThreadAlias(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/thread-aliases/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/thread-aliases\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailThreadAlias(req, ports, params[0])
+      : handleDeleteEmailThreadAlias(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/threads/split-message', ['POST'], /^\/api\/v1\/email\/threads\/split-message$/, (req, ports) => handleSplitEmailMessageThread(req, ports)),
+  metadataRoute('/api/v1/email/threads/merge', ['POST'], /^\/api\/v1\/email\/threads\/merge$/, (req, ports) => handleMergeEmailThreads(req, ports)),
+  metadataRoute('/api/v1/email/thread-alias-warnings', ['GET'], /^\/api\/v1\/email\/thread-alias-warnings$/, (req, ports) => handleListEmailThreadAliasWarnings(req, ports)),
+  metadataRoute('/api/v1/email/account-signatures/by-account/:accountId/upsert', ['POST'], /^\/api\/v1\/email\/account-signatures\/by-account\/([^/]+)\/upsert$/, (req, ports, params) => handleUpsertEmailAccountSignatureByAccount(req, ports, params[0]), ['POST']),
+  metadataRoute('/api/v1/email/account-signatures', ['POST'], /^\/api\/v1\/email\/account-signatures$/, (req, ports) => handleCreateEmailAccountSignature(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/account-signatures/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/account-signatures\/([^/]+)$/, (req, ports, params) => (
+    req.method === 'PATCH'
+      ? handleUpdateEmailAccountSignature(req, ports, params[0])
+      : handleDeleteEmailAccountSignature(req, ports, params[0])
+  ), ['PATCH', 'DELETE']),
+  metadataRoute('/api/v1/email/read-receipts', ['POST'], /^\/api\/v1\/email\/read-receipts$/, (req, ports) => handleCreateEmailReadReceipt(req, ports), ['POST']),
+  metadataRoute('/api/v1/email/category-counts', ['GET'], /^\/api\/v1\/email\/category-counts$/, (req, ports) => handleListEmailCategoryCounts(req, ports)),
+];
 
-  const messageCategoryMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/categories$/.exec(req.path);
-  if (messageCategoryMatch) {
-    if (req.method === 'POST') return handleCreateEmailMessageCategory(req, ports, messageCategoryMatch[1]);
-    return handleMessageScopedNumericList(req, ports.emailMessageCategories, messageCategoryMatch[1], {
-      unavailableCode: 'email_message_categories_unavailable',
-      unavailableMessage: 'Email message category API nicht konfiguriert',
-      sanitize: sanitizeEmailMessageCategory,
-    });
-  }
+const metadataGenericRouteRegistrations: readonly MailMetadataRouteRegistration[] = [
+  ...numericResourceRoutes.flatMap((route) => [
+    metadataRoute(route.listPath, ['GET'], new RegExp(`^${escapeRegExp(route.listPath)}$`), (req, ports) => handleNumericList(req, ports, route)),
+    metadataRoute(`${route.listPath}/:id`, ['GET'], route.idPattern, (req, ports, params) => handleNumericGet(req, ports, route, params[0])),
+  ]),
+  ...stringResourceRoutes.flatMap((route) => [
+    metadataRoute(route.listPath, ['GET'], new RegExp(`^${escapeRegExp(route.listPath)}$`), (req, ports) => handleStringList(req, ports, route)),
+    metadataRoute(`${route.listPath}/:id`, ['GET'], route.idPattern, (req, ports, params) => handleStringGet(req, ports, route, params[0])),
+  ]),
+];
 
-  const messageInternalNoteMatch = /^\/api\/v1\/email\/messages\/([^/]+)\/internal-notes$/.exec(req.path);
-  if (messageInternalNoteMatch) {
-    if (req.method === 'POST') return handleCreateEmailInternalNote(req, ports, messageInternalNoteMatch[1]);
-    return handleMessageScopedNumericList(req, ports.emailInternalNotes, messageInternalNoteMatch[1], {
-      unavailableCode: 'email_internal_notes_unavailable',
-      unavailableMessage: 'Email internal note API nicht konfiguriert',
-      sanitize: sanitizeEmailInternalNote,
-    });
-  }
+export const MAIL_METADATA_ROUTE_REGISTRATIONS: readonly MailMetadataRouteRegistration[] = Object.freeze([
+  ...metadataSpecialRouteRegistrations,
+  ...metadataGenericRouteRegistrations,
+]);
 
-  if (req.path === '/api/v1/email/internal-notes' && req.method === 'POST') {
-    return handleCreateEmailInternalNote(req, ports);
-  }
+export const MAIL_METADATA_ROUTE_INVENTORY: readonly CanonicalApiRoute[] = Object.freeze(
+  MAIL_METADATA_ROUTE_REGISTRATIONS.flatMap(({ registration }) => registration.methods.map((method) => ({
+    source: 'mail-metadata-routes',
+    method,
+    path: registration.path,
+    pattern: registration.pattern,
+  }))),
+);
 
-  const internalNoteMutationMatch = /^\/api\/v1\/email\/internal-notes\/([^/]+)$/.exec(req.path);
-  if (internalNoteMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailInternalNote(req, ports, internalNoteMutationMatch[1]);
-  }
-  if (internalNoteMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailInternalNote(req, ports, internalNoteMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/tags' && req.method === 'POST') {
-    return handleCreateEmailMessageTag(req, ports);
-  }
-  const tagMutationMatch = /^\/api\/v1\/email\/tags\/([^/]+)$/.exec(req.path);
-  if (tagMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailMessageTag(req, ports, tagMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/categories' && req.method === 'POST') {
-    return handleCreateEmailCategory(req, ports);
-  }
-  if (req.path === '/api/v1/email/categories/reorder') {
-    return handleReorderEmailCategories(req, ports);
-  }
-  const categoryMutationMatch = /^\/api\/v1\/email\/categories\/([^/]+)$/.exec(req.path);
-  if (categoryMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailCategory(req, ports, categoryMutationMatch[1]);
-  }
-  if (categoryMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailCategory(req, ports, categoryMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/message-categories' && req.method === 'POST') {
-    return handleCreateEmailMessageCategory(req, ports);
-  }
-  const messageCategoryMutationMatch = /^\/api\/v1\/email\/message-categories\/([^/]+)$/.exec(req.path);
-  if (messageCategoryMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailMessageCategory(req, ports, messageCategoryMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/canned-responses' && req.method === 'POST') {
-    return handleCreateEmailCannedResponse(req, ports);
-  }
-  const cannedResponseMutationMatch = /^\/api\/v1\/email\/canned-responses\/([^/]+)$/.exec(req.path);
-  if (cannedResponseMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailCannedResponse(req, ports, cannedResponseMutationMatch[1]);
-  }
-  if (cannedResponseMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailCannedResponse(req, ports, cannedResponseMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/remote-content-allowlist' && req.method === 'POST') {
-    return handleCreateEmailRemoteContentAllowlist(req, ports);
-  }
-  const remoteContentAllowlistMutationMatch = /^\/api\/v1\/email\/remote-content-allowlist\/([^/]+)$/.exec(req.path);
-  if (remoteContentAllowlistMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailRemoteContentAllowlist(req, ports, remoteContentAllowlistMutationMatch[1]);
-  }
-  if (remoteContentAllowlistMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailRemoteContentAllowlist(req, ports, remoteContentAllowlistMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/team-members' && req.method === 'POST') {
-    return handleCreateEmailTeamMember(req, ports);
-  }
-  const teamMemberUpsertMatch = /^\/api\/v1\/email\/team-members\/([^/]+)\/upsert$/.exec(req.path);
-  if (teamMemberUpsertMatch && req.method === 'POST') {
-    return handleUpsertEmailTeamMember(req, ports, teamMemberUpsertMatch[1]);
-  }
-  const teamMemberMutationMatch = /^\/api\/v1\/email\/team-members\/([^/]+)$/.exec(req.path);
-  if (teamMemberMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailTeamMember(req, ports, teamMemberMutationMatch[1]);
-  }
-  if (teamMemberMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailTeamMember(req, ports, teamMemberMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/thread-edges' && req.method === 'POST') {
-    return handleCreateEmailThreadEdge(req, ports);
-  }
-  const threadEdgeMutationMatch = /^\/api\/v1\/email\/thread-edges\/([^/]+)$/.exec(req.path);
-  if (threadEdgeMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailThreadEdge(req, ports, threadEdgeMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/thread-aliases' && req.method === 'POST') {
-    return handleCreateEmailThreadAlias(req, ports);
-  }
-  const threadAliasMutationMatch = /^\/api\/v1\/email\/thread-aliases\/([^/]+)$/.exec(req.path);
-  if (threadAliasMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailThreadAlias(req, ports, threadAliasMutationMatch[1]);
-  }
-  if (threadAliasMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailThreadAlias(req, ports, threadAliasMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/threads/split-message') {
-    return handleSplitEmailMessageThread(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/threads/merge') {
-    return handleMergeEmailThreads(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/thread-alias-warnings') {
-    return handleListEmailThreadAliasWarnings(req, ports);
-  }
-
-  const accountSignatureUpsertMatch = /^\/api\/v1\/email\/account-signatures\/by-account\/([^/]+)\/upsert$/.exec(req.path);
-  if (accountSignatureUpsertMatch && req.method === 'POST') {
-    return handleUpsertEmailAccountSignatureByAccount(req, ports, accountSignatureUpsertMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/account-signatures' && req.method === 'POST') {
-    return handleCreateEmailAccountSignature(req, ports);
-  }
-  const accountSignatureMutationMatch = /^\/api\/v1\/email\/account-signatures\/([^/]+)$/.exec(req.path);
-  if (accountSignatureMutationMatch && req.method === 'PATCH') {
-    return handleUpdateEmailAccountSignature(req, ports, accountSignatureMutationMatch[1]);
-  }
-  if (accountSignatureMutationMatch && req.method === 'DELETE') {
-    return handleDeleteEmailAccountSignature(req, ports, accountSignatureMutationMatch[1]);
-  }
-
-  if (req.path === '/api/v1/email/read-receipts' && req.method === 'POST') {
-    return handleCreateEmailReadReceipt(req, ports);
-  }
-
-  if (req.path === '/api/v1/email/category-counts') {
-    return handleListEmailCategoryCounts(req, ports);
-  }
-
-  for (const route of numericResourceRoutes) {
-    if (req.path === route.listPath) return handleNumericList(req, ports, route);
-    const match = route.idPattern.exec(req.path);
-    if (match) return handleNumericGet(req, ports, route, match[1]);
-  }
-
-  for (const route of stringResourceRoutes) {
-    if (req.path === route.listPath) return handleStringList(req, ports, route);
-    const match = route.idPattern.exec(req.path);
-    if (match) return handleStringGet(req, ports, route, match[1]);
+export async function handleMailMetadataReadRoute(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+): Promise<ApiResponse | null> {
+  for (const { registration, dispatchMethods, handler } of MAIL_METADATA_ROUTE_REGISTRATIONS) {
+    if (dispatchMethods && !dispatchMethods.includes(req.method)) continue;
+    const match = registration.pattern.exec(req.path);
+    if (match) return handler(req, ports, match.slice(1));
   }
 
   return null;
@@ -1000,6 +972,14 @@ async function handleUpdateEmailCannedResponse(
   });
   if (!parsed.ok) return parsed.response;
 
+  // Capture the pre-update account so a reparent can notify the previous account's
+  // delegates too (see the second publish below). Read before the mutation because
+  // the update overwrites accountId in place.
+  const previous = await ports.emailCannedResponses.get({
+    workspaceId: principal.workspaceId,
+    id,
+  });
+
   const response = await ports.emailCannedResponses.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1010,6 +990,21 @@ async function handleUpdateEmailCannedResponse(
 
   await auditEmailCannedResponse(ports, principal, 'email_canned_response.updated', response, { fields: Object.keys(parsed.values).sort() });
   await publishEmailCannedResponse(ports, principal.workspaceId, 'email_canned_response.updated', response, principal.userId);
+  // A PATCH can reparent the canned response to a different account (or to/from the
+  // workspace-global scope). The event above carries only the NEW accountId, so it
+  // reaches only the new account's delegates — a delegate scoped to the PREVIOUS
+  // account would never learn the row left their scope and would keep showing a stale
+  // copy. Emit a second event carrying the previous accountId so those delegates
+  // refresh (and drop it, since it no longer resolves under their scope).
+  if (previous && previous.accountId !== response.accountId) {
+    await publishEmailCannedResponse(
+      ports,
+      principal.workspaceId,
+      'email_canned_response.updated',
+      { ...response, accountId: previous.accountId },
+      principal.userId,
+    );
+  }
   return data(200, sanitizeEmailCannedResponse(response));
 }
 
@@ -1343,6 +1338,7 @@ async function handleCreateEmailThreadAlias(
   }
 
   const parsed = parseEmailThreadAliasMutationBody(req.body, {
+    allowAccountId: true,
     requireAliasThreadId: true,
     requireCanonicalThreadId: true,
     requireAny: false,
@@ -1379,11 +1375,21 @@ async function handleUpdateEmailThreadAlias(
   }
 
   const parsed = parseEmailThreadAliasMutationBody(req.body, {
+    allowAccountId: false,
     requireAliasThreadId: false,
     requireCanonicalThreadId: false,
     requireAny: true,
   });
   if (!parsed.ok) return parsed.response;
+
+  // Capture the current thread pair before the update so a REPOINT (either thread id
+  // changed) can also refresh delegates who could see the OLD pair: the primary .updated
+  // event resolves against the NEW threads (metadata lookup on the live row), so a delegate
+  // who saw both old threads but not one replacement would otherwise keep the obsolete
+  // grouping until a manual refresh (R48-3).
+  const previousAlias = ports.emailThreadAliases.get
+    ? await ports.emailThreadAliases.get({ workspaceId: principal.workspaceId, id })
+    : null;
 
   const result = await ports.emailThreadAliases.update({
     workspaceId: principal.workspaceId,
@@ -1397,6 +1403,28 @@ async function handleUpdateEmailThreadAlias(
   const alias = result.alias;
   await auditEmailThreadAlias(ports, principal, 'email_thread_alias.updated', alias, { fields: Object.keys(parsed.values).sort() });
   await publishEmailThreadAlias(ports, principal.workspaceId, 'email_thread_alias.updated', alias, principal.userId);
+  if (
+    previousAlias
+    && (previousAlias.aliasThreadId !== alias.aliasThreadId || previousAlias.canonicalThreadId !== alias.canonicalThreadId)
+  ) {
+    // The alias was repointed. Send delegates of the OLD thread pair a .deleted refresh
+    // carrying the previous threads/account: .deleted authorizes against BOTH payload
+    // threads via the tombstone two-sided rule (R47-4) and is already a client thread-alias
+    // refresh signal, so old-pair delegates drop the stale grouping without a new event
+    // type. New-pair delegates get the .updated above. Best-effort.
+    await publishEmailThreadAlias(
+      ports,
+      principal.workspaceId,
+      'email_thread_alias.deleted',
+      {
+        ...alias,
+        aliasThreadId: previousAlias.aliasThreadId,
+        canonicalThreadId: previousAlias.canonicalThreadId,
+        accountId: previousAlias.accountId,
+      },
+      principal.userId,
+    );
+  }
   return data(200, sanitizeEmailThreadAlias(alias));
 }
 
@@ -1557,6 +1585,13 @@ async function handleUpdateEmailAccountSignature(
   });
   if (!parsed.ok) return parsed.response;
 
+  // Capture the current account before the update so a move (account A → B) can also
+  // refresh the OLD account's delegates: the primary .updated event resolves to the NEW
+  // account, so account A's signature editor / compose cache would otherwise keep the
+  // moved-away signature until a manual reload (R48-1), mirroring the canned-response
+  // reparenting notification (R41-4).
+  const previous = await ports.emailAccountSignatures.get({ workspaceId: principal.workspaceId, id });
+
   const result = await ports.emailAccountSignatures.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1569,6 +1604,19 @@ async function handleUpdateEmailAccountSignature(
   const signature = result.signature;
   await auditEmailAccountSignature(ports, principal, 'email_account_signature.updated', signature, { fields: Object.keys(parsed.values).sort() });
   await publishEmailAccountSignature(ports, principal.workspaceId, 'email_account_signature.updated', signature, principal.userId);
+  if (previous && previous.accountId !== null && previous.accountId !== signature.accountId) {
+    // The signature left account A — send A's delegates a .deleted refresh (a client-side
+    // account-signature refresh signal, like .updated) carrying the PREVIOUS account so
+    // their list/compose cache drops it. The .deleted event resolves against the payload
+    // account (unlike the metadata-lookup .updated), so it reaches account A. Best-effort.
+    await publishEmailAccountSignature(
+      ports,
+      principal.workspaceId,
+      'email_account_signature.deleted',
+      { ...signature, accountId: previous.accountId, accountSourceSqliteId: previous.accountSourceSqliteId },
+      principal.userId,
+    );
+  }
   return data(200, sanitizeEmailAccountSignature(signature));
 }
 
@@ -1915,6 +1963,9 @@ async function publishEmailCannedResponse(
     payload: {
       id: response.id,
       sourceSqliteId: response.sourceSqliteId,
+      // Included so the event filter can authorize an account-scoped canned
+      // response against its account (null = global template → workspace-global).
+      accountId: response.accountId,
       title: response.title,
       body: response.body,
       sortOrder: response.sortOrder,
@@ -2100,6 +2151,10 @@ async function publishEmailThreadAlias(
     payload: {
       id: alias.id,
       sourceSqliteId: alias.sourceSqliteId,
+      // accountId is the tombstone the deletion event's authorization resolves
+      // against (the alias row is already gone); without it the event filter
+      // cannot recover the resource and drops the event for every client.
+      accountId: alias.accountId,
       aliasThreadId: alias.aliasThreadId,
       canonicalThreadId: alias.canonicalThreadId,
       confidence: alias.confidence,
@@ -3046,6 +3101,7 @@ function parseEmailThreadEdgeMutationBody(body: unknown): EmailThreadEdgeMutatio
 function parseEmailThreadAliasMutationBody(
   body: unknown,
   options: {
+    allowAccountId: boolean;
     requireAliasThreadId: boolean;
     requireCanonicalThreadId: boolean;
     requireAny: boolean;
@@ -3060,10 +3116,21 @@ function parseEmailThreadAliasMutationBody(
 
   const values: EmailThreadAliasMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
-  const allowedFields = new Set(['aliasThreadId', 'canonicalThreadId', 'confidence', 'source']);
+  const allowedFields = new Set([
+    ...(options.allowAccountId ? ['accountId'] : []),
+    'aliasThreadId',
+    'canonicalThreadId',
+    'confidence',
+    'source',
+  ]);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+  }
+  if (options.allowAccountId && Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    const accountId = normalizePositiveBodyInt(body.accountId, 'accountId');
+    if (accountId.ok) values.accountId = accountId.value;
+    else errors.push({ field: 'accountId', message: accountId.message });
   }
   if (Object.prototype.hasOwnProperty.call(body, 'aliasThreadId')) {
     const aliasThreadId = normalizeRequiredBodyText(body.aliasThreadId, 300);

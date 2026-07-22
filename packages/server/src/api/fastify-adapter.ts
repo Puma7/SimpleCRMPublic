@@ -18,8 +18,10 @@ import type {
   AuthenticatedPrincipal,
   HttpMethod,
   ServerEvent,
+  ServerEventPort,
   ServerApiPorts,
 } from './types';
+import { filterMailEventForPrincipal } from '../mail-access/async-policy-enforcer';
 
 export type FastifyPrincipalResolver = (
   request: FastifyRequest,
@@ -82,6 +84,7 @@ const CORS_ALLOWED_HEADERS = [
   'X-SimpleCRM-Session-Migration',
 ].join(', ');
 const CORS_MAX_AGE_SECONDS = '600';
+export const EVENT_STREAM_DEDUPE_WINDOW_SIZE = 1024;
 // Response headers a cross-origin renderer's Fetch may read. `Retry-After` on a
 // 429 is non-safelisted, so without exposing it `response.headers.get()` returns
 // null cross-origin and the transport's 429 backoff never triggers.
@@ -92,6 +95,7 @@ type EventWebSocket = {
   send(data: string): void;
   close(code?: number, reason?: string): void;
   on(event: 'close', listener: () => void): void;
+  on(event: 'error', listener: () => void): void;
 };
 
 export function createFastifyServer(options: FastifyServerOptions): FastifyInstance {
@@ -253,12 +257,97 @@ async function handleEventSocket(
     return;
   }
 
-  const deliveredSequences = new Set<number>();
-  const subscription = ports.events.subscribe((event) => {
+  const deliveredSequences = createBoundedEventSequenceDedupe();
+  let closed = false;
+  let replaying = true;
+  let liveQueue: ServerEvent[] = [];
+  let liveChain = Promise.resolve();
+  const context = {
+    principal,
+    ports: {
+      mailAccess: ports.mailAccess,
+      mailResourceLookup: ports.mailResourceLookup,
+    },
+  };
+  // The principal is captured once at socket open, but a later role demotion or
+  // account disable must take effect for event authorization — otherwise a demoted
+  // admin keeps bypassing resource checks and a disabled delegate keeps receiving
+  // events until reconnect. Re-resolve from the request (which re-reads the DB and
+  // returns null on disabled/revoked/expired) on a short TTL, mutate the shared
+  // context so the filter rebuilds the actor from the current role, and close the
+  // socket when the session is no longer valid. Mirrors the per-request HTTP path.
+  const PRINCIPAL_REVALIDATE_MS = 10_000;
+  let principalCheckedAt = Date.now();
+  const revalidatePrincipal = async (force = false): Promise<boolean> => {
+    if (!force && Date.now() - principalCheckedAt < PRINCIPAL_REVALIDATE_MS) return true;
+    principalCheckedAt = Date.now();
+    const fresh = await resolvePrincipal(request);
+    if (!fresh || fresh.workspaceId !== principal.workspaceId) return false;
+    // A live demotion (owner/admin -> user) revokes the elevated bypass that let this
+    // socket's client load mail it can no longer access. Re-resolving the principal
+    // stops NEW events from bypassing resource checks, but the client still holds the
+    // mail it fetched while elevated. Detect the transition against the PREVIOUS
+    // principal, then mutate, so the invalidation fires exactly once (the next
+    // revalidation sees role 'user' and publishes nothing).
+    const previous = context.principal;
+    context.principal = fresh;
+    await publishDemotionAclInvalidationIfNeeded(previous, fresh, ports.events, new Date().toISOString());
+    return true;
+  };
+  const deliver = async (event: ServerEvent): Promise<void> => {
+    if (closed) return;
+    // A self-targeted email_acl.changed IS the demote/disable/delete signal for this
+    // socket's user, so the cached principal it would be filtered against is exactly the
+    // one that may now be stale. Bypass the TTL and re-resolve NOW: a demotion downgrades
+    // the actor before the next mail event is authorized (no lingering admin bypass), and
+    // a disable/delete makes revalidatePrincipal return false → the revoke fallback below
+    // closes the socket immediately, instead of leaving up to PRINCIPAL_REVALIDATE_MS of
+    // bypass / an open deleted-user socket on the live stream.
+    const forceRevalidate = isSelfTargetedAclInvalidation(event, principal.userId);
+    if (!(await revalidatePrincipal(forceRevalidate))) {
+      if (!closed) {
+        closed = true;
+        // The just-revoked/disabled user's own socket is the one that most needs the
+        // invalidation, but the filtered path needs a valid principal we no longer
+        // have. Push a self-targeted email_acl.changed on the RAW path before closing
+        // so the client clears already-loaded mail; the ws library flushes this data
+        // frame ahead of the queued close frame. The payload carries only the user's
+        // own id, so the unfiltered send leaks nothing.
+        sendWebSocketJson(socket, {
+          type: 'email_acl.changed',
+          workspaceId: principal.workspaceId,
+          entityType: 'email_acl',
+          entityId: principal.userId,
+          actorUserId: principal.userId,
+          occurredAt: new Date().toISOString(),
+          payload: { targetUserId: principal.userId, state: 'changed' },
+        });
+        socket.close(1008, 'session revoked');
+      }
+      return;
+    }
+    await sendFilteredEvent(socket, event, deliveredSequences, context, () => closed);
+  };
+  const enqueueLive = (event: ServerEvent) => {
     if (event.workspaceId !== principal.workspaceId) return;
-    markDelivered(deliveredSequences, event);
-    sendWebSocketJson(socket, event);
-  });
+    if (replaying) {
+      liveQueue.push(event);
+      return;
+    }
+    liveChain = liveChain
+      .then(async () => deliver(event))
+      .catch(() => {
+        if (!closed) socket.close(1011, 'event stream error');
+      });
+  };
+  const subscription = ports.events.subscribe(enqueueLive);
+  const cleanup = () => {
+    closed = true;
+    liveQueue = [];
+    subscription.unsubscribe();
+  };
+  socket.on('close', cleanup);
+  socket.on('error', cleanup);
   if (afterSequence !== undefined) {
     await waitForWebSocketClient();
     const replayEvents = await ports.events.replay?.({
@@ -266,14 +355,27 @@ async function handleEventSocket(
       afterSequence,
     }) ?? [];
     for (const event of replayEvents) {
-      if (wasDelivered(deliveredSequences, event)) continue;
-      markDelivered(deliveredSequences, event);
-      sendWebSocketJson(socket, event);
+      await deliver(event);
     }
   }
-  socket.on('close', () => {
-    subscription.unsubscribe();
-  });
+  replaying = false;
+  const queued = liveQueue;
+  liveQueue = [];
+  for (const event of queued) enqueueLive(event);
+}
+
+async function sendFilteredEvent(
+  socket: EventWebSocket,
+  event: ServerEvent,
+  deliveredSequences: BoundedEventSequenceDedupe,
+  context: Parameters<typeof filterMailEventForPrincipal>[1],
+  isClosed: () => boolean,
+): Promise<void> {
+  if (isClosed() || wasDelivered(deliveredSequences, event)) return;
+  const filtered = await filterMailEventForPrincipal(event, context);
+  if (!filtered || isClosed() || wasDelivered(deliveredSequences, filtered)) return;
+  markDelivered(deliveredSequences, filtered);
+  sendWebSocketJson(socket, filtered);
 }
 
 function sendWebSocketJson(socket: EventWebSocket, event: ServerEvent): void {
@@ -281,14 +383,92 @@ function sendWebSocketJson(socket: EventWebSocket, event: ServerEvent): void {
   socket.send(JSON.stringify(event));
 }
 
-function markDelivered(deliveredSequences: Set<number>, event: ServerEvent): void {
+function markDelivered(deliveredSequences: BoundedEventSequenceDedupe, event: ServerEvent): void {
   if (typeof event.sequence === 'number') {
     deliveredSequences.add(event.sequence);
   }
 }
 
-function wasDelivered(deliveredSequences: Set<number>, event: ServerEvent): boolean {
+function wasDelivered(deliveredSequences: BoundedEventSequenceDedupe, event: ServerEvent): boolean {
   return typeof event.sequence === 'number' && deliveredSequences.has(event.sequence);
+}
+
+export type BoundedEventSequenceDedupe = Readonly<{
+  add(sequence: number): void;
+  has(sequence: number): boolean;
+  size(): number;
+}>;
+
+export function createBoundedEventSequenceDedupe(
+  maxSize = EVENT_STREAM_DEDUPE_WINDOW_SIZE,
+): BoundedEventSequenceDedupe {
+  const limit = Number.isInteger(maxSize) && maxSize > 0 ? maxSize : EVENT_STREAM_DEDUPE_WINDOW_SIZE;
+  const delivered = new Set<number>();
+  const order: number[] = [];
+  return {
+    add(sequence) {
+      if (!Number.isSafeInteger(sequence) || delivered.has(sequence)) return;
+      delivered.add(sequence);
+      order.push(sequence);
+      while (order.length > limit) {
+        const evicted = order.shift();
+        if (evicted !== undefined) delivered.delete(evicted);
+      }
+    },
+    has(sequence) {
+      return delivered.has(sequence);
+    },
+    size() {
+      return delivered.size;
+    },
+  };
+}
+
+/**
+ * R18-4: when a live socket's principal is re-resolved and the actor has lost
+ * owner/admin status, publish a self-targeted email_acl.changed so the demoted
+ * user's renderer clears the mail it loaded under the elevated role (the renderer
+ * only drops account/message/selection state on that invalidation). Re-resolving
+ * the principal alone stops NEW events/HTTP from bypassing checks but leaves the
+ * already-loaded mail visible. Returns whether an invalidation was published so the
+ * caller can fire it exactly once per demotion. Non-demotion transitions
+ * (user→user, unchanged owner/admin, or an elevation) publish nothing.
+ */
+export async function publishDemotionAclInvalidationIfNeeded(
+  previous: AuthenticatedPrincipal,
+  fresh: AuthenticatedPrincipal,
+  events: ServerEventPort | undefined,
+  occurredAt: string,
+): Promise<boolean> {
+  const wasElevated = previous.role === 'owner' || previous.role === 'admin';
+  if (!wasElevated || fresh.role !== 'user') return false;
+  await events?.publish({
+    type: 'email_acl.changed',
+    workspaceId: fresh.workspaceId,
+    entityType: 'email_acl',
+    entityId: fresh.userId,
+    actorUserId: fresh.userId,
+    occurredAt,
+    payload: { targetUserId: fresh.userId, state: 'changed' },
+  });
+  return true;
+}
+
+/**
+ * A self-targeted email_acl.changed is the demote/disable/delete signal for THIS
+ * socket's own user. The live delivery path forces an immediate principal re-resolve
+ * (bypassing the revalidation TTL) for these so a demotion downgrades the actor before
+ * the next mail event is authorized and a disable/delete closes the socket now, instead
+ * of leaving up to the TTL window of stale admin bypass. Owners/admins also receive
+ * OTHER users' email_acl.changed events — those must NOT force a re-resolve, hence the
+ * strict self-target (payload.targetUserId === userId) check.
+ */
+export function isSelfTargetedAclInvalidation(event: ServerEvent, userId: string): boolean {
+  return (
+    event.type === 'email_acl.changed'
+    && event.entityType === 'email_acl'
+    && event.payload.targetUserId === userId
+  );
 }
 
 function waitForWebSocketClient(): Promise<void> {

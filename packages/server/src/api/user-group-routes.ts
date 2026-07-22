@@ -134,19 +134,90 @@ async function handleUpdateGroup(
   return data(200, result.group);
 }
 
+/**
+ * Group membership feeds effective mail ACL grants (mail_acl_bindings with
+ * subject_type='group'), so a membership or group change must invalidate the
+ * affected users' loaded mailbox state — otherwise the client keeps showing
+ * mail the server would now deny until a manual reload. Mirrors the per-user
+ * email_acl.changed publish in mail-delegation-routes (no bindingId here, since
+ * this is a group/membership change, not a single binding).
+ */
+async function publishGroupAclInvalidation(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  groupId: number,
+  targetUserIds: readonly string[],
+  state: 'changed' | 'deleted',
+): Promise<void> {
+  const now = new Date().toISOString();
+  // Each target's publish is independent — allSettled so one failed delivery does not
+  // skip the remaining members' invalidations (the group/binding mutation already
+  // committed, so a revoked member must still receive its email_acl.changed even if a
+  // sibling delivery throws). Mirrors the account-deletion delegate fanout.
+  const orderedTargets = [...new Set(targetUserIds)].sort();
+  const publishResults = await Promise.allSettled(
+    orderedTargets.map((targetUserId) => (
+      ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId: principal.workspaceId,
+        entityType: 'email_acl',
+        entityId: String(groupId),
+        actorUserId: principal.userId,
+        occurredAt: now,
+        payload: { targetUserId, state },
+      }) ?? Promise.resolve()
+    )),
+  );
+  // Log a dropped invalidation rather than discarding it silently — the affected client
+  // then re-authorizes only on socket reconnect/replay (R50-3).
+  publishResults.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      console.warn(
+        `[user-group] email_acl.changed publish failed for user ${orderedTargets[index]} (group ${groupId}); mutation already committed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+      );
+    }
+  });
+}
+
 async function handleDeleteGroup(
   ports: ServerApiPorts,
   principal: AuthenticatedPrincipal,
   groupId: number,
 ): Promise<ApiResponse> {
   if (!requireAdmin(principal)) return error(403, 'forbidden', 'Adminrechte erforderlich');
-  const group = await ports.userGroups!.delete({
+  // Capture members and delete in ONE transaction (the port locks the group row and
+  // returns the members the committed cascade removed), so a member added
+  // concurrently can't be revoked without an invalidation.
+  const result = await ports.userGroups!.delete({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id: groupId,
   });
-  if (!group) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
+  if (!result) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
+  const { group, memberUserIds } = result;
 
+  // Publish the invalidation BEFORE auditing: the delete already committed, so a
+  // transient audit-port failure must not drop the events a revoked member needs to
+  // clear their loaded mailbox state.
+  await publishGroupAclInvalidation(ports, principal, groupId, memberUserIds, 'deleted');
+  // A group can hold mailbox bindings even with ZERO members (binding validation only
+  // requires the group to exist); deleting it cascades those bindings, but the
+  // per-member fanout above emits nothing, so other owner/admin delegation panels
+  // never learn the bindings are gone. Publish one member-independent invalidation —
+  // owner/admin receive every email_acl.changed regardless of targetUserId — so their
+  // panels refresh even when the deleted group had no members. (With members, each
+  // per-member event already reaches owner/admin, so this only covers the empty case.)
+  if (memberUserIds.length === 0) {
+    await ports.events?.publish({
+      type: 'email_acl.changed',
+      workspaceId: principal.workspaceId,
+      entityType: 'email_acl',
+      entityId: String(groupId),
+      actorUserId: principal.userId,
+      occurredAt: new Date().toISOString(),
+      payload: { state: 'deleted' },
+    });
+  }
   await ports.audit?.record({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -183,6 +254,7 @@ async function handleMemberRoute(
       userId,
     });
     if (!result.ok) return memberMutationError(result.code);
+    await publishGroupAclInvalidation(ports, principal, groupId, [userId], 'changed');
     return data(201, { added: true });
   }
 
@@ -196,6 +268,7 @@ async function handleMemberRoute(
       userId,
     });
     if (!result.ok) return memberMutationError(result.code);
+    await publishGroupAclInvalidation(ports, principal, groupId, [userId], 'changed');
     return data(200, { removed: true });
   }
 

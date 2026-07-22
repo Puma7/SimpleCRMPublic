@@ -1,0 +1,40 @@
+
+Running 1 test using 1 worker
+
+  x  1 tests\e2e\mail-delegation-server-client.spec.ts:101:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event (232ms)
+
+
+  1) tests\e2e\mail-delegation-server-client.spec.ts:101:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: true
+    Received: false
+
+      101 | test('profile, individual grant, and revoke travel through HTTP and the live ACL event', async ({ page, request }) => {
+      102 |   const response = await page.goto(`${webOrigin}/?apiUrl=${encodeURIComponent(apiOrigin)}`);
+    > 103 |   expect(response?.ok()).toBe(true);
+          |                          ^
+      104 |
+      105 |   await expect(page.getByRole('heading', { name: 'Mailbox-Delegation' })).toBeVisible();
+      106 |   await expect.poll(() => state.activeEventSubscriptions).toBe(1);
+        at C:\Cursor\SimpleCRM\SimpleCRMPublic\tests\e2e\mail-delegation-server-client.spec.ts:103:26
+
+    attachment #1: screenshot (image/png) ──────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\test-failed-1.png
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    Error Context: test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\error-context.md
+
+    attachment #4: trace (application/zip) ─────────────────────────────────────────────────────────
+    test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+    Usage:
+
+        pnpm exec playwright show-trace test-results\mail-delegation-server-cli-bc6f8-HTTP-and-the-live-ACL-event\trace.zip
+
+    ────────────────────────────────────────────────────────────────────────────────────────────────
+
+  1 failed
+    tests\e2e\mail-delegation-server-client.spec.ts:101:5 › profile, individual grant, and revoke travel through HTTP and the live ACL event

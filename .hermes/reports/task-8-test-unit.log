@@ -1,0 +1,8 @@
+$ jest --selectProjects unit
+Running one project: unit
+
+Test Suites: 265 passed, 265 total
+Tests:       2394 passed, 2394 total
+Snapshots:   1 passed, 1 total
+Time:        12.43 s
+Ran all test suites.

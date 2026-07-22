@@ -13,6 +13,7 @@ import {
   normalizeEmailAddress,
   parseSenderList,
   parseScheduledSendDraftStateFromValues,
+  scheduledSendClaimedAtKey,
   scheduledSendFailuresKey,
   scheduledSendLastErrorKey,
   scheduledSendStatusKey,
@@ -29,7 +30,7 @@ import {
   type SpamScoreBreakdown,
   type SenderFilterResult,
 } from '@simplecrm/core';
-import { sql as kyselySql, type Kysely, type Selectable, type Updateable } from 'kysely';
+import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 
 import {
   addressIlikePattern,
@@ -47,6 +48,8 @@ import type {
   EmailAttachmentApiPort,
   EmailAttachmentListResult,
   EmailAttachmentRecord,
+  EmailSourceAttachmentSummary,
+  EmailSourceAttachmentMeta,
   EmailAccountApiPort,
   EmailAccountListResult,
   EmailAccountMutationInput,
@@ -92,6 +95,9 @@ import {
   type RspamdLearnLabel,
 } from '../mail-security-check';
 import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
+import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
+import type { MailSqlScope } from '../mail-access/types';
+import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
 
 export type PostgresMailReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -297,7 +303,25 @@ const DEFAULT_RSPAMD_TIMEOUT_MS = 8000;
 type EmailMessageApiRow =
   & Pick<EmailMessageRow, typeof emailMessageSummaryColumns[number]>
   & Partial<Pick<EmailMessageRow, 'body_text' | 'body_html'>>
-  & { search_snippet?: string | null; thread_message_count?: number | string | null };
+  & {
+    search_snippet?: string | null;
+    thread_message_count?: number | string | null;
+    // Present only for a metadata-scoped list/search caller: false ⇒ the row's
+    // body-derived content (snippet, search snippet) must be redacted because the
+    // caller lacks mail.content.read on it. Absent ⇒ fully readable (owner/admin
+    // or content-authorized), so nothing is redacted.
+    content_readable?: boolean;
+    // Present only for a scoped list/conversation/thread/single-fetch caller: false ⇒ the
+    // row's reply_parent_message_id points to a message OUTSIDE the caller's scope, so the id
+    // must be nulled to avoid disclosing the hidden parent's existence/id. Absent ⇒ scope
+    // 'all' (owner/admin) ⇒ the id passes through unchanged.
+    reply_parent_visible?: boolean;
+    // Present only for a caller with a restricted mail.attachment.read scope (list or single
+    // fetch): false ⇒ the row falls outside that scope, so draft_attachment_paths_json (uploaded
+    // filenames + full server-side storage paths — attachment data) must be redacted. Absent ⇒
+    // attachment scope 'all'/absent (owner/admin, or attachment-authorized) ⇒ paths pass through.
+    attachment_readable?: boolean;
+  };
 
 type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
 
@@ -368,13 +392,31 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const rows = await trx
+          const scope = effectiveMailScope(input.mailScope);
+          if (scope.kind === 'none') return { items: [] };
+          let query = trx
             .selectFrom('email_accounts')
             .select(emailAccountSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
+            .where('workspace_id', '=', input.workspaceId);
+          // A folder-/message-only delegate has an empty accountIds but must still
+          // see the PARENT account (otherwise the mailbox tree can't render the
+          // authorized folder). Include accounts that own a scoped folder/message,
+          // and redact any account the delegate reaches ONLY as a parent to a
+          // minimal record so connection config never leaks.
+          const directAccountIds = scope.kind === 'restricted' ? new Set(scope.accountIds) : null;
+          if (scope.kind === 'restricted') {
+            query = query.where(parentAwareAccountVisibility(input.workspaceId, scope));
+          }
+          const rows = await query
             .orderBy('id', 'asc')
             .execute();
-          return { items: rows.map(mapEmailAccountRow) };
+          return {
+            items: rows.map((row) => (
+              directAccountIds && !directAccountIds.has(Number(row.id))
+                ? redactParentOnlyAccountRow(row)
+                : mapEmailAccountRow(row)
+            )),
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -385,7 +427,17 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
           const row = await selectEmailAccountByPublicId(trx, input.workspaceId, input.id);
-          return row ? mapEmailAccountRow(row) : null;
+          if (!row) return null;
+          // Same parent-only redaction as list(): a delegate reaching this account
+          // ONLY as the parent of a scoped folder/message (restricted scope that does
+          // not name the account directly) gets a minimal identity record — its
+          // IMAP/SMTP/OAuth/TLS/folder/vacation config never leaks through the single
+          // GET the enforcer authorized on account metadata.read. Owner/admin (scope
+          // undefined/all) and direct account-level grants keep the full record.
+          const scope = effectiveMailScope(input.mailScope);
+          const directAccountIds = scope.kind === 'restricted' ? new Set(scope.accountIds) : null;
+          const reachedOnlyAsParent = directAccountIds !== null && !directAccountIds.has(Number(row.id));
+          return reachedOnlyAsParent ? redactParentOnlyAccountRow(row) : mapEmailAccountRow(row);
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -624,7 +676,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         return { ok: false, code: 'secret_port_unavailable' };
       }
 
-      await withWorkspaceTransaction(
+      const affectedUserIds = await withWorkspaceTransaction(
         options.db,
         {
           workspaceId: input.workspaceId,
@@ -632,11 +684,66 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
           role: 'user',
         },
         async (trx) => {
+          // Lock the groups bound to this account BEFORE snapshotting members, mirroring
+          // group.delete (postgres-user-group-port). A concurrent addMember INSERT holds a
+          // FOR KEY SHARE lock on the group's user_groups row via the FK; FOR UPDATE conflicts
+          // with it, so an in-flight insert either committed before the snapshot (its member is
+          // captured) or blocks until this deletion commits (it then joins a group whose account
+          // binding is already gone — no access ever granted, no invalidation owed). Without this,
+          // under READ COMMITTED a member added between the snapshot and the cascade is excluded
+          // from affectedUserIds yet cascade-revoked, receiving no email_acl.changed (and
+          // email_account.deleted is owner/admin-only). (R52-2)
+          const boundGroupRows = await trx
+            .selectFrom('mail_acl_bindings')
+            .select('subject_group_id')
+            .distinct()
+            .where('workspace_id', '=', input.workspaceId)
+            .where('account_id', '=', Number(current.id))
+            .where('subject_group_id', 'is not', null)
+            .execute();
+          const boundGroupIds = boundGroupRows
+            .map((row) => row.subject_group_id)
+            .filter((id): id is number => id !== null);
+          if (boundGroupIds.length > 0) {
+            await trx
+              .selectFrom('user_groups')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', 'in', boundGroupIds)
+              .forUpdate()
+              .execute();
+          }
+          // Capture the delegates holding any binding on this account BEFORE the
+          // cascade delete removes those bindings, so the handler can invalidate
+          // their loaded mailbox state (the account.deleted event reaches only
+          // owners/admins). Resolves both direct user subjects and group members;
+          // disabled users are excluded (they cannot be receiving events).
+          const rows = await trx
+            .selectFrom('mail_acl_bindings as b')
+            .leftJoin('users as direct_user', (join) => join
+              .onRef('direct_user.id', '=', 'b.subject_user_id')
+              .onRef('direct_user.workspace_id', '=', 'b.workspace_id')
+              .on('direct_user.disabled_at', 'is', null))
+            .leftJoin('user_group_members as gm', (join) => join
+              .onRef('gm.group_id', '=', 'b.subject_group_id')
+              .onRef('gm.workspace_id', '=', 'b.workspace_id'))
+            .leftJoin('users as group_user', (join) => join
+              .onRef('group_user.id', '=', 'gm.user_id')
+              .onRef('group_user.workspace_id', '=', 'b.workspace_id')
+              .on('group_user.disabled_at', 'is', null))
+            .select(['direct_user.id as direct_id', 'group_user.id as group_id'])
+            .where('b.workspace_id', '=', input.workspaceId)
+            .where('b.account_id', '=', Number(current.id))
+            .execute();
           await trx
             .deleteFrom('email_accounts')
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', Number(current.id))
             .executeTakeFirst();
+          return [...new Set(
+            rows.flatMap((row) => [row.direct_id, row.group_id])
+              .filter((value): value is string => value !== null),
+          )];
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -649,7 +756,7 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         ].map((promise) => promise.catch(() => false)));
       }
 
-      return { ok: true, account: mapEmailAccountRow(current) };
+      return { ok: true, account: mapEmailAccountRow(current), affectedUserIds };
     },
   };
 }
@@ -687,11 +794,53 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           // Suche wirksam: ohne search gilt die Default-Sortierung samt
           // normalem Cursor, sonst bliebe eine normale Liste auf Seite 1
           // haengen (Cursor ignoriert + nextCursor null).
+          const messageScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          // Per-row content authorization: a caller with mail.metadata.read but not
+          // mail.content.read on a row must not receive its body-derived content or
+          // match it in search. undefined ⇒ content scope 'all'/absent ⇒ no gating
+          // (owner/admin, or content-authorized), so the query stays unchanged.
+          const contentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          // Per-row attachment authorization: extracted attachment text
+          // (email_message_attachments.content_text, and the a.search_vector that
+          // embeds it) is attachment CONTENT — gate search matches on it by the
+          // caller's independent mail.attachment.read scope, so a content.read
+          // delegate lacking attachment.read cannot probe attachment bodies via
+          // search. Attachment FILENAMES stay searchable (message metadata via
+          // attachments_json / a.filename_display). undefined ⇒ attachment scope
+          // 'all'/absent ⇒ no gating (owner/admin, or attachment-authorized).
+          const attachmentPredicate = mailScopePredicate(input.mailAttachmentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          const cursorScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'cursor_message.account_id',
+            folderId: 'cursor_message.folder_id',
+            messageId: 'cursor_message.id',
+          });
+          const threadCountScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'thread_count_message.account_id',
+            folderId: 'thread_count_message.folder_id',
+            messageId: 'thread_count_message.id',
+          });
           const relevanceSort = input.sort === 'relevance' && Boolean(search);
-          const effectiveCursor = relevanceSort ? undefined : input.cursor;
+          const requestedCursor = relevanceSort ? undefined : input.cursor;
+          const effectiveCursor =
+            requestedCursor !== undefined
+              && await isMessageCursorVisible(trx, input.workspaceId, requestedCursor, cursorScopePredicate)
+              ? requestedCursor
+              : undefined;
           const priorityCursor =
             effectiveCursor !== undefined && input.sort === 'priority'
-              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor)
+              ? await fetchPriorityCursorAnchor(trx, input.workspaceId, effectiveCursor, cursorScopePredicate)
               : undefined;
 
           const buildQuery = (page: { limit: number; offset: number | undefined; withCursor?: boolean }) => {
@@ -702,13 +851,50 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               // expand chevron only for real multi-message threads (every row
               // carries a thread_id since backfill). PK lookup per row — cheap.
               .select((eb) => eb
-                .selectFrom('email_threads')
-                .select('email_threads.message_count')
-                .whereRef('email_threads.id', '=', 'email_messages.thread_id')
-                .where('email_threads.workspace_id', '=', input.workspaceId)
+                .selectFrom('email_messages as thread_count_message')
+                .select(({ fn }) => fn.count<number>('thread_count_message.id').as('message_count'))
+                .whereRef('thread_count_message.thread_id', '=', 'email_messages.thread_id')
+                .where('thread_count_message.workspace_id', '=', input.workspaceId)
+                .$if(Boolean(threadCountScopePredicate), (threadQuery) => (
+                  threadQuery.where(threadCountScopePredicate!)
+                ))
                 .as('thread_message_count'))
-              .where('workspace_id', '=', input.workspaceId)
-              .limit(page.limit);
+              .where('workspace_id', '=', input.workspaceId);
+
+            if (contentPredicate) {
+              query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+            }
+            if (attachmentPredicate) {
+              // draft_attachment_paths_json (uploaded filenames + full server-side storage
+              // paths) is attachment data, so expose per row WHETHER the caller's independent
+              // mail.attachment.read scope covers it; the mapper redacts the paths otherwise.
+              // A content.read delegate lacking attachment.read thus cannot read draft
+              // attachment paths through the list. undefined ⇒ attachment scope 'all'/absent ⇒
+              // column absent ⇒ paths returned unchanged (owner/admin, or attachment-authorized).
+              query = query.select(kyselySql<boolean>`(${attachmentPredicate})`.as('attachment_readable'));
+            }
+            const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+              accountId: 'reply_parent.account_id',
+              folderId: 'reply_parent.folder_id',
+              messageId: 'reply_parent.id',
+            });
+            if (replyParentScopePredicate) {
+              // reply_parent_message_id may point to a message the scoped caller cannot see
+              // (cross-account replies are allowed); expose only WHETHER the parent is
+              // scope-visible so the mapper can null the id otherwise. Scope 'all' ⇒
+              // predicate undefined ⇒ column absent ⇒ id returned unchanged (owner/admin).
+              query = query.select(kyselySql<boolean>`(
+                email_messages.reply_parent_message_id is null
+                or exists (
+                  select 1 from email_messages reply_parent
+                  where reply_parent.id = email_messages.reply_parent_message_id
+                    and reply_parent.workspace_id = email_messages.workspace_id
+                    and (${replyParentScopePredicate})
+                )
+              )`.as('reply_parent_visible'));
+            }
+            if (messageScopePredicate) query = query.where(messageScopePredicate);
+            query = query.limit(page.limit);
 
             if (page.offset !== undefined) query = query.offset(page.offset);
             if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
@@ -741,6 +927,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 effectiveCursor,
                 input.sort,
                 effectiveListView,
+                cursorScopePredicate,
                 priorityCursor,
               );
             }
@@ -752,9 +939,25 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               // ts_rank_cd liefert 0 fuer Vektoren ohne Voll-Match — Anhang-
               // only-/Teiltreffer bleiben in der Ergebnismenge (WHERE ist
               // OR-basiert) und sortieren ans Ende, danach Datum.
+              // email_messages.search_vector blends metadata with snippet/body_text, so
+              // ranking a content-redacted row by it would let a term's occurrences in the
+              // HIDDEN body reorder metadata-matched rows — a content-derived signal. For
+              // a redacted row (contentPredicate false) rank instead by a metadata-only
+              // vector so only visible fields decide the order; content-readable rows keep
+              // the full-vector rank. undefined contentPredicate ⇒ full vector unchanged.
+              const rankVector = contentPredicate
+                ? kyselySql`CASE WHEN (${contentPredicate}) THEN email_messages.search_vector ELSE to_tsvector('simple',
+                    coalesce(email_messages.subject, '') || ' ' ||
+                    coalesce(email_messages.from_json::text, '') || ' ' ||
+                    coalesce(email_messages.to_json::text, '') || ' ' ||
+                    coalesce(email_messages.cc_json::text, '') || ' ' ||
+                    coalesce(email_messages.bcc_json::text, '') || ' ' ||
+                    coalesce(email_messages.ticket_code, '') || ' ' ||
+                    coalesce(email_messages.attachments_json::text, '')) END`
+                : kyselySql`email_messages.search_vector`;
               return query
                 .orderBy(
-                  kyselySql`ts_rank_cd(email_messages.search_vector, to_tsquery('simple', ${tsQueryText}))`,
+                  kyselySql`ts_rank_cd(${rankVector}, to_tsquery('simple', ${tsQueryText}))`,
                   'desc',
                 )
                 .orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc')
@@ -778,6 +981,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
                 query,
                 tsQueryTokens,
                 parsed ? ilikeTextNeedles(parsed) : [],
+                contentPredicate,
+                attachmentPredicate,
               );
               // Highlight per OR-Query, damit auch Teiltreffer markiert werden.
               // Sentinel-Codepoints werden aus dem Quelltext gestrippt, bevor
@@ -791,11 +996,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               // body_text mitselektieren, damit der JS-Snippet-Builder wie im
               // Desktop auch Body-Treffer zeigen kann (Record bleibt body-frei).
               query = query.select('body_text');
-              query = applyMessageIlikeFilter(query, parsed);
+              query = applyMessageIlikeFilter(query, parsed, contentPredicate, attachmentPredicate);
             } else if (mode === 'regex' && search) {
               // Regex-Modus liefert bewusst kein search_snippet (Paritaet zur
               // Desktop-App ist hier nicht noetig; Highlight nur fuer fts/like).
-              query = applyMessageSearchFilter(query, search, 'regex');
+              query = applyMessageSearchFilter(query, search, 'regex', contentPredicate, attachmentPredicate);
             }
             query = orderQuery(query, mode);
             return (await query.execute()) as EmailMessageApiRow[];
@@ -859,10 +1064,13 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const items = pageRows.map((row) => {
             const record = mapEmailMessageRow(row, false);
             if (likeNeedles.length > 0 && record.searchSnippet === undefined) {
-              const snippet =
-                buildLikeSearchSnippet(row.body_text ?? null, likeNeedles) ??
-                buildLikeSearchSnippet(row.snippet, likeNeedles) ??
-                buildLikeSearchSnippet(row.subject, likeNeedles);
+              // A metadata-only caller (content_readable===false) must not get a
+              // body/snippet-derived preview — restrict the fallback to the subject.
+              const snippet = row.content_readable === false
+                ? buildLikeSearchSnippet(row.subject, likeNeedles)
+                : (buildLikeSearchSnippet(row.body_text ?? null, likeNeedles) ??
+                  buildLikeSearchSnippet(row.snippet, likeNeedles) ??
+                  buildLikeSearchSnippet(row.subject, likeNeedles));
               if (snippet) return { ...record, searchSnippet: snippet };
             }
             return record;
@@ -888,13 +1096,46 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await trx
+          // A restricted delegate reaches the single-message fetch with mail.content.read on
+          // THIS message (the route's message_lookup resource check), but the row it echoes
+          // still carries reply_parent_message_id — which may point to a message OUTSIDE the
+          // caller's scope (cross-account replies are allowed) — and draft_attachment_paths_json
+          // (uploaded filenames + full server-side storage paths). Compute the same per-row
+          // redaction flags the list query does so mapEmailMessageRow can null a scope-invisible
+          // reply-parent id (R50-1) and redact the draft attachment paths for a caller lacking
+          // mail.attachment.read (R50-2). Owner/admin pass scope 'all' (the wrapper is skipped) ⇒
+          // both predicates undefined ⇒ columns absent ⇒ nothing redacted.
+          const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'reply_parent.account_id',
+            folderId: 'reply_parent.folder_id',
+            messageId: 'reply_parent.id',
+          });
+          const attachmentReadablePredicate = mailScopePredicate(input.mailAttachmentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          let query = trx
             .selectFrom('email_messages')
             .select(input.includeBody ? emailMessageDetailColumns : emailMessageSummaryColumns)
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
-          return row ? mapEmailMessageRow(row, input.includeBody) : null;
+            .where('id', '=', input.id);
+          if (replyParentScopePredicate) {
+            query = query.select(kyselySql<boolean>`(
+              email_messages.reply_parent_message_id is null
+              or exists (
+                select 1 from email_messages reply_parent
+                where reply_parent.id = email_messages.reply_parent_message_id
+                  and reply_parent.workspace_id = email_messages.workspace_id
+                  and (${replyParentScopePredicate})
+              )
+            )`.as('reply_parent_visible'));
+          }
+          if (attachmentReadablePredicate) {
+            query = query.select(kyselySql<boolean>`(${attachmentReadablePredicate})`.as('attachment_readable'));
+          }
+          const row = await query.executeTakeFirst();
+          return row ? mapEmailMessageRow(row as EmailMessageApiRow, input.includeBody) : null;
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -912,14 +1153,21 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId);
+          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
           if (!isLocalDraftUid(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
+          if (claimedConflict) return claimedConflict;
           const bodyText = input.values.bodyText ?? current.body_text ?? '';
           const snippet = bodyText.trim()
             ? (bodyText.length > 220 ? `${bodyText.slice(0, 217)}...` : bodyText)
             : current.snippet;
-          const row = await trx
+          const draftContentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'account_id',
+            folderId: 'folder_id',
+            messageId: 'id',
+          });
+          const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
               subject: input.values.subject ?? current.subject,
@@ -939,63 +1187,85 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               ...(input.values.trackingOverride === undefined ? {} : {
                 tracking_override: input.values.trackingOverride,
               }),
+              // Editing draft content invalidates any pending (unclaimed) scheduled
+              // send: otherwise an editor with mail.draft.edit but not mail.send could
+              // replace the recipients/body/attachments of a draft another user
+              // scheduled, and the ticker would transmit the editor's content under
+              // the scheduler's mail.send provenance. Re-scheduling then goes back
+              // through the mail.send-gated /scheduled-send route. Claimed sends were
+              // already rejected above by assertNoActiveScheduledSendClaimTx, so this
+              // only clears not-yet-claimed schedules (null -> null when none).
+              scheduled_send_at: null,
+              scheduled_send_actor_user_id: null,
+              scheduled_send_trusted_service_principal: null,
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
-            .returning(emailMessageDetailColumns)
-            .executeTakeFirstOrThrow();
+            .returning(emailMessageDetailColumns);
+          const row = await (draftContentPredicate
+            ? composeDraftUpdate.returning(kyselySql<boolean>`(${draftContentPredicate})`.as('content_readable'))
+            : composeDraftUpdate
+          ).executeTakeFirstOrThrow();
           return { ok: true as const, message: mapEmailMessageRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
       );
     },
     async scheduleDraftSend(input) {
-      if (input.sendAt && options.outboundValidation) {
-        const draftForValidation = await withWorkspaceTransaction(
-          options.db,
-          { workspaceId: input.workspaceId, role: 'system' },
-          async (trx) => selectLocalDraftForMutation(trx, input.workspaceId, input.messageId),
-          { applySession: options.applyWorkspaceSession },
-        );
-        if (!draftForValidation) return { ok: false as const, reason: 'not_found' as const };
-        if (!isSchedulableLocalDraft(draftForValidation)) {
-          return { ok: false as const, reason: 'not_local_draft' as const };
-        }
-        const validation = await options.outboundValidation.validate({
-          workspaceId: input.workspaceId,
-          actorUserId: 'system',
-          values: {
-            messageId: input.messageId,
-            subject: draftForValidation.subject?.trim() || '(Ohne Betreff)',
-            bodyText: draftForValidation.body_text ?? '',
-            bodyHtml: draftForValidation.body_html,
-            to: recipientFieldFromStoredJson(draftForValidation.to_json),
-            cc: recipientFieldFromStoredJson(draftForValidation.cc_json) || undefined,
-            bcc: recipientFieldFromStoredJson(draftForValidation.bcc_json) || undefined,
-            attachmentCount: countDraftAttachmentPaths(draftForValidation.draft_attachment_paths_json),
-          },
-        });
-        if (!validation.allowed) {
-          return {
-            ok: false as const,
-            reason: 'outbound_blocked' as const,
-            message: validation.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
-          };
-        }
-      }
-
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId);
+          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
           if (!isSchedulableLocalDraft(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
+          if (claimedConflict) return claimedConflict;
+          if (input.sendAt && options.outboundValidation) {
+            const validationValues = {
+              messageId: input.messageId,
+              subject: current.subject?.trim() || '(Ohne Betreff)',
+              bodyText: current.body_text ?? '',
+              bodyHtml: current.body_html,
+              to: recipientFieldFromStoredJson(current.to_json),
+              cc: recipientFieldFromStoredJson(current.cc_json) || undefined,
+              bcc: recipientFieldFromStoredJson(current.bcc_json) || undefined,
+              attachmentCount: countDraftAttachmentPaths(current.draft_attachment_paths_json),
+            };
+            const validation = await options.outboundValidation.validate({
+              workspaceId: input.workspaceId,
+              actorUserId: input.actorUserId,
+              persistence: 'none',
+              values: validationValues,
+            });
+            if (!validation.allowed) {
+              return {
+                ok: false as const,
+                reason: 'outbound_blocked' as const,
+                message: validation.reason ?? 'Ausgangspruefung wuerde den Versand blockieren',
+              };
+            }
+            if (validation.manualApprovalPersistenceRequired) {
+              await persistManualOutboundApproval(trx, {
+                workspaceId: input.workspaceId,
+                draftId: input.messageId,
+                subject: validationValues.subject,
+                bodyText: validationValues.bodyText,
+                bodyHtml: validationValues.bodyHtml ?? null,
+                to: validationValues.to,
+                cc: validationValues.cc ?? null,
+                bcc: validationValues.bcc ?? null,
+                draftSnapshot: current,
+              });
+            }
+          }
           const row = await trx
             .updateTable('email_messages')
             .set({
               scheduled_send_at: input.sendAt,
+              scheduled_send_actor_user_id: input.sendAt ? input.actorUserId : null,
+              scheduled_send_trusted_service_principal: null,
               outbound_hold: false,
               outbound_block_reason: null,
               updated_at: new Date(),
@@ -1042,14 +1312,18 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId);
+          const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
           if (!isSchedulableLocalDraft(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
+          if (claimedConflict) return claimedConflict;
           await clearScheduledSendDraftMeta(trx, input.workspaceId, input.messageId);
           const row = await trx
             .updateTable('email_messages')
             .set({
               scheduled_send_at: new Date(),
+              scheduled_send_actor_user_id: input.actorUserId,
+              scheduled_send_trusted_service_principal: null,
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -1253,10 +1527,44 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const threadId = input.threadId.trim();
           if (!threadId) return { items: [], nextCursor: null };
           const canonicalThreadId = await resolveCanonicalThreadId(trx, input.workspaceId, threadId);
-          const rows = await trx
+          let query = trx
             .selectFrom('email_messages')
             .select(emailMessageSummaryColumns)
-            .where('workspace_id', '=', input.workspaceId)
+            .where('workspace_id', '=', input.workspaceId);
+          const scopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          const contentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+          });
+          if (contentPredicate) {
+            query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+          }
+          const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+            accountId: 'reply_parent.account_id',
+            folderId: 'reply_parent.folder_id',
+            messageId: 'reply_parent.id',
+          });
+          if (replyParentScopePredicate) {
+            // A reply parent can live outside the scoped caller's view (cross-account
+            // replies are allowed); expose only whether it is scope-visible so the mapper
+            // can null the id otherwise. Scope 'all' ⇒ undefined ⇒ id unchanged.
+            query = query.select(kyselySql<boolean>`(
+              email_messages.reply_parent_message_id is null
+              or exists (
+                select 1 from email_messages reply_parent
+                where reply_parent.id = email_messages.reply_parent_message_id
+                  and reply_parent.workspace_id = email_messages.workspace_id
+                  and (${replyParentScopePredicate})
+              )
+            )`.as('reply_parent_visible'));
+          }
+          if (scopePredicate) query = query.where(scopePredicate);
+          const rows = await query
             .where(kyselySql<boolean>`(
               thread_id = ${canonicalThreadId}
               OR thread_id IN (
@@ -1360,14 +1668,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .select(['id', 'uid'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
+            .forUpdate()
             .executeTakeFirst();
           if (!row) return { ok: false as const, reason: 'not_found' as const };
           if (Number(row.uid) >= 0) return { ok: false as const, reason: 'not_local_draft' as const };
-          const result = await deleteLocalDraftRows(trx, {
+          return deleteLocalDraftRows(trx, {
             workspaceId: input.workspaceId,
             messageIds: [input.messageId],
           });
-          return { ok: true as const, count: result.count };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -1588,7 +1896,12 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           const rspamdLearningRequests: RspamdLearningRequest[] = [];
 
           const now = new Date();
-          const updated = await trx
+          const contentPredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'account_id',
+            folderId: 'folder_id',
+            messageId: 'id',
+          });
+          const spamStatusUpdate = trx
             .updateTable('email_messages')
             .set({
               ...spamStatusPatch(values.status as 'clean' | 'review' | 'spam', current.folder_kind),
@@ -1597,8 +1910,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
-            .returning(emailMessageSummaryColumns)
-            .executeTakeFirstOrThrow();
+            .returning(emailMessageSummaryColumns);
+          const updated = await (contentPredicate
+            ? spamStatusUpdate.returning(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'))
+            : spamStatusUpdate
+          ).executeTakeFirstOrThrow();
 
           if (values.train !== false) {
             const label = learningLabelForSpamStatusTransition(
@@ -2086,8 +2402,42 @@ async function selectConversationMessages(
     .selectFrom('email_messages')
     .select(emailMessageSummaryColumns)
     .where('workspace_id', '=', input.workspaceId)
-    .where('soft_deleted', '=', false)
-    .limit(limit);
+    .where('soft_deleted', '=', false);
+
+  const scopePredicate = mailScopePredicate(input.mailScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  const contentPredicate = mailScopePredicate(input.mailContentScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  if (contentPredicate) {
+    query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
+  }
+  const replyParentScopePredicate = mailScopePredicate(input.mailScope, {
+    accountId: 'reply_parent.account_id',
+    folderId: 'reply_parent.folder_id',
+    messageId: 'reply_parent.id',
+  });
+  if (replyParentScopePredicate) {
+    // A reply parent can live outside the scoped caller's view (cross-account replies are
+    // allowed); expose only whether it is scope-visible so the mapper can null the id
+    // otherwise. Scope 'all' ⇒ undefined ⇒ id unchanged (owner/admin).
+    query = query.select(kyselySql<boolean>`(
+      email_messages.reply_parent_message_id is null
+      or exists (
+        select 1 from email_messages reply_parent
+        where reply_parent.id = email_messages.reply_parent_message_id
+          and reply_parent.workspace_id = email_messages.workspace_id
+          and (${replyParentScopePredicate})
+      )
+    )`.as('reply_parent_visible'));
+  }
+  if (scopePredicate) query = query.where(scopePredicate);
+  query = query.limit(limit);
 
   if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
 
@@ -2205,9 +2555,25 @@ async function deleteLocalDraftRows(
     workspaceId: string;
     messageIds: readonly number[];
   },
-): Promise<{ count: number }> {
+): Promise<
+  | { ok: true; count: number }
+  | { ok: false; reason: 'scheduled_send_claimed'; message: string }
+> {
   const ids = normalizeMessageIdList(input.messageIds);
-  if (ids.length === 0) return { count: 0 };
+  if (ids.length === 0) return { ok: true, count: 0 };
+  const drafts = await trx
+    .selectFrom('email_messages')
+    .select('id')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', 'in', ids)
+    .where('uid', '<', 0)
+    .orderBy('id', 'asc')
+    .forUpdate()
+    .execute();
+  for (const draft of drafts) {
+    const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, Number(draft.id));
+    if (claimedConflict) return claimedConflict;
+  }
   const rows = await trx
     .deleteFrom('email_messages')
     .where('workspace_id', '=', input.workspaceId)
@@ -2215,7 +2581,7 @@ async function deleteLocalDraftRows(
     .where('uid', '<', 0)
     .returning('id')
     .execute();
-  return { count: rows.length };
+  return { ok: true, count: rows.length };
 }
 
 async function bulkSetSpamStatusRows(
@@ -2307,6 +2673,7 @@ async function linkMessageCustomer(
     workspaceId: string;
     messageId: number;
     customerId: number | null;
+    mailContentScope?: MailSqlScope;
   },
 ): Promise<NonNullable<EmailMessageApiPort['linkCustomer']> extends (arg: any) => Promise<infer R> ? R : never> {
   if (!Number.isSafeInteger(input.messageId) || input.messageId <= 0) {
@@ -2327,7 +2694,12 @@ async function linkMessageCustomer(
     customerSourceSqliteId = Number(customer.source_sqlite_id);
   }
 
-  const updated = await trx
+  const customerLinkContentPredicate = mailScopePredicate(input.mailContentScope, {
+    accountId: 'account_id',
+    folderId: 'folder_id',
+    messageId: 'id',
+  });
+  const customerLinkUpdate = trx
     .updateTable('email_messages')
     .set({
       customer_id: input.customerId,
@@ -2336,8 +2708,11 @@ async function linkMessageCustomer(
     })
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
-    .returning(emailMessageSummaryColumns)
-    .executeTakeFirst();
+    .returning(emailMessageSummaryColumns);
+  const updated = await (customerLinkContentPredicate
+    ? customerLinkUpdate.returning(kyselySql<boolean>`(${customerLinkContentPredicate})`.as('content_readable'))
+    : customerLinkUpdate
+  ).executeTakeFirst();
   return updated
     ? { ok: true as const, message: mapEmailMessageRow(updated, false) }
     : { ok: false as const, reason: 'not_found' as const };
@@ -2468,6 +2843,7 @@ async function assignMessageTeamMember(
     workspaceId: string;
     messageId: number;
     teamMemberId: string | null;
+    mailContentScope?: MailSqlScope;
   },
 ): Promise<NonNullable<EmailMessageApiPort['assign']> extends (arg: any) => Promise<infer R> ? R : never> {
   if (!Number.isSafeInteger(input.messageId) || input.messageId <= 0) {
@@ -2487,7 +2863,12 @@ async function assignMessageTeamMember(
     if (!member) return { ok: false as const, reason: 'team_member_not_found' as const };
   }
 
-  const updated = await trx
+  const assignContentPredicate = mailScopePredicate(input.mailContentScope, {
+    accountId: 'account_id',
+    folderId: 'folder_id',
+    messageId: 'id',
+  });
+  const assignUpdate = trx
     .updateTable('email_messages')
     .set({
       assigned_to: teamMemberId,
@@ -2495,8 +2876,11 @@ async function assignMessageTeamMember(
     })
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
-    .returning(emailMessageSummaryColumns)
-    .executeTakeFirst();
+    .returning(emailMessageSummaryColumns);
+  const updated = await (assignContentPredicate
+    ? assignUpdate.returning(kyselySql<boolean>`(${assignContentPredicate})`.as('content_readable'))
+    : assignUpdate
+  ).executeTakeFirst();
   return updated
     ? { ok: true as const, message: mapEmailMessageRow(updated, false) }
     : { ok: false as const, reason: 'not_found' as const };
@@ -2717,6 +3101,7 @@ async function selectMailFolderCounts(
   input: {
     workspaceId: string;
     accountId?: number;
+    mailScope?: Parameters<NonNullable<EmailMessageApiPort['getFolderCounts']>>[0]['mailScope'];
   },
 ): Promise<EmailMailFolderCounts> {
   let query = trx
@@ -2799,6 +3184,12 @@ async function selectMailFolderCounts(
     ])
     .where('workspace_id', '=', input.workspaceId);
 
+  const scopePredicate = mailScopePredicate(input.mailScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+  });
+  if (scopePredicate) query = query.where(scopePredicate);
   if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
   const row = await query.executeTakeFirst();
   return mapEmailMailFolderCountsRow(row);
@@ -2924,12 +3315,28 @@ type PriorityCursorAnchor = Readonly<{
   sortDate: Date | null;
 }>;
 
+async function isMessageCursorVisible(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  cursor: number,
+  cursorScopePredicate: RawBuilder<boolean> | undefined,
+): Promise<boolean> {
+  let query = trx
+    .selectFrom('email_messages as cursor_message')
+    .select('cursor_message.id')
+    .where('cursor_message.workspace_id', '=', workspaceId)
+    .where('cursor_message.id', '=', cursor);
+  if (cursorScopePredicate) query = query.where(cursorScopePredicate);
+  return Boolean(await query.executeTakeFirst());
+}
+
 async function fetchPriorityCursorAnchor(
   trx: WorkspaceTransaction,
   workspaceId: string,
   cursor: number,
+  cursorScopePredicate: RawBuilder<boolean> | undefined,
 ): Promise<PriorityCursorAnchor | null> {
-  const row = await trx
+  let query = trx
     .selectFrom('email_messages')
     .select([
       'id',
@@ -2937,8 +3344,17 @@ async function fetchPriorityCursorAnchor(
       messagePriorityRankSql.as('priority_rank'),
     ])
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', cursor)
-    .executeTakeFirst();
+    .where('id', '=', cursor);
+  if (cursorScopePredicate) {
+    query = query.where(kyselySql<boolean>`exists (
+      select 1
+      from email_messages cursor_message
+      where cursor_message.workspace_id = ${workspaceId}::uuid
+        and cursor_message.id = email_messages.id
+        and ${cursorScopePredicate}
+    )`);
+  }
+  const row = await query.executeTakeFirst();
   if (!row) return null;
   return {
     id: row.id,
@@ -2953,9 +3369,11 @@ function applyMessageCursor(
   cursor: number | undefined,
   sort: Parameters<EmailMessageApiPort['list']>[0]['sort'],
   view: Parameters<EmailMessageApiPort['list']>[0]['view'],
+  cursorScopePredicate: RawBuilder<boolean> | undefined,
   priorityCursor?: PriorityCursorAnchor | null,
 ): any {
   if (cursor === undefined) return query;
+  const scopedCursor = cursorScopePredicate ?? kyselySql<boolean>`true`;
   if (view === 'snoozed') {
     // Must stay aligned with applyMessageListOrder: snoozed_until ASC, id DESC tie-break.
     return query.where(kyselySql<boolean>`EXISTS (
@@ -2963,6 +3381,7 @@ function applyMessageCursor(
       FROM email_messages cursor_message
       WHERE cursor_message.workspace_id = ${workspaceId}::uuid
         AND cursor_message.id = ${cursor}
+        AND ${scopedCursor}
         AND (
           email_messages.snoozed_until > cursor_message.snoozed_until
           OR (
@@ -2978,6 +3397,7 @@ function applyMessageCursor(
       FROM email_messages cursor_message
       WHERE cursor_message.workspace_id = ${workspaceId}::uuid
         AND cursor_message.id = ${cursor}
+        AND ${scopedCursor}
         AND (
           (${cursorMessageSortDateSql} IS NOT NULL AND ${messageSortDateSql} IS NULL)
           OR (
@@ -3031,6 +3451,7 @@ function applyMessageCursor(
     FROM email_messages cursor_message
     WHERE cursor_message.workspace_id = ${workspaceId}::uuid
       AND cursor_message.id = ${cursor}
+      AND ${scopedCursor}
       AND (
         (${cursorMessageSortDateSql} IS NULL AND ${messageSortDateSql} IS NOT NULL)
         OR (
@@ -3124,19 +3545,76 @@ function applyMessageFtsFilter(
   query: any,
   tsQueryTokens: readonly string[],
   tokenIlikePatterns: readonly string[],
+  contentPredicate?: RawBuilder<boolean>,
+  attachmentPredicate?: RawBuilder<boolean>,
 ): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
   tsQueryTokens.forEach((token, index) => {
     // Leerer Fallback matcht nichts (ILIKE '' trifft nur den Leerstring).
     const tokenPattern = tokenIlikePatterns[index] ?? '';
+    if (!contentPredicate && !attachmentPredicate) {
+      // No content or attachment gating (owner/admin, or a caller authorized for
+      // both across all rows): the filter stays exactly as before.
+      query = query.where(rawSql<boolean>`(
+        email_messages.search_vector @@ to_tsquery('simple', ${token})
+        OR EXISTS (
+          SELECT 1 FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+            AND a.search_vector @@ to_tsquery('simple', ${token})
+        )
+        OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+        OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+        OR EXISTS (
+          SELECT 1 FROM customers c
+          WHERE c.workspace_id = email_messages.workspace_id
+            AND c.id = email_messages.customer_id
+            AND (
+              c.name ILIKE ${tokenPattern} ESCAPE '\\'
+              OR c.first_name ILIKE ${tokenPattern} ESCAPE '\\'
+              OR c.company ILIKE ${tokenPattern} ESCAPE '\\'
+              OR c.email ILIKE ${tokenPattern} ESCAPE '\\'
+            )
+        )
+      )`);
+      return;
+    }
+    // Content gating: email_messages.search_vector blends metadata
+    // (subject/from/to/cc/ticket) with content (snippet/body_text), so the whole
+    // message-vector match is allowed only on content-readable rows
+    // (contentPredicate). For redacted rows, substitute a metadata-only ILIKE so
+    // subject/address/ticket search still works without letting body content decide
+    // which rows return. undefined contentPredicate ⇒ content authorized for all ⇒
+    // the message vector matches unconditionally.
+    const messageVectorClause = contentPredicate
+      ? rawSql<boolean>`(
+        (${contentPredicate} AND email_messages.search_vector @@ to_tsquery('simple', ${token}))
+        OR (NOT (${contentPredicate}) AND (
+          email_messages.subject ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.from_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.to_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.cc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
+          OR email_messages.ticket_code ILIKE ${tokenPattern} ESCAPE '\\'
+        ))
+      )`
+      : rawSql<boolean>`email_messages.search_vector @@ to_tsquery('simple', ${token})`;
+    // Attachment gating: a.search_vector embeds extracted attachment content
+    // (content_text) alongside the filename, so the attachment-vector match is
+    // attachment CONTENT — allowed only on rows within the caller's
+    // mail.attachment.read scope (attachmentPredicate). undefined ⇒ authorized for
+    // all ⇒ unconditional. Filenames stay matchable via the attachments_json clause.
+    const attachmentExists = rawSql<boolean>`EXISTS (
+      SELECT 1 FROM email_message_attachments a
+      WHERE a.workspace_id = email_messages.workspace_id
+        AND a.message_id = email_messages.id
+        AND a.search_vector @@ to_tsquery('simple', ${token})
+    )`;
+    const attachmentVectorClause = attachmentPredicate
+      ? rawSql<boolean>`(${attachmentPredicate} AND ${attachmentExists})`
+      : attachmentExists;
     query = query.where(rawSql<boolean>`(
-      email_messages.search_vector @@ to_tsquery('simple', ${token})
-      OR EXISTS (
-        SELECT 1 FROM email_message_attachments a
-        WHERE a.workspace_id = email_messages.workspace_id
-          AND a.message_id = email_messages.id
-          AND a.search_vector @@ to_tsquery('simple', ${token})
-      )
+      ${messageVectorClause}
+      OR ${attachmentVectorClause}
       OR email_messages.attachments_json::text ILIKE ${tokenPattern} ESCAPE '\\'
       OR email_messages.bcc_json::text ILIKE ${tokenPattern} ESCAPE '\\'
       OR EXISTS (
@@ -3161,13 +3639,67 @@ function applyMessageFtsFilter(
  * (keine email_message_attachments-Zeile, s. applyMessageFtsFilter); das
  * Customer-EXISTS existiert seit R11 auch im fts-Zweig.
  */
-function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any {
+function applyMessageIlikeFilter(
+  query: any,
+  parsed: ParsedMailSearchQuery,
+  contentPredicate?: RawBuilder<boolean>,
+  attachmentPredicate?: RawBuilder<boolean>,
+): any {
   const { sql: rawSql } = require('kysely') as typeof import('kysely');
   for (const pattern of ilikeTextNeedles(parsed)) {
+    if (!contentPredicate && !attachmentPredicate) {
+      query = query.where(rawSql<boolean>`(
+        subject ILIKE ${pattern} ESCAPE '\\'
+        OR snippet ILIKE ${pattern} ESCAPE '\\'
+        OR body_text ILIKE ${pattern} ESCAPE '\\'
+        OR from_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR to_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR bcc_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR ticket_code ILIKE ${pattern} ESCAPE '\\'
+        OR attachments_json::text ILIKE ${pattern} ESCAPE '\\'
+        OR EXISTS (
+          SELECT 1 FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+            AND (
+              a.filename_display ILIKE ${pattern} ESCAPE '\\'
+              OR a.content_text ILIKE ${pattern} ESCAPE '\\'
+            )
+        )
+        OR EXISTS (
+          SELECT 1 FROM customers c
+          WHERE c.workspace_id = email_messages.workspace_id
+            AND c.id = email_messages.customer_id
+            AND (
+              c.name ILIKE ${pattern} ESCAPE '\\'
+              OR c.first_name ILIKE ${pattern} ESCAPE '\\'
+              OR c.company ILIKE ${pattern} ESCAPE '\\'
+              OR c.email ILIKE ${pattern} ESCAPE '\\'
+            )
+        )
+      )`);
+      continue;
+    }
+    // Content/attachment gating: snippet & body_text match only on content-readable
+    // rows (contentPredicate); attachment content_text matches only on
+    // attachment-readable rows (attachmentPredicate). subject/addresses/ticket and
+    // attachment FILENAMES stay matchable for everyone so metadata search is
+    // unaffected. An undefined predicate ⇒ authorized for all ⇒ that clause is
+    // unconditional.
+    const snippetClause = contentPredicate
+      ? rawSql<boolean>`(${contentPredicate} AND snippet ILIKE ${pattern} ESCAPE '\\')`
+      : rawSql<boolean>`snippet ILIKE ${pattern} ESCAPE '\\'`;
+    const bodyClause = contentPredicate
+      ? rawSql<boolean>`(${contentPredicate} AND body_text ILIKE ${pattern} ESCAPE '\\')`
+      : rawSql<boolean>`body_text ILIKE ${pattern} ESCAPE '\\'`;
+    const attachmentContentClause = attachmentPredicate
+      ? rawSql<boolean>`(${attachmentPredicate} AND a.content_text ILIKE ${pattern} ESCAPE '\\')`
+      : rawSql<boolean>`a.content_text ILIKE ${pattern} ESCAPE '\\'`;
     query = query.where(rawSql<boolean>`(
       subject ILIKE ${pattern} ESCAPE '\\'
-      OR snippet ILIKE ${pattern} ESCAPE '\\'
-      OR body_text ILIKE ${pattern} ESCAPE '\\'
+      OR ${snippetClause}
+      OR ${bodyClause}
       OR from_json::text ILIKE ${pattern} ESCAPE '\\'
       OR to_json::text ILIKE ${pattern} ESCAPE '\\'
       OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
@@ -3180,7 +3712,7 @@ function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any
           AND a.message_id = email_messages.id
           AND (
             a.filename_display ILIKE ${pattern} ESCAPE '\\'
-            OR a.content_text ILIKE ${pattern} ESCAPE '\\'
+            OR ${attachmentContentClause}
           )
       )
       OR EXISTS (
@@ -3201,7 +3733,13 @@ function applyMessageIlikeFilter(query: any, parsed: ParsedMailSearchQuery): any
 
 const TS_HEADLINE_OPTIONS = `StartSel=${SEARCH_MARK_START}, StopSel=${SEARCH_MARK_END}, MaxWords=12, MinWords=6`;
 
-function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'like' | 'regex'): any {
+function applyMessageSearchFilter(
+  query: any,
+  search: string,
+  mode: 'fts' | 'like' | 'regex',
+  contentPredicate?: RawBuilder<boolean>,
+  attachmentPredicate?: RawBuilder<boolean>,
+): any {
   if (mode === 'regex') {
     const parsed = parseRegexSearch(search);
     if (parsed) {
@@ -3211,7 +3749,7 @@ function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'lik
       // extrahierten Text der Attachment-Zeilen (pro Anhang per left() auf
       // 20k Zeichen gedeckelt) — sonst verschwinden /invoice\.pdf/i-Treffer
       // im Regex-Modus. bcc_json ergaenzt die Desktop-Feldliste.
-      return query.where(kyselySql<boolean>`(
+      const fullHaystack = kyselySql<string>`(
         coalesce(subject, '') || E'\n' ||
         coalesce(snippet, '') || E'\n' ||
         coalesce(body_text, '') || E'\n' ||
@@ -3230,17 +3768,70 @@ function applyMessageSearchFilter(query: any, search: string, mode: 'fts' | 'lik
           WHERE a.workspace_id = email_messages.workspace_id
             AND a.message_id = email_messages.id
         ), '')
-      ) ${operator} ${parsed.pattern}`);
+      )`;
+      if (!contentPredicate && !attachmentPredicate) {
+        return query.where(kyselySql<boolean>`${fullHaystack} ${operator} ${parsed.pattern}`);
+      }
+      // Content/attachment gating: match the regex against a per-row haystack whose
+      // body-derived text (snippet/body_text) is included only for content-readable
+      // rows (contentPredicate) and whose attachment content_text is included only
+      // for attachment-readable rows (attachmentPredicate). Metadata (subject/
+      // addresses/ticket), attachments_json and attachment FILENAMES stay in the
+      // haystack for everyone, so a redacted row cannot let body/attachment CONTENT
+      // decide the match while metadata/filename search keeps working. An undefined
+      // predicate ⇒ authorized for all ⇒ that segment stays in unconditionally.
+      const contentGate = contentPredicate ?? kyselySql<boolean>`TRUE`;
+      const attachmentGate = attachmentPredicate ?? kyselySql<boolean>`TRUE`;
+      const gatedHaystack = kyselySql<string>`(
+        coalesce(subject, '') || E'\n' ||
+        CASE WHEN (${contentGate}) THEN coalesce(snippet, '') || E'\n' || coalesce(body_text, '') ELSE '' END || E'\n' ||
+        coalesce(from_json::text, '') || E'\n' ||
+        coalesce(to_json::text, '') || E'\n' ||
+        coalesce(cc_json::text, '') || E'\n' ||
+        coalesce(bcc_json::text, '') || E'\n' ||
+        coalesce(ticket_code, '') || E'\n' ||
+        coalesce(attachments_json::text, '') || E'\n' ||
+        coalesce((
+          SELECT string_agg(
+            coalesce(a.filename_display, '')
+              || CASE WHEN (${attachmentGate}) THEN E'\n' || coalesce(left(a.content_text, 20000), '') ELSE '' END,
+            E'\n'
+          )
+          FROM email_message_attachments a
+          WHERE a.workspace_id = email_messages.workspace_id
+            AND a.message_id = email_messages.id
+        ), '')
+      )`;
+      return query.where(kyselySql<boolean>`${gatedHaystack} ${operator} ${parsed.pattern}`);
     }
   }
   if (mode === 'fts') {
-    return query.where(kyselySql<boolean>`search_vector @@ plainto_tsquery('simple', ${search})`);
+    if (!contentPredicate) {
+      return query.where(kyselySql<boolean>`search_vector @@ plainto_tsquery('simple', ${search})`);
+    }
+    const ftsPattern = `%${escapeLikePattern(search)}%`;
+    return query.where(kyselySql<boolean>`(
+      (${contentPredicate} AND search_vector @@ plainto_tsquery('simple', ${search}))
+      OR (NOT (${contentPredicate}) AND (
+        subject ILIKE ${ftsPattern} ESCAPE '\\'
+        OR from_json::text ILIKE ${ftsPattern} ESCAPE '\\'
+        OR to_json::text ILIKE ${ftsPattern} ESCAPE '\\'
+        OR cc_json::text ILIKE ${ftsPattern} ESCAPE '\\'
+        OR ticket_code ILIKE ${ftsPattern} ESCAPE '\\'
+      ))
+    )`);
   }
   const pattern = `%${escapeLikePattern(search)}%`;
+  const snippetClause = contentPredicate
+    ? kyselySql<boolean>`(${contentPredicate} AND snippet ILIKE ${pattern} ESCAPE '\\')`
+    : kyselySql<boolean>`snippet ILIKE ${pattern} ESCAPE '\\'`;
+  const bodyClause = contentPredicate
+    ? kyselySql<boolean>`(${contentPredicate} AND body_text ILIKE ${pattern} ESCAPE '\\')`
+    : kyselySql<boolean>`body_text ILIKE ${pattern} ESCAPE '\\'`;
   return query.where(kyselySql<boolean>`(
     subject ILIKE ${pattern} ESCAPE '\\'
-    OR snippet ILIKE ${pattern} ESCAPE '\\'
-    OR body_text ILIKE ${pattern} ESCAPE '\\'
+    OR ${snippetClause}
+    OR ${bodyClause}
     OR from_json::text ILIKE ${pattern} ESCAPE '\\'
     OR to_json::text ILIKE ${pattern} ESCAPE '\\'
     OR cc_json::text ILIKE ${pattern} ESCAPE '\\'
@@ -3330,7 +3921,58 @@ export function createPostgresEmailAttachmentReadPort(options: PostgresMailReadP
         { applySession: options.applyWorkspaceSession },
       );
     },
+    async listSourceAttachments(input): Promise<EmailSourceAttachmentSummary | null> {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const message = await trx
+            .selectFrom('email_messages')
+            .select('attachments_json')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.messageId)
+            .executeTakeFirst();
+          if (!message) return null;
+          const stored = await trx
+            .selectFrom('email_message_attachments')
+            .select((eb) => eb.fn.countAll<string>().as('count'))
+            .where('workspace_id', '=', input.workspaceId)
+            .where('message_id', '=', input.messageId)
+            .executeTakeFirst();
+          return {
+            items: parseSourceAttachmentMetas(message.attachments_json),
+            storedCount: Number(stored?.count ?? 0),
+          };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
   };
+}
+
+// attachments_json is a jsonb array of { filename, contentType, size } written by
+// parseAttachmentsMeta over the FULL parsed MIME part list (before the ingest size
+// cap), so it enumerates parts the size cap later dropped from
+// email_message_attachments. node-postgres returns jsonb pre-parsed, but tolerate a
+// raw JSON string too. Non-array / malformed input yields [] (fail open on shape,
+// closed on danger is handled by the caller's count check).
+function parseSourceAttachmentMetas(value: unknown): EmailSourceAttachmentMeta[] {
+  let source: unknown = value;
+  if (typeof source === 'string') {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(source)) return [];
+  return source.map((entry) => {
+    const obj = (entry && typeof entry === 'object' ? entry : {}) as Record<string, unknown>;
+    return {
+      filename: typeof obj.filename === 'string' ? obj.filename : null,
+      contentType: typeof obj.contentType === 'string' ? obj.contentType : null,
+    };
+  });
 }
 
 export function createPostgresEmailAttachmentContentPort(
@@ -4013,6 +4655,8 @@ export async function createPostgresComposeDraftInTransaction(
       spam_status: 'clean',
       snoozed_until: null,
       scheduled_send_at: null,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: null,
       pop3_uidl: null,
       remote_content_policy: 'blocked',
       read_receipt_requested: false,
@@ -4103,13 +4747,15 @@ async function selectLocalDraftForMutation(
   trx: WorkspaceTransaction,
   workspaceId: string,
   messageId: number,
+  options: { forUpdate?: boolean } = {},
 ): Promise<LocalDraftMutationRow | undefined> {
-  return trx
+  let query = trx
     .selectFrom('email_messages')
     .select(emailMessageDetailColumns)
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', messageId)
-    .executeTakeFirst();
+    .where('id', '=', messageId);
+  if (options.forUpdate) query = query.forUpdate();
+  return query.executeTakeFirst();
 }
 
 function isLocalDraftUid(row: Pick<EmailMessageRow, 'uid'>): boolean {
@@ -4194,6 +4840,30 @@ async function getComposeDraftRecoveryStateFromSyncInfo(
       Number(draft.uid) < 0 &&
       draft.folder_kind === 'draft',
     ),
+  };
+}
+
+async function assertNoActiveScheduledSendClaimTx(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  messageId: number,
+): Promise<{
+  ok: false;
+  reason: 'scheduled_send_claimed';
+  message: string;
+} | null> {
+  const claim = await trx
+    .selectFrom('sync_info')
+    .select('value')
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', scheduledSendClaimedAtKey(messageId))
+    .forUpdate()
+    .executeTakeFirst();
+  if (!claim?.value?.trim()) return null;
+  return {
+    ok: false as const,
+    reason: 'scheduled_send_claimed' as const,
+    message: 'Geplanter Versand wird bereits verarbeitet',
   };
 }
 
@@ -4463,6 +5133,98 @@ function emailAccountSecretIdentifier(
   };
 }
 
+/**
+ * Account is visible under a restricted scope if the delegate holds it directly
+ * OR owns a scoped folder/message on it (so the parent shows up for folder-only
+ * grants). Falls back to `false` when the scope names nothing.
+ */
+export function parentAwareAccountVisibility(
+  workspaceId: string,
+  scope: { accountIds: readonly number[]; folderIds: readonly number[]; messageIds: readonly number[] },
+): RawBuilder<boolean> {
+  const branches: RawBuilder<boolean>[] = [];
+  if (scope.accountIds.length > 0) {
+    branches.push(kyselySql<boolean>`email_accounts.id in (${kyselySql.join(scope.accountIds)})`);
+  }
+  if (scope.folderIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_folders f
+      where f.workspace_id = ${workspaceId}::uuid
+        and f.account_id = email_accounts.id
+        and f.id in (${kyselySql.join(scope.folderIds)})
+    )`);
+  }
+  if (scope.messageIds.length > 0) {
+    branches.push(kyselySql<boolean>`exists (
+      select 1 from email_messages m
+      where m.workspace_id = ${workspaceId}::uuid
+        and m.account_id = email_accounts.id
+        and m.id in (${kyselySql.join(scope.messageIds)})
+    )`);
+  }
+  if (branches.length === 0) return kyselySql<boolean>`false`;
+  return kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` or `)})`;
+}
+
+/**
+ * Minimal parent-account record for an account the delegate can only reach via a
+ * folder/message grant: enough to render the mailbox tree (id, name, address)
+ * without exposing connection config (hosts, usernames, OAuth provider, or which
+ * secrets are configured) or vacation content.
+ */
+function redactParentOnlyAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelectColumns[number]>): EmailAccountRecord {
+  // Fail-CLOSED allowlist: expose only the identity fields the mailbox tree
+  // renders and neutralize every connection/security/policy field. Built as an
+  // explicit literal (not `{ ...mapEmailAccountRow(row), overrides }`) so any
+  // field later added to EmailAccountRecord fails to compile here and must be
+  // consciously classified, rather than silently leaking a parent account's
+  // connection config to a folder-/message-only delegate.
+  return {
+    // identity — safe to render in the tree
+    id: Number(row.id),
+    sourceSqliteId: Number(row.source_sqlite_id),
+    displayName: row.display_name,
+    emailAddress: row.email_address,
+    // connection config — neutralized (safest defaults; never advertise real hosts,
+    // ports, auth mode, or a downgraded TLS posture)
+    protocol: 'imap',
+    imapHost: '',
+    imapPort: 0,
+    imapTls: true,
+    imapUsername: '',
+    smtpHost: null,
+    smtpPort: null,
+    smtpTls: true,
+    smtpUsername: null,
+    smtpUseImapAuth: false,
+    pop3Host: null,
+    pop3Port: null,
+    pop3Tls: true,
+    oauthProvider: null,
+    // server folder paths + sync flags — hidden
+    sentFolderPath: null,
+    syncSpamFolderPath: null,
+    syncArchiveFolderPath: null,
+    imapSyncSent: false,
+    imapSyncArchive: false,
+    imapSyncSpam: false,
+    imapSyncSeenOnOpen: false,
+    // vacation + policies — neutralized to the safest values
+    vacationEnabled: false,
+    vacationSubject: null,
+    vacationBodyText: null,
+    requestReadReceipt: false,
+    imapDeleteOptIn: false,
+    defaultRemoteContentPolicy: 'blocked',
+    respondToReadReceipts: 'never',
+    // secret-presence flags — never reveal what is configured
+    imapPasswordConfigured: false,
+    smtpPasswordConfigured: false,
+    oauthRefreshConfigured: false,
+    updatedAt: timestampToIso(row.updated_at),
+  };
+}
+
 function mapEmailAccountRow(row: Pick<EmailAccountRow, typeof emailAccountSelectColumns[number]>): EmailAccountRecord {
   return {
     id: Number(row.id),
@@ -4521,7 +5283,9 @@ function mapEmailMessageRow(
     cc: row.cc_json,
     bcc: row.bcc_json,
     dateReceived: timestampToIsoOrNull(row.date_received),
-    snippet: row.snippet,
+    // content_readable===false ⇒ metadata-only caller: blank the body-derived
+    // preview so it cannot read message content it is not authorized for.
+    snippet: row.content_readable === false ? null : row.snippet,
     seenLocal: row.seen_local,
     doneLocal: row.done_local,
     archived: row.archived,
@@ -4547,14 +5311,36 @@ function mapEmailMessageRow(
     readReceiptRequested: row.read_receipt_requested,
     postProcessDone: row.post_process_done,
     snoozedUntil: timestampToIsoOrNull(row.snoozed_until),
-    draftAttachmentPathsJson: row.draft_attachment_paths_json,
-    replyParentMessageId: row.reply_parent_message_id === null ? null : Number(row.reply_parent_message_id),
-    ...(row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
+    // Draft attachment paths hold uploaded filenames + full server-side storage paths
+    // (filesystem layout) — attachment data. Redact them when the row is content-redacted
+    // (metadata-only caller, like the snippet above) OR when it falls outside the caller's
+    // mail.attachment.read scope (attachment_readable===false) — so a content.read delegate
+    // lacking attachment.read cannot recover them via the list or the single-message get
+    // (R50-2). Both flags absent (scope 'all', owner/admin) ⇒ paths returned unchanged.
+    draftAttachmentPathsJson:
+      row.content_readable === false || row.attachment_readable === false
+        ? null
+        : row.draft_attachment_paths_json,
+    // reply_parent_message_id can reference a message OUTSIDE a restricted delegate's scope
+    // (compose authorizes only the CREATOR against the parent, and the FK permits
+    // cross-account parents). reply_parent_visible===false ⇒ the parent is not scope-visible,
+    // so null the id to avoid disclosing the hidden parent's existence/id. undefined ⇒ scope
+    // 'all' (or the single-message get, gated at the route) ⇒ the id is returned unchanged.
+    replyParentMessageId:
+      row.reply_parent_message_id === null || row.reply_parent_visible === false
+        ? null
+        : Number(row.reply_parent_message_id),
+    ...(row.content_readable !== false
+      && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }
       : {}),
     ...(includeBody ? {
-      bodyText: row.body_text,
-      bodyHtml: row.body_html,
+      // content_readable===false ⇒ the caller lacks mail.content.read on this row, so
+      // blank the body even when the caller requested it (e.g. a draft-edit response
+      // echoing the stored draft). Undefined ⇒ the route already gates content.read
+      // (single-message get), so the body is returned unchanged.
+      bodyText: row.content_readable === false ? null : row.body_text,
+      bodyHtml: row.content_readable === false ? null : row.body_html,
     } : {}),
     updatedAt: timestampToIso(row.updated_at),
   };
