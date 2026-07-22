@@ -19,6 +19,7 @@ export interface RecentCustomer extends Pick<Customer, 'id' | 'name' | 'email'> 
 export interface UpcomingTask extends Pick<Task, 'id' | 'title' | 'priority' | 'customer_id'> {
   dueDate: string; // Or Date object
   customerName?: string; // To be joined from customer data
+  customerCompany?: string;
 }
 
 export const dashboardService = {
@@ -76,8 +77,9 @@ export const dashboardService = {
         title: t.title,
         priority: t.priority,
         customer_id: t.customer_id,
-        dueDate: t.due_date, // Map from due_date
-        customerName: t.customer_name, // Assuming customer_name might be provided
+        dueDate: t.due_date ?? t.dueDate,
+        customerName: t.customer_name ?? t.customerName,
+        customerCompany: t.customer_company ?? t.customerCompany,
       }));
       return tasks;
     } catch (error) {

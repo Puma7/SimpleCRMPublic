@@ -100,7 +100,14 @@ export function ExecutionList({
               <PriorityIndicator score={item.priority_score} dueDate={item.due_date} />
 
               {/* Customer */}
-              <span className="truncate font-medium">{item.customer_name || '—'}</span>
+              <div className="min-w-0">
+                <div className="truncate font-medium">{item.customer_name || '—'}</div>
+                {item.customer_company
+                  && item.customer_company.trim().toLocaleLowerCase() !== item.customer_name.trim().toLocaleLowerCase()
+                  && (
+                  <div className="truncate text-[10px] text-muted-foreground">{item.customer_company}</div>
+                )}
+              </div>
 
               {/* Deal */}
               <span className="truncate">

@@ -20,6 +20,7 @@ const baseItem: FollowUpItem = {
   id: 1,
   title: 'Follow up with ACME',
   customer_name: 'ACME Corp',
+  customer_company: 'ACME Holding GmbH',
   customer_id: 10,
   source_type: 'task',
   priority: 'High',
@@ -61,6 +62,21 @@ describe('InstantDetailPanel', () => {
   test('displays customer name', () => {
     render(<InstantDetailPanel {...defaultProps} />);
     expect(screen.getByText('ACME Corp')).toBeTruthy();
+  });
+
+  test('displays customer company without replacing the customer name', () => {
+    render(<InstantDetailPanel {...defaultProps} />);
+    expect(screen.getByText('ACME Corp')).toBeTruthy();
+    expect(screen.getByText('ACME Holding GmbH')).toBeTruthy();
+  });
+
+  test('does not repeat the company when it is already the customer display name', () => {
+    const companyOnlyItem = {
+      ...baseItem,
+      customer_name: 'ACME Holding GmbH',
+    };
+    render(<InstantDetailPanel {...defaultProps} item={companyOnlyItem} />);
+    expect(screen.getAllByText('ACME Holding GmbH')).toHaveLength(1);
   });
 
   test('displays item title', () => {

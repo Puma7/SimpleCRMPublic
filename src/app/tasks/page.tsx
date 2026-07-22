@@ -59,6 +59,7 @@ interface TaskData {
 interface TaskDisplay extends TaskData {
   id: number;
   customer_name: string;
+  customer_company: string;
 }
 
 const createEmptyTask = (): Omit<TaskData, 'id'> => ({
@@ -226,7 +227,8 @@ export default function TasksPage() {
           priority: task.priority,
           completed: Boolean(task.completed),
           calendar_event_id: normalizedCalendarEventId,
-          customer_name: task.customer_name || 'Unknown Customer'
+          customer_name: task.customer_name || 'Unknown Customer',
+          customer_company: task.customer_company || ''
         }
       })
       
@@ -706,6 +708,7 @@ export default function TasksPage() {
                       <TableHead className="w-[50px]"></TableHead>
                       <TableHead>Aufgabe</TableHead>
                       <TableHead>Kunde</TableHead>
+                      <TableHead className="hidden lg:table-cell">Firma</TableHead>
                       <TableHead className="hidden md:table-cell">Fälligkeitsdatum</TableHead>
                       <TableHead>Priorität</TableHead>
                     </TableRow>
@@ -743,6 +746,9 @@ export default function TasksPage() {
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          {task.customer_company || <span className="text-muted-foreground">—</span>}
                         </TableCell>
                         <TableCell className="hidden md:table-cell">
                           <div className="flex items-center gap-2">

@@ -68,6 +68,7 @@ describe('server dashboard API', () => {
     });
     expect(upcoming.status).toBe(200);
     expect((upcoming.body as any).data[0].title).toBe('Follow up');
+    expect((upcoming.body as any).data[0].customerCompany).toBe('ACME GmbH');
     expect(dashboard.getUpcomingTasks).toHaveBeenCalledWith({
       workspaceId: 'workspace-1',
       limit: 2,
@@ -123,6 +124,7 @@ function dashboardPort(): jest.Mocked<DashboardApiPort> {
         customerId: 1,
         dueDate: '2026-06-04T00:00:00.000Z',
         customerName: 'ACME',
+        customerCompany: 'ACME GmbH',
       },
     ]),
   };

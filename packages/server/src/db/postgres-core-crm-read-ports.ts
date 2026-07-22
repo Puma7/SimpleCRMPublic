@@ -123,6 +123,30 @@ const taskSelectColumns = [
   'updated_at',
 ] as const;
 
+const taskJoinedSelectColumns = [
+  'tasks.id as id',
+  'tasks.source_sqlite_id as source_sqlite_id',
+  'tasks.customer_source_sqlite_id as customer_source_sqlite_id',
+  'tasks.customer_id as customer_id',
+  'tasks.title as title',
+  'tasks.description as description',
+  'tasks.due_date as due_date',
+  'tasks.priority as priority',
+  'tasks.completed as completed',
+  'tasks.snoozed_until as snoozed_until',
+  'tasks.assignment_scope as assignment_scope',
+  'tasks.assigned_user_id as assigned_user_id',
+  'tasks.assigned_group_id as assigned_group_id',
+  'tasks.updated_at as updated_at',
+  kyselySql<string | null>`coalesce(nullif(btrim(customers.name), ''), nullif(btrim(customers.first_name), ''), nullif(btrim(customers.company), ''))`.as('customerName'),
+  kyselySql<string | null>`nullif(btrim(customers.company), '')`.as('customerCompany'),
+] as const;
+
+type TaskJoinedRow = Pick<TaskRow, typeof taskSelectColumns[number]> & Readonly<{
+  customerName: string | null;
+  customerCompany: string | null;
+}>;
+
 export function createPostgresProductReadPort(options: PostgresCoreCrmReadPortOptions): ProductApiPort {
   return {
     async list(input): Promise<ProductListResult> {
@@ -586,22 +610,28 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
         async (trx) => {
           let query = trx
             .selectFrom('tasks')
-            .select(taskSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
+            .leftJoin('customers', (join) => join
+              .onRef('customers.id', '=', 'tasks.customer_id')
+              .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
+            .select(taskJoinedSelectColumns)
+            .where('tasks.workspace_id', '=', input.workspaceId)
             .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
-            .orderBy('id', 'asc')
+            .orderBy('tasks.id', 'asc')
             .limit(limit + 1);
 
-          if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
-          if (input.customerId !== undefined) query = query.where('customer_id', '=', input.customerId);
-          if (input.completed !== undefined) query = query.where('completed', '=', input.completed);
+          if (input.cursor !== undefined) query = query.where('tasks.id', '>', input.cursor);
+          if (input.customerId !== undefined) query = query.where('tasks.customer_id', '=', input.customerId);
+          if (input.completed !== undefined) query = query.where('tasks.completed', '=', input.completed);
           const search = input.search?.trim();
           if (search) {
             const pattern = `%${search}%`;
             query = query.where((eb) => eb.or([
-              eb('title', 'ilike', pattern),
-              eb('description', 'ilike', pattern),
-              eb('priority', 'ilike', pattern),
+              eb('tasks.title', 'ilike', pattern),
+              eb('tasks.description', 'ilike', pattern),
+              eb('tasks.priority', 'ilike', pattern),
+              eb('customers.name', 'ilike', pattern),
+              eb('customers.first_name', 'ilike', pattern),
+              eb('customers.company', 'ilike', pattern),
             ]));
           }
 
@@ -622,9 +652,12 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
         async (trx) => {
           const row = await trx
             .selectFrom('tasks')
-            .select(taskSelectColumns)
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
+            .leftJoin('customers', (join) => join
+              .onRef('customers.id', '=', 'tasks.customer_id')
+              .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
+            .select(taskJoinedSelectColumns)
+            .where('tasks.workspace_id', '=', input.workspaceId)
+            .where('tasks.id', '=', input.id)
             .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .executeTakeFirst();
           return row ? mapTaskRow(row) : null;
@@ -676,9 +709,11 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
               source_row: serverApiSourceRow(),
               updated_at: now,
             })
-            .returning(taskSelectColumns)
+            .returning('id')
             .executeTakeFirstOrThrow();
-          return { ok: true, task: mapTaskRow(row) };
+          const task = await selectTaskById(trx, input.workspaceId, Number(row.id));
+          if (!task) throw new Error('created task could not be reloaded');
+          return { ok: true, task };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -717,9 +752,11 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
             .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
-            .returning(taskSelectColumns)
+            .returning('id')
             .executeTakeFirst();
-          return row ? { ok: true, task: mapTaskRow(row) } : null;
+          if (!row) return null;
+          const task = await selectTaskById(trx, input.workspaceId, Number(row.id));
+          return task ? { ok: true, task } : null;
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -733,19 +770,40 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
           role: 'user',
         },
         async (trx) => {
+          const task = await selectTaskById(trx, input.workspaceId, input.id, input.viewer);
+          if (!task) return null;
           const row = await trx
             .deleteFrom('tasks')
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id)
             .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
-            .returning(taskSelectColumns)
+            .returning('id')
             .executeTakeFirst();
-          return row ? mapTaskRow(row) : null;
+          return row ? task : null;
         },
         { applySession: options.applyWorkspaceSession },
       );
     },
   };
+}
+
+async function selectTaskById(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  id: number,
+  viewer?: TaskViewer,
+): Promise<TaskRecord | null> {
+  const row = await trx
+    .selectFrom('tasks')
+    .leftJoin('customers', (join) => join
+      .onRef('customers.id', '=', 'tasks.customer_id')
+      .onRef('customers.workspace_id', '=', 'tasks.workspace_id'))
+    .select(taskJoinedSelectColumns)
+    .where('tasks.workspace_id', '=', workspaceId)
+    .where('tasks.id', '=', id)
+    .where((eb) => taskVisibilityExpression(eb, workspaceId, viewer))
+    .executeTakeFirst();
+  return row ? mapTaskRow(row) : null;
 }
 
 async function listDealProductsForDeal(
@@ -1275,12 +1333,14 @@ function mapDealRow(row: Pick<DealRow, typeof dealSelectColumns[number]>): DealR
   };
 }
 
-function mapTaskRow(row: Pick<TaskRow, typeof taskSelectColumns[number]>): TaskRecord {
+function mapTaskRow(row: TaskJoinedRow): TaskRecord {
   return {
     id: Number(row.id),
     sourceSqliteId: Number(row.source_sqlite_id),
     customerSourceSqliteId: Number(row.customer_source_sqlite_id),
     customerId: row.customer_id === null ? null : Number(row.customer_id),
+    customerName: row.customerName,
+    customerCompany: row.customerCompany,
     title: row.title,
     description: row.description,
     dueDate: timestampToIsoOrNull(row.due_date),

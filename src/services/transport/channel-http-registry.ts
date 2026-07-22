@@ -149,6 +149,8 @@ type TaskRecord = {
   sourceSqliteId?: number | null
   customerSourceSqliteId?: number | null
   customerId?: number | null
+  customerName?: string | null
+  customerCompany?: string | null
   title?: string | null
   description?: string | null
   dueDate?: string | null
@@ -256,6 +258,7 @@ type DashboardUpcomingTaskRecord = {
   customerId?: number | null
   dueDate?: string | null
   customerName?: string | null
+  customerCompany?: string | null
 }
 
 type SavedViewRecord = {
@@ -827,6 +830,8 @@ type FollowUpItemRecord = {
   customer_id?: number | null
   customerName?: string | null
   customer_name?: string | null
+  customerCompany?: string | null
+  customer_company?: string | null
   dealId?: number | null
   deal_id?: number | null
   dealName?: string | null
@@ -5091,6 +5096,8 @@ function mapTaskRecord(record: TaskRecord) {
   return {
     id: record.id,
     customer_id: record.customerId ?? record.customerSourceSqliteId ?? "",
+    customer_name: record.customerName ?? "",
+    customer_company: record.customerCompany ?? "",
     title: record.title ?? "",
     description: record.description ?? undefined,
     due_date: record.dueDate ?? "",
@@ -5260,6 +5267,7 @@ function mapDashboardUpcomingTask(record: DashboardUpcomingTaskRecord) {
     customer_id: record.customerId ?? undefined,
     dueDate: record.dueDate ?? "",
     customerName: record.customerName ?? undefined,
+    customerCompany: record.customerCompany ?? undefined,
   }
 }
 
@@ -6493,6 +6501,7 @@ function mapFollowUpItem(record: FollowUpItemRecord) {
     source_type: sourceType,
     customer_id: customerId === null ? 0 : Number(customerId),
     customer_name: record.customerName ?? record.customer_name ?? "",
+    customer_company: record.customerCompany ?? record.customer_company ?? "",
     ...(dealId === undefined || dealId === null ? {} : { deal_id: Number(dealId) }),
     deal_name: record.dealName ?? record.deal_name ?? undefined,
     deal_value: dealValue === undefined || dealValue === null ? undefined : Number(dealValue),

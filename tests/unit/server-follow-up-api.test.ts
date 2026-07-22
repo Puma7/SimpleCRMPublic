@@ -66,6 +66,7 @@ describe('server follow-up API', () => {
 
     expect(response.status).toBe(200);
     expect((response.body as any).data[0].title).toBe('Renewal');
+    expect((response.body as any).data[0].customerCompany).toBe('ACME GmbH');
     expect(followUp.getItems).toHaveBeenCalledWith({
       workspaceId: 'workspace-1',
       queue: 'high_value_risk',
@@ -147,6 +148,7 @@ function followUpPort(): jest.Mocked<FollowUpApiPort> {
         sourceType: 'deal',
         customerId: 3,
         customerName: 'ACME',
+        customerCompany: 'ACME GmbH',
         dealId: 7,
         dealName: 'Renewal',
         dealValue: 4200,

@@ -80,6 +80,12 @@ const {
   getCustomersPage,
   searchProducts,
   createTask,
+  getAllTasks,
+  getTaskById,
+  getUpcomingTasks,
+  getFollowUpItems,
+  getTasksForCustomer,
+  getTasksForDeal,
 } = require('../../electron/sqlite-service') as typeof import('../../electron/sqlite-service');
 
 describe('sqlite-service', () => {
@@ -204,6 +210,95 @@ describe('sqlite-service', () => {
       });
       expect(mockDb.prepare).toHaveBeenCalledTimes(1);
       expect(customerStmt.get).toHaveBeenCalledWith(99);
+    });
+  });
+
+  describe('task and follow-up customer company projections', () => {
+    test('projects a compatible customer display name and company for task lists', () => {
+      const stmt = makeStmt([]);
+      mockDb.prepare.mockReturnValue(stmt);
+
+      getAllTasks(25, 0, { query: 'Meyer GmbH' });
+
+      const sql = mockDb.prepare.mock.calls[0][0] as string;
+      expect(sql).toContain("COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name");
+      expect(sql).toContain("NULLIF(TRIM(c.company), '') AS customer_company");
+      expect(sql).toContain('c.firstName LIKE ?');
+      expect(sql).toContain('c.company LIKE ?');
+      expect(stmt.all).toHaveBeenCalledWith(
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        25,
+        0,
+      );
+    });
+
+    test('projects customer company for task details and dashboard tasks', () => {
+      mockDb.prepare.mockReturnValue(makeStmt({ id: 1 }));
+      getTaskById(1);
+      expect(mockDb.prepare.mock.calls[0][0]).toContain("NULLIF(TRIM(c.company), '') AS customer_company");
+
+      mockDb.prepare.mockReset();
+      mockDb.prepare.mockReturnValue(makeStmt([]));
+      getUpcomingTasks(5);
+      expect(mockDb.prepare.mock.calls[0][0]).toContain("NULLIF(TRIM(c.company), '') AS customer_company");
+
+      mockDb.prepare.mockReset();
+      mockDb.prepare.mockReturnValue(makeStmt([]));
+      getTasksForCustomer(1);
+      expect(mockDb.prepare.mock.calls[0][0]).toContain("NULLIF(TRIM(c.company), '') AS customer_company");
+
+      mockDb.prepare.mockReset();
+      mockDb.prepare.mockReturnValue(makeStmt([]));
+      getTasksForDeal(1);
+      expect(mockDb.prepare.mock.calls[0][0]).toContain("NULLIF(TRIM(c.company), '') AS customer_company");
+    });
+
+    test('projects and searches company data in follow-up queues', () => {
+      const stmt = makeStmt([]);
+      mockDb.prepare.mockReturnValue(stmt);
+
+      getFollowUpItems('heute', { query: 'Meyer GmbH' }, 20, 0);
+
+      const sql = mockDb.prepare.mock.calls[0][0] as string;
+      expect(sql).toContain("NULLIF(TRIM(c.company), '') AS customer_company");
+      expect(sql).toContain('c.firstName LIKE ?');
+      expect(sql).toContain('c.company LIKE ?');
+      expect(stmt.all).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        20,
+        0,
+      );
+    });
+
+    test('projects and searches company data in deal follow-up queues', () => {
+      const stmt = makeStmt([]);
+      mockDb.prepare.mockReturnValue(stmt);
+
+      getFollowUpItems('stagnierende_deals', { query: 'Meyer GmbH' }, 20, 0);
+
+      const sql = mockDb.prepare.mock.calls[0][0] as string;
+      expect(sql).toContain("NULLIF(TRIM(c.company), '') AS customer_company");
+      expect(sql).toContain('c.firstName LIKE ?');
+      expect(sql).toContain('c.company LIKE ?');
+      expect(stmt.all).toHaveBeenCalledWith(
+        expect.any(String),
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        '%Meyer GmbH%',
+        20,
+        0,
+      );
     });
   });
 
