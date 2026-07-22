@@ -1972,6 +1972,8 @@ describe('renderer transport', () => {
         data: {
           id: 9,
           customerId: 4,
+          customerName: 'Anna Meyer',
+          customerCompany: 'Meyer GmbH',
           title: 'Call',
           dueDate: '2026-06-04T00:00:00.000Z',
           priority: 'High',
@@ -2024,6 +2026,8 @@ describe('renderer transport', () => {
       task: expect.objectContaining({
         id: 9,
         customer_id: 4,
+        customer_name: 'Anna Meyer',
+        customer_company: 'Meyer GmbH',
         due_date: '2026-06-04T00:00:00.000Z',
         completed: true,
       }),
@@ -8290,6 +8294,7 @@ describe('renderer transport', () => {
             customerId: 12,
             dueDate: '2026-06-04T00:00:00.000Z',
             customerName: 'ACME',
+            customerCompany: 'ACME GmbH',
           },
         ],
       }));
@@ -8323,6 +8328,7 @@ describe('renderer transport', () => {
         customer_id: 12,
         dueDate: '2026-06-04T00:00:00.000Z',
         customerName: 'ACME',
+        customerCompany: 'ACME GmbH',
       },
     ]);
 
@@ -8363,6 +8369,7 @@ describe('renderer transport', () => {
             sourceType: 'deal',
             customerId: 3,
             customerName: 'ACME',
+            customerCompany: 'ACME GmbH',
             dealId: 12,
             dealName: 'Renewal',
             dealValue: '2400.50',
@@ -8418,6 +8425,7 @@ describe('renderer transport', () => {
         source_type: 'deal',
         customer_id: 3,
         customer_name: 'ACME',
+        customer_company: 'ACME GmbH',
         deal_id: 12,
         deal_name: 'Renewal',
         deal_value: 2400.50,

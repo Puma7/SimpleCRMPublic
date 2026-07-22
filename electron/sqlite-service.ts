@@ -2737,7 +2737,9 @@ export function updateDealStage(dealId: number, newStage: string): { success: bo
 export function getTasksForDeal(dealId: number): any[] {
   // Returns all tasks for the customer associated with this deal
   const stmt = getDb().prepare(`
-    SELECT t.*, c.name as customer_name
+    SELECT t.*,
+           COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
+           NULLIF(TRIM(c.company), '') AS customer_company
     FROM ${TASKS_TABLE} t
     LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
     WHERE t.customer_id = (SELECT customer_id FROM ${DEALS_TABLE} WHERE id = ?)
@@ -2777,7 +2779,9 @@ export function getAllTasks(
   filter: { completed?: boolean; priority?: string; query?: string } = {}
 ): any[] {
   let sql = `
-    SELECT t.*, c.name as customer_name
+    SELECT t.*,
+           COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
+           NULLIF(TRIM(c.company), '') AS customer_company
     FROM ${TASKS_TABLE} t
     LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
     WHERE 1=1
@@ -2799,9 +2803,9 @@ export function getAllTasks(
 
   // Add search query filter if provided
   if (filter.query && filter.query.trim() !== '') {
-    sql += ` AND (t.title LIKE ? OR c.name LIKE ? OR t.description LIKE ?)`;
+    sql += ` AND (t.title LIKE ? OR c.name LIKE ? OR c.firstName LIKE ? OR c.company LIKE ? OR t.description LIKE ?)`;
     const searchTerm = `%${filter.query}%`;
-    params.push(searchTerm, searchTerm, searchTerm);
+    params.push(searchTerm, searchTerm, searchTerm, searchTerm, searchTerm);
   }
 
   sql += ` ORDER BY t.due_date ASC LIMIT ? OFFSET ?`;
@@ -2813,7 +2817,9 @@ export function getAllTasks(
 
 export function getTaskById(taskId: number): any {
   const stmt = getDb().prepare(`
-    SELECT t.*, c.name as customer_name
+    SELECT t.*,
+           COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
+           NULLIF(TRIM(c.company), '') AS customer_company
     FROM ${TASKS_TABLE} t
     LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
     WHERE t.id = ?
@@ -2974,11 +2980,14 @@ export function deleteTask(taskId: number): { success: boolean; error?: string }
 
 // --- Task Operations for Customer ---
 export function getTasksForCustomer(customerId: number): any[] {
-    // This assumes a 'tasks' table with a customer_id field
     const stmt = getDb().prepare(`
-        SELECT * FROM tasks
-        WHERE customer_id = ?
-        ORDER BY due_date ASC
+        SELECT t.*,
+               COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
+               NULLIF(TRIM(c.company), '') AS customer_company
+        FROM ${TASKS_TABLE} t
+        LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
+        WHERE t.customer_id = ?
+        ORDER BY t.due_date ASC
     `);
     return stmt.all(customerId);
 }
@@ -3168,7 +3177,8 @@ export function getUpcomingTasks(limit: number = 5): any[] {
     try {
         const stmt = getDb().prepare(`
             SELECT t.id, t.title, t.priority, t.customer_id, t.due_date,
-                   c.name as customer_name
+                   COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
+                   NULLIF(TRIM(c.company), '') AS customer_company
             FROM ${TASKS_TABLE} t
             LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
             WHERE t.completed = 0
@@ -3342,7 +3352,8 @@ export function getFollowUpItems(
                 d.id as item_id,
                 'deal' as source_type,
                 d.customer_id,
-                c.name as customer_name,
+                COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
+                NULLIF(TRIM(c.company), '') AS customer_company,
                 d.id as deal_id,
                 d.name as deal_name,
                 d.value as deal_value,
@@ -3372,9 +3383,9 @@ export function getFollowUpItems(
         }
 
         if (filters.query && filters.query.trim()) {
-            sql += ` AND (d.name LIKE ? OR c.name LIKE ?)`;
+            sql += ` AND (d.name LIKE ? OR c.name LIKE ? OR c.firstName LIKE ? OR c.company LIKE ?)`;
             const term = `%${filters.query}%`;
-            params.push(term, term);
+            params.push(term, term, term, term);
         }
 
         sql += ` ORDER BY priority_score DESC LIMIT ? OFFSET ?`;
@@ -3386,7 +3397,8 @@ export function getFollowUpItems(
                 t.id as item_id,
                 'task' as source_type,
                 t.customer_id,
-                c.name as customer_name,
+                COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(c.firstName), ''), NULLIF(TRIM(c.company), '')) AS customer_name,
+                NULLIF(TRIM(c.company), '') AS customer_company,
                 d.id as deal_id,
                 d.name as deal_name,
                 d.value as deal_value,
@@ -3433,9 +3445,9 @@ export function getFollowUpItems(
         }
 
         if (filters.query && filters.query.trim()) {
-            sql += ` AND (t.title LIKE ? OR c.name LIKE ? OR t.description LIKE ?)`;
+            sql += ` AND (t.title LIKE ? OR c.name LIKE ? OR c.firstName LIKE ? OR c.company LIKE ? OR t.description LIKE ?)`;
             const term = `%${filters.query}%`;
-            params.push(term, term, term);
+            params.push(term, term, term, term, term);
         }
 
         if (queue === 'zurueckgestellt') {

@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type {
   FollowUpApiPort,
@@ -119,7 +119,8 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
               .select([
                 'deals.id as id',
                 'deals.customer_id as customerId',
-                'customers.name as customerName',
+                kyselySql<string | null>`coalesce(nullif(btrim(customers.name), ''), nullif(btrim(customers.first_name), ''), nullif(btrim(customers.company), ''))`.as('customerName'),
+                kyselySql<string | null>`nullif(btrim(customers.company), '')`.as('customerCompany'),
                 'deals.name as name',
                 'deals.value as value',
                 'deals.stage as stage',
@@ -146,6 +147,8 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
               query = query.where((eb) => eb.or([
                 eb('deals.name', 'ilike', pattern),
                 eb('customers.name', 'ilike', pattern),
+                eb('customers.first_name', 'ilike', pattern),
+                eb('customers.company', 'ilike', pattern),
               ]));
             }
 
@@ -163,7 +166,8 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
             .select([
               'tasks.id as id',
               'tasks.customer_id as customerId',
-              'customers.name as customerName',
+              kyselySql<string | null>`coalesce(nullif(btrim(customers.name), ''), nullif(btrim(customers.first_name), ''), nullif(btrim(customers.company), ''))`.as('customerName'),
+              kyselySql<string | null>`nullif(btrim(customers.company), '')`.as('customerCompany'),
               'tasks.title as title',
               'tasks.description as description',
               'tasks.due_date as dueDate',
@@ -212,6 +216,8 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
               eb('tasks.title', 'ilike', pattern),
               eb('tasks.description', 'ilike', pattern),
               eb('customers.name', 'ilike', pattern),
+              eb('customers.first_name', 'ilike', pattern),
+              eb('customers.company', 'ilike', pattern),
             ]));
           }
 
@@ -279,6 +285,7 @@ function mapTaskFollowUpItem(row: {
   id: number;
   customerId: number | null;
   customerName: string | null;
+  customerCompany: string | null;
   title: string;
   dueDate: Date | string | null;
   priority: string;
@@ -292,6 +299,7 @@ function mapTaskFollowUpItem(row: {
     sourceType: 'task',
     customerId: row.customerId === null ? null : Number(row.customerId),
     customerName: row.customerName,
+    customerCompany: row.customerCompany,
     title: row.title,
     reason: queueReason(queue, { dueDate, snoozedUntil: row.snoozedUntil, now }),
     dueDate,
@@ -306,6 +314,7 @@ function mapDealFollowUpItem(row: {
   id: number;
   customerId: number | null;
   customerName: string | null;
+  customerCompany: string | null;
   name: string;
   value: string;
   stage: string;
@@ -319,6 +328,7 @@ function mapDealFollowUpItem(row: {
     sourceType: 'deal',
     customerId: row.customerId === null ? null : Number(row.customerId),
     customerName: row.customerName,
+    customerCompany: row.customerCompany,
     dealId: Number(row.id),
     dealName: row.name,
     dealValue: Number.isFinite(value) ? value : 0,

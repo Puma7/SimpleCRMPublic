@@ -1,7 +1,7 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-14 (system/mail/UX/security audit)
-**Integration branch:** `codex/system-mail-ux-security-audit-complete`
+**Last updated:** 2026-07-22 (customer company in tasks and follow-ups)
+**Integration branch:** `codex/customer-company-task-followup`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 **Current audit:** [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
@@ -59,6 +59,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Electron E2E | Each suite creates an isolated standalone user-data directory and completes first-run authentication |
 | System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers, RLS-sichere MFA-Mutationen und multi-replizierter Login-Challenge-State gehärtet; siehe aktuellen Auditbericht |
 | E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
+| CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
 
 ---
 

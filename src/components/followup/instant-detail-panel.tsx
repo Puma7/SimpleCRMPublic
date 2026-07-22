@@ -40,7 +40,12 @@ export function InstantDetailPanel({
       <div className="px-4 py-3 space-y-2">
         <div className="flex items-center gap-2">
           <User className="h-4 w-4 text-muted-foreground" />
-          <span className="font-medium text-sm">{item.customer_name || '—'}</span>
+          <div className="min-w-0">
+            <div className="truncate font-medium text-sm">{item.customer_name || '—'}</div>
+            {item.customer_company && (
+              <div className="truncate text-xs text-muted-foreground">{item.customer_company}</div>
+            )}
+          </div>
         </div>
 
         {item.deal_name && (

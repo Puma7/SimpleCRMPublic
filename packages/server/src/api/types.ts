@@ -930,6 +930,7 @@ export type DashboardUpcomingTaskRecord = {
   customerId: number | null;
   dueDate: string | null;
   customerName: string | null;
+  customerCompany?: string | null;
 };
 
 export type DashboardApiPort = {
@@ -961,6 +962,7 @@ export type FollowUpItemRecord = {
   sourceType: 'task' | 'deal';
   customerId: number | null;
   customerName: string | null;
+  customerCompany?: string | null;
   dealId?: number | null;
   dealName?: string | null;
   dealValue?: number | null;
@@ -1182,6 +1184,8 @@ export type TaskRecord = {
   sourceSqliteId: number;
   customerSourceSqliteId: number;
   customerId: number | null;
+  customerName?: string | null;
+  customerCompany?: string | null;
   title: string;
   description: string | null;
   dueDate: string | null;

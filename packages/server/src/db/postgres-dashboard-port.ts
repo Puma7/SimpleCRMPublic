@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type {
   DashboardApiPort,
@@ -143,7 +143,8 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
               'tasks.priority as priority',
               'tasks.customer_id as customerId',
               'tasks.due_date as dueDate',
-              'customers.name as customerName',
+              kyselySql<string | null>`coalesce(nullif(btrim(customers.name), ''), nullif(btrim(customers.first_name), ''), nullif(btrim(customers.company), ''))`.as('customerName'),
+              kyselySql<string | null>`nullif(btrim(customers.company), '')`.as('customerCompany'),
             ])
             .where('tasks.workspace_id', '=', input.workspaceId)
             .where('tasks.completed', '=', false)
@@ -158,6 +159,7 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
             customerId: row.customerId === null ? null : Number(row.customerId),
             dueDate: row.dueDate === null ? null : timestampToIso(row.dueDate),
             customerName: row.customerName,
+            customerCompany: row.customerCompany,
           }));
         },
         { applySession: options.applyWorkspaceSession },

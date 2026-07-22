@@ -78,6 +78,8 @@ Definiert in `shared/ipc/channels.ts`, registriert in `electron/ipc/router.ts`:
 
 Typen: `src/services/data/types.ts`.
 
+Aufgaben-, Dashboard- und Follow-up-Abfragen liefern den kompatiblen Kundennamen als ersten nichtleeren Wert aus Name, Vorname und Firma. Die Firma bleibt zusätzlich separat als `customerCompany` (Server) beziehungsweise `customer_company` (Desktop-Renderer) erhalten; beide PostgreSQL-Joins müssen immer auch `workspace_id` vergleichen.
+
 ---
 
 ## Follow-up-Implementierung
