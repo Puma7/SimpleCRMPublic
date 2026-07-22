@@ -70,6 +70,15 @@ describe('InstantDetailPanel', () => {
     expect(screen.getByText('ACME Holding GmbH')).toBeTruthy();
   });
 
+  test('does not repeat the company when it is already the customer display name', () => {
+    const companyOnlyItem = {
+      ...baseItem,
+      customer_name: 'ACME Holding GmbH',
+    };
+    render(<InstantDetailPanel {...defaultProps} item={companyOnlyItem} />);
+    expect(screen.getAllByText('ACME Holding GmbH')).toHaveLength(1);
+  });
+
   test('displays item title', () => {
     render(<InstantDetailPanel {...defaultProps} />);
     expect(screen.getByText('Follow up with ACME')).toBeTruthy();

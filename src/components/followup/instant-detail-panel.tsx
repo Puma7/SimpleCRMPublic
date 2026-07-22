@@ -42,7 +42,9 @@ export function InstantDetailPanel({
           <User className="h-4 w-4 text-muted-foreground" />
           <div className="min-w-0">
             <div className="truncate font-medium text-sm">{item.customer_name || '—'}</div>
-            {item.customer_company && (
+            {item.customer_company
+              && item.customer_company.trim().toLocaleLowerCase() !== item.customer_name.trim().toLocaleLowerCase()
+              && (
               <div className="truncate text-xs text-muted-foreground">{item.customer_company}</div>
             )}
           </div>

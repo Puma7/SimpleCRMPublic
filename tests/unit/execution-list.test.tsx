@@ -45,3 +45,22 @@ test('shows customer company in the follow-up execution list', () => {
   expect(screen.getByText('Anna Meyer')).toBeTruthy();
   expect(screen.getByText('Meyer GmbH')).toBeTruthy();
 });
+
+test('does not repeat the company when it is already the customer display name', () => {
+  render(
+    <ExecutionList
+      items={[{ ...item, customer_name: 'Meyer GmbH' }]}
+      loading={false}
+      selectedItem={null}
+      selectedItemIds={new Set()}
+      activeQueue="heute"
+      onItemSelect={jest.fn()}
+      onItemToggleSelect={jest.fn()}
+      onComplete={jest.fn()}
+      onSnooze={jest.fn()}
+      onQueueSwitch={jest.fn()}
+    />,
+  );
+
+  expect(screen.getAllByText('Meyer GmbH')).toHaveLength(1);
+});
