@@ -763,6 +763,54 @@ function runMigrations() {
             setSyncInfo('atomic_task_calendar_v1', '1');
         }
 
+        if (!getSyncInfo('atomic_task_calendar_cascade_v2')) {
+            const taskForeignKey = (db.prepare(`PRAGMA foreign_key_list(${CALENDAR_EVENTS_TABLE})`).all() as Array<{
+                from: string;
+                table: string;
+                on_delete: string;
+            }>).find((foreignKey) => foreignKey.from === 'task_id' && foreignKey.table === TASKS_TABLE);
+
+            if (taskForeignKey?.on_delete.toUpperCase() !== 'CASCADE') {
+                db.transaction(() => {
+                    db!.exec(`
+                        DROP TABLE IF EXISTS calendar_events_atomic_v2;
+                        CREATE TABLE calendar_events_atomic_v2 (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            title TEXT NOT NULL,
+                            description TEXT,
+                            start_date TEXT NOT NULL,
+                            end_date TEXT NOT NULL,
+                            all_day INTEGER NOT NULL DEFAULT 0,
+                            color_code TEXT,
+                            event_type TEXT,
+                            recurrence_rule TEXT,
+                            task_id INTEGER,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (task_id) REFERENCES ${TASKS_TABLE}(id) ON DELETE CASCADE
+                        );
+                        INSERT INTO calendar_events_atomic_v2 (
+                            id, title, description, start_date, end_date, all_day, color_code,
+                            event_type, recurrence_rule, task_id, created_at, updated_at
+                        )
+                        SELECT id, title, description, start_date, end_date, all_day, color_code,
+                               event_type, recurrence_rule, task_id, created_at, updated_at
+                          FROM ${CALENDAR_EVENTS_TABLE};
+                        DROP TABLE ${CALENDAR_EVENTS_TABLE};
+                        ALTER TABLE calendar_events_atomic_v2 RENAME TO ${CALENDAR_EVENTS_TABLE};
+                        CREATE INDEX IF NOT EXISTS idx_calendar_events_start_date
+                            ON ${CALENDAR_EVENTS_TABLE}(start_date);
+                        CREATE INDEX IF NOT EXISTS idx_calendar_events_end_date
+                            ON ${CALENDAR_EVENTS_TABLE}(end_date);
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_events_task_unique
+                            ON ${CALENDAR_EVENTS_TABLE}(task_id)
+                            WHERE task_id IS NOT NULL;
+                    `);
+                })();
+            }
+            setSyncInfo('atomic_task_calendar_cascade_v2', '1');
+        }
+
         // Migration: Add customerNumber column to customers table if it doesn't exist
         const customerColumns = db.prepare(`PRAGMA table_info(${CUSTOMERS_TABLE})`).all();
         const hasCustomerNumber = customerColumns.some((col: any) => col.name === 'customerNumber');
@@ -2785,7 +2833,7 @@ export function createCalendarEntry(input: SqliteCalendarEntryMutationInput): Sq
         const eventResult = createCalendarEvent({
             ...input.event,
             title: task?.title ?? title,
-            description: task?.description ?? input.event.description ?? '',
+            description: input.event.description ?? task?.description ?? '',
             color_code: task
                 ? (task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR)
                 : input.event.color_code,
@@ -2859,6 +2907,14 @@ export function updateCalendarEntry(
             if (input.event.description !== undefined) {
                 taskFields.push('description = @description');
                 taskValues.description = input.event.description;
+            }
+            if (input.schedule?.mode === 'existing' && input.schedule.task?.priority !== undefined) {
+                taskFields.push('priority = @priority');
+                taskValues.priority = input.schedule.task.priority;
+            }
+            if (input.schedule?.mode === 'existing' && input.schedule.task?.completed !== undefined) {
+                taskFields.push('completed = @completed');
+                taskValues.completed = input.schedule.task.completed ? 1 : 0;
             }
             if (input.event.start_date !== undefined || input.schedule?.mode === 'existing') {
                 taskFields.push('due_date = @due_date');

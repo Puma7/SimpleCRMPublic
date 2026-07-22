@@ -327,10 +327,37 @@ function parseTaskSchedule(raw: unknown):
   }
   if (raw.mode === 'existing') {
     const taskId = normalizePositiveBodyInt(raw.taskId, 'taskId');
-    if (!taskId.ok || Object.keys(raw).some((key) => key !== 'mode' && key !== 'taskId')) {
+    if (
+      !taskId.ok
+      || Object.keys(raw).some((key) => key !== 'mode' && key !== 'taskId' && key !== 'task')
+      || (raw.task !== undefined && !isPlainObject(raw.task))
+    ) {
       return { ok: false, response: error(400, 'validation_error', 'Bestehender Task-Link ist ungueltig') };
     }
-    return { ok: true, value: { mode: 'existing', taskId: taskId.value } };
+    const task = raw.task as Record<string, unknown> | undefined;
+    if (
+      task
+      && (
+        Object.keys(task).some((key) => key !== 'priority' && key !== 'completed')
+        || (task.priority !== undefined && (typeof task.priority !== 'string' || !task.priority.trim()))
+        || (task.completed !== undefined && typeof task.completed !== 'boolean')
+      )
+    ) {
+      return { ok: false, response: error(400, 'validation_error', 'Task-Aenderung ist ungueltig') };
+    }
+    return {
+      ok: true,
+      value: {
+        mode: 'existing',
+        taskId: taskId.value,
+        ...(task ? {
+          task: {
+            ...(typeof task.priority === 'string' ? { priority: task.priority.trim() } : {}),
+            ...(typeof task.completed === 'boolean' ? { completed: task.completed } : {}),
+          },
+        } : {}),
+      },
+    };
   }
   if (raw.mode !== 'create' || !isPlainObject(raw.task)) {
     return { ok: false, response: error(400, 'validation_error', 'schedule.mode ist ungueltig') };

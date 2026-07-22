@@ -768,6 +768,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
         async (trx) => {
           const current = await selectTaskById(trx, input.workspaceId, input.id, input.viewer);
           if (!current) return null;
+          const previousCalendarEventId = current.calendarEventId;
           await lockTaskCalendarEvent(trx, input.workspaceId, current);
 
           const customer = values.customerId === undefined
@@ -798,7 +799,20 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             await syncTaskCalendarEvent(trx, input.workspaceId, task);
             task = await selectTaskById(trx, input.workspaceId, Number(row.id));
           }
-          return task ? { ok: true, task } : null;
+          if (!task) return null;
+          const calendarEventChange = previousCalendarEventId === null || previousCalendarEventId === undefined
+            ? undefined
+            : {
+                type: task.calendarEventId === null || task.calendarEventId === undefined
+                  ? 'deleted' as const
+                  : 'updated' as const,
+                eventId: previousCalendarEventId,
+              };
+          return {
+            ok: true,
+            task,
+            ...(calendarEventChange ? { calendarEventChange } : {}),
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -861,7 +875,7 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
                 workspace_id: input.workspaceId,
                 source_sqlite_id: serverCreatedCalendarEventSourceSqliteId(),
                 title: task?.title ?? input.event.title?.trim() ?? '',
-                description: task?.description ?? input.event.description ?? null,
+                description: input.event.description ?? task?.description ?? null,
                 start_date: start,
                 end_date: end,
                 all_day: input.event.allDay ?? false,
@@ -1162,7 +1176,13 @@ async function resolveCalendarSchedule(
     const now = new Date();
     await trx
       .updateTable('tasks')
-      .set({ due_date: dueDate, last_modified: now, updated_at: now })
+      .set({
+        due_date: dueDate,
+        ...(schedule.task?.priority === undefined ? {} : { priority: schedule.task.priority }),
+        ...(schedule.task?.completed === undefined ? {} : { completed: schedule.task.completed }),
+        last_modified: now,
+        updated_at: now,
+      })
       .where('workspace_id', '=', workspaceId)
       .where('id', '=', task.id)
       .execute();

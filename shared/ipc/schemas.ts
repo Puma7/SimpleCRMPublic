@@ -184,13 +184,20 @@ const calendarEventRecordSchema = z.object({
 const calendarEntrySuccessSchema = z.object({
   success: z.literal(true),
   id: z.number().int().positive(),
-  event: calendarEventRecordSchema.optional(),
+  event: calendarEventRecordSchema,
   task: taskRecordSchema.nullable().optional(),
 }).passthrough();
 
 const taskScheduleSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('none') }).strict(),
-  z.object({ mode: z.literal('existing'), taskId: z.number().int().positive() }).strict(),
+  z.object({
+    mode: z.literal('existing'),
+    taskId: z.number().int().positive(),
+    task: z.object({
+      priority: z.string().trim().min(1).optional(),
+      completed: z.boolean().optional(),
+    }).strict().optional(),
+  }).strict(),
   z.object({
     mode: z.literal('create'),
     task: z.object({

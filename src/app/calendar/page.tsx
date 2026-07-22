@@ -45,6 +45,7 @@ import {
 import { CalendarEventDetails } from './components/event-details';
 import { CalendarEventForm } from './components/event-form';
 import type { EventFormData, EventFormSubmitPayload, TaskFormState } from './types';
+import { toCalendarRbcEvent } from './date-utils';
 
 // Initialize calendar
 const locales = {
@@ -70,11 +71,15 @@ const RETRY_DELAY_MS = 3000;
 // Database API
 type CalendarSchedule =
   | { mode: 'none' }
-  | { mode: 'existing'; taskId: number }
+  | {
+      mode: 'existing';
+      taskId: number;
+      task?: { priority?: string; completed?: boolean };
+    }
   | {
       mode: 'create';
       task: {
-        customerId: number;
+        customerId?: number;
         title: string;
         description?: string | null;
         priority?: string;
@@ -98,6 +103,7 @@ type CalendarMutationResult = {
   success: boolean;
   id: number;
   lastInsertRowid?: number;
+  event: CalendarEvent;
   task?: { id: number | string } | null;
 };
 
@@ -429,27 +435,7 @@ export default function CalendarPage() {
 
       try {
         const dbEvents = await dbApi.getCalendarEvents();
-        const rbcEvents = dbEvents.map((event: CalendarEvent) => {
-          let parsedRule = event.recurrence_rule;
-          if (typeof event.recurrence_rule === 'string' && event.recurrence_rule !== null && event.recurrence_rule !== '') {
-            try {
-              parsedRule = JSON.parse(event.recurrence_rule);
-            } catch (e) {
-              console.error('Error parsing recurrence rule for event:', event.id, e);
-              parsedRule = null;
-            }
-          }
-          
-          return {
-            ...event,
-            id: event.id,
-            start: new Date(event.start_date),
-            end: new Date(event.end_date),
-            allDay: event.all_day,
-            recurrence_rule: parsedRule,
-            task_id: event.task_id ?? null,
-          };
-        });
+        const rbcEvents = dbEvents.map(toCalendarRbcEvent);
         setEvents(rbcEvents);
         fetchRetryCount.current = 0; // Reset retry count on success
       } catch (error) {
@@ -593,11 +579,12 @@ export default function CalendarPage() {
       
       console.log('Updating event after drag/resize:', dbEvent);
       
-      await dbApi.updateCalendarEvent(dbEvent);
+      const result = await dbApi.updateCalendarEvent(dbEvent);
+      const canonicalEvent = toCalendarRbcEvent(result.event);
 
       setEvents(prev => prev.map(e =>
         e.id === event.id
-          ? updatedEvent
+          ? canonicalEvent
           : e
       ));
 
@@ -674,7 +661,7 @@ export default function CalendarPage() {
         ? {
             mode: 'create',
             task: {
-              customerId: task.customer_id,
+              ...(task.customer_id > 0 ? { customerId: task.customer_id } : {}),
               title: newEventData.title,
               description: task.description ?? newEventData.description ?? '',
               priority: task.priority,
@@ -693,21 +680,7 @@ export default function CalendarPage() {
         throw new Error('Die verknüpfte Aufgabe fehlt in der atomaren Antwort.');
       }
       
-      // Convert the returned data to RBC format
-      const newEvent: CalendarRBCEvent = {
-        id: insertedEventId,
-        title: newEventData.title,
-        start: newEventData.start,
-        end: newEventData.end,
-        allDay: newEventData.allDay,
-        description: newEventData.description,
-        color_code: newEventData.color_code,
-        event_type: newEventData.event_type,
-        recurrence_rule: newEventData.recurrence_rule,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        task_id: createdTaskId,
-      };
+      const newEvent = toCalendarRbcEvent(data.event);
 
       setEvents(prev => [...prev, newEvent]);
 
@@ -764,12 +737,16 @@ export default function CalendarPage() {
       };
 
       const schedule: CalendarSchedule = task?.id
-        ? { mode: 'existing', taskId: task.id }
+        ? {
+            mode: 'existing',
+            taskId: task.id,
+            task: { priority: task.priority, completed: task.completed ?? false },
+          }
         : task
           ? {
               mode: 'create',
               task: {
-                customerId: task.customer_id,
+                ...(task.customer_id > 0 ? { customerId: task.customer_id } : {}),
                 title: updatedEventData.title,
                 description: task.description ?? updatedEventData.description ?? '',
                 priority: task.priority,
@@ -786,13 +763,9 @@ export default function CalendarPage() {
         throw new Error('Die verknüpfte Aufgabe fehlt in der atomaren Antwort.');
       }
 
+      const canonicalEvent = toCalendarRbcEvent(data.event);
       setEvents(prev => prev.map(event =>
-        event.id === selectedEvent.id ? {
-          ...event,
-          ...updatedEventData,
-          id: event.id,
-          task_id: linkedTaskId,
-        } : event
+        event.id === selectedEvent.id ? canonicalEvent : event
       ));
 
       if (!task && selectedEvent.task_id) {

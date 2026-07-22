@@ -68,6 +68,44 @@ describe('SQLite atomic task/calendar operations', () => {
     expect(result.task?.due_date).toBe('2026-07-23');
   });
 
+  test('keeps an enriched event description separate from the raw task description', () => {
+    const result = createCalendarEntry({
+      event: {
+        title: 'Angebot nachfassen',
+        description: 'Kunde anrufen\nKunde: Ada',
+        start_date: '2026-07-23T00:00:00.000Z',
+        end_date: '2026-07-24T00:00:00.000Z',
+        all_day: true,
+      },
+      schedule: {
+        mode: 'create',
+        task: {
+          customerId: 1,
+          title: 'Angebot nachfassen',
+          description: 'Kunde anrufen',
+        },
+      },
+    });
+
+    expect(result.event.description).toBe('Kunde anrufen\nKunde: Ada');
+    expect(result.task?.description).toBe('Kunde anrufen');
+  });
+
+  test('updates priority and completion when editing an existing task link', () => {
+    const created = createLinkedEntry();
+    const updated = updateCalendarEntry(created.event.id, {
+      event: {},
+      schedule: {
+        mode: 'existing',
+        taskId: created.task!.id,
+        task: { priority: 'Low', completed: true },
+      },
+    });
+
+    expect(updated.task).toMatchObject({ priority: 'Low', completed: 1 });
+    expect(updated.event.color_code).toBe('#94a3b8');
+  });
+
   test('rolls the task back when the calendar insert fails', () => {
     db.exec(`
       CREATE TRIGGER reject_calendar_insert
@@ -238,5 +276,53 @@ describe('SQLite task/calendar legacy migration', () => {
       INSERT INTO calendar_events (title, start_date, end_date, all_day, event_type, task_id)
       VALUES ('Duplicate', '2026-07-23', '2026-07-24', 1, 'task', 1)
     `).run()).toThrow();
+  });
+
+  test('rebuilds an already-migrated legacy task foreign key with delete cascade', () => {
+    mkdirSync(dirname(databasePath), { recursive: true });
+    const seed = new Database(databasePath);
+    try {
+      bootstrapFreshDatabaseSchema(seed);
+      seed.pragma('foreign_keys = OFF');
+      seed.exec(`
+        DROP INDEX idx_calendar_events_task_unique;
+        DROP TABLE calendar_events;
+        CREATE TABLE calendar_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          description TEXT,
+          start_date TEXT NOT NULL,
+          end_date TEXT NOT NULL,
+          all_day INTEGER NOT NULL DEFAULT 0,
+          color_code TEXT,
+          event_type TEXT,
+          recurrence_rule TEXT,
+          task_id INTEGER,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+        CREATE UNIQUE INDEX idx_calendar_events_task_unique
+          ON calendar_events(task_id) WHERE task_id IS NOT NULL;
+        INSERT INTO customers (id, name, company) VALUES (1, 'Ada', 'Analytical Engines');
+        INSERT INTO tasks (id, customer_id, title, priority) VALUES (1, 1, 'Legacy task', 'Medium');
+        INSERT INTO calendar_events (
+          id, title, start_date, end_date, all_day, event_type, task_id
+        ) VALUES (10, 'Legacy event', '2026-07-20', '2026-07-21', 1, 'task', 1);
+        INSERT OR REPLACE INTO sync_info (key, value) VALUES ('atomic_task_calendar_v1', '1');
+        DELETE FROM sync_info WHERE key = 'atomic_task_calendar_cascade_v2';
+      `);
+    } finally {
+      seed.close();
+    }
+
+    initializeDatabase();
+
+    const foreignKeys = getDb().prepare('PRAGMA foreign_key_list(calendar_events)').all() as Array<Record<string, unknown>>;
+    expect(foreignKeys).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'task_id', table: 'tasks', on_delete: 'CASCADE' }),
+    ]));
+    expect(deleteTask(1)).toMatchObject({ success: true });
+    expect(getDb().prepare('SELECT id FROM calendar_events WHERE id = 10').get()).toBeUndefined();
   });
 });

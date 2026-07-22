@@ -1,6 +1,8 @@
 import { IPCChannels } from '../../shared/ipc/channels';
 import { getPayloadSchema, getResultSchema } from '../../shared/ipc/schemas';
 import { serverMigrations } from '../../packages/server/src/migrations';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 describe('atomic task and calendar contracts', () => {
   test('registers a workspace-safe one-calendar-entry-per-task migration', () => {
@@ -29,6 +31,20 @@ describe('atomic task and calendar contracts', () => {
     })).toThrow();
   });
 
+  test('accepts task field updates for an existing calendar link', () => {
+    const schema = getPayloadSchema(IPCChannels.Calendar.UpdateCalendarEvent);
+
+    expect(schema.parse({
+      id: 12,
+      event: { title: 'Termin' },
+      schedule: {
+        mode: 'existing',
+        taskId: 7,
+        task: { priority: 'Low', completed: true },
+      },
+    })).toBeDefined();
+  });
+
   test('rejects malformed task mutations and calendar results', () => {
     expect(() => getPayloadSchema(IPCChannels.Tasks.Create).parse({
       title: '',
@@ -40,6 +56,19 @@ describe('atomic task and calendar contracts', () => {
       id: 'not-a-number',
     })).toThrow();
 
+    expect(() => getResultSchema(IPCChannels.Calendar.AddCalendarEvent).parse({
+      success: true,
+      id: 4,
+      task: null,
+    })).toThrow();
+
     expect(() => getPayloadSchema(IPCChannels.Tasks.ToggleCompletion).parse(1)).toThrow();
+  });
+
+  test('does not coerce a missing task customer to id zero', () => {
+    const source = readFileSync(join(process.cwd(), 'src', 'app', 'tasks', 'page.tsx'), 'utf8');
+
+    expect(source).toContain('...(newTask.customer_id > 0 ? { customerId: Number(newTask.customer_id) } : {})');
+    expect(source).not.toMatch(/createTask:\s*\{\s*customerId:/);
   });
 });

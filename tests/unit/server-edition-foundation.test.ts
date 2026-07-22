@@ -18824,8 +18824,10 @@ describe('server edition foundation', () => {
           return input.id === 51
             ? {
               ok: true,
+              calendarEventChange: { type: 'updated' as const, eventId: 61 },
               task: {
                 ...makeTaskRecord(51),
+                calendarEventId: 61,
                 completed: input.values.completed ?? false,
                 snoozedUntil: input.values.snoozedUntil ?? null,
               },
@@ -18834,7 +18836,7 @@ describe('server edition foundation', () => {
         },
         async delete(input) {
           taskDeleteCalls.push(input);
-          return input.id === 51 ? makeTaskRecord(51) : null;
+          return input.id === 51 ? { ...makeTaskRecord(51), calendarEventId: 61 } : null;
         },
       },
     }));
@@ -19038,8 +19040,11 @@ describe('server edition foundation', () => {
       ['deal.deleted', WORKSPACE_A_ID, 'deal', '41'],
       ['task.created', WORKSPACE_A_ID, 'task', '51'],
       ['task.updated', WORKSPACE_A_ID, 'task', '51'],
+      ['calendar_event.updated', WORKSPACE_A_ID, 'calendar_event', '61'],
       ['task.updated', WORKSPACE_A_ID, 'task', '51'],
+      ['calendar_event.updated', WORKSPACE_A_ID, 'calendar_event', '61'],
       ['task.deleted', WORKSPACE_A_ID, 'task', '51'],
+      ['calendar_event.deleted', WORKSPACE_A_ID, 'calendar_event', '61'],
     ]);
     expect(events[0].payload).toMatchObject({
       id: 41,

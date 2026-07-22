@@ -321,7 +321,7 @@ export default function TasksPage() {
             dueDate: dueDateSnapshot,
             customerName: selectedCustomerName || undefined,
             createTask: {
-              customerId: Number(newTask.customer_id),
+              ...(newTask.customer_id > 0 ? { customerId: Number(newTask.customer_id) } : {}),
               title: trimmedTitle,
               description: trimmedDescription || null,
               priority: newTask.priority,

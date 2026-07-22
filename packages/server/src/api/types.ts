@@ -1220,7 +1220,11 @@ export type TaskMutationInput = {
 };
 
 export type TaskMutationPortResult =
-  | { ok: true; task: TaskRecord }
+  | {
+      ok: true;
+      task: TaskRecord;
+      calendarEventChange?: { type: 'updated' | 'deleted'; eventId: number };
+    }
   | { ok: false; code: 'customer_not_found' | 'assigned_user_not_found' | 'assigned_group_not_found' };
 
 export type TaskApiPort = {

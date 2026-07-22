@@ -247,6 +247,51 @@ describe('PostgreSQL atomic task/calendar operations', () => {
     });
   });
 
+  test('keeps an enriched event description and updates fields on an existing task link', async () => {
+    const entries = createPostgresCalendarEntryPort({ db });
+    const created = await entries.create({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      event: {
+        title: 'Angebot nachfassen',
+        description: 'Kunde anrufen\nKunde: Ada',
+        startDate: '2026-07-29T00:00:00.000Z',
+        endDate: '2026-07-30T00:00:00.000Z',
+        allDay: true,
+      },
+      schedule: {
+        mode: 'create',
+        task: { title: 'Angebot nachfassen', description: 'Kunde anrufen', priority: 'High' },
+      },
+    });
+    expect(created).toMatchObject({
+      ok: true,
+      event: { description: 'Kunde anrufen\nKunde: Ada' },
+      task: { description: 'Kunde anrufen' },
+    });
+    if (!created.ok || !created.task) return;
+
+    const updated = await entries.update({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      id: created.event.id,
+      event: {},
+      schedule: {
+        mode: 'existing',
+        taskId: created.task.id,
+        task: { priority: 'Low', completed: true },
+      },
+    });
+
+    expect(updated).toMatchObject({
+      ok: true,
+      event: { colorCode: '#94a3b8' },
+      task: { priority: 'Low', completed: true },
+    });
+  });
+
   test('allows only one concurrent calendar link for a task', async () => {
     const tasks = createPostgresTaskReadPort({ db });
     const entries = createPostgresCalendarEntryPort({ db });

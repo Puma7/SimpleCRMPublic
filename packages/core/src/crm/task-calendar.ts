@@ -13,7 +13,11 @@ export type TaskScheduleValues = Readonly<{
 
 export type TaskScheduleInput =
   | Readonly<{ mode: 'none' }>
-  | Readonly<{ mode: 'existing'; taskId: number }>
+  | Readonly<{
+      mode: 'existing';
+      taskId: number;
+      task?: Readonly<Pick<TaskScheduleValues, 'priority' | 'completed'>>;
+    }>
   | Readonly<{ mode: 'create'; task: TaskScheduleValues }>;
 
 export type CalendarEntryValues = Readonly<{

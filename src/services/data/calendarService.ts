@@ -8,7 +8,7 @@ interface AddTaskEventOptions {
   customerName?: string;
   colorCode?: string;
   createTask?: {
-    customerId: number;
+    customerId?: number;
     title: string;
     description?: string | null;
     priority?: string;
