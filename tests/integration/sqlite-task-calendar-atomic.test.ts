@@ -68,6 +68,24 @@ describe('SQLite atomic task/calendar operations', () => {
     expect(result.task?.due_date).toBe('2026-07-23');
   });
 
+  test('uses the explicit local calendar day for a timed task entry', () => {
+    const result = createCalendarEntry({
+      event: {
+        title: 'Spaeter Termin',
+        start_date: '2026-07-22T22:30:00.000Z',
+        end_date: '2026-07-22T23:30:00.000Z',
+        all_day: false,
+      },
+      schedule: {
+        mode: 'create',
+        dueDate: '2026-07-23',
+        task: { customerId: 1, title: 'Spaeter Termin' },
+      },
+    });
+
+    expect(result.task?.due_date).toBe('2026-07-23');
+  });
+
   test('keeps an enriched event description separate from the raw task description', () => {
     const result = createCalendarEntry({
       event: {
@@ -141,6 +159,31 @@ describe('SQLite atomic task/calendar operations', () => {
       event_type: 'task',
       recurrence_rule: null,
     });
+  });
+
+  test('preserves timed event bounds when only task completion changes', () => {
+    const created = createCalendarEntry({
+      event: {
+        title: 'Zeitgebundene Aufgabe',
+        start_date: '2026-07-23T12:00:00.000Z',
+        end_date: '2026-07-23T13:00:00.000Z',
+        all_day: false,
+      },
+      schedule: {
+        mode: 'create',
+        dueDate: '2026-07-23',
+        task: { customerId: 1, title: 'Zeitgebundene Aufgabe' },
+      },
+    });
+
+    expect(updateTaskCompletion(created.task!.id, true)).toMatchObject({ success: true });
+    expect(db.prepare('SELECT start_date, end_date, all_day, color_code FROM calendar_events WHERE id = ?')
+      .get(created.event.id)).toEqual({
+        start_date: '2026-07-23T12:00:00.000Z',
+        end_date: '2026-07-23T13:00:00.000Z',
+        all_day: 0,
+        color_code: '#94a3b8',
+      });
   });
 
   test('moving or deleting a linked entry updates but does not delete the task', () => {

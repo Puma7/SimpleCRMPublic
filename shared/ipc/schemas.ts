@@ -188,11 +188,20 @@ const calendarEntrySuccessSchema = z.object({
   task: taskRecordSchema.nullable().optional(),
 }).passthrough();
 
+const calendarTaskDueDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+});
+
 const taskScheduleSchema = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('none') }).strict(),
   z.object({
     mode: z.literal('existing'),
     taskId: z.number().int().positive(),
+    dueDate: calendarTaskDueDateSchema.optional(),
     task: z.object({
       priority: z.string().trim().min(1).optional(),
       completed: z.boolean().optional(),
@@ -200,6 +209,7 @@ const taskScheduleSchema = z.discriminatedUnion('mode', [
   }).strict(),
   z.object({
     mode: z.literal('create'),
+    dueDate: calendarTaskDueDateSchema.optional(),
     task: z.object({
       customerId: z.number().int().positive().optional(),
       title: z.string().trim().min(1),

@@ -796,7 +796,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
           if (!row) return null;
           let task = await selectTaskById(trx, input.workspaceId, Number(row.id));
           if (task) {
-            await syncTaskCalendarEvent(trx, input.workspaceId, task);
+            await syncTaskCalendarEvent(trx, input.workspaceId, task, values.dueDate !== undefined);
             task = await selectTaskById(trx, input.workspaceId, Number(row.id));
           }
           if (!task) return null;
@@ -862,7 +862,7 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
               trx,
               input.workspaceId,
               input.schedule,
-              start,
+              calendarScheduleDueDate(input.schedule, start),
               input.viewer,
             );
             if (!scheduled.ok) return scheduled;
@@ -945,7 +945,7 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
                   trx,
                   input.workspaceId,
                   input.schedule,
-                  start,
+                  calendarScheduleDueDate(input.schedule, start),
                   input.viewer,
                   input.id,
                 );
@@ -961,8 +961,11 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
             }
 
             if (task) {
+              const shouldUpdateTaskDueDate = input.event.startDate !== undefined || input.schedule !== undefined;
               const taskPatch: Partial<Updateable<TasksTable>> = {
-                due_date: start,
+                ...(shouldUpdateTaskDueDate
+                  ? { due_date: calendarScheduleDueDate(input.schedule, start) }
+                  : {}),
                 last_modified: new Date(),
                 updated_at: new Date(),
               };
@@ -1097,6 +1100,7 @@ async function syncTaskCalendarEvent(
   trx: WorkspaceTransaction,
   workspaceId: string,
   task: TaskRecord,
+  reschedule = false,
 ): Promise<void> {
   if (task.calendarEventId === null || task.calendarEventId === undefined) return;
   if (task.dueDate === null) {
@@ -1108,16 +1112,14 @@ async function syncTaskCalendarEvent(
     return;
   }
 
-  const start = taskCalendarStart(task.dueDate);
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const start = reschedule ? taskCalendarStart(task.dueDate) : null;
+  const end = start ? new Date(start.getTime() + 24 * 60 * 60 * 1000) : null;
   await trx
     .updateTable('calendar_events')
     .set({
       title: task.title,
       description: task.description,
-      start_date: start,
-      end_date: end,
-      all_day: true,
+      ...(start && end ? { start_date: start, end_date: end, all_day: true } : {}),
       color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
       event_type: 'task',
       recurrence_rule: null,
@@ -1151,6 +1153,12 @@ function taskCalendarStart(dueDate: string): Date {
     throw new Error('task dueDate must be a valid timestamp');
   }
   return new Date(`${day}T00:00:00.000Z`);
+}
+
+function calendarScheduleDueDate(schedule: TaskScheduleInput | undefined, fallback: Date): Date {
+  return schedule && schedule.mode !== 'none' && schedule.dueDate
+    ? taskCalendarStart(schedule.dueDate)
+    : fallback;
 }
 
 type CalendarScheduleResolution =

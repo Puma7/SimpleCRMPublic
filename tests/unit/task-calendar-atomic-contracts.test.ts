@@ -40,9 +40,16 @@ describe('atomic task and calendar contracts', () => {
       schedule: {
         mode: 'existing',
         taskId: 7,
+        dueDate: '2026-07-23',
         task: { priority: 'Low', completed: true },
       },
     })).toBeDefined();
+
+    expect(() => schema.parse({
+      id: 12,
+      event: { title: 'Termin' },
+      schedule: { mode: 'existing', taskId: 7, dueDate: '2026-02-30' },
+    })).toThrow();
   });
 
   test('rejects malformed task mutations and calendar results', () => {

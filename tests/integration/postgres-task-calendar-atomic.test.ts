@@ -15,6 +15,7 @@ import {
 } from '../../packages/server/src/db/postgres-core-crm-read-ports';
 import { createPostgresCalendarEventReadPort } from '../../packages/server/src/db/postgres-extended-crm-read-ports';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
+import { runPostgresCoreCrmImport } from '../../packages/server/src/db/postgres-core-crm-import';
 import { serverMigrations } from '../../packages/server/src/migrations';
 import { createPgMigrationDatabase, runServerMigrations } from '../../packages/server/src/migrations/runner';
 
@@ -247,6 +248,28 @@ describe('PostgreSQL atomic task/calendar operations', () => {
     });
   });
 
+  test('uses the explicit local calendar day for a timed task entry', async () => {
+    const entries = createPostgresCalendarEntryPort({ db });
+    const created = await entries.create({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      event: {
+        title: 'Spaeter Termin',
+        startDate: '2026-07-22T22:30:00.000Z',
+        endDate: '2026-07-22T23:30:00.000Z',
+        allDay: false,
+      },
+      schedule: {
+        mode: 'create',
+        dueDate: '2026-07-23',
+        task: { title: 'Spaeter Termin' },
+      },
+    });
+
+    expect(created).toMatchObject({ ok: true, task: { dueDate: '2026-07-23T00:00:00.000Z' } });
+  });
+
   test('keeps an enriched event description and updates fields on an existing task link', async () => {
     const entries = createPostgresCalendarEntryPort({ db });
     const created = await entries.create({
@@ -290,6 +313,115 @@ describe('PostgreSQL atomic task/calendar operations', () => {
       event: { colorCode: '#94a3b8' },
       task: { priority: 'Low', completed: true },
     });
+  });
+
+  test('preserves timed event bounds when only task completion changes', async () => {
+    const entries = createPostgresCalendarEntryPort({ db });
+    const tasks = createPostgresTaskReadPort({ db });
+    const created = await entries.create({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      event: {
+        title: 'Zeitgebundene Aufgabe',
+        startDate: '2026-07-23T12:00:00.000Z',
+        endDate: '2026-07-23T13:00:00.000Z',
+        allDay: false,
+      },
+      schedule: {
+        mode: 'create',
+        dueDate: '2026-07-23',
+        task: { title: 'Zeitgebundene Aufgabe' },
+      },
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok || !created.task) return;
+
+    await expect(tasks.update!({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      id: created.task.id,
+      values: { completed: true },
+    })).resolves.toMatchObject({ ok: true });
+
+    const eventRow = await pool.query<{
+      start_date: Date;
+      end_date: Date;
+      all_day: boolean;
+      color_code: string;
+    }>('SELECT start_date, end_date, all_day, color_code FROM calendar_events WHERE id = $1', [created.event.id]);
+    expect(eventRow.rows[0]).toMatchObject({
+      start_date: new Date('2026-07-23T12:00:00.000Z'),
+      end_date: new Date('2026-07-23T13:00:00.000Z'),
+      all_day: false,
+      color_code: '#94a3b8',
+    });
+  });
+
+  test('deduplicates legacy task links while importing calendar events', async () => {
+    const runId = '30000000-0000-4000-8000-000000000001';
+    await pool.query(
+      `INSERT INTO sqlite_import_runs (id, workspace_id, plan_id, source_fingerprint, status)
+       VALUES ($1, $2, 'task-calendar-test', 'task-calendar-legacy-import', 'running')`,
+      [runId, WORKSPACE_ID],
+    );
+    const stagedRows = [
+      {
+        table: 'tasks',
+        sourcePk: '501',
+        row: { id: 501, title: 'Legacy task', due_date: '2026-08-01', priority: 'Medium', completed: 0 },
+      },
+      {
+        table: 'calendar_events',
+        sourcePk: '601',
+        row: {
+          id: 601,
+          title: 'Older link',
+          start_date: '2026-08-01T08:00:00.000Z',
+          end_date: '2026-08-01T09:00:00.000Z',
+          task_id: 501,
+          event_type: 'task',
+          updated_at: '2026-08-01T09:00:00.000Z',
+        },
+      },
+      {
+        table: 'calendar_events',
+        sourcePk: '602',
+        row: {
+          id: 602,
+          title: 'Newer link',
+          start_date: '2026-08-02T08:00:00.000Z',
+          end_date: '2026-08-02T09:00:00.000Z',
+          task_id: 501,
+          event_type: 'task',
+          updated_at: '2026-08-02T09:00:00.000Z',
+        },
+      },
+    ];
+    for (const staged of stagedRows) {
+      await pool.query(
+        `INSERT INTO sqlite_import_rows (
+          workspace_id, table_name, source_pk, source_row, source_row_sha256, imported_in_run_id
+        ) VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+        [WORKSPACE_ID, staged.table, staged.sourcePk, JSON.stringify(staged.row), `sha-${staged.sourcePk}`, runId],
+      );
+    }
+
+    await runPostgresCoreCrmImport(pool, { workspaceId: WORKSPACE_ID, runId });
+
+    const imported = await pool.query<{
+      source_sqlite_id: string;
+      task_id: string | null;
+      event_type: string | null;
+    }>(`SELECT source_sqlite_id::text, task_id::text, event_type
+          FROM calendar_events
+         WHERE source_sqlite_id IN (601, 602)
+         ORDER BY source_sqlite_id`);
+    expect(imported.rows).toEqual([
+      { source_sqlite_id: '601', task_id: null, event_type: null },
+      { source_sqlite_id: '602', task_id: expect.any(String), event_type: 'task' },
+    ]);
   });
 
   test('allows only one concurrent calendar link for a task', async () => {

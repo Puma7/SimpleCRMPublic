@@ -1,5 +1,13 @@
 import type { CalendarEvent, CalendarRBCEvent } from '@/types';
 
+export function toLocalCalendarDate(value: Date): string {
+  return [
+    String(value.getFullYear()).padStart(4, '0'),
+    String(value.getMonth() + 1).padStart(2, '0'),
+    String(value.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
 export function fromCalendarTimestamp(value: string, allDay: boolean | undefined): Date {
   if (!allDay) return new Date(value);
 

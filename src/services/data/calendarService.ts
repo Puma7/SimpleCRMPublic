@@ -96,7 +96,7 @@ export const calendarService = {
       createTask
         ? {
             event: sqliteCompatibleEvent,
-            schedule: { mode: 'create' as const, task: createTask },
+            schedule: { mode: 'create' as const, dueDate, task: createTask },
           }
         : sqliteCompatibleEvent,
     ) as {

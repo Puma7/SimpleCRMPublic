@@ -1,4 +1,4 @@
-import { fromCalendarTimestamp, toCalendarRbcEvent } from '@/app/calendar/date-utils';
+import { fromCalendarTimestamp, toCalendarRbcEvent, toLocalCalendarDate } from '@/app/calendar/date-utils';
 
 describe('calendar date conversion', () => {
   test('keeps an all-day UTC date on the same local calendar day west of UTC', () => {
@@ -35,5 +35,16 @@ describe('calendar date conversion', () => {
       event_type: 'task',
       task_id: 9,
     });
+  });
+
+  test('derives a task due date from the local calendar day east of UTC', () => {
+    const previousTimezone = process.env.TZ;
+    process.env.TZ = 'Europe/Berlin';
+
+    try {
+      expect(toLocalCalendarDate(new Date('2026-07-22T22:30:00.000Z'))).toBe('2026-07-23');
+    } finally {
+      process.env.TZ = previousTimezone;
+    }
   });
 });

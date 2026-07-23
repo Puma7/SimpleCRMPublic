@@ -45,7 +45,7 @@ const task = {
   calendarEventId: 41,
 };
 
-function makeApi(calls: unknown[], eventCalls: unknown[] = []) {
+function makeApi(calls: unknown[], eventCalls: unknown[] = [], auditCalls: unknown[] = []) {
   const ports = {
     auth: {},
     locks: {},
@@ -76,6 +76,11 @@ function makeApi(calls: unknown[], eventCalls: unknown[] = []) {
         eventCalls.push(input);
       },
     },
+    audit: {
+      async record(input: unknown) {
+        auditCalls.push(input);
+      },
+    },
   } as unknown as ServerApiPorts;
   return createServerApi(ports);
 }
@@ -84,7 +89,8 @@ describe('atomic calendar entry routes', () => {
   test('creates task and calendar entry through one server command', async () => {
     const calls: unknown[] = [];
     const eventCalls: unknown[] = [];
-    const api = makeApi(calls, eventCalls);
+    const auditCalls: unknown[] = [];
+    const api = makeApi(calls, eventCalls, auditCalls);
 
     const response = await api.handle({
       method: 'POST',
@@ -119,6 +125,10 @@ describe('atomic calendar entry routes', () => {
       viewer: principal,
     })]);
     expect(eventCalls).toContainEqual(expect.objectContaining({ type: 'task.created', entityId: '51' }));
+    expect(auditCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'calendar_entry.created', entityId: '41' }),
+      expect.objectContaining({ action: 'task.created', entityId: '51' }),
+    ]));
   });
 
   test('rejects an invalid task link before invoking the port', async () => {
@@ -171,7 +181,8 @@ describe('atomic calendar entry routes', () => {
   test('publishes the detached task after unlinking a calendar entry', async () => {
     const calls: unknown[] = [];
     const eventCalls: unknown[] = [];
-    const api = makeApi(calls, eventCalls);
+    const auditCalls: unknown[] = [];
+    const api = makeApi(calls, eventCalls, auditCalls);
 
     const response = await api.handle({
       method: 'PATCH',
@@ -189,5 +200,6 @@ describe('atomic calendar entry routes', () => {
       entityId: '51',
       payload: { id: 51, calendarEventId: null },
     }));
+    expect(auditCalls).toContainEqual(expect.objectContaining({ action: 'task.updated', entityId: '51' }));
   });
 });

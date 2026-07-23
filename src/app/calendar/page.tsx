@@ -45,7 +45,7 @@ import {
 import { CalendarEventDetails } from './components/event-details';
 import { CalendarEventForm } from './components/event-form';
 import type { EventFormData, EventFormSubmitPayload, TaskFormState } from './types';
-import { toCalendarRbcEvent } from './date-utils';
+import { toCalendarRbcEvent, toLocalCalendarDate } from './date-utils';
 
 // Initialize calendar
 const locales = {
@@ -74,10 +74,12 @@ type CalendarSchedule =
   | {
       mode: 'existing';
       taskId: number;
+      dueDate?: string;
       task?: { priority?: string; completed?: boolean };
     }
   | {
       mode: 'create';
+      dueDate?: string;
       task: {
         customerId?: number;
         title: string;
@@ -579,7 +581,12 @@ export default function CalendarPage() {
       
       console.log('Updating event after drag/resize:', dbEvent);
       
-      const result = await dbApi.updateCalendarEvent(dbEvent);
+      const result = await dbApi.updateCalendarEvent(
+        dbEvent,
+        event.task_id
+          ? { mode: 'existing', taskId: Number(event.task_id), dueDate: toLocalCalendarDate(start) }
+          : undefined,
+      );
       const canonicalEvent = toCalendarRbcEvent(result.event);
 
       setEvents(prev => prev.map(e =>
@@ -660,6 +667,7 @@ export default function CalendarPage() {
       const schedule: CalendarSchedule = task
         ? {
             mode: 'create',
+            dueDate: toLocalCalendarDate(newEventData.start),
             task: {
               ...(task.customer_id > 0 ? { customerId: task.customer_id } : {}),
               title: newEventData.title,
@@ -740,11 +748,13 @@ export default function CalendarPage() {
         ? {
             mode: 'existing',
             taskId: task.id,
+            dueDate: toLocalCalendarDate(updatedEventData.start),
             task: { priority: task.priority, completed: task.completed ?? false },
           }
         : task
           ? {
               mode: 'create',
+              dueDate: toLocalCalendarDate(updatedEventData.start),
               task: {
                 ...(task.customer_id > 0 ? { customerId: task.customer_id } : {}),
                 title: updatedEventData.title,

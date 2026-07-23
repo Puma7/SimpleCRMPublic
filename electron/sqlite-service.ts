@@ -2715,8 +2715,8 @@ export type SqliteCalendarEntryMutationResult = {
 const TASK_EVENT_DEFAULT_COLOR = '#3174ad';
 const TASK_EVENT_COMPLETED_COLOR = '#94a3b8';
 
-function calendarDueDate(startDate: string): string {
-  const dueDate = startDate.slice(0, 10);
+function calendarDueDate(startDate: string, explicitDueDate?: string): string {
+  const dueDate = (explicitDueDate ?? startDate).slice(0, 10);
   if (!hasValidCalendarDate(dueDate)) {
     throw new Error('Invalid calendar start date');
   }
@@ -2769,7 +2769,7 @@ function assertCalendarRange(startDate: string, endDate: string): void {
     }
 }
 
-function syncLinkedCalendarEvent(taskId: number): void {
+function syncLinkedCalendarEvent(taskId: number, reschedule = false): void {
     const task = readTask(taskId);
     if (!task?.calendar_event_id) return;
 
@@ -2778,13 +2778,11 @@ function syncLinkedCalendarEvent(taskId: number): void {
         return;
     }
 
-    const { startDate, endDate } = taskCalendarBounds(task.due_date.slice(0, 10));
+    const bounds = reschedule ? taskCalendarBounds(task.due_date.slice(0, 10)) : null;
     updateCalendarEvent(task.calendar_event_id, {
         title: task.title,
         description: task.description ?? '',
-        start_date: startDate,
-        end_date: endDate,
-        all_day: 1,
+        ...(bounds ? { start_date: bounds.startDate, end_date: bounds.endDate, all_day: 1 } : {}),
         color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
         event_type: 'task',
         recurrence_rule: null,
@@ -2809,7 +2807,7 @@ export function createCalendarEntry(input: SqliteCalendarEntryMutationInput): Sq
                 customer_id: schedule.task.customerId,
                 title: schedule.task.title,
                 description: schedule.task.description ?? '',
-                due_date: calendarDueDate(startDate),
+                due_date: calendarDueDate(startDate, schedule.dueDate),
                 priority: schedule.task.priority ?? 'Medium',
                 completed: schedule.task.completed ?? false,
                 calendar_event_id: null,
@@ -2826,7 +2824,7 @@ export function createCalendarEntry(input: SqliteCalendarEntryMutationInput): Sq
                 UPDATE ${TASKS_TABLE}
                    SET due_date = ?, last_modified = ?
                  WHERE id = ?
-            `).run(calendarDueDate(startDate), new Date().toISOString(), taskId);
+            `).run(calendarDueDate(startDate, schedule.dueDate), new Date().toISOString(), taskId);
         }
 
         const task = taskId ? readTask(taskId) : null;
@@ -2869,7 +2867,7 @@ export function updateCalendarEntry(
                 customer_id: input.schedule.task.customerId,
                 title: input.schedule.task.title,
                 description: input.schedule.task.description ?? '',
-                due_date: calendarDueDate(String(merged.start_date)),
+                due_date: calendarDueDate(String(merged.start_date), input.schedule.dueDate),
                 priority: input.schedule.task.priority ?? 'Medium',
                 completed: input.schedule.task.completed ?? false,
                 calendar_event_id: null,
@@ -2918,7 +2916,10 @@ export function updateCalendarEntry(
             }
             if (input.event.start_date !== undefined || input.schedule?.mode === 'existing') {
                 taskFields.push('due_date = @due_date');
-                taskValues.due_date = calendarDueDate(String(merged.start_date));
+                taskValues.due_date = calendarDueDate(
+                    String(merged.start_date),
+                    input.schedule?.mode === 'existing' ? input.schedule.dueDate : undefined,
+                );
             }
             taskFields.push('last_modified = @last_modified');
             connection.prepare(`UPDATE ${TASKS_TABLE} SET ${taskFields.join(', ')} WHERE id = @id`).run(taskValues);
@@ -3375,7 +3376,10 @@ export function updateTask(taskId: number, taskData: any): { success: boolean; e
         return { success: false, error: 'No fields to update' };
       }
 
-      syncLinkedCalendarEvent(taskId);
+      syncLinkedCalendarEvent(
+        taskId,
+        Object.prototype.hasOwnProperty.call(taskData ?? {}, 'due_date') && taskData?.due_date !== undefined,
+      );
       return { success: true };
     })();
   } catch (error) {

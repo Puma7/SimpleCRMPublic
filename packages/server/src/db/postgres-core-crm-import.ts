@@ -384,7 +384,20 @@ DO UPDATE SET
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   updated_at = now()`,
-  calendar_events: `INSERT INTO calendar_events (
+  calendar_events: `WITH ranked_import_rows AS (
+  SELECT r.*,
+         row_number() OVER (
+           PARTITION BY NULLIF(r.source_row->>'task_id', '')
+           ORDER BY NULLIF(r.source_row->>'updated_at', '')::timestamptz DESC NULLS LAST,
+                    (r.source_row->>'id')::bigint DESC
+         ) AS task_link_rank
+    FROM sqlite_import_rows r
+   WHERE r.workspace_id = $1
+     AND r.table_name = $2
+     AND r.imported_in_run_id = $3
+     AND r.source_row ? 'id'
+)
+INSERT INTO calendar_events (
   workspace_id,
   source_sqlite_id,
   title,
@@ -411,19 +424,22 @@ SELECT
   COALESCE(NULLIF(r.source_row->>'end_date', '')::timestamptz, now()),
   COALESCE(${sqliteBoolean('all_day')}, false),
   NULLIF(r.source_row->>'color_code', ''),
-  NULLIF(r.source_row->>'event_type', ''),
-  NULLIF(r.source_row->>'recurrence_rule', ''),
-  NULLIF(r.source_row->>'task_id', '')::bigint,
-  t.id,
+  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE NULLIF(r.source_row->>'event_type', '') END,
+  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE NULLIF(r.source_row->>'recurrence_rule', '') END,
+  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE NULLIF(r.source_row->>'task_id', '')::bigint END,
+  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE t.id END,
   r.source_row,
   $3,
   NULLIF(r.source_row->>'created_at', '')::timestamptz,
   now()
-${sqliteImportRowsFrom}
+FROM ranked_import_rows r
 LEFT JOIN tasks t
   ON t.workspace_id = $1
  AND t.source_sqlite_id = NULLIF(r.source_row->>'task_id', '')::bigint
-${sqliteImportRowsWhere}
 ON CONFLICT (workspace_id, source_sqlite_id)
 DO UPDATE SET
   title = EXCLUDED.title,

@@ -133,7 +133,7 @@ describe('calendarService', () => {
     const requestInit = fetchImpl.mock.calls[0][1] as RequestInit;
     expect(JSON.parse(String(requestInit.body))).toMatchObject({
       event: { title: 'Server task' },
-      schedule: { mode: 'create', task: { customerId: 7, title: 'Server task' } },
+      schedule: { mode: 'create', dueDate: '2026-03-12', task: { customerId: 7, title: 'Server task' } },
     });
   });
 

@@ -231,6 +231,26 @@ async function recordCalendarEntryMutation(
       detachedTaskId: detachedTask?.id ?? null,
     },
   });
+  if (task) {
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action: taskAction === 'created' ? 'task.created' : 'task.updated',
+      entityType: 'task',
+      entityId: String(task.id),
+      metadata: { id: task.id, calendarEventId: action === 'deleted' ? null : event.id },
+    });
+  }
+  if (detachedTask && detachedTask.id !== task?.id) {
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action: 'task.updated',
+      entityType: 'task',
+      entityId: String(detachedTask.id),
+      metadata: { id: detachedTask.id, calendarEventId: null },
+    });
+  }
   await publishCalendarEvent(
     ports,
     `calendar_event.${action}` as 'calendar_event.created' | 'calendar_event.updated' | 'calendar_event.deleted',
@@ -329,7 +349,8 @@ function parseTaskSchedule(raw: unknown):
     const taskId = normalizePositiveBodyInt(raw.taskId, 'taskId');
     if (
       !taskId.ok
-      || Object.keys(raw).some((key) => key !== 'mode' && key !== 'taskId' && key !== 'task')
+      || Object.keys(raw).some((key) => key !== 'mode' && key !== 'taskId' && key !== 'dueDate' && key !== 'task')
+      || (raw.dueDate !== undefined && (typeof raw.dueDate !== 'string' || !isValidCalendarDateOnly(raw.dueDate)))
       || (raw.task !== undefined && !isPlainObject(raw.task))
     ) {
       return { ok: false, response: error(400, 'validation_error', 'Bestehender Task-Link ist ungueltig') };
@@ -350,6 +371,7 @@ function parseTaskSchedule(raw: unknown):
       value: {
         mode: 'existing',
         taskId: taskId.value,
+        ...(typeof raw.dueDate === 'string' ? { dueDate: raw.dueDate } : {}),
         ...(task ? {
           task: {
             ...(typeof task.priority === 'string' ? { priority: task.priority.trim() } : {}),
@@ -362,7 +384,10 @@ function parseTaskSchedule(raw: unknown):
   if (raw.mode !== 'create' || !isPlainObject(raw.task)) {
     return { ok: false, response: error(400, 'validation_error', 'schedule.mode ist ungueltig') };
   }
-  if (Object.keys(raw).some((key) => key !== 'mode' && key !== 'task')) {
+  if (
+    Object.keys(raw).some((key) => key !== 'mode' && key !== 'dueDate' && key !== 'task')
+    || (raw.dueDate !== undefined && (typeof raw.dueDate !== 'string' || !isValidCalendarDateOnly(raw.dueDate)))
+  ) {
     return { ok: false, response: error(400, 'validation_error', 'schedule enthaelt unerlaubte Felder') };
   }
 
@@ -417,6 +442,7 @@ function parseTaskSchedule(raw: unknown):
     ok: true,
     value: {
       mode: 'create',
+      ...(typeof raw.dueDate === 'string' ? { dueDate: raw.dueDate } : {}),
       task: {
         ...(customerId && customerId.ok ? { customerId: customerId.value } : {}),
         title: title.value,
@@ -435,6 +461,18 @@ function parseTaskSchedule(raw: unknown):
       },
     },
   };
+}
+
+function isValidCalendarDateOnly(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
 }
 
 async function handleJtlSyncStatus(
