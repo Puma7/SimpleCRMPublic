@@ -37,14 +37,13 @@ describe('calendar date conversion', () => {
     });
   });
 
-  test('derives a task due date from the local calendar day east of UTC', () => {
-    const previousTimezone = process.env.TZ;
-    process.env.TZ = 'Europe/Berlin';
+  test('derives a task due date from local components instead of the UTC ISO day', () => {
+    const date = new Date('2026-07-22T22:30:00.000Z');
+    jest.spyOn(date, 'getFullYear').mockReturnValue(2026);
+    jest.spyOn(date, 'getMonth').mockReturnValue(6);
+    jest.spyOn(date, 'getDate').mockReturnValue(23);
 
-    try {
-      expect(toLocalCalendarDate(new Date('2026-07-22T22:30:00.000Z'))).toBe('2026-07-23');
-    } finally {
-      process.env.TZ = previousTimezone;
-    }
+    expect(date.toISOString().slice(0, 10)).toBe('2026-07-22');
+    expect(toLocalCalendarDate(date)).toBe('2026-07-23');
   });
 });
