@@ -747,4 +747,40 @@ describe('PostgreSQL atomic task/calendar operations', () => {
     const remainingEvent = await pool.query('SELECT id FROM calendar_events WHERE id = $1', [second.event.id]);
     expect(remainingEvent.rowCount).toBe(0);
   });
+
+  test('treats schedule none as a no-op for standalone event metadata', async () => {
+    const entries = createPostgresCalendarEntryPort({ db });
+    const standalone = await entries.create({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      event: {
+        title: 'Wiederkehrender Termin',
+        startDate: '2026-08-15T00:00:00.000Z',
+        endDate: '2026-08-16T00:00:00.000Z',
+        eventType: 'meeting',
+        recurrenceRule: '{"frequency":"weekly","interval":1}',
+      },
+    });
+    expect(standalone.ok).toBe(true);
+    if (!standalone.ok) return;
+
+    const unchanged = await entries.update({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      id: standalone.event.id,
+      event: {},
+      schedule: { mode: 'none' },
+    });
+
+    expect(unchanged).toMatchObject({
+      ok: true,
+      event: {
+        taskId: null,
+        eventType: 'meeting',
+        recurrenceRule: '{"frequency":"weekly","interval":1}',
+      },
+    });
+  });
 });

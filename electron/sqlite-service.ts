@@ -2951,12 +2951,12 @@ export function updateCalendarEntry(
                 : merged.color_code,
             event_type: task
                 ? 'task'
-                : input.schedule?.mode === 'none'
+                : input.schedule?.mode === 'none' && current.task_id !== null
                     ? input.event.event_type ?? null
                     : merged.event_type,
             recurrence_rule: task
                 ? null
-                : input.schedule?.mode === 'none'
+                : input.schedule?.mode === 'none' && current.task_id !== null
                     ? input.event.recurrence_rule ?? null
                     : merged.recurrence_rule,
             task_id: taskId,

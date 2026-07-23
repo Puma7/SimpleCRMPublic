@@ -299,6 +299,30 @@ describe('SQLite atomic task/calendar operations', () => {
     });
   });
 
+  test('treats schedule none as a no-op for standalone event metadata', () => {
+    const standalone = createCalendarEntry({
+      event: {
+        title: 'Wiederkehrender Termin',
+        start_date: '2026-08-03T00:00:00.000Z',
+        end_date: '2026-08-04T00:00:00.000Z',
+        all_day: true,
+        event_type: 'meeting',
+        recurrence_rule: '{"frequency":"weekly","interval":1}',
+      },
+    });
+
+    const unchanged = updateCalendarEntry(standalone.event.id, {
+      event: {},
+      schedule: { mode: 'none' },
+    });
+
+    expect(unchanged.event).toMatchObject({
+      task_id: null,
+      event_type: 'meeting',
+      recurrence_rule: '{"frequency":"weekly","interval":1}',
+    });
+  });
+
   test('clearing or deleting a task removes its linked calendar entry', () => {
     const first = createLinkedEntry();
     expect(updateTask(first.task!.id, { due_date: null })).toMatchObject({ success: true });

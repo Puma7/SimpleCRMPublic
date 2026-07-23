@@ -164,7 +164,10 @@ describe('atomic task and calendar contracts', () => {
     expect(source).toContain('requireTaskCustomer={!serverClientMode}');
     expect(source).toContain('if (!serverClientMode && task && (!task.customer_id || task.customer_id <= 0))');
     expect(updateBlock).toContain(
-      'const shouldUpdateDescription = !task?.id || task.description !== formTaskData?.description;',
+      "const initialDescription = formTaskData?.description ?? eventFormData?.description ?? '';",
+    );
+    expect(updateBlock).toContain(
+      "const shouldUpdateDescription = (updatedEventData.description ?? '') !== initialDescription;",
     );
     expect(updateBlock).toContain(
       "...(shouldUpdateDescription ? { description: updatedEventData.description ?? '' } : {}),",
