@@ -91,10 +91,7 @@ jobs:
     timeout-minutes: 20
 
     env:
-      CC: gcc-12
       CI: "true"
-      CXX: g++-12
-      CXXFLAGS: "-UV8_IMMINENT_DEPRECATION_WARNINGS"
       SIMPLECRM_E2E_LOG_DIR: test-results/electron-logs
 
     steps:
@@ -117,8 +114,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             xvfb \
-            gcc-12 \
-            g++-12 \
             libsecret-1-0 \
             libsecret-1-dev \
             libasound2 \

@@ -158,6 +158,7 @@ async function ensureElectronCache() {
       force: true,
       onlyModules: ['better-sqlite3'],
       mode: 'sequential',
+      useElectronClang: process.platform === 'linux',
     });
     assertProbe('electron');
     await copyFile(sqliteBinaryPath, electronCachePath);
