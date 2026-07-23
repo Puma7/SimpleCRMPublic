@@ -12,6 +12,7 @@ describe('Electron E2E CI gate', () => {
     expect(workflow).toMatch(/xvfb-run --auto-servernum .*pnpm run test:e2e/);
     expect(workflow).toContain('CC: gcc-12');
     expect(workflow).toContain('CXX: g++-12');
+    expect(workflow).toContain('CXXFLAGS: "-UV8_IMMINENT_DEPRECATION_WARNINGS"');
     expect(workflow).toContain('node_modules/electron/dist/chrome-sandbox');
     expect(workflow).toContain('gcc-12 \\');
     expect(workflow).toContain('g++-12 \\');

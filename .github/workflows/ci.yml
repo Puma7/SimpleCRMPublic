@@ -94,6 +94,7 @@ jobs:
       CC: gcc-12
       CI: "true"
       CXX: g++-12
+      CXXFLAGS: "-UV8_IMMINENT_DEPRECATION_WARNINGS"
       SIMPLECRM_E2E_LOG_DIR: test-results/electron-logs
 
     steps:
