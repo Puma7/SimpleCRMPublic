@@ -734,12 +734,13 @@ export default function CalendarPage() {
       const numericEventId = typeof (updatedEventData.id ?? selectedEvent.id) === 'string'
         ? parseInt(String(updatedEventData.id ?? selectedEvent.id))
         : Number(updatedEventData.id ?? selectedEvent.id);
+      const shouldUpdateDescription = !task?.id || task.description !== formTaskData?.description;
 
       // Convert from RBC format to database format
       const dbEvent: CalendarDatabaseEventUpdate = {
         id: numericEventId,
         title: updatedEventData.title,
-        description: task?.description ?? updatedEventData.description ?? '',
+        ...(shouldUpdateDescription ? { description: updatedEventData.description ?? '' } : {}),
         start_date: toCalendarTimestamp(updatedEventData.start, updatedEventData.allDay),
         end_date: toCalendarTimestamp(updatedEventData.end, updatedEventData.allDay),
         all_day: updatedEventData.allDay || false,
@@ -800,7 +801,7 @@ export default function CalendarPage() {
         variant: "destructive",
       });
     }
-  }, [dbApi, selectedEvent, toast]);
+  }, [dbApi, formTaskData, selectedEvent, toast]);
 
   const handleDeleteEvent = useCallback(async (id: number | string) => {
     try {
