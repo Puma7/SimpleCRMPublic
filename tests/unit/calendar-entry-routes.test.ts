@@ -206,4 +206,41 @@ describe('atomic calendar entry routes', () => {
     }));
     expect(auditCalls).toContainEqual(expect.objectContaining({ action: 'task.updated', entityId: '51' }));
   });
+
+  test('accepts a schedule-only PATCH when unlinking a calendar entry', async () => {
+    const calls: unknown[] = [];
+    const api = makeApi(calls);
+
+    const response = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/calendar-entries/41',
+      principal,
+      body: {
+        event: {},
+        schedule: { mode: 'none' },
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toContainEqual(expect.objectContaining({
+      id: 41,
+      event: {},
+      schedule: { mode: 'none' },
+    }));
+  });
+
+  test('still rejects an empty PATCH without a schedule change', async () => {
+    const calls: unknown[] = [];
+    const api = makeApi(calls);
+
+    const response = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/calendar-entries/41',
+      principal,
+      body: { event: {} },
+    });
+
+    expect(response.status).toBe(400);
+    expect(calls).toHaveLength(0);
+  });
 });

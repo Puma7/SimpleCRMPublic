@@ -35,6 +35,23 @@ type TaskTogglePayload = {
   completed: boolean;
 };
 
+function normalizeTaskMutationForSqlite(
+  taskData: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!taskData) return taskData;
+  const normalized = { ...taskData };
+  const aliases = [
+    ['customerId', 'customer_id'],
+    ['dueDate', 'due_date'],
+    ['snoozedUntil', 'snoozed_until'],
+  ] as const;
+  for (const [camelCase, snakeCase] of aliases) {
+    if (normalized[camelCase] !== undefined) normalized[snakeCase] = normalized[camelCase];
+    delete normalized[camelCase];
+  }
+  return normalized;
+}
+
 export function registerTaskHandlers(options: TaskHandlersOptions) {
   const { logger } = options;
   const disposers: Disposer[] = [];
@@ -129,7 +146,7 @@ export function registerTaskHandlers(options: TaskHandlersOptions) {
   disposers.push(
     registerIpcHandler(IPCChannels.Tasks.Create, async (_event, taskData: Record<string, unknown>) => {
       try {
-        return createTask(taskData);
+        return createTask(normalizeTaskMutationForSqlite(taskData));
       } catch (error) {
         logger.error('IPC Error creating task:', error);
         return { success: false, error: (error as Error).message };
@@ -141,7 +158,7 @@ export function registerTaskHandlers(options: TaskHandlersOptions) {
     registerIpcHandler(IPCChannels.Tasks.Update, async (_event, payload: TaskUpdatePayload) => {
       try {
         const { id, taskData } = payload ?? {};
-        return updateTask(id, taskData);
+        return updateTask(id, normalizeTaskMutationForSqlite(taskData));
       } catch (error) {
         logger.error('IPC Error updating task:', error);
         return { success: false, error: (error as Error).message };

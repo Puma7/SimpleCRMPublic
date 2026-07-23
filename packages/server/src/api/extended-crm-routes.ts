@@ -312,8 +312,11 @@ function parseCalendarEntryMutationBody(
     };
   }
 
+  const schedule = parseTaskSchedule(body.schedule);
+  if (!schedule.ok) return schedule;
+
   const parsedEvent = parseCalendarEventMutationBody(body.event, {
-    requireAtLeastOneField: true,
+    requireAtLeastOneField: create || schedule.value === undefined,
     requireTitle: create,
     requireStartAndEnd: create,
   });
@@ -326,8 +329,6 @@ function parseCalendarEntryMutationBody(
   }
   delete parsedEvent.values.taskId;
 
-  const schedule = parseTaskSchedule(body.schedule);
-  if (!schedule.ok) return schedule;
   return {
     ok: true,
     event: parsedEvent.values,

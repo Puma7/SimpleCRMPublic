@@ -651,7 +651,7 @@ export default function CalendarPage() {
         }
       }
 
-      if (task && (!task.customer_id || task.customer_id <= 0)) {
+      if (!serverClientMode && task && (!task.customer_id || task.customer_id <= 0)) {
         toast({ title: "Fehler", description: "Bitte wählen Sie einen Kunden für die Aufgabe aus.", variant: "destructive" });
         return;
       }
@@ -726,7 +726,7 @@ export default function CalendarPage() {
         }
       }
 
-      if (task && (!task.customer_id || task.customer_id <= 0)) {
+      if (!serverClientMode && task && (!task.customer_id || task.customer_id <= 0)) {
         toast({ title: "Fehler", description: "Bitte wählen Sie einen Kunden für die Aufgabe aus.", variant: "destructive" });
         return;
       }
@@ -739,7 +739,7 @@ export default function CalendarPage() {
       const dbEvent: CalendarDatabaseEventUpdate = {
         id: numericEventId,
         title: updatedEventData.title,
-        description: updatedEventData.description || '',
+        description: task?.description ?? updatedEventData.description ?? '',
         start_date: toCalendarTimestamp(updatedEventData.start, updatedEventData.allDay),
         end_date: toCalendarTimestamp(updatedEventData.end, updatedEventData.allDay),
         all_day: updatedEventData.allDay || false,
@@ -1041,6 +1041,7 @@ export default function CalendarPage() {
                   key={`add-${eventFormData.start.getTime()}`}
                   initialData={eventFormData}
                   initialTaskData={formTaskData}
+                  requireTaskCustomer={!serverClientMode}
                   onSubmit={handleAddEvent}
                   onCancel={() => {
                     setIsAddModalOpen(false);
@@ -1071,6 +1072,7 @@ export default function CalendarPage() {
                   key={`edit-${eventFormData.id ?? selectedEvent.id}`}
                   initialData={eventFormData}
                   initialTaskData={formTaskData}
+                  requireTaskCustomer={!serverClientMode}
                   onSubmit={handleUpdateEvent}
                   onCancel={() => {
                     setIsEditModalOpen(false);
