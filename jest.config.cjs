@@ -134,6 +134,7 @@ module.exports = {
     },
     {
       displayName: 'integration',
+      runner: '<rootDir>/tests/setup/serial-jest-runner.cjs',
       testEnvironment: 'node',
       roots: ['<rootDir>/src', '<rootDir>/shared', '<rootDir>/electron', '<rootDir>/tests'],
       moduleNameMapper: {
