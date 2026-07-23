@@ -124,6 +124,30 @@ describe('SQLite atomic task/calendar operations', () => {
     expect(updated.event.color_code).toBe('#94a3b8');
   });
 
+  test('updates priority and completion when creating an existing task link', () => {
+    const taskId = Number(db.prepare(`
+      INSERT INTO tasks (customer_id, title, priority, completed)
+      VALUES (1, 'Bestehende Aufgabe', 'Medium', 0)
+    `).run().lastInsertRowid);
+
+    const created = createCalendarEntry({
+      event: {
+        title: 'Bestehende Aufgabe',
+        start_date: '2026-07-23T12:00:00.000Z',
+        end_date: '2026-07-23T13:00:00.000Z',
+        all_day: false,
+      },
+      schedule: {
+        mode: 'existing',
+        taskId,
+        task: { priority: 'Low', completed: true },
+      },
+    });
+
+    expect(created.task).toMatchObject({ priority: 'Low', completed: 1 });
+    expect(created.event.color_code).toBe('#94a3b8');
+  });
+
   test('rolls the task back when the calendar insert fails', () => {
     db.exec(`
       CREATE TRIGGER reject_calendar_insert
@@ -251,6 +275,20 @@ describe('SQLite atomic task/calendar operations', () => {
     const second = createLinkedEntry();
     expect(deleteTask(second.task!.id)).toMatchObject({ success: true });
     expect(db.prepare('SELECT * FROM calendar_events WHERE id = ?').get(second.event.id)).toBeUndefined();
+  });
+
+  test('does not let a task update steal another task calendar entry', () => {
+    const first = createLinkedEntry();
+    const second = createLinkedEntry();
+
+    expect(updateTask(first.task!.id, { calendar_event_id: second.event.id })).toMatchObject({
+      success: false,
+      error: 'Calendar entry already linked',
+    });
+    expect(db.prepare('SELECT id, task_id FROM calendar_events ORDER BY id').all()).toEqual([
+      { id: first.event.id, task_id: first.task!.id },
+      { id: second.event.id, task_id: second.task!.id },
+    ]);
   });
 
   test('enforces at most one calendar entry per task', () => {

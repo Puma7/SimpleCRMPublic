@@ -5178,6 +5178,7 @@ function mapCalendarEventRecord(record: CalendarEventRecord) {
 
 function mapCalendarEventMutation(value: unknown): Record<string, unknown> {
   const input = objectPayload(value ?? {}, "calendar event payload")
+  const recurrenceRule = input.recurrenceRule !== undefined ? input.recurrenceRule : input.recurrence_rule
   return pruneUndefined({
     title: input.title,
     description: input.description,
@@ -5186,7 +5187,7 @@ function mapCalendarEventMutation(value: unknown): Record<string, unknown> {
     allDay: input.allDay ?? (input.all_day === undefined ? undefined : Boolean(input.all_day)),
     colorCode: input.colorCode ?? input.color_code,
     eventType: input.eventType ?? input.event_type,
-    recurrenceRule: input.recurrenceRule ?? input.recurrence_rule,
+    recurrenceRule: isRecord(recurrenceRule) ? JSON.stringify(recurrenceRule) : recurrenceRule,
     taskId: input.taskId ?? input.task_id,
   })
 }

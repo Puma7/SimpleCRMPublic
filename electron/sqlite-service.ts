@@ -2822,9 +2822,18 @@ export function createCalendarEntry(input: SqliteCalendarEntryMutationInput): Sq
             taskId = task.id;
             connection.prepare(`
                 UPDATE ${TASKS_TABLE}
-                   SET due_date = ?, last_modified = ?
-                 WHERE id = ?
-            `).run(calendarDueDate(startDate, schedule.dueDate), new Date().toISOString(), taskId);
+                   SET due_date = @due_date,
+                       priority = COALESCE(@priority, priority),
+                       completed = COALESCE(@completed, completed),
+                       last_modified = @last_modified
+                 WHERE id = @id
+            `).run({
+                id: taskId,
+                due_date: calendarDueDate(startDate, schedule.dueDate),
+                priority: schedule.task?.priority ?? null,
+                completed: schedule.task?.completed === undefined ? null : (schedule.task.completed ? 1 : 0),
+                last_modified: new Date().toISOString(),
+            });
         }
 
         const task = taskId ? readTask(taskId) : null;
@@ -3364,8 +3373,12 @@ export function updateTask(taskId: number, taskData: any): { success: boolean; e
         connection.prepare(`UPDATE ${CALENDAR_EVENTS_TABLE} SET task_id = NULL WHERE task_id = ?`).run(taskId);
         if (taskData.calendar_event_id !== null) {
           const eventId = Number(taskData.calendar_event_id);
-          if (!Number.isInteger(eventId) || eventId <= 0 || !readCalendarEvent(eventId)) {
+          const event = Number.isInteger(eventId) && eventId > 0 ? readCalendarEvent(eventId) : undefined;
+          if (!event) {
             throw new Error('Calendar entry not found');
+          }
+          if (event.task_id !== null && event.task_id !== taskId) {
+            throw new Error('Calendar entry already linked');
           }
           connection.prepare(`UPDATE ${CALENDAR_EVENTS_TABLE} SET task_id = ? WHERE id = ?`).run(taskId, eventId);
         }

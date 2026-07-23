@@ -3,6 +3,7 @@ import { getPayloadSchema, getResultSchema } from '../../shared/ipc/schemas';
 import { serverMigrations } from '../../packages/server/src/migrations';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { buildHttpInvocation } from '../../src/services/transport/channel-http-registry';
 
 describe('atomic task and calendar contracts', () => {
   test('registers a workspace-safe one-calendar-entry-per-task migration', () => {
@@ -50,6 +51,20 @@ describe('atomic task and calendar contracts', () => {
       event: { title: 'Termin' },
       schedule: { mode: 'existing', taskId: 7, dueDate: '2026-02-30' },
     })).toThrow();
+  });
+
+  test('serializes recurrence objects for the server calendar contract', () => {
+    const recurrenceRule = { frequency: 'weekly', interval: 2 };
+    const request = buildHttpInvocation(IPCChannels.Calendar.AddCalendarEvent, [{
+      title: 'Serientermin',
+      start_date: '2026-07-23T08:00:00.000Z',
+      end_date: '2026-07-23T09:00:00.000Z',
+      recurrence_rule: recurrenceRule,
+    }]);
+
+    expect(request.body).toMatchObject({
+      event: { recurrenceRule: JSON.stringify(recurrenceRule) },
+    });
   });
 
   test('rejects malformed task mutations and calendar results', () => {
