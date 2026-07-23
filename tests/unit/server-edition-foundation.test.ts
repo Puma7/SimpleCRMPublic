@@ -19030,8 +19030,11 @@ describe('server edition foundation', () => {
       'deal.deleted',
       'task.created',
       'task.updated',
+      'calendar_event.updated',
       'task.updated',
+      'calendar_event.updated',
       'task.deleted',
+      'calendar_event.deleted',
     ]);
     expect(events.map((event) => [event.type, event.workspaceId, event.entityType, event.entityId])).toEqual([
       ['deal.created', WORKSPACE_A_ID, 'deal', '41'],

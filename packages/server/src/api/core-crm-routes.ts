@@ -778,6 +778,14 @@ async function handleUpdateTask(
   });
   await publishTaskEvent(ports, 'task.updated', principal.workspaceId, task, principal.userId);
   if (result.calendarEventChange) {
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action: `calendar_event.${result.calendarEventChange.type}`,
+      entityType: 'calendar_event',
+      entityId: String(result.calendarEventChange.eventId),
+      metadata: { id: result.calendarEventChange.eventId, taskId: task.id },
+    });
     await publishTaskCalendarEvent(
       ports,
       `calendar_event.${result.calendarEventChange.type}`,
@@ -820,6 +828,14 @@ async function handleDeleteTask(
   });
   await publishTaskEvent(ports, 'task.deleted', principal.workspaceId, task, principal.userId);
   if (task.calendarEventId !== null && task.calendarEventId !== undefined) {
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action: 'calendar_event.deleted',
+      entityType: 'calendar_event',
+      entityId: String(task.calendarEventId),
+      metadata: { id: task.calendarEventId, taskId: task.id },
+    });
     await publishTaskCalendarEvent(
       ports,
       'calendar_event.deleted',
