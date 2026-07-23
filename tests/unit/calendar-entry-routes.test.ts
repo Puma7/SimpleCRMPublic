@@ -229,6 +229,28 @@ describe('atomic calendar entry routes', () => {
     }));
   });
 
+  test('accepts a schedule-only PATCH when linking an existing task', async () => {
+    const calls: unknown[] = [];
+    const api = makeApi(calls);
+
+    const response = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/calendar-entries/41',
+      principal,
+      body: {
+        event: {},
+        schedule: { mode: 'existing', taskId: 51 },
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toContainEqual(expect.objectContaining({
+      id: 41,
+      event: {},
+      schedule: { mode: 'existing', taskId: 51 },
+    }));
+  });
+
   test('still rejects an empty PATCH without a schedule change', async () => {
     const calls: unknown[] = [];
     const api = makeApi(calls);

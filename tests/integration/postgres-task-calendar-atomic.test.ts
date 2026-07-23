@@ -231,6 +231,7 @@ describe('PostgreSQL atomic task/calendar operations', () => {
       viewer: ownerViewer,
       event: {
         title: 'Stand-alone',
+        description: 'Fachfremde Terminbeschreibung',
         startDate: '2026-07-27T00:00:00.000Z',
         endDate: '2026-07-28T00:00:00.000Z',
       },
@@ -243,14 +244,24 @@ describe('PostgreSQL atomic task/calendar operations', () => {
       actorUserId: OWNER_ID,
       viewer: ownerViewer,
       id: standalone.event.id,
-      event: { title: 'Verknuepft' },
-      schedule: { mode: 'create', task: { title: 'Verknuepft' } },
+      event: {},
+      schedule: {
+        mode: 'create',
+        task: { title: 'Verknuepft', description: 'Rohe Aufgabenbeschreibung' },
+      },
     });
 
     expect(linked).toMatchObject({
       ok: true,
-      event: { id: standalone.event.id },
-      task: { calendarEventId: standalone.event.id },
+      event: {
+        id: standalone.event.id,
+        title: 'Verknuepft',
+        description: 'Rohe Aufgabenbeschreibung',
+      },
+      task: {
+        calendarEventId: standalone.event.id,
+        description: 'Rohe Aufgabenbeschreibung',
+      },
     });
   });
 

@@ -2944,7 +2944,8 @@ export function updateCalendarEntry(
         updateCalendarEvent(id, {
             ...input.event,
             title: task?.title ?? String(merged.title),
-            description: input.event.description ?? merged.description,
+            description: input.event.description
+                ?? (task && current.task_id !== task.id ? task.description : merged.description),
             color_code: task
                 ? (task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR)
                 : merged.color_code,
