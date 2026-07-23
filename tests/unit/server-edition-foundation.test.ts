@@ -15008,9 +15008,9 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(49);
+    expect(client.queries).toHaveLength(50);
     expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[48].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
+    expect(client.queries[49].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
     expect(result.domains.map((domain) => [domain.domain, domain.commandCount])).toEqual([
       ['core_crm', 15],
       ['core_mail', 17],
@@ -15197,6 +15197,8 @@ describe('server edition foundation', () => {
     expect(commands[3].sql).toContain('LEFT JOIN customers c');
     expect(commands[5].sql).toContain('LEFT JOIN deals d');
     expect(commands[5].sql).toContain('LEFT JOIN products p');
+    expect(commands[6].prepareSql).toContain('UPDATE calendar_events AS existing');
+    expect(commands[6].prepareSql).toContain('existing.source_sqlite_id IS DISTINCT FROM winner.event_source_sqlite_id');
     expect(commands[6].sql).toContain('INSERT INTO calendar_events');
     expect(commands[8].sql).toContain('LEFT JOIN customer_custom_fields f');
     expect(commands[9].sql).toContain('LEFT JOIN deals d');
@@ -15212,9 +15214,11 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(15);
+    expect(client.queries).toHaveLength(16);
     expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[14].params).toEqual(['workspace-a', 'jtl_versandarten', 'run-1']);
+    expect(client.queries[15].params).toEqual(['workspace-a', 'jtl_versandarten', 'run-1']);
+    expect(client.queries[6].sql).toContain('UPDATE calendar_events AS existing');
+    expect(client.queries[7].sql).toContain('INSERT INTO calendar_events');
     expect(client.queries[1].sql).not.toContain('workspace-a');
     expect(client.queries[1].sql).not.toContain('run-1');
     expect(() => buildCoreCrmImportCommands({ workspaceId: ' ', runId: 'run-1' })).toThrow('workspaceId');

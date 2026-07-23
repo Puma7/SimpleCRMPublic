@@ -422,6 +422,50 @@ describe('PostgreSQL atomic task/calendar operations', () => {
       { source_sqlite_id: '601', task_id: null, event_type: null },
       { source_sqlite_id: '602', task_id: expect.any(String), event_type: 'task' },
     ]);
+
+    const secondRunId = '30000000-0000-4000-8000-000000000002';
+    await pool.query(
+      `INSERT INTO sqlite_import_runs (id, workspace_id, plan_id, source_fingerprint, status)
+       VALUES ($1, $2, 'task-calendar-test', 'task-calendar-legacy-reimport', 'running')`,
+      [secondRunId, WORKSPACE_ID],
+    );
+    await pool.query(
+      `UPDATE sqlite_import_rows
+          SET imported_in_run_id = $1,
+              source_row = jsonb_set(source_row, '{updated_at}', to_jsonb(
+                CASE source_pk
+                  WHEN '601' THEN '2026-08-03T09:00:00.000Z'::text
+                  ELSE '2026-08-02T09:00:00.000Z'::text
+                END
+              ))
+        WHERE workspace_id = $2
+          AND table_name = 'calendar_events'
+          AND source_pk IN ('601', '602')`,
+      [secondRunId, WORKSPACE_ID],
+    );
+    await pool.query(
+      `UPDATE sqlite_import_rows
+          SET imported_in_run_id = $1
+        WHERE workspace_id = $2
+          AND table_name = 'tasks'
+          AND source_pk = '501'`,
+      [secondRunId, WORKSPACE_ID],
+    );
+
+    await runPostgresCoreCrmImport(pool, { workspaceId: WORKSPACE_ID, runId: secondRunId });
+
+    const reimported = await pool.query<{
+      source_sqlite_id: string;
+      task_id: string | null;
+      event_type: string | null;
+    }>(`SELECT source_sqlite_id::text, task_id::text, event_type
+          FROM calendar_events
+         WHERE source_sqlite_id IN (601, 602)
+         ORDER BY source_sqlite_id`);
+    expect(reimported.rows).toEqual([
+      { source_sqlite_id: '601', task_id: expect.any(String), event_type: 'task' },
+      { source_sqlite_id: '602', task_id: null, event_type: null },
+    ]);
   });
 
   test('allows only one concurrent calendar link for a task', async () => {

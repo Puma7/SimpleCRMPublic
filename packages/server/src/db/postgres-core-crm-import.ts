@@ -9,6 +9,7 @@ export type CoreCrmImportInput = Readonly<{
 
 export type CoreCrmImportCommand = Readonly<{
   tableName: string;
+  prepareSql?: string;
   sql: string;
   params: readonly unknown[];
 }>;
@@ -36,6 +37,9 @@ export async function runPostgresCoreCrmImport(
   input: CoreCrmImportInput,
 ): Promise<void> {
   for (const command of buildCoreCrmImportCommands(input)) {
+    if (command.prepareSql) {
+      await client.query(command.prepareSql, command.params);
+    }
     await client.query(command.sql, command.params);
   }
 }
@@ -50,6 +54,7 @@ export function buildCoreCrmImportCommands(input: CoreCrmImportInput): readonly 
 
   return tableOrder.map((tableName) => ({
     tableName,
+    ...(tableName === 'calendar_events' ? { prepareSql: calendarEventTaskLinkResetSql } : {}),
     sql: commandSqlByTable[tableName],
     params: [input.workspaceId, tableName, input.runId],
   }));
@@ -67,6 +72,42 @@ WHERE r.workspace_id = $1
   AND r.table_name = $2
   AND r.imported_in_run_id = $3
   AND r.source_row ? 'id'`;
+
+const calendarEventTaskLinkResetSql = `WITH ranked_import_rows AS (
+  SELECT
+    r.source_row,
+    ROW_NUMBER() OVER (
+      PARTITION BY NULLIF(r.source_row->>'task_id', '')::bigint
+      ORDER BY NULLIF(r.source_row->>'updated_at', '')::timestamptz DESC NULLS LAST,
+               (r.source_row->>'id')::bigint DESC
+    ) AS task_link_rank
+  FROM sqlite_import_rows r
+  WHERE r.workspace_id = $1
+    AND r.table_name = $2
+    AND r.imported_in_run_id = $3
+    AND r.source_row ? 'id'
+), resolved_winners AS (
+  SELECT
+    (r.source_row->>'id')::bigint AS event_source_sqlite_id,
+    t.id AS task_id
+  FROM ranked_import_rows r
+  JOIN tasks t
+    ON t.workspace_id = $1
+   AND t.source_sqlite_id = NULLIF(r.source_row->>'task_id', '')::bigint
+  WHERE NULLIF(r.source_row->>'task_id', '') IS NOT NULL
+    AND r.task_link_rank = 1
+)
+UPDATE calendar_events AS existing
+SET
+  task_source_sqlite_id = NULL,
+  task_id = NULL,
+  event_type = CASE WHEN existing.event_type = 'task' THEN NULL ELSE existing.event_type END,
+  recurrence_rule = CASE WHEN existing.event_type = 'task' THEN NULL ELSE existing.recurrence_rule END,
+  updated_at = now()
+FROM resolved_winners winner
+WHERE existing.workspace_id = $1
+  AND existing.task_id = winner.task_id
+  AND existing.source_sqlite_id IS DISTINCT FROM winner.event_source_sqlite_id`;
 
 const commandSqlByTable: Record<typeof tableOrder[number], string> = {
   sync_info: `INSERT INTO sync_info (

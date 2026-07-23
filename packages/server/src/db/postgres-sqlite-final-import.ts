@@ -33,6 +33,7 @@ export type PostgresSqliteFinalImportInput = Readonly<{
 export type PostgresSqliteFinalImportCommand = Readonly<{
   domain: PostgresSqliteFinalImportDomain;
   tableName: string;
+  prepareSql?: string;
   sql: string;
   params: readonly unknown[];
 }>;
@@ -125,6 +126,7 @@ function withDomain(
   return {
     domain,
     tableName: command.tableName,
+    ...('prepareSql' in command && command.prepareSql ? { prepareSql: command.prepareSql } : {}),
     sql: command.sql,
     params: command.params,
   };
