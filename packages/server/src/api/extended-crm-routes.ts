@@ -1018,17 +1018,7 @@ async function publishCalendarEvent(
     entityId: String(event.id),
     actorUserId,
     occurredAt: new Date().toISOString(),
-    payload: {
-      id: event.id,
-      sourceSqliteId: event.sourceSqliteId,
-      title: event.title,
-      startDate: event.startDate,
-      endDate: event.endDate,
-      allDay: event.allDay,
-      eventType: event.eventType,
-      taskId: event.taskId,
-      taskSourceSqliteId: event.taskSourceSqliteId,
-    },
+    payload: { id: event.id },
   });
 }
 

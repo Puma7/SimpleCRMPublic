@@ -73,28 +73,49 @@ WHERE r.workspace_id = $1
   AND r.imported_in_run_id = $3
   AND r.source_row ? 'id'`;
 
-const calendarEventTaskLinkResetSql = `WITH ranked_import_rows AS (
+const calendarEventRankedImportCtes = `normalized_import_rows AS (
   SELECT
     r.source_row,
-    ROW_NUMBER() OVER (
-      PARTITION BY NULLIF(r.source_row->>'task_id', '')::bigint
-      ORDER BY NULLIF(r.source_row->>'updated_at', '')::timestamptz DESC NULLS LAST,
-               (r.source_row->>'id')::bigint DESC
-    ) AS task_link_rank
+    COALESCE(
+      NULLIF(r.source_row->>'task_id', '')::bigint,
+      reverse_task.task_source_sqlite_id
+    ) AS effective_task_source_sqlite_id
   FROM sqlite_import_rows r
+  LEFT JOIN LATERAL (
+    SELECT (task.source_row->>'id')::bigint AS task_source_sqlite_id
+    FROM sqlite_import_rows task
+    WHERE task.workspace_id = r.workspace_id
+      AND task.table_name = 'tasks'
+      AND task.imported_in_run_id = r.imported_in_run_id
+      AND NULLIF(task.source_row->>'calendar_event_id', '')::bigint = (r.source_row->>'id')::bigint
+    ORDER BY (task.source_row->>'id')::bigint DESC
+    LIMIT 1
+  ) reverse_task ON TRUE
   WHERE r.workspace_id = $1
     AND r.table_name = $2
     AND r.imported_in_run_id = $3
     AND r.source_row ? 'id'
-), resolved_winners AS (
+), ranked_import_rows AS (
+  SELECT
+    r.source_row,
+    r.effective_task_source_sqlite_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY r.effective_task_source_sqlite_id
+      ORDER BY NULLIF(r.source_row->>'updated_at', '')::timestamptz DESC NULLS LAST,
+               (r.source_row->>'id')::bigint DESC
+    ) AS task_link_rank
+  FROM normalized_import_rows r
+)`;
+
+const calendarEventTaskLinkResetSql = `WITH ${calendarEventRankedImportCtes}, resolved_winners AS (
   SELECT
     (r.source_row->>'id')::bigint AS event_source_sqlite_id,
     t.id AS task_id
   FROM ranked_import_rows r
   JOIN tasks t
     ON t.workspace_id = $1
-   AND t.source_sqlite_id = NULLIF(r.source_row->>'task_id', '')::bigint
-  WHERE NULLIF(r.source_row->>'task_id', '') IS NOT NULL
+   AND t.source_sqlite_id = r.effective_task_source_sqlite_id
+  WHERE r.effective_task_source_sqlite_id IS NOT NULL
     AND r.task_link_rank = 1
 )
 UPDATE calendar_events AS existing
@@ -425,19 +446,7 @@ DO UPDATE SET
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   updated_at = now()`,
-  calendar_events: `WITH ranked_import_rows AS (
-  SELECT r.*,
-         row_number() OVER (
-           PARTITION BY NULLIF(r.source_row->>'task_id', '')
-           ORDER BY NULLIF(r.source_row->>'updated_at', '')::timestamptz DESC NULLS LAST,
-                    (r.source_row->>'id')::bigint DESC
-         ) AS task_link_rank
-    FROM sqlite_import_rows r
-   WHERE r.workspace_id = $1
-     AND r.table_name = $2
-     AND r.imported_in_run_id = $3
-     AND r.source_row ? 'id'
-)
+  calendar_events: `WITH ${calendarEventRankedImportCtes}
 INSERT INTO calendar_events (
   workspace_id,
   source_sqlite_id,
@@ -465,13 +474,13 @@ SELECT
   COALESCE(NULLIF(r.source_row->>'end_date', '')::timestamptz, now()),
   COALESCE(${sqliteBoolean('all_day')}, false),
   NULLIF(r.source_row->>'color_code', ''),
-  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
     THEN NULL ELSE NULLIF(r.source_row->>'event_type', '') END,
-  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
     THEN NULL ELSE NULLIF(r.source_row->>'recurrence_rule', '') END,
-  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
-    THEN NULL ELSE NULLIF(r.source_row->>'task_id', '')::bigint END,
-  CASE WHEN NULLIF(r.source_row->>'task_id', '') IS NOT NULL AND r.task_link_rank > 1
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE r.effective_task_source_sqlite_id END,
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
     THEN NULL ELSE t.id END,
   r.source_row,
   $3,
@@ -480,7 +489,7 @@ SELECT
 FROM ranked_import_rows r
 LEFT JOIN tasks t
   ON t.workspace_id = $1
- AND t.source_sqlite_id = NULLIF(r.source_row->>'task_id', '')::bigint
+ AND t.source_sqlite_id = r.effective_task_source_sqlite_id
 ON CONFLICT (workspace_id, source_sqlite_id)
 DO UPDATE SET
   title = EXCLUDED.title,

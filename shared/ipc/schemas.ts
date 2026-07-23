@@ -249,6 +249,7 @@ baseSchemaMap.set(IPCChannels.Calendar.AddCalendarEvent, {
 
 baseSchemaMap.set(IPCChannels.Calendar.UpdateCalendarEvent, {
   payload: z.union([
+    calendarEventMutationSchema.extend({ id: z.number().int().positive() }),
     z.object({
       id: z.number().int().positive(),
       eventData: calendarEventMutationSchema,
@@ -435,7 +436,9 @@ baseSchemaMap.set(IPCChannels.Tasks.GetById, {
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.Create, {
-  payload: taskMutationSchema.extend({ title: z.string().trim().min(1) }),
+  payload: taskMutationSchema
+    .omit({ calendar_event_id: true })
+    .extend({ title: z.string().trim().min(1) }),
   result: z.union([
     z.object({ success: z.literal(true), id: z.number().int().positive().optional() }).passthrough(),
     failureResponse,

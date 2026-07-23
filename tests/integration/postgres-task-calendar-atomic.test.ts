@@ -159,8 +159,14 @@ describe('PostgreSQL atomic task/calendar operations', () => {
   afterAll(async () => {
     if (db) await db.destroy();
     if (postgresProcess) {
-      postgresProcess.stdin.write('stop\n');
-      await new Promise<void>((resolve) => postgresProcess.once('exit', () => resolve()));
+      await new Promise<void>((resolve) => {
+        if (postgresProcess.exitCode !== null) {
+          resolve();
+          return;
+        }
+        postgresProcess.once('exit', () => resolve());
+        postgresProcess.stdin.write('stop\n');
+      });
     }
     if (postgresDir) rmSync(postgresDir, { recursive: true, force: true });
   });
@@ -310,9 +316,23 @@ describe('PostgreSQL atomic task/calendar operations', () => {
 
     expect(updated).toMatchObject({
       ok: true,
-      event: { colorCode: '#94a3b8' },
+      event: { colorCode: '#94a3b8', description: 'Kunde anrufen\nKunde: Ada' },
       task: { priority: 'Low', completed: true },
     });
+
+    const tasks = createPostgresTaskReadPort({ db });
+    await expect(tasks.update!({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      viewer: ownerViewer,
+      id: created.task.id,
+      values: { completed: false },
+    })).resolves.toMatchObject({ ok: true });
+    const eventRow = await pool.query<{ description: string }>(
+      'SELECT description FROM calendar_events WHERE id = $1',
+      [created.event.id],
+    );
+    expect(eventRow.rows[0]?.description).toBe('Kunde anrufen\nKunde: Ada');
   });
 
   test('preserves timed event bounds when only task completion changes', async () => {
@@ -398,6 +418,30 @@ describe('PostgreSQL atomic task/calendar operations', () => {
           updated_at: '2026-08-02T09:00:00.000Z',
         },
       },
+      {
+        table: 'tasks',
+        sourcePk: '502',
+        row: {
+          id: 502,
+          title: 'Reverse legacy link',
+          due_date: '2026-08-04',
+          priority: 'Medium',
+          completed: 0,
+          calendar_event_id: 603,
+        },
+      },
+      {
+        table: 'calendar_events',
+        sourcePk: '603',
+        row: {
+          id: 603,
+          title: 'Only task back-reference',
+          start_date: '2026-08-04T08:00:00.000Z',
+          end_date: '2026-08-04T09:00:00.000Z',
+          event_type: 'task',
+          updated_at: '2026-08-04T09:00:00.000Z',
+        },
+      },
     ];
     for (const staged of stagedRows) {
       await pool.query(
@@ -422,6 +466,11 @@ describe('PostgreSQL atomic task/calendar operations', () => {
       { source_sqlite_id: '601', task_id: null, event_type: null },
       { source_sqlite_id: '602', task_id: expect.any(String), event_type: 'task' },
     ]);
+    await expect(pool.query<{ task_id: string | null }>(
+      `SELECT task_id::text
+         FROM calendar_events
+        WHERE source_sqlite_id = 603`,
+    )).resolves.toMatchObject({ rows: [{ task_id: expect.any(String) }] });
 
     const secondRunId = '30000000-0000-4000-8000-000000000002';
     await pool.query(

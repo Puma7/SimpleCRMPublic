@@ -19392,16 +19392,11 @@ describe('server edition foundation', () => {
       ['calendar_event.updated', WORKSPACE_A_ID, 'calendar_event', '61'],
       ['calendar_event.deleted', WORKSPACE_A_ID, 'calendar_event', '61'],
     ]);
-    expect(events[0].payload).toMatchObject({
-      id: 61,
-      sourceSqliteId: -61,
-      title: 'Planning',
-      startDate: '2026-07-03T08:00:00.000Z',
-      endDate: '2026-07-03T09:00:00.000Z',
-      allDay: true,
-      eventType: 'meeting',
-      taskId: 51,
-    });
+    expect(events.map((event) => event.payload)).toEqual([
+      { id: 61 },
+      { id: 61 },
+      { id: 61 },
+    ]);
   });
 
   test('server calendar event mutation routes reject unsafe payloads and invalid references', async () => {

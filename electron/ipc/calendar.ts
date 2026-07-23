@@ -14,6 +14,13 @@ interface CalendarHandlersOptions {
 
 type Disposer = () => void;
 
+type CalendarUpdatePayload = SqliteCalendarEntryMutationInput['event'] & {
+  id: number;
+  event?: SqliteCalendarEntryMutationInput['event'];
+  eventData?: SqliteCalendarEntryMutationInput['event'];
+  schedule?: SqliteCalendarEntryMutationInput['schedule'];
+};
+
 export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   const { logger } = options;
   const disposers: Disposer[] = [];
@@ -33,7 +40,14 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   disposers.push(
     registerIpcHandler(IPCChannels.Calendar.AddCalendarEvent, async (_event, eventData: SqliteCalendarEntryMutationInput | SqliteCalendarEntryMutationInput['event']) => {
       try {
-        const input = 'event' in eventData ? eventData : { event: eventData };
+        const rawInput = 'event' in eventData ? eventData : { event: eventData };
+        const { task_id: legacyTaskId, ...event } = rawInput.event;
+        const schedule = rawInput.schedule ?? (
+          legacyTaskId === null || legacyTaskId === undefined
+            ? undefined
+            : { mode: 'existing' as const, taskId: legacyTaskId }
+        );
+        const input = { event, ...(schedule ? { schedule } : {}) };
         return createCalendarEntry(input);
       } catch (error) {
         logger.error('IPC Error adding calendar event:', error);
@@ -43,12 +57,7 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Calendar.UpdateCalendarEvent, async (_event, payload: {
-      id: number;
-      event?: SqliteCalendarEntryMutationInput['event'];
-      eventData?: SqliteCalendarEntryMutationInput['event'];
-      schedule?: SqliteCalendarEntryMutationInput['schedule'];
-    }) => {
+    registerIpcHandler(IPCChannels.Calendar.UpdateCalendarEvent, async (_event, payload: CalendarUpdatePayload) => {
       try {
         if (!payload) {
           throw new Error('No payload provided for calendar update.');
@@ -58,14 +67,23 @@ export function registerCalendarHandlers(options: CalendarHandlersOptions) {
           throw new Error('Missing calendar event ID for update.');
         }
 
-        const normalizedEventData = payload.event ?? payload.eventData;
-        if (!normalizedEventData || Object.keys(normalizedEventData).length === 0) {
+        const { id, event, eventData, schedule, ...flatEventData } = payload;
+        const normalizedEventData = event ?? eventData ?? flatEventData;
+        const { task_id: legacyTaskId, ...normalizedEvent } = normalizedEventData;
+        const normalizedSchedule = schedule ?? (
+          legacyTaskId === null
+            ? { mode: 'none' as const }
+            : legacyTaskId === undefined
+              ? undefined
+              : { mode: 'existing' as const, taskId: legacyTaskId }
+        );
+        if (Object.keys(normalizedEvent).length === 0 && normalizedSchedule === undefined) {
           throw new Error('Missing calendar event data for update.');
         }
 
-        return updateCalendarEntry(payload.id, {
-          event: normalizedEventData,
-          ...(payload.schedule ? { schedule: payload.schedule } : {}),
+        return updateCalendarEntry(id, {
+          event: normalizedEvent,
+          ...(normalizedSchedule ? { schedule: normalizedSchedule } : {}),
         });
       } catch (error) {
         logger.error('IPC Error updating calendar event:', error);

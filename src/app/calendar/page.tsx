@@ -101,6 +101,8 @@ type CalendarDatabaseEvent = {
   recurrence_rule?: string | null;
 };
 
+type CalendarDatabaseEventUpdate = Partial<Omit<CalendarDatabaseEvent, 'id'>> & { id: number };
+
 type CalendarMutationResult = {
   success: boolean;
   id: number;
@@ -122,7 +124,7 @@ const toCalendarTimestamp = (date: Date, allDay: boolean | undefined): string =>
 interface DatabaseAPI {
   getCalendarEvents: () => Promise<CalendarEvent[]>;
   addCalendarEvent: (event: CalendarDatabaseEvent, schedule?: CalendarSchedule) => Promise<CalendarMutationResult>;
-  updateCalendarEvent: (event: CalendarDatabaseEvent, schedule?: CalendarSchedule) => Promise<CalendarMutationResult>;
+  updateCalendarEvent: (event: CalendarDatabaseEventUpdate, schedule?: CalendarSchedule) => Promise<CalendarMutationResult>;
   deleteCalendarEvent: (id: number) => Promise<void>;
 }
 
@@ -360,25 +362,31 @@ export default function CalendarPage() {
 
         // Convert date objects to ISO strings
         if (!event.id) throw new Error('Kalenderereignis-ID fehlt.');
-        const sqliteCompatibleEvent: CalendarDatabaseEvent = {
-          title: event.title,
-          description: event.description || '',
-          // Ensure start_date and end_date are strings (ISOs)
-          start_date: typeof event.start_date === 'string' ? event.start_date : new Date(event.start_date).toISOString(),
-          end_date: normalizeAllDayEnd(event.start_date, event.end_date, event.all_day),
-          all_day: event.all_day || false,
-          color_code: event.color_code || '#3174ad',
-          event_type: event.event_type || '',
-          recurrence_rule: null
+        const startDate = event.start_date === undefined
+          ? undefined
+          : typeof event.start_date === 'string' ? event.start_date : new Date(event.start_date).toISOString();
+        const endDate = event.end_date === undefined
+          ? undefined
+          : typeof event.end_date === 'string' ? event.end_date : new Date(event.end_date).toISOString();
+        const sqliteCompatibleEvent: Partial<Omit<CalendarDatabaseEvent, 'id'>> = {
+          ...(event.title === undefined ? {} : { title: event.title }),
+          ...(event.description === undefined ? {} : { description: event.description || '' }),
+          ...(startDate === undefined ? {} : { start_date: startDate }),
+          ...(endDate === undefined ? {} : {
+            end_date: startDate === undefined ? endDate : normalizeAllDayEnd(startDate, endDate, event.all_day),
+          }),
+          ...(event.all_day === undefined ? {} : { all_day: event.all_day }),
+          ...(event.color_code === undefined ? {} : { color_code: event.color_code || '#3174ad' }),
+          ...(event.event_type === undefined ? {} : { event_type: event.event_type || '' }),
         };
 
         // Only stringify the recurrence_rule if it exists and isn't null
-        if (event.recurrence_rule && typeof event.recurrence_rule !== 'string') {
+        if (event.recurrence_rule !== undefined && event.recurrence_rule && typeof event.recurrence_rule !== 'string') {
           sqliteCompatibleEvent.recurrence_rule = JSON.stringify(event.recurrence_rule);
-        } else if (typeof event.recurrence_rule === 'string' && event.recurrence_rule !== '') {
+        } else if (event.recurrence_rule !== undefined && typeof event.recurrence_rule === 'string' && event.recurrence_rule !== '') {
           // If it's already a string, use it directly
           sqliteCompatibleEvent.recurrence_rule = event.recurrence_rule;
-        } else {
+        } else if (event.recurrence_rule !== undefined) {
           sqliteCompatibleEvent.recurrence_rule = null;
         }
 
@@ -566,17 +574,13 @@ export default function CalendarPage() {
       };
       
       // Convert to database format
-      const dbEvent = {
-        id: typeof updatedEvent.id === 'string' ? parseInt(updatedEvent.id) : updatedEvent.id,
-        title: updatedEvent.title,
-        description: updatedEvent.description || '',
+      const eventId = typeof updatedEvent.id === 'string' ? parseInt(updatedEvent.id) : updatedEvent.id;
+      if (!Number.isInteger(eventId) || Number(eventId) <= 0) throw new Error('Kalenderereignis-ID fehlt.');
+      const dbEvent: CalendarDatabaseEventUpdate = {
+        id: Number(eventId),
         start_date: toCalendarTimestamp(updatedEvent.start, updatedEvent.allDay),
         end_date: toCalendarTimestamp(updatedEvent.end, updatedEvent.allDay),
         all_day: updatedEvent.allDay || false,
-        color_code: updatedEvent.color_code || '#3174ad',
-        event_type: updatedEvent.event_type || '',
-        recurrence_rule: updatedEvent.recurrence_rule ? JSON.stringify(updatedEvent.recurrence_rule) : null,
-        updated_at: new Date().toISOString()
       };
       
       console.log('Updating event after drag/resize:', dbEvent);
@@ -732,7 +736,7 @@ export default function CalendarPage() {
         : Number(updatedEventData.id ?? selectedEvent.id);
 
       // Convert from RBC format to database format
-      const dbEvent: CalendarDatabaseEvent = {
+      const dbEvent: CalendarDatabaseEventUpdate = {
         id: numericEventId,
         title: updatedEventData.title,
         description: updatedEventData.description || '',

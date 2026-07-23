@@ -796,7 +796,13 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
           if (!row) return null;
           let task = await selectTaskById(trx, input.workspaceId, Number(row.id));
           if (task) {
-            await syncTaskCalendarEvent(trx, input.workspaceId, task, values.dueDate !== undefined);
+            await syncTaskCalendarEvent(
+              trx,
+              input.workspaceId,
+              task,
+              values.dueDate !== undefined,
+              values.description !== undefined || values.customerId !== undefined,
+            );
             task = await selectTaskById(trx, input.workspaceId, Number(row.id));
           }
           if (!task) return null;
@@ -1002,7 +1008,6 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
                 }),
                 ...(task ? {
                   title: task.title,
-                  description: task.description,
                   color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
                   event_type: 'task',
                   recurrence_rule: null,
@@ -1101,6 +1106,7 @@ async function syncTaskCalendarEvent(
   workspaceId: string,
   task: TaskRecord,
   reschedule = false,
+  syncDescription = false,
 ): Promise<void> {
   if (task.calendarEventId === null || task.calendarEventId === undefined) return;
   if (task.dueDate === null) {
@@ -1118,7 +1124,12 @@ async function syncTaskCalendarEvent(
     .updateTable('calendar_events')
     .set({
       title: task.title,
-      description: task.description,
+      ...(syncDescription ? {
+        description: [
+          task.description?.trim() || null,
+          task.customerName?.trim() ? `Kunde: ${task.customerName.trim()}` : null,
+        ].filter(Boolean).join('\n') || null,
+      } : {}),
       ...(start && end ? { start_date: start, end_date: end, all_day: true } : {}),
       color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
       event_type: 'task',

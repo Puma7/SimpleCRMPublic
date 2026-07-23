@@ -75,6 +75,21 @@ describe('registerCalendarHandlers', () => {
       expect(sqliteMocks.createCalendarEntry).toHaveBeenCalledWith(payload);
     });
 
+    test('translates a legacy task link into an atomic schedule', async () => {
+      sqliteMocks.createCalendarEntry.mockReturnValue({ success: true, id: 10, event: { id: 10 }, task: { id: 4 } });
+      const handler = handlers.get(IPCChannels.Calendar.AddCalendarEvent);
+      await handler({}, {
+        title: 'Legacy task event',
+        start_date: '2026-04-01',
+        end_date: '2026-04-02',
+        task_id: 4,
+      });
+      expect(sqliteMocks.createCalendarEntry).toHaveBeenCalledWith({
+        event: { title: 'Legacy task event', start_date: '2026-04-01', end_date: '2026-04-02' },
+        schedule: { mode: 'existing', taskId: 4 },
+      });
+    });
+
     test('returns error object on service throw', async () => {
       sqliteMocks.createCalendarEntry.mockImplementation(() => { throw new Error('Insert failed'); });
       const handler = handlers.get(IPCChannels.Calendar.AddCalendarEvent);
@@ -93,12 +108,33 @@ describe('registerCalendarHandlers', () => {
       expect(sqliteMocks.updateCalendarEntry).toHaveBeenCalledWith(9, { event: { title: 'Updated' } });
     });
 
+    test('updates event with legacy flat fields', async () => {
+      const updated = { id: 10, title: 'Flat update' };
+      sqliteMocks.updateCalendarEntry.mockReturnValue(updated);
+      const handler = handlers.get(IPCChannels.Calendar.UpdateCalendarEvent);
+      const result = await handler({}, { id: 10, title: 'Flat update', all_day: false });
+      expect(result).toEqual(updated);
+      expect(sqliteMocks.updateCalendarEntry).toHaveBeenCalledWith(10, {
+        event: { title: 'Flat update', all_day: false },
+      });
+    });
+
+    test('translates a legacy null task link into an atomic unlink', async () => {
+      sqliteMocks.updateCalendarEntry.mockReturnValue({ success: true, id: 10 });
+      const handler = handlers.get(IPCChannels.Calendar.UpdateCalendarEvent);
+      await handler({}, { id: 10, title: 'Unlinked', task_id: null });
+      expect(sqliteMocks.updateCalendarEntry).toHaveBeenCalledWith(10, {
+        event: { title: 'Unlinked' },
+        schedule: { mode: 'none' },
+      });
+    });
+
     test('forwards event and schedule atomically', async () => {
       sqliteMocks.updateCalendarEntry.mockReturnValue({ success: true, id: 4 });
       const handler = handlers.get(IPCChannels.Calendar.UpdateCalendarEvent);
-      await handler({}, { id: 4, event: { title: 'Atomic' }, schedule: { mode: 'none' } });
+      await handler({}, { id: 4, event: {}, schedule: { mode: 'none' } });
       expect(sqliteMocks.updateCalendarEntry).toHaveBeenCalledWith(4, {
-        event: { title: 'Atomic' },
+        event: {},
         schedule: { mode: 'none' },
       });
     });

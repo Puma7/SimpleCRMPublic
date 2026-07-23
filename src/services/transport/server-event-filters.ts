@@ -221,7 +221,8 @@ export function isCustomerDetailRefreshEvent(event: ServerEvent, customerId: num
 }
 
 export function isCalendarEventRefreshEvent(event: ServerEvent): boolean {
-  return event.entityType === "calendar_event" && CALENDAR_EVENT_REFRESH_EVENT_TYPES.has(event.type)
+  if (event.entityType === "calendar_event" && CALENDAR_EVENT_REFRESH_EVENT_TYPES.has(event.type)) return true
+  return event.entityType === "email_acl" && MAIL_ACL_REFRESH_EVENT_TYPES.has(event.type)
 }
 
 export function isProductListRefreshEvent(event: ServerEvent): boolean {

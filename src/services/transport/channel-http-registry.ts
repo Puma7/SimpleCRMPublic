@@ -1599,7 +1599,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       path: "/api/v1/calendar-entries",
       body: pruneUndefined({
         event: mapCalendarEventMutation(wrapped ? input.event : eventData),
-        schedule: wrapped ? input.schedule : undefined,
+        schedule: wrapped ? input.schedule : mapLegacyCalendarSchedule(eventData, false),
       }),
       transform: (body) => {
         const result = dataBody<{ event: CalendarEventRecord; task: TaskRecord | null }>(body)
@@ -1617,12 +1617,13 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Calendar.UpdateCalendarEvent, ([payload]) => {
     const update = objectPayload(payload, "calendar update payload")
     const wrapped = update.event !== undefined
+    const eventData = wrapped ? update.event : update.eventData ?? update
     return {
       method: "PATCH",
       path: `/api/v1/calendar-entries/${positiveId(update.id, "calendar event id")}`,
       body: pruneUndefined({
-        event: mapCalendarEventMutation(wrapped ? update.event : update.eventData),
-        schedule: wrapped ? update.schedule : undefined,
+        event: mapCalendarEventMutation(eventData),
+        schedule: wrapped ? update.schedule : mapLegacyCalendarSchedule(eventData, true),
       }),
       transform: (body) => {
         const result = dataBody<{ event: CalendarEventRecord; task: TaskRecord | null }>(body)
@@ -5188,8 +5189,15 @@ function mapCalendarEventMutation(value: unknown): Record<string, unknown> {
     colorCode: input.colorCode ?? input.color_code,
     eventType: input.eventType ?? input.event_type,
     recurrenceRule: isRecord(recurrenceRule) ? JSON.stringify(recurrenceRule) : recurrenceRule,
-    taskId: input.taskId ?? input.task_id,
   })
+}
+
+function mapLegacyCalendarSchedule(value: unknown, unlinkOnNull: boolean) {
+  const input = objectPayload(value ?? {}, "calendar event payload")
+  const taskId = input.taskId !== undefined ? input.taskId : input.task_id
+  if (taskId === undefined || (taskId === null && !unlinkOnNull)) return undefined
+  if (taskId === null) return { mode: "none" as const }
+  return { mode: "existing" as const, taskId: positiveId(taskId, "task id") }
 }
 
 function mapCustomFieldRecord(record: CustomFieldRecord) {

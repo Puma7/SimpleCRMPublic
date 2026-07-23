@@ -2701,6 +2701,7 @@ type SqliteTaskRecord = {
     priority: string;
     completed: number;
     calendar_event_id: number | null;
+    customer_name: string | null;
     [key: string]: unknown;
 };
 
@@ -2769,7 +2770,7 @@ function assertCalendarRange(startDate: string, endDate: string): void {
     }
 }
 
-function syncLinkedCalendarEvent(taskId: number, reschedule = false): void {
+function syncLinkedCalendarEvent(taskId: number, reschedule = false, syncDescription = false): void {
     const task = readTask(taskId);
     if (!task?.calendar_event_id) return;
 
@@ -2781,7 +2782,12 @@ function syncLinkedCalendarEvent(taskId: number, reschedule = false): void {
     const bounds = reschedule ? taskCalendarBounds(task.due_date.slice(0, 10)) : null;
     updateCalendarEvent(task.calendar_event_id, {
         title: task.title,
-        description: task.description ?? '',
+        ...(syncDescription ? {
+            description: [
+                task.description?.trim() || null,
+                task.customer_name?.trim() ? `Kunde: ${task.customer_name.trim()}` : null,
+            ].filter(Boolean).join('\n'),
+        } : {}),
         ...(bounds ? { start_date: bounds.startDate, end_date: bounds.endDate, all_day: 1 } : {}),
         color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
         event_type: 'task',
@@ -2938,7 +2944,7 @@ export function updateCalendarEntry(
         updateCalendarEvent(id, {
             ...input.event,
             title: task?.title ?? String(merged.title),
-            description: task?.description ?? merged.description,
+            description: input.event.description ?? merged.description,
             color_code: task
                 ? (task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR)
                 : merged.color_code,
@@ -3392,6 +3398,8 @@ export function updateTask(taskId: number, taskData: any): { success: boolean; e
       syncLinkedCalendarEvent(
         taskId,
         Object.prototype.hasOwnProperty.call(taskData ?? {}, 'due_date') && taskData?.due_date !== undefined,
+        (Object.prototype.hasOwnProperty.call(taskData ?? {}, 'description') && taskData?.description !== undefined)
+          || (Object.prototype.hasOwnProperty.call(taskData ?? {}, 'customer_id') && taskData?.customer_id !== undefined),
       );
       return { success: true };
     })();

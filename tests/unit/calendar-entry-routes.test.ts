@@ -124,6 +124,10 @@ describe('atomic calendar entry routes', () => {
       actorUserId: principal.userId,
       viewer: principal,
     })]);
+    expect(eventCalls).toContainEqual(expect.objectContaining({
+      type: 'calendar_event.created',
+      payload: { id: 41 },
+    }));
     expect(eventCalls).toContainEqual(expect.objectContaining({ type: 'task.created', entityId: '51' }));
     expect(auditCalls).toEqual(expect.arrayContaining([
       expect.objectContaining({ action: 'calendar_entry.created', entityId: '41' }),

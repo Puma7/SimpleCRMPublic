@@ -107,6 +107,10 @@ describe('SQLite atomic task/calendar operations', () => {
 
     expect(result.event.description).toBe('Kunde anrufen\nKunde: Ada');
     expect(result.task?.description).toBe('Kunde anrufen');
+
+    expect(updateTaskCompletion(result.task!.id, true)).toMatchObject({ success: true });
+    expect(db.prepare('SELECT description FROM calendar_events WHERE id = ?').get(result.event.id))
+      .toEqual({ description: 'Kunde anrufen\nKunde: Ada' });
   });
 
   test('updates priority and completion when editing an existing task link', () => {
@@ -122,6 +126,7 @@ describe('SQLite atomic task/calendar operations', () => {
 
     expect(updated.task).toMatchObject({ priority: 'Low', completed: 1 });
     expect(updated.event.color_code).toBe('#94a3b8');
+    expect(updated.event.description).toBe('Kunde anrufen');
   });
 
   test('updates priority and completion when creating an existing task link', () => {
@@ -176,7 +181,7 @@ describe('SQLite atomic task/calendar operations', () => {
     const event = db.prepare('SELECT * FROM calendar_events WHERE task_id = ?').get(taskId) as Record<string, unknown>;
     expect(event).toMatchObject({
       title: 'Neuer Titel',
-      description: 'Neue Beschreibung',
+      description: 'Neue Beschreibung\nKunde: Ada',
       start_date: '2026-07-25T00:00:00.000Z',
       end_date: '2026-07-26T00:00:00.000Z',
       color_code: '#94a3b8',
