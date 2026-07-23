@@ -117,10 +117,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             xvfb \
+            dbus \
             gcc-12 \
             g++-12 \
+            gnome-keyring \
             libsecret-1-0 \
             libsecret-1-dev \
+            libsecret-tools \
             libasound2 \
             libatk-bridge2.0-0 \
             libatk1.0-0 \
@@ -147,7 +150,13 @@ jobs:
           test "$(stat -c '%a' node_modules/electron/dist/chrome-sandbox)" = "4755"
 
       - name: Run Electron E2E suite
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1440x1000x24" pnpm run test:e2e
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+            printf "simplecrm-ci" | timeout 10s secret-tool store --label="SimpleCRM CI" simplecrm ci
+            test "$(timeout 10s secret-tool lookup simplecrm ci)" = "simplecrm-ci"
+            exec xvfb-run --auto-servernum --server-args="-screen 0 1440x1000x24" pnpm run test:e2e
+          '
 
       - name: Upload Electron E2E diagnostics
         if: ${{ always() }}

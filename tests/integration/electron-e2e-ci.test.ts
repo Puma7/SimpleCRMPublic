@@ -17,6 +17,9 @@ describe('Electron E2E CI gate', () => {
     expect(workflow).toContain('gcc-12 \\');
     expect(workflow).toContain('g++-12 \\');
     expect(workflow).toContain('libsecret-1-0');
+    expect(workflow).toContain('gnome-keyring');
+    expect(workflow).toContain('dbus-run-session');
+    expect(workflow).toContain('gnome-keyring-daemon --unlock --components=secrets');
     expect(workflow).toContain('actions/upload-artifact@v4');
   });
 
