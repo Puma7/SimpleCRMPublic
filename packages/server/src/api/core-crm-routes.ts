@@ -777,6 +777,23 @@ async function handleUpdateTask(
     },
   });
   await publishTaskEvent(ports, 'task.updated', principal.workspaceId, task, principal.userId);
+  if (result.calendarEventChange) {
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action: `calendar_event.${result.calendarEventChange.type}`,
+      entityType: 'calendar_event',
+      entityId: String(result.calendarEventChange.eventId),
+      metadata: { id: result.calendarEventChange.eventId, taskId: task.id },
+    });
+    await publishTaskCalendarEvent(
+      ports,
+      `calendar_event.${result.calendarEventChange.type}`,
+      principal.workspaceId,
+      result.calendarEventChange.eventId,
+      principal.userId,
+    );
+  }
   return data(200, task);
 }
 
@@ -810,6 +827,23 @@ async function handleDeleteTask(
     },
   });
   await publishTaskEvent(ports, 'task.deleted', principal.workspaceId, task, principal.userId);
+  if (task.calendarEventId !== null && task.calendarEventId !== undefined) {
+    await ports.audit?.record({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      action: 'calendar_event.deleted',
+      entityType: 'calendar_event',
+      entityId: String(task.calendarEventId),
+      metadata: { id: task.calendarEventId, taskId: task.id },
+    });
+    await publishTaskCalendarEvent(
+      ports,
+      'calendar_event.deleted',
+      principal.workspaceId,
+      task.calendarEventId,
+      principal.userId,
+    );
+  }
   return data(200, { deleted: true, task });
 }
 
@@ -919,6 +953,24 @@ async function publishTaskEvent(
       completed: task.completed,
       dueDate: task.dueDate,
     },
+  });
+}
+
+async function publishTaskCalendarEvent(
+  ports: ServerApiPorts,
+  type: 'calendar_event.updated' | 'calendar_event.deleted',
+  workspaceId: string,
+  eventId: number,
+  actorUserId: string,
+): Promise<void> {
+  await ports.events?.publish({
+    type,
+    workspaceId,
+    entityType: 'calendar_event',
+    entityId: String(eventId),
+    actorUserId,
+    occurredAt: new Date().toISOString(),
+    payload: { id: eventId },
   });
 }
 

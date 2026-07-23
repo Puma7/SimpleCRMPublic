@@ -29,7 +29,7 @@ Schema-Definitionen: `electron/database-schema.ts`. Migrationen: `runMigrations(
 | `customers` | Kunden; optional `jtl_kKunde` |
 | `deals` | Deals; FK `customer_id`; `stage`, `value`, `value_calculation_method` |
 | `deal_products` | n:m Deal ↔ Produkt mit Menge/Preis |
-| `tasks` | Aufgaben; FK `customer_id`; `snoozed_until`, `calendar_event_id` |
+| `tasks` | Aufgaben; FK `customer_id`; `snoozed_until`; `calendar_event_id` bleibt nur als Desktop-Legacyfeld |
 | `products` | Produktkatalog; optional `jtl_kArtikel` |
 | `calendar_events` | Termine; optional `task_id` |
 | `activity_log` | Nachverfolgung / Timeline |
@@ -79,6 +79,16 @@ Definiert in `shared/ipc/channels.ts`, registriert in `electron/ipc/router.ts`:
 Typen: `src/services/data/types.ts`.
 
 Aufgaben-, Dashboard- und Follow-up-Abfragen liefern den kompatiblen Kundennamen als ersten nichtleeren Wert aus Name, Vorname und Firma. Die Firma bleibt zusätzlich separat als `customerCompany` (Server) beziehungsweise `customer_company` (Desktop-Renderer) erhalten; beide PostgreSQL-Joins müssen immer auch `workspace_id` vergleichen.
+
+### Atomare Aufgaben-/Kalenderverknuepfung
+
+- `calendar_events.task_id` ist die kanonische Beziehung; pro Aufgabe darf hoechstens ein Termin verknuepft sein.
+- PostgreSQL nutzt `POST/PATCH/DELETE /api/v1/calendar-entries`; SQLite nutzt `createCalendarEntry`, `updateCalendarEntry` und `deleteCalendarEntry`.
+- Termin plus optionale Aufgabe werden in genau einer Transaktion geschrieben. Renderer duerfen keine Rollback- oder Reparatursequenzen nachbilden.
+- Aufgabenupdates synchronisieren Titel, Beschreibung, Faelligkeit und Erledigt-Farbe. `dueDate: null` entfernt den verknuepften Termin.
+- Das Loeschen oder Entkoppeln eines Termins behaelt die Aufgabe und setzt ihre Faelligkeit auf `null`; das Loeschen der Aufgabe entfernt den Termin.
+- Verknuepfte Servertermine uebernehmen die Aufgaben-Sichtbarkeit. Owner und Admin behalten Vollzugriff.
+- Oeffentliche Payloadtypen liegen in `packages/core/src/crm/task-calendar.ts`; IPC-Vertraege liegen in `shared/ipc/schemas.ts`.
 
 ---
 

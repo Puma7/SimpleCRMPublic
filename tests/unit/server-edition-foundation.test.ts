@@ -373,6 +373,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0040_scheduled_send_provenance',
   '0041_mail_acl_binding_message_fk_cascade',
   '0042_quarantine_legacy_provenanceless_jobs',
+  '0043_atomic_task_calendar',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -15007,9 +15008,9 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(49);
+    expect(client.queries).toHaveLength(50);
     expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[48].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
+    expect(client.queries[49].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
     expect(result.domains.map((domain) => [domain.domain, domain.commandCount])).toEqual([
       ['core_crm', 15],
       ['core_mail', 17],
@@ -15196,6 +15197,8 @@ describe('server edition foundation', () => {
     expect(commands[3].sql).toContain('LEFT JOIN customers c');
     expect(commands[5].sql).toContain('LEFT JOIN deals d');
     expect(commands[5].sql).toContain('LEFT JOIN products p');
+    expect(commands[6].prepareSql).toContain('UPDATE calendar_events AS existing');
+    expect(commands[6].prepareSql).toContain('existing.source_sqlite_id IS DISTINCT FROM winner.event_source_sqlite_id');
     expect(commands[6].sql).toContain('INSERT INTO calendar_events');
     expect(commands[8].sql).toContain('LEFT JOIN customer_custom_fields f');
     expect(commands[9].sql).toContain('LEFT JOIN deals d');
@@ -15211,9 +15214,11 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(15);
+    expect(client.queries).toHaveLength(16);
     expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[14].params).toEqual(['workspace-a', 'jtl_versandarten', 'run-1']);
+    expect(client.queries[15].params).toEqual(['workspace-a', 'jtl_versandarten', 'run-1']);
+    expect(client.queries[6].sql).toContain('UPDATE calendar_events AS existing');
+    expect(client.queries[7].sql).toContain('INSERT INTO calendar_events');
     expect(client.queries[1].sql).not.toContain('workspace-a');
     expect(client.queries[1].sql).not.toContain('run-1');
     expect(() => buildCoreCrmImportCommands({ workspaceId: ' ', runId: 'run-1' })).toThrow('workspaceId');
@@ -18823,8 +18828,10 @@ describe('server edition foundation', () => {
           return input.id === 51
             ? {
               ok: true,
+              calendarEventChange: { type: 'updated' as const, eventId: 61 },
               task: {
                 ...makeTaskRecord(51),
+                calendarEventId: 61,
                 completed: input.values.completed ?? false,
                 snoozedUntil: input.values.snoozedUntil ?? null,
               },
@@ -18833,7 +18840,7 @@ describe('server edition foundation', () => {
         },
         async delete(input) {
           taskDeleteCalls.push(input);
-          return input.id === 51 ? makeTaskRecord(51) : null;
+          return input.id === 51 ? { ...makeTaskRecord(51), calendarEventId: 61 } : null;
         },
       },
     }));
@@ -19027,8 +19034,11 @@ describe('server edition foundation', () => {
       'deal.deleted',
       'task.created',
       'task.updated',
+      'calendar_event.updated',
       'task.updated',
+      'calendar_event.updated',
       'task.deleted',
+      'calendar_event.deleted',
     ]);
     expect(events.map((event) => [event.type, event.workspaceId, event.entityType, event.entityId])).toEqual([
       ['deal.created', WORKSPACE_A_ID, 'deal', '41'],
@@ -19037,8 +19047,11 @@ describe('server edition foundation', () => {
       ['deal.deleted', WORKSPACE_A_ID, 'deal', '41'],
       ['task.created', WORKSPACE_A_ID, 'task', '51'],
       ['task.updated', WORKSPACE_A_ID, 'task', '51'],
+      ['calendar_event.updated', WORKSPACE_A_ID, 'calendar_event', '61'],
       ['task.updated', WORKSPACE_A_ID, 'task', '51'],
+      ['calendar_event.updated', WORKSPACE_A_ID, 'calendar_event', '61'],
       ['task.deleted', WORKSPACE_A_ID, 'task', '51'],
+      ['calendar_event.deleted', WORKSPACE_A_ID, 'calendar_event', '61'],
     ]);
     expect(events[0].payload).toMatchObject({
       id: 41,
@@ -19329,6 +19342,7 @@ describe('server edition foundation', () => {
         recurrenceRule: 'RRULE:FREQ=DAILY',
         taskId: 51,
       },
+      viewer: principal,
     }]);
 
     const updated = await api.handle({
@@ -19351,6 +19365,7 @@ describe('server edition foundation', () => {
         colorCode: null,
         taskId: null,
       },
+      viewer: principal,
     }]);
 
     const deleted = await api.handle({
@@ -19364,6 +19379,7 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       actorUserId: USER_A_ID,
       id: 61,
+      viewer: principal,
     }]);
 
     expect(auditEvents.map((event) => event.action)).toEqual([
@@ -19376,16 +19392,11 @@ describe('server edition foundation', () => {
       ['calendar_event.updated', WORKSPACE_A_ID, 'calendar_event', '61'],
       ['calendar_event.deleted', WORKSPACE_A_ID, 'calendar_event', '61'],
     ]);
-    expect(events[0].payload).toMatchObject({
-      id: 61,
-      sourceSqliteId: -61,
-      title: 'Planning',
-      startDate: '2026-07-03T08:00:00.000Z',
-      endDate: '2026-07-03T09:00:00.000Z',
-      allDay: true,
-      eventType: 'meeting',
-      taskId: 51,
-    });
+    expect(events.map((event) => event.payload)).toEqual([
+      { id: 61 },
+      { id: 61 },
+      { id: 61 },
+    ]);
   });
 
   test('server calendar event mutation routes reject unsafe payloads and invalid references', async () => {
@@ -20486,6 +20497,7 @@ describe('server edition foundation', () => {
     expect((calendarEvents.body as any).data.nextCursor).toBe(30);
     expect(calendarEventCalls).toEqual([{
       workspaceId: WORKSPACE_A_ID,
+      viewer: principal,
       limit: 5,
       cursor: 1,
       search: 'Demo',

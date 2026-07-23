@@ -940,6 +940,20 @@ export async function filterMailEventForPrincipal(
   event: ServerEvent,
   context: MailEventFilterContext,
 ): Promise<ServerEvent | null> {
+  if (
+    event.entityType === 'calendar_event'
+    && (
+      event.type === 'calendar_event.created'
+      || event.type === 'calendar_event.updated'
+      || event.type === 'calendar_event.deleted'
+    )
+  ) {
+    const id = event.payload.id;
+    return {
+      ...event,
+      payload: typeof id === 'number' || typeof id === 'string' ? { id } : {},
+    };
+  }
   if (event.type === 'email_acl.changed') {
     const sanitized = sanitizeMailEventPayload(event);
     // Deliver to the affected subject, to owners/admins, AND to a non-admin

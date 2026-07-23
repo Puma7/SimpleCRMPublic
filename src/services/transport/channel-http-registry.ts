@@ -160,6 +160,7 @@ type TaskRecord = {
   assignmentScope?: "global" | "user" | "group" | null
   assignedUserId?: string | null
   assignedGroupId?: number | null
+  calendarEventId?: number | null
   updatedAt?: string | null
 }
 
@@ -1590,28 +1591,56 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     query: { limit: DEFAULT_LIST_LIMIT },
     transform: (body) => listItems<CalendarEventRecord>(body).map(mapCalendarEventRecord),
   })],
-  [IPCChannels.Calendar.AddCalendarEvent, ([eventData]) => ({
-    method: "POST",
-    path: "/api/v1/calendar-events",
-    body: mapCalendarEventMutation(eventData),
-    transform: (body) => {
-      const event = mapCalendarEventRecord(dataBody<CalendarEventRecord>(body))
-      return { success: true, id: event.id, lastInsertRowid: event.id, event }
-    },
-  })],
+  [IPCChannels.Calendar.AddCalendarEvent, ([eventData]) => {
+    const input = objectPayload(eventData, "calendar entry payload")
+    const wrapped = input.event !== undefined
+    return {
+      method: "POST",
+      path: "/api/v1/calendar-entries",
+      body: pruneUndefined({
+        event: mapCalendarEventMutation(wrapped ? input.event : eventData),
+        schedule: wrapped ? input.schedule : mapLegacyCalendarSchedule(eventData, false),
+      }),
+      transform: (body) => {
+        const result = dataBody<{ event: CalendarEventRecord; task: TaskRecord | null }>(body)
+        const event = mapCalendarEventRecord(result.event)
+        return {
+          success: true,
+          id: event.id,
+          lastInsertRowid: event.id,
+          event,
+          task: result.task ? mapTaskRecord(result.task) : null,
+        }
+      },
+    }
+  }],
   [IPCChannels.Calendar.UpdateCalendarEvent, ([payload]) => {
     const update = objectPayload(payload, "calendar update payload")
+    const wrapped = update.event !== undefined
+    const eventData = wrapped ? update.event : update.eventData ?? update
     return {
       method: "PATCH",
-      path: `/api/v1/calendar-events/${positiveId(update.id, "calendar event id")}`,
-      body: mapCalendarEventMutation(update.eventData),
-      transform: () => undefined,
+      path: `/api/v1/calendar-entries/${positiveId(update.id, "calendar event id")}`,
+      body: pruneUndefined({
+        event: mapCalendarEventMutation(eventData),
+        schedule: wrapped ? update.schedule : mapLegacyCalendarSchedule(eventData, true),
+      }),
+      transform: (body) => {
+        const result = dataBody<{ event: CalendarEventRecord; task: TaskRecord | null }>(body)
+        const event = mapCalendarEventRecord(result.event)
+        return {
+          success: true,
+          id: event.id,
+          event,
+          task: result.task ? mapTaskRecord(result.task) : null,
+        }
+      },
     }
   }],
   [IPCChannels.Calendar.DeleteCalendarEvent, ([id]) => ({
     method: "DELETE",
-    path: `/api/v1/calendar-events/${positiveId(id, "calendar event id")}`,
-    transform: () => undefined,
+    path: `/api/v1/calendar-entries/${positiveId(id, "calendar event id")}`,
+    transform: () => ({ success: true }),
   })],
 
   [IPCChannels.CustomFields.GetAll, () => ({
@@ -5108,7 +5137,7 @@ function mapTaskRecord(record: TaskRecord) {
     assigned_user_id: record.assignedUserId ?? null,
     assigned_group_id: record.assignedGroupId ?? null,
     last_modified: record.updatedAt ?? undefined,
-    calendar_event_id: null,
+    calendar_event_id: record.calendarEventId ?? null,
   }
 }
 
@@ -5150,6 +5179,7 @@ function mapCalendarEventRecord(record: CalendarEventRecord) {
 
 function mapCalendarEventMutation(value: unknown): Record<string, unknown> {
   const input = objectPayload(value ?? {}, "calendar event payload")
+  const recurrenceRule = input.recurrenceRule !== undefined ? input.recurrenceRule : input.recurrence_rule
   return pruneUndefined({
     title: input.title,
     description: input.description,
@@ -5158,9 +5188,16 @@ function mapCalendarEventMutation(value: unknown): Record<string, unknown> {
     allDay: input.allDay ?? (input.all_day === undefined ? undefined : Boolean(input.all_day)),
     colorCode: input.colorCode ?? input.color_code,
     eventType: input.eventType ?? input.event_type,
-    recurrenceRule: input.recurrenceRule ?? input.recurrence_rule,
-    taskId: input.taskId ?? input.task_id,
+    recurrenceRule: isRecord(recurrenceRule) ? JSON.stringify(recurrenceRule) : recurrenceRule,
   })
+}
+
+function mapLegacyCalendarSchedule(value: unknown, unlinkOnNull: boolean) {
+  const input = objectPayload(value ?? {}, "calendar event payload")
+  const taskId = input.taskId !== undefined ? input.taskId : input.task_id
+  if (taskId === undefined || (taskId === null && !unlinkOnNull)) return undefined
+  if (taskId === null) return { mode: "none" as const }
+  return { mode: "existing" as const, taskId: positiveId(taskId, "task id") }
 }
 
 function mapCustomFieldRecord(record: CustomFieldRecord) {

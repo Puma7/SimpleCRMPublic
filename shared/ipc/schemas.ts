@@ -133,6 +133,95 @@ const updateDealProductPayload = dealProductIdentifier.extend({
 });
 
 // --- Calendar ---
+const calendarEventMutationSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+  description: z.string().nullable().optional(),
+  start_date: z.string().min(1).optional(),
+  end_date: z.string().min(1).optional(),
+  all_day: z.boolean().optional(),
+  color_code: z.string().nullable().optional(),
+  event_type: z.string().nullable().optional(),
+  recurrence_rule: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+  task_id: z.number().int().positive().nullable().optional(),
+}).strict();
+
+const calendarEventCreateSchema = calendarEventMutationSchema.extend({
+  title: z.string().trim().min(1),
+  start_date: z.string().min(1),
+  end_date: z.string().min(1),
+});
+
+const taskRecordSchema = z.object({
+  id: z.union([z.number().int().positive(), z.string().min(1)]),
+  customer_id: z.union([z.number(), z.string()]).nullable().optional(),
+  customer_name: z.string().nullable().optional(),
+  customer_company: z.string().nullable().optional(),
+  title: z.string(),
+  description: z.string().nullable().optional(),
+  due_date: z.string().nullable().optional(),
+  priority: z.string(),
+  completed: z.union([z.boolean(), z.number().int()]),
+  snoozed_until: z.string().nullable().optional(),
+  assignment_scope: z.enum(['global', 'user', 'group']).optional(),
+  assigned_user_id: z.string().nullable().optional(),
+  assigned_group_id: z.number().int().positive().nullable().optional(),
+  calendar_event_id: z.number().int().positive().nullable().optional(),
+}).passthrough();
+
+const calendarEventRecordSchema = z.object({
+  id: z.number().int().positive(),
+  title: z.string(),
+  description: z.string().nullable().optional(),
+  start_date: z.string(),
+  end_date: z.string(),
+  all_day: z.union([z.boolean(), z.number().int()]),
+  color_code: z.string().nullable().optional(),
+  event_type: z.string().nullable().optional(),
+  recurrence_rule: z.union([z.string(), z.record(z.string(), z.unknown())]).nullable().optional(),
+  task_id: z.number().int().positive().nullable().optional(),
+}).passthrough();
+
+const calendarEntrySuccessSchema = z.object({
+  success: z.literal(true),
+  id: z.number().int().positive(),
+  event: calendarEventRecordSchema,
+  task: taskRecordSchema.nullable().optional(),
+}).passthrough();
+
+const calendarTaskDueDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+});
+
+const taskScheduleSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('none') }).strict(),
+  z.object({
+    mode: z.literal('existing'),
+    taskId: z.number().int().positive(),
+    dueDate: calendarTaskDueDateSchema.optional(),
+    task: z.object({
+      priority: z.string().trim().min(1).optional(),
+      completed: z.boolean().optional(),
+    }).strict().optional(),
+  }).strict(),
+  z.object({
+    mode: z.literal('create'),
+    dueDate: calendarTaskDueDateSchema.optional(),
+    task: z.object({
+      customerId: z.number().int().positive().optional(),
+      title: z.string().trim().min(1),
+      description: z.string().nullable().optional(),
+      priority: z.string().trim().min(1).optional(),
+      completed: z.boolean().optional(),
+      assignmentScope: z.enum(['global', 'user', 'group']).optional(),
+      assignedUserId: z.string().trim().min(1).nullable().optional(),
+      assignedGroupId: z.number().int().positive().nullable().optional(),
+    }).strict(),
+  }).strict(),
+]);
 baseSchemaMap.set(IPCChannels.Calendar.GetCalendarEvents, {
   payload: z.union([
     z.undefined(),
@@ -141,22 +230,42 @@ baseSchemaMap.set(IPCChannels.Calendar.GetCalendarEvents, {
       endDate: z.string().optional(),
     }).passthrough(),
   ]),
-  result: z.array(z.any()),
+  result: z.array(calendarEventRecordSchema),
 });
 
 baseSchemaMap.set(IPCChannels.Calendar.AddCalendarEvent, {
-  payload: z.any(),
-  result: z.any(),
+  payload: z.union([
+    calendarEventCreateSchema,
+    z.object({
+      event: calendarEventCreateSchema,
+      schedule: taskScheduleSchema.optional(),
+    }).strict(),
+  ]),
+  result: z.union([
+    calendarEntrySuccessSchema,
+    failureResponse,
+  ]),
 });
 
 baseSchemaMap.set(IPCChannels.Calendar.UpdateCalendarEvent, {
-  payload: z.any(),
-  result: z.any(),
+  payload: z.union([
+    calendarEventMutationSchema.extend({ id: z.number().int().positive() }),
+    z.object({
+      id: z.number().int().positive(),
+      eventData: calendarEventMutationSchema,
+    }).strict(),
+    z.object({
+      id: z.number().int().positive(),
+      event: calendarEventMutationSchema,
+      schedule: taskScheduleSchema.optional(),
+    }).strict(),
+  ]),
+  result: z.union([calendarEntrySuccessSchema, failureResponse]),
 });
 
 baseSchemaMap.set(IPCChannels.Calendar.DeleteCalendarEvent, {
-  payload: z.number().int(),
-  result: z.any(),
+  payload: z.number().int().positive(),
+  result: z.union([successResponse, failureResponse]),
 });
 
 // --- Deals ---
@@ -296,40 +405,65 @@ baseSchemaMap.set(IPCChannels.Dashboard.GetUpcomingTasks, {
 });
 
 // --- Tasks ---
+const taskMutationSchema = z.object({
+  customer_id: z.number().int().positive().nullable().optional(),
+  customerId: z.number().int().positive().nullable().optional(),
+  title: z.string().trim().min(1).optional(),
+  description: z.string().nullable().optional(),
+  due_date: z.string().nullable().optional(),
+  dueDate: z.string().nullable().optional(),
+  priority: z.string().trim().min(1).optional(),
+  completed: z.boolean().optional(),
+  assignment_scope: z.enum(['global', 'user', 'group']).optional(),
+  assignmentScope: z.enum(['global', 'user', 'group']).optional(),
+  assigned_user_id: z.string().trim().min(1).nullable().optional(),
+  assignedUserId: z.string().trim().min(1).nullable().optional(),
+  assigned_group_id: z.number().int().positive().nullable().optional(),
+  assignedGroupId: z.number().int().positive().nullable().optional(),
+  snoozed_until: z.string().nullable().optional(),
+  snoozedUntil: z.string().nullable().optional(),
+  calendar_event_id: z.number().int().positive().nullable().optional(),
+}).strict();
+
 baseSchemaMap.set(IPCChannels.Tasks.GetAll, {
   payload: optionalListParamsSchema,
-  result: z.array(z.any()),
+  result: z.array(taskRecordSchema),
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.GetById, {
   payload: z.number().int().positive(),
-  result: z.any(),
+  result: taskRecordSchema.nullable(),
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.Create, {
-  payload: z.any(),
-  result: z.any(),
+  payload: taskMutationSchema
+    .omit({ calendar_event_id: true })
+    .extend({ title: z.string().trim().min(1) }),
+  result: z.union([
+    z.object({ success: z.literal(true), id: z.number().int().positive().optional() }).passthrough(),
+    failureResponse,
+  ]),
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.Update, {
-  payload: z.any(),
-  result: z.any(),
+  payload: z.object({
+    id: z.number().int().positive(),
+    taskData: taskMutationSchema,
+  }).strict(),
+  result: standardResult,
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.ToggleCompletion, {
-  payload: z.union([
-    z.number().int().positive(),
-    z.object({
-      taskId: z.number().int().positive(),
-      completed: z.boolean(),
-    }).passthrough(),
-  ]),
-  result: z.any(),
+  payload: z.object({
+    taskId: z.number().int().positive(),
+    completed: z.boolean(),
+  }).strict(),
+  result: standardResult,
 });
 
 baseSchemaMap.set(IPCChannels.Tasks.Delete, {
   payload: z.number().int().positive(),
-  result: z.any(),
+  result: standardResult,
 });
 
 // --- Custom Fields ---

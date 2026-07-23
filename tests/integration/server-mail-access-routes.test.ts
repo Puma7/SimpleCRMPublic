@@ -4406,25 +4406,24 @@ describe('server mailbox ACL migration', () => {
     const adminDb = createApplicationDb({ maxConnections: 2, applicationName: 'task8-enforce-transition' });
     const evaluationState = createPostgresMailAclRolloutStatePort({ db: evaluationDb });
     const adminState = createPostgresMailAclRolloutStatePort({ db: adminDb });
-    const allEvaluationsEntered = deferred<void>();
+    const evaluationEntered = [deferred<void>(), deferred<void>()];
     const releases = [deferred<void>(), deferred<void>()];
-    let entered = 0;
-    const service = new MailAccessRolloutService({
-      state: evaluationState,
-      legacy: {
-        async canAccessAccount() {
-          const index = entered;
-          entered += 1;
-          if (entered === releases.length) allEvaluationsEntered.resolve(undefined);
-          await releases[index]!.promise;
-          return true;
+    const services = releases.map((release, index) => (
+      new MailAccessRolloutService({
+        state: evaluationState,
+        legacy: {
+          async canAccessAccount() {
+            evaluationEntered[index]!.resolve(undefined);
+            await release.promise;
+            return true;
+          },
+          async resolveAccountScope() { return [ACCOUNT_A]; },
         },
-        async resolveAccountScope() { return [ACCOUNT_A]; },
-      },
-      newAcl: {
-        async resolveGrants() { return []; },
-      },
-    });
+        newAcl: {
+          async resolveGrants() { return []; },
+        },
+      })
+    ));
     const request = {
       workspaceId: WORKSPACE_A,
       actor: {
@@ -4445,8 +4444,8 @@ describe('server mailbox ACL migration', () => {
     let transition: Promise<Awaited<ReturnType<typeof adminState.transitionToEnforce>>> | undefined;
     try {
       await adminState.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
-      evaluations = [service.assertPermission(request), service.assertPermission(request)];
-      await allEvaluationsEntered.promise;
+      evaluations = services.map((service) => service.assertPermission(request));
+      await Promise.all(evaluationEntered.map((entry) => entry.promise));
       await expect(adminState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         inFlight: 2n,
         ready: false,

@@ -42,6 +42,8 @@ describe('calendarService', () => {
       IPCChannels.Calendar.AddCalendarEvent,
       expect.objectContaining({
         title: 'Call customer',
+        start_date: '2026-03-12T00:00:00.000Z',
+        end_date: '2026-03-13T00:00:00.000Z',
         all_day: true,
         color_code: TASK_EVENT_DEFAULT_COLOR,
         event_type: 'task',
@@ -56,11 +58,14 @@ describe('calendarService', () => {
     });
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {
-        id: 77,
-        title: 'Server task',
-        startDate: '2026-03-12T00:00:00.000Z',
-        endDate: '2026-03-13T00:00:00.000Z',
-        allDay: true,
+        event: {
+          id: 77,
+          title: 'Server task',
+          startDate: '2026-03-12T00:00:00.000Z',
+          endDate: '2026-03-13T00:00:00.000Z',
+          allDay: true,
+        },
+        task: null,
       },
     }, 201));
     configureRendererTransport(createHttpRendererTransport({
@@ -75,7 +80,7 @@ describe('calendarService', () => {
 
     expect(result).toEqual({ success: true, id: 77 });
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://crm.example.com/api/v1/calendar-events',
+      'https://crm.example.com/api/v1/calendar-entries',
       expect.objectContaining({
         method: 'POST',
         body: expect.any(String),
@@ -84,13 +89,52 @@ describe('calendarService', () => {
     const requestInit = fetchImpl.mock.calls[0][1] as RequestInit;
     expect(JSON.parse(String(requestInit.body))).toEqual(
       expect.objectContaining({
-        title: 'Server task',
-        allDay: true,
-        colorCode: TASK_EVENT_DEFAULT_COLOR,
-        eventType: 'task',
+        event: expect.objectContaining({
+          title: 'Server task',
+          allDay: true,
+          colorCode: TASK_EVENT_DEFAULT_COLOR,
+          eventType: 'task',
+        }),
       }),
     );
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  test('creates a task and event through the atomic HTTP command', async () => {
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: undefined });
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: {
+        event: {
+          id: 78,
+          title: 'Server task',
+          startDate: '2026-03-12T00:00:00.000Z',
+          endDate: '2026-03-13T00:00:00.000Z',
+          allDay: true,
+        },
+        task: { id: 91, title: 'Server task', priority: 'Medium', completed: false },
+      },
+    }, 201));
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    }));
+
+    const result = await calendarService.addTaskEvent({
+      title: 'Server task',
+      dueDate: '2026-03-12',
+      createTask: { customerId: 7, title: 'Server task' },
+    });
+
+    expect(result).toEqual({ success: true, id: 78, taskId: 91 });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/calendar-entries',
+      expect.objectContaining({ method: 'POST', body: expect.any(String) }),
+    );
+    const requestInit = fetchImpl.mock.calls[0][1] as RequestInit;
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      event: { title: 'Server task' },
+      schedule: { mode: 'create', dueDate: '2026-03-12', task: { customerId: 7, title: 'Server task' } },
+    });
   });
 
   test('throws for invalid due date', async () => {
@@ -100,6 +144,12 @@ describe('calendarService', () => {
         dueDate: 'invalid',
       })
     ).rejects.toThrow('Ungültiges Fälligkeitsdatum');
+  });
+
+  test('rejects calendar dates that JavaScript would otherwise normalize', async () => {
+    await expect(calendarService.addTaskEvent({ title: 'Invalid', dueDate: '2026-02-31' }))
+      .rejects.toThrow('Ungültiges Fälligkeitsdatum');
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   test('updates task event with completed color', async () => {
@@ -116,7 +166,7 @@ describe('calendarService', () => {
         id: 5,
         eventData: expect.objectContaining({
           color_code: TASK_EVENT_COMPLETED_COLOR,
-          all_day: 1,
+          all_day: true,
         }),
       })
     );

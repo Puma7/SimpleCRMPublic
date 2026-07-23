@@ -145,6 +145,13 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         patch: { summary: 'Update calendar event' },
         delete: { summary: 'Delete calendar event' },
       },
+      '/calendar-entries': {
+        post: { summary: 'Create calendar event and optional task atomically' },
+      },
+      '/calendar-entries/{id}': {
+        patch: { summary: 'Update calendar event and task link atomically' },
+        delete: { summary: 'Delete calendar event and unschedule its task atomically' },
+      },
       '/activity-log': {
         get: { summary: 'List activity log' },
         post: { summary: 'Create activity log entry' },

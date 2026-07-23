@@ -1,4 +1,6 @@
 import type {
+  CalendarEntryMutationInput,
+  TaskScheduleInput,
   EmailEvidenceClassification,
   EmailEvidenceConfidence,
   EmailEvidenceEventType,
@@ -1195,6 +1197,7 @@ export type TaskRecord = {
   assignmentScope: TaskAssignmentScope;
   assignedUserId: string | null;
   assignedGroupId: number | null;
+  calendarEventId?: number | null;
   updatedAt: string;
 };
 
@@ -1217,7 +1220,11 @@ export type TaskMutationInput = {
 };
 
 export type TaskMutationPortResult =
-  | { ok: true; task: TaskRecord }
+  | {
+      ok: true;
+      task: TaskRecord;
+      calendarEventChange?: { type: 'updated' | 'deleted'; eventId: number };
+    }
   | { ok: false; code: 'customer_not_found' | 'assigned_user_not_found' | 'assigned_group_not_found' };
 
 export type TaskApiPort = {
@@ -1303,27 +1310,76 @@ export type CalendarEventApiPort = {
     startTo?: string;
     cursor?: number;
     limit: number;
+    viewer?: TaskViewer;
   }): Promise<CalendarEventListResult>;
   get(input: {
     workspaceId: string;
     id: number;
+    viewer?: TaskViewer;
   }): Promise<CalendarEventRecord | null>;
   create?(input: {
     workspaceId: string;
     actorUserId: string;
     values: CalendarEventMutationInput;
+    viewer?: TaskViewer;
   }): Promise<CalendarEventMutationPortResult>;
   update?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
     values: CalendarEventMutationInput;
+    viewer?: TaskViewer;
   }): Promise<CalendarEventMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
+    viewer?: TaskViewer;
   }): Promise<CalendarEventRecord | null>;
+};
+
+export type CalendarEntryMutationPortResult =
+  | {
+    ok: true;
+    event: CalendarEventRecord;
+    task: TaskRecord | null;
+    detachedTask?: TaskRecord | null;
+  }
+  | {
+    ok: false;
+    code:
+      | 'calendar_event_not_found'
+      | 'task_not_found'
+      | 'customer_not_found'
+      | 'assigned_user_not_found'
+      | 'assigned_group_not_found'
+      | 'invalid_date_range'
+      | 'forbidden'
+      | 'task_already_scheduled';
+  };
+
+export type CalendarEntryApiPort = {
+  create(input: {
+    workspaceId: string;
+    actorUserId: string;
+    event: CalendarEntryMutationInput['event'];
+    schedule?: TaskScheduleInput;
+    viewer: TaskViewer;
+  }): Promise<CalendarEntryMutationPortResult>;
+  update(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    event: CalendarEntryMutationInput['event'];
+    schedule?: TaskScheduleInput;
+    viewer: TaskViewer;
+  }): Promise<CalendarEntryMutationPortResult>;
+  delete(input: {
+    workspaceId: string;
+    actorUserId: string;
+    id: number;
+    viewer: TaskViewer;
+  }): Promise<CalendarEntryMutationPortResult>;
 };
 
 export type CustomerCustomFieldRecord = {
@@ -5258,6 +5314,7 @@ export type ServerApiPorts = {
   loginSecurity?: LoginSecurityApiPort;
   health?: HealthCheckApiPort;
   serverLogs?: ServerLogReadPort;
+  calendarEntries?: CalendarEntryApiPort;
   calendarEvents?: CalendarEventApiPort;
   locks: ConversationLockApiPort;
   audit?: AuditApiPort;

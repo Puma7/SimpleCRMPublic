@@ -9,6 +9,7 @@ export type CoreCrmImportInput = Readonly<{
 
 export type CoreCrmImportCommand = Readonly<{
   tableName: string;
+  prepareSql?: string;
   sql: string;
   params: readonly unknown[];
 }>;
@@ -36,6 +37,9 @@ export async function runPostgresCoreCrmImport(
   input: CoreCrmImportInput,
 ): Promise<void> {
   for (const command of buildCoreCrmImportCommands(input)) {
+    if (command.prepareSql) {
+      await client.query(command.prepareSql, command.params);
+    }
     await client.query(command.sql, command.params);
   }
 }
@@ -50,6 +54,7 @@ export function buildCoreCrmImportCommands(input: CoreCrmImportInput): readonly 
 
   return tableOrder.map((tableName) => ({
     tableName,
+    ...(tableName === 'calendar_events' ? { prepareSql: calendarEventTaskLinkResetSql } : {}),
     sql: commandSqlByTable[tableName],
     params: [input.workspaceId, tableName, input.runId],
   }));
@@ -67,6 +72,63 @@ WHERE r.workspace_id = $1
   AND r.table_name = $2
   AND r.imported_in_run_id = $3
   AND r.source_row ? 'id'`;
+
+const calendarEventRankedImportCtes = `normalized_import_rows AS (
+  SELECT
+    r.source_row,
+    COALESCE(
+      NULLIF(r.source_row->>'task_id', '')::bigint,
+      reverse_task.task_source_sqlite_id
+    ) AS effective_task_source_sqlite_id
+  FROM sqlite_import_rows r
+  LEFT JOIN LATERAL (
+    SELECT (task.source_row->>'id')::bigint AS task_source_sqlite_id
+    FROM sqlite_import_rows task
+    WHERE task.workspace_id = r.workspace_id
+      AND task.table_name = 'tasks'
+      AND task.imported_in_run_id = r.imported_in_run_id
+      AND NULLIF(task.source_row->>'calendar_event_id', '')::bigint = (r.source_row->>'id')::bigint
+    ORDER BY (task.source_row->>'id')::bigint DESC
+    LIMIT 1
+  ) reverse_task ON TRUE
+  WHERE r.workspace_id = $1
+    AND r.table_name = $2
+    AND r.imported_in_run_id = $3
+    AND r.source_row ? 'id'
+), ranked_import_rows AS (
+  SELECT
+    r.source_row,
+    r.effective_task_source_sqlite_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY r.effective_task_source_sqlite_id
+      ORDER BY NULLIF(r.source_row->>'updated_at', '')::timestamptz DESC NULLS LAST,
+               (r.source_row->>'id')::bigint DESC
+    ) AS task_link_rank
+  FROM normalized_import_rows r
+)`;
+
+const calendarEventTaskLinkResetSql = `WITH ${calendarEventRankedImportCtes}, resolved_winners AS (
+  SELECT
+    (r.source_row->>'id')::bigint AS event_source_sqlite_id,
+    t.id AS task_id
+  FROM ranked_import_rows r
+  JOIN tasks t
+    ON t.workspace_id = $1
+   AND t.source_sqlite_id = r.effective_task_source_sqlite_id
+  WHERE r.effective_task_source_sqlite_id IS NOT NULL
+    AND r.task_link_rank = 1
+)
+UPDATE calendar_events AS existing
+SET
+  task_source_sqlite_id = NULL,
+  task_id = NULL,
+  event_type = CASE WHEN existing.event_type = 'task' THEN NULL ELSE existing.event_type END,
+  recurrence_rule = CASE WHEN existing.event_type = 'task' THEN NULL ELSE existing.recurrence_rule END,
+  updated_at = now()
+FROM resolved_winners winner
+WHERE existing.workspace_id = $1
+  AND existing.task_id = winner.task_id
+  AND existing.source_sqlite_id IS DISTINCT FROM winner.event_source_sqlite_id`;
 
 const commandSqlByTable: Record<typeof tableOrder[number], string> = {
   sync_info: `INSERT INTO sync_info (
@@ -384,7 +446,8 @@ DO UPDATE SET
   source_row = EXCLUDED.source_row,
   imported_in_run_id = EXCLUDED.imported_in_run_id,
   updated_at = now()`,
-  calendar_events: `INSERT INTO calendar_events (
+  calendar_events: `WITH ${calendarEventRankedImportCtes}
+INSERT INTO calendar_events (
   workspace_id,
   source_sqlite_id,
   title,
@@ -411,19 +474,22 @@ SELECT
   COALESCE(NULLIF(r.source_row->>'end_date', '')::timestamptz, now()),
   COALESCE(${sqliteBoolean('all_day')}, false),
   NULLIF(r.source_row->>'color_code', ''),
-  NULLIF(r.source_row->>'event_type', ''),
-  NULLIF(r.source_row->>'recurrence_rule', ''),
-  NULLIF(r.source_row->>'task_id', '')::bigint,
-  t.id,
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE NULLIF(r.source_row->>'event_type', '') END,
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE NULLIF(r.source_row->>'recurrence_rule', '') END,
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE r.effective_task_source_sqlite_id END,
+  CASE WHEN r.effective_task_source_sqlite_id IS NOT NULL AND r.task_link_rank > 1
+    THEN NULL ELSE t.id END,
   r.source_row,
   $3,
   NULLIF(r.source_row->>'created_at', '')::timestamptz,
   now()
-${sqliteImportRowsFrom}
+FROM ranked_import_rows r
 LEFT JOIN tasks t
   ON t.workspace_id = $1
- AND t.source_sqlite_id = NULLIF(r.source_row->>'task_id', '')::bigint
-${sqliteImportRowsWhere}
+ AND t.source_sqlite_id = r.effective_task_source_sqlite_id
 ON CONFLICT (workspace_id, source_sqlite_id)
 DO UPDATE SET
   title = EXCLUDED.title,

@@ -1329,7 +1329,7 @@ describe('renderer transport', () => {
     }, 21)).toBe(false);
   });
 
-  test('matches calendar refresh server events only for calendar event mutations', () => {
+  test('matches calendar refresh server events for mutations and ACL changes', () => {
     const baseEvent = {
       type: 'calendar_event.updated',
       workspaceId: 'workspace-a',
@@ -1341,6 +1341,11 @@ describe('renderer transport', () => {
     expect(isCalendarEventRefreshEvent(baseEvent)).toBe(true);
     expect(isCalendarEventRefreshEvent({ ...baseEvent, type: 'calendar_event.created' })).toBe(true);
     expect(isCalendarEventRefreshEvent({ ...baseEvent, type: 'calendar_event.deleted' })).toBe(true);
+    expect(isCalendarEventRefreshEvent({
+      ...baseEvent,
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+    })).toBe(true);
     expect(isCalendarEventRefreshEvent({ ...baseEvent, type: 'task.updated' })).toBe(false);
     expect(isCalendarEventRefreshEvent({ ...baseEvent, entityType: 'task' })).toBe(false);
     expect(isCalendarEventRefreshEvent({

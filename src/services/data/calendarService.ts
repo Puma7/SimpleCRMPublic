@@ -7,11 +7,22 @@ interface AddTaskEventOptions {
   dueDate: string;
   customerName?: string;
   colorCode?: string;
+  createTask?: {
+    customerId?: number;
+    title: string;
+    description?: string | null;
+    priority?: string;
+    completed?: boolean;
+    assignmentScope?: 'global' | 'user' | 'group';
+    assignedUserId?: string | null;
+    assignedGroupId?: number | null;
+  };
 }
 
 interface AddTaskEventResult {
   success: boolean;
   id: number;
+  taskId?: number;
 }
 
 interface UpdateTaskEventOptions {
@@ -24,7 +35,7 @@ interface UpdateTaskEventOptions {
 }
 
 const DEFAULT_TASK_EVENT_COLOR = '#3174ad';
-const COMPLETED_TASK_EVENT_COLOR = '#9CA3AF';
+const COMPLETED_TASK_EVENT_COLOR = '#94a3b8';
 
 const parseDueDate = (dueDate: string): { start: Date; end: Date } => {
   const [yearString, monthString, dayString] = dueDate.split('-');
@@ -36,9 +47,15 @@ const parseDueDate = (dueDate: string): { start: Date; end: Date } => {
     throw new Error(`Ungültiges Fälligkeitsdatum: ${dueDate}`);
   }
 
-  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 1);
+  const start = new Date(Date.UTC(year, month - 1, day));
+  if (
+    start.getUTCFullYear() !== year
+    || start.getUTCMonth() !== month - 1
+    || start.getUTCDate() !== day
+  ) {
+    throw new Error(`Ungültiges Fälligkeitsdatum: ${dueDate}`);
+  }
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
 
   return { start, end };
 };
@@ -59,6 +76,7 @@ export const calendarService = {
     dueDate,
     customerName,
     colorCode,
+    createTask,
   }: AddTaskEventOptions): Promise<AddTaskEventResult> {
     const { start, end } = parseDueDate(dueDate);
 
@@ -75,8 +93,18 @@ export const calendarService = {
 
     const result = await invokeRenderer(
       IPCChannels.Calendar.AddCalendarEvent,
-      sqliteCompatibleEvent,
-    ) as { success?: boolean; id?: number; lastInsertRowid?: number };
+      createTask
+        ? {
+            event: sqliteCompatibleEvent,
+            schedule: { mode: 'create' as const, dueDate, task: createTask },
+          }
+        : sqliteCompatibleEvent,
+    ) as {
+      success?: boolean;
+      id?: number;
+      lastInsertRowid?: number;
+      task?: { id?: number | string } | null;
+    };
 
     const calendarEventId =
       typeof result?.id === 'number'
@@ -92,6 +120,7 @@ export const calendarService = {
     return {
       success: Boolean(result?.success ?? true),
       id: calendarEventId,
+      taskId: result.task?.id === undefined ? undefined : Number(result.task.id),
     };
   },
 
@@ -124,7 +153,7 @@ export const calendarService = {
       const { start, end } = parseDueDate(dueDate);
       eventData.start_date = start.toISOString();
       eventData.end_date = end.toISOString();
-      eventData.all_day = 1;
+      eventData.all_day = true;
     }
 
     if (completed !== undefined || colorCode !== undefined) {
