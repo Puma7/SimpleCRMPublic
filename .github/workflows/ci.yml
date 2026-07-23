@@ -91,7 +91,9 @@ jobs:
     timeout-minutes: 20
 
     env:
+      CC: clang
       CI: "true"
+      CXX: clang++
       SIMPLECRM_E2E_LOG_DIR: test-results/electron-logs
 
     steps:
@@ -114,6 +116,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             xvfb \
+            clang \
             libsecret-1-0 \
             libsecret-1-dev \
             libasound2 \
