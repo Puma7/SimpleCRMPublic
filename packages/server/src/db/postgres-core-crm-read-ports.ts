@@ -1008,7 +1008,7 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
                 }),
                 ...(task ? {
                   title: task.title,
-                  ...(current.task_id === task.id || input.event.description !== undefined
+                  ...(Number(current.task_id) === task.id || input.event.description !== undefined
                     ? {}
                     : { description: task.description }),
                   color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
