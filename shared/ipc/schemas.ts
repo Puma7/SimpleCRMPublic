@@ -438,7 +438,10 @@ baseSchemaMap.set(IPCChannels.Tasks.GetById, {
 baseSchemaMap.set(IPCChannels.Tasks.Create, {
   payload: taskMutationSchema
     .omit({ calendar_event_id: true })
-    .extend({ title: z.string().trim().min(1) }),
+    .extend({
+      title: z.string().trim().min(1),
+      calendar_event_id: z.null().optional(),
+    }),
   result: z.union([
     z.object({ success: z.literal(true), id: z.number().int().positive().optional() }).passthrough(),
     failureResponse,

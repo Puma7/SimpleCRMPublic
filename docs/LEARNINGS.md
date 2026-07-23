@@ -26,7 +26,7 @@ Short, durable facts discovered during implementation. **Read before refactoring
 5. **Compatibility exceptions** — `@types/node` stays on the Node 24 major; Kysely stays at the security-patched `0.28.17` until the CommonJS server is migrated because 0.29 is ESM-only.
 6. **Graphile Worker 0.17 migration** — old API/worker replicas must be scaled to zero before the new version starts and migrates its lock schema; `docker/update.sh` enforces this ordering.
 7. **IPC contracts** — payload and result schemas are enforced at runtime. Destructive CRM handlers return `{ success, error? }`; schema mismatches can mutate SQLite and still make the renderer report failure.
-8. **Electron E2E** — use `launchAuthenticatedElectron` so suites get a temporary standalone profile, complete first-run authentication, and never depend on the developer's local account or database.
+8. **Electron E2E** — use `launchAuthenticatedElectron` so suites get a temporary standalone profile, complete first-run authentication, and never depend on the developer's local account or database. The Chromium sandbox is the default; `SIMPLECRM_E2E_NO_SANDBOX=1` is only a local diagnostic fallback. CI stores Playwright artifacts and `test-results/electron-logs`.
 9. **Secrets** — Keytar / env, never commit API keys or mail passwords.
 10. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
 9. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).

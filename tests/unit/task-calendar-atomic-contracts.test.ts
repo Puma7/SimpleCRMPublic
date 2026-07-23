@@ -111,6 +111,11 @@ describe('atomic task and calendar contracts', () => {
 
   test('rejects malformed task mutations and calendar results', () => {
     expect(() => getPayloadSchema(IPCChannels.Tasks.Create).parse({
+      title: 'Unverknuepfte Legacy-Aufgabe',
+      calendar_event_id: null,
+    })).not.toThrow();
+
+    expect(() => getPayloadSchema(IPCChannels.Tasks.Create).parse({
       title: '',
       priority: 'Medium',
     })).toThrow();

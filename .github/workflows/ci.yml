@@ -86,6 +86,89 @@ jobs:
       - name: Build (renderer)
         run: pnpm run build
 
+  electron-e2e:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    env:
+      CC: gcc-12
+      CI: "true"
+      CXX: g++-12
+      CXXFLAGS: "-UV8_DEPRECATION_WARNINGS"
+      SIMPLECRM_E2E_LOG_DIR: test-results/electron-logs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 11.12.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Electron runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            xvfb \
+            dbus \
+            gcc-12 \
+            g++-12 \
+            gnome-keyring \
+            libsecret-1-0 \
+            libsecret-1-dev \
+            libsecret-tools \
+            libasound2 \
+            libatk-bridge2.0-0 \
+            libatk1.0-0 \
+            libcups2 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnspr4 \
+            libnss3 \
+            libx11-xcb1 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxkbcommon0 \
+            libxrandr2
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure Chromium sandbox helper
+        run: |
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+          test "$(stat -c '%a' node_modules/electron/dist/chrome-sandbox)" = "4755"
+
+      - name: Run Electron E2E suite
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+            printf "simplecrm-ci" | timeout 10s secret-tool store --label="SimpleCRM CI" simplecrm ci
+            test "$(timeout 10s secret-tool lookup simplecrm ci)" = "simplecrm-ci"
+            exec xvfb-run --auto-servernum --server-args="-screen 0 1440x1000x24" pnpm run test:e2e
+          '
+
+      - name: Upload Electron E2E diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
   server-compose-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 20
