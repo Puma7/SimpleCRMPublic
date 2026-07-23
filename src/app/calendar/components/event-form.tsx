@@ -20,6 +20,7 @@ interface CalendarEventFormProps {
   onSubmit: (payload: EventFormSubmitPayload) => void;
   onCancel: () => void;
   isEditMode?: boolean;
+  requireTaskCustomer?: boolean;
 }
 
 const recurrenceFrequencyOptions: Array<{ value: RecurrenceRule["frequency"]; label: string }> = [
@@ -72,13 +73,14 @@ export function CalendarEventForm({
   onSubmit,
   onCancel,
   isEditMode = false,
+  requireTaskCustomer = true,
 }: CalendarEventFormProps) {
   const { toast } = useToast();
 
   const [title, setTitle] = useState(initialData.title);
   const [start, setStart] = useState(initialData.start);
   const [end, setEnd] = useState(initialData.end);
-  const [description, setDescription] = useState(initialData.description || "");
+  const [description, setDescription] = useState(initialTaskData?.description ?? initialData.description ?? "");
   const [allDay, setAllDay] = useState(initialData.allDay ?? false);
   const [color, setColor] = useState(initialData.color_code || TASK_EVENT_DEFAULT_COLOR);
   const [eventType, setEventType] = useState(initialData.event_type || "");
@@ -153,7 +155,7 @@ export function CalendarEventForm({
       return;
     }
 
-    if (linkTask && (!taskCustomerId || taskCustomerId <= 0)) {
+    if (requireTaskCustomer && linkTask && (!taskCustomerId || taskCustomerId <= 0)) {
       toast({ title: "Fehler", description: "Bitte wählen Sie einen Kunden für die Aufgabe aus.", variant: "destructive" });
       return;
     }
@@ -419,7 +421,7 @@ export function CalendarEventForm({
               <div className="space-y-4 rounded-md border p-4">
                 <div className="grid grid-cols-4 items-center gap-4">
                   <Label className="text-right" htmlFor="taskCustomer">
-                    Kunde*
+                    {requireTaskCustomer ? "Kunde*" : "Kunde (optional)"}
                   </Label>
                   <div className="col-span-3">
                     <CustomerCombobox
