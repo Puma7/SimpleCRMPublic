@@ -10,10 +10,11 @@ describe('Electron E2E CI gate', () => {
     expect(workflow).toContain('electron-e2e:');
     expect(workflow).toMatch(/electron-e2e:\s*\n\s+runs-on: ubuntu-22\.04/);
     expect(workflow).toMatch(/xvfb-run --auto-servernum .*pnpm run test:e2e/);
-    expect(workflow).toContain('CC: clang');
-    expect(workflow).toContain('CXX: clang++');
+    expect(workflow).toContain('CC: gcc-12');
+    expect(workflow).toContain('CXX: g++-12');
     expect(workflow).toContain('node_modules/electron/dist/chrome-sandbox');
-    expect(workflow).toContain('clang \\');
+    expect(workflow).toContain('gcc-12 \\');
+    expect(workflow).toContain('g++-12 \\');
     expect(workflow).toContain('libsecret-1-0');
     expect(workflow).toContain('actions/upload-artifact@v4');
   });
