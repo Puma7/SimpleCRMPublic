@@ -1,7 +1,7 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-22 (atomic task/calendar mutations)
-**Integration branch:** `codex/atomic-task-calendar`
+**Last updated:** 2026-07-23 (Electron E2E CI gate)
+**Integration branch:** `codex/electron-e2e-ci`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
 **Current audit:** [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
@@ -56,7 +56,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Toolchain | Node 24 LTS, pnpm 11.12.0, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
 | ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
 | Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
-| Electron E2E | Each suite creates an isolated standalone user-data directory and completes first-run authentication |
+| Electron E2E | Dedicated `ubuntu-22.04` CI gate with Chromium sandbox, Xvfb, isolated standalone user-data, first-run authentication, HTML/trace/video/screenshot artifacts, and Electron/renderer logs |
 | System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers, RLS-sichere MFA-Mutationen und multi-replizierter Login-Challenge-State gehärtet; siehe aktuellen Auditbericht |
 | E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 | CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
@@ -77,6 +77,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | E-Mail-Evidenz | `packages/server/src/email-tracking.ts`, `src/components/email/message-evidence-panel.tsx`, `docs/EMAIL_EVIDENCE_TRACKING.md` |
 | Native ABI manager | `scripts/native-runtime-manager.mjs`, `scripts/run-with-electron-native.mjs` |
 | Electron E2E session | `tests/e2e/helpers/electron-session.ts` |
+| Electron E2E CI | `.github/workflows/ci.yml`, `tests/e2e/playwright.electron.config.ts`, `tests/e2e/atomic-task-calendar.spec.ts` |
 | Atomic task/calendar | `packages/core/src/crm/task-calendar.ts`, `packages/server/src/db/postgres-core-crm-read-ports.ts`, `electron/sqlite-service.ts` |
 
 ---
@@ -99,3 +100,8 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 ## 7. Commands
 
 See root [`AGENTS.md`](../AGENTS.md): `pnpm install`, `xvfb-run --auto-servernum pnpm run electron:dev`.
+
+Run the complete desktop gate with `pnpm run test:e2e`. The helper starts with the
+Chromium sandbox enabled; `SIMPLECRM_E2E_NO_SANDBOX=1` is only an explicit local
+diagnostic fallback. CI never sets it and uploads `playwright-report/` plus
+`test-results/` for 14 days.

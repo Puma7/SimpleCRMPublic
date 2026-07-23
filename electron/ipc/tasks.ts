@@ -118,7 +118,7 @@ export function registerTaskHandlers(options: TaskHandlersOptions) {
   disposers.push(
     registerIpcHandler(IPCChannels.Tasks.GetById, async (_event, taskId: number) => {
       try {
-        return getTaskById(taskId);
+        return getTaskById(taskId) ?? null;
       } catch (error) {
         logger.error(`IPC Error getting task by id ${taskId}:`, error);
         return null;

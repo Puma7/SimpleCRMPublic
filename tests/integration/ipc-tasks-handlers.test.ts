@@ -64,6 +64,13 @@ describe('registerTaskHandlers', () => {
       expect(sqliteMocks.getTaskById).toHaveBeenCalledWith(5);
     });
 
+    test('returns null when the task does not exist', async () => {
+      sqliteMocks.getTaskById.mockReturnValue(undefined);
+      const handler = handlers.get(IPCChannels.Tasks.GetById);
+      const result = await handler({}, 99);
+      expect(result).toBeNull();
+    });
+
     test('returns null on error', async () => {
       sqliteMocks.getTaskById.mockImplementation(() => { throw new Error('Not found'); });
       const handler = handlers.get(IPCChannels.Tasks.GetById);
