@@ -651,7 +651,7 @@ export default function CalendarPage() {
         }
       }
 
-      if (task && (!task.customer_id || task.customer_id <= 0)) {
+      if (!serverClientMode && task && (!task.customer_id || task.customer_id <= 0)) {
         toast({ title: "Fehler", description: "Bitte wählen Sie einen Kunden für die Aufgabe aus.", variant: "destructive" });
         return;
       }
@@ -726,7 +726,7 @@ export default function CalendarPage() {
         }
       }
 
-      if (task && (!task.customer_id || task.customer_id <= 0)) {
+      if (!serverClientMode && task && (!task.customer_id || task.customer_id <= 0)) {
         toast({ title: "Fehler", description: "Bitte wählen Sie einen Kunden für die Aufgabe aus.", variant: "destructive" });
         return;
       }
@@ -734,12 +734,14 @@ export default function CalendarPage() {
       const numericEventId = typeof (updatedEventData.id ?? selectedEvent.id) === 'string'
         ? parseInt(String(updatedEventData.id ?? selectedEvent.id))
         : Number(updatedEventData.id ?? selectedEvent.id);
+      const initialDescription = formTaskData?.description ?? eventFormData?.description ?? '';
+      const shouldUpdateDescription = (updatedEventData.description ?? '') !== initialDescription;
 
       // Convert from RBC format to database format
       const dbEvent: CalendarDatabaseEventUpdate = {
         id: numericEventId,
         title: updatedEventData.title,
-        description: updatedEventData.description || '',
+        ...(shouldUpdateDescription ? { description: updatedEventData.description ?? '' } : {}),
         start_date: toCalendarTimestamp(updatedEventData.start, updatedEventData.allDay),
         end_date: toCalendarTimestamp(updatedEventData.end, updatedEventData.allDay),
         all_day: updatedEventData.allDay || false,
@@ -800,7 +802,7 @@ export default function CalendarPage() {
         variant: "destructive",
       });
     }
-  }, [dbApi, selectedEvent, toast]);
+  }, [dbApi, eventFormData, formTaskData, selectedEvent, toast]);
 
   const handleDeleteEvent = useCallback(async (id: number | string) => {
     try {
@@ -1041,6 +1043,7 @@ export default function CalendarPage() {
                   key={`add-${eventFormData.start.getTime()}`}
                   initialData={eventFormData}
                   initialTaskData={formTaskData}
+                  requireTaskCustomer={!serverClientMode}
                   onSubmit={handleAddEvent}
                   onCancel={() => {
                     setIsAddModalOpen(false);
@@ -1071,6 +1074,7 @@ export default function CalendarPage() {
                   key={`edit-${eventFormData.id ?? selectedEvent.id}`}
                   initialData={eventFormData}
                   initialTaskData={formTaskData}
+                  requireTaskCustomer={!serverClientMode}
                   onSubmit={handleUpdateEvent}
                   onCancel={() => {
                     setIsEditModalOpen(false);

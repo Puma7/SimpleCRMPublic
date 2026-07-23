@@ -998,7 +998,7 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
                 ...(input.event.colorCode === undefined ? {} : { color_code: input.event.colorCode }),
                 ...(input.event.eventType === undefined ? {} : { event_type: input.event.eventType }),
                 ...(input.event.recurrenceRule === undefined ? {} : { recurrence_rule: input.event.recurrenceRule }),
-                ...(input.schedule?.mode === 'none' ? {
+                ...(input.schedule?.mode === 'none' && current.task_id !== null ? {
                   event_type: input.event.eventType ?? null,
                   recurrence_rule: input.event.recurrenceRule ?? null,
                 } : {}),
@@ -1008,6 +1008,9 @@ export function createPostgresCalendarEntryPort(options: PostgresCoreCrmReadPort
                 }),
                 ...(task ? {
                   title: task.title,
+                  ...(Number(current.task_id) === task.id || input.event.description !== undefined
+                    ? {}
+                    : { description: task.description }),
                   color_code: task.completed ? TASK_EVENT_COMPLETED_COLOR : TASK_EVENT_DEFAULT_COLOR,
                   event_type: 'task',
                   recurrence_rule: null,

@@ -129,6 +129,33 @@ describe('SQLite atomic task/calendar operations', () => {
     expect(updated.event.description).toBe('Kunde anrufen');
   });
 
+  test('replaces a standalone event description when linking an existing task', () => {
+    const taskId = Number(db.prepare(`
+      INSERT INTO tasks (customer_id, title, description, priority, completed)
+      VALUES (1, 'Bestehende Aufgabe', 'Rohe Aufgabenbeschreibung', 'Medium', 0)
+    `).run().lastInsertRowid);
+    const standalone = createCalendarEntry({
+      event: {
+        title: 'Eigenstaendiger Termin',
+        description: 'Fachfremde Terminbeschreibung',
+        start_date: '2026-07-23T12:00:00.000Z',
+        end_date: '2026-07-23T13:00:00.000Z',
+        all_day: false,
+      },
+    });
+
+    const linked = updateCalendarEntry(standalone.event.id, {
+      event: {},
+      schedule: { mode: 'existing', taskId },
+    });
+
+    expect(linked.event).toMatchObject({
+      task_id: taskId,
+      title: 'Bestehende Aufgabe',
+      description: 'Rohe Aufgabenbeschreibung',
+    });
+  });
+
   test('updates priority and completion when creating an existing task link', () => {
     const taskId = Number(db.prepare(`
       INSERT INTO tasks (customer_id, title, priority, completed)
@@ -269,6 +296,30 @@ describe('SQLite atomic task/calendar operations', () => {
       id: created.task!.id,
       due_date: null,
       calendar_event_id: null,
+    });
+  });
+
+  test('treats schedule none as a no-op for standalone event metadata', () => {
+    const standalone = createCalendarEntry({
+      event: {
+        title: 'Wiederkehrender Termin',
+        start_date: '2026-08-03T00:00:00.000Z',
+        end_date: '2026-08-04T00:00:00.000Z',
+        all_day: true,
+        event_type: 'meeting',
+        recurrence_rule: '{"frequency":"weekly","interval":1}',
+      },
+    });
+
+    const unchanged = updateCalendarEntry(standalone.event.id, {
+      event: {},
+      schedule: { mode: 'none' },
+    });
+
+    expect(unchanged.event).toMatchObject({
+      task_id: null,
+      event_type: 'meeting',
+      recurrence_rule: '{"frequency":"weekly","interval":1}',
     });
   });
 

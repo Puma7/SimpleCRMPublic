@@ -89,6 +89,25 @@ describe('registerTaskHandlers', () => {
       expect(sqliteMocks.createTask).toHaveBeenCalledTimes(1);
     });
 
+    test('normalizes supported camelCase task fields for SQLite', async () => {
+      sqliteMocks.createTask.mockReturnValue({ success: true, id: 3 });
+      const handler = handlers.get(IPCChannels.Tasks.Create);
+
+      await handler({}, {
+        title: 'New task',
+        customerId: 7,
+        dueDate: '2026-07-24',
+        snoozedUntil: '2026-07-23T12:00:00.000Z',
+      });
+
+      expect(sqliteMocks.createTask).toHaveBeenCalledWith({
+        title: 'New task',
+        customer_id: 7,
+        due_date: '2026-07-24',
+        snoozed_until: '2026-07-23T12:00:00.000Z',
+      });
+    });
+
     test('returns error object on service throw', async () => {
       sqliteMocks.createTask.mockImplementation(() => { throw new Error('Constraint violation'); });
       const handler = handlers.get(IPCChannels.Tasks.Create);
@@ -105,6 +124,26 @@ describe('registerTaskHandlers', () => {
       const result = await handler({}, { id: 1, taskData: { title: 'Updated task' } });
       expect(result).toEqual(updated);
       expect(sqliteMocks.updateTask).toHaveBeenCalledWith(1, { title: 'Updated task' });
+    });
+
+    test('normalizes supported camelCase task updates for SQLite', async () => {
+      sqliteMocks.updateTask.mockReturnValue({ success: true });
+      const handler = handlers.get(IPCChannels.Tasks.Update);
+
+      await handler({}, {
+        id: 1,
+        taskData: {
+          customerId: 8,
+          dueDate: '2026-07-25',
+          snoozedUntil: null,
+        },
+      });
+
+      expect(sqliteMocks.updateTask).toHaveBeenCalledWith(1, {
+        customer_id: 8,
+        due_date: '2026-07-25',
+        snoozed_until: null,
+      });
     });
 
     test('returns error object on service throw', async () => {

@@ -156,4 +156,22 @@ describe('atomic task and calendar contracts', () => {
     expect(payloadBlock).not.toContain('description:');
     expect(payloadBlock).not.toContain('title: updatedEvent.title');
   });
+
+  test('keeps linked task descriptions raw without overwriting enriched event descriptions', () => {
+    const source = readFileSync(join(process.cwd(), 'src', 'app', 'calendar', 'page.tsx'), 'utf8');
+    const updateBlock = source.slice(source.indexOf('const handleUpdateEvent'), source.indexOf('const handleDeleteEvent'));
+
+    expect(source).toContain('requireTaskCustomer={!serverClientMode}');
+    expect(source).toContain('if (!serverClientMode && task && (!task.customer_id || task.customer_id <= 0))');
+    expect(updateBlock).toContain(
+      "const initialDescription = formTaskData?.description ?? eventFormData?.description ?? '';",
+    );
+    expect(updateBlock).toContain(
+      "const shouldUpdateDescription = (updatedEventData.description ?? '') !== initialDescription;",
+    );
+    expect(updateBlock).toContain(
+      "...(shouldUpdateDescription ? { description: updatedEventData.description ?? '' } : {}),",
+    );
+    expect(updateBlock).not.toContain("description: task?.description ?? updatedEventData.description ?? ''");
+  });
 });
