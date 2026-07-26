@@ -137,6 +137,12 @@ describe('mail ACL visibility constraints', () => {
     expect(merged.tagExcludeValues).toEqual(['x']);
   });
 
+  test('deny-all category sentinel survives positive-id filtering', () => {
+    const ids = [DENY_ALL_CATEGORY_ALLOW_ID, 0, 1, 2]
+      .filter((id) => Number.isSafeInteger(id) && (id > 0 || id === DENY_ALL_CATEGORY_ALLOW_ID));
+    expect(ids).toEqual([DENY_ALL_CATEGORY_ALLOW_ID, 1, 2]);
+  });
+
   test('MailAccessService resolveScope attaches clauses when grants have constraints', async () => {
     const grants: MailAccessGrant[] = [{
       bindingId: 1,

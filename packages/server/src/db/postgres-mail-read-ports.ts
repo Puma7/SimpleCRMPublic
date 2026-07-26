@@ -1179,11 +1179,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             ? (bodyText.length > 220 ? `${bodyText.slice(0, 217)}...` : bodyText)
             : current.snippet;
           const draftContentPredicate = mailScopePredicate(input.mailContentScope, {
-            accountId: 'account_id',
-            folderId: 'folder_id',
-            messageId: 'id',
-            assignedToUserId: 'assigned_to_user_id',
-            assignedTo: 'assigned_to',
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           const composeDraftUpdate = trx
             .updateTable('email_messages')
@@ -1921,11 +1921,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
 
           const now = new Date();
           const contentPredicate = mailScopePredicate(input.mailContentScope, {
-            accountId: 'account_id',
-            folderId: 'folder_id',
-            messageId: 'id',
-            assignedToUserId: 'assigned_to_user_id',
-            assignedTo: 'assigned_to',
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           const spamStatusUpdate = trx
             .updateTable('email_messages')
@@ -2727,11 +2727,11 @@ async function linkMessageCustomer(
   }
 
   const customerLinkContentPredicate = mailScopePredicate(input.mailContentScope, {
-    accountId: 'account_id',
-    folderId: 'folder_id',
-    messageId: 'id',
-    assignedToUserId: 'assigned_to_user_id',
-    assignedTo: 'assigned_to',
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
   });
   const customerLinkUpdate = trx
     .updateTable('email_messages')
@@ -2898,21 +2898,24 @@ async function assignMessageTeamMember(
     if (!member) return { ok: false as const, reason: 'team_member_not_found' as const };
     // When the team-member id coincides with a workspace user UUID, keep
     // assigned_to_user_id in sync so assigned_to_me / assigned_to_my_groups work.
-    const linkedUser = await trx
-      .selectFrom('users')
-      .select('id')
-      .where('workspace_id', '=', input.workspaceId)
-      .where('id', '=', teamMemberId)
-      .executeTakeFirst();
-    assignedToUserId = linkedUser ? String(linkedUser.id) : null;
+    // Free-text team-member ids (e.g. agent-1) must not be cast against users.id.
+    if (isUuidString(teamMemberId)) {
+      const linkedUser = await trx
+        .selectFrom('users')
+        .select('id')
+        .where('workspace_id', '=', input.workspaceId)
+        .where('id', '=', teamMemberId)
+        .executeTakeFirst();
+      assignedToUserId = linkedUser ? String(linkedUser.id) : null;
+    }
   }
 
   const assignContentPredicate = mailScopePredicate(input.mailContentScope, {
-    accountId: 'account_id',
-    folderId: 'folder_id',
-    messageId: 'id',
-    assignedToUserId: 'assigned_to_user_id',
-    assignedTo: 'assigned_to',
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
   });
   const assignUpdate = trx
     .updateTable('email_messages')
@@ -3248,6 +3251,10 @@ function normalizeRestoreFolderKind(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function isUuidString(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function normalizeMessageIdList(messageIds: readonly number[]): number[] {

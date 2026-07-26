@@ -14,6 +14,8 @@ import type {
 } from '../api/types';
 import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
 import {
+  DENY_ALL_CATEGORY_ALLOW_ID,
+  DENY_ALL_TAG_ALLOW_VALUE,
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
   mergeAuthorityConstraints,
@@ -381,6 +383,8 @@ export function createPostgresMailDelegationPort(
     // serializes with this write rather than racing it under read-committed (R48-4).
     const manage = await canManageResource(trx, workspaceId, actor, input.resource, [], true);
     if (!manage) return { ok: false as const, code: 'permission_denied' };
+    const existing = input.existing
+      ?? await findBinding(trx, workspaceId, input.subject, input.resource);
     let constraints = input.constraints;
     if (!actor.isOwner && !actor.isAdmin) {
       const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, input.resource, true);
@@ -392,22 +396,20 @@ export function createPostgresMailDelegationPort(
         workspaceId,
         actor.userId,
         input.resource,
+        input.permissions,
         true,
       );
-      if (constraints === undefined && hasMailBindingConstraints(authorityConstraints)) {
-        // Non-admins inherit their own filters when omitting constraints on create/replace.
-        constraints = authorityConstraints;
-      }
-      if (
-        constraints !== undefined
-        && !isConstraintsAtLeastAsRestrictive(constraints, authorityConstraints)
-      ) {
+      if (constraints === undefined) {
+        // Preserve existing filters on permission-only updates; inherit authority
+        // filters only when creating a new binding without explicit constraints.
+        if (!existing && hasMailBindingConstraints(authorityConstraints)) {
+          constraints = authorityConstraints;
+        }
+      } else if (!isConstraintsAtLeastAsRestrictive(constraints, authorityConstraints)) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
     }
 
-    const existing = input.existing
-      ?? await findBinding(trx, workspaceId, input.subject, input.resource);
     const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
     if (input.permissions.length === 0) {
       if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
@@ -553,16 +555,20 @@ async function canManageResource(
 }
 
 /**
- * Most-restrictive intersection of visibility filters on the actor's authorizing
- * grants for this resource (those that include mail.delegation.manage).
+ * Most-restrictive intersection of visibility filters for the permissions being
+ * delegated. Derived from bindings that grant each requested permission (not only
+ * mail.delegation.manage), so a constrained content grant cannot be widened via
+ * an unconstrained manage-only grant.
  */
 async function authorityConstraintsForResource(
   trx: Trx,
   workspaceId: string,
   userId: string,
   resource: MailDelegationResource,
+  permissions: readonly MailPermission[],
   _forUpdate = false,
 ): Promise<MailBindingVisibilityConstraints | null> {
+  if (permissions.length === 0) return null;
   const groupRows = await trx
     .selectFrom('user_group_members')
     .select(['group_id'])
@@ -572,9 +578,12 @@ async function authorityConstraintsForResource(
   const bindingRows = await trx
     .selectFrom('mail_acl_bindings')
     .innerJoin('mail_acl_binding_permissions', 'mail_acl_binding_permissions.binding_id', 'mail_acl_bindings.id')
-    .select(['mail_acl_bindings.id'])
+    .select([
+      'mail_acl_bindings.id',
+      'mail_acl_binding_permissions.permission_key',
+    ])
     .where('mail_acl_bindings.workspace_id', '=', workspaceId)
-    .where('mail_acl_binding_permissions.permission_key', '=', MANAGE_PERMISSION)
+    .where('mail_acl_binding_permissions.permission_key', 'in', [...permissions])
     .where((eb) => eb.or([
       eb.and([
         eb('mail_acl_bindings.subject_type', '=', 'user'),
@@ -606,16 +615,37 @@ async function authorityConstraintsForResource(
         ]),
       ]);
     })
-    .execute() as Array<{ id: number | string }>;
+    .execute() as Array<{ id: number | string; permission_key: MailPermission }>;
 
-  const bindingIds = [...new Set(bindingRows.map((row) => dbInteger(row.id, 'authority binding id')))];
-  if (bindingIds.length === 0) return null;
-  const constraintMap = await loadBindingConstraints(trx, bindingIds);
+  const bindingIdsByPermission = new Map<MailPermission, number[]>();
+  for (const row of bindingRows) {
+    const bindingId = dbInteger(row.id, 'authority binding id');
+    const list = bindingIdsByPermission.get(row.permission_key) ?? [];
+    list.push(bindingId);
+    bindingIdsByPermission.set(row.permission_key, list);
+  }
+
+  const allBindingIds = [...new Set(bindingRows.map((row) => dbInteger(row.id, 'authority binding id')))];
+  if (allBindingIds.length === 0) return null;
+  const constraintMap = await loadBindingConstraints(trx, allBindingIds);
+
   let merged: MailBindingVisibilityConstraints | null = null;
-  for (const bindingId of bindingIds) {
-    const next = constraintMap.get(bindingId) ?? null;
-    if (!hasMailBindingConstraints(next) || !next) continue;
-    merged = mergeAuthorityConstraints(merged, next);
+  for (const permission of permissions) {
+    const bindingIds = [...new Set(bindingIdsByPermission.get(permission) ?? [])];
+    if (bindingIds.length === 0) continue;
+    let permissionMerged: MailBindingVisibilityConstraints | null = null;
+    let hasUnconstrained = false;
+    for (const bindingId of bindingIds) {
+      const next = constraintMap.get(bindingId) ?? null;
+      if (!hasMailBindingConstraints(next) || !next) {
+        hasUnconstrained = true;
+        break;
+      }
+      permissionMerged = mergeAuthorityConstraints(permissionMerged, next);
+    }
+    // An unconstrained grant for this permission does not tighten authority.
+    if (hasUnconstrained || !permissionMerged) continue;
+    merged = mergeAuthorityConstraints(merged, permissionMerged);
   }
   return merged;
 }
@@ -898,13 +928,19 @@ async function loadBindingConstraints(
     if (row.kind === 'assignment' && row.assignment_mode) {
       current.assignmentMode = row.assignment_mode as MailBindingVisibilityConstraints['assignmentMode'];
     } else if (row.kind === 'category') {
-      const ids = Array.isArray(row.value_ids) ? row.value_ids.map(Number).filter((n) => n > 0) : [];
+      const ids = Array.isArray(row.value_ids)
+        ? row.value_ids.map(Number).filter((n) => Number.isSafeInteger(n) && (n > 0 || n === DENY_ALL_CATEGORY_ALLOW_ID))
+        : [];
       if (row.mode === 'allow') current.categoryAllowIds.push(...ids);
-      if (row.mode === 'exclude') current.categoryExcludeIds.push(...ids);
+      if (row.mode === 'exclude') current.categoryExcludeIds.push(...ids.filter((n) => n > 0));
     } else if (row.kind === 'tag') {
-      const texts = Array.isArray(row.value_texts) ? row.value_texts.map(String).filter(Boolean) : [];
+      const texts = Array.isArray(row.value_texts)
+        ? row.value_texts.map(String).filter((value) => value === DENY_ALL_TAG_ALLOW_VALUE || Boolean(value))
+        : [];
       if (row.mode === 'allow') current.tagAllowValues.push(...texts);
-      if (row.mode === 'exclude') current.tagExcludeValues.push(...texts);
+      if (row.mode === 'exclude') {
+        current.tagExcludeValues.push(...texts.filter((value) => value !== DENY_ALL_TAG_ALLOW_VALUE));
+      }
     }
     builders.set(bindingId, current);
   }

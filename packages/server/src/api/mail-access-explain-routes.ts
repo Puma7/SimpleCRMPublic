@@ -53,18 +53,6 @@ export async function handleMailAccessExplainRoute(
       userId,
     });
   }
-  if (targetRole === 'owner' || targetRole === 'admin') {
-    return data(200, {
-      visible: true,
-      reason: targetRole === 'owner'
-        ? 'Owner sieht alle Nachrichten im Workspace'
-        : 'Admin sieht alle Nachrichten im Workspace',
-      messageId,
-      userId,
-      role: targetRole,
-    });
-  }
-
   const resources = await ports.mailResourceLookup.resolve({
     workspaceId: principal.workspaceId,
     target: { kind: 'message', id: messageId },
@@ -77,6 +65,19 @@ export async function handleMailAccessExplainRoute(
       messageId,
       userId,
       role: targetRole,
+    });
+  }
+
+  if (targetRole === 'owner' || targetRole === 'admin') {
+    return data(200, {
+      visible: true,
+      reason: targetRole === 'owner'
+        ? 'Owner sieht alle Nachrichten im Workspace'
+        : 'Admin sieht alle Nachrichten im Workspace',
+      messageId,
+      userId,
+      role: targetRole,
+      resource: messageResource,
     });
   }
 

@@ -578,6 +578,7 @@ async function auditAndPublish(
           ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
         } : {}),
         permissionNames: [...details.permissions].sort(),
+        ...(binding && 'constraints' in binding ? { constraints: binding.constraints ?? null } : {}),
       },
     });
   } catch (error) {

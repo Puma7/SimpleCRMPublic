@@ -9,6 +9,8 @@ import {
 } from '../db/workspace-context';
 import { requirePostgresMailAclRolloutTransaction } from './postgres-mail-acl-rollout-evaluation-context';
 import {
+  DENY_ALL_CATEGORY_ALLOW_ID,
+  DENY_ALL_TAG_ALLOW_VALUE,
   EMPTY_MAIL_BINDING_CONSTRAINTS,
   type MailBindingVisibilityConstraints,
 } from './mail-acl-constraints';
@@ -177,11 +179,13 @@ async function loadConstraintsByBinding(
     } else if (row.kind === 'category') {
       const ids = parseIntArray(row.value_ids);
       if (row.mode === 'allow') current.categoryAllowIds.push(...ids);
-      if (row.mode === 'exclude') current.categoryExcludeIds.push(...ids);
+      if (row.mode === 'exclude') current.categoryExcludeIds.push(...ids.filter((id) => id > 0));
     } else if (row.kind === 'tag') {
       const texts = parseTextArray(row.value_texts);
       if (row.mode === 'allow') current.tagAllowValues.push(...texts);
-      if (row.mode === 'exclude') current.tagExcludeValues.push(...texts);
+      if (row.mode === 'exclude') {
+        current.tagExcludeValues.push(...texts.filter((value) => value !== DENY_ALL_TAG_ALLOW_VALUE));
+      }
     }
     builders.set(bindingId, current);
   }
@@ -316,25 +320,33 @@ function parseDatabaseId(value: string | null, field: string): number {
 
 function parseIntArray(value: number[] | string | null): number[] {
   if (Array.isArray(value)) {
-    return value.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+    return value.map(Number).filter(isPersistedCategoryId);
   }
   if (typeof value === 'string') {
     // Postgres may return "{1,2}" style.
     const inner = value.replace(/^\{|\}$/g, '');
     if (!inner) return [];
-    return inner.split(',').map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+    return inner.split(',').map(Number).filter(isPersistedCategoryId);
   }
   return [];
 }
 
 function parseTextArray(value: string[] | string | null): string[] {
-  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (Array.isArray(value)) return value.map(String).filter(isPersistedTagValue);
   if (typeof value === 'string') {
     const inner = value.replace(/^\{|\}$/g, '');
     if (!inner) return [];
-    return inner.split(',').map((part) => part.replace(/^"|"$/g, '').replace(/\\"/g, '"')).filter(Boolean);
+    return inner.split(',').map((part) => part.replace(/^"|"$/g, '').replace(/\\"/g, '"')).filter(isPersistedTagValue);
   }
   return [];
+}
+
+function isPersistedCategoryId(id: number): boolean {
+  return Number.isSafeInteger(id) && (id > 0 || id === DENY_ALL_CATEGORY_ALLOW_ID);
+}
+
+function isPersistedTagValue(value: string): boolean {
+  return value === DENY_ALL_TAG_ALLOW_VALUE || Boolean(value);
 }
 
 export { EMPTY_MAIL_BINDING_CONSTRAINTS };

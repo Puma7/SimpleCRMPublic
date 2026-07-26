@@ -803,6 +803,8 @@ function metadataMessageScopePredicate(
     accountId: `${messageAlias}.account_id`,
     folderId: `${messageAlias}.folder_id`,
     messageId: `${messageAlias}.id`,
+    assignedToUserId: `${messageAlias}.assigned_to_user_id`,
+    assignedTo: `${messageAlias}.assigned_to`,
   });
   if (!scopePredicate) return undefined;
   return kyselySql<boolean>`exists (

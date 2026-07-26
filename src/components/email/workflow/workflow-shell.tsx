@@ -146,6 +146,7 @@ export function WorkflowShell() {
   const { hasCapability } = useAuth()
   // Desktop edition has full local control; server edition respects capabilities.
   const canEditWorkflows = !serverClientMode || hasCapability("workflows.edit")
+  const canManageWorkflows = !serverClientMode || hasCapability("workflows.manage")
   const canRunWorkflows = !serverClientMode || hasCapability("workflows.run")
   const workflowFileTransferAvailable = electronReady || serverClientMode
   const workflowBackfillAvailable = electronReady || serverClientMode
@@ -743,7 +744,7 @@ export function WorkflowShell() {
                   size="sm"
                   variant="outline"
                   onClick={() => void handleDelete()}
-                  disabled={!canEditWorkflows}
+                  disabled={!canManageWorkflows}
                   aria-label="Workflow löschen"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -988,7 +989,7 @@ export function WorkflowShell() {
                   loading={loading}
                   onSelect={selectRowById}
                   onCreate={() => void handleCreate()}
-                  onDelete={(id) => void handleDeleteId(id)}
+                  onDelete={canManageWorkflows ? (id) => void handleDeleteId(id) : undefined}
                   canEdit={canEditWorkflows}
                 />
               </div>

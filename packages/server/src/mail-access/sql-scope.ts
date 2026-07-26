@@ -87,6 +87,7 @@ function visibilityPredicate(
 ): RawBuilder<boolean> | undefined {
   const parts: RawBuilder<boolean>[] = [];
   const messageCol = columns.messageId!;
+  const messageIdRef = outerColumnRef(messageCol);
   const mode = constraints.assignmentMode;
   if (mode && mode !== 'any') {
     // Fail closed: assignment filters without actor or assignee columns must not
@@ -94,31 +95,32 @@ function visibilityPredicate(
     if (!canEnforceAssignmentFilter(constraints, columns, actor)) {
       return sql<boolean>`false`;
     }
-    const assignedUserCol = columns.assignedToUserId ?? null;
-    const assignedCol = columns.assignedTo ?? null;
+    const assignedUserCol = columns.assignedToUserId;
+    const assignedCol = columns.assignedTo;
+    const actorId = actor!.userId;
     if (mode === 'unassigned') {
       if (assignedUserCol && assignedCol) {
         parts.push(sql<boolean>`(${sql.ref(assignedUserCol)} is null and (${sql.ref(assignedCol)} is null or ${sql.ref(assignedCol)} = ''))`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)} is null`);
-      } else {
+      } else if (assignedCol) {
         parts.push(sql<boolean>`(${sql.ref(assignedCol)} is null or ${sql.ref(assignedCol)} = '')`);
       }
     } else if (mode === 'assigned_to_me') {
       if (assignedUserCol && assignedCol) {
-        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) = ${actor!.userId})`);
+        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) = ${actorId})`);
       } else if (assignedUserCol) {
-        parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text = ${actor!.userId}`);
-      } else {
-        parts.push(sql<boolean>`${sql.ref(assignedCol)} = ${actor!.userId}`);
+        parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text = ${actorId}`);
+      } else if (assignedCol) {
+        parts.push(sql<boolean>`${sql.ref(assignedCol)} = ${actorId}`);
       }
     } else if (mode === 'assigned_to_my_groups') {
-      const ids = actor!.groupMemberUserIds.length > 0 ? actor!.groupMemberUserIds : [actor!.userId];
+      const ids = actor!.groupMemberUserIds.length > 0 ? actor!.groupMemberUserIds : [actorId];
       if (assignedUserCol && assignedCol) {
         parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) in (${sql.join(ids)}))`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text in (${sql.join(ids)})`);
-      } else {
+      } else if (assignedCol) {
         parts.push(sql<boolean>`${sql.ref(assignedCol)} in (${sql.join(ids)})`);
       }
     }
@@ -127,34 +129,43 @@ function visibilityPredicate(
   if (constraints.categoryAllowIds.length > 0) {
     parts.push(sql<boolean>`exists (
       select 1 from email_message_categories _emc_allow
-      where _emc_allow.message_id = ${sql.ref(messageCol)}
+      where _emc_allow.message_id = ${messageIdRef}
         and _emc_allow.category_id in (${sql.join(constraints.categoryAllowIds)})
     )`);
   }
   if (constraints.categoryExcludeIds.length > 0) {
     parts.push(sql<boolean>`not exists (
       select 1 from email_message_categories _emc_excl
-      where _emc_excl.message_id = ${sql.ref(messageCol)}
+      where _emc_excl.message_id = ${messageIdRef}
         and _emc_excl.category_id in (${sql.join(constraints.categoryExcludeIds)})
     )`);
   }
   if (constraints.tagAllowValues.length > 0) {
     parts.push(sql<boolean>`exists (
       select 1 from email_message_tags _emt_allow
-      where _emt_allow.message_id = ${sql.ref(messageCol)}
+      where _emt_allow.message_id = ${messageIdRef}
         and _emt_allow.tag in (${sql.join(constraints.tagAllowValues)})
     )`);
   }
   if (constraints.tagExcludeValues.length > 0) {
     parts.push(sql<boolean>`not exists (
       select 1 from email_message_tags _emt_excl
-      where _emt_excl.message_id = ${sql.ref(messageCol)}
+      where _emt_excl.message_id = ${messageIdRef}
         and _emt_excl.tag in (${sql.join(constraints.tagExcludeValues)})
     )`);
   }
 
   if (parts.length === 0) return undefined;
   return sql<boolean>`(${sql.join(parts, sql` and `)})`;
+}
+
+/**
+ * Correlate constraint subqueries to the outer message row. Unqualified names
+ * like `id` would otherwise resolve to the nearer category/tag table's `id`.
+ */
+function outerColumnRef(column: string): RawBuilder<unknown> {
+  const qualified = column.includes('.') ? column : `email_messages.${column}`;
+  return sql.ref(qualified);
 }
 
 function addIdBranches(
