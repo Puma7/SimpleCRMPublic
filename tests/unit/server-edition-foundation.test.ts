@@ -11581,8 +11581,10 @@ describe('server edition foundation', () => {
       messageId: 20,
       direction: 'outbound',
       blockKeyword: 'BLOCK',
+      parseMode: 'outbound_structured',
       workflowId: 32,
       resumeNodeId: 'tag-ok',
+      portResumeTargets: { ok: 'tag-ok' },
       continuation: {
         workflowId: 32,
         triggerName: 'outbound',
@@ -11816,7 +11818,7 @@ describe('server edition foundation', () => {
     ]);
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
       ['move-1', 'email.move_imap', 'ok', 'default', null],
-      ['spam-move-1', 'email.mark_spam', 'ok', 'default', null],
+      ['spam-move-1', 'email.mark_spam', 'ok', 'default', 'stop_further_workflows:spam_status'],
       ['delete-1', 'email.delete_server', 'ok', 'default', null],
     ]);
   });

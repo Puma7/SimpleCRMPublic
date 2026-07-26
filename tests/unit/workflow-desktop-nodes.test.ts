@@ -457,6 +457,17 @@ describe('logic.set_variable / logic.stop / logic.merge', () => {
       status: 'ok',
       stop: true,
     });
+    await expect(logicDefs.get('logic.stop_after_spam')!.execute(ctx(), {}, 'n1')).resolves.toMatchObject({
+      status: 'ok',
+      message: 'not_spam:continue',
+    });
+    await expect(
+      logicDefs.get('logic.stop_after_spam')!.execute(
+        ctx({ message: { is_spam: 1, spam_status: 'spam' } as never }),
+        {},
+        'n2',
+      ),
+    ).resolves.toMatchObject({ status: 'ok', stop: true, message: 'stop_after_spam' });
     await expect(logicDefs.get('logic.merge')!.execute(ctx(), {}, 'n1')).resolves.toEqual({
       status: 'ok',
       port: 'default',

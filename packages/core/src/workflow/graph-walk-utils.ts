@@ -35,14 +35,7 @@ export function pickEdge(
 ): WorkflowGraphEdge | undefined {
   if (edges.length === 0) return undefined;
 
-  if (port === 'yes') return edges.find((edge) => edgeIsYes(edge));
-  // Do not fall back to the first/yes edge when the condition failed. That caused
-  // inbound workflows to archive every message when only a "ja" branch was wired.
-  if (port === 'no') return edges.find((edge) => edgeIsNo(edge));
-  if (port === 'done') return edges.find((edge) => edgeIsDone(edge)) ?? undefined;
-  if (port === 'each') return edges.find((edge) => edgeIsEach(edge)) ?? edges[0];
-
-  if (typeof port === 'string' && port !== 'default') {
+  if (typeof port === 'string' && port !== 'yes' && port !== 'no' && port !== 'default') {
     const lower = port.toLowerCase();
     const byLabel = edges.find((edge) => (edge.label ?? '').toLowerCase() === lower);
     if (byLabel) return byLabel;
@@ -50,9 +43,18 @@ export function pickEdge(
     if (lower === 'ok') {
       return edges.find((edge) => edgeIsDefault(edge));
     }
-    // Explizite Zweige (block, error, hold, send, …) ohne Kante: fail-closed.
-    return undefined;
+    // Fail-closed nur für explizite Hold/Block-Ausgänge — andere Ports (z. B. approved,
+    // send_tracking-Fallback) fallen wie bisher auf die Default-Kante durch.
+    if (lower === 'block' || lower === 'error' || lower === 'hold' || lower === 'send') {
+      return undefined;
+    }
   }
+  if (port === 'yes') return edges.find((edge) => edgeIsYes(edge));
+  // Do not fall back to the first/yes edge when the condition failed. That caused
+  // inbound workflows to archive every message when only a "ja" branch was wired.
+  if (port === 'no') return edges.find((edge) => edgeIsNo(edge));
+  if (port === 'done') return edges.find((edge) => edgeIsDone(edge)) ?? undefined;
+  if (port === 'each') return edges.find((edge) => edgeIsEach(edge)) ?? edges[0];
 
   return edges.find((edge) => edgeIsDefault(edge));
 }

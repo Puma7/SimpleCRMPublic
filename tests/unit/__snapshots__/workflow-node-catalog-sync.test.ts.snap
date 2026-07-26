@@ -168,6 +168,7 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
     "value",
   ],
   "logic.stop": [],
+  "logic.stop_after_spam": [],
   "logic.switch": [
     "cases",
     "field",

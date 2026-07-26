@@ -54,6 +54,20 @@ function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
   return node.type === 'condition' || registryType(node) === 'logic.threshold';
 }
 
+/** Multi-port KI review nodes — walk every port; only release ports must reach send. */
+const NAMED_PORT_BRANCH_NODES: Readonly<
+  Record<string, { ports: readonly string[]; releasePorts: readonly string[] }>
+> = {
+  'ai.outbound_review': { ports: ['ok', 'block', 'error'], releasePorts: ['ok'] },
+  'ai.review_draft': { ports: ['send', 'hold'], releasePorts: ['send'] },
+};
+
+function namedPortBranch(
+  node: WorkflowGraphNode,
+): { ports: readonly string[]; releasePorts: readonly string[] } | null {
+  return NAMED_PORT_BRANCH_NODES[registryType(node)] ?? null;
+}
+
 /**
  * Runtime node types that only read state, branch, or produce in-run variables
  * — they never mutate persisted mailbox/CRM state, send mail, or reach an
@@ -602,7 +616,7 @@ export function findOutboundGraphTraps(
     }
   };
 
-  const walk = (nodeId: string, pathVisited: Set<string>): void => {
+  const walk = (nodeId: string, pathVisited: Set<string>, holdPath = false): void => {
     const node = byId.get(nodeId);
     if (!node) {
       add({ code: 'dead_end', nodeId }); // edge to a missing/deleted node
@@ -620,15 +634,31 @@ export function findOutboundGraphTraps(
     if (isYesNoBranchNode(node)) {
       const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
       const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
-      if (yesEdge) walk(yesEdge.target, next);
+      if (yesEdge) walk(yesEdge.target, next, holdPath);
       else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
-      if (noEdge) walk(noEdge.target, next);
+      if (noEdge) walk(noEdge.target, next, holdPath);
       else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
       return;
     }
 
+    const portBranch = namedPortBranch(node);
+    if (portBranch) {
+      for (const port of portBranch.ports) {
+        const edge = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+        const isReleasePort = portBranch.releasePorts.includes(port);
+        if (edge) {
+          walk(edge.target, next, holdPath || !isReleasePort);
+        } else if (isReleasePort) {
+          // Missing ok/send port — a successful verdict could never release mail.
+          add({ code: 'dead_end', nodeId });
+        }
+        // Missing block/error/hold ports fail closed at runtime (draft stays held).
+      }
+      return;
+    }
+
     if (outs.length === 0) {
-      add({ code: 'dead_end', nodeId }); // nothing to route to
+      if (!holdPath) add({ code: 'dead_end', nodeId }); // intentional hold branch terminal
       return;
     }
     // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
@@ -636,13 +666,13 @@ export function findOutboundGraphTraps(
     // branch) are not taken, so they must not be treated as reachable traps.
     const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
     if (defaultEdge) {
-      walk(defaultEdge.target, next);
+      walk(defaultEdge.target, next, holdPath);
       return;
     }
     // Every outgoing edge is labeled (e.g. success/error) and none is a
     // default/unlabeled edge, so pickEdge(..., 'default') returns undefined:
     // the runtime stops here and the draft is never released — a dead end.
-    add({ code: 'dead_end', nodeId });
+    if (!holdPath) add({ code: 'dead_end', nodeId });
   };
 
   for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));
