@@ -172,4 +172,24 @@ describe('codex review regression guards', () => {
     expect(graphile).toContain('buildTrustedServiceJobPayload');
     expect(graphile).toContain("helpers.addJob('workflow.execute'");
   });
+
+  test('codex round-6: chain parse, draft skip continuation, stop_after_spam, fingerprint paths, approve triage', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const logic = readRepoFile('electron/workflow/nodes/logic-nodes.ts');
+    const engine = readRepoFile('electron/email/email-workflow-engine.ts');
+    const httpPolicy = readRepoFile('packages/server/src/mail-access/http-policy-enforcer.ts');
+
+    expect(execution).toContain('parseInboundWorkflowChain(input.jobContext.inboundWorkflowChain)');
+    expect(execution).not.toContain('parseInboundWorkflowChain(input.jobContext);');
+    expect(draftNodes).toContain("'ai.draft.status': 'skipped'");
+    expect(draftNodes).toContain("skip_reason': 'message_spam_or_review'");
+    expect(draftNodes).toContain("'path' in item");
+    expect(logic).toContain('inboundChainStop: true');
+    expect(logic).toContain('getEmailMessageById(ctx.messageId)');
+    expect(engine).toContain('const currentRow = getEmailMessageById(messageId) ?? freshRow');
+    expect(httpPolicy).toContain("canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'");
+    expect(httpPolicy).toContain('resolveScheduledDraftReplyParent');
+    expect(httpPolicy).toContain('approve-draft-send clears pending approval and arms scheduled send');
+  });
 });

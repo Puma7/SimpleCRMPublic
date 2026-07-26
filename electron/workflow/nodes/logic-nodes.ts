@@ -1,4 +1,5 @@
 import { getWorkflowById } from '../../email/email-workflow-store';
+import { getEmailMessageById } from '../../email/email-store';
 import { getWorkflowSpamScoreThreshold } from '../automation-settings';
 import { scheduleDelayedJob } from '../delayed-jobs';
 import { parseGraphDocument, resolveResumeNodeAfter } from '../runtime';
@@ -24,7 +25,15 @@ export function registerLogicNodes(register: Reg): void {
       'Beendet den Workflow, wenn die Mail als Spam oder „Spam prüfen" markiert ist. ' +
       'Hilfsknoten hinter email.mark_spam in Spam-Pipelines.',
     execute: async (ctx) => {
-      const row = ctx.message;
+      // Prefer live DB row — a higher-priority workflow may have marked spam with
+      // stopFurtherWorkflows:false while this workflow still holds a clean snapshot.
+      let row = ctx.message;
+      try {
+        const live = getEmailMessageById(ctx.messageId);
+        if (live) row = live;
+      } catch {
+        // Unit tests without SQLite keep the context snapshot.
+      }
       const isSpam =
         row?.is_spam === 1
         || row?.spam_status === 'spam'
@@ -35,7 +44,12 @@ export function registerLogicNodes(register: Reg): void {
         || ctx.variables['spam.status'] === 'review'
         || ctx.variables['email.is_spam'] === true;
       if (isSpam) {
-        return { status: 'ok', stop: true, message: 'stop_after_spam' };
+        return {
+          status: 'ok',
+          stop: true,
+          inboundChainStop: true,
+          message: 'stop_after_spam',
+        };
       }
       return { status: 'ok', message: 'not_spam:continue' };
     },

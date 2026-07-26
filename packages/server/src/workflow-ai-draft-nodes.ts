@@ -541,7 +541,19 @@ function parseDraftAttachmentPaths(value: string | null | undefined): string[] {
   try {
     const parsed = JSON.parse(value) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((item) => String(item ?? '').trim()).filter(Boolean);
+    const paths: string[] = [];
+    for (const item of parsed) {
+      if (typeof item === 'string' && item.trim()) {
+        paths.push(item.trim());
+        continue;
+      }
+      // Server drafts store `{ path, filename }` objects (see draftAttachmentPathsToJsonValue).
+      if (item && typeof item === 'object' && 'path' in item) {
+        const path = String((item as { path?: unknown }).path ?? '').trim();
+        if (path) paths.push(path);
+      }
+    }
+    return paths;
   } catch {
     return [];
   }
@@ -737,7 +749,31 @@ export function createPostgresAiDraftReplyPort(
         },
         { applySession: deps.applyWorkspaceSession },
       );
-      if (prep === 'skip' || prep === null) return;
+      if (prep === 'skip') {
+        // Node already deferred the parent workflow.execute — must continue the
+        // graph even when we skip the LLM call for spam/review.
+        if (input.continuation) {
+          await withWorkspaceTransaction(
+            deps.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => {
+              await enqueueContinuation(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation!,
+                variables: {
+                  'ai.draft.status': 'skipped',
+                  'ai.draft.skip_reason': 'message_spam_or_review',
+                },
+                now: now(),
+              });
+            },
+            { applySession: deps.applyWorkspaceSession },
+          );
+        }
+        return;
+      }
+      if (prep === null) return;
 
       // OpenAI outside any workspace transaction (Codex P1).
       let aiText: string;

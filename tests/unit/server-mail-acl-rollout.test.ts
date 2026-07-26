@@ -851,6 +851,51 @@ describe('mail ACL rollout central use', () => {
     expect(approveDraftSend).toHaveBeenCalledTimes(1);
   });
 
+  test('approve-draft-send requires mail.triage on reply parent when mark-parent-done is default', async () => {
+    const approveDraftSend = jest.fn(async () => ({ ok: true as const }));
+    const parentId = 909;
+    const restricted = { kind: 'restricted' as const, accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+    const calls: string[] = [];
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission(input) {
+          calls.push(input.permission);
+          if (input.permission === 'mail.triage') throw new MailAccessDeniedError();
+        },
+        async resolveScope() { return restricted; },
+      }),
+      emailMessages: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        approveDraftSend,
+      } as unknown as ServerApiPorts['emailMessages'],
+      mailResourceLookup: {
+        async resolve(input) {
+          if (input.target.kind === 'message' && input.target.id === parentId) {
+            return [messageResource(ACCOUNT_A, FOLDER_A, parentId)];
+          }
+          return [messageResource()];
+        },
+        async resolveScheduledDraftReplyParent() {
+          return { replyParentMessageId: parentId, markParentDone: true };
+        },
+      },
+    });
+
+    await expect(api.handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/approve-draft-send`,
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 404 });
+    expect(approveDraftSend).not.toHaveBeenCalled();
+    expect(calls).toEqual(expect.arrayContaining([
+      'mail.send',
+      'mail.draft.edit',
+      'mail.content.read',
+      'mail.triage',
+    ]));
+  });
+
   test('pgp verify POST requires content-read in addition to triage', async () => {
     // verifyMessage parses the hidden signed body and returns signature validity +
     // signer fingerprint, so a triage-only delegate without content access must be

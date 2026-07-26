@@ -352,11 +352,14 @@ export async function runInboundWorkflowsForMessage(
     if (applied?.has(wf.id)) continue;
     if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
     try {
+      // Re-read before each workflow so a prior run with stopFurther=false that
+      // marked spam/review is visible to logic.stop_after_spam and other guards.
+      const currentRow = getEmailMessageById(messageId) ?? freshRow;
       const r = await executeWorkflowForTrigger({
         workflow: wf,
         trigger: 'inbound',
         direction: 'inbound',
-        message: freshRow,
+        message: currentRow,
       });
       if (r.deferred) inboundWorkflowDeferred = true;
       if (r.status !== 'ok') {

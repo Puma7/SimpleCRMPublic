@@ -47,6 +47,7 @@ describe('workflow inbound chain continuity', () => {
     expect(injections).toBeGreaterThanOrEqual(9); // 8 continuations + delay context
     expect(execution.split('continuation:terminal_success')[1] ?? '')
       .toContain('maybeEnqueueNextInboundWorkflow');
+    expect(execution).toContain('parseInboundWorkflowChain(input.jobContext.inboundWorkflowChain)');
     expect(ai).toContain('resumeContextInboundChainFields(input.continuation)');
     expect(http).toContain('resumeContextInboundChainFields(continuation)');
   });

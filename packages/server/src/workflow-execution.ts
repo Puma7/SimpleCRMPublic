@@ -7125,7 +7125,7 @@ async function maybeEnqueueNextInboundWorkflow(
     now: Date;
   },
 ): Promise<void> {
-  const chain = parseInboundWorkflowChain(input.jobContext);
+  const chain = parseInboundWorkflowChain(input.jobContext.inboundWorkflowChain);
   if (!chain) return;
   const nextIndex = chain.index + 1;
   if (nextIndex >= chain.workflowIds.length) return;

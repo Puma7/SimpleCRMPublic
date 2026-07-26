@@ -1057,6 +1057,43 @@ async function assertSupplementalHttpPermissions(
         resource,
       });
     }
+    // approve-draft-send clears pending approval and arms scheduled send. The job
+    // then marks the reply parent done by default (compose_mark_parent_done unset
+    // ⇒ true), which requires mail.triage at job time. Check that now so we do not
+    // mutate approval state only to fail the subsequent send.
+    if (
+      canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'
+      && ports.mailResourceLookup?.resolveScheduledDraftReplyParent
+    ) {
+      const draftId = optionalPositiveInt(
+        selectorValue(req, canonicalPath, { source: 'path', field: 'messageId' }),
+      );
+      if (draftId !== undefined) {
+        const info = await ports.mailResourceLookup.resolveScheduledDraftReplyParent({
+          workspaceId,
+          draftId,
+        });
+        if (info && info.replyParentMessageId !== null && info.markParentDone) {
+          const parent = await ports.mailResourceLookup.resolve({
+            workspaceId,
+            target: { kind: 'message', id: info.replyParentMessageId },
+          });
+          if (parent.length !== 1) throw new MailAccessDeniedError();
+          await ports.mailAccess!.assertPermission({
+            workspaceId,
+            actor,
+            permission: 'mail.content.read',
+            resource: parent[0]!,
+          });
+          await ports.mailAccess!.assertPermission({
+            workspaceId,
+            actor,
+            permission: 'mail.triage',
+            resource: parent[0]!,
+          });
+        }
+      }
+    }
   }
 
   const replyParent = canonicalPath === '/api/v1/email/compose/send'
