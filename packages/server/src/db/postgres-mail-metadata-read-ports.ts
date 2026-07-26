@@ -584,7 +584,21 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .where('id', '=', input.id)
             .returning(emailTeamMemberSelectColumns)
             .executeTakeFirst();
-          return row ? mapEmailTeamMemberRow(row) : null;
+          if (!row) return null;
+          // Keep assigned_to_user_id in sync for messages already assigned to this
+          // free-text team member (e.g. agent-2) so assigned_to_me filters work.
+          if (values.linkedUserId !== undefined) {
+            await trx
+              .updateTable('email_messages')
+              .set({
+                assigned_to_user_id: values.linkedUserId,
+                updated_at: new Date(),
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('assigned_to', '=', input.id)
+              .execute();
+          }
+          return mapEmailTeamMemberRow(row);
         },
         { applySession: options.applyWorkspaceSession },
       );

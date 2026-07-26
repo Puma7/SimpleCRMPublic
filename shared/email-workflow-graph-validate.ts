@@ -197,3 +197,65 @@ export function outboundGraphReleasesMail(
 ): boolean {
   return findOutboundGraphTraps(doc, opts).length === 0;
 }
+
+// --- Side-effect detection (mirror of packages/core workflowGraphHasSideEffectNode) ---
+
+const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'email.auth_check',
+  'email.read_tracking_evidence',
+  'email.sender_filter',
+  'returns.evaluate',
+  'jtl.lookup',
+  'jtl.prepare_action',
+]);
+
+const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'logic.stop',
+  'logic.set_variable',
+  'logic.merge',
+  'logic.threshold',
+  'logic.switch',
+  'logic.loop',
+]);
+
+function sideEffectRuntimeType(node: WorkflowGraphNode): string {
+  const data = node.data as Record<string, unknown> | undefined;
+  if (node.type === 'registry') {
+    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
+  }
+  if (node.type === 'action') {
+    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
+    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
+    return 'action';
+  }
+  return node.type;
+}
+
+/**
+ * True if the graph has at least one side-effecting node when run live.
+ * Keep in sync with packages/core/src/workflow/graph-validate.ts.
+ */
+export function workflowGraphHasSideEffectNode(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type === 'trigger' || node.type === 'condition') continue;
+    if (node.type !== 'action' && node.type !== 'registry') return true;
+    const type = sideEffectRuntimeType(node);
+    if (LOGIC_INMEMORY_NODE_TYPES.has(type)) continue;
+    if (READ_ONLY_WORKFLOW_NODE_TYPES.has(type)) continue;
+    return true;
+  }
+  return false;
+}

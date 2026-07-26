@@ -12,6 +12,7 @@ import {
 import {
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  workflowGraphHasSideEffectNode,
 } from "@shared/email-workflow-graph-validate"
 import {
   exportWorkflowBundle,
@@ -416,18 +417,18 @@ export function WorkflowShell() {
       const baseline = saveBaselineRef.current
       const graphChanged = !baseline || baseline.graphJson !== graphJson
       const enabledChanged = !baseline || baseline.enabled !== editEnabled
-      // Editors without manage must not re-POST graph/enabled for an already-active
-      // workflow — the API rejects enabled side-effect graphs without manage.
-      // Metadata-only saves omit those fields; graph/enable changes while active require manage.
+      const hasSideEffects = workflowGraphHasSideEffectNode(graphDoc)
+      // Match API rejectUnlessSideEffectWorkflowManage: only enabled + side-effect graphs need manage.
+      const needsManage = editEnabled && hasSideEffects
       const omitActiveGraphFields =
         !canManageWorkflows
-        && editEnabled
+        && needsManage
         && baseline?.enabled === true
         && !graphChanged
         && !enabledChanged
       if (
         !canManageWorkflows
-        && editEnabled
+        && needsManage
         && (graphChanged || enabledChanged)
       ) {
         toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
@@ -737,8 +738,11 @@ export function WorkflowShell() {
                   checked={editEnabled}
                   onCheckedChange={(on) => {
                     if (on && !canManageWorkflows) {
-                      toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
-                      return
+                      const graph = useWorkflowEditorStore.getState().toGraphDocument()
+                      if (workflowGraphHasSideEffectNode(graph)) {
+                        toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
+                        return
+                      }
                     }
                     setEditEnabled(on)
                   }}

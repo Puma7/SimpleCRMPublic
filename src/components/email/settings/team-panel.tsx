@@ -28,6 +28,7 @@ export function TeamPanel() {
   )
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editSignature, setEditSignature] = useState("")
+  const [editLinkedUserId, setEditLinkedUserId] = useState("")
 
   const load = useCallback(async () => {
     setTeam(await invokeRenderer(IPCChannels.Email.ListTeamMembers) as TeamMember[])
@@ -68,6 +69,12 @@ export function TeamPanel() {
     await load()
   }
 
+  const startEditing = (member: TeamMember) => {
+    setEditingId(member.id)
+    setEditSignature(sanitizeEmailHtml(member.signature_html ?? ""))
+    setEditLinkedUserId(member.linked_user_id ?? "")
+  }
+
   return (
     <div className="space-y-4">
       <div>
@@ -99,12 +106,9 @@ export function TeamPanel() {
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
-                      setEditingId(t.id)
-                      setEditSignature(sanitizeEmailHtml(t.signature_html ?? ""))
-                    }}
+                    onClick={() => startEditing(t)}
                   >
-                    Signatur
+                    Bearbeiten
                   </Button>
                   <Button
                     type="button"
@@ -121,6 +125,15 @@ export function TeamPanel() {
               </div>
               {editingId === t.id ? (
                 <div className="space-y-2 border-t pt-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Verknüpfte User-UUID</Label>
+                    <Input
+                      className="font-mono text-xs"
+                      placeholder="Workspace-User-UUID (leer = keine Verknüpfung)"
+                      value={editLinkedUserId}
+                      onChange={(e) => setEditLinkedUserId(e.target.value)}
+                    />
+                  </div>
                   <Label className="text-xs">Signatur</Label>
                   <SignatureQuillEditor
                     value={editSignature}
@@ -134,14 +147,15 @@ export function TeamPanel() {
                         id: t.id,
                         displayName: t.display_name,
                         signatureHtml: editSignature,
+                        linkedUserId: editLinkedUserId.trim() || null,
                       }).then(() => {
                         setEditingId(null)
                         bumpAccountsRevision()
-                        toast.success("Signatur gespeichert")
+                        toast.success("Mitglied gespeichert")
                       })
                     }
                   >
-                    Signatur speichern
+                    Speichern
                   </Button>
                 </div>
               ) : null}
