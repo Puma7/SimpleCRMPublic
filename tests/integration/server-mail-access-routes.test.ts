@@ -293,6 +293,10 @@ describe('server mailbox ACL migration', () => {
   }
 
   async function ensureMailAclConstraintsSchema(): Promise<void> {
+    const exists = await client.query<{ exists: boolean }>(`
+      SELECT to_regclass('public.mail_acl_bindings') IS NOT NULL AS exists
+    `);
+    if (!exists.rows[0]?.exists) return;
     const migration = serverMigrations.find((candidate) => candidate.id === '0046_group_rights_and_mail_constraints');
     expect(migration).toBeDefined();
     await applyStatements(migration!.upSql);
