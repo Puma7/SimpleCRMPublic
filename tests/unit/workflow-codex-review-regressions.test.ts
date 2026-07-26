@@ -127,7 +127,8 @@ describe('codex review regression guards', () => {
     expect(execution).toMatch(/skip:workflow_already_applied[\s\S]*?maybeEnqueueNextInboundWorkflow/);
     expect(catalog).toContain('stopFurtherWorkflows: true');
     expect(emailNodes).toContain('stopFurtherWorkflows: true');
-    expect(aiNodes).toContain('getEmailMessageById(ctx.messageId) ?? ctx.message');
+    expect(aiNodes).toContain('getEmailMessageById(ctx.messageId)');
+    expect(aiNodes).toContain("ctx.variables['email.is_spam'] === true");
     expect(policy).toContain("job.type === 'ai.draft_reply'");
     expect(policy).toContain('assertAiReviewDraftAccess');
     expect(execution).toContain('buildOutboundReviewUserTemplate');

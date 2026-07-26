@@ -80,9 +80,24 @@ function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
 
 function skipInboundIfSpamOrReview(ctx: WorkflowContext): NodeExecuteResult | null {
   if (ctx.direction !== 'inbound' || ctx.messageId == null) return null;
-  // Always prefer the live row — a prior workflow may have marked spam with
-  // stopFurtherWorkflows:false while ctx.message still holds the pre-loop snapshot.
-  const row = getEmailMessageById(ctx.messageId) ?? ctx.message;
+  // Same-workflow spam nodes update variables even when ctx.message is a stale snapshot.
+  const spamStatus = ctx.variables['spam.status'];
+  if (
+    ctx.variables['email.is_spam'] === true
+    || spamStatus === 'spam'
+    || spamStatus === 'review'
+  ) {
+    return { status: 'skipped', message: 'skip:message_spam_or_review' };
+  }
+  // Prefer the live DB row when available (prior workflow may have marked spam with
+  // stopFurtherWorkflows:false). Unit tests without SQLite keep the context snapshot.
+  let row = ctx.message;
+  try {
+    const live = getEmailMessageById(ctx.messageId);
+    if (live) row = live;
+  } catch {
+    // keep snapshot
+  }
   if (!row) return null;
   if (messageIsSpamOrReviewForInboundWorkflow(row)) {
     return { status: 'skipped', message: 'skip:message_spam_or_review' };

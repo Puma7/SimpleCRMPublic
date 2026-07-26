@@ -102,6 +102,7 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
   "email.mark_spam": [
     "moveImap",
     "spam",
+    "stopFurtherWorkflows",
     "tag",
   ],
   "email.move_imap": [
@@ -129,6 +130,7 @@ exports[`Workflow-Katalog-Synchronität Kompat-Wache: Node-Typen und defaultConf
   ],
   "email.set_spam_status": [
     "status",
+    "stopFurtherWorkflows",
     "tag",
     "train",
   ],
