@@ -214,9 +214,21 @@ describe('codex review regression guards', () => {
   test('codex round-8: desktop HOLD disarms schedule and draft_reply rechecks spam after AI', () => {
     const approval = readRepoFile('electron/email/email-draft-approval.ts');
     const desktopAi = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const handlers = readRepoFile('packages/server/src/jobs/production-handlers.ts');
 
     expect(approval).toContain('scheduled_send_at = NULL');
     expect(desktopAi).toContain('Re-check live spam/review after the external AI call');
     expect(desktopAi).toContain('const postAiSpamSkip = skipInboundIfSpamOrReview(ctx)');
+    // Preserve accumulated sibling error across trigger branches.
+    expect(execution).toContain("result.status === 'error' || branch.status === 'error' ? 'error'");
+    // Terminal SEND without resume still advances the inbound chain.
+    expect(draftNodes).toContain('Terminal SEND without a success edge');
+    expect(draftNodes).toContain('enqueueNextInboundWorkflowAfterTerminalChildFailure');
+    // Dedupe key is run-scoped so backfill/reapply can mint a new draft.
+    expect(draftNodes).toContain(':run:');
+    expect(execution).toContain('runId: context.runId');
+    expect(handlers).toContain("optionalPositiveInteger(payload, 'runId')");
   });
 });

@@ -1206,14 +1206,14 @@ async function runServerWorkflowGraph(
     result = {
       ...branch,
       deferred: result.deferred === true || branch.deferred === true,
+      // Preserve an earlier sibling error — a later ok branch must not flip the
+      // run back to success (would mark inbound applied and advance the chain).
+      status: result.status === 'error' || branch.status === 'error' ? 'error' : branch.status,
       log,
     };
     if (branch.blocked) return result;
     if (branch.inboundChainStop) return result;
     // Keep walking sibling trigger branches after a deferred async/delay node.
-    if (branch.status === 'error') {
-      result = { ...result, status: 'error' };
-    }
   }
   return result;
 }
@@ -3010,6 +3010,7 @@ async function scheduleAiDraftReplyJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     messageId: context.messageId,
+    runId: context.runId,
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,

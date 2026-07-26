@@ -427,6 +427,7 @@ export function buildAiDraftReplyJobPlan(
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     messageId: requiredPositiveInteger(payload, 'messageId'),
     ...optionalString(payload, 'actorUserId'),
+    ...optionalPositiveInteger(payload, 'runId'),
     ...optionalPositiveInteger(payload, 'profileId'),
     ...optionalPositiveInteger(payload, 'knowledgeBaseId'),
     ...optionalString(payload, 'systemPrompt', 4000),

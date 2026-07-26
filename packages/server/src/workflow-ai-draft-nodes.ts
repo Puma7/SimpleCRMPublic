@@ -575,12 +575,16 @@ function replySubject(subject: string | null | undefined): string {
 
 function aiDraftReplyDedupeKey(input: {
   messageId: number;
+  runId?: number;
   continuation?: { workflowId?: number } | null;
 }): string {
   const workflowId = input.continuation?.workflowId;
+  const runPart = Number.isInteger(input.runId) && Number(input.runId) > 0
+    ? `:run:${Number(input.runId)}`
+    : '';
   return Number.isInteger(workflowId) && Number(workflowId) > 0
-    ? `workflow_ai_draft_reply:${Number(workflowId)}:${input.messageId}`
-    : `workflow_ai_draft_reply:${input.messageId}`;
+    ? `workflow_ai_draft_reply:${Number(workflowId)}:${input.messageId}${runPart}`
+    : `workflow_ai_draft_reply:${input.messageId}${runPart}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -592,6 +596,8 @@ export type AiDraftReplyJobPlan = Readonly<{
   workspaceId: string;
   messageId: number;
   actorUserId?: string;
+  /** Workflow run id — scopes draft idempotency so backfill/reapply can mint a new draft. */
+  runId?: number;
   profileId?: number;
   knowledgeBaseId?: number;
   systemPrompt?: string;
@@ -1142,14 +1148,15 @@ export function createPostgresAiReviewDraftPort(
             if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
           }
           if (!resumeNodeId) {
-            if (port !== 'send') {
-              await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
-                workspaceId: input.workspaceId,
-                messageId: input.messageId,
-                actorUserId: continuation.actorUserId,
-                continuation,
-              }, now());
-            }
+            // Terminal SEND without a success edge (e.g. hold-only graph) must
+            // still advance the inbound priority chain — otherwise later
+            // workflows stay stranded after a successful child.
+            await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              actorUserId: continuation.actorUserId,
+              continuation,
+            }, now());
             return;
           }
           await enqueueContinuation(trx, {
