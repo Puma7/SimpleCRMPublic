@@ -43,8 +43,11 @@ import {
   type InboundWorkflowChainContext,
 } from './workflow-inbound-chain-context';
 import {
+  cancelPendingWorkflowDelayedJobsForMessage,
   completeInboundDeferredJoinSibling,
   initInboundDeferredJoin,
+  isInboundSiblingAborted,
+  markInboundSiblingAbort,
   tryClaimInboundChainHop,
 } from './workflow-inbound-chain-advance';
 
@@ -573,7 +576,7 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
-          const context = buildWorkflowContext({
+          const context = await buildWorkflowContext(trx, {
             workspaceId: input.workspaceId,
             workflowId: Number(workflow.id),
             workflowSourceSqliteId: workflowSourceSqliteId(workflow),
@@ -588,6 +591,41 @@ export function createPostgresWorkflowExecutionJobPort(
             manualAdminExecute: input.manualAdminExecute,
             jobContext,
           });
+          if (
+            resumeNodeId
+            && trigger === 'inbound'
+            && message
+            && await isInboundSiblingAborted(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              workflowId: Number(workflow.id),
+              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+            })
+          ) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:sibling_terminal_abort'],
+              now,
+            });
+            await completeInboundDeferredJoinSibling(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              workflowId: Number(workflow.id),
+              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              chainStop: true,
+              now,
+            });
+            if (delayedJob) {
+              await markDelayedJobStatus(
+                trx,
+                input.workspaceId,
+                Number(delayedJob.id),
+                'failed',
+                now,
+              );
+            }
+            return;
+          }
           const result = await runServerWorkflowGraph(trx, {
             workspaceId: input.workspaceId,
             workflow,
@@ -607,14 +645,39 @@ export function createPostgresWorkflowExecutionJobPort(
           if (trigger === 'inbound' && message && result.deferred) {
             // Multi-deferred trigger fan-out: wait for every sibling before
             // mark-applied / priority-chain advance (Codex Round-10 join).
+            // If a later sibling blocked/stopped the fan-out, seed chainStop and
+            // cancel already-queued delay jobs so they cannot release holds later.
+            const siblingTerminal = result.blocked
+              || result.status === 'blocked'
+              || result.inboundChainStop === true;
+            const chain = parseInboundWorkflowChain(jobContext.inboundWorkflowChain);
             await initInboundDeferredJoin(trx, {
               workspaceId: input.workspaceId,
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
-              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              chain,
               pendingCount: result.deferredBranchCount ?? 1,
+              chainStop: siblingTerminal,
               now,
             });
+            if (siblingTerminal) {
+              await markInboundSiblingAbort(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain,
+                reason: result.inboundChainStop
+                  ? 'sibling_inbound_chain_stop'
+                  : 'sibling_blocked',
+                now,
+              });
+              await cancelPendingWorkflowDelayedJobsForMessage(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                now,
+              });
+            }
           } else if (
             trigger === 'inbound'
             && message
@@ -692,7 +755,7 @@ export function createPostgresWorkflowExecutionJobPort(
             };
           }
 
-          const context = buildWorkflowContext({
+          const context = await buildWorkflowContext(trx, {
             workspaceId: input.workspaceId,
             workflowId: Number(prepared.workflow.id),
             workflowSourceSqliteId: workflowSourceSqliteId(prepared.workflow),
@@ -1874,6 +1937,22 @@ async function executeServerNode(
       return dryRunSideEffectResult('email.release_outbound', log, {
         message: 'dry_run:email.release_outbound',
       });
+    }
+    if (
+      context.direction === 'inbound'
+      && context.messageId !== null
+      && await isInboundSiblingAborted(trx, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        workflowId: context.workflowId,
+        chain: context.inboundWorkflowChain ?? null,
+      })
+    ) {
+      return {
+        status: 'skipped',
+        port: 'default',
+        message: 'skip:sibling_terminal_abort',
+      };
     }
     return await releaseWorkflowOutboundHold(trx, context, config, now);
   }
@@ -6562,21 +6641,24 @@ async function insertRunStep(
     .execute();
 }
 
-function buildWorkflowContext(input: {
-  workspaceId: string;
-  workflowId: number;
-  workflowSourceSqliteId: number;
-  runId: number;
-  runSourceSqliteId: number;
-  messageId: number | null;
-  trigger: WorkflowTriggerKind;
-  direction: WorkflowDirection;
-  message: MessageRow | null;
-  actorUserId?: string;
-  trustedService?: boolean;
-  manualAdminExecute?: boolean;
-  jobContext: Record<string, unknown>;
-}): ServerWorkflowContext {
+async function buildWorkflowContext(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    workflowId: number;
+    workflowSourceSqliteId: number;
+    runId: number;
+    runSourceSqliteId: number;
+    messageId: number | null;
+    trigger: WorkflowTriggerKind;
+    direction: WorkflowDirection;
+    message: MessageRow | null;
+    actorUserId?: string;
+    trustedService?: boolean;
+    manualAdminExecute?: boolean;
+    jobContext: Record<string, unknown>;
+  },
+): Promise<ServerWorkflowContext> {
   const eventStrings = stringRecord(input.jobContext.eventStrings);
   const eventVariables = variableRecord(input.jobContext.eventVariables);
   const strings = eventStrings ?? (
@@ -6597,6 +6679,31 @@ function buildWorkflowContext(input: {
     }
     if (input.message.customer_source_sqlite_id !== null && input.message.customer_source_sqlite_id !== undefined) {
       variables['customer.source_sqlite_id'] = Number(input.message.customer_source_sqlite_id);
+    }
+    // Automated drafts have no later client interpolation — resolve customer
+    // name/email here so signature {{customer.*}} placeholders are not sent literally.
+    if (
+      input.message.customer_id !== null
+      && input.message.customer_id !== undefined
+      && (typeof variables['customer.name'] !== 'string' || !variables['customer.name'])
+    ) {
+      const customer = await trx
+        .selectFrom('customers')
+        .select(['name', 'first_name', 'company', 'email'])
+        .where('workspace_id', '=', input.workspaceId)
+        .where('id', '=', Number(input.message.customer_id))
+        .executeTakeFirst();
+      if (customer) {
+        const displayName = [customer.first_name, customer.name]
+          .map((part) => String(part ?? '').trim())
+          .filter(Boolean)
+          .join(' ')
+          || String(customer.company ?? '').trim()
+          || String(customer.name ?? '').trim();
+        if (displayName) variables['customer.name'] = displayName;
+        const email = String(customer.email ?? '').trim();
+        if (email) variables['customer.email'] = email;
+      }
     }
     variables['auth.spf'] = authValue(input.message.auth_spf);
     variables['auth.dkim'] = authValue(input.message.auth_dkim);

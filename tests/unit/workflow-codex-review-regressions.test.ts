@@ -305,7 +305,41 @@ describe('codex review regression guards', () => {
     expect(advance).toContain('completeInboundDeferredJoinSiblingOnPgClient');
     expect(graphile).toContain('completeInboundDeferredJoinSiblingOnPgClient');
     expect(graphile).toMatch(
-      /completeInboundDeferredJoinSiblingOnPgClient[\s\S]*?if \(join !== 'ready'\) return/,
+      /completeInboundDeferredJoinSiblingOnPgClient[\s\S]*?if \(join !== 'ready'\)/,
     );
+  });
+
+  test('codex round-11b: BEGIN RLS tx, sibling abort, draft guards, customer vars, early dedupe', () => {
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+
+    // set_config is transaction-local — claim path must BEGIN/COMMIT.
+    expect(graphile).toContain("await client.query('BEGIN')");
+    expect(graphile).toContain("await client.query('COMMIT')");
+    expect(graphile).toContain("await client.query('ROLLBACK')");
+
+    // Sibling blocked/stop after deferred fan-out aborts remaining children.
+    expect(advance).toContain('markInboundSiblingAbort');
+    expect(advance).toContain('cancelPendingWorkflowDelayedJobsForMessage');
+    expect(advance).toContain('isInboundSiblingAborted');
+    expect(execution).toContain('sibling_terminal_abort');
+    expect(execution).toContain('cancelPendingWorkflowDelayedJobsForMessage');
+    expect(execution).toContain('skip:sibling_terminal_abort');
+
+    // HOLD/SEND: only stamp pending on still-local drafts.
+    expect(draftNodes).toContain("where('folder_kind', '=', 'draft')");
+    expect(draftNodes).toContain("where('uid', '<', 0)");
+    expect(draftNodes).toContain('Re-read draft after the external AI call for EVERY verdict');
+
+    // Dedupe before paid model call.
+    expect(draftNodes).toContain('aiDraftReplyDedupeKey(input)');
+    expect(draftNodes).toContain('skip the paid model call when a prior');
+
+    // Customer name/email loaded for signature placeholders.
+    expect(execution).toContain("variables['customer.name']");
+    expect(execution).toContain("variables['customer.email']");
+    expect(execution).toContain("selectFrom('customers')");
   });
 });

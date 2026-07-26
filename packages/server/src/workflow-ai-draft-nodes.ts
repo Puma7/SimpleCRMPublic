@@ -387,6 +387,8 @@ export async function setDraftApprovalPending(
   reason: string,
 ): Promise<void> {
   const now = new Date();
+  // Only stamp pending while the row is still a local draft — a concurrent send
+  // or delete must not leave approval_state on a sent/missing message.
   await trx
     .updateTable('email_messages')
     .set({
@@ -402,6 +404,8 @@ export async function setDraftApprovalPending(
     })
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', draftId)
+    .where('folder_kind', '=', 'draft')
+    .where('uid', '<', 0)
     .execute();
 }
 
@@ -819,6 +823,26 @@ export function createPostgresAiDraftReplyPort(
       }
       if (prep === null) return;
 
+      // Job retry after a committed draft: skip the paid model call when a prior
+      // draft already exists for this run (transactional check remains below).
+      const earlyDedupeKey = aiDraftReplyDedupeKey(input);
+      const priorDraft = await withWorkspaceTransaction(
+        deps.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const prior = await trx
+            .selectFrom('sync_info')
+            .select(['value'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', earlyDedupeKey)
+            .executeTakeFirst();
+          const priorDraftId = Number(prior?.value);
+          return Number.isInteger(priorDraftId) && priorDraftId > 0 ? priorDraftId : null;
+        },
+        { applySession: deps.applyWorkspaceSession },
+      );
+      if (priorDraft !== null) return;
+
       // OpenAI outside any workspace transaction (Codex P1).
       let aiText: string;
       try {
@@ -1122,27 +1146,62 @@ export function createPostgresAiReviewDraftPort(
         deps.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          // Re-read draft after the external AI call — a human may have edited it.
+          // Re-read draft after the external AI call for EVERY verdict — a human
+          // may have sent or deleted it while the review was in flight.
+          const live = await trx
+            .selectFrom('email_messages')
+            .select([
+              'subject',
+              'body_text',
+              'body_html',
+              'to_json',
+              'cc_json',
+              'bcc_json',
+              'draft_attachment_paths_json',
+              'folder_kind',
+              'uid',
+            ])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', draftId)
+            .executeTakeFirst();
+          const stillLocalDraft = Boolean(live && live.folder_kind === 'draft' && Number(live.uid) < 0);
+          if (!stillLocalDraft) {
+            // Draft gone/sent — do not stamp pending; still continue the graph.
+            const continuation = input.continuation;
+            if (!continuation) return;
+            const namedTarget = input.portResumeTargets?.[port];
+            let resumeNodeId = namedTarget;
+            if (!resumeNodeId && port === 'send') {
+              const holdOnlyAnchor = Boolean(input.portResumeTargets?.hold)
+                && !input.portResumeTargets?.send
+                && continuation.resumeNodeId === input.portResumeTargets?.hold;
+              if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
+            }
+            if (!resumeNodeId) {
+              await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                actorUserId: continuation.actorUserId,
+                continuation,
+              }, now());
+              return;
+            }
+            await enqueueContinuation(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: { ...continuation, resumeNodeId },
+              variables: {
+                ...continuationVariables,
+                'ai.review.verdict': 'hold',
+                'ai.review.answered': false,
+                'ai.review.reason': 'Entwurf ist nicht mehr lokal — Freigabe übersprungen',
+              },
+              now: now(),
+            });
+            return;
+          }
           if (port === 'send') {
-            const live = await trx
-              .selectFrom('email_messages')
-              .select([
-                'subject',
-                'body_text',
-                'body_html',
-                'to_json',
-                'cc_json',
-                'bcc_json',
-                'draft_attachment_paths_json',
-                'folder_kind',
-                'uid',
-              ])
-              .where('workspace_id', '=', input.workspaceId)
-              .where('id', '=', draftId)
-              .executeTakeFirst();
-            const liveFp = live && live.folder_kind === 'draft' && Number(live.uid) < 0
-              ? fingerprintReviewedDraft(live)
-              : null;
+            const liveFp = fingerprintReviewedDraft(live!);
             if (liveFp !== prep.reviewedFingerprint) {
               port = 'hold';
               approvalReason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';

@@ -267,48 +267,66 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
   try {
     // Prefer a single PG client so the hop claim + enqueue share one connection
     // (sibling terminal failures must not double-enqueue the next workflow).
-    // FORCE RLS on sync_info requires app.workspace_id / app.role before INSERT.
+    // FORCE RLS on sync_info requires app.workspace_id / app.role; set_config(..., true)
+    // is transaction-local so wrap BEGIN/COMMIT (autocommit would discard settings).
     if (helpers?.withPgClient) {
       await helpers.withPgClient(async (client) => {
-        await client.query(
-          `SELECT set_config('app.workspace_id', $1, true),
-                  set_config('app.user_id', '', true),
-                  set_config('app.role', 'system', true),
-                  set_config('app.cross_workspace_access', 'off', true)`,
-          [parsed.workspaceId],
-        );
-        const join = await completeInboundDeferredJoinSiblingOnPgClient(client, {
-          workspaceId: parsed.workspaceId,
-          messageId: parsed.messageId,
-          workflowId: currentWorkflowId,
-          chain: parsed.chain,
-          chainStop: false,
-          now: new Date(),
-        });
-        if (join !== 'ready') return;
-        const claimed = await client.query(
-          `INSERT INTO sync_info (
-             workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
-           ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
-           ON CONFLICT (workspace_id, key) DO NOTHING
-           RETURNING key`,
-          [
-            parsed.workspaceId,
-            claimKey,
-            JSON.stringify({ origin: 'inbound_chain_hop' }),
-          ],
-        ) as { rowCount?: number | null };
-        if (!claimed.rowCount) return;
-        await client.query(
-          `SELECT graphile_worker.add_job(
-             $1::text,
-             $2::json,
-             'workflow',
-             now(),
-             3
-           )`,
-          ['workflow.execute', JSON.stringify(nextPayload)],
-        );
+        await client.query('BEGIN');
+        try {
+          await client.query(
+            `SELECT set_config('app.workspace_id', $1, true),
+                    set_config('app.user_id', '', true),
+                    set_config('app.role', 'system', true),
+                    set_config('app.cross_workspace_access', 'off', true)`,
+            [parsed.workspaceId],
+          );
+          const join = await completeInboundDeferredJoinSiblingOnPgClient(client, {
+            workspaceId: parsed.workspaceId,
+            messageId: parsed.messageId,
+            workflowId: currentWorkflowId,
+            chain: parsed.chain,
+            chainStop: false,
+            now: new Date(),
+          });
+          if (join !== 'ready') {
+            await client.query('COMMIT');
+            return;
+          }
+          const claimed = asPgResult(await client.query(
+            `INSERT INTO sync_info (
+               workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
+             ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
+             ON CONFLICT (workspace_id, key) DO NOTHING
+             RETURNING key`,
+            [
+              parsed.workspaceId,
+              claimKey,
+              JSON.stringify({ origin: 'inbound_chain_hop' }),
+            ],
+          ));
+          if (!claimed.rowCount) {
+            await client.query('COMMIT');
+            return;
+          }
+          await client.query(
+            `SELECT graphile_worker.add_job(
+               $1::text,
+               $2::json,
+               'workflow',
+               now(),
+               3
+             )`,
+            ['workflow.execute', JSON.stringify(nextPayload)],
+          );
+          await client.query('COMMIT');
+        } catch (inner) {
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            // ignore rollback errors
+          }
+          throw inner;
+        }
       });
       return;
     }
@@ -323,6 +341,11 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
     // Never mask the original job failure if chain advance itself fails.
     console.error('[graphile-worker] inbound chain advance after terminal failure failed', advanceErr);
   }
+}
+
+function asPgResult(value: unknown): { rowCount?: number | null } {
+  if (!value || typeof value !== 'object') return {};
+  return value as { rowCount?: number | null };
 }
 
 export function graphileSpecFromJob(input: EnqueueJobInput): GraphileTaskSpec {

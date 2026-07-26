@@ -98,8 +98,19 @@ export type InboundChainPgClient = Readonly<{
   query: (
     sql: string,
     values?: readonly unknown[],
-  ) => Promise<{ rowCount?: number | null; rows?: ReadonlyArray<{ value?: string | null }> }>;
+  ) => Promise<unknown>;
 }>;
+
+function asPgQueryResult(value: unknown): {
+  rowCount?: number | null;
+  rows?: ReadonlyArray<{ value?: string | null }>;
+} {
+  if (!value || typeof value !== 'object') return {};
+  return value as {
+    rowCount?: number | null;
+    rows?: ReadonlyArray<{ value?: string | null }>;
+  };
+}
 
 /** Graphile/pg-client variant of {@link completeInboundDeferredJoinSibling}. */
 export async function completeInboundDeferredJoinSiblingOnPgClient(
@@ -114,14 +125,14 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
   },
 ): Promise<'wait' | 'stop' | 'ready'> {
   const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
-  const locked = await client.query(
+  const locked = asPgQueryResult(await client.query(
     `SELECT value
        FROM sync_info
       WHERE workspace_id = $1
         AND key = $2
       FOR UPDATE`,
     [input.workspaceId, key],
-  );
+  ));
   const row = locked.rows?.[0];
   if (!row) return 'ready';
 
@@ -202,23 +213,113 @@ export async function initInboundDeferredJoin(
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
     pendingCount: number;
+    /** When true, join completions must not advance the priority chain. */
+    chainStop?: boolean;
     now: Date;
   },
 ): Promise<void> {
-  if (input.pendingCount <= 1) return;
+  if (input.pendingCount <= 1 && input.chainStop !== true) return;
+  // pendingCount 1 with chainStop still needs a barrier so the single deferred
+  // sibling completes into 'stop' instead of advancing.
+  const pending = Math.max(1, input.pendingCount);
   const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
   await trx
     .insertInto('sync_info')
     .values({
       workspace_id: input.workspaceId,
       key,
-      value: encodeDeferredJoinValue(input.pendingCount, false),
+      value: encodeDeferredJoinValue(pending, input.chainStop === true),
       last_updated: input.now,
       source_row: { origin: 'inbound_deferred_join' },
       imported_in_run_id: null,
       updated_at: input.now,
     })
     .onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())
+    .execute();
+}
+
+/** Abort key: a sibling blocked/stopped after other branches already deferred. */
+export function inboundSiblingAbortKey(
+  messageId: number,
+  workflowId: number,
+  chain: InboundWorkflowChainContext | null,
+): string {
+  if (chain) {
+    return `inbound_sibling_abort:${messageId}:${chain.workflowIds.join(',')}:${chain.index}`;
+  }
+  return `inbound_sibling_abort:${messageId}:${workflowId}`;
+}
+
+export async function markInboundSiblingAbort(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    chain: InboundWorkflowChainContext | null;
+    reason: string;
+    now: Date;
+  },
+): Promise<void> {
+  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain);
+  await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key,
+      value: input.reason.slice(0, 200),
+      last_updated: input.now,
+      source_row: { origin: 'inbound_sibling_abort' },
+      imported_in_run_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+      value: input.reason.slice(0, 200),
+      last_updated: input.now,
+      updated_at: input.now,
+    }))
+    .execute();
+}
+
+export async function isInboundSiblingAborted(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    chain: InboundWorkflowChainContext | null;
+  },
+): Promise<boolean> {
+  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain);
+  const row = await trx
+    .selectFrom('sync_info')
+    .select(['value'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('key', '=', key)
+    .executeTakeFirst();
+  return Boolean(row?.value);
+}
+
+/** Cancel pending/running delay jobs so aborted siblings cannot resume later. */
+export async function cancelPendingWorkflowDelayedJobsForMessage(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    now: Date;
+  },
+): Promise<void> {
+  await trx
+    .updateTable('workflow_delayed_jobs')
+    .set({
+      status: 'cancelled',
+      updated_at: input.now,
+    })
+    .where('workspace_id', '=', input.workspaceId)
+    .where('message_id', '=', input.messageId)
+    .where('workflow_id', '=', input.workflowId)
+    .where('status', 'in', ['pending', 'running'])
     .execute();
 }
 
