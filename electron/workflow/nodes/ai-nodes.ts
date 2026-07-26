@@ -675,6 +675,10 @@ export function registerAiNodes(register: Reg): void {
       }
       ctx.ai.lastResponse = aiText;
       if (!aiText) return { status: 'error', message: 'KI lieferte keinen Antworttext' };
+      // Re-check live spam/review after the external AI call — a concurrent mark_spam
+      // during the call must not still mint an auto-reply draft.
+      const postAiSpamSkip = skipInboundIfSpamOrReview(ctx);
+      if (postAiSpamSkip) return postAiSpamSkip;
       // Entartete KI-Ausgaben (Wiederholungsschleifen) hart abfangen: Fehler
       // statt stillem Abschneiden — sonst ginge ein kaputter, nur teilweise
       // gegengelesener Text an echte Kunden. Der Branch endet fail-safe.

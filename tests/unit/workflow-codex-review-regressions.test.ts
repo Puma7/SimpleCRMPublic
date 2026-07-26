@@ -210,4 +210,13 @@ describe('codex review regression guards', () => {
     expect(draftNodes).toContain('workflow_ai_draft_reply:');
     expect(draftNodes).toContain('Re-check live spam/review after the external AI call');
   });
+
+  test('codex round-8: desktop HOLD disarms schedule and draft_reply rechecks spam after AI', () => {
+    const approval = readRepoFile('electron/email/email-draft-approval.ts');
+    const desktopAi = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+
+    expect(approval).toContain('scheduled_send_at = NULL');
+    expect(desktopAi).toContain('Re-check live spam/review after the external AI call');
+    expect(desktopAi).toContain('const postAiSpamSkip = skipInboundIfSpamOrReview(ctx)');
+  });
 });
