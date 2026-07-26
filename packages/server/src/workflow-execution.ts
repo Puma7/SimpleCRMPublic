@@ -1353,8 +1353,10 @@ async function walkGraph(
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
     }
-    // Hold as side effect, but still follow an explicit block/error port so
+    // Hold as side effect, but still follow an *explicit* block/error port so
     // template branches (tags, notifications) run before finishing blocked.
+    // Do NOT follow ports for ordinary status:'error' (e.g. Continuation-Kontext
+    // overflow) or port:'blocked' unsupported-node results — those must stop.
     const pendingBlockReason = result.blocked
       ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
       : null;
@@ -1370,16 +1372,7 @@ async function walkGraph(
         .where('id', '=', input.context.messageId)
         .execute();
     }
-    if (result.blocked && !result.port) {
-      return {
-        status: 'blocked',
-        blocked: true,
-        deferred: false,
-        blockReason: pendingBlockReason,
-        log: input.log,
-      };
-    }
-    if (result.status === 'error' && !result.port) {
+    if (result.status === 'error') {
       return {
         status: 'error',
         blocked: false,
@@ -1388,66 +1381,58 @@ async function walkGraph(
         log: input.log,
       };
     }
-    if (result.stop) {
-      input.log.push('stop');
-      return {
-        status: pendingBlockReason ? 'blocked' : 'ok',
-        blocked: pendingBlockReason != null,
-        deferred: result.deferred === true,
-        // Ordinary logic.stop ends only this workflow; only spam short-circuit
-        // (stop_after_spam / stopFurtherWorkflows) terminates the priority chain.
-        inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
-        blockReason: pendingBlockReason,
-        log: input.log,
-      };
-    }
-
-    const next = pickEdge(outgoing(input.doc.edges, currentId), result.port ?? 'default');
-    if (!next) {
-      if (pendingBlockReason) {
+    if (result.blocked) {
+      const blockPort = typeof result.port === 'string' ? result.port : '';
+      const followBlockPort = blockPort === 'block' || blockPort === 'error';
+      const outs = outgoing(input.doc.edges, currentId);
+      const blockEdge = followBlockPort ? pickEdge(outs, blockPort) : undefined;
+      if (blockEdge) {
+        const branch = await walkGraph(trx, {
+          ...input,
+          startNodeId: blockEdge.target,
+        });
+        if (branch.blocked || branch.status === 'blocked') return branch;
+        if (branch.deferred) {
+          return {
+            ...branch,
+            status: 'blocked',
+            blocked: true,
+            blockReason: pendingBlockReason,
+          };
+        }
+        if (branch.status === 'error') return branch;
         return {
           status: 'blocked',
           blocked: true,
           deferred: false,
           blockReason: pendingBlockReason,
-          log: input.log,
+          log: branch.log,
         };
       }
-      if (result.status === 'error') {
-        return {
-          status: 'error',
-          blocked: false,
-          deferred: false,
-          blockReason: result.message ?? null,
-          log: input.log,
-        };
-      }
-      break;
-    }
-    if (pendingBlockReason) {
-      const branch = await walkGraph(trx, {
-        ...input,
-        startNodeId: next.target,
-      });
-      if (branch.blocked || branch.status === 'blocked') return branch;
-      if (branch.deferred) {
-        return {
-          ...branch,
-          status: 'blocked',
-          blocked: true,
-          blockReason: pendingBlockReason,
-        };
-      }
-      if (branch.status === 'error') return branch;
       return {
         status: 'blocked',
         blocked: true,
         deferred: false,
         blockReason: pendingBlockReason,
-        log: branch.log,
+        log: input.log,
       };
     }
-    currentId = next.target;
+    if (result.stop) {
+      input.log.push('stop');
+      return {
+        status: 'ok',
+        blocked: false,
+        deferred: result.deferred === true,
+        // Ordinary logic.stop ends only this workflow; only spam short-circuit
+        // (stop_after_spam / stopFurtherWorkflows) terminates the priority chain.
+        inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
+        blockReason: null,
+        log: input.log,
+      };
+    }
+
+    const next = pickEdge(outgoing(input.doc.edges, currentId), result.port ?? 'default');
+    currentId = next?.target;
   }
 
   return { status: 'ok', blocked: false, deferred: false, blockReason: null, log: input.log };

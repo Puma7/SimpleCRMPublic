@@ -49,9 +49,9 @@ describe('codex review regression guards', () => {
     const importSql = readRepoFile('packages/server/src/db/postgres-core-mail-import.ts');
     expect(execution).toMatch(/port: 'block'[\s\S]*?blocked: true/);
     expect(desktop).toMatch(/port: 'block'[\s\S]*?blocked: true/);
-    // Port edges must still run when blocked is set.
-    expect(runtime).toContain('pendingBlockReason');
-    expect(execution).toContain('pendingBlockReason');
+    // Port edges must still run when blocked is set for explicit block/error ports.
+    expect(runtime).toContain("blockPort === 'block' || blockPort === 'error'");
+    expect(execution).toContain("blockPort === 'block' || blockPort === 'error'");
     expect(importSql).toContain('approval_state');
     expect(importSql).toContain('approval_reason');
     expect(importSql).toContain('auto_submitted');
