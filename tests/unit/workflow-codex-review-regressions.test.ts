@@ -157,7 +157,8 @@ describe('codex review regression guards', () => {
     expect(draftNodes).toContain('draft_attachment_paths_json');
     expect(aiNodes).toContain('recipientFieldFromJson(draft.to_json)');
     expect(aiNodes).toContain('parseDraftAttachmentPathsJson');
-    expect(execution).toContain('Do not re-stamp skipIfMessageSpamOrReview');
+    expect(execution).toContain('re-stamp skipIfMessageSpamOrReview');
+    expect(execution).toContain('one-shot for the initial');
     expect(chainCtx).toContain('Do not re-stamp skipIfMessageSpamOrReview');
     expect(execution).toMatch(/error:workflow_not_found[\s\S]*?maybeEnqueueNextInboundWorkflow/);
     expect(execution).toContain('replyParentMessageId');
