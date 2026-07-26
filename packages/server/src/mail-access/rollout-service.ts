@@ -14,6 +14,7 @@ import type {
   MailAclRolloutReadiness,
   MailAclRolloutState,
   MailAclRolloutTransitionResult,
+  MailScopeClause,
   MailSqlScope,
 } from './types';
 import { hasMailBindingConstraints } from './mail-acl-constraints';
@@ -128,7 +129,7 @@ export class MailAccessRolloutService implements MailAccessService {
       const accountId = resourceAccountId(input.resource);
       if (accountId === null) return { value: deniedDecision() };
 
-      const [legacyAllowed, newDecision] = await Promise.all([
+      const [legacyAllowed, newDecision, newGrants] = await Promise.all([
         this.options.legacy.canAccessAccount({
           workspaceId: input.workspaceId,
           userId: input.actor.userId,
@@ -136,9 +137,18 @@ export class MailAccessRolloutService implements MailAccessService {
           accountId,
         }, context),
         this.newDecision(newAcl, input),
+        this.options.newAcl.resolveGrants({
+          workspaceId: input.workspaceId,
+          userId: input.actor.userId,
+          permission: input.permission,
+        }, context),
       ]);
+      // Shadow keeps legacy account allow/deny for readiness comparison, but still
+      // enforces assignment/category/tag filters so constrained bindings are not inert.
+      const enforceConstraints = shouldEnforceConstraintsInShadow(input.resource, newGrants);
+      const allowed = legacyAllowed && (!enforceConstraints || newDecision.allowed);
       return {
-        value: legacyAllowed ? allowedDecision() : deniedDecision(),
+        value: allowed ? allowedDecision() : deniedDecision(),
         delta: {
           evaluated: 1n,
           legacyAllowNewDeny: legacyAllowed && !newDecision.allowed ? 1n : 0n,
@@ -188,10 +198,29 @@ export class MailAccessRolloutService implements MailAccessService {
       ]);
       const mismatch = compareLegacyAccountScopeToNewGrants(legacyAccountIds, newGrants);
       const accountIds = [...new Set(legacyAccountIds)].sort(compareNumbers);
+      if (accountIds.length === 0) {
+        return {
+          value: { kind: 'none' as const },
+          delta: {
+            evaluated: 1n,
+            legacyAllowNewDeny: mismatch.legacyAllowNewDeny,
+            legacyDenyNewAllow: mismatch.legacyDenyNewAllow,
+          },
+        };
+      }
+
+      const scope = await buildShadowScopeWithConstraints({
+        accountIds,
+        newGrants,
+        resolveActor: this.options.newAcl.resolveScopeActorContext
+          ? () => this.options.newAcl.resolveScopeActorContext!({
+            workspaceId: input.workspaceId,
+            userId: input.actor.userId,
+          })
+          : async () => ({ userId: input.actor.userId, groupMemberUserIds: [input.actor.userId] }),
+      });
       return {
-        value: accountIds.length === 0
-          ? { kind: 'none' as const }
-          : { kind: 'restricted' as const, accountIds, folderIds: [], messageIds: [] },
+        value: scope,
         delta: {
           evaluated: 1n,
           legacyAllowNewDeny: mismatch.legacyAllowNewDeny,
@@ -299,4 +328,104 @@ function compareLegacyAccountScopeToNewGrants(
 
 function compareNumbers(left: number, right: number): number {
   return left - right;
+}
+
+function shouldEnforceConstraintsInShadow(
+  resource: MailResource,
+  newGrants: readonly MailAccessGrant[],
+): boolean {
+  if (resource.type !== 'message') return false;
+  const accountId = resourceAccountId(resource);
+  const folderId = parsePositiveId(resource.folderId);
+  const messageId = parsePositiveId(resource.messageId);
+  if (accountId === null || folderId === null || messageId === null) return false;
+  return newGrants.some((grant) => (
+    hasMailBindingConstraints(grant.constraints)
+    && grantCoversMessage(grant, accountId, folderId, messageId)
+  ));
+}
+
+async function buildShadowScopeWithConstraints(input: Readonly<{
+  accountIds: readonly number[];
+  newGrants: readonly MailAccessGrant[];
+  resolveActor: () => Promise<{ userId: string; groupMemberUserIds: readonly string[] }>;
+}>): Promise<MailSqlScope> {
+  const accountIds = [...input.accountIds];
+  const hasConstrainedGrant = input.newGrants.some((grant) => (
+    accountIds.includes(grant.accountId) && hasMailBindingConstraints(grant.constraints)
+  ));
+  if (!hasConstrainedGrant) {
+    return { kind: 'restricted', accountIds, folderIds: [], messageIds: [] };
+  }
+
+  const clauses: MailScopeClause[] = [];
+  for (const accountId of accountIds) {
+    const grantsForAccount = input.newGrants.filter((grant) => grant.accountId === accountId);
+    if (!grantsForAccount.some((grant) => hasMailBindingConstraints(grant.constraints))) {
+      clauses.push({
+        accountIds: [accountId],
+        folderIds: [],
+        messageIds: [],
+        constraints: null,
+      });
+      continue;
+    }
+    for (const grant of grantsForAccount) {
+      clauses.push(grantToClause(grant));
+    }
+  }
+
+  const actor = await input.resolveActor();
+  return {
+    kind: 'restricted',
+    accountIds,
+    folderIds: [],
+    messageIds: [],
+    clauses,
+    actor,
+  };
+}
+
+function grantToClause(grant: MailAccessGrant): MailScopeClause {
+  if (grant.resourceType === 'account') {
+    return {
+      accountIds: [grant.accountId],
+      folderIds: [],
+      messageIds: [],
+      constraints: grant.constraints,
+    };
+  }
+  if (grant.resourceType === 'folder') {
+    return {
+      accountIds: [],
+      folderIds: [grant.folderId],
+      messageIds: [],
+      constraints: grant.constraints,
+    };
+  }
+  return {
+    accountIds: [],
+    folderIds: [],
+    messageIds: [grant.messageId],
+    constraints: grant.constraints,
+  };
+}
+
+function grantCoversMessage(
+  grant: MailAccessGrant,
+  accountId: number,
+  folderId: number,
+  messageId: number,
+): boolean {
+  if (grant.accountId !== accountId) return false;
+  if (grant.resourceType === 'account') return true;
+  if (grant.folderId !== folderId) return false;
+  if (grant.resourceType === 'folder') return true;
+  return grant.messageId === messageId;
+}
+
+function parsePositiveId(value: string): number | null {
+  if (!/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && String(parsed) === value ? parsed : null;
 }
