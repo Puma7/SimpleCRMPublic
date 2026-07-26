@@ -23,14 +23,19 @@ describe('workflow inbound chain continuity', () => {
     expect(parseInboundWorkflowChain({ workflowIds: [], index: 0 })).toBeNull();
   });
 
-  test('resumeContextInboundChainFields restamps chain onto continuation context', () => {
+  test('resumeContextInboundChainFields keeps chain but drops one-shot spam guard', () => {
     const fields = inboundChainFieldsFromRecord({
       inboundWorkflowChain: { workflowIds: [10, 20], index: 0 },
       skipIfMessageSpamOrReview: true,
     });
-    expect(resumeContextInboundChainFields(fields)).toEqual({
+    expect(fields).toEqual({
       inboundWorkflowChain: { workflowIds: [10, 20], index: 0 },
       skipIfMessageSpamOrReview: true,
+    });
+    // Continuations must not re-apply skipIfMessageSpamOrReview — otherwise
+    // mark_spam with stopFurther=false aborts the remaining graph on resume.
+    expect(resumeContextInboundChainFields(fields)).toEqual({
+      inboundWorkflowChain: { workflowIds: [10, 20], index: 0 },
     });
   });
 
