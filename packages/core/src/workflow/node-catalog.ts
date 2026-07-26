@@ -471,7 +471,6 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Antwort entwerfen',
     category: 'ai',
     canvasType: 'registry',
-    runtime: 'desktop',
     description:
       'Agent 1 der Zwei-Stufen-Antwort: schreibt mit System-Prompt und Wissensbasis eine Antwort, ergänzt Anrede und Konto-Signatur und legt einen fertig adressierten Entwurf an (setzt draft.id).',
     defaultConfig: {
@@ -489,7 +488,6 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Gegenprüfung (Entwurf)',
     category: 'ai',
     canvasType: 'registry',
-    runtime: 'desktop',
     description:
       'Agent 2 der Zwei-Stufen-Antwort: liest den Entwurf gegen die Kundenmail gegen und entscheidet — Ausgang „senden" (Antwort darf raus) oder „prüfen" (Entwurf wartet auf menschliche Freigabe). Im Zweifel immer „prüfen".',
     defaultConfig: { draftIdVariable: 'draft.id', reviewPrompt: '', profileId: null },

@@ -5573,6 +5573,8 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     snoozed_until: record.snoozedUntil ?? null,
     draft_attachment_paths_json: record.draftAttachmentPathsJson ?? null,
     reply_parent_message_id: record.replyParentMessageId ?? null,
+    approval_state: record.approvalState ?? null,
+    approval_reason: record.approvalReason ?? null,
     updated_at: record.updatedAt ?? undefined,
     remote_content_policy: record.remoteContentPolicy ?? undefined,
     read_receipt_requested: record.readReceiptRequested ? 1 : 0,

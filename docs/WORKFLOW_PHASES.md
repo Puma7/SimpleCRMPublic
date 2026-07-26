@@ -67,6 +67,7 @@ Systemaudit-Overhaul in drei Commits (`f93354e`, `65966ef`, `8dc8298`). Endanwen
 | **1.2/1.3 Spam Short-Circuit** | `stopFurtherWorkflows` an Spam-Knoten; `logic.stop_after_spam`; serielle Inbound-Kette auf dem Server; Agent-Vorlage mit Spam-Bedingung |
 | **2 Spam-Score-Parität** | Ehrliche Server-Hinweise zu `ai.spam_score`; Schema-Doku Desktop vs. Server |
 | **3 Editor-Transparenz** | Read-only Graph-JSON im Editor; Vorlagen-Port-Erklärungen; Doku-Updates |
+| **4 Server-Parität & Spam-Kette** | `ai.draft_reply`/`ai.review_draft` auf dem Server; `approval_state` in PostgreSQL; einheitliche fail-closed KI + Spam-Short-Circuit (`inboundChainStop`); Run-Historie mit Port-Labels ok/block/error; Desktop-KI überspringt Spam-Mails |
 
 ## Smoke-Check 2026-06-01
 

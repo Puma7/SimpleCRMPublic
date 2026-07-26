@@ -46,6 +46,11 @@ import {
   createAiReviewPreviewRunner,
   type AiReviewPreviewRunner,
 } from './ai-classification';
+import {
+  executeWorkflowAiDraftReply,
+  executeWorkflowAiReviewDraft,
+  type WorkflowAiDraftNodeDeps,
+} from './workflow-ai-draft-nodes';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
@@ -221,6 +226,8 @@ type GraphRunResult = {
   status: WorkflowRunStatus;
   blocked: boolean;
   deferred: boolean;
+  /** When true, do not enqueue the next inbound workflow in the priority chain. */
+  inboundChainStop?: boolean;
   blockReason: string | null;
   log: string[];
 };
@@ -248,6 +255,7 @@ type ServerWorkflowRuntimePorts = Readonly<{
   workflowImapActions?: ServerWorkflowImapActionPort;
   deferredImapEffects?: DeferredWorkflowImapEffect[];
   aiReviewPreview?: AiReviewPreviewRunner;
+  aiDraft?: WorkflowAiDraftNodeDeps;
 }>;
 
 type ServerInboundBranchGate = {
@@ -276,10 +284,19 @@ export function createPostgresWorkflowExecutionJobPort(
         now: options.now,
       })
       : undefined);
+  const aiDraft: WorkflowAiDraftNodeDeps | undefined = options.secrets
+    ? {
+      db: options.db,
+      secrets: options.secrets,
+      applyWorkspaceSession: options.applyWorkspaceSession,
+      now: options.now,
+    }
+    : undefined;
   const runtimePorts: ServerWorkflowRuntimePorts = {
     mssql: options.mssql,
     workflowImapActions: options.workflowImapActions,
     aiReviewPreview,
+    aiDraft,
   };
   return {
     async execute(input) {
@@ -516,7 +533,13 @@ export function createPostgresWorkflowExecutionJobPort(
             log: result.log,
             now,
           });
-          if (trigger === 'inbound' && message && result.status === 'ok' && !result.deferred) {
+          if (
+            trigger === 'inbound'
+            && message
+            && result.status === 'ok'
+            && !result.deferred
+            && !result.inboundChainStop
+          ) {
             await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
             await maybeEnqueueNextInboundWorkflow(trx, {
               workspaceId: input.workspaceId,
@@ -1324,6 +1347,7 @@ async function walkGraph(
         status: 'ok',
         blocked: false,
         deferred: result.deferred === true,
+        inboundChainStop: result.deferred !== true,
         blockReason: null,
         log: input.log,
       };
@@ -1619,6 +1643,37 @@ async function executeServerNode(
   }
   if (type === 'ai.spam_score') {
     return await workflowAiSpamScoreResult(trx, context, config);
+  }
+  if (type === 'ai.draft_reply') {
+    if (context.direction !== 'inbound' || context.messageId === null) {
+      return { status: 'skipped', port: 'default', message: 'Nur fuer eingehende Nachrichten' };
+    }
+    if (!ports.aiDraft) {
+      return { status: 'error', port: 'error', message: 'KI-Entwurf: Server-KI nicht konfiguriert' };
+    }
+    return await executeWorkflowAiDraftReply(trx, ports.aiDraft, {
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      config,
+      strings: context.strings,
+      variables: context.variables,
+      actorUserId: context.actorUserId,
+      dryRun,
+    });
+  }
+  if (type === 'ai.review_draft') {
+    if (!ports.aiDraft) {
+      return { status: 'error', port: 'error', message: 'KI-Gegenpruefung: Server-KI nicht konfiguriert' };
+    }
+    return await executeWorkflowAiReviewDraft(trx, ports.aiDraft, {
+      workspaceId: context.workspaceId,
+      messageId: context.messageId,
+      config,
+      variables: context.variables,
+      strings: context.strings,
+      actorUserId: context.actorUserId,
+      dryRun,
+    });
   }
   if (type === 'email.hold_outbound' || type === 'hold_outbound') {
     const reason = String(config.reason ?? node.data.reason ?? '').trim()
@@ -2403,6 +2458,16 @@ async function scheduleAiReplySuggestionJob(
 ): Promise<NodeResult | null> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+
+  const currentMessage = await trx
+    .selectFrom('email_messages')
+    .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', context.messageId)
+    .executeTakeFirst();
+  if (currentMessage && messageIsSpamOrReview(currentMessage)) {
+    return { status: 'skipped', port: 'default', message: 'skip:message_spam_or_review' };
   }
 
   const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');

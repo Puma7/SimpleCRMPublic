@@ -200,6 +200,8 @@ const emailMessageSummaryColumns = [
   'snoozed_until',
   'draft_attachment_paths_json',
   'reply_parent_message_id',
+  'approval_state',
+  'approval_reason',
   'tracking_override',
   'updated_at',
 ] as const;
@@ -5330,6 +5332,8 @@ function mapEmailMessageRow(
       row.reply_parent_message_id === null || row.reply_parent_visible === false
         ? null
         : Number(row.reply_parent_message_id),
+    approvalState: row.approval_state ?? null,
+    approvalReason: row.approval_reason ?? null,
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }

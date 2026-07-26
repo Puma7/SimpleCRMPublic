@@ -1963,6 +1963,8 @@ export type EmailMessageRecord = {
   snoozedUntil: string | null;
   draftAttachmentPathsJson?: string | null;
   replyParentMessageId?: number | null;
+  approvalState?: string | null;
+  approvalReason?: string | null;
   /** Nur in Suchergebnissen: sentinel-markierter Treffer-Ausschnitt (kein HTML). */
   searchSnippet?: string | null;
   bodyText?: string | null;

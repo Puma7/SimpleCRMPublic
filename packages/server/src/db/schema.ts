@@ -744,6 +744,9 @@ export type EmailMessagesTable = {
   reply_suggestion_error: string | null;
   ai_suggestion_snapshot: string | null;
   reply_suggestion_updated_at: TimestampColumn | null;
+  approval_state: string | null;
+  approval_reason: string | null;
+  auto_submitted: ColumnType<number, number | undefined, number>;
   pop3_uidl: string | null;
   raw_headers: string | null;
   raw_rfc822_b64: string | null;

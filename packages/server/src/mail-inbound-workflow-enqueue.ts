@@ -1,5 +1,7 @@
 import type { Kysely, Selectable } from 'kysely';
 
+import { messageIsSpamOrReviewForInboundWorkflow } from '@simplecrm/core';
+
 import type { ServerJobQueueApiPort } from './api/types';
 import type { EmailMessagesTable, EmailWorkflowsTable, ServerDatabase } from './db';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './db/workspace-context';
@@ -18,15 +20,7 @@ export type InboundWorkflowEnqueueOptions = Readonly<{
 }>;
 
 export function messageIsSpamOrReviewForWorkflow(message: MessageSpamRow): boolean {
-  const status = String(message.spam_status ?? '').toLowerCase();
-  const label = String(message.spam_score_label ?? '').toLowerCase();
-  return (
-    message.is_spam === true
-    || status === 'spam'
-    || status === 'review'
-    || label === 'spam'
-    || label === 'review'
-  );
+  return messageIsSpamOrReviewForInboundWorkflow(message);
 }
 
 /** Enqueue inbound workflow jobs only after spam/security scoring has committed. */

@@ -548,6 +548,8 @@ describe('server edition foundation', () => {
       'http.request',
       'mssql.query',
       'workflow.subflow',
+      'ai.draft_reply',
+      'ai.review_draft',
     ]));
     expect(serverTypes).not.toEqual(expect.arrayContaining([
       'code.javascript',
@@ -555,17 +557,15 @@ describe('server edition foundation', () => {
       'plugin.custom',
     ]));
 
-    // Generisch: JEDER runtime:'desktop'-Eintrag des Core-Katalogs fehlt im
-    // Server-Katalog — auch künftige Desktop-only-Nodes ohne Pflege der
-    // SERVER_UNSUPPORTED-Liste (aktuell ai.draft_reply / ai.review_draft).
     const desktopOnlyTypes = builtin
       .filter((entry) => entry.runtime === 'desktop')
       .map((entry) => entry.type);
-    expect(desktopOnlyTypes).toEqual(expect.arrayContaining(['ai.draft_reply', 'ai.review_draft']));
     for (const type of desktopOnlyTypes) {
       expect(serverTypes).not.toContain(type);
       expect(isServerWorkflowNodeTypeSupported(type)).toBe(false);
     }
+    expect(isServerWorkflowNodeTypeSupported('ai.draft_reply')).toBe(true);
+    expect(isServerWorkflowNodeTypeSupported('ai.review_draft')).toBe(true);
 
     // Feld-Ebene: Desktop-only-Felder (der Server-Executor wertet sie nicht
     // aus) verschwinden aus dem Server-Katalog — z. B. bewirbt ai.spam_score
@@ -649,9 +649,7 @@ describe('server edition foundation', () => {
 
   test('server template list omits templates with server-unsupported nodes', () => {
     const templateIds = listServerWorkflowTemplates().map((template) => template.id);
-    // Die Zwei-Stufen-Vorlage nutzt ai.draft_reply/ai.review_draft
-    // (desktop-only) und bliebe im Server-Modus zur Laufzeit stecken.
-    expect(templateIds).not.toContain('inbound-ai-two-stage-reply');
+    expect(templateIds).toContain('inbound-ai-two-stage-reply');
     // Die klassische Auto-Antwort-Vorlage besteht nur aus Server-fähigen
     // Knoten und bleibt anwählbar.
     expect(templateIds).toContain('inbound-ai-auto-reply');

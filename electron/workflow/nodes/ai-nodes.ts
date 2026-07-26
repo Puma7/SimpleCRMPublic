@@ -65,6 +65,7 @@ import {
 } from '../ai-classification-parse';
 import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
+import { messageIsSpamOrReviewForInboundWorkflow } from '@simplecrm/core';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -75,6 +76,16 @@ const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
 
 function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
   return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+}
+
+function skipInboundIfSpamOrReview(ctx: WorkflowContext): NodeExecuteResult | null {
+  if (ctx.direction !== 'inbound' || ctx.messageId == null) return null;
+  const row = ctx.message ?? getEmailMessageById(ctx.messageId);
+  if (!row) return null;
+  if (messageIsSpamOrReviewForInboundWorkflow(row)) {
+    return { status: 'skipped', message: 'skip:message_spam_or_review' };
+  }
+  return null;
 }
 
 /** Wissensbasis wie ai.agent: explizit gewählte KB, sonst passend zur Richtung. */
@@ -425,6 +436,8 @@ export function registerAiNodes(register: Reg): void {
       createDraft: true,
     },
     execute: async (ctx, config) => {
+      const spamSkip = skipInboundIfSpamOrReview(ctx);
+      if (spamSkip) return spamSkip;
       const system = String(config.systemPrompt ?? '');
       const chunks = await resolveKnowledgeChunks(ctx, config);
       const kbText = chunks.map((c) => c.content).join('\n---\n');
@@ -475,6 +488,8 @@ export function registerAiNodes(register: Reg): void {
       if (ctx.direction !== 'inbound') {
         return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
       }
+      const spamSkip = skipInboundIfSpamOrReview(ctx);
+      if (spamSkip) return spamSkip;
       const messageId = ctx.messageId;
       if (messageId == null) return { status: 'error', message: 'Keine Nachricht' };
 
@@ -591,6 +606,8 @@ export function registerAiNodes(register: Reg): void {
       if (ctx.direction !== 'inbound') {
         return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
       }
+      const spamSkip = skipInboundIfSpamOrReview(ctx);
+      if (spamSkip) return spamSkip;
       const { message } = ctx;
       if (!message || ctx.messageId == null) {
         return { status: 'error', message: 'Keine Nachricht im Kontext' };
