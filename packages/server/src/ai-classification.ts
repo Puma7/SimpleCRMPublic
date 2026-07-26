@@ -30,6 +30,10 @@ import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-r
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
 import type { MailSqlScope } from './mail-access/types';
+import {
+  resumeContextInboundChainFields,
+  type InboundChainContinuationFields,
+} from './workflow-inbound-chain-context';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -68,7 +72,7 @@ export type AiClassificationContinuation = Readonly<{
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
-}>;
+} & InboundChainContinuationFields>;
 
 export type AiClassificationJobPlan = Readonly<{
   workspaceId: string;
@@ -1446,6 +1450,7 @@ async function enqueueContinuation(
         ...(input.continuation.eventVariables ?? {}),
         ...input.variables,
       },
+      ...resumeContextInboundChainFields(input.continuation),
     },
   }, input.continuation.trustedService === true);
 

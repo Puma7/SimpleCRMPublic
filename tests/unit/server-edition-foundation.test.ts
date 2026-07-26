@@ -374,6 +374,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0041_mail_acl_binding_message_fk_cascade',
   '0042_quarantine_legacy_provenanceless_jobs',
   '0043_atomic_task_calendar',
+  '0044_email_draft_approval_fields',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -31635,13 +31636,19 @@ describe('server edition foundation', () => {
         docs: { longHelp: 'Setzt einen Tag.', seeAlso: ['email.categorize'] },
         customWidget: 'tagPicker',
       },
+      {
+        type: 'ai.draft_reply',
+        label: 'KI-Antwort entwerfen',
+        category: 'ai',
+        canvasType: 'registry',
+      },
     ]);
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('should-not-leak');
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('code.javascript');
-    // runtime:'desktop' am Eintrag selbst UND desktop-only-Typen aus dem
-    // Core-Katalog (ai.draft_reply) werden serverseitig gefiltert.
+    // runtime:'desktop' am Eintrag selbst wird serverseitig gefiltert.
+    // ai.draft_reply ist seit Welle 4 server-fähig und bleibt im Katalog.
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('custom.desktop_only');
-    expect(JSON.stringify(nodeCatalog.body)).not.toContain('ai.draft_reply');
+    expect(JSON.stringify(nodeCatalog.body)).toContain('ai.draft_reply');
     expect(workflowNodeCatalogCalls).toEqual([{ workspaceId: WORKSPACE_A_ID }]);
 
     const templates = await api.handle({

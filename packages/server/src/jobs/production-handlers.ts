@@ -1,6 +1,7 @@
 import type { JobPayload, MailJobAuthorization } from './types';
 import type { JobHandlerRegistry } from './worker';
 import { isTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './policy';
+import { inboundChainFieldsFromRecord } from '../workflow-inbound-chain-context';
 import type {
   AiClassificationContextMode,
   AiAgentJobPlan,
@@ -712,6 +713,7 @@ function optionalClassificationContinuation(
       resumeNodeId: requiredString(value as JobPayload, 'resumeNodeId'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(value as JobPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(value as JobPayload, 'eventVariables') }),
+      ...inboundChainFieldsFromRecord(value as Record<string, unknown>),
     },
   };
 }
@@ -744,6 +746,7 @@ function optionalWorkflowHttpContinuation(
       ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(continuationPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
+      ...inboundChainFieldsFromRecord(continuationPayload as Record<string, unknown>),
     },
   };
 }

@@ -107,6 +107,7 @@ const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
 // logic.* branches in executeServerNode (packages/server/src/workflow-execution.ts).
 const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'logic.stop',
+  'logic.stop_after_spam',
   'logic.set_variable',
   'logic.merge',
   'logic.threshold',

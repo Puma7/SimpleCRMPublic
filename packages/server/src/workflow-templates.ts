@@ -5,11 +5,11 @@ import { isServerWorkflowNodeTypeSupported } from './workflow-node-catalog';
 
 /**
  * Nur Vorlagen anbieten, deren sämtliche Registry-Knoten der Server auch
- * ausführen kann. Desktop-only-Vorlagen (z. B. die Zwei-Stufen-KI-Antwort mit
- * ai.draft_reply/ai.review_draft) ließen sich sonst im HTTP-Modus zwar laden
- * und speichern, blieben aber zur Laufzeit am nicht unterstützten Knoten
- * stecken. Engine-Primitive (trigger/condition/switch/…) sind immer da —
- * geprüft wird nur data.nodeType.
+ * ausführen kann. Vorlagen mit nicht unterstützten Knoten (z. B. code.javascript)
+ * würden sich sonst im HTTP-Modus zwar laden und speichern lassen, blieben aber
+ * zur Laufzeit am nicht unterstützten Knoten stecken. Engine-Primitive
+ * (trigger/condition/switch/…) sind immer da — geprüft wird nur data.nodeType.
+ * Zwei-Stufen-KI-Antwort (ai.draft_reply / ai.review_draft) ist serverfähig.
  */
 export function listServerWorkflowTemplates(): WorkflowTemplate[] {
   return WORKFLOW_TEMPLATES.filter((template) =>

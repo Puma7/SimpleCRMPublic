@@ -30,11 +30,17 @@ import {
   type WorkflowGraphDocument,
   type WorkflowGraphNode,
   type WorkflowTriggerKind,
+  messageIsSpamOrReviewForInboundWorkflow,
   type SpamDecisionMessageInput,
   type SpamEngineSettings,
   type SpamFeatureStatInput,
   type SpamListMatch,
 } from '@simplecrm/core';
+import {
+  inboundChainFieldsFromRecord,
+  parseInboundWorkflowChain,
+  type InboundWorkflowChainContext,
+} from './workflow-inbound-chain-context';
 
 import type {
   WorkflowExecutionDryRunResult,
@@ -190,6 +196,9 @@ type ServerWorkflowContext = {
   trustedService?: boolean;
   manualAdminExecute?: boolean;
   previewOutbound?: boolean;
+  /** Priority-chain fields: must survive AI/HTTP/delay continuations. */
+  inboundWorkflowChain?: InboundWorkflowChainContext;
+  skipIfMessageSpamOrReview?: boolean;
 };
 
 type PreparedWorkflowRun =
@@ -444,6 +453,13 @@ export function createPostgresWorkflowExecutionJobPort(
             });
             if (trigger === 'inbound' && message) {
               await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
+                now,
+              });
             }
             return;
           }
@@ -1474,11 +1490,19 @@ async function executeServerNode(
   if (type === 'logic.stop_after_spam') {
     const message = context.message;
     const spamStatus = String(context.variables['spam.status'] ?? message?.spam_status ?? '').toLowerCase();
+    const spamLabel = String(
+      context.variables['spam.label']
+      ?? context.variables['spam.score_label']
+      ?? message?.spam_score_label
+      ?? '',
+    ).toLowerCase();
     const isSpam =
-      message?.is_spam === true
-      || spamStatus === 'spam'
-      || spamStatus === 'review'
-      || context.variables['email.is_spam'] === true;
+      context.variables['email.is_spam'] === true
+      || messageIsSpamOrReviewForInboundWorkflow({
+        is_spam: message?.is_spam,
+        spam_status: spamStatus || message?.spam_status,
+        spam_score_label: spamLabel || message?.spam_score_label,
+      });
     if (isSpam) {
       return { status: 'ok', port: 'default', stop: true, message: 'stop_after_spam' };
     }
@@ -2561,6 +2585,7 @@ async function scheduleAiClassificationJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2652,6 +2677,7 @@ async function scheduleAiReviewJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2721,6 +2747,7 @@ async function scheduleAiTransformTextJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2800,6 +2827,7 @@ async function scheduleAiAgentJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2865,6 +2893,7 @@ async function scheduleAiPickCannedJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2979,6 +3008,7 @@ async function scheduleWorkflowHttpRequestJob(
       ...(!resumeNodeId && errorResumeNodeId ? { completeOnSuccess: true } : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -3048,6 +3078,7 @@ async function scheduleWorkflowForwardCopyJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -3114,6 +3145,7 @@ async function scheduleWorkflowDmarcIngestJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -4452,7 +4484,17 @@ function workflowDelayContext(
     resumeNodeId,
     eventStrings: context.strings,
     eventVariables: context.variables,
+    ...inboundChainFieldsFromContext(context),
   };
+}
+
+function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnType<typeof inboundChainFieldsFromRecord> {
+  return inboundChainFieldsFromRecord({
+    ...(context.inboundWorkflowChain
+      ? { inboundWorkflowChain: context.inboundWorkflowChain }
+      : {}),
+    ...(context.skipIfMessageSpamOrReview ? { skipIfMessageSpamOrReview: true } : {}),
+  });
 }
 
 function boundedDelayMinutes(value: unknown): number {
@@ -6188,6 +6230,7 @@ function buildWorkflowContext(input: {
     ...(input.trustedService ? { trustedService: true } : {}),
     ...(input.manualAdminExecute ? { manualAdminExecute: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
+    ...inboundChainFieldsFromRecord(input.jobContext),
   };
 }
 
@@ -6721,26 +6764,6 @@ function contextCompletesWorkflow(value: Record<string, unknown>): boolean {
 
 function contextSkipsSpamOrReview(value: Record<string, unknown>): boolean {
   return value.skipIfMessageSpamOrReview === true;
-}
-
-type InboundWorkflowChainContext = {
-  workflowIds: number[];
-  index: number;
-};
-
-function parseInboundWorkflowChain(value: Record<string, unknown>): InboundWorkflowChainContext | null {
-  const raw = objectRecord(value.inboundWorkflowChain);
-  if (!raw) return null;
-  const workflowIds = Array.isArray(raw.workflowIds)
-    ? raw.workflowIds
-      .map((item) => Number(item))
-      .filter((item) => Number.isInteger(item) && item > 0)
-    : [];
-  const index = Number(raw.index ?? 0);
-  if (workflowIds.length === 0 || !Number.isInteger(index) || index < 0 || index >= workflowIds.length) {
-    return null;
-  }
-  return { workflowIds, index };
 }
 
 async function maybeEnqueueNextInboundWorkflow(

@@ -173,11 +173,24 @@ export async function dismissDraftApprovalInTransaction(
   const now = input.now ?? new Date();
   const draft = await trx
     .selectFrom('email_messages')
-    .select(['id'])
+    .select(['id', 'approval_state', 'scheduled_send_at'])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.draftId)
+    .forUpdate()
     .executeTakeFirst();
   if (!draft) return { success: false, error: 'Entwurf nicht gefunden' };
+  if (draft.approval_state !== 'pending') {
+    return {
+      success: false,
+      error: 'Entwurf wartet nicht (mehr) auf Freigabe — bitte Ansicht aktualisieren.',
+    };
+  }
+  if (draft.scheduled_send_at != null) {
+    return {
+      success: false,
+      error: 'Entwurf ist bereits zum Versand eingeplant — bitte Ansicht aktualisieren.',
+    };
+  }
 
   await clearDraftApproval(trx, input.workspaceId, input.draftId);
   await trx

@@ -20,6 +20,10 @@ import {
 } from './db/workspace-context';
 import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
+import {
+  resumeContextInboundChainFields,
+  type InboundChainContinuationFields,
+} from './workflow-inbound-chain-context';
 
 /** Per-attachment read cap (compressed bytes). The decompressed side has its own
  *  cap in the parser (MAX_DECOMPRESSED_BYTES); this stops us reading an absurdly
@@ -41,7 +45,7 @@ export type WorkflowDmarcIngestContinuation = Readonly<{
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
-}>;
+} & InboundChainContinuationFields>;
 
 export type WorkflowDmarcIngestJobPlan = Readonly<{
   workspaceId: string;
@@ -241,6 +245,7 @@ async function enqueueDmarcIngestContinuation(
             ...(continuation.eventVariables ?? {}),
             ...dmarcIngestVariables(summary, aggregate),
           },
+          ...resumeContextInboundChainFields(continuation),
         },
       }, continuation.trustedService === true);
 

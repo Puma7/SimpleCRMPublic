@@ -1375,9 +1375,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             draftId: input.messageId,
           });
           if (!result.success) {
+            const reason = result.error.includes('nicht gefunden')
+              ? 'not_found' as const
+              : result.error.includes('wartet nicht') || result.error.includes('bereits zum Versand')
+                ? 'not_pending' as const
+                : 'action_failed' as const;
             return {
               ok: false as const,
-              reason: result.error.includes('nicht gefunden') ? 'not_found' as const : 'action_failed' as const,
+              reason,
               message: result.error,
             };
           }

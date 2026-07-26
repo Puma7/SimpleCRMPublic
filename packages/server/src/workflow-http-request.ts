@@ -12,6 +12,10 @@ import { createPinnedFetch, type GuardedFetch } from './jobs/pinned-fetch';
 import { assertWebhookUrlAllowed, guardedFetch } from './jobs/webhook-handlers';
 import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
+import {
+  resumeContextInboundChainFields,
+  type InboundChainContinuationFields,
+} from './workflow-inbound-chain-context';
 
 export type WorkflowHttpMethod = 'GET' | 'POST';
 
@@ -28,7 +32,7 @@ export type WorkflowHttpRequestContinuation = Readonly<{
   completeOnSuccess?: boolean;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
-}>;
+} & InboundChainContinuationFields>;
 
 export type WorkflowHttpRequestJobPlan = Readonly<{
   workspaceId: string;
@@ -191,6 +195,7 @@ async function enqueueWorkflowHttpContinuation(
         'http.ok': ok,
         ...(error ? { 'http.error': error } : {}),
       },
+      ...resumeContextInboundChainFields(continuation),
     },
   }, continuation.trustedService === true);
 

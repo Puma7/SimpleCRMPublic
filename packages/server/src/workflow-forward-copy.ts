@@ -26,6 +26,10 @@ import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
 import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
 import type { JobPayload } from './jobs/types';
+import {
+  resumeContextInboundChainFields,
+  type InboundChainContinuationFields,
+} from './workflow-inbound-chain-context';
 
 const EMAIL_OAUTH_APP_KEYS: Record<EmailOAuthProvider, {
   clientId: string;
@@ -54,7 +58,7 @@ export type WorkflowForwardCopyContinuation = Readonly<{
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
-}>;
+} & InboundChainContinuationFields>;
 
 export type WorkflowForwardCopyJobPlan = Readonly<{
   workspaceId: string;
@@ -871,6 +875,7 @@ async function enqueueForwardCopyContinuationInTransaction(
         'forward_copy.review_pending': result.reviewPending === true,
         ...(result.error ? { 'forward_copy.error': result.error } : {}),
       },
+      ...resumeContextInboundChainFields(continuation),
     },
   }, continuation.trustedService === true);
 
