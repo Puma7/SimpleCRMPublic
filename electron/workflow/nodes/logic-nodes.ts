@@ -28,11 +28,13 @@ export function registerLogicNodes(register: Reg): void {
       // Prefer live DB row — a higher-priority workflow may have marked spam with
       // stopFurtherWorkflows:false while this workflow still holds a clean snapshot.
       let row = ctx.message;
-      try {
-        const live = getEmailMessageById(ctx.messageId);
-        if (live) row = live;
-      } catch {
-        // Unit tests without SQLite keep the context snapshot.
+      if (typeof ctx.messageId === 'number' && ctx.messageId > 0) {
+        try {
+          const live = getEmailMessageById(ctx.messageId);
+          if (live) row = live;
+        } catch {
+          // Unit tests without SQLite keep the context snapshot.
+        }
       }
       const isSpam =
         row?.is_spam === 1

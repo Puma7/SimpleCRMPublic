@@ -187,6 +187,7 @@ describe('codex review regression guards', () => {
     expect(draftNodes).toContain("'path' in item");
     expect(logic).toContain('inboundChainStop: true');
     expect(logic).toContain('getEmailMessageById(ctx.messageId)');
+    expect(logic).toContain("typeof ctx.messageId === 'number'");
     expect(engine).toContain('const currentRow = getEmailMessageById(messageId) ?? freshRow');
     expect(httpPolicy).toContain("canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'");
     expect(httpPolicy).toContain('resolveScheduledDraftReplyParent');
