@@ -41497,6 +41497,7 @@ type WorkflowExecutionFakeRows = {
   trackingMessages: Array<Record<string, unknown>>;
   trackingEvents: Array<Record<string, unknown>>;
   trackingEventClassifications: Array<Record<string, unknown>>;
+  teamMembers: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -41542,6 +41543,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     trackingMessages: input.trackingMessages ?? [],
     trackingEvents: input.trackingEvents ?? [],
     trackingEventClassifications: input.trackingEventClassifications ?? [],
+    teamMembers: input.teamMembers ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table.split(' ')[0]) {
@@ -41613,6 +41615,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
         return rows.trackingEvents;
       case 'email_tracking_event_classifications':
         return rows.trackingEventClassifications;
+      case 'email_team_members':
+        return rows.teamMembers;
       default:
         throw new Error(`unexpected workflow execution table: ${table}`);
     }

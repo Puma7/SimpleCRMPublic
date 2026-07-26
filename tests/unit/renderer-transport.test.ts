@@ -7657,6 +7657,7 @@ describe('renderer transport', () => {
         role: 'agent',
         signature_html: '<p>One</p>',
         sort_order: 1,
+        linked_user_id: null,
       },
     ]);
     await expect(transport.invoke(IPCChannels.Email.SaveTeamMember, {
