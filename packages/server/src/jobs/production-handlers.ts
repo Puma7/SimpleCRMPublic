@@ -445,6 +445,7 @@ export function buildAiReviewDraftJobPlan(
   return {
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     ...optionalPositiveInteger(payload, 'messageId'),
+    ...optionalPositiveInteger(payload, 'draftId'),
     ...optionalString(payload, 'actorUserId'),
     ...optionalPositiveInteger(payload, 'profileId'),
     ...optionalString(payload, 'draftIdVariable', 120),

@@ -5,6 +5,7 @@ import addressparser from 'nodemailer/lib/addressparser';
 import {
   addressesFromRecipientJson,
   messageIsSpamOrReviewForInboundWorkflow,
+  outboundDraftFingerprint,
   parseDraftReviewResponse,
 } from '@simplecrm/core';
 
@@ -543,6 +544,8 @@ export type AiDraftReplyJobPort = Readonly<{
 export type AiReviewDraftJobPlan = Readonly<{
   workspaceId: string;
   messageId?: number;
+  /** Concrete draft id (preferred for ACL); falls back to eventVariables[draftIdVariable]. */
+  draftId?: number;
   actorUserId?: string;
   profileId?: number;
   draftIdVariable?: string;
@@ -816,7 +819,8 @@ export function createPostgresAiReviewDraftPort(
       const strings = jobStrings(input.eventStrings);
       const variables = jobVariables(input.eventVariables);
       const draftIdVar = String(input.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
-      const draftId = Number(variables[draftIdVar]);
+      const draftId = input.draftId
+        ?? Number(variables[draftIdVar]);
       if (!Number.isFinite(draftId) || draftId <= 0) {
         throw new Error(`Kein Entwurf unter Variable ${draftIdVar}`);
       }
@@ -824,6 +828,7 @@ export function createPostgresAiReviewDraftPort(
       type Prep = {
         system: string;
         user: string;
+        reviewedFingerprint: string;
       };
 
       const prep = await withWorkspaceTransaction(
@@ -832,7 +837,7 @@ export function createPostgresAiReviewDraftPort(
         async (trx): Promise<Prep> => {
           const draft = await trx
             .selectFrom('email_messages')
-            .select(['id', 'subject', 'body_text', 'folder_kind', 'uid'])
+            .select(['id', 'subject', 'body_text', 'body_html', 'folder_kind', 'uid'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', draftId)
             .executeTakeFirst();
@@ -880,7 +885,15 @@ export function createPostgresAiReviewDraftPort(
             (draft.body_text ?? '').slice(0, 6000),
           ].join('\n');
 
-          return { system, user };
+          return {
+            system,
+            user,
+            reviewedFingerprint: outboundDraftFingerprint({
+              subject: draft.subject,
+              bodyText: draft.body_text,
+              bodyHtml: draft.body_html,
+            }),
+          };
         },
         { applySession: deps.applyWorkspaceSession },
       );
@@ -926,6 +939,31 @@ export function createPostgresAiReviewDraftPort(
         deps.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          // Re-read draft after the external AI call — a human may have edited it.
+          if (port === 'send') {
+            const live = await trx
+              .selectFrom('email_messages')
+              .select(['subject', 'body_text', 'body_html', 'folder_kind', 'uid'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', draftId)
+              .executeTakeFirst();
+            const liveFp = live && live.folder_kind === 'draft' && Number(live.uid) < 0
+              ? outboundDraftFingerprint({
+                subject: live.subject,
+                bodyText: live.body_text,
+                bodyHtml: live.body_html,
+              })
+              : null;
+            if (liveFp !== prep.reviewedFingerprint) {
+              port = 'hold';
+              approvalReason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
+              continuationVariables = {
+                'ai.review.verdict': 'hold',
+                'ai.review.answered': false,
+                'ai.review.reason': approvalReason,
+              };
+            }
+          }
           if (port === 'hold') {
             await setDraftApprovalPending(trx, input.workspaceId, draftId, approvalReason);
           }

@@ -2972,6 +2972,9 @@ function sanitizeEmailMessage(message: EmailMessageRecord, includeBody: boolean)
     // Authoritative thread count (list chevron) and per-message tracking choice
     // (draft-reopen checkbox) must survive the sanitizer, or the renderer never
     // sees them in server mode and both fall back to stale/default behaviour.
+    // Approval fields must also pass through — otherwise Freigabe UI is invisible.
+    approvalState: message.approvalState ?? null,
+    approvalReason: message.approvalReason ?? null,
     ...(message.threadMessageCount === undefined ? {} : { threadMessageCount: message.threadMessageCount }),
     ...(message.trackingOverride === undefined ? {} : { trackingOverride: message.trackingOverride }),
     ...(message.searchSnippet === undefined ? {} : { searchSnippet: message.searchSnippet }),

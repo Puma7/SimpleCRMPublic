@@ -291,7 +291,7 @@ export function registerEmailNodes(register: Reg): void {
     category: 'email',
     canvasType: 'registry',
     description: 'Setzt den lokalen Spam-Status: clean, review oder spam.',
-    defaultConfig: { status: 'review', train: false, tag: '' },
+    defaultConfig: { status: 'review', train: false, tag: '', stopFurtherWorkflows: true },
     execute: async (ctx, config) => {
       const { messageId } = requireMessage(ctx);
       const raw = String(config.status ?? 'review').toLowerCase();
@@ -324,7 +324,7 @@ export function registerEmailNodes(register: Reg): void {
     label: 'Als Spam markieren',
     category: 'email',
     canvasType: 'registry',
-    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false },
+    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false, stopFurtherWorkflows: true },
     execute: async (ctx, config) => {
       const { row, messageId } = requireMessage(ctx);
       const spam = config.spam !== false;

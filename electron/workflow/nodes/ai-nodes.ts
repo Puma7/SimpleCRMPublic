@@ -65,7 +65,7 @@ import {
 } from '../ai-classification-parse';
 import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
-import { messageIsSpamOrReviewForInboundWorkflow } from '@simplecrm/core';
+import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint } from '@simplecrm/core';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -80,7 +80,9 @@ function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
 
 function skipInboundIfSpamOrReview(ctx: WorkflowContext): NodeExecuteResult | null {
   if (ctx.direction !== 'inbound' || ctx.messageId == null) return null;
-  const row = ctx.message ?? getEmailMessageById(ctx.messageId);
+  // Always prefer the live row — a prior workflow may have marked spam with
+  // stopFurtherWorkflows:false while ctx.message still holds the pre-loop snapshot.
+  const row = getEmailMessageById(ctx.messageId) ?? ctx.message;
   if (!row) return null;
   if (messageIsSpamOrReviewForInboundWorkflow(row)) {
     return { status: 'skipped', message: 'skip:message_spam_or_review' };
@@ -819,6 +821,11 @@ export function registerAiNodes(register: Reg): void {
       ].join('\n');
 
       try {
+        const reviewedFingerprint = outboundDraftFingerprint({
+          subject: draft.subject,
+          bodyText: draft.body_text,
+          bodyHtml: draft.body_html,
+        });
         const out = await runChatCompletion(system, user, profileIdFromConfig(config));
         ctx.ai.lastResponse = out;
         const parsed = parseDraftReviewResponse(out);
@@ -828,6 +835,27 @@ export function registerAiNodes(register: Reg): void {
           'ai.review.reason': parsed.reason,
         };
         if (parsed.verdict === 'send') {
+          const live = getEmailMessageById(draftId);
+          const liveFp = live
+            ? outboundDraftFingerprint({
+              subject: live.subject,
+              bodyText: live.body_text,
+              bodyHtml: live.body_html,
+            })
+            : null;
+          if (liveFp !== reviewedFingerprint) {
+            const reason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
+            setDraftApprovalPending(draftId, reason);
+            return {
+              status: 'ok',
+              port: 'hold',
+              variables: {
+                'ai.review.verdict': 'hold',
+                'ai.review.answered': false,
+                'ai.review.reason': reason,
+              },
+            };
+          }
           return { status: 'ok', port: 'send', variables };
         }
         setDraftApprovalPending(

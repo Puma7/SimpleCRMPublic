@@ -21347,6 +21347,8 @@ describe('server edition foundation', () => {
               ...makeEmailMessageRecord(11, true),
               threadMessageCount: 3,
               trackingOverride: false,
+              approvalState: 'pending',
+              approvalReason: 'Gegenlese empfohlen',
               ...((input as { search?: string }).search ? { searchSnippet: 'Treffer: \uE000Hello\uE001' } : {}),
             })],
             nextCursor: 11,
@@ -21362,6 +21364,8 @@ describe('server edition foundation', () => {
               ...makeEmailMessageRecord(11, input.includeBody),
               threadMessageCount: 3,
               trackingOverride: false,
+              approvalState: 'pending',
+              approvalReason: 'Gegenlese empfohlen',
             })
             : null;
         },
@@ -21541,6 +21545,9 @@ describe('server edition foundation', () => {
     // breaking the list thread chevron and draft tracking checkbox in server mode).
     expect((messages.body as any).data.items[0].threadMessageCount).toBe(3);
     expect((messages.body as any).data.items[0].trackingOverride).toBe(false);
+    // Freigabe-Felder müssen den Sanitizer passieren, sonst fehlen Banner/Buttons.
+    expect((messages.body as any).data.items[0].approvalState).toBe('pending');
+    expect((messages.body as any).data.items[0].approvalReason).toBe('Gegenlese empfohlen');
 
     // Suche Phase 3: Broad-Scope + Relevanz-Sortierung laufen bis in den Port.
     const broadSearch = await api.handle({

@@ -145,6 +145,7 @@ type MessageRow = Pick<
   | 'spam_decision_source'
   | 'spam_score_breakdown_json'
   | 'raw_headers'
+  | 'reply_parent_message_id'
 >;
 
 type RunRow = Pick<Selectable<EmailWorkflowRunsTable>, 'id' | 'source_sqlite_id'>;
@@ -434,6 +435,13 @@ export function createPostgresWorkflowExecutionJobPort(
             await finishRun(trx, input.workspaceId, run.id, {
               status: 'ok',
               log: ['skip:workflow_already_applied'],
+              now,
+            });
+            await maybeEnqueueNextInboundWorkflow(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              actorUserId: input.actorUserId,
+              jobContext,
               now,
             });
             return;
@@ -908,6 +916,7 @@ async function loadMessage(
       // Anti-Loop-Guards (email.auto_reply / email.send_draft) prüfen
       // Auto-Submitted/X-Auto-Response-Suppress/Precedence/List-Header.
       'raw_headers',
+      'reply_parent_message_id',
     ])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
@@ -1472,6 +1481,7 @@ function boundedWorkflowLoopItems(value: unknown): number {
 }
 
 async function executePreviewOutboundAiReview(
+  trx: WorkspaceTransaction,
   ports: ServerWorkflowRuntimePorts,
   context: ServerWorkflowContext,
   config: Record<string, unknown>,
@@ -1508,7 +1518,7 @@ async function executePreviewOutboundAiReview(
           : workflowOutboundReviewSystemPrompt(),
         fallbackUserTemplate: typeof config.fallbackUserTemplate === 'string' && config.fallbackUserTemplate.trim()
           ? config.fallbackUserTemplate.trim()
-          : workflowOutboundReviewUserTemplate(),
+          : await buildOutboundReviewUserTemplate(trx, context, config),
       }
       : { parseMode: 'block_keyword' as const }),
     eventStrings: context.strings,
@@ -1678,10 +1688,10 @@ async function executeServerNode(
       if (context.direction !== 'outbound') {
         return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
       }
-      return executePreviewOutboundAiReview(ports, context, config, type);
+      return executePreviewOutboundAiReview(trx, ports, context, config, type);
     }
     if (type === 'ai.review' || type === 'ai_review') {
-      return executePreviewOutboundAiReview(ports, context, config, type);
+      return executePreviewOutboundAiReview(trx, ports, context, config, type);
     }
   }
   if (dryRun) {
@@ -1701,11 +1711,12 @@ async function executeServerNode(
       block: resolveResumeNodeAfterPort(doc, node.id, 'block'),
       error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
     };
+    const fallbackUserTemplate = await buildOutboundReviewUserTemplate(trx, context, config);
     return await scheduleAiReviewJob(trx, doc, context, node, {
       ...config,
       blockKeyword: 'BLOCK',
       systemPrompt: workflowOutboundReviewSystemPrompt(),
-      fallbackUserTemplate: workflowOutboundReviewUserTemplate(),
+      fallbackUserTemplate,
       parseMode: 'outbound_structured',
       portResumeTargets,
     }, now);
@@ -3056,8 +3067,13 @@ async function scheduleAiReviewDraftJob(
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
   if (profileId.value !== undefined) payload.profileId = profileId.value;
-  if (typeof config.draftIdVariable === 'string' && config.draftIdVariable.trim()) {
-    payload.draftIdVariable = config.draftIdVariable.trim();
+  const draftIdVar = typeof config.draftIdVariable === 'string' && config.draftIdVariable.trim()
+    ? config.draftIdVariable.trim()
+    : 'draft.id';
+  payload.draftIdVariable = draftIdVar;
+  const draftIdFromVars = Number(context.variables[draftIdVar]);
+  if (Number.isFinite(draftIdFromVars) && draftIdFromVars > 0) {
+    payload.draftId = draftIdFromVars;
   }
   if (typeof config.reviewPrompt === 'string' && config.reviewPrompt.trim()) {
     payload.reviewPrompt = config.reviewPrompt.trim();
@@ -4712,6 +4728,54 @@ function workflowOutboundReviewUserTemplate(): string {
     'Ausgehende E-Mail:',
     '{{combined_text}}',
   ].join('\n');
+}
+
+async function buildOutboundReviewUserTemplate(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<string> {
+  let template = workflowOutboundReviewUserTemplate();
+  if (config.checkReplyContext === false) return template;
+
+  const fromVar = Number(context.variables['outbound.in_reply_to_message_id']);
+  const fromMessage = context.message?.reply_parent_message_id == null
+    ? 0
+    : Number(context.message.reply_parent_message_id);
+  const parentId = (Number.isFinite(fromVar) && fromVar > 0)
+    ? fromVar
+    : (Number.isFinite(fromMessage) && fromMessage > 0 ? fromMessage : 0);
+  if (parentId <= 0) return template;
+
+  const parent = await trx
+    .selectFrom('email_messages')
+    .select(['subject', 'body_text', 'snippet', 'from_json', 'is_spam'])
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', parentId)
+    .executeTakeFirst();
+  if (!parent) return template;
+
+  let fromAddr = '';
+  try {
+    fromAddr = addressesFromRecipientJson(
+      typeof parent.from_json === 'string'
+        ? parent.from_json
+        : parent.from_json == null
+          ? null
+          : JSON.stringify(parent.from_json),
+    );
+  } catch {
+    fromAddr = '';
+  }
+  const parentBlock = [
+    '',
+    '--- Ursprüngliche Nachricht (Antwort-Kontext) ---',
+    `Von: ${fromAddr}`,
+    `Betreff: ${parent.subject ?? ''}`,
+    `Textauszug: ${(parent.body_text ?? parent.snippet ?? '').slice(0, 4000)}`,
+    `Spam markiert: ${parent.is_spam ? 'ja' : 'nein'}`,
+  ].join('\n');
+  return `${template}${parentBlock}`;
 }
 
 function replySubject(subject: string | null | undefined): string {
@@ -6454,6 +6518,10 @@ function buildWorkflowContext(input: {
     const outbound = objectRecord(input.jobContext.outbound);
     const count = Number(outbound?.attachmentCount ?? 0);
     variables['outbound.attachment_count'] = Number.isFinite(count) ? count : 0;
+    const inReplyTo = Number(outbound?.inReplyToMessageId);
+    if (Number.isFinite(inReplyTo) && inReplyTo > 0) {
+      variables['outbound.in_reply_to_message_id'] = inReplyTo;
+    }
   }
   return {
     workspaceId: input.workspaceId,

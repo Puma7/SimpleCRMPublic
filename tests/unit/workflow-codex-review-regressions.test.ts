@@ -111,4 +111,30 @@ describe('codex review regression guards', () => {
     expect(mailPorts).toContain('draftAttachmentPaths !== undefined');
     expect(desktopStore).toContain('draftAttachmentPaths !== undefined');
   });
+
+  test('codex round-4: snapshot guard, chain, ACL, approval sanitize, reply context', () => {
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const catalog = readRepoFile('packages/core/src/workflow/node-catalog.ts');
+    const emailNodes = readRepoFile('electron/workflow/nodes/email-nodes.ts');
+    const aiNodes = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+    const policy = readRepoFile('packages/server/src/mail-access/async-policy-enforcer.ts');
+    const sanitize = readRepoFile('packages/server/src/api/mail-routes.ts');
+
+    expect(draftNodes).toContain('outboundDraftFingerprint');
+    expect(draftNodes).toContain('reviewedFingerprint');
+    expect(draftNodes).toContain('Entwurf wurde nach der KI-Prüfung geändert');
+    expect(execution).toMatch(/skip:workflow_already_applied[\s\S]*?maybeEnqueueNextInboundWorkflow/);
+    expect(catalog).toContain('stopFurtherWorkflows: true');
+    expect(emailNodes).toContain('stopFurtherWorkflows: true');
+    expect(aiNodes).toContain('getEmailMessageById(ctx.messageId) ?? ctx.message');
+    expect(policy).toContain("job.type === 'ai.draft_reply'");
+    expect(policy).toContain('assertAiReviewDraftAccess');
+    expect(execution).toContain('buildOutboundReviewUserTemplate');
+    expect(execution).toContain('Antwort-Kontext');
+    expect(execution).toContain('reply_parent_message_id');
+    expect(execution).toContain('payload.draftId');
+    expect(sanitize).toContain('approvalState: message.approvalState ?? null');
+    expect(sanitize).toContain('approvalReason: message.approvalReason ?? null');
+  });
 });

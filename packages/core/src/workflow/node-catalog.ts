@@ -147,7 +147,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'email',
     canvasType: 'registry',
     description: 'Setzt den lokalen Spam-Status: clean, review oder spam.',
-    defaultConfig: { status: 'review', train: false, tag: '' },
+    defaultConfig: { status: 'review', train: false, tag: '', stopFurtherWorkflows: true },
   },
   {
     type: 'email.mark_spam',
@@ -155,7 +155,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'email',
     canvasType: 'registry',
     description: 'Markiert die Nachricht als Spam (lokal + optional IMAP-Verschiebung in den Spam-Ordner).',
-    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false },
+    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false, stopFurtherWorkflows: true },
   },
   {
     type: 'email.assign',
