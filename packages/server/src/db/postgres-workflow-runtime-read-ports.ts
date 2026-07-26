@@ -1029,7 +1029,7 @@ export function createPostgresWorkflowDelayedJobReadPort(
         async (trx) => {
           let currentQuery = trx
             .selectFrom('workflow_delayed_jobs')
-            .select(['id'])
+            .select(['id', 'status'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id);
           const currentVisibility = workflowMessageVisibilityPredicate(
@@ -1040,6 +1040,12 @@ export function createPostgresWorkflowDelayedJobReadPort(
           if (currentVisibility) currentQuery = currentQuery.where(currentVisibility);
           const current = await currentQuery.forUpdate().executeTakeFirst();
           if (!current) return null;
+
+          // Cancel must not overwrite running/done/failed after the worker claimed
+          // the row between the diagnostics list and this click.
+          if (values.status === 'cancelled' && current.status !== 'pending') {
+            return { ok: false, code: 'job_not_cancellable' };
+          }
 
           const workflow = values.workflowId === undefined
             ? undefined
@@ -1061,11 +1067,17 @@ export function createPostgresWorkflowDelayedJobReadPort(
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id);
+          if (values.status === 'cancelled') {
+            updateQuery = updateQuery.where('status', '=', 'pending');
+          }
           if (currentVisibility) updateQuery = updateQuery.where(currentVisibility);
           const row = await updateQuery
             .returning(workflowDelayedJobDetailColumns)
             .executeTakeFirst();
-          if (!row) return null;
+          if (!row) {
+            if (values.status === 'cancelled') return { ok: false, code: 'job_not_cancellable' };
+            return null;
+          }
           // Cancelling only the delayed-job row leaves the queued workflow.execute
           // continuation runnable; drop unlocked queue rows for this delayedJobId.
           if (values.status === 'cancelled') {

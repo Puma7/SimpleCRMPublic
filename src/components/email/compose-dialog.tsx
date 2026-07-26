@@ -1249,13 +1249,20 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   }): Promise<{ status: "ok" | "blocked" | "skipped"; workflowCount: number }> => {
     if (draftId == null) return { status: "skipped", workflowCount: 0 }
     type WfRow = { trigger: string; enabled: number }
-    const workflows = composeAccountId != null
-      ? await invokeRenderer(IPCChannels.Email.ListWorkflows, { accountId: composeAccountId }) as WfRow[]
-      : await invokeRenderer(IPCChannels.Email.ListWorkflows) as WfRow[]
-    const outboundActive = workflows.filter(
-      (w) => w.trigger === "outbound" && w.enabled === 1,
-    )
-    if (outboundActive.length === 0) return { status: "skipped", workflowCount: 0 }
+    let outboundActiveCount = 0
+    try {
+      const workflows = composeAccountId != null
+        ? await invokeRenderer(IPCChannels.Email.ListWorkflows, { accountId: composeAccountId }) as WfRow[]
+        : await invokeRenderer(IPCChannels.Email.ListWorkflows) as WfRow[]
+      const outboundActive = workflows.filter(
+        (w) => w.trigger === "outbound" && w.enabled === 1,
+      )
+      if (outboundActive.length === 0) return { status: "skipped", workflowCount: 0 }
+      outboundActiveCount = outboundActive.length
+    } catch {
+      // ListWorkflows may be gated; ValidateOutbound still runs server-side workflows.
+      outboundActiveCount = 0
+    }
 
     const r = await invokeRenderer(
       IPCChannels.Email.ValidateOutbound,
@@ -1272,15 +1279,15 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     ) as { success: boolean; allowed?: boolean; reason?: string | null }
     if (!r.success) {
       toast.error("Ausgangsprüfung fehlgeschlagen")
-      return { status: "blocked", workflowCount: outboundActive.length }
+      return { status: "blocked", workflowCount: outboundActiveCount }
     }
     if (!r.allowed) {
       toast.warning(r.reason ?? "Ausgangsprüfung: Versand würde blockiert.", {
         duration: 8000,
       })
-      return { status: "blocked", workflowCount: outboundActive.length }
+      return { status: "blocked", workflowCount: outboundActiveCount }
     }
-    return { status: "ok", workflowCount: outboundActive.length }
+    return { status: "ok", workflowCount: outboundActiveCount }
   }
 
   const handleCheckOutbound = async () => {
@@ -1303,17 +1310,23 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       if (!saved) return
 
       type WfRow = { trigger: string; enabled: number }
-      const workflows = composeAccountId != null
-        ? await invokeRenderer(IPCChannels.Email.ListWorkflows, { accountId: composeAccountId }) as WfRow[]
-        : await invokeRenderer(IPCChannels.Email.ListWorkflows) as WfRow[]
-      const outboundActive = workflows.filter(
-        (w) => w.trigger === "outbound" && w.enabled === 1,
-      )
-      if (outboundActive.length === 0) {
-        toast.info(
-          "Keine aktiven Ausgangs-Workflows. Legen Sie unter Einstellungen → Workflows einen Workflow mit Auslöser „Ausgang“ an.",
+      let knownOutboundCount: number | null = null
+      try {
+        const workflows = composeAccountId != null
+          ? await invokeRenderer(IPCChannels.Email.ListWorkflows, { accountId: composeAccountId }) as WfRow[]
+          : await invokeRenderer(IPCChannels.Email.ListWorkflows) as WfRow[]
+        const outboundActive = workflows.filter(
+          (w) => w.trigger === "outbound" && w.enabled === 1,
         )
-        return
+        knownOutboundCount = outboundActive.length
+        if (outboundActive.length === 0) {
+          toast.info(
+            "Keine aktiven Ausgangs-Workflows. Legen Sie unter Einstellungen → Workflows einen Workflow mit Auslöser „Ausgang“ an.",
+          )
+          return
+        }
+      } catch {
+        // Continue with ValidateOutbound when listing is not permitted.
       }
 
       const rawHtml = getEditorHtml()
@@ -1330,8 +1343,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       })
       if (precheck.status === "blocked") return
       if (precheck.status === "ok") {
+        const count = knownOutboundCount ?? precheck.workflowCount
         toast.success(
-          `Ausgangsprüfung: OK (${precheck.workflowCount} Workflow${precheck.workflowCount === 1 ? "" : "s"}) — Versand würde erlaubt.`,
+          count > 0
+            ? `Ausgangsprüfung: OK (${count} Workflow${count === 1 ? "" : "s"}) — Versand würde erlaubt.`
+            : "Ausgangsprüfung: OK — Versand würde erlaubt.",
         )
       }
     } catch (e) {

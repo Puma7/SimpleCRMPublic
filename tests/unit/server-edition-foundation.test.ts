@@ -31902,7 +31902,7 @@ describe('server edition foundation', () => {
     expect((unavailableWorkflows.body as any).error.code).toBe('workflows_unavailable');
   });
 
-  test('server AI prompt reads work without workflows.manage while profile/workflow reads stay gated', async () => {
+  test('server AI prompt and profile reads work without workflows.manage while workflow reads stay gated', async () => {
     const promptListCalls: unknown[] = [];
     const samplePrompt = {
       id: 22,
@@ -31916,6 +31916,20 @@ describe('server edition foundation', () => {
       accountId: null,
       accountSourceSqliteId: null,
       overrideKey: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const sampleProfile = {
+      id: 21,
+      sourceSqliteId: 21,
+      label: 'Default',
+      provider: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o-mini',
+      embeddingModel: null,
+      isDefault: true,
+      sortOrder: 0,
+      apiKeyConfigured: true,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     };
@@ -31934,10 +31948,10 @@ describe('server edition foundation', () => {
       },
       aiProfiles: {
         async list() {
-          return { items: [], nextCursor: null };
+          return { items: [sampleProfile], nextCursor: null };
         },
         async get() {
-          return null;
+          return sampleProfile;
         },
       },
       workflows: {
@@ -31979,7 +31993,16 @@ describe('server edition foundation', () => {
       path: '/api/v1/ai/profiles',
       principal: viewer,
     });
-    expect(profiles.status).toBe(403);
+    expect(profiles.status).toBe(200);
+    expect((profiles.body as any).data.items[0].label).toBe('Default');
+    expect(JSON.stringify(profiles.body)).not.toContain('secret');
+
+    const profile = await api.handle({
+      method: 'GET',
+      path: '/api/v1/ai/profiles/21',
+      principal: viewer,
+    });
+    expect(profile.status).toBe(200);
 
     const workflows = await api.handle({
       method: 'GET',

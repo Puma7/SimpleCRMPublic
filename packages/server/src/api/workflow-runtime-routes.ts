@@ -1063,8 +1063,13 @@ async function handleDelayedJobDelete(
   return data(200, { deleted: true, delayedJob: sanitizeDelayedJob(job, false) });
 }
 
-function delayedJobMutationError(code: 'workflow_not_found' | 'message_not_found'): ApiResponse {
+function delayedJobMutationError(
+  code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable',
+): ApiResponse {
   if (code === 'workflow_not_found') return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
+  if (code === 'job_not_cancellable') {
+    return error(409, 'workflow_delayed_job_not_cancellable', 'Delayed Job laeuft bereits oder ist abgeschlossen');
+  }
   return error(404, 'email_message_not_found', 'E-Mail-Nachricht nicht gefunden');
 }
 

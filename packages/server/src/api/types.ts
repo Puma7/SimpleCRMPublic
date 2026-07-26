@@ -4244,7 +4244,7 @@ export type WorkflowDelayedJobMutationInput = {
 
 export type WorkflowDelayedJobMutationPortResult =
   | { ok: true; job: WorkflowDelayedJobRecord }
-  | { ok: false; code: 'workflow_not_found' | 'message_not_found' };
+  | { ok: false; code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable' };
 
 export type WorkflowDelayedJobApiPort = {
   list(input: {

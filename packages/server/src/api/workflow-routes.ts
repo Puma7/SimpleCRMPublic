@@ -330,9 +330,9 @@ async function handleListRoute(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  // Prompt catalog is needed by compose/viewer AI for every authenticated user.
-  // Profile and workflow lists stay behind workflows.manage.
-  if (resource !== 'aiPrompts') {
+  // Prompt catalog and sanitized AI profile reads are needed by compose/settings
+  // for every authenticated user. Workflow lists stay behind workflows.manage.
+  if (resource === 'workflows') {
     const listDenied = rejectUnlessWorkflowManage(principal);
     if (listDenied) return listDenied;
   }
@@ -421,8 +421,8 @@ async function handleGetRoute(
   if (resource === 'workflows' && req.method === 'PATCH') return handleUpdateWorkflow(req, ports, principal, id);
   if (resource === 'workflows' && req.method === 'DELETE') return handleDeleteWorkflow(ports, principal, id);
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  // Prompt reads are available to any authenticated user (compose/viewer AI).
-  if (resource !== 'aiPrompts') {
+  // Prompt and sanitized profile reads are available to any authenticated user.
+  if (resource === 'workflows') {
     const getDenied = rejectUnlessWorkflowManage(principal);
     if (getDenied) return getDenied;
   }
@@ -2231,7 +2231,8 @@ function isPrivateOrReservedAiProfileHost(host: string): boolean {
   }
   if (kind === 6) {
     if (value === '::1' || value === '::') return true;
-    if (value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+    // fe80::/10 (link-local), not only the fe80: textual prefix.
+    if (isIpv6LinkLocalAddress(value) || value.startsWith('fc') || value.startsWith('fd')) return true;
     if (value.startsWith('::ffff:') || value.startsWith('0:0:0:0:0:ffff:')) {
       const mapped = value.includes('.')
         ? value.slice(value.lastIndexOf(':') + 1)
@@ -2241,6 +2242,13 @@ function isPrivateOrReservedAiProfileHost(host: string): boolean {
     }
   }
   return false;
+}
+
+function isIpv6LinkLocalAddress(host: string): boolean {
+  const first = host.split(':', 1)[0] ?? '';
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
+  const n = Number.parseInt(first, 16);
+  return n >= 0xfe80 && n <= 0xfebf;
 }
 
 function normalizeBodyBoolean(

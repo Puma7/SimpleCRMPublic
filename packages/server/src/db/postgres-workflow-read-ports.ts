@@ -876,7 +876,8 @@ function isPrivateOrReservedAiProfileHost(host: string): boolean {
   }
   if (kind === 6) {
     if (value === '::1' || value === '::') return true;
-    if (value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+    // fe80::/10 (link-local), not only the fe80: textual prefix.
+    if (isIpv6LinkLocalAddress(value) || value.startsWith('fc') || value.startsWith('fd')) return true;
     if (value.startsWith('::ffff:') || value.startsWith('0:0:0:0:0:ffff:')) {
       const mapped = value.includes('.')
         ? value.slice(value.lastIndexOf(':') + 1)
@@ -886,6 +887,13 @@ function isPrivateOrReservedAiProfileHost(host: string): boolean {
     }
   }
   return false;
+}
+
+function isIpv6LinkLocalAddress(host: string): boolean {
+  const first = host.split(':', 1)[0] ?? '';
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
+  const n = Number.parseInt(first, 16);
+  return n >= 0xfe80 && n <= 0xfebf;
 }
 
 function mutationToAiProfilePatch(

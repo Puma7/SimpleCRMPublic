@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils"
 import { hasLocalIpc, type EmailMessage } from "./types"
 import { workflowTriggerLabel } from "./workflow/trigger-labels"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
+import { useAuth } from "@/components/auth/auth-context"
 
 type WorkflowRow = {
   id: number
@@ -57,12 +58,17 @@ export function ApplyWorkflowMenu({
   size = "sm",
   className,
 }: Props) {
+  const { hasCapability } = useAuth()
   const [open, setOpen] = useState(false)
   const [workflows, setWorkflows] = useState<WorkflowRow[]>([])
   const [loadingList, setLoadingList] = useState(false)
   const [runningId, setRunningId] = useState<number | null>(null)
   const [runDetailId, setRunDetailId] = useState<number | null>(null)
   const [runDetailOpen, setRunDetailOpen] = useState(false)
+
+  // Server edition: execute/dry-run require workflows.manage; hide the dead-end menu.
+  const canExecuteWorkflows =
+    getRendererTransport().kind !== "http" || hasCapability("workflows.manage")
 
   const loadWorkflows = useCallback(async () => {
     setLoadingList(true)
@@ -150,6 +156,8 @@ export function ApplyWorkflowMenu({
   }
 
   const dryRunAvailable = hasLocalIpc() || getRendererTransport().kind === "http"
+
+  if (!canExecuteWorkflows) return null
 
   return (
     <>
