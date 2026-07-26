@@ -253,6 +253,9 @@ export async function enforceMailJobPolicy(
     // Base policy only covers the inbound messageId — also require content.read + draft.edit
     // on the concrete draft (payload.draftId or eventVariables[draftIdVariable]).
     await assertAiReviewDraftAccess(job, actor.actor, requiredPorts);
+    // Outbound review with checkReplyContext loads the reply parent for the LLM —
+    // require content.read on that parent at execution time.
+    await assertAiReviewReplyParentAccess(job, actor.actor, requiredPorts);
     // A compose-originated ai.agent / ai.pick_canned with createDraft:true calls
     // createPostgresComposeDraftInTransaction() under the SYSTEM role, minting a reply
     // draft the base content.read policy never covers. Recheck mail.draft.create on the
@@ -833,6 +836,29 @@ async function assertAiReviewDraftAccess(
       workspaceId: job.workspaceId,
       actor,
       permission: 'mail.draft.edit',
+      resource,
+    });
+  }
+}
+
+async function assertAiReviewReplyParentAccess(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'ai.review') return;
+  const parentId = optionalPositiveInt(job.payload.replyParentMessageId);
+  if (parentId === null) return;
+  const resources = await ports.mailResourceLookup.resolve({
+    workspaceId: job.workspaceId,
+    target: { kind: 'message', id: parentId },
+  });
+  if (resources.length === 0) throw new MailAsyncAuthorizationError();
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.content.read',
       resource,
     });
   }

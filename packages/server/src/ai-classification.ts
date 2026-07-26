@@ -116,6 +116,8 @@ export type AiReviewJobPlan = Readonly<{
   systemPrompt?: string;
   fallbackUserTemplate?: string;
   parseMode?: 'outbound_structured' | 'block_keyword';
+  /** Original inbound message to include when checkReplyContext is enabled. */
+  replyParentMessageId?: number;
   portResumeTargets?: Readonly<Record<string, string>>;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
@@ -661,8 +663,17 @@ export function createPostgresAiReviewPort(
         ...stringPayload(input.eventStrings),
       };
       const variables = variablePayload(input.eventVariables);
-      const userTemplate = (context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
+      let userTemplate = (context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
         .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
+      if (input.replyParentMessageId !== undefined) {
+        const parentBlock = await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => loadReplyParentContextBlock(trx, input.workspaceId, input.replyParentMessageId!),
+          { applySession: options.applyWorkspaceSession },
+        );
+        if (parentBlock) userTemplate = `${userTemplate}${parentBlock}`;
+      }
       try {
         // Config errors (missing prompt/profile/key) must take the same fail-closed
         // error-port path as runtime KI failures — otherwise the draft stays held
@@ -1635,6 +1646,40 @@ function interpolateWorkflowTemplate(
 function stringPayload(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item ?? '')]));
+}
+
+async function loadReplyParentContextBlock(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  parentId: number,
+): Promise<string | null> {
+  const parent = await trx
+    .selectFrom('email_messages')
+    .select(['subject', 'body_text', 'snippet', 'from_json', 'is_spam'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', parentId)
+    .executeTakeFirst();
+  if (!parent) return null;
+  let fromAddr = '';
+  try {
+    fromAddr = addressesFromRecipientJson(
+      typeof parent.from_json === 'string'
+        ? parent.from_json
+        : parent.from_json == null
+          ? null
+          : JSON.stringify(parent.from_json),
+    );
+  } catch {
+    fromAddr = '';
+  }
+  return [
+    '',
+    '--- Ursprüngliche Nachricht (Antwort-Kontext) ---',
+    `Von: ${fromAddr}`,
+    `Betreff: ${parent.subject ?? ''}`,
+    `Textauszug: ${(parent.body_text ?? parent.snippet ?? '').slice(0, 4000)}`,
+    `Spam markiert: ${parent.is_spam ? 'ja' : 'nein'}`,
+  ].join('\n');
 }
 
 function variablePayload(value: unknown): JobPayload {

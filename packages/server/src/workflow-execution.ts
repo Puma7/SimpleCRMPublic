@@ -328,6 +328,17 @@ export function createPostgresWorkflowExecutionJobPort(
                 now,
               });
             }
+            // Deleted mid-chain: still advance so later priority workflows run.
+            const missingTrigger = normalizeWorkflowTrigger(input.triggerName ?? 'inbound');
+            if (missingTrigger === 'inbound' && input.messageId !== undefined) {
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                actorUserId: input.actorUserId,
+                jobContext: input.context ?? {},
+                now,
+              });
+            }
             return;
           }
 
@@ -1711,14 +1722,19 @@ async function executeServerNode(
       block: resolveResumeNodeAfterPort(doc, node.id, 'block'),
       error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
     };
-    const fallbackUserTemplate = await buildOutboundReviewUserTemplate(trx, context, config);
+    const replyParentMessageId = config.checkReplyContext === false
+      ? undefined
+      : resolveOutboundReplyParentId(context);
     return await scheduleAiReviewJob(trx, doc, context, node, {
       ...config,
       blockKeyword: 'BLOCK',
       systemPrompt: workflowOutboundReviewSystemPrompt(),
-      fallbackUserTemplate,
+      // Parent body is loaded in the ai.review job AFTER content.read ACL —
+      // do not bake it into the template under the system role here.
+      fallbackUserTemplate: workflowOutboundReviewUserTemplate(),
       parseMode: 'outbound_structured',
       portResumeTargets,
+      ...(replyParentMessageId !== undefined ? { replyParentMessageId } : {}),
     }, now);
   }
   if (type === 'ai.review' || type === 'ai_review') {
@@ -2763,6 +2779,13 @@ async function scheduleAiReviewJob(
   if (context.messageId !== null) payload.messageId = context.messageId;
   if (promptId.value !== undefined) payload.promptId = promptId.value;
   if (profileId.value !== undefined) payload.profileId = profileId.value;
+  {
+    const replyParent = optionalPositiveIntegerConfig(config.replyParentMessageId, 'replyParentMessageId');
+    if (!replyParent.ok) {
+      return { status: 'error', port: 'error', message: replyParent.message };
+    }
+    if (replyParent.value !== undefined) payload.replyParentMessageId = replyParent.value;
+  }
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
@@ -4735,25 +4758,37 @@ async function buildOutboundReviewUserTemplate(
   context: ServerWorkflowContext,
   config: Record<string, unknown>,
 ): Promise<string> {
+  // Dry-run / preview only: live scheduling stamps replyParentMessageId and
+  // loads the parent inside the ai.review job after ACL.
   let template = workflowOutboundReviewUserTemplate();
   if (config.checkReplyContext === false) return template;
+  const parentId = resolveOutboundReplyParentId(context);
+  if (parentId === undefined) return template;
+  const parentBlock = await loadOutboundReplyParentBlock(trx, context.workspaceId, parentId);
+  return parentBlock ? `${template}${parentBlock}` : template;
+}
 
+function resolveOutboundReplyParentId(context: ServerWorkflowContext): number | undefined {
   const fromVar = Number(context.variables['outbound.in_reply_to_message_id']);
+  if (Number.isFinite(fromVar) && fromVar > 0) return fromVar;
   const fromMessage = context.message?.reply_parent_message_id == null
     ? 0
     : Number(context.message.reply_parent_message_id);
-  const parentId = (Number.isFinite(fromVar) && fromVar > 0)
-    ? fromVar
-    : (Number.isFinite(fromMessage) && fromMessage > 0 ? fromMessage : 0);
-  if (parentId <= 0) return template;
+  return Number.isFinite(fromMessage) && fromMessage > 0 ? fromMessage : undefined;
+}
 
+export async function loadOutboundReplyParentBlock(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  parentId: number,
+): Promise<string | null> {
   const parent = await trx
     .selectFrom('email_messages')
     .select(['subject', 'body_text', 'snippet', 'from_json', 'is_spam'])
-    .where('workspace_id', '=', context.workspaceId)
+    .where('workspace_id', '=', workspaceId)
     .where('id', '=', parentId)
     .executeTakeFirst();
-  if (!parent) return template;
+  if (!parent) return null;
 
   let fromAddr = '';
   try {
@@ -4767,7 +4802,7 @@ async function buildOutboundReviewUserTemplate(
   } catch {
     fromAddr = '';
   }
-  const parentBlock = [
+  return [
     '',
     '--- Ursprüngliche Nachricht (Antwort-Kontext) ---',
     `Von: ${fromAddr}`,
@@ -4775,7 +4810,6 @@ async function buildOutboundReviewUserTemplate(
     `Textauszug: ${(parent.body_text ?? parent.snippet ?? '').slice(0, 4000)}`,
     `Spam markiert: ${parent.is_spam ? 'ja' : 'nein'}`,
   ].join('\n');
-  return `${template}${parentBlock}`;
 }
 
 function replySubject(subject: string | null | undefined): string {
@@ -4797,11 +4831,14 @@ function workflowDelayContext(
 }
 
 function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnType<typeof inboundChainFieldsFromRecord> {
+  // Continuations (AI/HTTP/delay) must keep the priority chain, but must NOT
+  // re-stamp skipIfMessageSpamOrReview — that guard is one-shot for the initial
+  // post-process enqueue. Re-applying it after mark_spam with stopFurther=false
+  // would abort the remaining graph on resume.
   return inboundChainFieldsFromRecord({
     ...(context.inboundWorkflowChain
       ? { inboundWorkflowChain: context.inboundWorkflowChain }
       : {}),
-    ...(context.skipIfMessageSpamOrReview ? { skipIfMessageSpamOrReview: true } : {}),
   });
 }
 

@@ -44,8 +44,7 @@ export function resumeContextInboundChainFields(
     ...(continuation.inboundWorkflowChain
       ? { inboundWorkflowChain: continuation.inboundWorkflowChain }
       : {}),
-    ...(continuation.skipIfMessageSpamOrReview === true
-      ? { skipIfMessageSpamOrReview: true }
-      : {}),
+    // Do not re-stamp skipIfMessageSpamOrReview onto resumed workflow.execute —
+    // it is a one-shot initial post-process guard only.
   };
 }

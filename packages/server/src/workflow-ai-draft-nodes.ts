@@ -511,6 +511,42 @@ function knowledgeSourcesLabel(
     .join(', ');
 }
 
+function fingerprintReviewedDraft(draft: {
+  subject?: string | null;
+  body_text?: string | null;
+  body_html?: string | null;
+  to_json?: unknown;
+  cc_json?: unknown;
+  bcc_json?: unknown;
+  draft_attachment_paths_json?: string | null;
+}): string {
+  return outboundDraftFingerprint({
+    subject: draft.subject,
+    bodyText: draft.body_text,
+    bodyHtml: draft.body_html,
+    to: recipientJsonToFingerprintString(draft.to_json),
+    cc: recipientJsonToFingerprintString(draft.cc_json),
+    bcc: recipientJsonToFingerprintString(draft.bcc_json),
+    attachmentPaths: parseDraftAttachmentPaths(draft.draft_attachment_paths_json),
+  });
+}
+
+function recipientJsonToFingerprintString(value: unknown): string {
+  const raw = typeof value === 'string' ? value : value == null ? null : JSON.stringify(value);
+  return addressesFromRecipientJson(raw);
+}
+
+function parseDraftAttachmentPaths(value: string | null | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => String(item ?? '').trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function replySubject(subject: string | null | undefined): string {
   const value = String(subject ?? '').trim();
   if (!value) return 'Re:';
@@ -837,7 +873,18 @@ export function createPostgresAiReviewDraftPort(
         async (trx): Promise<Prep> => {
           const draft = await trx
             .selectFrom('email_messages')
-            .select(['id', 'subject', 'body_text', 'body_html', 'folder_kind', 'uid'])
+            .select([
+              'id',
+              'subject',
+              'body_text',
+              'body_html',
+              'to_json',
+              'cc_json',
+              'bcc_json',
+              'draft_attachment_paths_json',
+              'folder_kind',
+              'uid',
+            ])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', draftId)
             .executeTakeFirst();
@@ -888,11 +935,7 @@ export function createPostgresAiReviewDraftPort(
           return {
             system,
             user,
-            reviewedFingerprint: outboundDraftFingerprint({
-              subject: draft.subject,
-              bodyText: draft.body_text,
-              bodyHtml: draft.body_html,
-            }),
+            reviewedFingerprint: fingerprintReviewedDraft(draft),
           };
         },
         { applySession: deps.applyWorkspaceSession },
@@ -943,16 +986,22 @@ export function createPostgresAiReviewDraftPort(
           if (port === 'send') {
             const live = await trx
               .selectFrom('email_messages')
-              .select(['subject', 'body_text', 'body_html', 'folder_kind', 'uid'])
+              .select([
+                'subject',
+                'body_text',
+                'body_html',
+                'to_json',
+                'cc_json',
+                'bcc_json',
+                'draft_attachment_paths_json',
+                'folder_kind',
+                'uid',
+              ])
               .where('workspace_id', '=', input.workspaceId)
               .where('id', '=', draftId)
               .executeTakeFirst();
             const liveFp = live && live.folder_kind === 'draft' && Number(live.uid) < 0
-              ? outboundDraftFingerprint({
-                subject: live.subject,
-                bodyText: live.body_text,
-                bodyHtml: live.body_html,
-              })
+              ? fingerprintReviewedDraft(live)
               : null;
             if (liveFp !== prep.reviewedFingerprint) {
               port = 'hold';

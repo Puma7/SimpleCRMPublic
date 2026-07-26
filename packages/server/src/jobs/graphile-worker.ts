@@ -1,5 +1,6 @@
 import {
   assertServerJobType,
+  buildTrustedServiceJobPayload,
   calculateMailSyncPoolSize,
   normalizeAiJobConcurrency,
   normalizeMaxAttempts,
@@ -42,10 +43,19 @@ export type GraphileWorkerFactory = (options: {
 }) => Promise<GraphileWorkerRuntime>;
 
 export type GraphileJobHelpers = Readonly<{
-  job?: Readonly<{ id?: string | number }>;
+  job?: Readonly<{
+    id?: string | number;
+    attempts?: number;
+    max_attempts?: number;
+  }>;
   withPgClient?: (callback: (client: {
     query: (sql: string, values?: readonly unknown[]) => Promise<unknown>;
   }) => Promise<unknown>) => Promise<unknown>;
+  addJob?: (
+    identifier: string,
+    payload: JobPayload,
+    spec?: GraphileTaskSpec,
+  ) => Promise<unknown>;
 }>;
 
 export type GraphileWorkerUtilsFactory = (options: {
@@ -166,10 +176,11 @@ export function buildGraphileTaskList(
       if (!handler) {
         throw new Error(`No handler registered for job type ${type}`);
       }
+      const normalizedPayload = normalizePayload(payload);
       const job: QueuedJob = {
         id: 0,
         type,
-        payload: normalizePayload(payload),
+        payload: normalizedPayload,
         runAfter: new Date(0).toISOString(),
         attempts: 0,
         maxAttempts: 1,
@@ -190,11 +201,88 @@ export function buildGraphileTaskList(
         // without a trace. Rethrow so the failure is visible: graphile retries
         // and, after maxAttempts, keeps the row as permanently failed — mirroring
         // the legacy worker's failTerminal handling of MailAsyncAuthorizationError.
+        await maybeAdvanceInboundChainAfterGraphileTerminalFailure(normalizedPayload, helpers);
         throw error;
       }
-      await handler(mailAuthorization ? { ...job, mailAuthorization } : job);
+      try {
+        await handler(mailAuthorization ? { ...job, mailAuthorization } : job);
+      } catch (error) {
+        await maybeAdvanceInboundChainAfterGraphileTerminalFailure(normalizedPayload, helpers);
+        throw error;
+      }
     },
   ]));
+}
+
+/**
+ * When a Graphile job exhausts retries, advance the inbound priority chain the
+ * same way postgres-job-queue-port failTerminal does. Without this, a failed
+ * AI/HTTP child (or workflow.execute) strands later workflows forever.
+ */
+async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
+  payload: JobPayload,
+  helpers: GraphileJobHelpers | undefined,
+): Promise<void> {
+  // Graphile bumps `attempts` when claiming the job (before the handler runs).
+  // Terminal = same predicate Graphile uses for job:failed (`attempts >= max_attempts`).
+  const attempts = Number(helpers?.job?.attempts ?? 0);
+  const maxAttempts = Number(helpers?.job?.max_attempts ?? 1);
+  if (!(attempts >= maxAttempts)) return;
+
+  const { inboundChainFromJobPayload } = await import('../workflow-inbound-chain-advance.js');
+  const parsed = inboundChainFromJobPayload(payload as Record<string, unknown>);
+  if (!parsed) return;
+  const nextIndex = parsed.chain.index + 1;
+  if (nextIndex >= parsed.chain.workflowIds.length) return;
+
+  const nextPayload: JobPayload = parsed.actorUserId
+    ? {
+      workspaceId: parsed.workspaceId,
+      actorUserId: parsed.actorUserId,
+      workflowId: parsed.chain.workflowIds[nextIndex]!,
+      messageId: parsed.messageId,
+      triggerName: 'inbound',
+      context: {
+        inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
+      },
+    }
+    : buildTrustedServiceJobPayload({
+      workspaceId: parsed.workspaceId,
+      workflowId: parsed.chain.workflowIds[nextIndex]!,
+      messageId: parsed.messageId,
+      triggerName: 'inbound',
+      context: {
+        inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
+      },
+    });
+
+  try {
+    // Prefer Graphile's addJob so the hop stays on the same worker queue.
+    if (helpers?.addJob) {
+      await helpers.addJob('workflow.execute', nextPayload, {
+        maxAttempts: 3,
+        queueName: 'workflow',
+      });
+      return;
+    }
+    if (!helpers?.withPgClient) return;
+    // Fallback for tests / helpers without addJob: enqueue via Graphile SQL API.
+    await helpers.withPgClient(async (client) => {
+      await client.query(
+        `SELECT graphile_worker.add_job(
+           $1::text,
+           $2::json,
+           'workflow',
+           now(),
+           3
+         )`,
+        ['workflow.execute', JSON.stringify(nextPayload)],
+      );
+    });
+  } catch (advanceErr) {
+    // Never mask the original job failure if chain advance itself fails.
+    console.error('[graphile-worker] inbound chain advance after terminal failure failed', advanceErr);
+  }
 }
 
 export function graphileSpecFromJob(input: EnqueueJobInput): GraphileTaskSpec {

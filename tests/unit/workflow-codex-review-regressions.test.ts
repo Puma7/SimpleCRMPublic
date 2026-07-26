@@ -138,4 +138,37 @@ describe('codex review regression guards', () => {
     expect(sanitize).toContain('approvalState: message.approvalState ?? null');
     expect(sanitize).toContain('approvalReason: message.approvalReason ?? null');
   });
+
+  test('codex round-5: desktop chain-stop, fingerprint recipients, spam-guard, ACL parent, graphile advance', () => {
+    const runtime = readRepoFile('electron/workflow/runtime.ts');
+    const aiNodes = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const chainCtx = readRepoFile('packages/server/src/workflow-inbound-chain-context.ts');
+    const policy = readRepoFile('packages/server/src/mail-access/async-policy-enforcer.ts');
+    const aiClass = readRepoFile('packages/server/src/ai-classification.ts');
+    const handlers = readRepoFile('packages/server/src/jobs/production-handlers.ts');
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+
+    expect(runtime).toContain('if (r.inboundChainStop)');
+    expect(runtime).toContain('if (r.deferred)');
+    expect(draftNodes).toContain('fingerprintReviewedDraft');
+    expect(draftNodes).toContain('to_json');
+    expect(draftNodes).toContain('draft_attachment_paths_json');
+    expect(aiNodes).toContain('recipientFieldFromJson(draft.to_json)');
+    expect(aiNodes).toContain('parseDraftAttachmentPathsJson');
+    expect(execution).toContain('Do not re-stamp skipIfMessageSpamOrReview');
+    expect(chainCtx).toContain('Do not re-stamp skipIfMessageSpamOrReview');
+    expect(execution).toMatch(/error:workflow_not_found[\s\S]*?maybeEnqueueNextInboundWorkflow/);
+    expect(execution).toContain('replyParentMessageId');
+    expect(execution).toContain('workflowOutboundReviewUserTemplate()');
+    expect(policy).toContain('assertAiReviewReplyParentAccess');
+    expect(aiClass).toContain('replyParentMessageId');
+    expect(aiClass).toContain('loadReplyParentContextBlock');
+    expect(handlers).toContain("optionalPositiveInteger(payload, 'replyParentMessageId')");
+    expect(graphile).toContain('maybeAdvanceInboundChainAfterGraphileTerminalFailure');
+    expect(graphile).toContain('attempts >= maxAttempts');
+    expect(graphile).toContain('buildTrustedServiceJobPayload');
+    expect(graphile).toContain("helpers.addJob('workflow.execute'");
+  });
 });

@@ -66,6 +66,8 @@ import {
 import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
 import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint } from '@simplecrm/core';
+import { recipientFieldFromJson } from '../../../shared/email-recipient-parse';
+import { parseDraftAttachmentPathsJson } from '../../../shared/compose-draft-attachments';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -840,6 +842,10 @@ export function registerAiNodes(register: Reg): void {
           subject: draft.subject,
           bodyText: draft.body_text,
           bodyHtml: draft.body_html,
+          to: recipientFieldFromJson(draft.to_json),
+          cc: recipientFieldFromJson(draft.cc_json) || null,
+          bcc: recipientFieldFromJson(draft.bcc_json) || null,
+          attachmentPaths: parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json),
         });
         const out = await runChatCompletion(system, user, profileIdFromConfig(config));
         ctx.ai.lastResponse = out;
@@ -856,6 +862,10 @@ export function registerAiNodes(register: Reg): void {
               subject: live.subject,
               bodyText: live.body_text,
               bodyHtml: live.body_html,
+              to: recipientFieldFromJson(live.to_json),
+              cc: recipientFieldFromJson(live.cc_json) || null,
+              bcc: recipientFieldFromJson(live.bcc_json) || null,
+              attachmentPaths: parseDraftAttachmentPathsJson(live.draft_attachment_paths_json),
             })
             : null;
           if (liveFp !== reviewedFingerprint) {

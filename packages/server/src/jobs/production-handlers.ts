@@ -400,6 +400,7 @@ export function buildAiReviewJobPlan(
     direction: optionalWorkflowDirection(payload),
     ...optionalString(payload, 'systemPrompt', 4000),
     ...optionalString(payload, 'fallbackUserTemplate', 20_000),
+    ...optionalPositiveInteger(payload, 'replyParentMessageId'),
     ...(payload.parseMode === 'outbound_structured' || payload.parseMode === 'block_keyword'
       ? { parseMode: payload.parseMode as 'outbound_structured' | 'block_keyword' }
       : {}),
