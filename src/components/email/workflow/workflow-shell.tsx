@@ -177,6 +177,8 @@ export function WorkflowShell() {
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  /** Baseline for omitting unchanged graph/enabled on editor-only saves. */
+  const saveBaselineRef = useRef<{ enabled: boolean; graphJson: string } | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [triggerFilter, setTriggerFilter] = useState<
     "all" | "inbound" | "outbound" | "other"
@@ -267,6 +269,10 @@ export function WorkflowShell() {
       ? enrichRegistryGraphDocument(doc, labelByType)
       : doc
     useWorkflowEditorStore.getState().resetFromGraph(enriched)
+    saveBaselineRef.current = {
+      enabled: w.enabled === 1,
+      graphJson: JSON.stringify(enriched ?? { version: 1, nodes: [], edges: [] }),
+    }
   }
 
   useEffect(() => {
@@ -406,18 +412,45 @@ export function WorkflowShell() {
           return
         }
       }
+      const graphJson = JSON.stringify(graphDoc)
+      const baseline = saveBaselineRef.current
+      const graphChanged = !baseline || baseline.graphJson !== graphJson
+      const enabledChanged = !baseline || baseline.enabled !== editEnabled
+      // Editors without manage must not re-POST graph/enabled for an already-active
+      // workflow — the API rejects enabled side-effect graphs without manage.
+      // Metadata-only saves omit those fields; graph/enable changes while active require manage.
+      const omitActiveGraphFields =
+        !canManageWorkflows
+        && editEnabled
+        && baseline?.enabled === true
+        && !graphChanged
+        && !enabledChanged
+      if (
+        !canManageWorkflows
+        && editEnabled
+        && (graphChanged || enabledChanged)
+      ) {
+        toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
+        setSaving(false)
+        return
+      }
       await invokeRenderer(IPCChannels.Email.UpdateWorkflow, {
         id: selectedId,
         name: editName.trim(),
-        trigger: trig,
         priority: parseInt(editPriority, 10) || 100,
         definitionJson,
-        graphJson: JSON.stringify(graphDoc),
         cronExpr: cronTrim || null,
         scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
-        enabled: editEnabled,
+        ...(omitActiveGraphFields
+          ? {}
+          : {
+              trigger: trig,
+              graphJson,
+              enabled: editEnabled,
+            }),
       })
       setEditJson(definitionJson)
+      saveBaselineRef.current = { enabled: editEnabled, graphJson }
       toast.success("Gespeichert.")
       await load()
     } catch (e) {
@@ -702,7 +735,13 @@ export function WorkflowShell() {
                 <Switch
                   id="wf-en"
                   checked={editEnabled}
-                  onCheckedChange={setEditEnabled}
+                  onCheckedChange={(on) => {
+                    if (on && !canManageWorkflows) {
+                      toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
+                      return
+                    }
+                    setEditEnabled(on)
+                  }}
                   disabled={!canEditWorkflows}
                 />
                 <Label htmlFor="wf-en" className="cursor-pointer text-xs font-normal">

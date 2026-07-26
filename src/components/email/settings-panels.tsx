@@ -1,6 +1,7 @@
 "use client"
 
 import type { ReactElement } from "react"
+import { useEffect } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
@@ -48,6 +49,7 @@ export { SETTINGS_TAB_IDS } from "./settings-tab-ids"
 import { TrackingSettingsPanel } from "./settings/tracking-settings-panel"
 import { RelaySettingsPanel } from "./settings/relay-settings-panel"
 import { MailDelegationPanel } from "./settings/mail-delegation-panel"
+import { useAuth } from "@/components/auth/auth-context"
 
 type TabDef = {
   id: SettingsTab
@@ -58,6 +60,8 @@ type TabDef = {
   /** Tab depends on server-only IPC channels (no Electron handlers); hidden in
    *  standalone mode so it doesn't error on open. */
   serverOnly?: boolean
+  /** Reachable without settings.view (personal account / password). */
+  personalAccount?: boolean
 }
 
 const TAB_DEFS: TabDef[] = [
@@ -133,6 +137,8 @@ const TAB_DEFS: TabDef[] = [
         <UsersPanel />
       </div>
     ),
+    /** Always available for self-service password change without settings.view. */
+    personalAccount: true,
   },
   { id: "authSecurity", label: "Login-Sicherheit", icon: Shield, render: () => <AuthSecurityPanel />, serverOnly: true },
   { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
@@ -157,7 +163,14 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Sonstiges", tabIds: ["misc"] },
 ]
 
-function SettingsPanels({ current }: { current: SettingsTab }) {
+function SettingsPanels({ current, personalOnly }: { current: SettingsTab; personalOnly: boolean }) {
+  if (personalOnly) {
+    return (
+      <div className="mx-auto w-full max-w-2xl space-y-6 p-6">
+        <ChangePasswordCard />
+      </div>
+    )
+  }
   const active = TAB_DEFS.find(
     (t) => t.id === current && (!t.serverOnly || isServerClientMode()),
   ) ?? TAB_DEFS[0]!
@@ -177,20 +190,24 @@ function SettingsPanels({ current }: { current: SettingsTab }) {
 type NavProps = {
   current: SettingsTab
   onSelect: (t: SettingsTab) => void
+  personalOnly: boolean
 }
 
-function SettingsNav({ current, onSelect }: NavProps) {
+function SettingsNav({ current, onSelect, personalOnly }: NavProps) {
   const tabById = new Map(TAB_DEFS.map((t) => [t.id, t]))
+  const groups = personalOnly
+    ? [{ label: "Konto", tabIds: ["appUsers"] as SettingsTab[] }]
+    : SETTINGS_GROUPS
 
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r bg-muted/40">
       <div className="border-b px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          E-Mail-Einstellungen
+          {personalOnly ? "Konto" : "E-Mail-Einstellungen"}
         </p>
       </div>
       <nav className="flex-1 space-y-4 overflow-y-auto p-2">
-        {SETTINGS_GROUPS.map((group) => (
+        {groups.map((group) => (
           <div key={group.label}>
             <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               {group.label}
@@ -202,8 +219,10 @@ function SettingsNav({ current, onSelect }: NavProps) {
                 // Hide server-only tabs in standalone Electron (their IPC
                 // channels have no local handler).
                 if (t.serverOnly && !isServerClientMode()) return null
+                if (personalOnly && !t.personalAccount) return null
                 const Icon = t.icon
                 const active = t.id === current
+                const label = personalOnly && t.id === "appUsers" ? "Passwort" : t.label
                 return (
                   <button
                     key={t.id}
@@ -217,7 +236,7 @@ function SettingsNav({ current, onSelect }: NavProps) {
                     )}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
-                    {t.label}
+                    {label}
                   </button>
                 )
               })}
@@ -232,27 +251,41 @@ function SettingsNav({ current, onSelect }: NavProps) {
 export function SettingsPanelsPage() {
   const { settingsTab, setSettingsTab } = useMailWorkspace()
   const navigate = useNavigate()
-  const active = TAB_DEFS.find(
-    (t) => t.id === settingsTab && (!t.serverOnly || isServerClientMode()),
-  ) ?? TAB_DEFS[0]!
+  const { canViewSettings } = useAuth()
+  const personalOnly = isServerClientMode() && !canViewSettings
+  const active = personalOnly
+    ? TAB_DEFS.find((t) => t.id === "appUsers")!
+    : TAB_DEFS.find(
+      (t) => t.id === settingsTab && (!t.serverOnly || isServerClientMode()),
+    ) ?? TAB_DEFS[0]!
 
   const selectTab = (tab: SettingsTab) => {
-    setSettingsTab(tab)
-    void navigate({ to: "/email/settings", search: emailSettingsSearch({ tab }) })
+    const next = personalOnly ? "appUsers" : tab
+    setSettingsTab(next)
+    void navigate({ to: "/email/settings", search: emailSettingsSearch({ tab: next }) })
   }
+
+  useEffect(() => {
+    if (!personalOnly) return
+    if (settingsTab === "appUsers") return
+    setSettingsTab("appUsers")
+    void navigate({ to: "/email/settings", search: emailSettingsSearch({ tab: "appUsers" }), replace: true })
+  }, [personalOnly, settingsTab, setSettingsTab, navigate])
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <header className="flex h-12 shrink-0 items-center border-b px-4">
-        <h1 className="text-lg font-semibold tracking-tight">Einstellungen</h1>
+        <h1 className="text-lg font-semibold tracking-tight">
+          {personalOnly ? "Konto" : "Einstellungen"}
+        </h1>
       </header>
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <SettingsNav current={settingsTab} onSelect={selectTab} />
-        {active.fullBleed ? (
+        <SettingsNav current={personalOnly ? "appUsers" : settingsTab} onSelect={selectTab} personalOnly={personalOnly} />
+        {active.fullBleed && !personalOnly ? (
           active.render()
         ) : (
           <ScrollArea className="flex-1">
-            <SettingsPanels current={settingsTab} />
+            <SettingsPanels current={personalOnly ? "appUsers" : settingsTab} personalOnly={personalOnly} />
           </ScrollArea>
         )}
       </div>

@@ -78,6 +78,42 @@ describe('mail ACL visibility constraints', () => {
     })).toBe(true);
   });
 
+  test('messageMatchesConstraints prefers assignedToUserId over free-text assignedTo', () => {
+    expect(messageMatchesConstraints(
+      {
+        assignedToUserId: 'user-a',
+        assignedTo: 'agent-2',
+        categoryIds: [],
+        tags: [],
+      },
+      {
+        assignmentMode: 'assigned_to_me',
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: [],
+        tagExcludeValues: [],
+      },
+      ACTOR,
+    )).toBe(true);
+
+    expect(messageMatchesConstraints(
+      {
+        assignedToUserId: 'user-b',
+        assignedTo: 'user-a',
+        categoryIds: [],
+        tags: [],
+      },
+      {
+        assignmentMode: 'assigned_to_me',
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: [],
+        tagExcludeValues: [],
+      },
+      ACTOR,
+    )).toBe(false);
+  });
+
   test('messageMatchesConstraints ANDs assignment, category and tag rules', () => {
     const facts = {
       assignedToUserId: 'user-a',

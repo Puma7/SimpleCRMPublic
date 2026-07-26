@@ -119,9 +119,9 @@ function visibilityPredicate(
       }
     } else if (mode === 'assigned_to_me') {
       if (assignedUserCol && assignedCol) {
-        // Prefer free-text assigned_to when set so workflow/UI reassignment is not
-        // masked by a stale assigned_to_user_id UUID.
-        parts.push(sql<boolean>`(coalesce(nullif(${sql.ref(assignedCol)}, ''), ${sql.ref(assignedUserCol)}::text) = ${actorId})`);
+        // Prefer assigned_to_user_id (linked workspace UUID). Free-text assigned_to
+        // (e.g. agent-2) is only a fallback when no user link is stored.
+        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, nullif(${sql.ref(assignedCol)}, '')) = ${actorId})`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text = ${actorId}`);
       } else if (assignedCol) {
@@ -130,7 +130,7 @@ function visibilityPredicate(
     } else if (mode === 'assigned_to_my_groups') {
       const ids = actor!.groupMemberUserIds.length > 0 ? actor!.groupMemberUserIds : [actorId];
       if (assignedUserCol && assignedCol) {
-        parts.push(sql<boolean>`(coalesce(nullif(${sql.ref(assignedCol)}, ''), ${sql.ref(assignedUserCol)}::text) in (${sql.join(ids)}))`);
+        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, nullif(${sql.ref(assignedCol)}, '')) in (${sql.join(ids)}))`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text in (${sql.join(ids)})`);
       } else if (assignedCol) {

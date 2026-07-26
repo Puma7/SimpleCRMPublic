@@ -296,9 +296,9 @@ export function messageMatchesConstraints(
   if (!constraints) return true;
   const mode = constraints.assignmentMode;
   if (mode && mode !== 'any') {
-    const assignee = (facts.assignedTo && facts.assignedTo.length > 0)
-      ? facts.assignedTo
-      : facts.assignedToUserId;
+    // Prefer linked workspace user UUID; free-text assigned_to is fallback only.
+    const assignee = facts.assignedToUserId
+      ?? (facts.assignedTo && facts.assignedTo.length > 0 ? facts.assignedTo : null);
     if (mode === 'unassigned') {
       if (assignee) return false;
     } else if (mode === 'assigned_to_me') {
@@ -333,9 +333,8 @@ export function explainConstraintMismatch(
   if (!constraints) return null;
   const mode = constraints.assignmentMode;
   if (mode && mode !== 'any') {
-    const assignee = (facts.assignedTo && facts.assignedTo.length > 0)
-      ? facts.assignedTo
-      : facts.assignedToUserId;
+    const assignee = facts.assignedToUserId
+      ?? (facts.assignedTo && facts.assignedTo.length > 0 ? facts.assignedTo : null);
     if (mode === 'unassigned' && assignee) return 'Nachricht ist zugewiesen (Filter: unzugewiesen)';
     if (mode === 'assigned_to_me' && assignee !== actor.userId) {
       return 'Nachricht ist nicht dem Nutzer zugewiesen';

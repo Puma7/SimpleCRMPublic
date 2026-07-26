@@ -12,7 +12,10 @@ const SVELTE_LAB_ENABLED = import.meta.env.VITE_ENABLE_SVELTE_LAB === "true"
 
 export function EmailSubNav() {
   const matchRoute = useMatchRoute()
-  const { canViewSettings, canViewWorkflows } = useAuth()
+  const { canViewSettings, canViewWorkflows, authRequired } = useAuth()
+  // Personal account settings (password change) must stay reachable even without
+  // settings.view — support templates intentionally omit that capability.
+  const canOpenEmailSettings = canViewSettings || authRequired
 
   const items = useMemo(() => {
     const list = [
@@ -26,12 +29,13 @@ export function EmailSubNav() {
       ...(isServerClientMode()
         ? [{ to: "/email/dmarc" as const, label: "DMARC", icon: ShieldAlert, exact: false as const }]
         : []),
-      ...(canViewSettings
+      ...(canOpenEmailSettings
         ? [{
             to: "/email/settings" as const,
-            label: "Einstellungen",
+            label: canViewSettings ? "Einstellungen" : "Konto",
             icon: Settings,
             exact: false as const,
+            settingsTab: canViewSettings ? ("accounts" as const) : ("appUsers" as const),
           }]
         : []),
       ...(SVELTE_LAB_ENABLED
@@ -46,12 +50,12 @@ export function EmailSubNav() {
         : []),
     ]
     return list
-  }, [canViewSettings, canViewWorkflows])
+  }, [canOpenEmailSettings, canViewSettings, canViewWorkflows])
 
   return (
     <div className="border-b bg-muted/30">
       <nav className="flex h-11 items-stretch gap-0 px-2" aria-label="E-Mail-Bereiche">
-        {items.map(({ to, label, icon: Icon, exact }) => {
+        {items.map(({ to, label, icon: Icon, exact, settingsTab }) => {
           const active = exact
             ? !!matchRoute({ to: "/email", fuzzy: false })
             : !!matchRoute({ to, fuzzy: false })
@@ -60,7 +64,7 @@ export function EmailSubNav() {
             <Link
               key={to}
               to={to}
-              search={to === "/email/settings" ? emailSettingsSearch({ tab: "accounts" }) : undefined}
+              search={to === "/email/settings" ? emailSettingsSearch({ tab: settingsTab ?? "accounts" }) : undefined}
               className={cn(
                 "relative flex items-center gap-2 rounded-t-md px-4 text-sm font-medium transition-colors",
                 active
