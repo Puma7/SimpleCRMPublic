@@ -1569,16 +1569,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => dataBody(body),
     }
   }],
-  [IPCChannels.Maintenance.CheckForUpdates, () => ({
-    method: "GET",
-    path: "/api/v1/maintenance/status",
-    transform: (body) => ({ success: true, status: dataBody(body) }),
-  })],
-  [IPCChannels.Maintenance.InstallUpdate, () => ({
-    method: "GET",
-    path: "/api/v1/maintenance/status",
-    transform: (body) => ({ success: true, status: dataBody(body) }),
-  })],
+  [IPCChannels.Maintenance.CheckForUpdates, () => {
+    throw new Error("Software-Updates werden im Servermodus über Docker/Compose eingespielt")
+  }],
+  [IPCChannels.Maintenance.InstallUpdate, () => {
+    throw new Error("Software-Updates werden im Servermodus über Docker/Compose eingespielt")
+  }],
   [IPCChannels.Maintenance.GetUpdateStatus, () => ({
     method: "GET",
     path: "/api/v1/maintenance/status",
@@ -3383,6 +3379,33 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     query: { limit: DEFAULT_LIST_LIMIT },
     transform: (body) => listItems<WorkflowRunRecord>(body).map(mapWorkflowRunRecord),
   })],
+  [IPCChannels.Email.ListWorkflowDelayedJobs, ([payload]) => {
+    const input = payload === undefined ? {} : objectPayload(payload, "workflow delayed jobs payload")
+    return {
+      method: "GET",
+      path: "/api/v1/workflow-delayed-jobs",
+      query: pruneQueryUndefined({
+        status: typeof input.status === "string" ? input.status : "pending",
+        limit: input.limit === undefined ? DEFAULT_LIST_LIMIT : positiveId(input.limit, "delayed jobs limit"),
+      }),
+      transform: (body) => {
+        const result = dataBody<{ items: Record<string, unknown>[]; nextCursor: number | null }>(body)
+        return {
+          items: Array.isArray(result.items) ? result.items : [],
+          nextCursor: result.nextCursor ?? null,
+        }
+      },
+    }
+  }],
+  [IPCChannels.Email.CancelWorkflowDelayedJob, ([payload]) => {
+    const input = objectPayload(payload, "cancel workflow delayed job payload")
+    return {
+      method: "PATCH",
+      path: `/api/v1/workflow-delayed-jobs/${positiveId(input.id, "delayed job id")}`,
+      body: { status: "cancelled" },
+      transform: () => ({ success: true }),
+    }
+  }],
   [IPCChannels.Email.GetLatestWorkflowRunForMessage, ([payload]) => {
     const input = objectPayload(payload, "latest workflow run payload")
     const messageId = positiveId(input.messageId, "email message id")

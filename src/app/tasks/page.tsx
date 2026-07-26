@@ -42,6 +42,7 @@ import { userGroupService, type UserGroup } from "@/services/data/userGroupServi
 import { useToast } from "@/components/ui/use-toast"
 import { Task } from "@/services/data/types"
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from "@/components/ui/pagination"
+import { useAuth } from "@/components/auth/auth-context"
 
 // Match the database structure
 interface TaskData {
@@ -73,6 +74,7 @@ const createEmptyTask = (): Omit<TaskData, 'id'> => ({
 });
 
 export default function TasksPage() {
+  const { canWriteCrm } = useAuth()
   const [tasks, setTasks] = useState<TaskDisplay[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -481,6 +483,7 @@ export default function TasksPage() {
             <ExportButton data={tasks} fileName="tasks.json">
               Exportieren
             </ExportButton>
+            {canWriteCrm ? (
             <Dialog open={isAddTaskOpen} onOpenChange={setIsAddTaskOpen}>
               <DialogTrigger asChild>
                 <Button>
@@ -624,6 +627,7 @@ export default function TasksPage() {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
+            ) : null}
         </div>
         <Card>
           <CardHeader className="pb-2">
@@ -647,12 +651,14 @@ export default function TasksPage() {
                 heading="Keine Aufgaben gefunden"
                 description="Erstellen Sie Ihre erste Aufgabe, um loszulegen."
                 action={
-                  <button
-                    className="text-sm text-primary hover:underline"
-                    onClick={() => setIsAddTaskOpen(true)}
-                  >
-                    + Aufgabe hinzufügen
-                  </button>
+                  canWriteCrm ? (
+                    <button
+                      className="text-sm text-primary hover:underline"
+                      onClick={() => setIsAddTaskOpen(true)}
+                    >
+                      + Aufgabe hinzufügen
+                    </button>
+                  ) : undefined
                 }
               />
             ) : (
@@ -675,7 +681,8 @@ export default function TasksPage() {
                           <div className="flex items-center space-x-2">
                             <Checkbox 
                               checked={task.completed} 
-                              onCheckedChange={() => toggleTaskCompletion(task.id)} 
+                              onCheckedChange={() => toggleTaskCompletion(task.id)}
+                              disabled={!canWriteCrm}
                             />
                           </div>
                         </TableCell>

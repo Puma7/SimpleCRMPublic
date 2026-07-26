@@ -54,6 +54,7 @@ import { useForm } from "react-hook-form"
 import * as z from "zod"
 import { customFieldService } from "@/services/data/customFieldService"
 import { CustomField } from "@/services/data/types"
+import { useAuth } from "@/components/auth/auth-context"
 
 // Schema for custom field form validation
 const formSchema = z.object({
@@ -76,6 +77,7 @@ const formSchema = z.object({
 type FormValues = z.infer<typeof formSchema>;
 
 export default function CustomFieldsPage() {
+  const { canWriteCrm } = useAuth();
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -221,9 +223,11 @@ export default function CustomFieldsPage() {
     <div className="container mx-auto py-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-3xl font-bold">Benutzerdefinierte Felder</h1>
-        <Button onClick={handleCreateField}>
-          <Plus className="mr-2 h-4 w-4" /> Benutzerdefiniertes Feld hinzufügen
-        </Button>
+        {canWriteCrm ? (
+          <Button onClick={handleCreateField}>
+            <Plus className="mr-2 h-4 w-4" /> Benutzerdefiniertes Feld hinzufügen
+          </Button>
+        ) : null}
       </div>
 
       <Card>
@@ -242,9 +246,11 @@ export default function CustomFieldsPage() {
           ) : customFields.length === 0 ? (
             <div className="text-center py-10">
               <p className="text-muted-foreground">Noch keine benutzerdefinierten Felder definiert.</p>
-              <Button onClick={handleCreateField} className="mt-4">
-                <Plus className="mr-2 h-4 w-4" /> Fügen Sie Ihr erstes benutzerdefiniertes Feld hinzu
-              </Button>
+              {canWriteCrm ? (
+                <Button onClick={handleCreateField} className="mt-4">
+                  <Plus className="mr-2 h-4 w-4" /> Fügen Sie Ihr erstes benutzerdefiniertes Feld hinzu
+                </Button>
+              ) : null}
             </div>
           ) : (
             <div className="rounded-md border">
@@ -274,20 +280,24 @@ export default function CustomFieldsPage() {
                       </TableCell>
                       <TableCell>{field.display_order}</TableCell>
                       <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleEditField(field)}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDeleteField(field)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        {canWriteCrm ? (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleEditField(field)}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleDeleteField(field)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        ) : null}
                       </TableCell>
                     </TableRow>
                   ))}

@@ -11,6 +11,7 @@ import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
 } from './workspace-context';
+import { ilikeContainsPattern } from './sql-ilike';
 
 export type PostgresCustomerReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -60,7 +61,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('first_name', 'ilike', pattern),

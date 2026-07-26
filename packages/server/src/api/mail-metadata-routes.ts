@@ -397,7 +397,9 @@ const metadataSpecialRouteRegistrations: readonly MailMetadataRouteRegistration[
   metadataRoute('/api/v1/email/tags', ['POST'], /^\/api\/v1\/email\/tags$/, (req, ports) => handleCreateEmailMessageTag(req, ports), ['POST']),
   metadataRoute('/api/v1/email/tags/:id', ['DELETE'], /^\/api\/v1\/email\/tags\/([^/]+)$/, (req, ports, params) => handleDeleteEmailMessageTag(req, ports, params[0]), ['DELETE']),
   metadataRoute('/api/v1/email/categories', ['POST'], /^\/api\/v1\/email\/categories$/, (req, ports) => handleCreateEmailCategory(req, ports), ['POST']),
-  metadataRoute('/api/v1/email/categories/reorder', ['PATCH'], /^\/api\/v1\/email\/categories\/reorder$/, (req, ports) => handleReorderEmailCategories(req, ports)),
+  // Inventory method must match the handler (POST) and the HTTP registry; a
+  // PATCH-only inventory skipped mail-ACL enforcement for the working POST path.
+  metadataRoute('/api/v1/email/categories/reorder', ['POST'], /^\/api\/v1\/email\/categories\/reorder$/, (req, ports) => handleReorderEmailCategories(req, ports), ['POST']),
   metadataRoute('/api/v1/email/categories/:id', ['PATCH', 'DELETE'], /^\/api\/v1\/email\/categories\/([^/]+)$/, (req, ports, params) => (
     req.method === 'PATCH'
       ? handleUpdateEmailCategory(req, ports, params[0])

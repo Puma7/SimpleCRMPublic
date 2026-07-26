@@ -633,25 +633,24 @@ async function handlePortalCreate(
 
   // CAPTCHA: when the workspace has captcha enabled in its login security
   // settings, the public create endpoint also requires a fresh challenge.
-  // assertCaptchaChallenge consumes the challenge so each one is single-use.
-  // When loginSecurity is NOT wired at all the gate degrades open by design
-  // (matching the login flow) — but the audit record below carries
-  // captcha:'unavailable' so such deployments are visible, not silent.
+  // When loginSecurity is NOT wired, portal create is rejected — public abuse
+  // must not rely on optional operator configuration.
   let captchaStatus: 'passed' | 'not_required' | 'unavailable' = 'unavailable';
-  if (ports.loginSecurity) {
-    const loginConfig = await ports.loginSecurity.getLoginConfig();
-    if (loginConfig?.captcha.enabled) {
-      const challenge = isRecord(req.body) && typeof req.body.captchaChallenge === 'string'
-        ? req.body.captchaChallenge
-        : undefined;
-      const ip = req.ip ?? '0.0.0.0';
-      if (!(await ports.loginSecurity.assertCaptchaChallenge({ challenge, ip }))) {
-        return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
-      }
-      captchaStatus = 'passed';
-    } else {
-      captchaStatus = 'not_required';
+  if (!ports.loginSecurity) {
+    return error(503, 'portal_captcha_unavailable', 'Oeffentliches Retouren-Portal ist ohne Login-Sicherheitskonfiguration nicht verfuegbar');
+  }
+  const loginConfig = await ports.loginSecurity.getLoginConfig();
+  if (loginConfig?.captcha.enabled) {
+    const challenge = isRecord(req.body) && typeof req.body.captchaChallenge === 'string'
+      ? req.body.captchaChallenge
+      : undefined;
+    const ip = req.ip ?? '0.0.0.0';
+    if (!(await ports.loginSecurity.assertCaptchaChallenge({ challenge, ip }))) {
+      return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
     }
+    captchaStatus = 'passed';
+  } else {
+    captchaStatus = 'not_required';
   }
 
   const parsed = parsePortalCreateBody(req.body);

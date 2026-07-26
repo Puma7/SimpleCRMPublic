@@ -1476,7 +1476,7 @@ export type CustomerCustomFieldValueMutationInput = {
 };
 
 export type CustomerCustomFieldValueMutationPortResult =
-  | { ok: true; value: CustomerCustomFieldValueRecord }
+  | { ok: true; value: CustomerCustomFieldValueRecord; created: boolean }
   | { ok: false; code: 'customer_not_found' | 'custom_field_not_found' | 'value_conflict' };
 
 export type CustomerCustomFieldValueApiPort = {
@@ -4244,7 +4244,7 @@ export type WorkflowDelayedJobMutationInput = {
 
 export type WorkflowDelayedJobMutationPortResult =
   | { ok: true; job: WorkflowDelayedJobRecord }
-  | { ok: false; code: 'workflow_not_found' | 'message_not_found' };
+  | { ok: false; code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable' };
 
 export type WorkflowDelayedJobApiPort = {
   list(input: {

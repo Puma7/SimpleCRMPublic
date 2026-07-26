@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ilikeContainsPattern } from './db/sql-ilike';
 
 import { sql, type Kysely, type Selectable } from 'kysely';
 import {
@@ -454,10 +455,10 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
-          if (delayedJob && delayedJob.status === 'done') {
+          if (delayedJob && (delayedJob.status === 'done' || delayedJob.status === 'cancelled')) {
             await finishRun(trx, input.workspaceId, run.id, {
               status: 'ok',
-              log: ['skip:delayed_job_done'],
+              log: [delayedJob.status === 'cancelled' ? 'skip:delayed_job_cancelled' : 'skip:delayed_job_done'],
               now,
             });
             return;
@@ -473,7 +474,21 @@ export function createPostgresWorkflowExecutionJobPort(
           }
 
           if (delayedJob) {
-            await markDelayedJobStatus(trx, input.workspaceId, Number(delayedJob.id), 'running', now);
+            const claimed = await markDelayedJobStatus(
+              trx,
+              input.workspaceId,
+              Number(delayedJob.id),
+              'running',
+              now,
+            );
+            if (!claimed) {
+              await finishRun(trx, input.workspaceId, run.id, {
+                status: 'ok',
+                log: ['skip:delayed_job_cancelled'],
+                now,
+              });
+              return;
+            }
           }
 
           if (workflowTriggerNeedsMessage(trigger) && !message && !contextHasOutbound(jobContext)) {
@@ -679,13 +694,13 @@ async function prepareWorkflowRun(
   const resumeNodeId = delayedJob?.resume_node_id
     ?? stringFromContext(jobContext.resumeNodeId)
     ?? null;
-  if (delayedJob && delayedJob.status === 'done') {
+  if (delayedJob && (delayedJob.status === 'done' || delayedJob.status === 'cancelled')) {
     return {
       ok: false,
       workflow,
       message,
-      error: 'delayed_job_done',
-      log: ['skip:delayed_job_done'],
+      error: delayedJob.status === 'cancelled' ? 'delayed_job_cancelled' : 'delayed_job_done',
+      log: [delayedJob.status === 'cancelled' ? 'skip:delayed_job_cancelled' : 'skip:delayed_job_done'],
     };
   }
   if (delayedJob && !resumeNodeId) {
@@ -903,16 +918,23 @@ async function markDelayedJobStatus(
   delayedJobId: number,
   status: 'pending' | 'running' | 'done' | 'failed',
   now: Date,
-): Promise<void> {
-  await trx
+): Promise<boolean> {
+  let query = trx
     .updateTable('workflow_delayed_jobs')
     .set({
       status,
       updated_at: now,
     })
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', delayedJobId)
-    .execute();
+    .where('id', '=', delayedJobId);
+  // Do not revive/overwrite a job that ops cancelled (claim race or finish race).
+  if (status === 'running') {
+    query = query.where('status', 'in', ['pending', 'running']);
+  } else if (status === 'done' || status === 'failed') {
+    query = query.where('status', 'in', ['pending', 'running']);
+  }
+  const row = await query.returning('id').executeTakeFirst();
+  return row !== undefined;
 }
 
 async function startOrReuseRun(
@@ -3121,7 +3143,7 @@ async function executeWorkflowJtlLookup(
     .limit(limit);
 
   if (sourceSqliteId.value !== undefined) query = query.where('source_sqlite_id', '=', sourceSqliteId.value);
-  if (search) query = query.where('name', 'ilike', `%${search}%`);
+  if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
   const rows = await query.execute();
   const items = rows.map((row) => ({

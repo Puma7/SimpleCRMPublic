@@ -1,4 +1,6 @@
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { isIP } from 'node:net';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   AiProfileApiPort,
@@ -122,7 +124,7 @@ export function createPostgresAiProfileReadPort(options: PostgresWorkflowReadPor
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('label', 'ilike', pattern),
               eb('provider', 'ilike', pattern),
@@ -368,7 +370,7 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('label', 'ilike', pattern),
               eb('user_template', 'ilike', pattern),
@@ -601,7 +603,7 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('trigger_name', 'ilike', pattern),
@@ -841,7 +843,57 @@ function normalizeAiProfileBaseUrl(value: string): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('AI profile baseUrl must use http or https');
   }
+  // Block literal private/reserved hosts at config time. Full DNS-pinning for
+  // runtime AI fetches remains a follow-up; this closes the obvious SSRF path
+  // where a user points baseUrl at 127.0.0.1 / RFC1918 and reads the response
+  // via transform-text.
+  if (isPrivateOrReservedAiProfileHost(url.hostname)) {
+    throw new Error('AI profile baseUrl must not target a private or reserved address');
+  }
   return url.toString().replace(/\/$/, '');
+}
+
+function isPrivateOrReservedAiProfileHost(host: string): boolean {
+  const value = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    value === 'localhost'
+    || value === 'metadata.google.internal'
+    || value.endsWith('.localhost')
+    || value.endsWith('.local')
+    || value.endsWith('.internal')
+  ) {
+    return true;
+  }
+  const kind = isIP(value);
+  if (kind === 4) {
+    const [a, b] = value.split('.').map((part) => Number.parseInt(part, 10));
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (kind === 6) {
+    if (value === '::1' || value === '::') return true;
+    // fe80::/10 (link-local), not only the fe80: textual prefix.
+    if (isIpv6LinkLocalAddress(value) || value.startsWith('fc') || value.startsWith('fd')) return true;
+    if (value.startsWith('::ffff:') || value.startsWith('0:0:0:0:0:ffff:')) {
+      const mapped = value.includes('.')
+        ? value.slice(value.lastIndexOf(':') + 1)
+        : null;
+      if (mapped && isIP(mapped) === 4) return isPrivateOrReservedAiProfileHost(mapped);
+      return true;
+    }
+  }
+  return false;
+}
+
+function isIpv6LinkLocalAddress(host: string): boolean {
+  const first = host.split(':', 1)[0] ?? '';
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
+  const n = Number.parseInt(first, 16);
+  return n >= 0xfe80 && n <= 0xfebf;
 }
 
 function mutationToAiProfilePatch(

@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   SpamDecisionApiPort,
@@ -124,7 +125,7 @@ export function createPostgresSpamListEntryReadPort(options: PostgresSpamReadPor
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('pattern', 'ilike', pattern),
               eb('note', 'ilike', pattern),
@@ -608,7 +609,7 @@ export function createPostgresSpamFeatureStatReadPort(options: PostgresSpamReadP
 
           if (input.cursor !== undefined) query = query.where('feature_key', '>', input.cursor);
           const search = input.search?.trim();
-          if (search) query = query.where('feature_key', 'ilike', `%${search}%`);
+          if (search) query = query.where('feature_key', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           const pageRows = rows.slice(0, limit);

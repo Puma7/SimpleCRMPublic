@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   PgpIdentityApiPort,
@@ -96,7 +97,7 @@ export function createPostgresPgpIdentityReadPort(options: PostgresPgpReadPortOp
           if (input.email !== undefined) query = query.where('email', '=', input.email);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('email', 'ilike', pattern),
               eb('fingerprint', 'ilike', pattern),
@@ -445,7 +446,7 @@ export function createPostgresPgpPeerKeyReadPort(options: PostgresPgpReadPortOpt
           if (input.trustLevel !== undefined) query = query.where('trust_level', '=', input.trustLevel);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('email', 'ilike', pattern),
               eb('fingerprint', 'ilike', pattern),

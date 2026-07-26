@@ -10,6 +10,7 @@ import {
 } from '@simplecrm/core';
 
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 
 import type {
   AiProfileListResult,
@@ -33,11 +34,14 @@ import type {
 import {
   data,
   error,
+  forbidUnlessCapability,
   positiveIntFromPath,
+  rejectUnlessWorkflowManage,
   requireAdmin,
   requireCapability,
   requirePrincipal,
 } from './http';
+import { rejectUnlessWorkflowMessageReadable } from '../mail-access/workflow-message-access';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
 import { MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from '../jobs/policy';
@@ -226,6 +230,8 @@ async function handleWorkflowTemplateList(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessWorkflowManage(principal);
+  if (denied) return denied;
   if (!ports.workflowTemplates) {
     return error(503, 'workflow_templates_unavailable', 'Workflow template API nicht konfiguriert');
   }
@@ -240,6 +246,8 @@ async function handleWorkflowNodeCatalogList(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessWorkflowManage(principal);
+  if (denied) return denied;
   if (!ports.workflowNodeCatalog) {
     return error(503, 'workflow_node_catalog_unavailable', 'Workflow node catalog API nicht konfiguriert');
   }
@@ -253,6 +261,8 @@ async function handleWorkflowPluginList(req: ApiRequest): Promise<ApiResponse> {
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessWorkflowManage(principal);
+  if (denied) return denied;
   return data(200, []);
 }
 
@@ -260,6 +270,8 @@ async function handleWorkflowGraphCompileRoute(req: ApiRequest): Promise<ApiResp
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessWorkflowManage(principal);
+  if (denied) return denied;
 
   try {
     const graph = parseWorkflowGraphCompilePayload(req.body);
@@ -294,12 +306,36 @@ async function handleListRoute(
   ports: ServerApiPorts,
   resource: WorkflowReadResource,
 ): Promise<ApiResponse> {
-  if (resource === 'aiProfiles' && req.method === 'POST') return handleCreateAiProfile(req, ports);
-  if (resource === 'aiPrompts' && req.method === 'POST') return handleCreateAiPrompt(req, ports);
-  if (resource === 'workflows' && req.method === 'POST') return handleCreateWorkflow(req, ports);
+  if (resource === 'aiProfiles' && req.method === 'POST') {
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    const denied = rejectUnlessWorkflowManage(principal);
+    if (denied) return denied;
+    return handleCreateAiProfile(req, ports);
+  }
+  if (resource === 'aiPrompts' && req.method === 'POST') {
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    const denied = rejectUnlessWorkflowManage(principal);
+    if (denied) return denied;
+    return handleCreateAiPrompt(req, ports);
+  }
+  if (resource === 'workflows' && req.method === 'POST') {
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    const denied = rejectUnlessWorkflowManage(principal);
+    if (denied) return denied;
+    return handleCreateWorkflow(req, ports);
+  }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Prompt catalog and sanitized AI profile reads are needed by compose/settings
+  // for every authenticated user. Workflow lists stay behind workflows.manage.
+  if (resource === 'workflows') {
+    const listDenied = rejectUnlessWorkflowManage(principal);
+    if (listDenied) return listDenied;
+  }
 
   const limit = parseLimit(req.query?.limit);
   if (limit === null) return error(400, 'invalid_limit', `limit muss zwischen 1 und ${MAX_LIMIT} liegen`);
@@ -374,6 +410,10 @@ async function handleGetRoute(
   if ('status' in principal) return principal;
   const id = positiveIntFromPath(rawId);
   if (id === null) return error(400, `invalid_${resourceErrorName(resource)}_id`, `${resourceLabel(resource)} id muss eine positive Ganzzahl sein`);
+  if (req.method === 'PATCH' || req.method === 'DELETE') {
+    const denied = rejectUnlessWorkflowManage(principal);
+    if (denied) return denied;
+  }
   if (resource === 'aiProfiles' && req.method === 'PATCH') return handleUpdateAiProfile(req, ports, principal, id);
   if (resource === 'aiProfiles' && req.method === 'DELETE') return handleDeleteAiProfile(ports, principal, id);
   if (resource === 'aiPrompts' && req.method === 'PATCH') return handleUpdateAiPrompt(req, ports, principal, id);
@@ -381,6 +421,11 @@ async function handleGetRoute(
   if (resource === 'workflows' && req.method === 'PATCH') return handleUpdateWorkflow(req, ports, principal, id);
   if (resource === 'workflows' && req.method === 'DELETE') return handleDeleteWorkflow(ports, principal, id);
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  // Prompt and sanitized profile reads are available to any authenticated user.
+  if (resource === 'workflows') {
+    const getDenied = rejectUnlessWorkflowManage(principal);
+    if (getDenied) return getDenied;
+  }
 
   switch (resource) {
     case 'aiProfiles': {
@@ -417,6 +462,10 @@ async function handleWorkflowBySourceRoute(
   if (!ports.workflows) return error(503, 'workflows_unavailable', 'Workflow API nicht konfiguriert');
 
   const workflow = await findWorkflowBySourceSqliteId(ports, principal.workspaceId, sourceSqliteId);
+  if (req.method === 'PATCH' || req.method === 'DELETE') {
+    const denied = rejectUnlessWorkflowManage(principal);
+    if (denied) return denied;
+  }
   if (req.method === 'PATCH') {
     return workflow
       ? handleUpdateWorkflow(req, ports, principal, workflow.id)
@@ -428,6 +477,8 @@ async function handleWorkflowBySourceRoute(
       : error(404, 'workflow_not_found', 'Workflow nicht gefunden');
   }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const getDenied = rejectUnlessWorkflowManage(principal);
+  if (getDenied) return getDenied;
   return data(200, workflow ? sanitizeWorkflow(workflow) : null);
 }
 
@@ -476,21 +527,16 @@ async function handleWorkflowExecute(
   const parsed = parseWorkflowExecuteBody(req.body);
   if (!parsed.ok) return parsed.response;
 
+  const workflowDenied = rejectUnlessWorkflowManage(principal);
+  if (workflowDenied) return workflowDenied;
+
   const messageId = parsed.values.messageId;
   if (messageId !== undefined) {
-    if (!ports.emailMessages) return error(503, 'email_messages_unavailable', 'Email message API nicht konfiguriert');
-    const message = await ports.emailMessages.get({
-      workspaceId: principal.workspaceId,
-      id: messageId,
-      includeBody: false,
-    });
-    if (!message) return error(404, 'email_message_not_found', 'Email message nicht gefunden');
+    const messageDenied = await rejectUnlessWorkflowMessageReadable(ports, principal, messageId);
+    if (messageDenied) return messageDenied;
   }
 
   const dryRun = parsed.values.dryRun !== false;
-  if (!dryRun && !requireCapability(principal, 'workflows.manage')) {
-    return error(403, 'forbidden', 'Live-Ausführung erfordert Adminrechte oder Workflow-Berechtigung');
-  }
 
   // Interim escalation guard: server workflow runs execute under a system role
   // with no per-node ACL, so a live run whose graph contains a writing node
@@ -561,6 +607,8 @@ async function handleWorkflowInboundBackfillRoute(
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessWorkflowManage(principal);
+  if (denied) return denied;
   if (!ports.workflowInboundBackfill) {
     return error(503, 'workflow_backfill_unavailable', 'Workflow Backfill API nicht konfiguriert');
   }
@@ -604,7 +652,7 @@ async function handleWebhookIncomingRoute(
   if (!automationKeyAuthenticated) {
     const expectedSecret = syncValues.get('email_webhook_secret')?.trim() ?? '';
     if (!parsed.values.secret || !expectedSecret || !webhookSecretMatches(parsed.values.secret, expectedSecret)) {
-      return data(200, { success: false, error: 'Ungueltiges Webhook-Secret', fired: 0 });
+      return error(401, 'webhook_secret_invalid', 'Ungueltiges Webhook-Secret');
     }
   }
 
@@ -661,6 +709,14 @@ async function handleCreateAiProfile(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // AI profiles hold outbound API base URLs and secrets — workspace-wide SSRF surface.
+  // Restrict create/update/delete to workflow managers (admins inherit via requireCapability).
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
   if (!ports.aiProfiles?.create) return error(503, 'ai_profiles_unavailable', 'AI profile API nicht konfiguriert');
 
   const parsed = parseAiProfileMutationBody(req.body, {
@@ -691,6 +747,12 @@ async function handleUpdateAiProfile(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
   if (!ports.aiProfiles?.update) return error(503, 'ai_profiles_unavailable', 'AI profile API nicht konfiguriert');
 
   const parsed = parseAiProfileMutationBody(req.body, {
@@ -724,6 +786,12 @@ async function handleDeleteAiProfile(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
   if (!ports.aiProfiles?.delete) return error(503, 'ai_profiles_unavailable', 'AI profile API nicht konfiguriert');
 
   const profile = await ports.aiProfiles.delete({
@@ -817,6 +885,7 @@ async function handleAiTextTransform(
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Text transform is a per-user compose/viewer action; do not require workflows.manage.
   if (!ports.aiTextTransform) return error(503, 'ai_text_transform_unavailable', 'AI text transform API nicht konfiguriert');
 
   const parsed = parseAiTextTransformBody(req.body);
@@ -837,6 +906,8 @@ async function handleReorderAiPrompts(
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessWorkflowManage(principal);
+  if (denied) return denied;
   if (!ports.aiPrompts?.reorder) return error(503, 'ai_prompts_unavailable', 'AI prompt API nicht konfiguriert');
 
   const parsed = parseAiPromptReorderBody(req.body);
@@ -1490,8 +1561,23 @@ function parseAiProfileMutationBody(
   }
   if (Object.prototype.hasOwnProperty.call(body, 'baseUrl')) {
     const baseUrl = normalizeBodyHttpUrl(body.baseUrl, 'baseUrl', 2048);
-    if (baseUrl.ok) values.baseUrl = baseUrl.value;
-    else errors.push({ field: 'baseUrl', message: baseUrl.message });
+    if (baseUrl.ok) {
+      try {
+        const host = new URL(baseUrl.value).hostname;
+        if (isPrivateOrReservedAiProfileHost(host)) {
+          errors.push({
+            field: 'baseUrl',
+            message: 'baseUrl darf keine private oder reservierte Adresse sein',
+          });
+        } else {
+          values.baseUrl = baseUrl.value;
+        }
+      } catch {
+        errors.push({ field: 'baseUrl', message: 'baseUrl muss eine gueltige URL sein' });
+      }
+    } else {
+      errors.push({ field: 'baseUrl', message: baseUrl.message });
+    }
   }
   if (Object.prototype.hasOwnProperty.call(body, 'model')) {
     const model = normalizeRequiredBodyText(body.model, 'model', 200);
@@ -2120,6 +2206,49 @@ function normalizeBodyHttpUrl(
   } catch {
     return { ok: false, message: `${field} muss eine gueltige URL sein` };
   }
+}
+
+function isPrivateOrReservedAiProfileHost(host: string): boolean {
+  const value = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    value === 'localhost'
+    || value === 'metadata.google.internal'
+    || value.endsWith('.localhost')
+    || value.endsWith('.local')
+    || value.endsWith('.internal')
+  ) {
+    return true;
+  }
+  const kind = isIP(value);
+  if (kind === 4) {
+    const [a, b] = value.split('.').map((part) => Number.parseInt(part, 10));
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (kind === 6) {
+    if (value === '::1' || value === '::') return true;
+    // fe80::/10 (link-local), not only the fe80: textual prefix.
+    if (isIpv6LinkLocalAddress(value) || value.startsWith('fc') || value.startsWith('fd')) return true;
+    if (value.startsWith('::ffff:') || value.startsWith('0:0:0:0:0:ffff:')) {
+      const mapped = value.includes('.')
+        ? value.slice(value.lastIndexOf(':') + 1)
+        : null;
+      if (mapped && isIP(mapped) === 4) return isPrivateOrReservedAiProfileHost(mapped);
+      return true;
+    }
+  }
+  return false;
+}
+
+function isIpv6LinkLocalAddress(host: string): boolean {
+  const first = host.split(':', 1)[0] ?? '';
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
+  const n = Number.parseInt(first, 16);
+  return n >= 0xfe80 && n <= 0xfebf;
 }
 
 function normalizeBodyBoolean(

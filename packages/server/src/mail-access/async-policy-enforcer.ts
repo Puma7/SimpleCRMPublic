@@ -936,22 +936,59 @@ function mailDelegationResourceFromEventPayload(payload: Record<string, unknown>
   return null;
 }
 
+const CRM_ID_ONLY_ENTITY_TYPES = new Set([
+  'calendar_event',
+  'task',
+  'customer',
+  'product',
+  'deal',
+  'deal_product',
+  'custom_field',
+  'custom_field_value',
+  'saved_view',
+  'activity_log',
+  'jtl_reference',
+  'jtl_order',
+]);
+
+function shouldReduceCrmEventPayload(event: ServerEvent): boolean {
+  if (!CRM_ID_ONLY_ENTITY_TYPES.has(event.entityType)) return false;
+  return (
+    event.type.endsWith('.created')
+    || event.type.endsWith('.updated')
+    || event.type.endsWith('.deleted')
+  );
+}
+
+/** Safe relation keys needed by renderer refresh filters (not PII content). */
+const CRM_EVENT_RELATION_KEYS = ['customerId', 'dealId', 'resource'] as const;
+
+function reduceCrmEventPayload(payload: ServerEvent['payload']): ServerEvent['payload'] {
+  const reduced: Record<string, unknown> = {};
+  const id = payload.id;
+  if (typeof id === 'number' || typeof id === 'string') {
+    reduced.id = id;
+  }
+  for (const key of CRM_EVENT_RELATION_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(payload, key) && payload[key] !== undefined) {
+      reduced[key] = payload[key];
+    }
+  }
+  return reduced;
+}
+
 export async function filterMailEventForPrincipal(
   event: ServerEvent,
   context: MailEventFilterContext,
 ): Promise<ServerEvent | null> {
-  if (
-    event.entityType === 'calendar_event'
-    && (
-      event.type === 'calendar_event.created'
-      || event.type === 'calendar_event.updated'
-      || event.type === 'calendar_event.deleted'
-    )
-  ) {
-    const id = event.payload.id;
+  // CRM entity events are workspace-broadcast but REST reads may be scoped
+  // (tasks) or contain PII (customers, deals, custom fields). Reduce payloads
+  // to { id } plus safe relation keys so live refresh still works without
+  // leaking field content over WS.
+  if (shouldReduceCrmEventPayload(event)) {
     return {
       ...event,
-      payload: typeof id === 'number' || typeof id === 'string' ? { id } : {},
+      payload: reduceCrmEventPayload(event.payload),
     };
   }
   if (event.type === 'email_acl.changed') {

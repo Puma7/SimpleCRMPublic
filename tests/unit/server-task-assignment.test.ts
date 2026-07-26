@@ -7,7 +7,7 @@ import {
 } from '../../packages/server/src';
 
 describe('task assignment (global/user/group) and visibility', () => {
-  const principal = { userId: 'user-1', workspaceId: 'ws-1', role: 'user' as const };
+  const principal = { userId: 'user-1', workspaceId: 'ws-1', role: 'user' as const, capabilities: ['crm.write'] };
 
   test('creates a task assigned to a specific user', async () => {
     const tasks = taskPort();

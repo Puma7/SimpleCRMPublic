@@ -17,7 +17,10 @@ export type AiChatRequest = {
   user: string;
   temperature: number;
   maxTokens?: number;
-  fetchImpl: typeof fetch;
+  /** Test-only plain fetch; production uses SSRF-guarded pinned fetch. */
+  fetchImpl?: typeof fetch;
+  /** When true with fetchImpl, skip network SSRF guards (unit tests only). */
+  allowUnguardedFetch?: boolean;
   signal: AbortSignal;
 };
 
@@ -187,16 +190,34 @@ function usageFrom(prompt: number | null, completion: number | null, total: numb
 export async function callAiChat(req: AiChatRequest): Promise<AiChatResult> {
   const provider = resolveProviderKind(req.provider, req.baseUrl);
   const spec = buildProviderRequest(provider, req);
-  const response = await req.fetchImpl(spec.url, {
-    method: 'POST',
-    headers: spec.headers,
-    body: JSON.stringify(spec.body),
-    signal: req.signal,
-  });
+  const bodyJson = JSON.stringify(spec.body);
+
+  let response: { ok: boolean; status: number; text(): Promise<string> };
+  if (req.allowUnguardedFetch && req.fetchImpl) {
+    response = await req.fetchImpl(spec.url, {
+      method: 'POST',
+      headers: spec.headers,
+      body: bodyJson,
+      signal: req.signal,
+    });
+  } else {
+    const { guardedAiPost } = await import('./ai-guarded-fetch.js');
+    response = await guardedAiPost({
+      url: spec.url,
+      baseUrl: req.baseUrl,
+      headers: spec.headers,
+      body: bodyJson,
+      signal: req.signal,
+      // Align guarded deadline with caller AbortController (classification/reply use 90s).
+      timeoutMs: 90_000,
+    });
+  }
+
   const body = await response.text();
   if (!response.ok) {
-    const detail = body.trim().slice(0, 500);
-    throw new Error(`KI API HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+    // Do not return provider response bodies to callers — they can contain
+    // internal error pages when baseUrl was pointed at unexpected hosts.
+    throw new Error(`KI API HTTP ${response.status}`);
   }
   return parseProviderResponse(provider, body);
 }

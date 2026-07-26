@@ -57,6 +57,30 @@ function makePortalSettings(resolution: Resolution): ReturnsPortalSettingsApiPor
   };
 }
 
+function makeLoginSecurity(captchaEnabled = false) {
+  return {
+    async getLoginConfig() {
+      return {
+        captcha: { enabled: captchaEnabled, provider: 'turnstile', siteKey: 'site-key' },
+        pinKeypad: { enabled: false },
+        mfa: { enabled: false, methods: [] },
+        user: null,
+      };
+    },
+    assertCaptchaChallenge() { return true; },
+  } as never;
+}
+
+function makePortalPorts(over: Partial<ServerApiPorts> = {}): ServerApiPorts {
+  return {
+    auth: {} as never,
+    returns: makeReturnsPort(),
+    returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
+    loginSecurity: makeLoginSecurity(),
+    ...over,
+  };
+}
+
 function req(path: string, init: Partial<ApiRequest> = {}): ApiRequest {
   return { method: 'GET', path, ...init };
 }
@@ -139,11 +163,7 @@ describe('public portal dispatcher', () => {
   });
 
   test('POST without items responds 400 (validation runs after token resolves)', async () => {
-    const ports: ServerApiPorts = {
-      auth: {} as never,
-      returns: makeReturnsPort(),
-      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
-    };
+    const ports = makePortalPorts();
     const result = await handlePublicPortalRoute(
       req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', body: { items: [] } }),
       ports,
@@ -153,11 +173,7 @@ describe('public portal dispatcher', () => {
   });
 
   test('POST rejects an invalid item productId/reasonId (does not silently drop the link)', async () => {
-    const ports: ServerApiPorts = {
-      auth: {} as never,
-      returns: makeReturnsPort(),
-      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
-    };
+    const ports = makePortalPorts();
 
     const badProduct = await handlePublicPortalRoute(
       req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', body: { items: [{ quantity: 1, productId: 'abc' }] } }),
@@ -240,11 +256,7 @@ describe('public portal dispatcher', () => {
   });
 
   test('POST create is rate-limited per IP (10/hour) with a 429 + retry hint', async () => {
-    const ports: ServerApiPorts = {
-      auth: {} as never,
-      returns: makeReturnsPort(),
-      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
-    };
+    const ports = makePortalPorts();
     const post = (ip: string) => handlePublicPortalRoute(
       req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', ip, body: { items: [{ quantity: 1 }] } }),
       ports,
@@ -315,18 +327,26 @@ describe('public portal dispatcher', () => {
     const auditPort = {
       async record(input: { metadata: Record<string, unknown> }) { audits.push(input.metadata); },
     } as never;
-    const base = {
-      auth: {} as never,
-      returns: makeReturnsPort(),
-      returnsPortalSettings: makePortalSettings({ ok: true, workspaceId: WS_ID, enabled: true }),
-      audit: auditPort,
-    };
-    // No loginSecurity wired → the gate degrades open but the audit shows it.
+    const base = makePortalPorts({ audit: auditPort });
+
+    // No loginSecurity wired → portal create is rejected.
+    const unavailable = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', ip: '1.1.1.1', body: { items: [{ quantity: 1 }] } }),
+      {
+        ...base,
+        loginSecurity: undefined,
+      },
+    );
+    expect(unavailable?.status).toBe(503);
+    expect((unavailable?.body as { error: { code: string } }).error.code).toBe('portal_captcha_unavailable');
+    expect(audits).toHaveLength(0);
+
+    // CAPTCHA disabled → not_required.
     await handlePublicPortalRoute(
       req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', ip: '1.1.1.1', body: { items: [{ quantity: 1 }] } }),
-      base as ServerApiPorts,
+      base,
     );
-    expect(audits[0]!.captcha).toBe('unavailable');
+    expect(audits[0]!.captcha).toBe('not_required');
 
     // CAPTCHA enabled and passed → 'passed'.
     await handlePublicPortalRoute(
@@ -337,18 +357,8 @@ describe('public portal dispatcher', () => {
       }),
       {
         ...base,
-        loginSecurity: {
-          async getLoginConfig() {
-            return {
-              captcha: { enabled: true, provider: 'turnstile', siteKey: 's' },
-              pinKeypad: { enabled: false },
-              mfa: { enabled: false, methods: [] },
-              user: null,
-            };
-          },
-          assertCaptchaChallenge() { return true; },
-        } as never,
-      } as ServerApiPorts,
+        loginSecurity: makeLoginSecurity(true),
+      },
     );
     expect(audits[1]!.captcha).toBe('passed');
   });

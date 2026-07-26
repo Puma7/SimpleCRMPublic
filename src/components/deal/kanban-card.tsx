@@ -21,9 +21,10 @@ type Deal = {
 interface KanbanCardProps {
   deal: Deal;
   onStageChange?: (dealId: number, newStage: string) => void;
+  canWriteCrm?: boolean;
 }
 
-export function KanbanCard({ deal, onStageChange }: KanbanCardProps) {
+export function KanbanCard({ deal, onStageChange, canWriteCrm = true }: KanbanCardProps) {
   const {
     attributes,
     listeners,
@@ -33,6 +34,7 @@ export function KanbanCard({ deal, onStageChange }: KanbanCardProps) {
     isDragging,
   } = useSortable({
     id: deal.id,
+    disabled: !canWriteCrm,
     data: {
       type: "deal",
       deal,
@@ -47,8 +49,8 @@ export function KanbanCard({ deal, onStageChange }: KanbanCardProps) {
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <Card className="mb-3 cursor-grab active:cursor-grabbing shadow-sm hover:shadow-md transition-all">
+    <div ref={setNodeRef} style={style} {...(canWriteCrm ? attributes : {})} {...(canWriteCrm ? listeners : {})}>
+      <Card className={`mb-3 shadow-sm hover:shadow-md transition-all ${canWriteCrm ? "cursor-grab active:cursor-grabbing" : ""}`}>
         <CardHeader className="p-4 pb-2">
           <CardTitle className="text-base font-medium">
             <Link to="/deals/$dealId" params={{ dealId: deal.id.toString() }} className="hover:underline">
@@ -82,7 +84,7 @@ export function KanbanCard({ deal, onStageChange }: KanbanCardProps) {
         </CardContent>
         <CardFooter className="p-4 pt-0 flex items-center justify-between gap-2">
           <span className="text-xs text-muted-foreground">Abschluss: {deal.expectedCloseDate || '—'}</span>
-          {onStageChange && (
+          {canWriteCrm && onStageChange && (
             // Stop pointer events from bubbling to drag listeners
             <div onPointerDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
               <Select value={deal.stage} onValueChange={(stage) => onStageChange(deal.id, stage)}>

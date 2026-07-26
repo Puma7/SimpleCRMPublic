@@ -131,15 +131,12 @@ export const columns: ColumnDef<Product>[] = [
       const product = row.original
       // Type assertion for meta - ensure handlers are passed correctly in ProductTable
       const meta = table.options.meta as { 
-        onEdit: (product: Product) => void;
-        onDelete: (productId: number) => Promise<void>; // Assuming delete is async
+        onEdit?: (product: Product) => void;
+        onDelete?: (productId: number) => Promise<void>; // Assuming delete is async
+        canWriteCrm?: boolean;
       };
 
-      if (!meta || typeof meta.onEdit !== 'function' || typeof meta.onDelete !== 'function') {
-         console.error("Table meta actions not passed correctly!");
-         return null; // Or some placeholder error indicator
-      }
-
+      const canWriteCrm = meta?.canWriteCrm !== false;
       const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
       const handleDelete = async () => {
@@ -160,35 +157,41 @@ export const columns: ColumnDef<Product>[] = [
               <DropdownMenuItem onClick={() => navigator.clipboard.writeText(product.name)}>
                 Namen kopieren
               </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => meta.onEdit(product)}> 
-                <Pencil className="mr-2 h-4 w-4" /> Bearbeiten
-              </DropdownMenuItem>
-              <DropdownMenuItem className="text-red-600 focus:text-red-700 focus:bg-red-100" onClick={handleDelete}> 
-                <Trash2 className="mr-2 h-4 w-4" /> Löschen
-              </DropdownMenuItem>
+              {canWriteCrm && typeof meta?.onEdit === 'function' && typeof meta?.onDelete === 'function' ? (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => meta.onEdit!(product)}> 
+                    <Pencil className="mr-2 h-4 w-4" /> Bearbeiten
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="text-red-600 focus:text-red-700 focus:bg-red-100" onClick={handleDelete}> 
+                    <Trash2 className="mr-2 h-4 w-4" /> Löschen
+                  </DropdownMenuItem>
+                </>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Produkt löschen</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Sind Sie sicher, dass Sie das Produkt "{product.name}" löschen möchten? Diese Aktion kann nicht rückgängig gemacht werden.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Abbrechen</AlertDialogCancel>
-                <AlertDialogAction 
-                  className="bg-red-600 hover:bg-red-700" 
-                  onClick={() => meta.onDelete(product.id)}
-                >
-                  Löschen
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          </AlertDialog>
+          {canWriteCrm && typeof meta?.onDelete === 'function' ? (
+            <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Produkt löschen</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    Sind Sie sicher, dass Sie das Produkt "{product.name}" löschen möchten? Diese Aktion kann nicht rückgängig gemacht werden.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+                  <AlertDialogAction 
+                    className="bg-red-600 hover:bg-red-700" 
+                    onClick={() => meta.onDelete!(product.id)}
+                  >
+                    Löschen
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : null}
         </>
       )
     },

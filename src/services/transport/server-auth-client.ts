@@ -121,9 +121,10 @@ export type ServerInitialOwnerInput = {
 
 export type ServerAuthInvitation = {
   id: string
-  email: string
+  email?: string
+  maskedEmail?: string
   displayName: string
-  role: ServerAuthUser["role"]
+  role?: ServerAuthUser["role"]
   expiresAt: string
   acceptedAt?: string | null
   revokedAt?: string | null
