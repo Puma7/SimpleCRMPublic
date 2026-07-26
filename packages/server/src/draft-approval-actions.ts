@@ -105,6 +105,12 @@ export async function approveDraftSendInTransaction(
   const to = recipientFieldFromStoredJson(draft.to_json);
   const cc = recipientFieldFromStoredJson(draft.cc_json) || null;
   const bcc = recipientFieldFromStoredJson(draft.bcc_json) || null;
+  // Validate recipients before mutating approval/schedule — otherwise a draft
+  // without To clears pending approval, the API reports success, and
+  // processScheduledDraft only releases the claim without sending.
+  if (!to.trim()) {
+    return { success: false, error: 'Empfänger fehlt — Freigabe bleibt bestehen.' };
+  }
 
   try {
     await persistManualOutboundApproval(trx, {

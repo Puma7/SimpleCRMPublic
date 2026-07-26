@@ -35,6 +35,9 @@ import {
 import { enqueueNextInboundWorkflowAfterTerminalChildFailure } from './workflow-inbound-chain-advance';
 import type { JobPayload } from './jobs/types';
 
+/** Match ai-classification agent/classify caps so draft_reply cannot blow the model context. */
+const DRAFT_REPLY_BODY_MAX = 12_000;
+const DRAFT_REPLY_KNOWLEDGE_MAX = 12_000;
 const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
 
 export type WorkflowAiDraftNodeDeps = WorkflowAiChatDeps & Readonly<{
@@ -97,7 +100,7 @@ export async function executeWorkflowAiDraftReply(
 
   const profileId = optionalPositiveInt(input.config.profileId);
   const knowledgeBaseId = optionalPositiveInt(input.config.knowledgeBaseId);
-  const query = input.strings.combined_text ?? '';
+  const query = (input.strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX);
   let chunks;
   if (knowledgeBaseId !== undefined) {
     chunks = await searchKnowledgeForWorkflow(
@@ -119,7 +122,7 @@ export async function executeWorkflowAiDraftReply(
       5,
     );
   }
-  const kbText = chunks.map((c) => c.content).join('\n---\n');
+  const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
 
   let cannedBlock = '';
   if (input.config.includeCanned === true) {
@@ -710,7 +713,7 @@ export function createPostgresAiDraftReplyPort(
           if (message.account_id === null) throw new Error('Nachricht ohne Konto');
 
           const knowledgeBaseId = optionalPositiveInt(config.knowledgeBaseId);
-          const query = strings.combined_text ?? '';
+          const query = (strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX);
           const chunks = knowledgeBaseId !== undefined
             ? await searchKnowledgeForWorkflow(
               trx,
@@ -729,7 +732,7 @@ export function createPostgresAiDraftReplyPort(
               query,
               5,
             );
-          const kbText = chunks.map((c) => c.content).join('\n---\n');
+          const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
 
           let cannedBlock = '';
           if (config.includeCanned === true) {

@@ -229,7 +229,10 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
   const maxAttempts = Number(helpers?.job?.max_attempts ?? 1);
   if (!(attempts >= maxAttempts)) return;
 
-  const { inboundChainFromJobPayload } = await import('../workflow-inbound-chain-advance.js');
+  const {
+    inboundChainFromJobPayload,
+    inboundChainHopClaimKey,
+  } = await import('../workflow-inbound-chain-advance.js');
   const parsed = inboundChainFromJobPayload(payload as Record<string, unknown>);
   if (!parsed) return;
   const nextIndex = parsed.chain.index + 1;
@@ -256,29 +259,46 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
       },
     });
 
+  const claimKey = inboundChainHopClaimKey(parsed.messageId, parsed.chain, nextIndex);
+
   try {
-    // Prefer Graphile's addJob so the hop stays on the same worker queue.
+    // Prefer a single PG client so the hop claim + enqueue share one connection
+    // (sibling terminal failures must not double-enqueue the next workflow).
+    if (helpers?.withPgClient) {
+      await helpers.withPgClient(async (client) => {
+        const claimed = await client.query(
+          `INSERT INTO sync_info (
+             workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
+           ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
+           ON CONFLICT (workspace_id, key) DO NOTHING
+           RETURNING key`,
+          [
+            parsed.workspaceId,
+            claimKey,
+            JSON.stringify({ origin: 'inbound_chain_hop' }),
+          ],
+        ) as { rowCount?: number | null };
+        if (!claimed.rowCount) return;
+        await client.query(
+          `SELECT graphile_worker.add_job(
+             $1::text,
+             $2::json,
+             'workflow',
+             now(),
+             3
+           )`,
+          ['workflow.execute', JSON.stringify(nextPayload)],
+        );
+      });
+      return;
+    }
+    // Test helpers without withPgClient: best-effort enqueue (no claim available).
     if (helpers?.addJob) {
       await helpers.addJob('workflow.execute', nextPayload, {
         maxAttempts: 3,
         queueName: 'workflow',
       });
-      return;
     }
-    if (!helpers?.withPgClient) return;
-    // Fallback for tests / helpers without addJob: enqueue via Graphile SQL API.
-    await helpers.withPgClient(async (client) => {
-      await client.query(
-        `SELECT graphile_worker.add_job(
-           $1::text,
-           $2::json,
-           'workflow',
-           now(),
-           3
-         )`,
-        ['workflow.execute', JSON.stringify(nextPayload)],
-      );
-    });
   } catch (advanceErr) {
     // Never mask the original job failure if chain advance itself fails.
     console.error('[graphile-worker] inbound chain advance after terminal failure failed', advanceErr);

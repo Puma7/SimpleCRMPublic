@@ -42,6 +42,7 @@ import {
   parseInboundWorkflowChain,
   type InboundWorkflowChainContext,
 } from './workflow-inbound-chain-context';
+import { tryClaimInboundChainHop } from './workflow-inbound-chain-advance';
 
 import type {
   WorkflowExecutionDryRunResult,
@@ -7154,6 +7155,18 @@ async function maybeEnqueueNextInboundWorkflow(
   // Chain stop is decided exclusively via inboundChainStop on the finished run.
   // Do not re-bail on spam/review here — that would ignore stopFurtherWorkflows:false.
   if (!message) return;
+
+  // Sibling deferred continuations share the same inboundWorkflowChain: the first
+  // finisher marks applied + enqueues; later already_applied hops must not
+  // re-enqueue the same next workflow. Claim is shared with terminal-child advance.
+  const claimed = await tryClaimInboundChainHop(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    chain,
+    nextIndex,
+    now: input.now,
+  });
+  if (!claimed) return;
 
   const payload = input.actorUserId
     ? {

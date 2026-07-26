@@ -231,4 +231,37 @@ describe('codex review regression guards', () => {
     expect(execution).toContain('runId: context.runId');
     expect(handlers).toContain("optionalPositiveInteger(payload, 'runId')");
   });
+
+  test('codex round-9: chain hop claim, approve requires To, draft_reply context caps', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+    const approval = readRepoFile('packages/server/src/draft-approval-actions.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const desktopAi = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+
+    // Sibling deferred / already_applied hops share one sync_info claim.
+    expect(advance).toContain('inboundChainHopClaimKey');
+    expect(advance).toContain('tryClaimInboundChainHop');
+    expect(advance).toContain("onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())");
+    expect(execution).toContain('tryClaimInboundChainHop');
+    expect(execution).toMatch(/skip:workflow_already_applied[\s\S]*?maybeEnqueueNextInboundWorkflow/);
+    expect(graphile).toContain('inboundChainHopClaimKey');
+    expect(graphile).toContain('ON CONFLICT (workspace_id, key) DO NOTHING');
+
+    // Empty To must fail before clearing pending approval.
+    expect(approval).toContain("if (!to.trim())");
+    expect(approval).toContain('Empfänger fehlt — Freigabe bleibt bestehen.');
+    expect(approval).toMatch(
+      /if \(!to\.trim\(\)\) \{\s*return \{ success: false, error: 'Empfänger fehlt[\s\S]*?persistManualOutboundApproval\(/,
+    );
+
+    // Cap mail + knowledge like agent/classify (12k).
+    expect(draftNodes).toContain('DRAFT_REPLY_BODY_MAX = 12_000');
+    expect(draftNodes).toContain('DRAFT_REPLY_KNOWLEDGE_MAX = 12_000');
+    expect(draftNodes).toContain('.slice(0, DRAFT_REPLY_BODY_MAX)');
+    expect(draftNodes).toContain('.slice(0, DRAFT_REPLY_KNOWLEDGE_MAX)');
+    expect(desktopAi).toContain('DRAFT_REPLY_BODY_MAX = 12_000');
+    expect(desktopAi).toContain('.slice(0, DRAFT_REPLY_KNOWLEDGE_MAX)');
+  });
 });

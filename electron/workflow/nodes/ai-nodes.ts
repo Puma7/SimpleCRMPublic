@@ -75,6 +75,9 @@ type Reg = (def: RegisteredWorkflowNode) => void;
 // aber ein harter Riegel gegen entartete LLM-Ausgaben (Wiederholungsschleifen),
 // die sonst ungedeckelt in DB und SMTP-Versand landen würden.
 const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
+/** Match server/agent caps so draft_reply cannot blow the model context. */
+const DRAFT_REPLY_BODY_MAX = 12_000;
+const DRAFT_REPLY_KNOWLEDGE_MAX = 12_000;
 
 function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
   return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
@@ -644,7 +647,7 @@ export function registerAiNodes(register: Reg): void {
       }
 
       const chunks = await resolveKnowledgeChunks(ctx, config);
-      const kbText = chunks.map((c) => c.content).join('\n---\n');
+      const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
 
       let cannedBlock = '';
       if (config.includeCanned === true) {
@@ -660,7 +663,7 @@ export function registerAiNodes(register: Reg): void {
       const system = String(config.systemPrompt ?? '').trim() || 'Beantworte die Kundenmail freundlich auf Deutsch.';
       const user = [
         'Kundenmail:',
-        ctx.strings.combined_text,
+        (ctx.strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX),
         kbText ? `\nWissensbasis (relevante Auszüge):\n${kbText}` : '',
         cannedBlock ? `\nVorhandene Textbausteine (als Formulierungshilfe):\n${cannedBlock}` : '',
       ]

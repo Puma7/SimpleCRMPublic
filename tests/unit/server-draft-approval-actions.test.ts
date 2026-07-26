@@ -16,6 +16,10 @@ describe('server draft approval actions', () => {
     expect(source).toContain('autoSubmittedDraftKey');
     expect(source).toContain('markServerAutoReplySentUnconditionally');
     expect(source).toContain('clearDraftApproval');
+    expect(source).toContain('Empfänger fehlt — Freigabe bleibt bestehen.');
+    expect(source).toMatch(
+      /if \(!to\.trim\(\)\) \{\s*return \{ success: false, error: 'Empfänger fehlt[\s\S]*?persistManualOutboundApproval\(/,
+    );
   });
 
   test('dismiss clears approval and RFC-3834 marker', () => {
