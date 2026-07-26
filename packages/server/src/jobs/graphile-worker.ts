@@ -230,11 +230,14 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
   if (!(attempts >= maxAttempts)) return;
 
   const {
+    completeInboundDeferredJoinSiblingOnPgClient,
     inboundChainFromJobPayload,
     inboundChainHopClaimKey,
   } = await import('../workflow-inbound-chain-advance.js');
   const parsed = inboundChainFromJobPayload(payload as Record<string, unknown>);
   if (!parsed) return;
+  const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
+  if (currentWorkflowId == null) return;
   const nextIndex = parsed.chain.index + 1;
   if (nextIndex >= parsed.chain.workflowIds.length) return;
 
@@ -274,6 +277,15 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
                   set_config('app.cross_workspace_access', 'off', true)`,
           [parsed.workspaceId],
         );
+        const join = await completeInboundDeferredJoinSiblingOnPgClient(client, {
+          workspaceId: parsed.workspaceId,
+          messageId: parsed.messageId,
+          workflowId: currentWorkflowId,
+          chain: parsed.chain,
+          chainStop: false,
+          now: new Date(),
+        });
+        if (join !== 'ready') return;
         const claimed = await client.query(
           `INSERT INTO sync_info (
              workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at

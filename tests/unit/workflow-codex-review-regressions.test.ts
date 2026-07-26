@@ -297,4 +297,15 @@ describe('codex review regression guards', () => {
     expect(draftNodes).toContain('Fail before the paid model call when Reply-To/From');
     expect(draftNodes).toContain('Kein Antwort-Empfänger ermittelbar');
   });
+
+  test('codex round-11: graphile terminal advance waits on deferred join barrier', () => {
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+
+    expect(advance).toContain('completeInboundDeferredJoinSiblingOnPgClient');
+    expect(graphile).toContain('completeInboundDeferredJoinSiblingOnPgClient');
+    expect(graphile).toMatch(
+      /completeInboundDeferredJoinSiblingOnPgClient[\s\S]*?if \(join !== 'ready'\) return/,
+    );
+  });
 });

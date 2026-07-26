@@ -94,6 +94,72 @@ function parseDeferredJoinValue(raw: string | null | undefined): { pending: numb
   return { pending, chainStop: stopRaw === '1' };
 }
 
+export type InboundChainPgClient = Readonly<{
+  query: (
+    sql: string,
+    values?: readonly unknown[],
+  ) => Promise<{ rowCount?: number | null; rows?: ReadonlyArray<{ value?: string | null }> }>;
+}>;
+
+/** Graphile/pg-client variant of {@link completeInboundDeferredJoinSibling}. */
+export async function completeInboundDeferredJoinSiblingOnPgClient(
+  client: InboundChainPgClient,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    chain: InboundWorkflowChainContext | null;
+    chainStop: boolean;
+    now: Date;
+  },
+): Promise<'wait' | 'stop' | 'ready'> {
+  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
+  const locked = await client.query(
+    `SELECT value
+       FROM sync_info
+      WHERE workspace_id = $1
+        AND key = $2
+      FOR UPDATE`,
+    [input.workspaceId, key],
+  );
+  const row = locked.rows?.[0];
+  if (!row) return 'ready';
+
+  const parsed = parseDeferredJoinValue(row.value);
+  if (!parsed) {
+    await client.query(
+      `DELETE FROM sync_info
+        WHERE workspace_id = $1
+          AND key = $2`,
+      [input.workspaceId, key],
+    );
+    return 'ready';
+  }
+
+  const pending = Math.max(0, parsed.pending - 1);
+  const chainStop = parsed.chainStop || input.chainStop;
+  if (pending > 0) {
+    await client.query(
+      `UPDATE sync_info
+          SET value = $3,
+              last_updated = $4,
+              updated_at = $4
+        WHERE workspace_id = $1
+          AND key = $2`,
+      [input.workspaceId, key, encodeDeferredJoinValue(pending, chainStop), input.now],
+    );
+    return 'wait';
+  }
+
+  await client.query(
+    `DELETE FROM sync_info
+      WHERE workspace_id = $1
+        AND key = $2`,
+    [input.workspaceId, key],
+  );
+  return chainStop ? 'stop' : 'ready';
+}
+
 /**
  * Atomically claim the right to enqueue the next inbound priority workflow.
  * Returns true only for the first winner; later sibling / already_applied hops
