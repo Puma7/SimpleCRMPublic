@@ -129,10 +129,17 @@ export async function guardedFetch(args: {
     if (remainingMs <= 0) {
       throw new Error('webhook request exceeded its total timeout');
     }
-    const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup);
+    const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup, {
+      signal: args.init.signal,
+      timeoutMs: remainingMs,
+    });
+    const hopRemainingMs = Math.max(0, deadline - Date.now());
+    if (hopRemainingMs <= 0) {
+      throw new Error('webhook request exceeded its total timeout');
+    }
     const timeoutSignal =
       typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-        ? AbortSignal.timeout(remainingMs)
+        ? AbortSignal.timeout(hopRemainingMs)
         : undefined;
     const signal = combineAbortSignals(args.init.signal, timeoutSignal);
     const response = await args.fetchImpl(currentUrl, {
@@ -214,6 +221,7 @@ export async function assertWebhookUrlAllowed(
   url: string,
   allowlist: string | readonly string[],
   lookup: WebhookLookup,
+  options?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<readonly string[]> {
   let parsed: URL;
   try {
@@ -239,7 +247,7 @@ export async function assertWebhookUrlAllowed(
     throw new Error('webhook URL host is not in the allowlist');
   }
 
-  const records = await lookup(hostname);
+  const records = await runWebhookLookupWithBudget(lookup, hostname, options);
   if (records.length === 0) {
     throw new Error('webhook DNS lookup returned no addresses');
   }
@@ -249,6 +257,53 @@ export async function assertWebhookUrlAllowed(
     }
   }
   return records.map((record) => record.address);
+}
+
+async function runWebhookLookupWithBudget(
+  lookup: WebhookLookup,
+  hostname: string,
+  options?: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<readonly { address: string }[]> {
+  if (options?.signal?.aborted) {
+    throw new Error('request was aborted');
+  }
+  const lookupPromise = lookup(hostname);
+  if (options?.timeoutMs === undefined && !options?.signal) {
+    return lookupPromise;
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      options?.signal?.removeEventListener('abort', onAbort);
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+    const onAbort = () => {
+      finish(() => reject(new Error('request was aborted')));
+    };
+
+    if (typeof options?.timeoutMs === 'number') {
+      if (options.timeoutMs <= 0) {
+        finish(() => reject(new Error('webhook DNS lookup timed out')));
+        return;
+      }
+      timer = setTimeout(() => {
+        finish(() => reject(new Error('webhook DNS lookup timed out')));
+      }, options.timeoutMs);
+    }
+    options?.signal?.addEventListener('abort', onAbort, { once: true });
+    lookupPromise.then(
+      (records) => finish(() => resolve(records)),
+      (error) => finish(() => reject(error)),
+    );
+  });
 }
 
 function requiredString(payload: JobPayload, key: string): string {

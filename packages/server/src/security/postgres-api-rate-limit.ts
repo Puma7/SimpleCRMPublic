@@ -42,9 +42,10 @@ export function createPostgresApiRateLimitPort(
         .executeTakeFirst();
 
       const count = row?.request_count ?? 1;
-      // Opportunistic cleanup of closed windows to keep the counters table small
-      // on shared multi-replica deployments (best-effort; ignore failures).
-      if (count === 1 || count % 64 === 0) {
+      // Opportunistic cleanup of closed windows (every 64th hit in a window) so
+      // unique client keys do not each trigger a DELETE. Uses window_start_ms
+      // (indexed by 0045) — best-effort; ignore failures.
+      if (count % 64 === 0) {
         void db
           .deleteFrom('api_rate_limit_counters')
           .where('window_start_ms', '<', String(windowStartMs - WINDOW_MS * 2))

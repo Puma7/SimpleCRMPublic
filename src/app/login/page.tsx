@@ -85,7 +85,8 @@ export default function LoginPage() {
         try {
           const invitation = await serverAuth.getInvitation(pendingInviteToken)
           setInvite(invitation)
-          if (invitation.email) setUsername(invitation.email)
+          // Public invite payloads only expose maskedEmail (privacy). Do not
+          // treat that as a login identity — accept flow uses the token.
         } catch (err) {
           setError(formatAuthError(err, true))
         }
@@ -276,8 +277,8 @@ export default function LoginPage() {
     setIsLoading(true)
     setError(null)
     try {
-      await serverAuth.acceptInvitation(inviteToken, { password: invitePass })
-      rememberLoginEmail(invite?.email ?? username)
+      const session = await serverAuth.acceptInvitation(inviteToken, { password: invitePass })
+      rememberLoginEmail(session.user.email)
       await refresh()
       navigate({ to: "/" })
     } catch (err) {
@@ -486,14 +487,19 @@ export default function LoginPage() {
           <CardHeader>
             <CardTitle>Einladung annehmen</CardTitle>
             <CardDescription>
-              Setzen Sie Ihr Passwort fuer {invite?.displayName ?? invite?.email ?? "dieses Konto"}.
+              Setzen Sie Ihr Passwort fuer {invite?.displayName ?? "dieses Konto"}.
             </CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleAcceptInvite} className="space-y-4" noValidate>
               <div className="space-y-2">
                 <Label htmlFor="invite-email">E-Mail</Label>
-                <Input id="invite-email" type="email" value={invite?.email ?? ""} readOnly />
+                <Input
+                  id="invite-email"
+                  type="text"
+                  value={invite?.email ?? invite?.maskedEmail ?? ""}
+                  readOnly
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="invite-pass">Neues Passwort</Label>

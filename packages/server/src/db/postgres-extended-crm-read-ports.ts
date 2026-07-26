@@ -709,32 +709,8 @@ export function createPostgresCustomerCustomFieldValueReadPort(
 
           const now = new Date();
           // Desktop SetValue is an upsert; the HTTP registry maps the same IPC
-          // channel to POST create. Update an existing (customer, field) row
-          // instead of returning value_conflict so server multi-user matches
-          // standalone semantics.
-          const existing = await trx
-            .selectFrom('customer_custom_field_values')
-            .select('id')
-            .where('workspace_id', '=', input.workspaceId)
-            .where('customer_source_sqlite_id', '=', customer.sourceSqliteId)
-            .where('field_source_sqlite_id', '=', field.sourceSqliteId)
-            .executeTakeFirst();
-          if (existing) {
-            const row = await trx
-              .updateTable('customer_custom_field_values')
-              .set({
-                value: values.value ?? null,
-                customer_id: customer.id,
-                field_id: field.id,
-                updated_at: now,
-              })
-              .where('workspace_id', '=', input.workspaceId)
-              .where('id', '=', existing.id)
-              .returning(customFieldValueSelectColumns)
-              .executeTakeFirstOrThrow();
-            return { ok: true, value: mapCustomFieldValueRow(row), created: false };
-          }
-
+          // channel to POST create. Use atomic INSERT … ON CONFLICT so concurrent
+          // writers cannot race into a unique-constraint 500.
           const row = await trx
             .insertInto('customer_custom_field_values')
             .values({
@@ -749,9 +725,24 @@ export function createPostgresCustomerCustomFieldValueReadPort(
               created_at: now,
               updated_at: now,
             })
-            .returning(customFieldValueSelectColumns)
+            .onConflict((oc) => oc
+              .columns(['workspace_id', 'customer_source_sqlite_id', 'field_source_sqlite_id'])
+              .doUpdateSet({
+                value: values.value ?? null,
+                customer_id: customer.id,
+                field_id: field.id,
+                updated_at: now,
+              }))
+            .returning([
+              ...customFieldValueSelectColumns,
+              kyselySql<boolean>`(xmax = 0)`.as('was_inserted'),
+            ])
             .executeTakeFirstOrThrow();
-          return { ok: true, value: mapCustomFieldValueRow(row), created: true };
+          return {
+            ok: true,
+            value: mapCustomFieldValueRow(row),
+            created: row.was_inserted === true,
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );

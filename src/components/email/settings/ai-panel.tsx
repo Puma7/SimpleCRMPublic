@@ -70,6 +70,10 @@ export function AiPanel() {
   const [apiKey, setApiKey] = useState("")
   const [saving, setSaving] = useState(false)
   const serverClientMode = getRendererTransport().kind === "http"
+  // Server edition rejects loopback Ollama URLs; hide that preset in HTTP mode.
+  const presetIds = serverClientMode
+    ? AI_PROVIDER_PRESET_IDS.filter((id) => id !== "ollama")
+    : AI_PROVIDER_PRESET_IDS
   // Capability model is server-edition only; desktop remains unrestricted.
   const canManageAiProfiles =
     getRendererTransport().kind !== "http" || hasCapability("workflows.manage")
@@ -285,7 +289,7 @@ export function AiPanel() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {AI_PROVIDER_PRESET_IDS.map((id) => (
+              {presetIds.map((id) => (
                 <SelectItem key={id} value={id}>
                   {presets[id]?.label ?? id}
                 </SelectItem>

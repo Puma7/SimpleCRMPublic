@@ -330,8 +330,12 @@ async function handleListRoute(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const listDenied = rejectUnlessWorkflowManage(principal);
-  if (listDenied) return listDenied;
+  // Prompt catalog is needed by compose/viewer AI for every authenticated user.
+  // Profile and workflow lists stay behind workflows.manage.
+  if (resource !== 'aiPrompts') {
+    const listDenied = rejectUnlessWorkflowManage(principal);
+    if (listDenied) return listDenied;
+  }
 
   const limit = parseLimit(req.query?.limit);
   if (limit === null) return error(400, 'invalid_limit', `limit muss zwischen 1 und ${MAX_LIMIT} liegen`);
@@ -417,8 +421,11 @@ async function handleGetRoute(
   if (resource === 'workflows' && req.method === 'PATCH') return handleUpdateWorkflow(req, ports, principal, id);
   if (resource === 'workflows' && req.method === 'DELETE') return handleDeleteWorkflow(ports, principal, id);
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  const getDenied = rejectUnlessWorkflowManage(principal);
-  if (getDenied) return getDenied;
+  // Prompt reads are available to any authenticated user (compose/viewer AI).
+  if (resource !== 'aiPrompts') {
+    const getDenied = rejectUnlessWorkflowManage(principal);
+    if (getDenied) return getDenied;
+  }
 
   switch (resource) {
     case 'aiProfiles': {
@@ -878,8 +885,7 @@ async function handleAiTextTransform(
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
-  if (denied) return denied;
+  // Text transform is a per-user compose/viewer action; do not require workflows.manage.
   if (!ports.aiTextTransform) return error(503, 'ai_text_transform_unavailable', 'AI text transform API nicht konfiguriert');
 
   const parsed = parseAiTextTransformBody(req.body);

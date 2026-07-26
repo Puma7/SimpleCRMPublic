@@ -375,6 +375,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0042_quarantine_legacy_provenanceless_jobs',
   '0043_atomic_task_calendar',
   '0044_api_rate_limit_counters',
+  '0045_api_rate_limit_window_idx',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -14244,6 +14245,12 @@ describe('server edition foundation', () => {
       'hooks.example.com',
       async () => [{ address: '8.8.8.8' }],
     )).rejects.toThrow('host is not in the allowlist');
+    await expect(assertWebhookUrlAllowed(
+      'https://hooks.example.com/simplecrm',
+      'hooks.example.com',
+      () => new Promise(() => undefined),
+      { timeoutMs: 5 },
+    )).rejects.toThrow('webhook DNS lookup timed out');
 
     expect(lookupHosts).toEqual(['hooks.example.com']);
     expect(fetchCalls).toEqual([{
@@ -31895,6 +31902,93 @@ describe('server edition foundation', () => {
     expect((unavailableWorkflows.body as any).error.code).toBe('workflows_unavailable');
   });
 
+  test('server AI prompt reads work without workflows.manage while profile/workflow reads stay gated', async () => {
+    const promptListCalls: unknown[] = [];
+    const samplePrompt = {
+      id: 22,
+      sourceSqliteId: 22,
+      label: 'Reply',
+      target: 'reply',
+      userTemplate: 'Bitte freundlicher',
+      profileId: 21,
+      profileSourceSqliteId: 21,
+      sortOrder: 1,
+      accountId: null,
+      accountSourceSqliteId: null,
+      overrideKey: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const api = createServerApi(makeServerApiPorts({
+      aiPrompts: {
+        async list(input) {
+          promptListCalls.push(input);
+          return {
+            items: [samplePrompt],
+            nextCursor: null,
+          };
+        },
+        async get() {
+          return samplePrompt;
+        },
+      },
+      aiProfiles: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+      },
+      workflows: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+      },
+    }));
+    const viewer = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: [] as string[],
+    };
+
+    const prompts = await api.handle({
+      method: 'GET',
+      path: '/api/v1/ai/prompts',
+      query: { target: 'reply' },
+      principal: viewer,
+    });
+    expect(prompts.status).toBe(200);
+    expect((prompts.body as any).data.items[0].label).toBe('Reply');
+    expect(promptListCalls).toHaveLength(1);
+
+    const prompt = await api.handle({
+      method: 'GET',
+      path: '/api/v1/ai/prompts/22',
+      principal: viewer,
+    });
+    expect(prompt.status).toBe(200);
+    expect((prompt.body as any).data.id).toBe(22);
+
+    const profiles = await api.handle({
+      method: 'GET',
+      path: '/api/v1/ai/profiles',
+      principal: viewer,
+    });
+    expect(profiles.status).toBe(403);
+
+    const workflows = await api.handle({
+      method: 'GET',
+      path: '/api/v1/workflows',
+      principal: viewer,
+    });
+    expect(workflows.status).toBe(403);
+  });
+
   test('server AI profile mutation routes write audit records and server events without exposing secrets', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const events: ServerEvent[] = [];
@@ -32519,6 +32613,21 @@ describe('server edition foundation', () => {
       text: 'Bitte freundlicher',
       customerId: 7,
     }]);
+
+    // Compose/viewer users need transform-text without workflows.manage.
+    const viewerPrincipal = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: [] as string[],
+    };
+    const viewerTransform = await api.handle({
+      method: 'POST',
+      path: '/api/v1/ai/transform-text',
+      body: { promptId: 22, text: 'Hallo' },
+      principal: viewerPrincipal,
+    });
+    expect(viewerTransform.status).toBe(200);
 
     const failed = await createServerApi(makeServerApiPorts({
       aiTextTransform: {

@@ -1447,15 +1447,37 @@ describe('server mail job and event ACL', () => {
       type: 'task.updated',
       entityId: '51',
     });
-    expect(taskInvalidation?.payload).toEqual({ id: 51 });
+    expect(taskInvalidation?.payload).toEqual({ id: 51, customerId: 7 });
 
     const dealInvalidation = await filterMailEventForPrincipal(event({
       type: 'deal.updated',
       entityType: 'deal',
       entityId: '9',
-      payload: { id: 9, name: 'Geheimdeal', value: 99999 },
+      payload: { id: 9, name: 'Geheimdeal', value: 99999, customerId: 7 },
     }), context);
-    expect(dealInvalidation?.payload).toEqual({ id: 9 });
+    expect(dealInvalidation?.payload).toEqual({ id: 9, customerId: 7 });
+
+    const dealProductInvalidation = await filterMailEventForPrincipal(event({
+      type: 'deal_product.updated',
+      entityType: 'deal_product',
+      entityId: '3',
+      payload: { id: 3, dealId: 9, productId: 2, quantity: 1, priceAtTimeOfAdding: 10 },
+    }), context);
+    expect(dealProductInvalidation?.payload).toEqual({ id: 3, dealId: 9 });
+
+    const activityInvalidation = await filterMailEventForPrincipal(event({
+      type: 'activity_log.created',
+      entityType: 'activity_log',
+      entityId: '12',
+      payload: {
+        id: 12,
+        title: 'Notiz',
+        customerId: 7,
+        dealId: 9,
+        metadata: { secret: true },
+      },
+    }), context);
+    expect(activityInvalidation?.payload).toEqual({ id: 12, customerId: 7, dealId: 9 });
 
     await expect(filterMailEventForPrincipal(event({
       type: 'email_secret.leaked',

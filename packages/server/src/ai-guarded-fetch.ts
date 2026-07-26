@@ -1,7 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 
 import { createPinnedFetch, type GuardedFetch } from './jobs/pinned-fetch';
-import { assertWebhookUrlAllowed, guardedFetch } from './jobs/webhook-handlers';
+import { guardedFetch } from './jobs/webhook-handlers';
 
 type AiLookup = (hostname: string) => Promise<readonly { address: string }[]>;
 
@@ -12,6 +12,10 @@ const DEFAULT_AI_TIMEOUT_MS = 90_000;
  * Performs an outbound AI HTTP POST with the same SSRF controls as webhooks:
  * allowlist derived from the profile baseUrl host, DNS private-IP rejection,
  * and pinned-fetch (no DNS rebinding on connect).
+ *
+ * DNS/SSRF checks run inside guardedFetch under the shared timeout budget —
+ * do not preflight assertWebhookUrlAllowed here (that would double DNS and
+ * could hang outside the AI timeout).
  */
 export async function guardedAiPost(input: {
   url: string;
@@ -46,10 +50,6 @@ export async function guardedAiPost(input: {
   if (requestHost !== allowHost) {
     throw new Error('KI API request host must match the profile baseUrl host');
   }
-
-  // assertWebhookUrlAllowed is reused for private-IP / DNS checks; allowlist is
-  // the single configured profile host.
-  await assertWebhookUrlAllowed(input.url, [allowHost], lookup);
 
   if (input.signal?.aborted) {
     throw new Error('KI API request was aborted');
