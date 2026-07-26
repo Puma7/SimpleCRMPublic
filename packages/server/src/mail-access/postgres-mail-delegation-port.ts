@@ -14,7 +14,6 @@ import type {
 } from '../api/types';
 import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
 import {
-  EMPTY_MAIL_BINDING_CONSTRAINTS,
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
 } from './mail-acl-constraints';
