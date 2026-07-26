@@ -13511,7 +13511,7 @@ describe('server edition foundation', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-metadata-read-ports.ts'), 'utf8');
     expect(source).toMatch(/view === 'scheduled_send'[\s\S]*m\.scheduled_send_at IS NOT NULL/);
     expect(source).toMatch(/view === 'drafts'[\s\S]*m\.scheduled_send_at IS NULL/);
-    expect(source).toMatch(/view === 'inbox'[\s\S]*m\.outbound_hold = true AND m\.scheduled_send_at IS NULL/);
+    expect(source).toMatch(/view === 'inbox'[\s\S]*m\.outbound_hold = true OR m\.approval_state = 'pending'/);
   });
 
   test('scheduled-send ticker isolates workspace failures', () => {

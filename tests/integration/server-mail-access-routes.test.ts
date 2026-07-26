@@ -714,6 +714,11 @@ describe('server mailbox ACL migration', () => {
     for (const migration of serverMigrations.filter((candidate) => candidate.id < '0038_mail_acl')) {
       await applyStatements(migration.upSql);
     }
+    // Draft-approval columns are required by inbox predicates / message detail selects
+    // (added after 0038 in 0046); apply early so ACL port tests see a current schema.
+    const draftApprovalMigration = serverMigrations.find((candidate) => candidate.id === '0046_email_draft_approval_fields');
+    expect(draftApprovalMigration).toBeDefined();
+    await applyStatements(draftApprovalMigration!.upSql);
     await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     await seedLegacyMailAccess();
     await client.query('RESET app.role; RESET app.cross_workspace_access');

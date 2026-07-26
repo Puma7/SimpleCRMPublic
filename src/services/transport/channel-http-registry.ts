@@ -371,6 +371,8 @@ type EmailMessageRecord = {
   bodyText?: string | null
   bodyHtml?: string | null
   updatedAt?: string | null
+  approvalState?: string | null
+  approvalReason?: string | null
 }
 
 type EmailThreadRecord = {
