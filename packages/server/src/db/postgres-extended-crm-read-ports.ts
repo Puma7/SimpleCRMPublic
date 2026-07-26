@@ -705,11 +705,35 @@ export function createPostgresCustomerCustomFieldValueReadPort(
           if (!customer) return { ok: false, code: 'customer_not_found' };
           const field = await resolveCustomFieldReference(trx, input.workspaceId, values.fieldId as number);
           if (!field) return { ok: false, code: 'custom_field_not_found' };
-          if (await hasCustomFieldValueConflict(trx, input.workspaceId, customer.sourceSqliteId, field.sourceSqliteId)) {
-            return { ok: false, code: 'value_conflict' };
-          }
 
           const now = new Date();
+          // Desktop SetValue is an upsert; the HTTP registry maps the same IPC
+          // channel to POST create. Update an existing (customer, field) row
+          // instead of returning value_conflict so server multi-user matches
+          // standalone semantics.
+          const existing = await trx
+            .selectFrom('customer_custom_field_values')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('customer_source_sqlite_id', '=', customer.sourceSqliteId)
+            .where('field_source_sqlite_id', '=', field.sourceSqliteId)
+            .executeTakeFirst();
+          if (existing) {
+            const row = await trx
+              .updateTable('customer_custom_field_values')
+              .set({
+                value: values.value ?? null,
+                customer_id: customer.id,
+                field_id: field.id,
+                updated_at: now,
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', existing.id)
+              .returning(customFieldValueSelectColumns)
+              .executeTakeFirstOrThrow();
+            return { ok: true, value: mapCustomFieldValueRow(row) };
+          }
+
           const row = await trx
             .insertInto('customer_custom_field_values')
             .values({

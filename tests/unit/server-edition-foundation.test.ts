@@ -32021,6 +32021,22 @@ describe('server edition foundation', () => {
       { field: 'apiKey', message: 'apiKey darf nicht leer sein' },
     ]));
 
+    const privateBaseUrl = await writableApi.handle({
+      method: 'POST',
+      path: '/api/v1/ai/profiles',
+      body: {
+        label: 'Internal',
+        provider: 'openai',
+        baseUrl: 'http://127.0.0.1:8080/v1',
+        model: 'gpt-test',
+      },
+      principal,
+    });
+    expect(privateBaseUrl.status).toBe(400);
+    expect((privateBaseUrl.body as any).error.details.fields).toEqual(expect.arrayContaining([
+      { field: 'baseUrl', message: 'baseUrl darf keine private oder reservierte Adresse sein' },
+    ]));
+
     const missingRequired = await writableApi.handle({
       method: 'POST',
       path: '/api/v1/ai/profiles',

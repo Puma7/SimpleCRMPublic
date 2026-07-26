@@ -1426,6 +1426,25 @@ describe('server mail job and event ACL', () => {
     });
     expect(calendarInvalidation?.payload).toEqual({ id: 61 });
 
+    const taskInvalidation = await filterMailEventForPrincipal(event({
+      type: 'task.updated',
+      entityType: 'task',
+      entityId: '51',
+      payload: {
+        id: 51,
+        title: 'Private Aufgabe',
+        customerId: 7,
+        priority: 'high',
+        completed: false,
+        dueDate: '2026-07-24',
+      },
+    }), context);
+    expect(taskInvalidation).toMatchObject({
+      type: 'task.updated',
+      entityId: '51',
+    });
+    expect(taskInvalidation?.payload).toEqual({ id: 51 });
+
     await expect(filterMailEventForPrincipal(event({
       type: 'email_secret.leaked',
       entityType: 'email_message',

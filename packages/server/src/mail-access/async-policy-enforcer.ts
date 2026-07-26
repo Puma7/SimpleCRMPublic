@@ -954,6 +954,24 @@ export async function filterMailEventForPrincipal(
       payload: typeof id === 'number' || typeof id === 'string' ? { id } : {},
     };
   }
+  // Task reads are assignment-/group-scoped for non-admins, but the WebSocket
+  // previously forwarded full task payloads workspace-wide. Reduce to { id }
+  // (same pattern as calendar_event) so live refresh still works without
+  // leaking private titles, customers, or due dates across users.
+  if (
+    event.entityType === 'task'
+    && (
+      event.type === 'task.created'
+      || event.type === 'task.updated'
+      || event.type === 'task.deleted'
+    )
+  ) {
+    const id = event.payload.id;
+    return {
+      ...event,
+      payload: typeof id === 'number' || typeof id === 'string' ? { id } : {},
+    };
+  }
   if (event.type === 'email_acl.changed') {
     const sanitized = sanitizeMailEventPayload(event);
     // Deliver to the affected subject, to owners/admins, AND to a non-admin

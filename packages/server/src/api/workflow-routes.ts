@@ -10,6 +10,7 @@ import {
 } from '@simplecrm/core';
 
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
 
 import type {
   AiProfileListResult,
@@ -1490,8 +1491,23 @@ function parseAiProfileMutationBody(
   }
   if (Object.prototype.hasOwnProperty.call(body, 'baseUrl')) {
     const baseUrl = normalizeBodyHttpUrl(body.baseUrl, 'baseUrl', 2048);
-    if (baseUrl.ok) values.baseUrl = baseUrl.value;
-    else errors.push({ field: 'baseUrl', message: baseUrl.message });
+    if (baseUrl.ok) {
+      try {
+        const host = new URL(baseUrl.value).hostname;
+        if (isPrivateOrReservedAiProfileHost(host)) {
+          errors.push({
+            field: 'baseUrl',
+            message: 'baseUrl darf keine private oder reservierte Adresse sein',
+          });
+        } else {
+          values.baseUrl = baseUrl.value;
+        }
+      } catch {
+        errors.push({ field: 'baseUrl', message: 'baseUrl muss eine gueltige URL sein' });
+      }
+    } else {
+      errors.push({ field: 'baseUrl', message: baseUrl.message });
+    }
   }
   if (Object.prototype.hasOwnProperty.call(body, 'model')) {
     const model = normalizeRequiredBodyText(body.model, 'model', 200);
@@ -2120,6 +2136,41 @@ function normalizeBodyHttpUrl(
   } catch {
     return { ok: false, message: `${field} muss eine gueltige URL sein` };
   }
+}
+
+function isPrivateOrReservedAiProfileHost(host: string): boolean {
+  const value = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    value === 'localhost'
+    || value === 'metadata.google.internal'
+    || value.endsWith('.localhost')
+    || value.endsWith('.local')
+    || value.endsWith('.internal')
+  ) {
+    return true;
+  }
+  const kind = isIP(value);
+  if (kind === 4) {
+    const [a, b] = value.split('.').map((part) => Number.parseInt(part, 10));
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (kind === 6) {
+    if (value === '::1' || value === '::') return true;
+    if (value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+    if (value.startsWith('::ffff:') || value.startsWith('0:0:0:0:0:ffff:')) {
+      const mapped = value.includes('.')
+        ? value.slice(value.lastIndexOf(':') + 1)
+        : null;
+      if (mapped && isIP(mapped) === 4) return isPrivateOrReservedAiProfileHost(mapped);
+      return true;
+    }
+  }
+  return false;
 }
 
 function normalizeBodyBoolean(

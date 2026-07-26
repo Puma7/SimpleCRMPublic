@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { isIP } from 'node:net';
 
 import type {
   AiProfileApiPort,
@@ -841,7 +842,49 @@ function normalizeAiProfileBaseUrl(value: string): string {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('AI profile baseUrl must use http or https');
   }
+  // Block literal private/reserved hosts at config time. Full DNS-pinning for
+  // runtime AI fetches remains a follow-up; this closes the obvious SSRF path
+  // where a user points baseUrl at 127.0.0.1 / RFC1918 and reads the response
+  // via transform-text.
+  if (isPrivateOrReservedAiProfileHost(url.hostname)) {
+    throw new Error('AI profile baseUrl must not target a private or reserved address');
+  }
   return url.toString().replace(/\/$/, '');
+}
+
+function isPrivateOrReservedAiProfileHost(host: string): boolean {
+  const value = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    value === 'localhost'
+    || value === 'metadata.google.internal'
+    || value.endsWith('.localhost')
+    || value.endsWith('.local')
+    || value.endsWith('.internal')
+  ) {
+    return true;
+  }
+  const kind = isIP(value);
+  if (kind === 4) {
+    const [a, b] = value.split('.').map((part) => Number.parseInt(part, 10));
+    if (a === 10 || a === 127 || a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+  if (kind === 6) {
+    if (value === '::1' || value === '::') return true;
+    if (value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+    if (value.startsWith('::ffff:') || value.startsWith('0:0:0:0:0:ffff:')) {
+      const mapped = value.includes('.')
+        ? value.slice(value.lastIndexOf(':') + 1)
+        : null;
+      if (mapped && isIP(mapped) === 4) return isPrivateOrReservedAiProfileHost(mapped);
+      return true;
+    }
+  }
+  return false;
 }
 
 function mutationToAiProfilePatch(
