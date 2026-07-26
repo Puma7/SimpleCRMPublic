@@ -1064,6 +1064,11 @@ export function createPostgresWorkflowDelayedJobReadPort(
             .returning(workflowDelayedJobDetailColumns)
             .executeTakeFirst();
           if (!row) return null;
+          // Cancelling only the delayed-job row leaves the queued workflow.execute
+          // continuation runnable; drop unlocked queue rows for this delayedJobId.
+          if (values.status === 'cancelled') {
+            await cancelQueuedDelayedJobExecute(trx, input.workspaceId, input.id);
+          }
           return { ok: true, job: mapWorkflowDelayedJobRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1089,12 +1094,28 @@ export function createPostgresWorkflowDelayedJobReadPort(
           );
           if (visibility) query = query.where(visibility);
           const row = await query.returning(workflowDelayedJobSummaryColumns).executeTakeFirst();
-          return row ? mapWorkflowDelayedJobRow(row, false) : null;
+          if (!row) return null;
+          await cancelQueuedDelayedJobExecute(trx, input.workspaceId, input.id);
+          return mapWorkflowDelayedJobRow(row, false);
         },
         { applySession: options.applyWorkspaceSession },
       );
     },
   };
+}
+
+async function cancelQueuedDelayedJobExecute(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  delayedJobId: number,
+): Promise<void> {
+  await trx
+    .deleteFrom('job_queue')
+    .where('workspace_id', '=', workspaceId)
+    .where('type', '=', 'workflow.execute')
+    .where('locked_at', 'is', null)
+    .where(kyselySql<boolean>`payload->>'delayedJobId' = ${String(delayedJobId)}`)
+    .execute();
 }
 
 function pageNumeric<TRow, TRecord>(

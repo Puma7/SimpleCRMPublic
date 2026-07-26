@@ -58,7 +58,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Dedicated `ubuntu-22.04` CI gate with Chromium sandbox, Xvfb, isolated standalone user-data, first-run authentication, HTML/trace/video/screenshot artifacts, and Electron/renderer logs |
 | System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers, RLS-sichere MFA-Mutationen und multi-replizierter Login-Challenge-State gehärtet; siehe aktuellen Auditbericht |
-| Server multiuser audit (2026-07-26) | AI-baseUrl Private-Host-Block, Task-Event-Payload-Reduktion, Categories-Reorder ACL (POST), Custom-Field-Upsert; offen: `crm.write`-Enforcement, AI pinned-fetch |
+| Server multiuser audit (2026-07-26) | Alle validierten Findings behoben: `crm.write`, AI pinned-fetch + `workflows.manage` für Profile, CRM-WS-Payloads, Draft-Approval ausgeblendet, Delayed-Jobs Cancel, Maintenance-Shims; siehe Auditbericht |
 | E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 | CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
 | Aufgaben/Kalender | `calendar_events.task_id` ist die kanonische 1:1-Verknuepfung; Erstellen, Verschieben, Entkoppeln und Loeschen laufen in PostgreSQL und SQLite atomar |

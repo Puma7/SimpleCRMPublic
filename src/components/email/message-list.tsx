@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
+import { getRendererTransport } from "@/services/transport"
 import {
   Popover,
   PopoverContent,
@@ -163,6 +164,7 @@ export function MessageList({
     setListDisplayMode,
     conversationLocks,
   } = useMailWorkspace()
+  const serverClientMode = getRendererTransport().kind === "http"
   const visibleMessages = useMemo(() => {
     if (listDisplayMode !== "thread") return messages
     const seen = new Set<string>()
@@ -943,7 +945,7 @@ export function MessageList({
                               : formatMessageFrom(m, accounts)}
                           </span>
                           <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
-                            {m.approval_state === "pending" ? (
+                            {(!serverClientMode && m.approval_state === "pending") ? (
                               <span
                                 className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-sky-700 dark:text-sky-400"
                                 title={(m.approval_reason || "Wartet auf Freigabe").toString()}

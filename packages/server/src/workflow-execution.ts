@@ -454,10 +454,10 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
-          if (delayedJob && delayedJob.status === 'done') {
+          if (delayedJob && (delayedJob.status === 'done' || delayedJob.status === 'cancelled')) {
             await finishRun(trx, input.workspaceId, run.id, {
               status: 'ok',
-              log: ['skip:delayed_job_done'],
+              log: [delayedJob.status === 'cancelled' ? 'skip:delayed_job_cancelled' : 'skip:delayed_job_done'],
               now,
             });
             return;
@@ -473,7 +473,21 @@ export function createPostgresWorkflowExecutionJobPort(
           }
 
           if (delayedJob) {
-            await markDelayedJobStatus(trx, input.workspaceId, Number(delayedJob.id), 'running', now);
+            const claimed = await markDelayedJobStatus(
+              trx,
+              input.workspaceId,
+              Number(delayedJob.id),
+              'running',
+              now,
+            );
+            if (!claimed) {
+              await finishRun(trx, input.workspaceId, run.id, {
+                status: 'ok',
+                log: ['skip:delayed_job_cancelled'],
+                now,
+              });
+              return;
+            }
           }
 
           if (workflowTriggerNeedsMessage(trigger) && !message && !contextHasOutbound(jobContext)) {
@@ -679,13 +693,13 @@ async function prepareWorkflowRun(
   const resumeNodeId = delayedJob?.resume_node_id
     ?? stringFromContext(jobContext.resumeNodeId)
     ?? null;
-  if (delayedJob && delayedJob.status === 'done') {
+  if (delayedJob && (delayedJob.status === 'done' || delayedJob.status === 'cancelled')) {
     return {
       ok: false,
       workflow,
       message,
-      error: 'delayed_job_done',
-      log: ['skip:delayed_job_done'],
+      error: delayedJob.status === 'cancelled' ? 'delayed_job_cancelled' : 'delayed_job_done',
+      log: [delayedJob.status === 'cancelled' ? 'skip:delayed_job_cancelled' : 'skip:delayed_job_done'],
     };
   }
   if (delayedJob && !resumeNodeId) {
@@ -903,16 +917,21 @@ async function markDelayedJobStatus(
   delayedJobId: number,
   status: 'pending' | 'running' | 'done' | 'failed',
   now: Date,
-): Promise<void> {
-  await trx
+): Promise<boolean> {
+  let query = trx
     .updateTable('workflow_delayed_jobs')
     .set({
       status,
       updated_at: now,
     })
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', delayedJobId)
-    .execute();
+    .where('id', '=', delayedJobId);
+  // Do not revive a job that ops cancelled while the worker was claiming it.
+  if (status === 'running') {
+    query = query.where('status', 'in', ['pending', 'running']);
+  }
+  const row = await query.returning('id').executeTakeFirst();
+  return row !== undefined;
 }
 
 async function startOrReuseRun(

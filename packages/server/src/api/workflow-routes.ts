@@ -34,6 +34,7 @@ import type {
 import {
   data,
   error,
+  forbidUnlessCapability,
   positiveIntFromPath,
   requireAdmin,
   requireCapability,
@@ -662,6 +663,14 @@ async function handleCreateAiProfile(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // AI profiles hold outbound API base URLs and secrets — workspace-wide SSRF surface.
+  // Restrict create/update/delete to workflow managers (admins inherit via requireCapability).
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
   if (!ports.aiProfiles?.create) return error(503, 'ai_profiles_unavailable', 'AI profile API nicht konfiguriert');
 
   const parsed = parseAiProfileMutationBody(req.body, {
@@ -692,6 +701,12 @@ async function handleUpdateAiProfile(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
   if (!ports.aiProfiles?.update) return error(503, 'ai_profiles_unavailable', 'AI profile API nicht konfiguriert');
 
   const parsed = parseAiProfileMutationBody(req.body, {
@@ -725,6 +740,12 @@ async function handleDeleteAiProfile(
   principal: AuthenticatedPrincipal,
   id: number,
 ): Promise<ApiResponse> {
+  const denied = forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
+  );
+  if (denied) return denied;
   if (!ports.aiProfiles?.delete) return error(503, 'ai_profiles_unavailable', 'AI profile API nicht konfiguriert');
 
   const profile = await ports.aiProfiles.delete({

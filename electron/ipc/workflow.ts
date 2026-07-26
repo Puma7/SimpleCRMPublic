@@ -81,6 +81,25 @@ export function registerWorkflowHandlers(options: {
 
   disposers.push(
     registerIpcHandler(
+      IPCChannels.Email.ListWorkflowDelayedJobs,
+      async () => ({ items: [], nextCursor: null }),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.CancelWorkflowDelayedJob,
+      async () => ({
+        success: false as const,
+        error: 'Verzögerte Workflow-Jobs können lokal nicht abgebrochen werden',
+      }),
+      { logger },
+    ),
+  );
+
+  disposers.push(
+    registerIpcHandler(
       IPCChannels.Email.GetWorkflowRunLog,
       async (_event: IpcMainInvokeEvent, runId: number) => getWorkflowRunLog(runId),
       { logger },

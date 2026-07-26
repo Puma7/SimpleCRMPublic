@@ -23,6 +23,7 @@ const baseReq = {
   user: 'Hallo',
   temperature: 0.2,
   signal: new AbortController().signal,
+  allowUnguardedFetch: true as const,
 };
 
 describe('normalizeAiProvider', () => {
@@ -143,10 +144,11 @@ describe('callAiChat — gemini', () => {
 });
 
 describe('callAiChat — errors', () => {
-  test('throws a KI API HTTP error on non-2xx', async () => {
+  test('throws a KI API HTTP error on non-2xx without leaking response body', async () => {
     const captured: CapturedRequest[] = [];
-    const fetchImpl = fakeFetch('rate limited', captured, 429);
+    const fetchImpl = fakeFetch('internal secret page', captured, 429);
     await expect(callAiChat({ ...baseReq, provider: 'openai', fetchImpl })).rejects.toThrow('KI API HTTP 429');
+    await expect(callAiChat({ ...baseReq, provider: 'openai', fetchImpl })).rejects.not.toThrow(/secret/);
   });
 
   test('parseProviderResponse tolerates malformed bodies', () => {

@@ -936,36 +936,40 @@ function mailDelegationResourceFromEventPayload(payload: Record<string, unknown>
   return null;
 }
 
+const CRM_ID_ONLY_ENTITY_TYPES = new Set([
+  'calendar_event',
+  'task',
+  'customer',
+  'product',
+  'deal',
+  'deal_product',
+  'custom_field',
+  'custom_field_value',
+  'saved_view',
+  'activity_log',
+  'jtl_reference',
+  'jtl_order',
+]);
+
+function shouldReduceCrmEventPayload(event: ServerEvent): boolean {
+  if (!CRM_ID_ONLY_ENTITY_TYPES.has(event.entityType)) return false;
+  return (
+    event.type.endsWith('.created')
+    || event.type.endsWith('.updated')
+    || event.type.endsWith('.deleted')
+    || event.type === 'jtl_sync.completed'
+    || event.type === 'jtl_sync.failed'
+  );
+}
+
 export async function filterMailEventForPrincipal(
   event: ServerEvent,
   context: MailEventFilterContext,
 ): Promise<ServerEvent | null> {
-  if (
-    event.entityType === 'calendar_event'
-    && (
-      event.type === 'calendar_event.created'
-      || event.type === 'calendar_event.updated'
-      || event.type === 'calendar_event.deleted'
-    )
-  ) {
-    const id = event.payload.id;
-    return {
-      ...event,
-      payload: typeof id === 'number' || typeof id === 'string' ? { id } : {},
-    };
-  }
-  // Task reads are assignment-/group-scoped for non-admins, but the WebSocket
-  // previously forwarded full task payloads workspace-wide. Reduce to { id }
-  // (same pattern as calendar_event) so live refresh still works without
-  // leaking private titles, customers, or due dates across users.
-  if (
-    event.entityType === 'task'
-    && (
-      event.type === 'task.created'
-      || event.type === 'task.updated'
-      || event.type === 'task.deleted'
-    )
-  ) {
+  // CRM entity events are workspace-broadcast but REST reads may be scoped
+  // (tasks) or contain PII (customers, deals, custom fields). Reduce payloads
+  // to { id } so live refresh still works without leaking fields over WS.
+  if (shouldReduceCrmEventPayload(event)) {
     const id = event.payload.id;
     return {
       ...event,

@@ -30,6 +30,7 @@ import type {
 import {
   data,
   error,
+  forbidUnlessCrmWrite,
   positiveIntFromPath,
   requirePrincipal,
 } from './http';
@@ -136,6 +137,8 @@ async function handleCalendarEntryMutation(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = forbidUnlessCrmWrite(principal);
+  if (denied) return denied;
   if (!ports.calendarEntries) {
     return unavailable('calendar_entries_unavailable', 'Calendar entry API nicht konfiguriert');
   }
@@ -493,6 +496,8 @@ async function handleJtlSyncRun(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = forbidUnlessCrmWrite(principal);
+  if (denied) return denied;
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   if (!ports.jtlSync) return unavailable('jtl_sync_unavailable', 'JTL Sync API nicht konfiguriert');
   const result = await ports.jtlSync.run({
@@ -519,6 +524,8 @@ async function handleCreateJtlOrder(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = forbidUnlessCrmWrite(principal);
+  if (denied) return denied;
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   if (!ports.jtlOrders) return unavailable('jtl_orders_unavailable', 'JTL Auftrag API nicht konfiguriert');
 
@@ -555,26 +562,36 @@ async function handleNumericList(
   if (resource === 'activityLog' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateActivityLog(req, ports, principal);
   }
   if (resource === 'calendarEvents' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateCalendarEvent(req, ports, principal);
   }
   if (resource === 'customerCustomFields' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateCustomField(req, ports, principal);
   }
   if (resource === 'customerCustomFieldValues' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateCustomFieldValue(req, ports, principal);
   }
   if (resource === 'savedViews' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateSavedView(req, ports, principal);
   }
   if (req.method !== 'GET') return methodNotAllowed();
@@ -663,41 +680,57 @@ async function handleNumericGet(
   if (resource === 'calendarEvents' && req.method === 'PATCH') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateCalendarEvent(req, ports, principal, id);
   }
   if (resource === 'calendarEvents' && req.method === 'DELETE') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteCalendarEvent(ports, principal, id);
   }
   if (resource === 'customerCustomFields' && req.method === 'PATCH') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateCustomField(req, ports, principal, id);
   }
   if (resource === 'customerCustomFields' && req.method === 'DELETE') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteCustomField(ports, principal, id);
   }
   if (resource === 'customerCustomFieldValues' && req.method === 'PATCH') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateCustomFieldValue(req, ports, principal, id);
   }
   if (resource === 'customerCustomFieldValues' && req.method === 'DELETE') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteCustomFieldValue(ports, principal, id);
   }
   if (resource === 'savedViews' && req.method === 'PATCH') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateSavedView(req, ports, principal, id);
   }
   if (resource === 'savedViews' && req.method === 'DELETE') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteSavedView(ports, principal, id);
   }
   if (req.method !== 'GET') return methodNotAllowed();
@@ -1233,6 +1266,8 @@ async function handleDeleteCustomFieldValueByCustomerAndField(
   if (req.method !== 'DELETE') return methodNotAllowed();
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = forbidUnlessCrmWrite(principal);
+  if (denied) return denied;
 
   const customerId = positiveIntFromPath(rawCustomerId);
   if (customerId === null) return error(400, 'invalid_customer_id', 'customer id muss eine positive Ganzzahl sein');
@@ -1481,7 +1516,13 @@ async function handleJtlList(
   ports: ServerApiPorts,
   resource: JtlResource,
 ): Promise<ApiResponse> {
-  if (req.method === 'POST') return handleCreateJtlReference(req, ports, resource);
+  if (req.method === 'POST') {
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
+    return handleCreateJtlReference(req, ports, resource, principal);
+  }
   if (req.method !== 'GET') return methodNotAllowed();
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
@@ -1509,8 +1550,16 @@ async function handleJtlGet(
   if ('status' in principal) return principal;
   const sourceSqliteId = sourceSqliteIdFromPath(rawId);
   if (sourceSqliteId === null) return error(400, `invalid_jtl_${resource}_id`, `JTL ${resource} id muss eine Ganzzahl ungleich 0 sein`);
-  if (req.method === 'PATCH') return handleUpdateJtlReference(req, ports, principal, resource, sourceSqliteId);
-  if (req.method === 'DELETE') return handleDeleteJtlReference(ports, principal, resource, sourceSqliteId);
+  if (req.method === 'PATCH') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
+    return handleUpdateJtlReference(req, ports, principal, resource, sourceSqliteId);
+  }
+  if (req.method === 'DELETE') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
+    return handleDeleteJtlReference(ports, principal, resource, sourceSqliteId);
+  }
   if (req.method !== 'GET') return methodNotAllowed();
   const port = jtlPort(ports, resource);
   if (!port) return unavailable(`jtl_${resource}_unavailable`, `JTL ${resource} API nicht konfiguriert`);
@@ -1524,9 +1573,8 @@ async function handleCreateJtlReference(
   req: ApiRequest,
   ports: ServerApiPorts,
   resource: JtlResource,
+  principal: AuthenticatedPrincipal,
 ): Promise<ApiResponse> {
-  const principal = requirePrincipal(req);
-  if ('status' in principal) return principal;
   const port = jtlPort(ports, resource);
   if (!port?.create) return unavailable(`jtl_${resource}_unavailable`, `JTL ${resource} API nicht konfiguriert`);
 

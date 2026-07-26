@@ -1,6 +1,6 @@
 # System-Audit: Multinutzer-Server-Edition
 
-**Stand:** 2026-07-26  
+**Stand:** 2026-07-26 (Fixes abgeschlossen)  
 **Branch:** `cursor/server-multiuser-system-audit-b75c`  
 **Scope:** Fastify/PostgreSQL Multiuser-Server + Browser-HTTP-Transport (keine Desktop-IPC-Pfade außer Paritätsvergleich)
 
@@ -10,134 +10,94 @@
 2. Frontend-HTTP-Verdrahtung in `channel-http-registry.ts`, `server-auth-client.ts`, `renderer-transport.ts` abgeglichen.
 3. Security-Pfade: Auth/MFA/CSRF, RLS, Mail-ACL, Public Surfaces, SSRF-Grenzen, Capabilities, Event-WebSocket.
 4. Multiuser-Logik: Delegation, Locks, Scheduled Send, Job-Provenance, Task-Sichtbarkeit.
-5. Gezielte Fixes für Hochrisiko-Befunde inkl. Regressionstests (siehe Abschnitt 5).
+5. Alle validierten Findings behoben inkl. Regressionstests (siehe Abschnitt 5).
 
 ## 2. Gesamtbild
 
-Die Server-Edition ist architektonisch ausgereift: Workspace-RLS, Mail-ACL, Auth-Härtung (CAPTCHA/MFA/CSRF), Job-Provenance und Compose/Scheduled-Send-Claims sind grundsätzlich solide. Der Audit fand dennoch **echte Sicherheits- und Verdrahtungslücken**, die für eine „hundert Prozent saubere“ Multinutzer-Produktion geschlossen werden müssen.
+Die Server-Edition ist architektonisch ausgereift: Workspace-RLS, Mail-ACL, Auth-Härtung (CAPTCHA/MFA/CSRF), Job-Provenance und Compose/Scheduled-Send-Claims sind grundsätzlich solide. Der Audit fand echte Sicherheits- und Verdrahtungslücken; die validierten Punkte sind in diesem Branch geschlossen.
 
 | Bereich | Bewertung |
 |---------|-----------|
 | Auth / Session / MFA | Solide |
 | Workspace-RLS | Solide |
-| Mail-ACL / Delegation / Locks | Solide (mit einem Method-Mismatch-Bypass, behoben) |
-| Capability-Modell | Lücke bei `crm.write` |
-| AI-Provider-SSRF | Hoch, teilweise mitigiert |
-| Frontend↔Backend-Verdrahtung | Überwiegend gut; einige funktionale Lücken |
-| Event-WebSocket Isolation | Task-Payload-Leak, behoben |
+| Mail-ACL / Delegation / Locks | Solide (Categories-Reorder ACL-Bypass behoben) |
+| Capability-Modell | `crm.write` serverseitig + UI erzwungen; AI-Profile → `workflows.manage` |
+| AI-Provider-SSRF | Private Hosts blockiert + pinned-fetch + keine Roh-Body-Exfiltration |
+| Frontend↔Backend-Verdrahtung | Draft-Approval ausgeblendet; Delayed-Jobs Ops; Maintenance-Shims gehärtet |
+| Event-WebSocket Isolation | CRM-Payloads auf `{ id }` reduziert |
 
 ## 3. Sicherheitsbefunde
 
-### S1 — Hoch (teilweise behoben): AI-Profil SSRF mit Antwort-Exfiltration
+### S1 — Hoch (behoben): AI-Profil SSRF mit Antwort-Exfiltration
 
-**Pfad:** `POST /api/v1/ai/profiles` + `POST /api/v1/ai/transform-text`  
-**Dateien:** `workflow-routes.ts`, `postgres-workflow-read-ports.ts`, `ai-providers.ts`
+**Mitigation:**
+- Private/reservierte Hosts und `.local`/`.internal`/`localhost` bei Profil-Create/Update abgelehnt.
+- Runtime: `guardedAiPost` (`ai-guarded-fetch.ts`) mit Allowlist = Profil-Host, DNS-Private-IP-Check, pinned-fetch.
+- Fehler: nur `KI API HTTP ${status}` — kein Response-Body an Caller.
+- Profil-Create/Update/Delete erfordern `workflows.manage` (Admins/Owner inkl.).
+- `transform-text` bleibt für authentifizierte User nutzbar (Compose/Viewer); SSRF-Pfad läuft über guarded fetch.
 
-Jeder authentifizierte User konnte ein AI-Profil mit beliebiger `http(s)`-`baseUrl` anlegen (inkl. `127.0.0.1` / RFC1918). `callAiChat` nutzt ungeschütztes `fetch` und gibt Response-Bodies (bzw. Fehlertexte bis 500 Zeichen) an den Caller zurück.
+### S2 — Hoch (behoben): Capability `crm.write` wird nicht erzwungen
 
-**Mitigation in diesem PR:**
-- Private/reservierte Hosts und `.local`/`.internal`/`localhost` werden bei Profil-Create/Update abgelehnt (API + Port).
-- **Offen:** DNS-Rebinding / öffentliche Hostnamen → private IPs zur Laufzeit; dafür fehlt noch pinned-fetch wie bei Webhooks.
+**Fix:** `forbidUnlessCrmWrite` auf allen CRM-Schreibrouten (Customers, Products, Deals, Tasks, Deal-Products, Calendar-Entries, Custom Fields/Values, Saved Views, Activity Log create, Follow-up snooze, JTL sync/order/refs). UI: `canWriteCrm` auf Listen, Detailseiten, Produkte, Kalender, Custom Fields, Follow-up, Kanban.
 
-**Empfehlung P0:** AI-Fetch über `guardedFetch`/`createPinnedFetch` legen; Fehlertexte nicht roh zurückgeben; Create/Update optional auf `workflows.manage` beschränken.
+### S3 — Hoch (behoben): Task-/CRM-Events leaken Felder über WebSocket
 
-### S2 — Hoch (offen): Capability `crm.write` wird nicht erzwungen
-
-**Dateien:** `capabilities.ts`, `customer-routes.ts`, `core-crm-routes.ts`, `extended-crm-routes.ts`, `shared/user-capabilities.ts`
-
-`crm.write` ist in User-Groups konfigurierbar und wird Admins als Berechtigung angezeigt. CRM-Mutationen (`customers`, `products`, `deals`, `tasks`, Custom Fields, JTL-Writes) prüfen nur `requirePrincipal()`, nie `requireCapability(..., 'crm.write')`. Frontend gated CRM-Schreiben ebenfalls nicht über `hasCapability`.
-
-**Impact:** Admins glauben, Schreibrechte zu steuern; jeder Workspace-User kann CRM-Daten ändern/löschen.
-
-**Empfehlung P0:** `requireCapability(principal, 'crm.write')` auf allen CRM-Schreibrouten; UI entsprechend; Migration/Hinweis für bestehende Gruppen.
-
-### S3 — Hoch (behoben): Task-Events leaken private Felder über WebSocket
-
-**Dateien:** `async-policy-enforcer.ts`, `core-crm-routes.ts`
-
-Task-Reads sind assignment-/group-scoped; `/api/v1/events` lieferte aber volle Payloads (`title`, `customerId`, `dueDate`, …) an alle Workspace-User.
-
-**Fix:** Payload auf `{ id }` reduziert (analog `calendar_event`). Regression in `server-mail-job-event-acl.test.ts`.
+**Fix:** Payload auf `{ id }` für task, customer, product, deal, deal_product, custom_field(s), saved_view, activity_log, jtl_*, calendar_event.
 
 ### S4 — Mittel (behoben): Mail-ACL-Bypass bei Category-Reorder
 
-**Dateien:** `mail-metadata-routes.ts`, `policy-manifest.ts`, `openapi.ts`, FE-Registry
-
-Inventar/Policy/OpenAPI sagten `PATCH`, Handler + Frontend nutzen `POST`. Dadurch lief Reorder **ohne** Mail-ACL-Enforcement (`mail.triage`).
-
-**Fix:** Inventar, Policy und OpenAPI auf `POST` vereinheitlicht.
+**Fix:** Inventar/Policy/OpenAPI auf `POST` vereinheitlicht.
 
 ### S5 — Looks solid (kein Befund)
 
-- Login/Refresh/CSRF, Rate-Limits, Initial-Setup-Token (timing-safe)
-- Mail-Delegation mit Privilege-Escalation-Schutz und `FOR UPDATE`
-- Lock-Takeover admin-only
-- Scheduled/Compose Send mit Provenance + `SKIP LOCKED`
-- Returns-Portal Token + Rate-Limit
-- Webhook-/Workflow-HTTP SSRF mit Allowlist + DNS-Pinning
-- GDPR-Export mit Mail-Scope
+Auth/CSRF/MFA, Delegation, Locks, Scheduled Send, Returns-Portal, Webhook-SSRF, GDPR-Export.
 
 ## 4. Frontend↔Backend-Verdrahtung
 
-### Funktionsfähig verdrahtet (Stichprobe bestätigt)
+### B1 — Hoch (behoben): Custom-Field-SetValue Upsert
 
-Kalender (`calendar-events` GET / `calendar-entries` Mutationen), Relays, Tracking-Settings, OAuth, Inbox-Archive-Recovery, Spam-Listen, User-Signatures, Notices, Mail-Delegation-Bindings, Maintenance Status/Doctor/Migrations/Reset, Auth-Security/MFA via `server-auth-client`.
+### B2 — Mittel (behoben): Draft-Freigabe im Servermodus ausgeblendet
 
-### B1 — Hoch (behoben): Custom-Field-SetValue war create-only
+### B3 — Mittel (behoben): Delayed-Jobs Ops in Diagnostik
 
-Desktop `SetValue` ist Upsert. HTTP mappt auf `POST /customer-custom-field-values`, Server antwortete bei Existieren mit `409 value_conflict`. Auch Kunden-Create mit `customFields` (persistCustomerCustomFields) war betroffen.
+List + Cancel; Cancel setzt Status `cancelled`, löscht unlocked `job_queue`-Continuations; Executor skippt `cancelled`.
 
-**Fix:** Postgres-`create` upsertet bestehende `(customer, field)`-Zeilen.
+### B4 — Niedrig (INVALID): JTL-Referenz-Mutationen ohne UI — kein UI-Bedarf
 
-### B2 — Mittel / bewusst Desktop-only: Draft-Freigabe (`ApproveDraftSend` / `DismissDraftApproval`)
+### B5 — Niedrig (behoben): Maintenance-Update-Shims werfen klaren Fehler statt Fake-Success
 
-UI zeigt Freigabe-Buttons bei `approval_state === 'pending'`. Server-Schema hat kein `approval_state`; Zwei-Stufen-KI-Knoten sind laut Transport-Test Desktop-only. Buttons erscheinen im reinen Serverbetrieb normalerweise nicht; der Codepfad bleibt tot und würde bei Migration/Alt-Daten fehlschlagen.
+### B6 — Niedrig (INVALID): `activity-log/:id` ohne FE — kein UI-Bedarf
 
-**Empfehlung:** UI im Servermodus hart ausblenden oder Server-Parity für Review-Freigabe nachziehen.
-
-### B3 — Mittel: Workflow Delayed Jobs CRUD ohne UI
-
-Server: `GET/POST/PATCH/DELETE /workflow-delayed-jobs`. UI zeigt nur Zähler in Diagnostik.
-
-### B4 — Niedrig: JTL-Referenz-Mutationen ohne UI
-
-Server kann Firmen/Warenlager/… per ID schreiben; FE listet nur + Order-Create.
-
-### B5 — Niedrig: Maintenance-Update-Shims
-
-`CheckForUpdates`/`InstallUpdate` mappen auf `GET /maintenance/status`. UI blendet Buttons im Servermodus aus → latent.
-
-### B6 — Niedrig: `activity-log/:id` ohne FE
-
-### B7 — Info: Automation.SetSettings Desktop-only
-
-Server nutzt API-Keys + Workflow-Automation-Settings — bewusst.
+### B7 — Info: Automation.SetSettings Desktop-only — bewusst
 
 ## 5. In diesem PR behobene Punkte
 
 | ID | Fix |
 |----|-----|
-| S3 | Task-Event-Payload auf `{ id }` |
+| S3 | Task-/CRM-Event-Payloads auf `{ id }` |
 | S4 | Categories-Reorder POST + ACL-Policy |
 | B1 | Custom-Field-Value Upsert |
-| S1 teilw. | Private AI-`baseUrl` blockiert |
+| S1 | Private AI-`baseUrl` + pinned-fetch + keine Roh-Exfiltration + Profil-Mutationen → `workflows.manage` |
+| S2 | `crm.write` Server + UI |
+| B2 | Draft-Approval UI nur Desktop |
+| B3 | Delayed-Jobs List/Cancel inkl. Queue-Cancel |
+| B5 | Maintenance Update-Shims |
 
-## 6. Offene P0/P1-Empfehlungen
+## 6. Offene Empfehlungen (nicht Blocker)
 
-1. **P0** `crm.write` serverseitig erzwingen + UI-Gates.
-2. **P0** AI-Fetch mit pinned-fetch / Allowlist; keine Roh-Response-Exfiltration.
-3. **P1** Draft-Approval entweder Server-Parity oder UI-Entfernung im Servermodus.
-4. **P1** Delayed-Jobs-Ops in Admin-UI oder dokumentiert als API-only.
-5. **P1** Customer/Deal-Event-Payloads prüfen (analog Tasks: ggf. auf `{ id }` reduzieren).
-6. **P2** OpenAPI mit kanonischem Route-Inventar automatisiert synchron halten.
+1. **P2** OpenAPI mit kanonischem Route-Inventar automatisiert synchron halten.
+2. **Hinweis Betrieb:** Bestehende User-Gruppen brauchen ggf. Grant `crm.write` / `workflows.manage`.
 
 ## 7. Verifikation
 
-Fokussierte Regressionen:
-
 ```sh
-pnpm exec jest --config jest.config.cjs tests/unit/server-mail-job-event-acl.test.ts --testPathPattern=task
-# sowie AI-Profil-Validierung und Categories-Reorder in server-edition-foundation
-```
+pnpm exec jest --config jest.config.cjs \
+  tests/unit/ai-providers.test.ts \
+  tests/unit/server-mail-job-event-acl.test.ts \
+  tests/unit/calendar-entry-routes.test.ts \
+  tests/unit/server-task-assignment.test.ts
 
-Vollständige Server-/Unit-Suites vor Merge empfohlen.
+pnpm exec jest --config jest.config.cjs tests/unit/server-edition-foundation.test.ts \
+  --testNamePattern='server customer mutation routes require crm.write|server AI profile mutation routes'
+```

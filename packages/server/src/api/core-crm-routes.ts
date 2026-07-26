@@ -16,6 +16,7 @@ import type {
 import {
   data,
   error,
+  forbidUnlessCrmWrite,
   positiveIntFromPath,
   requirePrincipal,
 } from './http';
@@ -114,16 +115,22 @@ async function handleListRoute(
   if (resource === 'products' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateProduct(req, ports, principal);
   }
   if (resource === 'deals' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateDeal(req, ports, principal);
   }
   if (resource === 'tasks' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleCreateTask(req, ports, principal);
   }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
@@ -225,6 +232,8 @@ async function handleDealStageRoute(
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = forbidUnlessCrmWrite(principal);
+  if (denied) return denied;
 
   const id = positiveIntFromPath(rawDealId);
   if (id === null) return error(400, 'invalid_deal_id', 'deal id muss eine positive Ganzzahl sein');
@@ -263,6 +272,8 @@ async function handleTaskToggleRoute(
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = forbidUnlessCrmWrite(principal);
+  if (denied) return denied;
 
   const id = positiveIntFromPath(rawTaskId);
   if (id === null) return error(400, 'invalid_task_id', 'task id muss eine positive Ganzzahl sein');
@@ -330,6 +341,8 @@ async function handleDealProductRoute(
     if (dealId === undefined || dealProductId !== undefined || productId !== undefined) {
       return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     }
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     const parsed = parseDealProductMutationBody(req.body, {
       requireProduct: true,
       requireQuantity: true,
@@ -351,6 +364,8 @@ async function handleDealProductRoute(
   }
 
   if (req.method === 'PATCH') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     const parsed = parseDealProductMutationBody(req.body, {
       requireProduct: false,
       requireQuantity: true,
@@ -374,6 +389,8 @@ async function handleDealProductRoute(
   }
 
   if (req.method === 'DELETE') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     const result = await ports.dealProducts.delete({
       workspaceId: principal.workspaceId,
       actorUserId: principal.userId,
@@ -405,21 +422,33 @@ async function handleGetRoute(
   if (id === null) return error(400, `invalid_${singular(resource)}_id`, `${singular(resource)} id muss eine positive Ganzzahl sein`);
 
   if (resource === 'products' && req.method === 'PATCH') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateProduct(req, ports, principal, id);
   }
   if (resource === 'products' && req.method === 'DELETE') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteProduct(ports, principal, id);
   }
   if (resource === 'deals' && req.method === 'PATCH') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateDeal(req, ports, principal, id);
   }
   if (resource === 'deals' && req.method === 'DELETE') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteDeal(ports, principal, id);
   }
   if (resource === 'tasks' && req.method === 'PATCH') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateTask(req, ports, principal, id);
   }
   if (resource === 'tasks' && req.method === 'DELETE') {
+    const denied = forbidUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteTask(ports, principal, id);
   }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');

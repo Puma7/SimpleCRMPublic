@@ -47,6 +47,26 @@ export function requireCapability(principal: AuthenticatedPrincipal, capability:
   return principal.capabilities?.includes(capability) ?? false;
 }
 
+/** Returns a 403 response when the principal lacks the capability; otherwise null. */
+export function forbidUnlessCapability(
+  principal: AuthenticatedPrincipal,
+  capability: string,
+  message: string,
+): ApiResponse<ApiErrorBody> | null {
+  if (requireCapability(principal, capability)) return null;
+  return error(403, 'forbidden', message);
+}
+
+export function forbidUnlessCrmWrite(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return forbidUnlessCapability(
+    principal,
+    'crm.write',
+    'Adminrechte oder CRM-Schreibberechtigung erforderlich',
+  );
+}
+
 export function positiveIntFromPath(value: string | undefined): number | null {
   if (!value || !/^[1-9]\d*$/.test(value)) return null;
   const n = Number(value);

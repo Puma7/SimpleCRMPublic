@@ -117,7 +117,7 @@ function formatDuration(seconds: number | null | undefined): string {
 }
 
 export function DiagnosticsPanel() {
-  const { user } = useAuth()
+  const { user, hasCapability } = useAuth()
   const electronAvailable = useHasElectron()
   const serverClientMode = getRendererTransport().kind === "http"
   const localBackupAvailable = electronAvailable && !serverClientMode
@@ -126,7 +126,12 @@ export function DiagnosticsPanel() {
   const [backupRunning, setBackupRunning] = useState(false)
   const [verifyRunning, setVerifyRunning] = useState(false)
   const [recovering, setRecovering] = useState<string | null>(null)
+  const [delayedJobs, setDelayedJobs] = useState<Array<Record<string, unknown>>>([])
+  const [delayedJobsLoading, setDelayedJobsLoading] = useState(false)
   const canRecover = serverClientMode && (user?.role === "owner" || user?.role === "admin")
+  const canManageDelayedJobs = serverClientMode && (
+    user?.role === "owner" || user?.role === "admin" || hasCapability("workflows.manage")
+  )
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -141,9 +146,30 @@ export function DiagnosticsPanel() {
     }
   }, [])
 
+  const loadDelayedJobs = useCallback(async () => {
+    if (!canManageDelayedJobs) return
+    setDelayedJobsLoading(true)
+    try {
+      const page = await invokeRenderer(IPCChannels.Email.ListWorkflowDelayedJobs, {
+        status: "pending",
+        limit: 50,
+      }) as { items?: Array<Record<string, unknown>> }
+      setDelayedJobs(Array.isArray(page?.items) ? page.items : [])
+    } catch {
+      toast.error("Verzögerte Workflow-Jobs konnten nicht geladen werden.")
+      setDelayedJobs([])
+    } finally {
+      setDelayedJobsLoading(false)
+    }
+  }, [canManageDelayedJobs])
+
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    void loadDelayedJobs()
+  }, [loadDelayedJobs])
 
   const copyJson = async () => {
     if (!report) return
@@ -483,6 +509,67 @@ export function DiagnosticsPanel() {
               <p className="mt-1 text-[11px] text-muted-foreground">
                 Workflow-Nebeneffekte (Weiterleiten, HTTP, KI) laufen über job_queue — Details auch unter Server-Logs (Filter „Alle“, Quelle job-worker).
               </p>
+            </section>
+          ) : null}
+
+          {canManageDelayedJobs ? (
+            <section>
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="font-medium">Verzögerte Workflow-Jobs</h4>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={delayedJobsLoading}
+                  onClick={() => void loadDelayedJobs()}
+                >
+                  {delayedJobsLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  Aktualisieren
+                </Button>
+              </div>
+              {delayedJobs.length === 0 ? (
+                <p className="mt-1 text-xs text-muted-foreground">Keine ausstehenden Delayed Jobs.</p>
+              ) : (
+                <div className="mt-2 overflow-auto rounded border bg-background/60 p-2 font-mono text-[11px]">
+                  {delayedJobs.map((job) => {
+                    const id = Number(job.id)
+                    return (
+                      <div key={String(job.id)} className="flex items-start justify-between gap-2 border-b py-1 last:border-b-0">
+                        <div>
+                          #{id} · Workflow {String(job.workflowId ?? "—")} · {String(job.status ?? "pending")}
+                          {job.executeAt ? ` · ${String(job.executeAt)}` : ""}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-[11px]"
+                          onClick={() => {
+                            void (async () => {
+                              try {
+                                const result = await invokeRenderer(IPCChannels.Email.CancelWorkflowDelayedJob, { id }) as {
+                                  success?: boolean
+                                  error?: string
+                                }
+                                if (!result?.success) {
+                                  toast.error(result?.error ?? "Abbruch fehlgeschlagen")
+                                  return
+                                }
+                                toast.success("Delayed Job abgebrochen")
+                                await loadDelayedJobs()
+                              } catch (error) {
+                                toast.error(error instanceof Error ? error.message : "Abbruch fehlgeschlagen")
+                              }
+                            })()
+                          }}
+                        >
+                          Abbrechen
+                        </Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
             </section>
           ) : null}
 
