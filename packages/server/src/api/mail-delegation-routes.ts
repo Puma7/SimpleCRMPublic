@@ -289,6 +289,17 @@ function parseConstraints(body: Record<string, unknown>):
   if (body.constraints === null) return { ok: true, provided: true, constraints: null };
   if (!isRecord(body.constraints)) return invalid('constraints muss ein Objekt oder null sein');
   const raw = body.constraints;
+  const allowedConstraintKeys = new Set([
+    'assignmentMode',
+    'categoryAllowIds',
+    'categoryExcludeIds',
+    'tagAllowValues',
+    'tagExcludeValues',
+  ]);
+  const unknownKeys = Object.keys(raw).filter((key) => !allowedConstraintKeys.has(key));
+  if (unknownKeys.length > 0) {
+    return invalid(`Unbekannte Constraint-Felder: ${unknownKeys.sort().join(', ')}`);
+  }
   const assignmentMode = raw.assignmentMode;
   if (
     assignmentMode !== undefined

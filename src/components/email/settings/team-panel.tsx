@@ -22,6 +22,7 @@ export function TeamPanel() {
   const [team, setTeam] = useState<TeamMember[]>([])
   const [newId, setNewId] = useState("")
   const [newName, setNewName] = useState("")
+  const [newLinkedUserId, setNewLinkedUserId] = useState("")
   const [newSignature, setNewSignature] = useState(
     "<p>Mit freundlichen Grüßen<br/>Ihr Kundenservice</p>",
   )
@@ -50,6 +51,8 @@ export function TeamPanel() {
     id: string
     displayName: string
     signatureHtml?: string | null
+    /** Omit to leave the existing link unchanged; pass null to clear. */
+    linkedUserId?: string | null
   }) => {
     await invokeRenderer(IPCChannels.Email.SaveTeamMember, {
       id: payload.id,
@@ -58,6 +61,9 @@ export function TeamPanel() {
         typeof payload.signatureHtml === "string"
           ? sanitizeEmailHtml(payload.signatureHtml)
           : payload.signatureHtml,
+      ...(Object.prototype.hasOwnProperty.call(payload, "linkedUserId")
+        ? { linkedUserId: payload.linkedUserId ?? null }
+        : {}),
     })
     await load()
   }
@@ -69,6 +75,7 @@ export function TeamPanel() {
         <p className="text-sm text-muted-foreground">
           Mitglieder können Nachrichten zugewiesen bekommen. Die Team-Signatur dient als Fallback,
           wenn für ein Postfach keine eigene Signatur hinterlegt ist (unter Konten → Signatur).
+          Für Zuweisungsfilter (`assigned_to_me`) eine Workspace-User-UUID verknüpfen.
         </p>
       </div>
       <div className="space-y-2">
@@ -81,6 +88,11 @@ export function TeamPanel() {
                 <span>
                   <span className="font-mono text-xs text-muted-foreground">{t.id}</span> ·{" "}
                   {t.display_name}
+                  {t.linked_user_id ? (
+                    <span className="ml-2 font-mono text-[10px] text-muted-foreground">
+                      → {t.linked_user_id}
+                    </span>
+                  ) : null}
                 </span>
                 <div className="flex gap-1">
                   <Button
@@ -152,6 +164,12 @@ export function TeamPanel() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
+          <Input
+            className="min-w-[220px] flex-1 font-mono text-xs"
+            placeholder="Verknüpfte User-UUID (optional)"
+            value={newLinkedUserId}
+            onChange={(e) => setNewLinkedUserId(e.target.value)}
+          />
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">Signatur</Label>
@@ -166,9 +184,11 @@ export function TeamPanel() {
               id: newId.trim(),
               displayName: newName.trim(),
               signatureHtml: newSignature,
+              linkedUserId: newLinkedUserId.trim() || null,
             })
             setNewId("")
             setNewName("")
+            setNewLinkedUserId("")
             bumpAccountsRevision()
             toast.success("Mitglied gespeichert")
           }}

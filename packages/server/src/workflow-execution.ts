@@ -1748,16 +1748,26 @@ async function executeServerNode(
     }
     // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
     // stale UUID after workflow reassignment (mirrors the mail assign API).
-    // UUID-shaped team-member ids are only linked when a matching workspace user exists.
+    // Prefer email_team_members.linked_user_id; fall back to UUID coincidence.
     let assignedToUserId: string | null = null;
-    if (teamMemberId !== null && isUuidString(teamMemberId)) {
-      const linkedUser = await trx
-        .selectFrom('users')
-        .select('id')
+    if (teamMemberId !== null) {
+      const member = await trx
+        .selectFrom('email_team_members')
+        .select(['id', 'linked_user_id'])
         .where('workspace_id', '=', context.workspaceId)
         .where('id', '=', teamMemberId)
         .executeTakeFirst();
-      assignedToUserId = linkedUser ? String(linkedUser.id) : null;
+      if (member?.linked_user_id) {
+        assignedToUserId = String(member.linked_user_id);
+      } else if (isUuidString(teamMemberId)) {
+        const linkedUser = await trx
+          .selectFrom('users')
+          .select('id')
+          .where('workspace_id', '=', context.workspaceId)
+          .where('id', '=', teamMemberId)
+          .executeTakeFirst();
+        assignedToUserId = linkedUser ? String(linkedUser.id) : null;
+      }
     }
     const result = await updateWorkflowMessage(trx, context, {
       assigned_to: teamMemberId,

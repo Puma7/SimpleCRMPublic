@@ -19,7 +19,6 @@ import {
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
   mergeAuthorityConstraints,
-  unionAuthorityConstraints,
 } from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
 import {
@@ -392,7 +391,7 @@ export function createPostgresMailDelegationPort(
       if (input.permissions.some((permission) => !held.has(permission))) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
-      const authorityConstraints = await authorityConstraintsForResource(
+      const authority = await loadDelegationAuthority(
         trx,
         workspaceId,
         actor.userId,
@@ -406,17 +405,24 @@ export function createPostgresMailDelegationPort(
         if (existing) {
           const existingMap = await loadBindingConstraints(trx, [existing.id]);
           const existingConstraints = existingMap.get(existing.id) ?? null;
-          if (!isConstraintsAtLeastAsRestrictive(existingConstraints, authorityConstraints)) {
+          if (!isConstraintsAllowedByDelegationAuthority(existingConstraints, authority)) {
             return { ok: false as const, code: 'privilege_escalation' };
           }
           // Relative modes on another subject stay forbidden even when merely preserved.
           if (isRelativeAssignmentRedelegation(actor, input.subject, existingConstraints)) {
             return { ok: false as const, code: 'privilege_escalation' };
           }
-        } else if (hasMailBindingConstraints(authorityConstraints)) {
-          constraints = authorityConstraints;
+        } else {
+          const inherited = inheritConstraintsFromDelegationAuthority(authority);
+          if (inherited === undefined) {
+            // Multi-branch authority cannot be safely collapsed — require explicit filters.
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
+          if (hasMailBindingConstraints(inherited)) {
+            constraints = inherited;
+          }
         }
-      } else if (!isConstraintsAtLeastAsRestrictive(constraints, authorityConstraints)) {
+      } else if (!isConstraintsAllowedByDelegationAuthority(constraints, authority)) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
       // Relative assignment modes evaluate against the binding subject, not the
@@ -574,20 +580,31 @@ async function canManageResource(
 }
 
 /**
- * Most-restrictive intersection of visibility filters for the permissions being
- * delegated. Derived from bindings that grant each requested permission (not only
+ * Per-permission authority for re-delegation. Same-permission bindings are OR'd
+ * at read time, so we keep their constraint branches distinct instead of
+ * field-wise unioning (which would invent cross-products / drop assignment filters).
+ */
+type PermissionAuthority =
+  | { kind: 'unconstrained' }
+  | { kind: 'branches'; branches: readonly MailBindingVisibilityConstraints[] };
+
+type DelegationAuthority = readonly PermissionAuthority[];
+
+/**
+ * Most-restrictive visibility authority for the permissions being delegated.
+ * Derived from bindings that grant each requested permission (not only
  * mail.delegation.manage), so a constrained content grant cannot be widened via
  * an unconstrained manage-only grant.
  */
-async function authorityConstraintsForResource(
+async function loadDelegationAuthority(
   trx: Trx,
   workspaceId: string,
   userId: string,
   resource: MailDelegationResource,
   permissions: readonly MailPermission[],
   _forUpdate = false,
-): Promise<MailBindingVisibilityConstraints | null> {
-  if (permissions.length === 0) return null;
+): Promise<DelegationAuthority> {
+  if (permissions.length === 0) return [];
   const groupRows = await trx
     .selectFrom('user_group_members')
     .select(['group_id'])
@@ -645,26 +662,55 @@ async function authorityConstraintsForResource(
   }
 
   const allBindingIds = [...new Set(bindingRows.map((row) => dbInteger(row.id, 'authority binding id')))];
-  if (allBindingIds.length === 0) return null;
+  if (allBindingIds.length === 0) {
+    return permissions.map(() => ({ kind: 'unconstrained' as const }));
+  }
   const constraintMap = await loadBindingConstraints(trx, allBindingIds);
 
-  let merged: MailBindingVisibilityConstraints | null = null;
-  for (const permission of permissions) {
+  return permissions.map((permission) => {
     const bindingIds = [...new Set(bindingIdsByPermission.get(permission) ?? [])];
-    if (bindingIds.length === 0) continue;
-    let permissionMerged: MailBindingVisibilityConstraints | null = null;
-    let hasUnconstrained = false;
+    if (bindingIds.length === 0) return { kind: 'unconstrained' as const };
+    const branches: MailBindingVisibilityConstraints[] = [];
     for (const bindingId of bindingIds) {
       const next = constraintMap.get(bindingId) ?? null;
       if (!hasMailBindingConstraints(next) || !next) {
-        hasUnconstrained = true;
-        break;
+        return { kind: 'unconstrained' as const };
       }
-      permissionMerged = unionAuthorityConstraints(permissionMerged, next);
+      branches.push(next);
     }
-    // An unconstrained grant for this permission does not tighten authority.
-    if (hasUnconstrained || !permissionMerged) continue;
-    merged = mergeAuthorityConstraints(merged, permissionMerged);
+    return branches.length > 0
+      ? { kind: 'branches' as const, branches }
+      : { kind: 'unconstrained' as const };
+  });
+}
+
+/** Candidate must fit at least one branch of every constrained permission. */
+function isConstraintsAllowedByDelegationAuthority(
+  candidate: MailBindingVisibilityConstraints | null | undefined,
+  authority: DelegationAuthority,
+): boolean {
+  return authority.every((permissionAuthority) => {
+    if (permissionAuthority.kind === 'unconstrained') return true;
+    if (!hasMailBindingConstraints(candidate)) return false;
+    return permissionAuthority.branches.some((branch) => (
+      isConstraintsAtLeastAsRestrictive(candidate, branch)
+    ));
+  });
+}
+
+/**
+ * Auto-inherit only when every constrained permission has exactly one branch;
+ * then intersect across permissions. Multi-branch authorities return `undefined`
+ * so callers require explicit constraints (fail closed).
+ */
+function inheritConstraintsFromDelegationAuthority(
+  authority: DelegationAuthority,
+): MailBindingVisibilityConstraints | null | undefined {
+  let merged: MailBindingVisibilityConstraints | null = null;
+  for (const permissionAuthority of authority) {
+    if (permissionAuthority.kind === 'unconstrained') continue;
+    if (permissionAuthority.branches.length !== 1) return undefined;
+    merged = mergeAuthorityConstraints(merged, permissionAuthority.branches[0]!);
   }
   return merged;
 }

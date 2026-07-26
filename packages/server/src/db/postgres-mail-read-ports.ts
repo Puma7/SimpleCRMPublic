@@ -2891,15 +2891,16 @@ async function assignMessageTeamMember(
     }
     const member = await trx
       .selectFrom('email_team_members')
-      .select('id')
+      .select(['id', 'linked_user_id'])
       .where('workspace_id', '=', input.workspaceId)
       .where('id', '=', teamMemberId)
       .executeTakeFirst();
     if (!member) return { ok: false as const, reason: 'team_member_not_found' as const };
-    // When the team-member id coincides with a workspace user UUID, keep
-    // assigned_to_user_id in sync so assigned_to_me / assigned_to_my_groups work.
-    // Free-text team-member ids (e.g. agent-1) must not be cast against users.id.
-    if (isUuidString(teamMemberId)) {
+    // Prefer the explicit linked workspace user. Fall back to UUID-shaped member
+    // ids that coincide with users.id for backwards compatibility.
+    if (member.linked_user_id) {
+      assignedToUserId = String(member.linked_user_id);
+    } else if (isUuidString(teamMemberId)) {
       const linkedUser = await trx
         .selectFrom('users')
         .select('id')

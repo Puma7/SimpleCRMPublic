@@ -613,6 +613,7 @@ type EmailTeamMemberRecord = {
   role?: string | null
   signatureHtml?: string | null
   sortOrder?: number | null
+  linkedUserId?: string | null
   createdAt?: string | null
   updatedAt?: string | null
 }
@@ -5945,6 +5946,7 @@ function mapEmailTeamMemberRecord(record: EmailTeamMemberRecord) {
     role: record.role ?? "agent",
     signature_html: record.signatureHtml ?? null,
     sort_order: record.sortOrder ?? 0,
+    linked_user_id: record.linkedUserId ?? null,
   }
 }
 
@@ -5952,11 +5954,15 @@ function mapEmailTeamMemberMutation(value: Record<string, any>): Record<string, 
   const signatureHtml = Object.prototype.hasOwnProperty.call(value, "signatureHtml")
     ? value.signatureHtml
     : value.signature_html
+  const linkedUserId = Object.prototype.hasOwnProperty.call(value, "linkedUserId")
+    ? value.linkedUserId
+    : value.linked_user_id
   return pruneUndefined({
     displayName: value.displayName ?? value.display_name,
     role: value.role,
     signatureHtml,
     sortOrder: value.sortOrder ?? value.sort_order,
+    linkedUserId,
   })
 }
 

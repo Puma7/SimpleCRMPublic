@@ -46,11 +46,12 @@ type SpamListEntry = {
 }
 
 export function MailSecurityPanel() {
-  // A delegated email_settings.manage holder may edit these settings, but the
+  // A delegated settings.manage / email_settings.manage holder may edit these settings, but the
   // Rspamd connection test route stays admin-only (it fetches the URL — SSRF),
   // so the test button is admin-only to avoid a guaranteed 403.
-  const { user } = useAuth()
+  const { user, canManageSettings } = useAuth()
   const isAdmin = user?.role === "owner" || user?.role === "admin"
+  const canEdit = canManageSettings
   const [s, setS] = useState<MailSecuritySettings | null>(null)
   const [entries, setEntries] = useState<SpamListEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -92,11 +93,12 @@ export function MailSecurityPanel() {
   }, [load])
 
   const patch = (partial: Partial<MailSecuritySettings>) => {
+    if (!canEdit) return
     setS((prev) => (prev ? { ...prev, ...partial } : prev))
   }
 
   const save = async () => {
-    if (!s) return
+    if (!s || !canEdit) return
     try {
       await invokeRenderer(IPCChannels.Email.SetMailSecuritySettings, s)
       toast.success("Mail-Sicherheit gespeichert.")
@@ -108,6 +110,7 @@ export function MailSecurityPanel() {
   }
 
   const addEntry = async () => {
+    if (!canEdit) return
     const pattern = newPattern.trim()
     if (!pattern) return
     const result = await invokeRenderer(IPCChannels.Email.SaveSpamListEntry, {
@@ -126,6 +129,7 @@ export function MailSecurityPanel() {
   }
 
   const deleteEntry = async (id: number) => {
+    if (!canEdit) return
     try {
       const result = await invokeRenderer(IPCChannels.Email.DeleteSpamListEntry, id) as { success: boolean; error?: string }
       if (!result.success) {
@@ -167,13 +171,18 @@ export function MailSecurityPanel() {
           SPF, DKIM, DMARC, ARC, Rspamd und die SimpleCRM-Spam-Engine laufen vor eingehenden Workflows.
           Workflows entscheiden danach, ob eine Mail sauber bleibt, in Spam pruefen landet oder als Spam markiert wird.
         </p>
+        {!canEdit ? (
+          <p className="mt-2 text-sm text-muted-foreground">
+            Nur Leserechte (`settings.view`) — Änderungen sind deaktiviert.
+          </p>
+        ) : null}
       </div>
 
       <div className="space-y-3 rounded-lg border p-4">
         <h4 className="text-sm font-medium">Mailauth</h4>
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">SPF/DKIM/DMARC/ARC pruefen</Label>
-          <Switch checked={s.mailauthEnabled} onCheckedChange={(on) => patch({ mailauthEnabled: on })} />
+          <Switch checked={s.mailauthEnabled} disabled={!canEdit} onCheckedChange={(on) => patch({ mailauthEnabled: on })} />
         </div>
       </div>
 
@@ -181,7 +190,7 @@ export function MailSecurityPanel() {
         <h4 className="text-sm font-medium">SimpleCRM-Spam-Engine</h4>
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">Engine aktiv</Label>
-          <Switch checked={s.spamEngineEnabled} onCheckedChange={(on) => patch({ spamEngineEnabled: on })} />
+          <Switch checked={s.spamEngineEnabled} disabled={!canEdit} onCheckedChange={(on) => patch({ spamEngineEnabled: on })} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-2">
@@ -190,6 +199,7 @@ export function MailSecurityPanel() {
               type="number"
               min={0}
               max={100}
+              disabled={!canEdit}
               value={String(s.spamReviewThreshold)}
               onChange={(e) => {
                 const value = parseInt(e.target.value, 10)
@@ -203,6 +213,7 @@ export function MailSecurityPanel() {
               type="number"
               min={0}
               max={100}
+              disabled={!canEdit}
               value={String(s.spamSpamThreshold)}
               onChange={(e) => {
                 const value = parseInt(e.target.value, 10)
@@ -213,12 +224,13 @@ export function MailSecurityPanel() {
         </div>
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">Lernen aus Korrekturen</Label>
-          <Switch checked={s.localLearningEnabled} onCheckedChange={(on) => patch({ localLearningEnabled: on })} />
+          <Switch checked={s.localLearningEnabled} disabled={!canEdit} onCheckedChange={(on) => patch({ localLearningEnabled: on })} />
         </div>
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">Rspamd-Score in SimpleCRM-Score einrechnen</Label>
           <Switch
             checked={s.rspamdContributionEnabled}
+            disabled={!canEdit}
             onCheckedChange={(on) => patch({ rspamdContributionEnabled: on })}
           />
         </div>
@@ -228,24 +240,26 @@ export function MailSecurityPanel() {
         <h4 className="text-sm font-medium">Rspamd optional</h4>
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">Rspamd-Check aktiv</Label>
-          <Switch checked={s.rspamdEnabled} onCheckedChange={(on) => patch({ rspamdEnabled: on })} />
+          <Switch checked={s.rspamdEnabled} disabled={!canEdit} onCheckedChange={(on) => patch({ rspamdEnabled: on })} />
         </div>
         <div className="flex items-center justify-between gap-2">
           <Label className="text-sm">Rspamd aus Korrekturen lernen lassen</Label>
           <Switch
             checked={s.rspamdLearningEnabled}
+            disabled={!canEdit}
             onCheckedChange={(on) => patch({ rspamdLearningEnabled: on })}
           />
         </div>
         <div className="grid gap-2">
           <Label className="text-xs">Controller-URL</Label>
-          <Input value={s.rspamdUrl} onChange={(e) => patch({ rspamdUrl: e.target.value })} />
+          <Input value={s.rspamdUrl} disabled={!canEdit} onChange={(e) => patch({ rspamdUrl: e.target.value })} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-2">
             <Label className="text-xs">Timeout (ms)</Label>
             <Input
               type="number"
+              disabled={!canEdit}
               value={String(s.rspamdTimeoutMs)}
               onChange={(e) => patch({ rspamdTimeoutMs: parseInt(e.target.value, 10) || 8000 })}
             />
@@ -255,6 +269,7 @@ export function MailSecurityPanel() {
             <Input
               type="number"
               step="0.5"
+              disabled={!canEdit}
               value={String(s.rspamdSpamScore)}
               onChange={(e) => patch({ rspamdSpamScore: parseFloat(e.target.value) || 15 })}
             />
@@ -275,6 +290,7 @@ export function MailSecurityPanel() {
               type="button"
               size="sm"
               variant={newListType === "allow" ? "secondary" : "ghost"}
+              disabled={!canEdit}
               onClick={() => setNewListType("allow")}
             >
               Allow
@@ -283,14 +299,15 @@ export function MailSecurityPanel() {
               type="button"
               size="sm"
               variant={newListType === "block" ? "secondary" : "ghost"}
+              disabled={!canEdit}
               onClick={() => setNewListType("block")}
             >
               Block
             </Button>
           </div>
-          <Input value={newPattern} onChange={(e) => setNewPattern(e.target.value)} placeholder="kunde.de oder name@kunde.de" />
-          <Input value={newNote} onChange={(e) => setNewNote(e.target.value)} placeholder="Notiz" />
-          <Button type="button" size="icon" onClick={() => void addEntry()} title="Eintrag hinzufuegen">
+          <Input value={newPattern} disabled={!canEdit} onChange={(e) => setNewPattern(e.target.value)} placeholder="kunde.de oder name@kunde.de" />
+          <Input value={newNote} disabled={!canEdit} onChange={(e) => setNewNote(e.target.value)} placeholder="Notiz" />
+          <Button type="button" size="icon" disabled={!canEdit} onClick={() => void addEntry()} title="Eintrag hinzufuegen">
             <Plus className="h-4 w-4" />
           </Button>
         </div>
@@ -308,7 +325,7 @@ export function MailSecurityPanel() {
                   {entry.pattern}
                   {entry.note ? <span className="text-muted-foreground"> · {entry.note}</span> : null}
                 </span>
-                <Button type="button" size="icon" variant="ghost" onClick={() => void deleteEntry(entry.id)} title="Eintrag loeschen">
+                <Button type="button" size="icon" variant="ghost" disabled={!canEdit} onClick={() => void deleteEntry(entry.id)} title="Eintrag loeschen">
                   <Trash2 className="h-4 w-4" />
                 </Button>
               </div>
@@ -317,7 +334,7 @@ export function MailSecurityPanel() {
         </div>
       </div>
 
-      <Button type="button" onClick={() => void save()}>
+      <Button type="button" disabled={!canEdit} onClick={() => void save()}>
         Speichern
       </Button>
     </div>

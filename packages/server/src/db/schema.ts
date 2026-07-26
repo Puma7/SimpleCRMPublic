@@ -668,6 +668,7 @@ export type EmailTeamMembersTable = {
   role: string;
   signature_html: string | null;
   sort_order: number;
+  linked_user_id: string | null;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
   created_at: TimestampColumn | null;

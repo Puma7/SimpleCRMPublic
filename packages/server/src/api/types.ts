@@ -2900,6 +2900,7 @@ export type EmailTeamMemberRecord = {
   role: string;
   signatureHtml: string | null;
   sortOrder: number;
+  linkedUserId: string | null;
   createdAt: string | null;
   updatedAt: string;
 };
@@ -2912,6 +2913,7 @@ export type EmailTeamMemberMutationInput = {
   role?: string;
   signatureHtml?: string | null;
   sortOrder?: number;
+  linkedUserId?: string | null;
 };
 
 export type EmailTeamMemberMutationPortResult =

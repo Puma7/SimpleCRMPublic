@@ -3006,6 +3006,7 @@ function makeEmailTeamMemberRecord(id: string): EmailTeamMemberRecord {
     role: 'agent',
     signatureHtml: '<p>Agent signature</p>',
     sortOrder: 1,
+    linkedUserId: null,
     createdAt: '2026-06-01T12:00:00.000Z',
     updatedAt: '2026-06-02T12:00:00.000Z',
   };

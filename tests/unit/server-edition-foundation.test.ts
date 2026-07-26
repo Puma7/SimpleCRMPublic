@@ -377,6 +377,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0044_api_rate_limit_counters',
   '0045_api_rate_limit_window_idx',
   '0046_group_rights_and_mail_constraints',
+  '0047_email_team_member_linked_user',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -39030,6 +39031,7 @@ function makeEmailTeamMemberRecord(id: string): EmailTeamMemberRecord {
     role: 'agent',
     signatureHtml: '<p>Agent signature</p>',
     sortOrder: 1,
+    linkedUserId: null,
     createdAt: '2026-06-01T12:00:00.000Z',
     updatedAt: '2026-06-02T12:00:00.000Z',
   };

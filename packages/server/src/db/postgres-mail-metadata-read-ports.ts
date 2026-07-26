@@ -178,6 +178,7 @@ const emailTeamMemberSelectColumns = [
   'role',
   'signature_html',
   'sort_order',
+  'linked_user_id',
   'created_at',
   'updated_at',
 ] as const;
@@ -509,6 +510,26 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .executeTakeFirst();
           if (existing) return { ok: false, code: 'team_member_conflict' };
 
+          let linkedUserId = values.linkedUserId ?? null;
+          if (linkedUserId === null && isUuidString(values.id as string)) {
+            const coincidingUser = await trx
+              .selectFrom('users')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', values.id as string)
+              .executeTakeFirst();
+            linkedUserId = coincidingUser ? String(coincidingUser.id) : null;
+          } else if (linkedUserId !== null) {
+            const linkedUser = await trx
+              .selectFrom('users')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', linkedUserId)
+              .executeTakeFirst();
+            if (!linkedUser) throw new Error('email team member linkedUserId must reference a workspace user');
+            linkedUserId = String(linkedUser.id);
+          }
+
           const now = new Date();
           const row = await trx
             .insertInto('email_team_members')
@@ -519,6 +540,7 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
               role: values.role ?? 'agent',
               signature_html: values.signatureHtml ?? null,
               sort_order: values.sortOrder ?? 0,
+              linked_user_id: linkedUserId,
               source_row: serverApiSourceRow(),
               created_at: now,
               updated_at: now,
@@ -543,6 +565,15 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           role: 'user',
         },
         async (trx) => {
+          if (values.linkedUserId) {
+            const linkedUser = await trx
+              .selectFrom('users')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', values.linkedUserId)
+              .executeTakeFirst();
+            if (!linkedUser) throw new Error('email team member linkedUserId must reference a workspace user');
+          }
           const row = await trx
             .updateTable('email_team_members')
             .set({
@@ -2655,6 +2686,13 @@ function normalizeEmailTeamMemberMutation(
   if (normalized.sortOrder !== undefined && (!Number.isSafeInteger(normalized.sortOrder) || normalized.sortOrder < 0)) {
     throw new Error('email team member sortOrder must be a non-negative integer');
   }
+  if (normalized.linkedUserId !== undefined && normalized.linkedUserId !== null) {
+    normalized.linkedUserId = normalized.linkedUserId.trim();
+    if (!normalized.linkedUserId) normalized.linkedUserId = null;
+    else if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized.linkedUserId)) {
+      throw new Error('email team member linkedUserId must be a UUID');
+    }
+  }
   return normalized;
 }
 
@@ -2666,6 +2704,7 @@ function mutationToEmailTeamMemberPatch(
     ...(values.role === undefined ? {} : { role: values.role }),
     ...(values.signatureHtml === undefined ? {} : { signature_html: values.signatureHtml }),
     ...(values.sortOrder === undefined ? {} : { sort_order: values.sortOrder }),
+    ...(values.linkedUserId === undefined ? {} : { linked_user_id: values.linkedUserId }),
   };
 }
 
@@ -3970,6 +4009,7 @@ function mapEmailTeamMemberRow(row: Pick<EmailTeamMemberRow, typeof emailTeamMem
     role: row.role,
     signatureHtml: row.signature_html,
     sortOrder: row.sort_order,
+    linkedUserId: row.linked_user_id ?? null,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
   };
@@ -4192,4 +4232,8 @@ function timestampToIsoOrNull(value: Date | string | null): string | null {
 
 function timestampToIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
+}
+
+function isUuidString(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }

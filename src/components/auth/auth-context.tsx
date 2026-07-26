@@ -42,6 +42,8 @@ type AuthState = {
   canWriteCrm: boolean
   /** Desktop always true; server edition requires settings.view (or admin/owner). */
   canViewSettings: boolean
+  /** Desktop always true; server edition requires settings.manage (or admin/owner). */
+  canManageSettings: boolean
   /** Desktop always true; server edition requires workflows.view (or admin/owner). */
   canViewWorkflows: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
@@ -207,6 +209,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return hasCapability("settings.view")
   }, [hasCapability, authenticated, user, capabilities])
 
+  const canManageSettings = useMemo(() => {
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("settings.manage")
+  }, [hasCapability, authenticated, user, capabilities])
+
   const canViewWorkflows = useMemo(() => {
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("workflows.view")
@@ -268,6 +275,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasCapability,
       canWriteCrm,
       canViewSettings,
+      canManageSettings,
       canViewWorkflows,
       login,
       logout,
@@ -281,6 +289,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasCapability,
       canWriteCrm,
       canViewSettings,
+      canManageSettings,
       canViewWorkflows,
       login,
       logout,

@@ -137,7 +137,19 @@ export function UserGroupsPanel() {
       }
       const created = await userGroupService.create(name.trim(), description.trim() || undefined)
       if (createTemplate !== "none") {
-        await userGroupService.setPermissions(created.id, [...templateCapabilities(createTemplate)])
+        try {
+          await userGroupService.setPermissions(created.id, [...templateCapabilities(createTemplate)])
+        } catch (templateError) {
+          try {
+            await userGroupService.remove(created.id)
+          } catch {
+            // Best-effort rollback; surface the original template failure below.
+          }
+          await loadGroups()
+          throw templateError instanceof Error
+            ? templateError
+            : new Error(t("common.actionFailed"))
+        }
       }
       setName("")
       setDescription("")
