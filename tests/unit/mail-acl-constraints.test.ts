@@ -5,6 +5,7 @@ import {
   hasMailBindingConstraints,
   mergeAuthorityConstraints,
   messageMatchesConstraints,
+  unionAuthorityConstraints,
   type MailScopeActorContext,
 } from '../../packages/server/src/mail-access/types';
 import { MailAccessService } from '../../packages/server/src/mail-access/service';
@@ -19,6 +20,44 @@ describe('mail ACL visibility constraints', () => {
   test('deny-all tag sentinel is Postgres-safe text', () => {
     expect(DENY_ALL_TAG_ALLOW_VALUE.includes('\u0000')).toBe(false);
     expect(DENY_ALL_TAG_ALLOW_VALUE.length).toBeGreaterThan(0);
+  });
+
+  test('deny-all tag allowlist never matches a real tag value', () => {
+    expect(messageMatchesConstraints(
+      {
+        assignedToUserId: null,
+        assignedTo: null,
+        categoryIds: [],
+        tags: [DENY_ALL_TAG_ALLOW_VALUE],
+      },
+      {
+        assignmentMode: null,
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: [DENY_ALL_TAG_ALLOW_VALUE],
+        tagExcludeValues: [],
+      },
+      ACTOR,
+    )).toBe(false);
+  });
+
+  test('unionAuthorityConstraints ORs alternative same-permission branches', () => {
+    const left = {
+      assignmentMode: null,
+      categoryAllowIds: [] as number[],
+      categoryExcludeIds: [] as number[],
+      tagAllowValues: ['alpha'],
+      tagExcludeValues: [] as string[],
+    };
+    const right = {
+      assignmentMode: null,
+      categoryAllowIds: [] as number[],
+      categoryExcludeIds: [] as number[],
+      tagAllowValues: ['beta'],
+      tagExcludeValues: [] as string[],
+    };
+    expect(unionAuthorityConstraints(left, right).tagAllowValues).toEqual(['alpha', 'beta']);
+    expect(mergeAuthorityConstraints(left, right).tagAllowValues).toEqual([DENY_ALL_TAG_ALLOW_VALUE]);
   });
 
   test('hasMailBindingConstraints detects active filters', () => {

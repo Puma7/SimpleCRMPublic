@@ -15,7 +15,9 @@ import {
   createServerAuthClient,
   getRendererTransport,
   invokeRenderer,
+  isMailAclRefreshEvent,
   ServerAuthClientError,
+  subscribeServerEvents,
   type ServerAuthClient,
   type ServerAuthSession,
   type ServerAuthUser,
@@ -150,6 +152,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Load group-granted capabilities for non-admin users (server edition only).
   // Owners/admins hold all implicitly, so the fetch is skipped for them.
+  // Also reload on email_acl.changed — group membership/permission updates publish
+  // that event, and nav gates must reflect the new capability set without re-login.
   useEffect(() => {
     if (!authenticated || !user || getRendererTransport().kind !== "http"
       || user.role === "owner" || user.role === "admin") {
@@ -157,7 +161,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return
     }
     let cancelled = false
-    void (async () => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+    const loadCapabilities = async () => {
       try {
         const res = await invokeRenderer(IPCChannels.Auth.ListCapabilities, undefined) as
           { capabilities?: string[] } | null
@@ -165,8 +171,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {
         if (!cancelled) setCapabilities([])
       }
-    })()
-    return () => { cancelled = true }
+    }
+
+    void loadCapabilities()
+    const subscription = subscribeServerEvents({
+      onEvent: (event) => {
+        if (!isMailAclRefreshEvent(event)) return
+        if (debounceTimer) clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => {
+          void loadCapabilities()
+        }, 250)
+      },
+    })
+    return () => {
+      cancelled = true
+      if (debounceTimer) clearTimeout(debounceTimer)
+      subscription.unsubscribe()
+    }
   }, [authenticated, user])
 
   const hasCapability = useCallback((capability: string): boolean => {

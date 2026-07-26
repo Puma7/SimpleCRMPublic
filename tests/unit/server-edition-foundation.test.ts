@@ -33840,8 +33840,8 @@ describe('server edition foundation', () => {
           workflowListCalls.push(input);
           return { items: [workflow], nextCursor: null };
         },
-        async get() {
-          return null;
+        async get(input) {
+          return input.id === workflow.id ? workflow : null;
         },
         async update(input) {
           workflowUpdateCalls.push(input);

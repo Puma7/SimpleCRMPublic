@@ -41,6 +41,19 @@ export const DENY_ALL_MAIL_BINDING_CONSTRAINTS: MailBindingVisibilityConstraints
   tagExcludeValues: Object.freeze([] as string[]),
 });
 
+/** True when the category allowlist is the deny-all sentinel (matches no real category). */
+export function isDenyAllCategoryAllowlist(ids: readonly number[]): boolean {
+  return ids.length > 0 && ids.every((id) => id === DENY_ALL_CATEGORY_ALLOW_ID);
+}
+
+/**
+ * True when the tag allowlist is the deny-all sentinel. Matching code must treat this
+ * as match-nothing — the printable sentinel must never succeed against real tags.
+ */
+export function isDenyAllTagAllowlist(values: readonly string[]): boolean {
+  return values.length > 0 && values.every((value) => value === DENY_ALL_TAG_ALLOW_VALUE);
+}
+
 export function hasMailBindingConstraints(
   constraints: MailBindingVisibilityConstraints | null | undefined,
 ): boolean {
@@ -86,6 +99,41 @@ export function mergeAuthorityConstraints(
   };
 }
 
+/**
+ * Union alternative constraint branches for the same permission (OR semantics).
+ * Access control ORs multiple bindings; authority must mirror that, not intersect.
+ */
+export function unionAuthorityConstraints(
+  left: MailBindingVisibilityConstraints | null,
+  right: MailBindingVisibilityConstraints,
+): MailBindingVisibilityConstraints {
+  if (!left) return right;
+  if (isPureDenyAllConstraints(left)) return right;
+  if (isPureDenyAllConstraints(right)) return left;
+
+  const leftMode = left.assignmentMode && left.assignmentMode !== 'any' ? left.assignmentMode : null;
+  const rightMode = right.assignmentMode && right.assignmentMode !== 'any' ? right.assignmentMode : null;
+  const assignmentMode = leftMode && rightMode && leftMode === rightMode ? leftMode : null;
+
+  return {
+    assignmentMode,
+    categoryAllowIds: unionAllowNumbers(left.categoryAllowIds, right.categoryAllowIds),
+    categoryExcludeIds: intersectExcludeNumbers(left.categoryExcludeIds, right.categoryExcludeIds),
+    tagAllowValues: unionAllowStrings(left.tagAllowValues, right.tagAllowValues),
+    tagExcludeValues: intersectExcludeStrings(left.tagExcludeValues, right.tagExcludeValues),
+  };
+}
+
+function isPureDenyAllConstraints(constraints: MailBindingVisibilityConstraints): boolean {
+  return (
+    !constraints.assignmentMode
+    && isDenyAllCategoryAllowlist(constraints.categoryAllowIds)
+    && constraints.categoryExcludeIds.length === 0
+    && isDenyAllTagAllowlist(constraints.tagAllowValues)
+    && constraints.tagExcludeValues.length === 0
+  );
+}
+
 function intersectAllowNumbers(
   left: readonly number[],
   right: readonly number[],
@@ -114,6 +162,49 @@ function intersectAllowStrings(
   if (left.length > 0) return [...left].sort();
   if (right.length > 0) return [...right].sort();
   return [];
+}
+
+function unionAllowNumbers(
+  left: readonly number[],
+  right: readonly number[],
+): readonly number[] {
+  if (isDenyAllCategoryAllowlist(left)) {
+    return right.filter((id) => id !== DENY_ALL_CATEGORY_ALLOW_ID).sort((a, b) => a - b);
+  }
+  if (isDenyAllCategoryAllowlist(right)) {
+    return left.filter((id) => id !== DENY_ALL_CATEGORY_ALLOW_ID).sort((a, b) => a - b);
+  }
+  if (left.length === 0 || right.length === 0) return [];
+  return [...new Set([...left, ...right].filter((id) => id !== DENY_ALL_CATEGORY_ALLOW_ID))]
+    .sort((a, b) => a - b);
+}
+
+function unionAllowStrings(
+  left: readonly string[],
+  right: readonly string[],
+): readonly string[] {
+  if (isDenyAllTagAllowlist(left)) {
+    return right.filter((value) => value !== DENY_ALL_TAG_ALLOW_VALUE).sort();
+  }
+  if (isDenyAllTagAllowlist(right)) {
+    return left.filter((value) => value !== DENY_ALL_TAG_ALLOW_VALUE).sort();
+  }
+  if (left.length === 0 || right.length === 0) return [];
+  return [...new Set([...left, ...right].filter((value) => value !== DENY_ALL_TAG_ALLOW_VALUE))].sort();
+}
+
+function intersectExcludeNumbers(
+  left: readonly number[],
+  right: readonly number[],
+): readonly number[] {
+  return left.filter((id) => right.includes(id)).sort((a, b) => a - b);
+}
+
+function intersectExcludeStrings(
+  left: readonly string[],
+  right: readonly string[],
+): readonly string[] {
+  return left.filter((value) => right.includes(value)).sort();
 }
 
 export function constraintsEqual(

@@ -17,6 +17,7 @@ import type {
   ServerApiPorts,
 } from './types';
 import type { MailBindingVisibilityConstraints } from '../mail-access/types';
+import { DENY_ALL_TAG_ALLOW_VALUE } from '../mail-access/types';
 import { data, error, positiveIntFromPath, requirePrincipal } from './http';
 
 const BINDINGS_PATH = '/api/v1/email/access/bindings';
@@ -340,10 +341,12 @@ function parseTextList(value: unknown, label: string):
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
     return invalid(`${label} muss ein Array von Zeichenketten sein`);
   }
-  return {
-    ok: true,
-    values: [...new Set((value as string[]).map((entry) => entry.trim()).filter(Boolean))].sort(),
-  };
+  const values = [...new Set((value as string[]).map((entry) => entry.trim()).filter(Boolean))].sort();
+  // Reserved deny-all sentinel must never be accepted as a real user tag.
+  if (values.includes(DENY_ALL_TAG_ALLOW_VALUE)) {
+    return invalid(`${label} enthält einen reservierten Wert`);
+  }
+  return { ok: true, values };
 }
 
 function parsePermissions(body: Record<string, unknown>):

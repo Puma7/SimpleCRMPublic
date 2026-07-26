@@ -310,6 +310,16 @@ async function handlePermissionRoute(
       entityId: String(groupId),
       metadata: { permissions: result.permissions },
     });
+    const members = await ports.userGroups!.listMembers({ workspaceId: principal.workspaceId, groupId });
+    if (members) {
+      await publishGroupAclInvalidation(
+        ports,
+        principal,
+        groupId,
+        members.map((member) => member.userId),
+        'changed',
+      );
+    }
     return data(200, { permissions: result.permissions });
   }
 

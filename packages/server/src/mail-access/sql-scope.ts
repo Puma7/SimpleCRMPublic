@@ -1,6 +1,6 @@
 import { sql, type RawBuilder } from 'kysely';
 
-import { hasMailBindingConstraints } from './mail-acl-constraints';
+import { hasMailBindingConstraints, isDenyAllCategoryAllowlist, isDenyAllTagAllowlist } from './mail-acl-constraints';
 import type {
   MailBindingVisibilityConstraints,
   MailScopeActorContext,
@@ -140,11 +140,15 @@ function visibilityPredicate(
   }
 
   if (constraints.categoryAllowIds.length > 0) {
-    parts.push(sql<boolean>`exists (
-      select 1 from email_message_categories _emc_allow
-      where _emc_allow.message_id = ${messageIdRef}
-        and _emc_allow.category_id in (${sql.join(constraints.categoryAllowIds)})
-    )`);
+    if (isDenyAllCategoryAllowlist(constraints.categoryAllowIds)) {
+      parts.push(sql<boolean>`false`);
+    } else {
+      parts.push(sql<boolean>`exists (
+        select 1 from email_message_categories _emc_allow
+        where _emc_allow.message_id = ${messageIdRef}
+          and _emc_allow.category_id in (${sql.join(constraints.categoryAllowIds)})
+      )`);
+    }
   }
   if (constraints.categoryExcludeIds.length > 0) {
     parts.push(sql<boolean>`not exists (
@@ -154,11 +158,15 @@ function visibilityPredicate(
     )`);
   }
   if (constraints.tagAllowValues.length > 0) {
-    parts.push(sql<boolean>`exists (
-      select 1 from email_message_tags _emt_allow
-      where _emt_allow.message_id = ${messageIdRef}
-        and _emt_allow.tag in (${sql.join(constraints.tagAllowValues)})
-    )`);
+    if (isDenyAllTagAllowlist(constraints.tagAllowValues)) {
+      parts.push(sql<boolean>`false`);
+    } else {
+      parts.push(sql<boolean>`exists (
+        select 1 from email_message_tags _emt_allow
+        where _emt_allow.message_id = ${messageIdRef}
+          and _emt_allow.tag in (${sql.join(constraints.tagAllowValues)})
+      )`);
+    }
   }
   if (constraints.tagExcludeValues.length > 0) {
     parts.push(sql<boolean>`not exists (

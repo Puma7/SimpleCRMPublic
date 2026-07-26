@@ -1,6 +1,10 @@
 import type { MailPermission, MailResource } from '@simplecrm/core';
 
 import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
+import {
+  isDenyAllCategoryAllowlist,
+  isDenyAllTagAllowlist,
+} from './mail-acl-constraints';
 
 export type { MailAssignmentMode, MailBindingVisibilityConstraints } from './mail-acl-constraints';
 export {
@@ -11,7 +15,10 @@ export {
   constraintsEqual,
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
+  isDenyAllCategoryAllowlist,
+  isDenyAllTagAllowlist,
   mergeAuthorityConstraints,
+  unionAuthorityConstraints,
 } from './mail-acl-constraints';
 
 export type MailAccessActor = Readonly<{
@@ -301,12 +308,14 @@ export function messageMatchesConstraints(
     }
   }
   if (constraints.categoryAllowIds.length > 0) {
+    if (isDenyAllCategoryAllowlist(constraints.categoryAllowIds)) return false;
     if (!constraints.categoryAllowIds.some((id) => facts.categoryIds.includes(id))) return false;
   }
   if (constraints.categoryExcludeIds.length > 0) {
     if (constraints.categoryExcludeIds.some((id) => facts.categoryIds.includes(id))) return false;
   }
   if (constraints.tagAllowValues.length > 0) {
+    if (isDenyAllTagAllowlist(constraints.tagAllowValues)) return false;
     if (!constraints.tagAllowValues.some((tag) => facts.tags.includes(tag))) return false;
   }
   if (constraints.tagExcludeValues.length > 0) {
@@ -337,7 +346,8 @@ export function explainConstraintMismatch(
   }
   if (
     constraints.categoryAllowIds.length > 0
-    && !constraints.categoryAllowIds.some((id) => facts.categoryIds.includes(id))
+    && (isDenyAllCategoryAllowlist(constraints.categoryAllowIds)
+      || !constraints.categoryAllowIds.some((id) => facts.categoryIds.includes(id)))
   ) {
     return 'Nachricht liegt ausserhalb der erlaubten Kategorien';
   }
@@ -346,7 +356,8 @@ export function explainConstraintMismatch(
   }
   if (
     constraints.tagAllowValues.length > 0
-    && !constraints.tagAllowValues.some((tag) => facts.tags.includes(tag))
+    && (isDenyAllTagAllowlist(constraints.tagAllowValues)
+      || !constraints.tagAllowValues.some((tag) => facts.tags.includes(tag)))
   ) {
     return 'Nachricht liegt ausserhalb der erlaubten Tags';
   }

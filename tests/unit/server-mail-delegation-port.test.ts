@@ -178,6 +178,57 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
   });
 
+  test('blocks permission-only updates that preserve relative modes on other subjects', async () => {
+    const existingBinding = {
+      id: 901,
+      workspace_id: WORKSPACE,
+      subject_type: 'user' as const,
+      subject_id: AGENT,
+      resource_type: 'account' as const,
+      account_id: 101,
+      folder_id: null,
+      message_id: null,
+      updated_at: '2026-07-20T10:00:00.000Z',
+    };
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+      actorPermissions: ['mail.delegation.manage', 'mail.metadata.read', 'mail.content.read'],
+      actorAuthorityConstraints: [{
+        binding_id: 501,
+        kind: 'assignment',
+        mode: 'filter',
+        assignment_mode: 'assigned_to_me',
+        value_ids: null,
+        value_texts: null,
+      }],
+      existingConstraints: [{
+        binding_id: 901,
+        kind: 'assignment',
+        mode: 'filter',
+        assignment_mode: 'assigned_to_me',
+        value_ids: null,
+        value_texts: null,
+      }],
+    });
+    const db = {
+      transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
+    };
+    const port = createPostgresMailDelegationPort({ db: db as never, applyWorkspaceSession: async () => {} });
+
+    await expect(port.replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read', 'mail.content.read'],
+    })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
+  });
+
   test('bulk-hydrates delegation pages with a constant query count', async () => {
     const small = createListTransaction(2);
     const large = createListTransaction(20);

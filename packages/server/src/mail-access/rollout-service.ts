@@ -249,51 +249,57 @@ export class MailAccessRolloutService implements MailAccessService {
     userId: string;
     resource: Extract<import('@simplecrm/core').MailResource, { type: 'message' }>;
   }>) {
-    const state = await this.options.state.getState(input.workspaceId);
-    const newExplanation = await this.contextualNewAcl({ workspaceId: input.workspaceId })
-      .explainMessageVisibility(input);
+    const evaluation = await this.options.state.withSharedEvaluation(input.workspaceId, async (context) => {
+      const state = await this.options.state.getState(input.workspaceId, context);
+      const newExplanation = await this.contextualNewAcl(context)
+        .explainMessageVisibility(input);
 
-    if (state.mode !== 'shadow' || state.diagnostic) {
-      return newExplanation;
-    }
+      if (state.mode !== 'shadow' || state.diagnostic) {
+        return { value: newExplanation };
+      }
 
-    const comparable = comparableLegacyFlag('mail.metadata.read');
-    if (!comparable) return newExplanation;
-    const accountId = resourceAccountId(input.resource);
-    if (accountId === null) return newExplanation;
+      const comparable = comparableLegacyFlag('mail.metadata.read');
+      if (!comparable) return { value: newExplanation };
+      const accountId = resourceAccountId(input.resource);
+      if (accountId === null) return { value: newExplanation };
 
-    const [legacyAllowed, newGrants] = await Promise.all([
-      this.options.legacy.canAccessAccount({
-        workspaceId: input.workspaceId,
-        userId: input.userId,
-        permission: 'mail.metadata.read',
-        accountId,
-      }),
-      this.options.newAcl.resolveGrants({
-        workspaceId: input.workspaceId,
-        userId: input.userId,
-        permission: 'mail.metadata.read',
-      }),
-    ]);
-    const enforceConstraints = shouldEnforceConstraintsInShadow(input.resource, newGrants);
-    const effectiveVisible = legacyAllowed && (!enforceConstraints || Boolean(newExplanation.visible));
+      const [legacyAllowed, newGrants] = await Promise.all([
+        this.options.legacy.canAccessAccount({
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          permission: 'mail.metadata.read',
+          accountId,
+        }, context),
+        this.options.newAcl.resolveGrants({
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          permission: 'mail.metadata.read',
+        }, context),
+      ]);
+      const enforceConstraints = shouldEnforceConstraintsInShadow(input.resource, newGrants);
+      const effectiveVisible = legacyAllowed && (!enforceConstraints || Boolean(newExplanation.visible));
 
-    return {
-      ...newExplanation,
-      visible: effectiveVisible,
-      reason: effectiveVisible
-        ? (enforceConstraints
-          ? newExplanation.reason
-          : (legacyAllowed && !newExplanation.visible
-            ? 'Shadow-Mode: Legacy-Kontozugriff erlaubt die Nachricht (neues ACL noch nicht deckungsgleich)'
-            : newExplanation.reason))
-        : (legacyAllowed
-          ? (newExplanation.reason || 'Sichtbarkeitsfilter blockieren die Nachricht')
-          : 'Kein Legacy-Kontozugriff und kein neues ACL-Binding'),
-      rolloutMode: 'shadow' as const,
-      legacyAllowed,
-      newAclVisible: Boolean(newExplanation.visible),
-    };
+      return {
+        value: {
+          ...newExplanation,
+          visible: effectiveVisible,
+          reason: effectiveVisible
+            ? (enforceConstraints
+              ? newExplanation.reason
+              : (legacyAllowed && !newExplanation.visible
+                ? 'Shadow-Mode: Legacy-Kontozugriff erlaubt die Nachricht (neues ACL noch nicht deckungsgleich)'
+                : newExplanation.reason))
+            : (legacyAllowed
+              ? (newExplanation.reason || 'Sichtbarkeitsfilter blockieren die Nachricht')
+              : 'Kein Legacy-Kontozugriff und kein neues ACL-Binding'),
+          rolloutMode: 'shadow' as const,
+          legacyAllowed,
+          newAclVisible: Boolean(newExplanation.visible),
+        },
+      };
+    });
+    if (!evaluation.telemetry.healthy) this.reportTelemetryDiagnostic(evaluation.telemetry.code);
+    return evaluation.value;
   }
 
   private async newDecision(

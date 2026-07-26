@@ -19,6 +19,7 @@ import {
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
   mergeAuthorityConstraints,
+  unionAuthorityConstraints,
 } from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
 import {
@@ -408,6 +409,10 @@ export function createPostgresMailDelegationPort(
           if (!isConstraintsAtLeastAsRestrictive(existingConstraints, authorityConstraints)) {
             return { ok: false as const, code: 'privilege_escalation' };
           }
+          // Relative modes on another subject stay forbidden even when merely preserved.
+          if (isRelativeAssignmentRedelegation(actor, input.subject, existingConstraints)) {
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
         } else if (hasMailBindingConstraints(authorityConstraints)) {
           constraints = authorityConstraints;
         }
@@ -655,7 +660,7 @@ async function authorityConstraintsForResource(
         hasUnconstrained = true;
         break;
       }
-      permissionMerged = mergeAuthorityConstraints(permissionMerged, next);
+      permissionMerged = unionAuthorityConstraints(permissionMerged, next);
     }
     // An unconstrained grant for this permission does not tighten authority.
     if (hasUnconstrained || !permissionMerged) continue;
