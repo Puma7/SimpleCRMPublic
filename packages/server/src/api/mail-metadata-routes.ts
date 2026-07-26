@@ -3585,6 +3585,7 @@ function sanitizeEmailTeamMember(member: EmailTeamMemberRecord): EmailTeamMember
     role: member.role,
     signatureHtml: member.signatureHtml,
     sortOrder: member.sortOrder,
+    linkedUserId: member.linkedUserId ?? null,
     createdAt: member.createdAt,
     updatedAt: member.updatedAt,
   };
