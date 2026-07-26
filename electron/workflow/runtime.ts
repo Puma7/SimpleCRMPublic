@@ -280,15 +280,21 @@ async function walkGraph(
     }
     if (result.ai?.lastResponse) ctx.ai.lastResponse = result.ai.lastResponse;
 
-    if (result.blocked) {
+    // Hold/block as side effect: when an explicit port is set (block/error),
+    // follow that edge first so tags/notifications on the branch still run.
+    // Finish as blocked after the branch (or immediately when no port).
+    const pendingBlockReason = result.blocked
+      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      : null;
+    if (result.blocked && !result.port) {
       return {
         log,
         status: 'blocked',
         blocked: true,
-        blockReason: result.blockReason ?? 'Workflow blockiert',
+        blockReason: pendingBlockReason,
       };
     }
-    if (result.status === 'error') {
+    if (result.status === 'error' && !result.port) {
       return {
         log,
         status: 'error',
@@ -300,15 +306,33 @@ async function walkGraph(
       log.push('stop');
       return {
         log,
-        status: 'ok',
-        blocked: false,
-        blockReason: null,
+        status: pendingBlockReason ? 'blocked' : 'ok',
+        blocked: pendingBlockReason != null,
+        blockReason: pendingBlockReason,
         deferred: result.deferred === true,
       };
     }
 
     const outs = outgoing(doc.edges, currentId);
-    if (outs.length === 0) break;
+    if (outs.length === 0) {
+      if (pendingBlockReason) {
+        return {
+          log,
+          status: 'blocked',
+          blocked: true,
+          blockReason: pendingBlockReason,
+        };
+      }
+      if (result.status === 'error') {
+        return {
+          log,
+          status: 'error',
+          blocked: false,
+          blockReason: result.message ?? null,
+        };
+      }
+      break;
+    }
 
     let port: string = 'default';
     if (node.type === 'condition') {
@@ -345,7 +369,50 @@ async function walkGraph(
     }
 
     const nextEdge = pickEdge(outs, port);
-    currentId = nextEdge?.target;
+    if (!nextEdge) {
+      if (pendingBlockReason) {
+        return {
+          log,
+          status: 'blocked',
+          blocked: true,
+          blockReason: pendingBlockReason,
+        };
+      }
+      if (result.status === 'error') {
+        return {
+          log,
+          status: 'error',
+          blocked: false,
+          blockReason: result.message ?? null,
+        };
+      }
+      break;
+    }
+    // Walk the block/error branch, then surface the blocked verdict so dry-run
+    // / outbound hold stay fail-closed even when the branch only tags & stops.
+    if (pendingBlockReason) {
+      const branch = await walkGraph(
+        ctx,
+        doc,
+        nextEdge.target,
+        log,
+        seen,
+        options,
+        gate,
+      );
+      if (branch.blocked || branch.status === 'blocked') return branch;
+      if (branch.deferred) {
+        return { ...branch, status: 'blocked', blocked: true, blockReason: pendingBlockReason };
+      }
+      if (branch.status === 'error') return branch;
+      return {
+        log: branch.log,
+        status: 'blocked',
+        blocked: true,
+        blockReason: pendingBlockReason,
+      };
+    }
+    currentId = nextEdge.target;
   }
 
   return { log, status: 'ok', blocked: false, blockReason: null };

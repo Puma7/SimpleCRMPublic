@@ -18,6 +18,10 @@ import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from './signature-template.js';
+import {
+  aiDraftLikelyIncludesGreeting,
+  buildReplyGreeting,
+} from './email-reply-greeting.js';
 
 const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
 
@@ -105,12 +109,34 @@ export async function executeWorkflowAiDraftReply(
   }
   const kbText = chunks.map((c) => c.content).join('\n---\n');
 
+  let cannedBlock = '';
+  if (input.config.includeCanned === true) {
+    const canned = await trx
+      .selectFrom('email_canned_responses')
+      .select(['title', 'body'])
+      .where('workspace_id', '=', input.workspaceId)
+      .where((eb) => eb.or([
+        eb('account_id', 'is', null),
+        eb('account_id', '=', Number(message.account_id)),
+      ]))
+      .orderBy('sort_order', 'asc')
+      .orderBy('id', 'asc')
+      .limit(5)
+      .execute();
+    if (canned.length > 0) {
+      cannedBlock = canned
+        .map((c) => `• ${String(c.title ?? '')}:\n${String(c.body ?? '').slice(0, 1200)}`)
+        .join('\n\n');
+    }
+  }
+
   const system = String(input.config.systemPrompt ?? '').trim()
     || 'Beantworte die Kundenmail freundlich auf Deutsch.';
   const user = [
     'Kundenmail:',
     query,
     kbText ? `\nWissensbasis (relevante Auszüge):\n${kbText}` : '',
+    cannedBlock ? `\nVorhandene Textbausteine (als Formulierungshilfe):\n${cannedBlock}` : '',
   ].filter(Boolean).join('\n');
 
   let aiText: string;
@@ -136,8 +162,22 @@ export async function executeWorkflowAiDraftReply(
   }
 
   const parts: string[] = [];
-  if (input.config.greeting !== 'none') {
-    parts.push('Guten Tag,', '');
+  if (input.config.greeting !== 'none' && !aiDraftLikelyIncludesGreeting(aiText)) {
+    const customerName = input.variables['customer.name'];
+    parts.push(
+      buildReplyGreeting({
+        customer:
+          typeof customerName === 'string' && customerName
+            ? { name: customerName }
+            : null,
+        fromJson: typeof message.from_json === 'string'
+          ? message.from_json
+          : message.from_json == null
+            ? null
+            : JSON.stringify(message.from_json),
+      }),
+      '',
+    );
   }
   parts.push(aiText);
   if (input.config.signature !== 'none') {
@@ -145,6 +185,7 @@ export async function executeWorkflowAiDraftReply(
       workspaceId: input.workspaceId,
       accountId: Number(message.account_id),
       variables: input.variables,
+      actorUserId: input.actorUserId ?? null,
     });
     parts.push('', accountSig || 'Mit freundlichen Grüßen');
   }
@@ -186,6 +227,7 @@ export async function executeWorkflowAiDraftReply(
       'draft.id': draft.message.id,
       'ai.draft.text': bodyText.slice(0, 8000),
       'ai.draft.subject': replySubject(message.subject),
+      'ai.draft.sources': knowledgeSourcesLabel(chunks),
     },
   };
 }
@@ -397,9 +439,10 @@ async function resolveAccountSignatureText(
     workspaceId: string;
     accountId: number;
     variables: Record<string, string | number | boolean | null>;
+    actorUserId?: string | null;
   },
 ): Promise<string> {
-  const [account, signature] = await Promise.all([
+  const [account, signature, actor] = await Promise.all([
     trx
       .selectFrom('email_accounts')
       .select(['display_name', 'email_address'])
@@ -412,15 +455,30 @@ async function resolveAccountSignatureText(
       .where('workspace_id', '=', input.workspaceId)
       .where('account_id', '=', input.accountId)
       .executeTakeFirst(),
+    input.actorUserId
+      ? trx
+        .selectFrom('users')
+        .select(['display_name', 'public_name'])
+        .where('workspace_id', '=', input.workspaceId)
+        .where('id', '=', input.actorUserId)
+        .executeTakeFirst()
+      : Promise.resolve(undefined),
   ]);
   const sigHtml = signature?.signature_html?.trim();
   if (!sigHtml || !account) return '';
+  // Automated drafts have no later client pass — resolve {{user.publicName}}
+  // from the actor when present, otherwise fall back to the account display name
+  // so the placeholder never reaches customers literally.
+  const userDisplayName = actor?.display_name?.trim() || account.display_name;
+  const userPublicName = actor?.public_name?.trim() || userDisplayName;
   return signatureHtmlToText(
     interpolateSignatureTemplate(
       sigHtml,
       buildSignatureTemplateContext({
         accountDisplayName: account.display_name,
         accountEmail: account.email_address,
+        userDisplayName,
+        userPublicName,
         customerName:
           typeof input.variables['customer.name'] === 'string'
             ? input.variables['customer.name']
@@ -432,6 +490,14 @@ async function resolveAccountSignatureText(
       }),
     ),
   );
+}
+
+function knowledgeSourcesLabel(
+  chunks: ReadonlyArray<{ id?: number; title?: string | null }>,
+): string {
+  return chunks
+    .map((c) => (c.title ? String(c.title) : `Chunk #${c.id ?? '?'}`))
+    .join(', ');
 }
 
 function replySubject(subject: string | null | undefined): string {

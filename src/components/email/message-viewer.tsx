@@ -558,10 +558,8 @@ export function MessageViewer(props: Props) {
     (selectedMessage.outbound_hold ?? 0) > 0
   // Neutraler Zustand (kein Fehler): Die Gegenlese-KI hat den KI-Entwurf zur
   // menschlichen Freigabe vorgelegt (gesetzt vom Workflow-Knoten ai.review_draft).
-  // Zwei-Stufen-Freigabe ist Desktop-only (kein approval_state auf dem Server);
-  // im HTTP-/Servermodus die Buttons hart ausblenden, damit toter IPC nicht greift.
+  // Desktop (IPC) und Server (HTTP Approve/Dismiss) nutzen denselben Banner.
   const isAwaitingApproval =
-    !serverClientMode &&
     selectedMessage != null &&
     selectedMessage.uid < 0 &&
     selectedMessage.approval_state === "pending"

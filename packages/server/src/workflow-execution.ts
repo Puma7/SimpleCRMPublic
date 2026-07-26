@@ -1353,28 +1353,33 @@ async function walkGraph(
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
     }
-    if (result.blocked) {
-      if (!input.dryRun && input.context.direction === 'outbound' && input.context.messageId !== null) {
-        await trx
-          .updateTable('email_messages')
-          .set({
-            outbound_hold: true,
-            outbound_block_reason: result.blockReason ?? result.message ?? 'Workflow blockiert',
-            updated_at: input.now,
-          })
-          .where('workspace_id', '=', input.context.workspaceId)
-          .where('id', '=', input.context.messageId)
-          .execute();
-      }
+    // Hold as side effect, but still follow an explicit block/error port so
+    // template branches (tags, notifications) run before finishing blocked.
+    const pendingBlockReason = result.blocked
+      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      : null;
+    if (result.blocked && !input.dryRun && input.context.direction === 'outbound' && input.context.messageId !== null) {
+      await trx
+        .updateTable('email_messages')
+        .set({
+          outbound_hold: true,
+          outbound_block_reason: pendingBlockReason,
+          updated_at: input.now,
+        })
+        .where('workspace_id', '=', input.context.workspaceId)
+        .where('id', '=', input.context.messageId)
+        .execute();
+    }
+    if (result.blocked && !result.port) {
       return {
         status: 'blocked',
         blocked: true,
         deferred: false,
-        blockReason: result.blockReason ?? result.message ?? 'Workflow blockiert',
+        blockReason: pendingBlockReason,
         log: input.log,
       };
     }
-    if (result.status === 'error') {
+    if (result.status === 'error' && !result.port) {
       return {
         status: 'error',
         blocked: false,
@@ -1386,19 +1391,63 @@ async function walkGraph(
     if (result.stop) {
       input.log.push('stop');
       return {
-        status: 'ok',
-        blocked: false,
+        status: pendingBlockReason ? 'blocked' : 'ok',
+        blocked: pendingBlockReason != null,
         deferred: result.deferred === true,
         // Ordinary logic.stop ends only this workflow; only spam short-circuit
         // (stop_after_spam / stopFurtherWorkflows) terminates the priority chain.
         inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
-        blockReason: null,
+        blockReason: pendingBlockReason,
         log: input.log,
       };
     }
 
     const next = pickEdge(outgoing(input.doc.edges, currentId), result.port ?? 'default');
-    currentId = next?.target;
+    if (!next) {
+      if (pendingBlockReason) {
+        return {
+          status: 'blocked',
+          blocked: true,
+          deferred: false,
+          blockReason: pendingBlockReason,
+          log: input.log,
+        };
+      }
+      if (result.status === 'error') {
+        return {
+          status: 'error',
+          blocked: false,
+          deferred: false,
+          blockReason: result.message ?? null,
+          log: input.log,
+        };
+      }
+      break;
+    }
+    if (pendingBlockReason) {
+      const branch = await walkGraph(trx, {
+        ...input,
+        startNodeId: next.target,
+      });
+      if (branch.blocked || branch.status === 'blocked') return branch;
+      if (branch.deferred) {
+        return {
+          ...branch,
+          status: 'blocked',
+          blocked: true,
+          blockReason: pendingBlockReason,
+        };
+      }
+      if (branch.status === 'error') return branch;
+      return {
+        status: 'blocked',
+        blocked: true,
+        deferred: false,
+        blockReason: pendingBlockReason,
+        log: branch.log,
+      };
+    }
+    currentId = next.target;
   }
 
   return { status: 'ok', blocked: false, deferred: false, blockReason: null, log: input.log };
@@ -6818,11 +6867,13 @@ async function maybeEnqueueNextInboundWorkflow(
 
   const message = await trx
     .selectFrom('email_messages')
-    .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
+    .select(['id'])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', '=', input.messageId)
     .executeTakeFirst();
-  if (!message || messageIsSpamOrReview(message)) return;
+  // Chain stop is decided exclusively via inboundChainStop on the finished run.
+  // Do not re-bail on spam/review here — that would ignore stopFurtherWorkflows:false.
+  if (!message) return;
 
   const payload = input.actorUserId
     ? {
@@ -6832,7 +6883,9 @@ async function maybeEnqueueNextInboundWorkflow(
       messageId: input.messageId,
       triggerName: 'inbound',
       context: {
-        skipIfMessageSpamOrReview: true,
+        // Do not stamp skipIfMessageSpamOrReview on chain hops: after
+        // mark_spam/set_spam_status with stopFurtherWorkflows:false the next
+        // priority workflow must still run. Spam short-circuit is inboundChainStop.
         inboundWorkflowChain: { workflowIds: chain.workflowIds, index: nextIndex },
       },
     }
@@ -6842,7 +6895,6 @@ async function maybeEnqueueNextInboundWorkflow(
       messageId: input.messageId,
       triggerName: 'inbound',
       context: {
-        skipIfMessageSpamOrReview: true,
         inboundWorkflowChain: { workflowIds: chain.workflowIds, index: nextIndex },
       },
     });

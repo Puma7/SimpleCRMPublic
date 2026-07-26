@@ -19,14 +19,20 @@ describe('codex review regression guards', () => {
     )?.[0] ?? '';
     expect(logicStopBlock).toContain('stop: true');
     expect(logicStopBlock).not.toContain('inboundChainStop');
+    // stopFurtherWorkflows:false must not be defeated by a spam re-bail on enqueue.
+    expect(source).toContain('Do not re-bail on spam/review here');
   });
 
-  test('draft reply uses Reply-To and account signature', () => {
+  test('draft reply uses Reply-To, account signature, greeting, canned, sources', () => {
     const source = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
     expect(source).toContain('raw_headers');
     expect(source).toContain('Reply-To');
     expect(source).toContain('resolveAccountSignatureText');
     expect(source).toContain('email_account_signatures');
+    expect(source).toContain('includeCanned');
+    expect(source).toContain('buildReplyGreeting');
+    expect(source).toContain('ai.draft.sources');
+    expect(source).toContain('userPublicName');
   });
 
   test('approval reason is redacted and draft edits clear approval', () => {
@@ -39,11 +45,30 @@ describe('codex review regression guards', () => {
   test('outbound dry-run block is fail-closed and import maps approval fields', () => {
     const execution = readRepoFile('packages/server/src/workflow-execution.ts');
     const desktop = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+    const runtime = readRepoFile('electron/workflow/runtime.ts');
     const importSql = readRepoFile('packages/server/src/db/postgres-core-mail-import.ts');
     expect(execution).toMatch(/port: 'block'[\s\S]*?blocked: true/);
     expect(desktop).toMatch(/port: 'block'[\s\S]*?blocked: true/);
+    // Port edges must still run when blocked is set.
+    expect(runtime).toContain('pendingBlockReason');
+    expect(execution).toContain('pendingBlockReason');
     expect(importSql).toContain('approval_state');
     expect(importSql).toContain('approval_reason');
     expect(importSql).toContain('auto_submitted');
+  });
+
+  test('server approval UI is reachable and terminal child failures advance the chain', () => {
+    const viewer = readRepoFile('src/components/email/message-viewer.tsx');
+    const list = readRepoFile('src/components/email/message-list.tsx');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+    const queue = readRepoFile('packages/server/src/db/postgres-job-queue-port.ts');
+    expect(viewer).toContain('approval_state === "pending"');
+    expect(viewer).not.toMatch(
+      /!serverClientMode &&\s*selectedMessage != null &&\s*selectedMessage\.uid < 0 &&\s*selectedMessage\.approval_state === "pending"/,
+    );
+    expect(list).toContain('m.approval_state === "pending"');
+    expect(list).not.toContain('!serverClientMode && m.approval_state');
+    expect(advance).toContain('enqueueNextInboundWorkflowAfterTerminalChildFailure');
+    expect(queue).toContain('enqueueNextInboundWorkflowAfterTerminalChildFailure');
   });
 });

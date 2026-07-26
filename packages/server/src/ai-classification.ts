@@ -34,6 +34,7 @@ import {
   resumeContextInboundChainFields,
   type InboundChainContinuationFields,
 } from './workflow-inbound-chain-context';
+import { enqueueNextInboundWorkflowAfterTerminalChildFailure } from './workflow-inbound-chain-advance';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -723,6 +724,14 @@ export function createPostgresAiReviewPort(
           async (trx) => {
             if (blocked) {
               await persistAiReviewBlock(trx, input, now());
+              if (input.continuation) {
+                await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.messageId,
+                  actorUserId: input.continuation.actorUserId,
+                  continuation: input.continuation,
+                }, now());
+              }
               return;
             }
             if (input.continuation) {
@@ -1393,7 +1402,19 @@ async function maybeEnqueueOutboundReviewContinuation(
   const continuation = input.continuation;
   if (!continuation) return;
   const resumeNodeId = input.portResumeTargets?.[port] ?? (port === 'ok' ? continuation.resumeNodeId : undefined);
-  if (!resumeNodeId) return;
+  if (!resumeNodeId) {
+    // No block/error edge: still advance the inbound priority chain so later
+    // workflows are not stranded after a deferred AI child terminates.
+    if (port !== 'ok') {
+      await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+        workspaceId: input.workspaceId,
+        messageId: input.messageId,
+        actorUserId: continuation.actorUserId,
+        continuation,
+      }, now);
+    }
+    return;
+  }
   await enqueueContinuation(trx, {
     workspaceId: input.workspaceId,
     messageId: input.messageId,

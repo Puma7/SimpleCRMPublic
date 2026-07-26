@@ -13,6 +13,7 @@ import {
   type QueuedJob,
 } from '../jobs/types';
 import { scheduledSendDraftIdFromPayload } from '../jobs/scheduled-send-job-key';
+import { enqueueNextInboundWorkflowAfterTerminalChildFailure } from '../workflow-inbound-chain-advance';
 import type { JobQueueRow, ServerDatabase } from './schema';
 import {
   withWorkspaceTransaction,
@@ -273,6 +274,14 @@ async function failJob(
     .returningAll()
     .executeTakeFirst();
 
+  if (terminal && row) {
+    await enqueueNextInboundWorkflowAfterTerminalChildFailure(
+      db,
+      jobPayloadRecord(input.job.payload),
+      now,
+    );
+  }
+
   return row ? mapJob(row) : null;
 }
 
@@ -325,7 +334,20 @@ async function failJobTerminal(
     }
   }
 
+  if (row) {
+    await enqueueNextInboundWorkflowAfterTerminalChildFailure(
+      db,
+      jobPayloadRecord(input.job.payload),
+      now,
+    );
+  }
+
   return row ? mapJob(row) : null;
+}
+
+function jobPayloadRecord(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
+  return payload as Record<string, unknown>;
 }
 
 export function mapJob(row: JobQueueRow): QueuedJob {
