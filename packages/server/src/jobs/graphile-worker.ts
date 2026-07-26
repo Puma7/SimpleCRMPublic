@@ -218,6 +218,8 @@ export function graphileQueueNameForJob(type: ServerJobType, payload: JobPayload
     || type === 'ai.agent'
     || type === 'ai.classify'
     || type === 'ai.review'
+    || type === 'ai.draft_reply'
+    || type === 'ai.review_draft'
     || type === 'ai.transform_text'
   ) {
     return 'ai';
@@ -287,6 +289,15 @@ export function graphileJobKeyForJob(
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
   }
   if (type === 'ai.review') {
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    if (workspaceKey && workflowId && resumeNodeId) {
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+    }
+    if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
+  }
+  if (type === 'ai.draft_reply' || type === 'ai.review_draft') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);

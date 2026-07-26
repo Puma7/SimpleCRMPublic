@@ -28,6 +28,8 @@ export type NodeExecuteResult = {
   stop?: boolean;
   /** Workflow paused (e.g. logic.delay) — inbound applied flag must not be set yet. */
   deferred?: boolean;
+  /** When true with stop, subsequent inbound workflows in the priority chain must not run. */
+  inboundChainStop?: boolean;
   blocked?: boolean;
   blockReason?: string;
   message?: string;
@@ -57,4 +59,6 @@ export type GraphRunResult = {
   blocked: boolean;
   blockReason: string | null;
   deferred?: boolean;
+  /** Spam short-circuit: stop later inbound workflows in the priority list. */
+  inboundChainStop?: boolean;
 };

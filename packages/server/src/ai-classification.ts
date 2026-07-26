@@ -656,20 +656,22 @@ export function createPostgresAiReviewPort(
         },
         { applySession: options.applyWorkspaceSession },
       );
-      if (!context) throw new Error('Prompt nicht gefunden');
-      if (!context.profile) throw new Error('AI-Profil nicht gefunden');
-
-      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
-      if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
-
       const strings = {
-        ...stringsFromOptionalMessage(context.message),
+        ...stringsFromOptionalMessage(context?.message ?? null),
         ...stringPayload(input.eventStrings),
       };
       const variables = variablePayload(input.eventVariables);
-      const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
+      const userTemplate = (context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
         .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
       try {
+        // Config errors (missing prompt/profile/key) must take the same fail-closed
+        // error-port path as runtime KI failures — otherwise the draft stays held
+        // with no continuation after retries.
+        if (!context) throw new Error('Prompt nicht gefunden');
+        if (!context.profile) throw new Error('AI-Profil nicht gefunden');
+        const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+        if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
+
         const output = await runTrackedChatCompletion(
           options,
           {
@@ -1445,7 +1447,7 @@ async function enqueueClassificationContinuation(
   });
 }
 
-async function enqueueContinuation(
+export async function enqueueContinuation(
   trx: WorkspaceTransaction,
   input: {
     workspaceId: string;

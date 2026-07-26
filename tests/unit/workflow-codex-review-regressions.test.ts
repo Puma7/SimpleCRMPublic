@@ -71,4 +71,44 @@ describe('codex review regression guards', () => {
     expect(advance).toContain('enqueueNextInboundWorkflowAfterTerminalChildFailure');
     expect(queue).toContain('enqueueNextInboundWorkflowAfterTerminalChildFailure');
   });
+
+  test('codex round-3: release on hold/block path is rejected and AI draft jobs are async', () => {
+    const validate = readRepoFile('packages/core/src/workflow/graph-validate.ts');
+    const sharedValidate = readRepoFile('shared/email-workflow-graph-validate.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const templates = readRepoFile('packages/core/src/workflow/templates.ts');
+    const aiClass = readRepoFile('packages/server/src/ai-classification.ts');
+    const desktopEngine = readRepoFile('electron/email/email-workflow-engine.ts');
+    const emailNodes = readRepoFile('electron/workflow/nodes/email-nodes.ts');
+    const approval = readRepoFile('packages/server/src/draft-approval-actions.ts');
+    const policy = readRepoFile('packages/server/src/mail-access/async-policy-enforcer.ts');
+    const jobPolicy = readRepoFile('packages/server/src/jobs/policy.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const mailPorts = readRepoFile('packages/server/src/db/postgres-mail-read-ports.ts');
+    const desktopStore = readRepoFile('electron/email/email-store.ts');
+
+    expect(validate).toContain('if (holdPath) add({ code: \'dead_end\', nodeId });');
+    expect(sharedValidate).toContain('if (holdPath) add({ code: \'dead_end\', nodeId });');
+    expect(templates).toContain('logic.stop_after_spam');
+    expect(templates).not.toMatch(/agent-retoure[\s\S]*?field: 'is_spam'/);
+    expect(aiClass).toMatch(/try \{[\s\S]*?if \(!context\) throw new Error\('Prompt nicht gefunden'\)/);
+    expect(desktopEngine).toContain('if (r.inboundChainStop)');
+    expect(desktopEngine).not.toContain('afterWorkflowRow.is_spam === 1');
+    expect(emailNodes).toContain('inboundChainStop: true');
+    expect(execution).toContain("log: ['skip:workflow_disabled']");
+    expect(execution).toMatch(/skip:workflow_disabled[\s\S]*?maybeEnqueueNextInboundWorkflow/);
+    expect(execution).toContain("type: 'ai.draft_reply'");
+    expect(execution).toContain('scheduleAiDraftReplyJob');
+    expect(execution).toContain('scheduleAiReviewDraftJob');
+    expect(execution).toContain('queued_ai_draft_reply');
+    expect(draftNodes).toContain('createPostgresAiDraftReplyPort');
+    expect(draftNodes).toContain('createPostgresAiReviewDraftPort');
+    expect(jobPolicy).toContain("'ai.draft_reply'");
+    expect(jobPolicy).toContain("'ai.review_draft'");
+    expect(approval).toContain('scheduled_send_at');
+    expect(approval).toContain('Entwurf ist bereits zum Versand eingeplant');
+    expect(policy).toContain("workflowGraphHasNodeType(loaded.graph, 'ai.draft_reply')");
+    expect(mailPorts).toContain('draftAttachmentPaths !== undefined');
+    expect(desktopStore).toContain('draftAttachmentPaths !== undefined');
+  });
 });

@@ -336,6 +336,7 @@ async function walkGraph(
         blocked: false,
         blockReason: null,
         deferred: result.deferred === true,
+        inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
       };
     }
 

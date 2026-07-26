@@ -16,6 +16,12 @@ import type {
   AiTransformTextJobPort,
 } from '../ai-classification';
 import type {
+  AiDraftReplyJobPlan,
+  AiDraftReplyJobPort,
+  AiReviewDraftJobPlan,
+  AiReviewDraftJobPort,
+} from '../workflow-ai-draft-nodes';
+import type {
   WorkflowHttpMethod,
   WorkflowHttpRequestJobPlan,
   WorkflowHttpRequestJobPort,
@@ -151,6 +157,8 @@ export type ProductionJobHandlersOptions = Readonly<{
   aiPickCanned?: AiPickCannedJobPort;
   aiClassification?: AiClassificationJobPort;
   aiReview?: AiReviewJobPort;
+  aiDraftReply?: AiDraftReplyJobPort;
+  aiReviewDraft?: AiReviewDraftJobPort;
   aiTransformText?: AiTransformTextJobPort;
   workflowExecution?: WorkflowExecutionJobPort;
   workflowHttpRequest?: WorkflowHttpRequestPort;
@@ -208,6 +216,14 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'ai.review': async (job) => {
       if (!options.aiReview) throw new Error('AI review job port is not configured');
       await options.aiReview.review(buildAiReviewJobPlan(job.payload, job.workspaceId));
+    },
+    'ai.draft_reply': async (job) => {
+      if (!options.aiDraftReply) throw new Error('AI draft-reply job port is not configured');
+      await options.aiDraftReply.draftReply(buildAiDraftReplyJobPlan(job.payload, job.workspaceId));
+    },
+    'ai.review_draft': async (job) => {
+      if (!options.aiReviewDraft) throw new Error('AI review-draft job port is not configured');
+      await options.aiReviewDraft.reviewDraft(buildAiReviewDraftJobPlan(job.payload, job.workspaceId));
     },
     'ai.transform_text': async (job) => {
       if (!options.aiTransformText) throw new Error('AI transform text job port is not configured');
@@ -387,6 +403,52 @@ export function buildAiReviewJobPlan(
     ...(payload.parseMode === 'outbound_structured' || payload.parseMode === 'block_keyword'
       ? { parseMode: payload.parseMode as 'outbound_structured' | 'block_keyword' }
       : {}),
+    ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
+      ? {
+        portResumeTargets: Object.fromEntries(
+          Object.entries(payload.portResumeTargets as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+            .map(([port, target]) => [port, target.trim()]),
+        ),
+      }
+      : {}),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+  };
+}
+
+export function buildAiDraftReplyJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiDraftReplyJobPlan {
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    messageId: requiredPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalPositiveInteger(payload, 'profileId'),
+    ...optionalPositiveInteger(payload, 'knowledgeBaseId'),
+    ...optionalString(payload, 'systemPrompt', 4000),
+    ...(payload.includeCanned === undefined ? {} : { includeCanned: optionalBoolean(payload, 'includeCanned', false) }),
+    ...optionalString(payload, 'greeting', 40),
+    ...optionalString(payload, 'signature', 40),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+  };
+}
+
+export function buildAiReviewDraftJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiReviewDraftJobPlan {
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    ...optionalPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalPositiveInteger(payload, 'profileId'),
+    ...optionalString(payload, 'draftIdVariable', 120),
+    ...optionalString(payload, 'reviewPrompt', 4000),
     ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
       ? {
         portResumeTargets: Object.fromEntries(

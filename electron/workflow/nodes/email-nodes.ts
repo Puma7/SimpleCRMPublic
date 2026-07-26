@@ -309,7 +309,11 @@ export function registerEmailNodes(register: Reg): void {
         status: 'ok',
         variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
         ...(config.stopFurtherWorkflows !== false && (status === 'spam' || status === 'review')
-          ? { stop: true, message: 'stop_further_workflows:spam_status' }
+          ? {
+            stop: true,
+            inboundChainStop: true,
+            message: 'stop_further_workflows:spam_status',
+          }
           : {}),
       };
     },
@@ -337,7 +341,11 @@ export function registerEmailNodes(register: Reg): void {
         status: 'ok',
         variables: { 'email.is_spam': spam, 'spam.status': spam ? 'spam' : 'clean' },
         ...(config.stopFurtherWorkflows !== false && spam
-          ? { stop: true, message: 'stop_further_workflows:mark_spam' }
+          ? {
+            stop: true,
+            inboundChainStop: true,
+            message: 'stop_further_workflows:mark_spam',
+          }
           : {}),
       };
     },

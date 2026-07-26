@@ -119,6 +119,33 @@ describe('findOutboundGraphTraps', () => {
     expect(findOutboundGraphTraps(graph)).toEqual([]);
   });
 
+  it('rejects email.release_outbound on a hold/block/error path', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        {
+          id: 'rev',
+          type: 'registry',
+          data: { nodeType: 'ai.outbound_review', config: {} },
+        },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+        { id: 'hold', type: 'registry', data: { nodeType: 'email.hold_outbound', config: {} } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'rev' },
+        { id: 'e1', source: 'rev', target: 'hold', label: 'ok' },
+        { id: 'e2', source: 'rev', target: 'rel', label: 'block' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([
+      { code: 'dead_end', nodeId: 'rel' },
+    ]);
+    expect(findOutboundGraphTrapsShared(graph as never)).toEqual([
+      { code: 'dead_end', nodeId: 'rel' },
+    ]);
+  });
+
   it('requires both ports on a logic.threshold branch node', () => {
     const graph: WorkflowGraphDocument = {
       version: 1,

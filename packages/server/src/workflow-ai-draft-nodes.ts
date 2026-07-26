@@ -11,7 +11,11 @@ import {
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type { ServerDatabase } from './db/schema';
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
-import type { WorkspaceSessionApplier, WorkspaceTransaction } from './db/workspace-context';
+import {
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './db/workspace-context';
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import { runWorkflowTrackedChatCompletion, type WorkflowAiChatDeps } from './workflow-ai-chat';
 import {
@@ -22,6 +26,12 @@ import {
   aiDraftLikelyIncludesGreeting,
   buildReplyGreeting,
 } from './email-reply-greeting.js';
+import {
+  enqueueContinuation,
+  type AiClassificationContinuation,
+} from './ai-classification';
+import { enqueueNextInboundWorkflowAfterTerminalChildFailure } from './workflow-inbound-chain-advance';
+import type { JobPayload } from './jobs/types';
 
 const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
 
@@ -504,4 +514,446 @@ function replySubject(subject: string | null | undefined): string {
   const value = String(subject ?? '').trim();
   if (!value) return 'Re:';
   return /^re:/i.test(value) ? value : `Re: ${value}`;
+}
+
+// ---------------------------------------------------------------------------
+// Async job ports — OpenAI runs outside any long-lived workflow.execute TX
+// (same pattern as ai.agent / ai.review).
+// ---------------------------------------------------------------------------
+
+export type AiDraftReplyJobPlan = Readonly<{
+  workspaceId: string;
+  messageId: number;
+  actorUserId?: string;
+  profileId?: number;
+  knowledgeBaseId?: number;
+  systemPrompt?: string;
+  includeCanned?: boolean;
+  greeting?: string;
+  signature?: string;
+  eventStrings?: JobPayload;
+  eventVariables?: JobPayload;
+  continuation?: AiClassificationContinuation;
+}>;
+
+export type AiDraftReplyJobPort = Readonly<{
+  draftReply(input: AiDraftReplyJobPlan): Promise<void>;
+}>;
+
+export type AiReviewDraftJobPlan = Readonly<{
+  workspaceId: string;
+  messageId?: number;
+  actorUserId?: string;
+  profileId?: number;
+  draftIdVariable?: string;
+  reviewPrompt?: string;
+  portResumeTargets?: Readonly<Record<string, string>>;
+  eventStrings?: JobPayload;
+  eventVariables?: JobPayload;
+  continuation?: AiClassificationContinuation;
+}>;
+
+export type AiReviewDraftJobPort = Readonly<{
+  reviewDraft(input: AiReviewDraftJobPlan): Promise<void>;
+}>;
+
+function jobStrings(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === 'string') out[key] = entry;
+  }
+  return out;
+}
+
+function jobVariables(value: unknown): Record<string, string | number | boolean | null> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, string | number | boolean | null> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (
+      entry === null
+      || typeof entry === 'string'
+      || typeof entry === 'number'
+      || typeof entry === 'boolean'
+    ) {
+      out[key] = entry;
+    }
+  }
+  return out;
+}
+
+export function createPostgresAiDraftReplyPort(
+  deps: WorkflowAiDraftNodeDeps,
+): AiDraftReplyJobPort {
+  const now = () => deps.now?.() ?? new Date();
+  return {
+    async draftReply(input) {
+      const strings = jobStrings(input.eventStrings);
+      const variables = jobVariables(input.eventVariables);
+      const config: Record<string, unknown> = {
+        ...(input.profileId !== undefined ? { profileId: input.profileId } : {}),
+        ...(input.knowledgeBaseId !== undefined ? { knowledgeBaseId: input.knowledgeBaseId } : {}),
+        ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
+        ...(input.includeCanned !== undefined ? { includeCanned: input.includeCanned } : {}),
+        ...(input.greeting !== undefined ? { greeting: input.greeting } : {}),
+        ...(input.signature !== undefined ? { signature: input.signature } : {}),
+      };
+
+      type Prep = {
+        accountId: number;
+        subject: string | null;
+        fromJson: unknown;
+        rawHeaders: string | null;
+        system: string;
+        user: string;
+        chunks: ReadonlyArray<{ id?: number; title?: string | null }>;
+      };
+
+      const prep = await withWorkspaceTransaction(
+        deps.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx): Promise<Prep | 'skip' | null> => {
+          const message = await trx
+            .selectFrom('email_messages')
+            .select([
+              'id',
+              'account_id',
+              'subject',
+              'from_json',
+              'raw_headers',
+              'body_text',
+              'snippet',
+              'is_spam',
+              'spam_status',
+              'spam_score_label',
+            ])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.messageId)
+            .executeTakeFirst();
+          if (!message) throw new Error('Nachricht nicht gefunden');
+          if (messageIsSpamOrReviewForInboundWorkflow(message)) return 'skip';
+          if (message.account_id === null) throw new Error('Nachricht ohne Konto');
+
+          const knowledgeBaseId = optionalPositiveInt(config.knowledgeBaseId);
+          const query = strings.combined_text ?? '';
+          const chunks = knowledgeBaseId !== undefined
+            ? await searchKnowledgeForWorkflow(
+              trx,
+              input.workspaceId,
+              Number(message.account_id),
+              'inbound',
+              query,
+              5,
+              knowledgeBaseId,
+            )
+            : await searchKnowledgeForWorkflow(
+              trx,
+              input.workspaceId,
+              Number(message.account_id),
+              'inbound',
+              query,
+              5,
+            );
+          const kbText = chunks.map((c) => c.content).join('\n---\n');
+
+          let cannedBlock = '';
+          if (config.includeCanned === true) {
+            const canned = await trx
+              .selectFrom('email_canned_responses')
+              .select(['title', 'body'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where((eb) => eb.or([
+                eb('account_id', 'is', null),
+                eb('account_id', '=', Number(message.account_id)),
+              ]))
+              .orderBy('sort_order', 'asc')
+              .orderBy('id', 'asc')
+              .limit(5)
+              .execute();
+            if (canned.length > 0) {
+              cannedBlock = canned
+                .map((c) => `• ${String(c.title ?? '')}:\n${String(c.body ?? '').slice(0, 1200)}`)
+                .join('\n\n');
+            }
+          }
+
+          const system = String(config.systemPrompt ?? '').trim()
+            || 'Beantworte die Kundenmail freundlich auf Deutsch.';
+          const user = [
+            'Kundenmail:',
+            query,
+            kbText ? `\nWissensbasis (relevante Auszüge):\n${kbText}` : '',
+            cannedBlock ? `\nVorhandene Textbausteine (als Formulierungshilfe):\n${cannedBlock}` : '',
+          ].filter(Boolean).join('\n');
+
+          return {
+            accountId: Number(message.account_id),
+            subject: message.subject,
+            fromJson: message.from_json,
+            rawHeaders: message.raw_headers,
+            system,
+            user,
+            chunks,
+          };
+        },
+        { applySession: deps.applyWorkspaceSession },
+      );
+      if (prep === 'skip' || prep === null) return;
+
+      // OpenAI outside any workspace transaction (Codex P1).
+      let aiText: string;
+      try {
+        aiText = (await runWorkflowTrackedChatCompletion(deps, {
+          workspaceId: input.workspaceId,
+          messageId: input.messageId,
+          nodeType: 'ai.draft_reply',
+          profileId: optionalPositiveInt(config.profileId),
+          actorUserId: input.actorUserId ?? null,
+          system: prep.system,
+          user: prep.user,
+        })).trim();
+      } catch (error) {
+        throw new Error(error instanceof Error ? error.message : String(error));
+      }
+      if (!aiText) throw new Error('KI lieferte keinen Antworttext');
+      if (aiText.length > MAX_AI_DRAFT_REPLY_CHARS) {
+        throw new Error(
+          `KI-Antwort unplausibel lang (${aiText.length} Zeichen, Limit ${MAX_AI_DRAFT_REPLY_CHARS})`,
+        );
+      }
+
+      await withWorkspaceTransaction(
+        deps.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const parts: string[] = [];
+          if (config.greeting !== 'none' && !aiDraftLikelyIncludesGreeting(aiText)) {
+            const customerName = variables['customer.name'];
+            parts.push(
+              buildReplyGreeting({
+                customer:
+                  typeof customerName === 'string' && customerName
+                    ? { name: customerName }
+                    : null,
+                fromJson: typeof prep.fromJson === 'string'
+                  ? prep.fromJson
+                  : prep.fromJson == null
+                    ? null
+                    : JSON.stringify(prep.fromJson),
+              }),
+              '',
+            );
+          }
+          parts.push(aiText);
+          if (config.signature !== 'none') {
+            const accountSig = await resolveAccountSignatureText(trx, {
+              workspaceId: input.workspaceId,
+              accountId: prep.accountId,
+              variables,
+              actorUserId: input.actorUserId ?? null,
+            });
+            parts.push('', accountSig || 'Mit freundlichen Grüßen');
+          }
+          const bodyText = parts.join('\n');
+          const replyTo = firstReplyAddress({
+            from_json: prep.fromJson,
+            raw_headers: prep.rawHeaders,
+          });
+          if (!replyTo) throw new Error('Kein Antwort-Empfänger ermittelbar');
+
+          const draft = await createPostgresComposeDraftInTransaction(trx, {
+            workspaceId: input.workspaceId,
+            accountId: prep.accountId,
+            values: {
+              accountId: prep.accountId,
+              subject: replySubject(prep.subject),
+              bodyText,
+              toJson: { value: [{ address: replyTo }] },
+            },
+          });
+          if (!draft.ok) {
+            throw new Error(`Entwurf konnte nicht angelegt werden: ${draft.reason}`);
+          }
+
+          await trx
+            .updateTable('email_messages')
+            .set({
+              reply_parent_message_id: input.messageId,
+              ai_suggestion_snapshot: aiText,
+              updated_at: now(),
+            })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', Number(draft.message.id))
+            .execute();
+
+          if (input.continuation) {
+            await enqueueContinuation(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+              variables: {
+                'draft.id': draft.message.id,
+                'ai.draft.text': bodyText.slice(0, 8000),
+                'ai.draft.subject': replySubject(prep.subject),
+                'ai.draft.sources': knowledgeSourcesLabel(prep.chunks),
+              },
+              now: now(),
+            });
+          }
+        },
+        { applySession: deps.applyWorkspaceSession },
+      );
+    },
+  };
+}
+
+export function createPostgresAiReviewDraftPort(
+  deps: WorkflowAiDraftNodeDeps,
+): AiReviewDraftJobPort {
+  const now = () => deps.now?.() ?? new Date();
+  return {
+    async reviewDraft(input) {
+      const strings = jobStrings(input.eventStrings);
+      const variables = jobVariables(input.eventVariables);
+      const draftIdVar = String(input.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
+      const draftId = Number(variables[draftIdVar]);
+      if (!Number.isFinite(draftId) || draftId <= 0) {
+        throw new Error(`Kein Entwurf unter Variable ${draftIdVar}`);
+      }
+
+      type Prep = {
+        system: string;
+        user: string;
+      };
+
+      const prep = await withWorkspaceTransaction(
+        deps.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx): Promise<Prep> => {
+          const draft = await trx
+            .selectFrom('email_messages')
+            .select(['id', 'subject', 'body_text', 'folder_kind', 'uid'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', draftId)
+            .executeTakeFirst();
+          if (!draft || draft.folder_kind !== 'draft' || Number(draft.uid) >= 0) {
+            throw new Error(`Entwurf ${draftId} nicht gefunden`);
+          }
+
+          const original = input.messageId === undefined
+            ? null
+            : await trx
+              .selectFrom('email_messages')
+              .select(['subject', 'body_text', 'snippet', 'from_json'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.messageId)
+              .executeTakeFirst();
+
+          const extraCriteria = String(input.reviewPrompt ?? '').trim();
+          const system = [
+            'Du bist die Endkontrolle für automatische Kundenservice-Antworten.',
+            'Prüfe: Beantwortet der Entwurf die Fragen des Kunden vollständig und korrekt?',
+            'Ist der Ton professionell? Enthält er keine erfundenen Fakten?',
+            extraCriteria ? `Zusätzliche Kriterien: ${extraCriteria}` : '',
+            '',
+            'Antworte NUR in diesem Format:',
+            'STATUS: SEND oder HOLD',
+            'ANSWERED: yes oder no',
+            'REASON: kurze deutsche Begründung (eine Zeile)',
+            'SEND nur, wenn der Entwurf ohne Änderung verschickt werden kann. Im Zweifel HOLD.',
+          ].filter(Boolean).join('\n');
+
+          const user = [
+            '--- Kundenmail ---',
+            original
+              ? [
+                `Betreff: ${original.subject ?? ''}`,
+                `Von: ${strings.from_address ?? ''}`,
+                '',
+                (original.body_text ?? original.snippet ?? '').slice(0, 6000),
+              ].join('\n')
+              : '(Original-Nachricht nicht verfügbar)',
+            '',
+            '--- Antwort-Entwurf ---',
+            `Betreff: ${draft.subject ?? ''}`,
+            '',
+            (draft.body_text ?? '').slice(0, 6000),
+          ].join('\n');
+
+          return { system, user };
+        },
+        { applySession: deps.applyWorkspaceSession },
+      );
+
+      let port: 'send' | 'hold' = 'hold';
+      let continuationVariables: JobPayload = {
+        'ai.review.verdict': 'hold',
+        'ai.review.answered': false,
+        'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
+      };
+      let approvalReason = 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen';
+
+      try {
+        const out = await runWorkflowTrackedChatCompletion(deps, {
+          workspaceId: input.workspaceId,
+          messageId: input.messageId ?? null,
+          nodeType: 'ai.review_draft',
+          profileId: input.profileId,
+          actorUserId: input.actorUserId ?? null,
+          system: prep.system,
+          user: prep.user,
+        });
+        const parsed = parseDraftReviewResponse(out);
+        continuationVariables = {
+          'ai.review.verdict': parsed.verdict,
+          'ai.review.answered': parsed.answered,
+          'ai.review.reason': parsed.reason,
+        };
+        if (parsed.verdict === 'send') {
+          port = 'send';
+          approvalReason = '';
+        } else {
+          port = 'hold';
+          approvalReason = parsed.reason || 'Gegenlese-KI empfiehlt menschliche Prüfung';
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        approvalReason = `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`;
+        port = 'hold';
+      }
+
+      await withWorkspaceTransaction(
+        deps.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          if (port === 'hold') {
+            await setDraftApprovalPending(trx, input.workspaceId, draftId, approvalReason);
+          }
+          const continuation = input.continuation;
+          if (!continuation) return;
+          const resumeNodeId = input.portResumeTargets?.[port]
+            ?? (port === 'send' ? continuation.resumeNodeId : undefined);
+          if (!resumeNodeId) {
+            if (port !== 'send') {
+              await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                actorUserId: continuation.actorUserId,
+                continuation,
+              }, now());
+            }
+            return;
+          }
+          await enqueueContinuation(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: { ...continuation, resumeNodeId },
+            variables: continuationVariables,
+            now: now(),
+          });
+        },
+        { applySession: deps.applyWorkspaceSession },
+      );
+    },
+  };
 }

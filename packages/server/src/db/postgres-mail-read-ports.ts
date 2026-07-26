@@ -1179,7 +1179,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             || input.values.bodyHtml !== undefined
             || input.values.toJson !== undefined
             || input.values.ccJson !== undefined
-            || input.values.bccJson !== undefined;
+            || input.values.bccJson !== undefined
+            || input.values.draftAttachmentPaths !== undefined;
           const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({

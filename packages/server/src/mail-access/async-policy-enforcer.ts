@@ -392,6 +392,8 @@ const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'ai.agent',
   'ai.pick_canned',
   'ai.review',
+  'ai.draft_reply',
+  'ai.review_draft',
   'ai.transform_text',
   'ai.reply_suggestion',
   'workflow.forward_copy',
@@ -598,7 +600,10 @@ async function assertWorkflowExecuteDraftCreateNodePrivilege(
     workspaceId: job.workspaceId,
     workflowId,
   });
-  if (!loaded || !workflowGraphHasNodeType(loaded.graph, 'email.create_draft')) return;
+  if (!loaded || !(
+    workflowGraphHasNodeType(loaded.graph, 'email.create_draft')
+    || workflowGraphHasNodeType(loaded.graph, 'ai.draft_reply')
+  )) return;
   for (const resource of resources) {
     await ports.mailAccess.assertPermission({
       workspaceId: job.workspaceId,

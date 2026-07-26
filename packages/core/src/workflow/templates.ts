@@ -440,9 +440,9 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       nodes: [
         { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
         {
-          id: 'c_spam',
-          type: 'condition',
-          data: { field: 'is_spam', op: 'is_false', value: '' },
+          id: 'stop_spam',
+          type: 'registry',
+          data: { nodeType: 'logic.stop_after_spam', config: {} },
         },
         {
           id: 'c1',
@@ -463,8 +463,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         },
       ],
       edges: [
-        { id: 'e0', source: 't1', target: 'c_spam' },
-        { id: 'e_spam', source: 'c_spam', target: 'c1', label: 'ja' },
+        { id: 'e0', source: 't1', target: 'stop_spam' },
+        { id: 'e_spam', source: 'stop_spam', target: 'c1' },
         { id: 'e1', source: 'c1', target: 'a1', label: 'ja' },
       ],
     } as WorkflowGraphDocument,

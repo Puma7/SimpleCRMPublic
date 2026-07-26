@@ -1961,6 +1961,8 @@ describe('server edition foundation', () => {
       'ai.pick_canned',
       'ai.classify',
       'ai.review',
+      'ai.draft_reply',
+      'ai.review_draft',
       'ai.transform_text',
       'workflow.execute',
       'workflow.http_request',
@@ -2191,6 +2193,8 @@ describe('server edition foundation', () => {
     expect(graphileQueueNameForJob('ai.agent', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.classify', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.review', {})).toBe('ai');
+    expect(graphileQueueNameForJob('ai.draft_reply', {})).toBe('ai');
+    expect(graphileQueueNameForJob('ai.review_draft', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.transform_text', {})).toBe('ai');
     expect(graphileQueueNameForJob('mail.spam.score', {})).toBe('spam');
     expect(graphileQueueNameForJob('mail.vacation.auto_reply', {})).toBe('mail');
@@ -2799,6 +2803,16 @@ describe('server edition foundation', () => {
           calls.push(`review:${input.messageId ?? 0}:${input.direction}:${input.blockKeyword}:${input.continuation?.resumeNodeId ?? ''}`);
         },
       },
+      aiDraftReply: {
+        async draftReply(input) {
+          calls.push(`draft_reply:${input.messageId}:${input.continuation?.resumeNodeId ?? ''}`);
+        },
+      },
+      aiReviewDraft: {
+        async reviewDraft(input) {
+          calls.push(`review_draft:${input.messageId ?? 0}:${input.continuation?.resumeNodeId ?? ''}`);
+        },
+      },
       aiTransformText: {
         async transformText(input) {
           calls.push(`transform:${input.messageId ?? 0}:${input.targetVariable}:${input.continuation?.resumeNodeId ?? ''}`);
@@ -2873,6 +2887,24 @@ describe('server edition foundation', () => {
         continuation: { workflowId: 23, resumeNodeId: 'tag-1' },
       },
     }));
+    await handlers['ai.draft_reply']?.(makeQueuedJob({
+      type: 'ai.draft_reply',
+      workspaceId: WORKSPACE_A_ID,
+      payload: {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 11,
+        continuation: { workflowId: 23, resumeNodeId: 'review-1' },
+      },
+    }));
+    await handlers['ai.review_draft']?.(makeQueuedJob({
+      type: 'ai.review_draft',
+      workspaceId: WORKSPACE_A_ID,
+      payload: {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 11,
+        continuation: { workflowId: 23, resumeNodeId: 'send-1' },
+      },
+    }));
     await handlers['ai.transform_text']?.(makeQueuedJob({
       type: 'ai.transform_text',
       workspaceId: WORKSPACE_A_ID,
@@ -2920,6 +2952,8 @@ describe('server edition foundation', () => {
       'agent:11:5:tag-1',
       'classify:11:Rechnung|Support:switch-1',
       'review:11:outbound:BLOCK:tag-1',
+      'draft_reply:11:review-1',
+      'review_draft:11:send-1',
       'transform:11:ai.summary:tag-1',
       'workflow:23:sync',
       'http:POST:https://api.example.com/hook:tag-1',

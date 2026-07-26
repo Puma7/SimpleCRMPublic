@@ -362,6 +362,11 @@ export async function runInboundWorkflowsForMessage(
       if (r.status !== 'ok') {
         releaseInboundWorkflowClaim(messageId, wf.id);
       }
+      // Honor stopFurtherWorkflows / inboundChainStop from the graph — do not
+      // re-bail solely because the node persisted is_spam (stopFurther=false).
+      if (r.inboundChainStop) {
+        return;
+      }
     } catch (e) {
       releaseInboundWorkflowClaim(messageId, wf.id);
       insertWorkflowRun({
@@ -371,15 +376,6 @@ export async function runInboundWorkflowsForMessage(
         status: 'error',
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
-    }
-    const afterWorkflowRow = getEmailMessageById(messageId);
-    if (
-      !afterWorkflowRow ||
-      afterWorkflowRow.is_spam === 1 ||
-      afterWorkflowRow.spam_status === 'spam' ||
-      afterWorkflowRow.spam_status === 'review'
-    ) {
-      return;
     }
   }
 

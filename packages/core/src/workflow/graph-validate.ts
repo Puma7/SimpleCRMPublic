@@ -627,7 +627,11 @@ export function findOutboundGraphTraps(
       add({ code: 'dead_end', nodeId }); // loop that never releases
       return;
     }
-    if (isReleaseNode(node)) return; // sends the mail — safe
+    if (isReleaseNode(node)) {
+      // Release on a hold/block/error path would send mail after a fail verdict.
+      if (holdPath) add({ code: 'dead_end', nodeId });
+      return;
+    }
     if (isHoldNode(node)) return; // explicit, intended hold — safe terminal
     const next = new Set(pathVisited).add(nodeId);
     const outs = outgoing(nodeId);

@@ -881,7 +881,7 @@ describe('server mail job and event ACL', () => {
     // ai.pick_canned is covered separately: a user actor now always returns a
     // canned-scope authorization (not undefined), so it doesn't fit this loop's
     // toBeUndefined assertions.
-    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.review', 'ai.transform_text'] as const;
+    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.review', 'ai.review_draft', 'ai.transform_text'] as const;
     for (const type of childTypes) {
       // A demoted (non-admin) initiator's MARKED message-less child would otherwise
       // hit the non_mail early return and run its side-effecting node unchecked.
@@ -1379,9 +1379,11 @@ describe('server mail job and event ACL', () => {
     expect(initiating).toEqual([
       'ai.agent',
       'ai.classify',
+      'ai.draft_reply',
       'ai.pick_canned',
       'ai.reply_suggestion',
       'ai.review',
+      'ai.review_draft',
       'ai.transform_text',
       'mail.send.scheduled',
       'mail.spam.score',

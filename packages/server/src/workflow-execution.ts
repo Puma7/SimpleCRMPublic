@@ -473,6 +473,15 @@ export function createPostgresWorkflowExecutionJobPort(
               log: ['skip:workflow_disabled'],
               now,
             });
+            if (trigger === 'inbound' && message) {
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
+                now,
+              });
+            }
             return;
           }
 
@@ -1741,32 +1750,38 @@ async function executeServerNode(
     if (context.direction !== 'inbound' || context.messageId === null) {
       return { status: 'skipped', port: 'default', message: 'Nur fuer eingehende Nachrichten' };
     }
-    if (!ports.aiDraft) {
-      return { status: 'error', port: 'error', message: 'KI-Entwurf: Server-KI nicht konfiguriert' };
+    if (dryRun) {
+      if (!ports.aiDraft) {
+        return { status: 'error', port: 'error', message: 'KI-Entwurf: Server-KI nicht konfiguriert' };
+      }
+      return await executeWorkflowAiDraftReply(trx, ports.aiDraft, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        config,
+        strings: context.strings,
+        variables: context.variables,
+        actorUserId: context.actorUserId,
+        dryRun: true,
+      });
     }
-    return await executeWorkflowAiDraftReply(trx, ports.aiDraft, {
-      workspaceId: context.workspaceId,
-      messageId: context.messageId,
-      config,
-      strings: context.strings,
-      variables: context.variables,
-      actorUserId: context.actorUserId,
-      dryRun,
-    });
+    return await scheduleAiDraftReplyJob(trx, doc, context, node, config, now);
   }
   if (type === 'ai.review_draft') {
-    if (!ports.aiDraft) {
-      return { status: 'error', port: 'error', message: 'KI-Gegenpruefung: Server-KI nicht konfiguriert' };
+    if (dryRun) {
+      if (!ports.aiDraft) {
+        return { status: 'error', port: 'error', message: 'KI-Gegenpruefung: Server-KI nicht konfiguriert' };
+      }
+      return await executeWorkflowAiReviewDraft(trx, ports.aiDraft, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        config,
+        variables: context.variables,
+        strings: context.strings,
+        actorUserId: context.actorUserId,
+        dryRun: true,
+      });
     }
-    return await executeWorkflowAiReviewDraft(trx, ports.aiDraft, {
-      workspaceId: context.workspaceId,
-      messageId: context.messageId,
-      config,
-      variables: context.variables,
-      strings: context.strings,
-      actorUserId: context.actorUserId,
-      dryRun,
-    });
+    return await scheduleAiReviewDraftJob(trx, doc, context, node, config, now);
   }
   if (type === 'email.hold_outbound' || type === 'hold_outbound') {
     const reason = String(config.reason ?? node.data.reason ?? '').trim()
@@ -2923,6 +2938,166 @@ async function scheduleAiAgentJob(
     variables: {
       'ai.agent.status': 'pending',
       'ai.agent.job_id': jobId,
+    },
+  };
+}
+
+async function scheduleAiDraftReplyJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+  const knowledgeBaseId = optionalPositiveIntegerConfig(config.knowledgeBaseId, 'knowledgeBaseId');
+  if (!knowledgeBaseId.ok) return { status: 'error', port: 'error', message: knowledgeBaseId.message };
+
+  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    messageId: context.messageId,
+    ...workflowJobProvenance(context),
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+  };
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  if (knowledgeBaseId.value !== undefined) payload.knowledgeBaseId = knowledgeBaseId.value;
+  if (typeof config.systemPrompt === 'string' && config.systemPrompt.trim()) {
+    payload.systemPrompt = config.systemPrompt.trim();
+  }
+  if (config.includeCanned === true) payload.includeCanned = true;
+  if (typeof config.greeting === 'string' && config.greeting.trim()) {
+    payload.greeting = config.greeting.trim();
+  }
+  if (typeof config.signature === 'string' && config.signature.trim()) {
+    payload.signature = config.signature.trim();
+  }
+  if (resumeNodeId) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = resumeNodeId;
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      resumeNodeId,
+      eventStrings: context.strings,
+      eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
+    };
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.draft_reply',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: Boolean(resumeNodeId),
+    deferred: Boolean(resumeNodeId),
+    message: `queued_ai_draft_reply:${jobId}`,
+    variables: {
+      'ai.draft.status': 'pending',
+      'ai.draft.job_id': jobId,
+    },
+  };
+}
+
+async function scheduleAiReviewDraftJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+
+  const portResumeTargets = {
+    send: resolveResumeNodeAfterPort(doc, node.id, 'send'),
+    hold: resolveResumeNodeAfterPort(doc, node.id, 'hold'),
+  };
+  const resumeNodeId = portResumeTargets.send
+    || portResumeTargets.hold
+    || resolveResumeNodeAfter(doc, node.id);
+
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    ...workflowJobProvenance(context),
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+    portResumeTargets: Object.fromEntries(
+      Object.entries(portResumeTargets).filter(([, target]) => Boolean(target)),
+    ),
+  };
+  if (context.messageId !== null) payload.messageId = context.messageId;
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  if (typeof config.draftIdVariable === 'string' && config.draftIdVariable.trim()) {
+    payload.draftIdVariable = config.draftIdVariable.trim();
+  }
+  if (typeof config.reviewPrompt === 'string' && config.reviewPrompt.trim()) {
+    payload.reviewPrompt = config.reviewPrompt.trim();
+  }
+  if (resumeNodeId) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = resumeNodeId;
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      resumeNodeId,
+      eventStrings: context.strings,
+      eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
+    };
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.review_draft',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: Boolean(resumeNodeId),
+    deferred: Boolean(resumeNodeId),
+    message: `queued_ai_review_draft:${jobId}`,
+    variables: {
+      'ai.review.status': 'pending',
+      'ai.review.job_id': jobId,
     },
   };
 }
