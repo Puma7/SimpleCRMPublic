@@ -98,6 +98,15 @@ export async function executeWorkflowAiDraftReply(
     return { status: 'error', message: 'Nachricht ohne Konto' };
   }
 
+  // Fail before the paid model call when Reply-To/From cannot yield a recipient.
+  const replyToEarly = firstReplyAddress({
+    from_json: message.from_json,
+    raw_headers: message.raw_headers,
+  });
+  if (!replyToEarly) {
+    return { status: 'error', message: 'Kein Antwort-Empfänger ermittelbar' };
+  }
+
   const profileId = optionalPositiveInt(input.config.profileId);
   const knowledgeBaseId = optionalPositiveInt(input.config.knowledgeBaseId);
   const query = (input.strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX);
@@ -711,6 +720,14 @@ export function createPostgresAiDraftReplyPort(
           if (!message) throw new Error('Nachricht nicht gefunden');
           if (messageIsSpamOrReviewForInboundWorkflow(message)) return 'skip';
           if (message.account_id === null) throw new Error('Nachricht ohne Konto');
+          // Validate recipient before the paid model call — retries would otherwise
+          // burn tokens when Reply-To/From cannot yield an address.
+          if (!firstReplyAddress({
+            from_json: message.from_json,
+            raw_headers: message.raw_headers,
+          })) {
+            throw new Error('Kein Antwort-Empfänger ermittelbar');
+          }
 
           const knowledgeBaseId = optionalPositiveInt(config.knowledgeBaseId);
           const query = (strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX);

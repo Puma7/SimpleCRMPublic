@@ -264,8 +264,16 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
   try {
     // Prefer a single PG client so the hop claim + enqueue share one connection
     // (sibling terminal failures must not double-enqueue the next workflow).
+    // FORCE RLS on sync_info requires app.workspace_id / app.role before INSERT.
     if (helpers?.withPgClient) {
       await helpers.withPgClient(async (client) => {
+        await client.query(
+          `SELECT set_config('app.workspace_id', $1, true),
+                  set_config('app.user_id', '', true),
+                  set_config('app.role', 'system', true),
+                  set_config('app.cross_workspace_access', 'off', true)`,
+          [parsed.workspaceId],
+        );
         const claimed = await client.query(
           `INSERT INTO sync_info (
              workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at

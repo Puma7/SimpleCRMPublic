@@ -42,7 +42,11 @@ import {
   parseInboundWorkflowChain,
   type InboundWorkflowChainContext,
 } from './workflow-inbound-chain-context';
-import { tryClaimInboundChainHop } from './workflow-inbound-chain-advance';
+import {
+  completeInboundDeferredJoinSibling,
+  initInboundDeferredJoin,
+  tryClaimInboundChainHop,
+} from './workflow-inbound-chain-advance';
 
 import type {
   WorkflowExecutionDryRunResult,
@@ -242,6 +246,11 @@ type GraphRunResult = {
   deferred: boolean;
   /** When true, do not enqueue the next inbound workflow in the priority chain. */
   inboundChainStop?: boolean;
+  /**
+   * Trigger fan-out only: how many sibling branches returned deferred.
+   * Used to init a join barrier so chain advance waits for every sibling.
+   */
+  deferredBranchCount?: number;
   blockReason: string | null;
   log: string[];
 };
@@ -595,23 +604,47 @@ export function createPostgresWorkflowExecutionJobPort(
             log: result.log,
             now,
           });
-          if (
+          if (trigger === 'inbound' && message && result.deferred) {
+            // Multi-deferred trigger fan-out: wait for every sibling before
+            // mark-applied / priority-chain advance (Codex Round-10 join).
+            await initInboundDeferredJoin(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              workflowId: Number(workflow.id),
+              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              pendingCount: result.deferredBranchCount ?? 1,
+              now,
+            });
+          } else if (
             trigger === 'inbound'
             && message
             && !result.deferred
-            && !result.inboundChainStop
-            && (result.status === 'ok' || result.status === 'error')
+            && (result.status === 'ok' || result.status === 'error' || result.inboundChainStop === true)
           ) {
-            if (result.status === 'ok') {
-              await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
-            }
-            await maybeEnqueueNextInboundWorkflow(trx, {
+            const join = await completeInboundDeferredJoinSibling(trx, {
               workspaceId: input.workspaceId,
               messageId: Number(message.id),
-              actorUserId: input.actorUserId,
-              jobContext,
+              workflowId: Number(workflow.id),
+              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              chainStop: result.inboundChainStop === true,
               now,
             });
+            if (
+              join === 'ready'
+              && !result.inboundChainStop
+              && (result.status === 'ok' || result.status === 'error')
+            ) {
+              if (result.status === 'ok') {
+                await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+              }
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
+                now,
+              });
+            }
           }
           if (delayedJob) {
             await markDelayedJobStatus(
@@ -1192,6 +1225,7 @@ async function runServerWorkflowGraph(
 
   const log: string[] = [];
   let result: GraphRunResult = { status: 'ok', blocked: false, deferred: false, blockReason: null, log };
+  let deferredBranchCount = 0;
   for (const edge of triggerEdges) {
     const branchContext = cloneServerWorkflowContext(input.context);
     const branch = await walkGraph(trx, {
@@ -1204,19 +1238,22 @@ async function runServerWorkflowGraph(
       ports: input.ports,
       inboundGate: branchContext.direction === 'inbound' ? { conditionOk: false } : undefined,
     });
+    if (branch.deferred) deferredBranchCount += 1;
     result = {
       ...branch,
       deferred: result.deferred === true || branch.deferred === true,
+      deferredBranchCount,
       // Preserve an earlier sibling error — a later ok branch must not flip the
       // run back to success (would mark inbound applied and advance the chain).
       status: result.status === 'error' || branch.status === 'error' ? 'error' : branch.status,
       log,
     };
-    if (branch.blocked) return result;
-    if (branch.inboundChainStop) return result;
+    if (branch.blocked) return { ...result, deferredBranchCount };
+    if (branch.inboundChainStop) return { ...result, deferredBranchCount };
     // Keep walking sibling trigger branches after a deferred async/delay node.
+    // Chain advance waits for all deferred siblings via inboundDeferredJoin.
   }
-  return result;
+  return { ...result, deferredBranchCount };
 }
 
 function cloneServerWorkflowContext(context: ServerWorkflowContext): ServerWorkflowContext {

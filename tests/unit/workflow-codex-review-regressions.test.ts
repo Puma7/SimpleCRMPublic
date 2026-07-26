@@ -264,4 +264,37 @@ describe('codex review regression guards', () => {
     expect(desktopAi).toContain('DRAFT_REPLY_BODY_MAX = 12_000');
     expect(desktopAi).toContain('.slice(0, DRAFT_REPLY_KNOWLEDGE_MAX)');
   });
+
+  test('codex round-10: graphile RLS session, deferred join, approve attachment ACL, recipient precheck', () => {
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const httpPolicy = readRepoFile('packages/server/src/mail-access/http-policy-enforcer.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+
+    // Graphile hop claim must set app.workspace_id / system role under FORCE RLS.
+    expect(graphile).toContain("set_config('app.workspace_id'");
+    expect(graphile).toContain("set_config('app.role', 'system'");
+    expect(graphile).toContain('inboundChainHopClaimKey');
+
+    // Multi-deferred trigger fan-out waits for all siblings before chain advance.
+    expect(advance).toContain('initInboundDeferredJoin');
+    expect(advance).toContain('completeInboundDeferredJoinSibling');
+    expect(advance).toContain('inbound_deferred_join:');
+    expect(execution).toContain('deferredBranchCount');
+    expect(execution).toContain('initInboundDeferredJoin');
+    expect(execution).toContain('completeInboundDeferredJoinSibling');
+    expect(execution).toContain('Chain advance waits for all deferred siblings');
+
+    // approve-draft-send checks attachment.read before clearing pending approval.
+    expect(httpPolicy).toContain('resolveScheduledDraftAttachmentPaths');
+    expect(httpPolicy).toMatch(
+      /approve-draft-send[\s\S]*?resolveScheduledDraftAttachmentPaths[\s\S]*?mail\.attachment\.read/,
+    );
+
+    // ai.draft_reply validates Reply-To/From before the paid model call.
+    expect(draftNodes).toContain('Validate recipient before the paid model call');
+    expect(draftNodes).toContain('Fail before the paid model call when Reply-To/From');
+    expect(draftNodes).toContain('Kein Antwort-Empfänger ermittelbar');
+  });
 });

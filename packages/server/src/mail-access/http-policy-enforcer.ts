@@ -1092,6 +1092,45 @@ async function assertSupplementalHttpPermissions(
             resource: parent[0]!,
           });
         }
+        // Mirror assertScheduledSendDraftAndAttachmentAccess: non-local attachment
+        // paths must be readable before we clear pending approval / arm send.
+        if (ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths) {
+          const paths = await ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths({
+            workspaceId,
+            draftId,
+          });
+          const draftLocalPrefix = `${workspaceId}/compose-drafts/${draftId}/`;
+          for (const path of paths ?? []) {
+            if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+            const owners = await ports.mailResourceLookup.resolve({
+              workspaceId,
+              target: { kind: 'attachment_path', path },
+            });
+            if (owners.length === 0) throw new MailAccessDeniedError();
+            for (const resource of owners) {
+              await ports.mailAccess!.assertPermission({
+                workspaceId,
+                actor,
+                permission: 'mail.attachment.read',
+                resource,
+              });
+            }
+            const filenames = (await ports.mailResourceLookup.resolveAttachmentPathFilenames?.({
+              workspaceId,
+              path,
+            })) ?? [];
+            if (filenames.some(isPotentiallyDangerousAttachment)) {
+              for (const resource of owners) {
+                await ports.mailAccess!.assertPermission({
+                  workspaceId,
+                  actor,
+                  permission: 'mail.attachment.suspicious_download',
+                  resource,
+                });
+              }
+            }
+          }
+        }
       }
     }
   }
