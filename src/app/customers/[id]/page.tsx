@@ -60,6 +60,7 @@ import {
   isCustomerDetailRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 
 // Update interface to match route params - TanStack Router typically uses $paramName for file routes
 // Removed RouteParams interface as it's not strictly needed when not using 'from' in useParams
@@ -76,6 +77,7 @@ export default function CustomerDetailPage() {
   const numericCustomerId = Number(customerId)
 
   const navigate = useNavigate()
+  const { canWriteCrm } = useAuth()
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [isLoading, setIsLoading] = useState(true) // Add loading state
   const [isEditOpen, setIsEditOpen] = useState(false)
@@ -368,6 +370,7 @@ export default function CustomerDetailPage() {
               </Badge>
             </div>
             <div className="flex gap-2">
+              {canWriteCrm ? (
               <Dialog open={isEditOpen} onOpenChange={setIsEditOpen}>
                 <DialogTrigger asChild>
                   <Button variant="outline">
@@ -545,6 +548,8 @@ export default function CustomerDetailPage() {
                   </DialogFooter>
                 </DialogContent>
               </Dialog>
+              ) : null}
+              {canWriteCrm ? (
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button variant="destructive">
@@ -570,6 +575,7 @@ export default function CustomerDetailPage() {
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
+              ) : null}
             </div>
           </div>
 
@@ -646,9 +652,11 @@ export default function CustomerDetailPage() {
                     )}
                   </CardContent>
                   <CardFooter>
-                    <Button variant="outline" onClick={() => setIsEditOpen(true)}>
-                      Notiz hinzufügen
-                    </Button>
+                    {canWriteCrm ? (
+                      <Button variant="outline" onClick={() => setIsEditOpen(true)}>
+                        Notiz hinzufügen
+                      </Button>
+                    ) : null}
                   </CardFooter>
                 </Card>
               </TabsContent>
@@ -673,9 +681,11 @@ export default function CustomerDetailPage() {
                     )}
                   </CardContent>
                   <CardFooter>
-                    <Button variant="outline" onClick={() => setIsEditOpen(true)}>
-                      Benutzerdefinierte Felder bearbeiten
-                    </Button>
+                    {canWriteCrm ? (
+                      <Button variant="outline" onClick={() => setIsEditOpen(true)}>
+                        Benutzerdefinierte Felder bearbeiten
+                      </Button>
+                    ) : null}
                   </CardFooter>
                 </Card>
               </TabsContent>
@@ -728,10 +738,12 @@ export default function CustomerDetailPage() {
                     <Button variant="outline" asChild>
                       <Link to="/deals">Alle Deals anzeigen</Link>
                     </Button>
-                    <Button onClick={() => setIsAddDealOpen(true)}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Neuen Deal erstellen
-                    </Button>
+                    {canWriteCrm ? (
+                      <Button onClick={() => setIsAddDealOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Neuen Deal erstellen
+                      </Button>
+                    ) : null}
                   </CardFooter>
                 </Card>
               </TabsContent>
@@ -814,10 +826,12 @@ export default function CustomerDetailPage() {
                     <Button variant="outline" asChild>
                       <Link to="/tasks">Alle Aufgaben anzeigen</Link>
                     </Button>
-                    <Button onClick={() => setIsAddTaskOpen(true)}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      Neue Aufgabe erstellen
-                    </Button>
+                    {canWriteCrm ? (
+                      <Button onClick={() => setIsAddTaskOpen(true)}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Neue Aufgabe erstellen
+                      </Button>
+                    ) : null}
                   </CardFooter>
                 </Card>
               </TabsContent>

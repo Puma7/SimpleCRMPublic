@@ -9,6 +9,7 @@ interface QuickActionsProps {
   onSnooze: (snoozedUntil: string) => void
   onComplete: () => void
   sourceType: 'task' | 'deal'
+  canWrite?: boolean
 }
 
 export function QuickActions({
@@ -18,7 +19,10 @@ export function QuickActions({
   onSnooze,
   onComplete,
   sourceType,
+  canWrite = true,
 }: QuickActionsProps) {
+  if (!canWrite) return null
+
   return (
     <div className="flex flex-wrap gap-1.5 px-3 py-2 border-t">
       <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onLogCall}>

@@ -22,6 +22,7 @@ interface ExecutionListProps {
   onComplete: (item: FollowUpItem) => void
   onSnooze: (item: FollowUpItem, snoozedUntil: string) => void
   onQueueSwitch: (queue: string) => void
+  canWriteCrm?: boolean
 }
 
 function formatDate(dateStr?: string): string {
@@ -44,6 +45,7 @@ export function ExecutionList({
   onComplete,
   onSnooze,
   onQueueSwitch,
+  canWriteCrm = true,
 }: ExecutionListProps) {
   if (loading) {
     return <FollowUpSkeleton />
@@ -134,7 +136,7 @@ export function ExecutionList({
 
               {/* Actions */}
               <div className="flex gap-0.5 justify-end" onClick={(e) => e.stopPropagation()}>
-                {item.source_type === 'task' && (
+                {canWriteCrm && item.source_type === 'task' && (
                   <>
                     <Button
                       variant="ghost"

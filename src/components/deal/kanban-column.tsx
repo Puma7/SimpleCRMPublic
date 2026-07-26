@@ -18,10 +18,11 @@ interface KanbanColumnProps {
   title: string;
   deals: Deal[];
   onStageChange?: (dealId: number, newStage: string) => void;
+  canWriteCrm?: boolean;
 }
 
-export function KanbanColumn({ id, title, deals, onStageChange }: KanbanColumnProps) {
-  const { setNodeRef, isOver } = useDroppable({ id });
+export function KanbanColumn({ id, title, deals, onStageChange, canWriteCrm = true }: KanbanColumnProps) {
+  const { setNodeRef, isOver } = useDroppable({ id, disabled: !canWriteCrm });
 
   return (
     <div className="flex-1 min-w-[250px]">
@@ -34,7 +35,7 @@ export function KanbanColumn({ id, title, deals, onStageChange }: KanbanColumnPr
       >
         <SortableContext items={deals.map(deal => deal.id)} strategy={verticalListSortingStrategy}>
           {deals.map((deal) => (
-            <KanbanCard key={deal.id} deal={deal} onStageChange={onStageChange} />
+            <KanbanCard key={deal.id} deal={deal} onStageChange={onStageChange} canWriteCrm={canWriteCrm} />
           ))}
         </SortableContext>
       </div>

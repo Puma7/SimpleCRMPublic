@@ -55,6 +55,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"; // Added for CustomerDetails
 import { Badge } from "@/components/ui/badge";
 import { ProductCombobox } from "@/components/product-combobox";
+import { useAuth } from "@/components/auth/auth-context";
 
 interface PageParams {
   id: string;
@@ -77,6 +78,7 @@ export default function DealDetailPage() {
   const dealId = Number(routeDealId); // Ensure dealId is a number for API calls
   const navigate = useNavigate();
   const { toast } = useToast();
+  const { canWriteCrm } = useAuth();
   const [deal, setDeal] = useState<Deal | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
@@ -428,6 +430,7 @@ export default function DealDetailPage() {
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <DealHeader deal={deal} />
                   <div className="flex gap-2 self-start">
+                    {canWriteCrm ? (
                     <Button
                       variant="outline"
                       size="sm"
@@ -437,6 +440,8 @@ export default function DealDetailPage() {
                       <Edit className="h-4 w-4" />
                       Bearbeiten
                     </Button>
+                    ) : null}
+                    {canWriteCrm ? (
                     <Dialog open={isCreateJtlOrderDialogOpen} onOpenChange={setIsCreateJtlOrderDialogOpen}>
                       <TooltipProvider>
                         <Tooltip>
@@ -526,6 +531,8 @@ export default function DealDetailPage() {
                         </DialogFooter>
                       </DialogContent>
                     </Dialog>
+                    ) : null}
+                    {canWriteCrm ? (
                     <Button
                       variant="destructive"
                       size="sm"
@@ -535,6 +542,7 @@ export default function DealDetailPage() {
                       <Trash2 className="h-4 w-4" />
                       Löschen
                     </Button>
+                    ) : null}
                   </div>
                 </div>
                 <Separator />
@@ -575,9 +583,11 @@ export default function DealDetailPage() {
                           <CardTitle>Produkte im Deal</CardTitle>
                           <CardDescription>Aktuell diesem Deal zugeordnete Produkte.</CardDescription>
                         </div>
-                        <Button onClick={() => setIsAddProductDialogOpen(true)} size="sm" className="gap-1">
-                          <Package className="h-4 w-4" /> Produkt hinzufügen
-                        </Button>
+                        {canWriteCrm ? (
+                          <Button onClick={() => setIsAddProductDialogOpen(true)} size="sm" className="gap-1">
+                            <Package className="h-4 w-4" /> Produkt hinzufügen
+                          </Button>
+                        ) : null}
                       </CardHeader>
                       <CardContent>
                         <div className="rounded-lg border">
@@ -605,6 +615,7 @@ export default function DealDetailPage() {
                                   <DealProductRow
                                     key={p.deal_product_id}
                                     product={p}
+                                    canWriteCrm={canWriteCrm}
                                     onUpdateProduct={handleUpdateDealProduct}
                                     onRemoveProduct={handleRemoveDealProduct}
                                     formatCurrency={formatCurrency}
@@ -735,12 +746,13 @@ export default function DealDetailPage() {
   // DealProductRow component
   interface DealProductRowProps {
     product: DealProductLink;
+    canWriteCrm?: boolean;
     onUpdateProduct: (dealProductId: number, newQuantity: number, newPrice: number) => void;
     onRemoveProduct: (dealProductId: number) => void;
     formatCurrency: (amount: number | string | undefined) => string;
   }
 
-  function DealProductRow({ product, onUpdateProduct, onRemoveProduct, formatCurrency }: DealProductRowProps) {
+  function DealProductRow({ product, canWriteCrm = true, onUpdateProduct, onRemoveProduct, formatCurrency }: DealProductRowProps) {
     const [currentQuantity, setCurrentQuantity] = useState(product.quantity);
     const [currentPrice, setCurrentPrice] = useState(product.price_at_time_of_adding);
 
@@ -751,6 +763,7 @@ export default function DealDetailPage() {
     }, [product.quantity, product.price_at_time_of_adding]);
 
     const onQuantityBlur = () => {
+      if (!canWriteCrm) return;
       // Check if the value actually changed before calling update
       if (currentQuantity !== product.quantity || currentPrice !== product.price_at_time_of_adding) {
         onUpdateProduct(product.deal_product_id, currentQuantity, currentPrice);
@@ -758,6 +771,7 @@ export default function DealDetailPage() {
     };
 
     const onPriceBlur = () => {
+      if (!canWriteCrm) return;
       // Check if the value actually changed before calling update
       if (currentPrice !== product.price_at_time_of_adding || currentQuantity !== product.quantity) {
         onUpdateProduct(product.deal_product_id, currentQuantity, currentPrice);
@@ -776,6 +790,7 @@ export default function DealDetailPage() {
             onBlur={onQuantityBlur}
             className="h-8 text-right"
             min="1"
+            disabled={!canWriteCrm}
           />
         </TableCell>
         <TableCell className="text-right w-32">
@@ -787,19 +802,22 @@ export default function DealDetailPage() {
             className="h-8 text-right"
             min="0"
             step="0.01"
+            disabled={!canWriteCrm}
           />
         </TableCell>
         <TableCell className="text-right">{formatCurrency(currentQuantity * currentPrice)}</TableCell>
         <TableCell className="text-right w-20">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => onRemoveProduct(product.deal_product_id)}
-            title="Produkt entfernen"
-            aria-label="Produkt entfernen"
-          >
-            <Trash2 className="h-4 w-4 text-destructive" />
-          </Button>
+          {canWriteCrm ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onRemoveProduct(product.deal_product_id)}
+              title="Produkt entfernen"
+              aria-label="Produkt entfernen"
+            >
+              <Trash2 className="h-4 w-4 text-destructive" />
+            </Button>
+          ) : null}
         </TableCell>
       </TableRow>
     );

@@ -5,12 +5,13 @@ import { Button } from '@/components/ui/button';
 interface CalendarEventDetailsProps {
   event: CalendarRBCEvent;
   recurrenceText?: string | null;
+  canWrite?: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onClose: () => void;
 }
 
-export function CalendarEventDetails({ event, recurrenceText, onEdit, onDelete, onClose }: CalendarEventDetailsProps) {
+export function CalendarEventDetails({ event, recurrenceText, canWrite = true, onEdit, onDelete, onClose }: CalendarEventDetailsProps) {
   return (
     <DialogContent>
       <DialogHeader>
@@ -50,10 +51,14 @@ export function CalendarEventDetails({ event, recurrenceText, onEdit, onDelete, 
         <Button variant="outline" onClick={onClose}>
           Schließen
         </Button>
-        <Button onClick={onEdit}>Bearbeiten</Button>
-        <Button variant="destructive" onClick={onDelete}>
-          Löschen
-        </Button>
+        {canWrite ? (
+          <>
+            <Button onClick={onEdit}>Bearbeiten</Button>
+            <Button variant="destructive" onClick={onDelete}>
+              Löschen
+            </Button>
+          </>
+        ) : null}
       </DialogFooter>
     </DialogContent>
   );
