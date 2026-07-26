@@ -573,8 +573,12 @@ async function handleCreateInvitation(req: ApiRequest, ports: ServerApiPorts): P
 
   return data(201, {
     invitation: publicInvitation(result.invitation),
-    ...(delivery.status === 'sent' ? {} : { token: result.token }),
-    acceptPath,
+    ...(delivery.status === 'sent'
+      ? {}
+      : {
+        token: result.token,
+        acceptPath,
+      }),
     delivery,
   });
 }

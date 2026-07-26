@@ -39,6 +39,24 @@ import {
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
+/** True when `path` is handled by `handleWorkflowRuntimeReadRoute` (not webhook/AI/compile routes). */
+export function isWorkflowRuntimeApiPath(path: string): boolean {
+  return path.startsWith('/api/v1/workflow-')
+    || /^\/api\/v1\/workflows\/[^/]+\/(?:versions|runs)(?:\/|$)/.test(path)
+    || /^\/api\/v1\/workflows\/by-source\/[^/]+\/(?:versions(?:\/snapshot)?|runs)(?:\/|$)/.test(path)
+    || /^\/api\/v1\/email\/messages\/[^/]+\/workflow-runs$/.test(path);
+}
+
+function rejectUnlessWorkflowRuntimeMutation(req: ApiRequest): ApiResponse | null {
+  if (req.method !== 'POST' && req.method !== 'PATCH' && req.method !== 'DELETE') return null;
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  if (!requireCapability(principal, 'workflows.manage')) {
+    return error(403, 'forbidden', 'Workflow-Verwaltung erfordert workflows.manage');
+  }
+  return null;
+}
+
 type ParseResult<TFilters extends object> =
   | { ok: true; filters: TFilters }
   | { ok: false; response: ApiResponse };
@@ -63,6 +81,11 @@ export async function handleWorkflowRuntimeReadRoute(
   req: ApiRequest,
   ports: ServerApiPorts,
 ): Promise<ApiResponse | null> {
+  if (!isWorkflowRuntimeApiPath(req.path)) return null;
+
+  const mutationDenied = rejectUnlessWorkflowRuntimeMutation(req);
+  if (mutationDenied) return mutationDenied;
+
   const workflowSourceVersionSnapshotMatch = /^\/api\/v1\/workflows\/by-source\/([^/]+)\/versions\/snapshot$/.exec(req.path);
   if (workflowSourceVersionSnapshotMatch) {
     return handleWorkflowSourceVersionSnapshot(req, ports, workflowSourceVersionSnapshotMatch[1]);

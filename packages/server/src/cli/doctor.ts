@@ -323,6 +323,13 @@ function checkTrustProxy(env: NodeJS.ProcessEnv): DoctorCheck {
       message: 'TRUST_PROXY is unset; per-IP rate limits use the direct socket address (set to 1 behind Caddy)',
     };
   }
+  if (value === 'false' || value === '0') {
+    return {
+      name: 'trust_proxy',
+      status: 'warn',
+      message: `TRUST_PROXY=${value}; per-IP rate limits use the direct socket address (set to 1 behind Caddy)`,
+    };
+  }
   return {
     name: 'trust_proxy',
     status: 'ok',

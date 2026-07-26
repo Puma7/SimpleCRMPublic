@@ -41,11 +41,11 @@ export async function rejectUnlessWorkflowMessageReadable(
 
   try {
     await assertMessageReadable(ports, principal.workspaceId, actor, resources[0]!);
-  } catch (error) {
-    if (error instanceof MailAccessDeniedError) {
-      return error(403, 'forbidden', error.message);
+  } catch (err) {
+    if (err instanceof MailAccessDeniedError) {
+      return error(403, 'forbidden', err.message);
     }
-    throw error;
+    throw err;
   }
 
   return null;

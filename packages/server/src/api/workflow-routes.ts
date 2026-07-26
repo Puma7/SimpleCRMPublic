@@ -259,6 +259,8 @@ async function handleWorkflowPluginList(req: ApiRequest): Promise<ApiResponse> {
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessWorkflowManage(principal);
+  if (denied) return denied;
   return data(200, []);
 }
 
