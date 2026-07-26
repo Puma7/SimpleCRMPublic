@@ -1816,6 +1816,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         resource: input.resource,
         profile: input.profile,
         permissions: Array.isArray(input.permissions) ? input.permissions : [],
+        constraints: input.constraints === undefined ? undefined : input.constraints,
       }),
       transform: (body) => {
         const result = dataBody<{ id?: number }>(body)

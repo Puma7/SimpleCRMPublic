@@ -29,9 +29,9 @@ type Equal<Left, Right> = (
 type Assert<Value extends true> = Value;
 
 const grantTypeAssertion: Assert<Equal<MailAccessGrant,
-  | Readonly<{ resourceType: 'account'; accountId: number; folderId: null; messageId: null }>
-  | Readonly<{ resourceType: 'folder'; accountId: number; folderId: number; messageId: null }>
-  | Readonly<{ resourceType: 'message'; accountId: number; folderId: number; messageId: number }>
+  | Readonly<{ bindingId: number; resourceType: 'account'; accountId: number; folderId: null; messageId: null; constraints: null | import('../../packages/server/src/mail-access/types').MailBindingVisibilityConstraints }>
+  | Readonly<{ bindingId: number; resourceType: 'folder'; accountId: number; folderId: number; messageId: null; constraints: null | import('../../packages/server/src/mail-access/types').MailBindingVisibilityConstraints }>
+  | Readonly<{ bindingId: number; resourceType: 'message'; accountId: number; folderId: number; messageId: number; constraints: null | import('../../packages/server/src/mail-access/types').MailBindingVisibilityConstraints }>
 >> = true;
 
 type GrantFixture = Readonly<{

@@ -488,7 +488,7 @@ function principal(userId: string, role: AuthenticatedPrincipal['role']): Authen
 }
 
 function accountGrant(accountId: number): MailAccessGrant {
-  return { resourceType: 'account', accountId, folderId: null, messageId: null };
+  return { bindingId: accountId, resourceType: 'account', accountId, folderId: null, messageId: null, constraints: null };
 }
 
 function binding(id: number, permissions: readonly MailPermission[]): MailDelegationBinding {

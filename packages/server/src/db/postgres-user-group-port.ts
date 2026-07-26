@@ -10,7 +10,7 @@ import type {
   UserGroupRemoveMemberResult,
 } from '../api/types';
 import type { ServerDatabase, UserGroupsTable } from './schema';
-import { isUserGroupCapability } from '../api/capabilities';
+import { isUserGroupCapability, normalizeStoredUserGroupPermissions } from '../api/capabilities';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -270,8 +270,10 @@ export function createPostgresUserGroupPort(options: PostgresUserGroupPortOption
     },
 
     async setPermissions(input) {
-      // Grant-only: unknown keys are dropped, and the set fully replaces the row set.
-      const permissions = [...new Set(input.permissions.filter(isUserGroupCapability))].sort();
+      // Grant-only: unknown keys are dropped; legacy aliases normalized; highest per module stored.
+      const permissions = normalizeStoredUserGroupPermissions(
+        input.permissions.filter(isUserGroupCapability),
+      );
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },

@@ -88,7 +88,7 @@ describe('ApplyWorkflowMenu server-client mode', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-1', role: 'user' },
       loading: false,
-      hasCapability: (cap: string) => cap === 'workflows.manage',
+      hasCapability: (cap: string) => cap === 'workflows.run',
     });
     resetRendererTransportForTests();
     delete (window as any).electronAPI;
@@ -99,7 +99,7 @@ describe('ApplyWorkflowMenu server-client mode', () => {
     delete (window as any).electronAPI;
   });
 
-  test('hides the menu when workflows.manage is missing in HTTP mode', () => {
+  test('hides the menu when workflows.run is missing in HTTP mode', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-1', role: 'user' },
       loading: false,

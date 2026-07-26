@@ -55,6 +55,7 @@ import {
   type EmailAccountReference,
 } from './resolve-email-account-reference';
 import type { MailSqlScope } from '../mail-access/types';
+import { mailScopePredicate } from '../mail-access/sql-scope';
 
 export type PostgresWorkflowRuntimeReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -1523,21 +1524,13 @@ async function resolveEmailMessageReference(
 }
 
 function emailMessageVisibilityPredicate(scope: MailSqlScope | undefined): RawBuilder<boolean> | undefined {
-  if (!scope || scope.kind === 'all') return undefined;
-  if (scope.kind === 'none') return kyselySql<boolean>`false`;
-  const branches: RawBuilder<boolean>[] = [];
-  if (scope.accountIds.length > 0) {
-    branches.push(kyselySql<boolean>`email_messages.account_id in (${kyselySql.join(scope.accountIds)})`);
-  }
-  if (scope.folderIds.length > 0) {
-    branches.push(kyselySql<boolean>`email_messages.folder_id in (${kyselySql.join(scope.folderIds)})`);
-  }
-  if (scope.messageIds.length > 0) {
-    branches.push(kyselySql<boolean>`email_messages.id in (${kyselySql.join(scope.messageIds)})`);
-  }
-  return branches.length === 0
-    ? kyselySql<boolean>`false`
-    : kyselySql<boolean>`(${kyselySql.join(branches, kyselySql` or `)})`;
+  return mailScopePredicate(scope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
+  });
 }
 
 function assertJsonObjectLike(value: unknown, label: string): void {

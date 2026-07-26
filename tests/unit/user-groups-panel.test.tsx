@@ -11,7 +11,7 @@ import { UserGroupsPanel } from '../../src/components/settings/user-groups-panel
 describe('UserGroupsPanel', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    mockInvoke.mockImplementation(async (channel: string, payload?: { name?: string }) => {
+    mockInvoke.mockImplementation(async (channel: string, payload?: { name?: string; permissions?: string[] }) => {
       switch (channel) {
         case 'user-groups:list':
           return [{ id: 1, name: 'Support', description: 'Hotline', memberCount: 2, updatedAt: '2026-06-06T10:00:00.000Z' }];
@@ -21,6 +21,10 @@ describe('UserGroupsPanel', () => {
           return { id: 2, name: payload?.name ?? '', description: null, memberCount: 0, updatedAt: '2026-06-06T10:00:00.000Z' };
         case 'user-groups:list-members':
           return [];
+        case 'user-groups:list-permissions':
+          return ['crm.write'];
+        case 'user-groups:set-permissions':
+          return Array.isArray(payload?.permissions) ? payload.permissions : [];
         default:
           return undefined;
       }

@@ -66,9 +66,9 @@ export function ApplyWorkflowMenu({
   const [runDetailId, setRunDetailId] = useState<number | null>(null)
   const [runDetailOpen, setRunDetailOpen] = useState(false)
 
-  // Server edition: execute/dry-run require workflows.manage; hide the dead-end menu.
+  // Server edition: execute/dry-run require workflows.run; hide the dead-end menu.
   const canExecuteWorkflows =
-    getRendererTransport().kind !== "http" || hasCapability("workflows.manage")
+    getRendererTransport().kind !== "http" || hasCapability("workflows.run")
 
   const loadWorkflows = useCallback(async () => {
     setLoadingList(true)

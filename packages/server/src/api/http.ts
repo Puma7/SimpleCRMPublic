@@ -73,13 +73,64 @@ export function forbidUnlessCrmWrite(
   return rejectUnlessCrmWrite(principal);
 }
 
+export function rejectUnlessWorkflowView(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return forbidUnlessCapability(
+    principal,
+    'workflows.view',
+    'Adminrechte oder Workflow-Ansicht erforderlich',
+  );
+}
+
+export function rejectUnlessWorkflowRun(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return forbidUnlessCapability(
+    principal,
+    'workflows.run',
+    'Adminrechte oder Workflow-Ausfuehrung erforderlich',
+  );
+}
+
+export function rejectUnlessWorkflowEdit(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return forbidUnlessCapability(
+    principal,
+    'workflows.edit',
+    'Adminrechte oder Workflow-Bearbeitung erforderlich',
+  );
+}
+
 export function rejectUnlessWorkflowManage(
   principal: AuthenticatedPrincipal,
 ): ApiResponse<ApiErrorBody> | null {
   return forbidUnlessCapability(
     principal,
     'workflows.manage',
-    'Adminrechte oder Workflow-Berechtigung erforderlich',
+    'Adminrechte oder Workflow-Verwaltung erforderlich',
+  );
+}
+
+export function rejectUnlessSettingsView(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return forbidUnlessCapability(
+    principal,
+    'settings.view',
+    'Adminrechte oder Einstellungs-Berechtigung erforderlich',
+  );
+}
+
+export function rejectUnlessSettingsManage(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  // Accept legacy email_settings.manage via expanded principal capabilities.
+  return forbidUnlessCapability(
+    principal,
+    'settings.manage',
+    'Adminrechte oder Einstellungs-Berechtigung erforderlich',
   );
 }
 

@@ -22,6 +22,7 @@ import type {
   MailAclRolloutReadiness,
   MailAclRolloutCounterResetResult,
   MailAclRolloutTransitionResult,
+  MailBindingVisibilityConstraints,
   MailResourceLookupPort,
   MailSqlScope,
 } from '../mail-access/types';
@@ -799,6 +800,7 @@ export type MailDelegationBinding = {
   permissions: readonly MailPermission[];
   profile: string | null;
   updatedAt: string;
+  constraints?: MailBindingVisibilityConstraints | null;
 };
 
 export type MailDelegationActor = {
@@ -855,6 +857,7 @@ export type MailDelegationApiPort = {
     subject: MailDelegationSubject;
     resource: MailDelegationResource;
     permissions: readonly MailPermission[];
+    constraints?: MailBindingVisibilityConstraints | null;
   }): Promise<
     | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted?: boolean }
     | { ok: false; code: MailDelegationMutationCode }
@@ -864,6 +867,7 @@ export type MailDelegationApiPort = {
     actor: MailDelegationActor;
     bindingId: number;
     permissions: readonly MailPermission[];
+    constraints?: MailBindingVisibilityConstraints | null;
   }): Promise<
     | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted: boolean }
     | { ok: false; code: MailDelegationMutationCode }

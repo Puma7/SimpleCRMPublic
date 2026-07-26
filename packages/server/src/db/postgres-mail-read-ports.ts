@@ -798,6 +798,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           // Per-row content authorization: a caller with mail.metadata.read but not
           // mail.content.read on a row must not receive its body-derived content or
@@ -807,6 +809,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           // Per-row attachment authorization: extracted attachment text
           // (email_message_attachments.content_text, and the a.search_vector that
@@ -820,6 +824,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           const cursorScopePredicate = mailScopePredicate(input.mailScope, {
             accountId: 'cursor_message.account_id',
@@ -1114,6 +1120,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           let query = trx
             .selectFrom('email_messages')
@@ -1535,11 +1543,15 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           const contentPredicate = mailScopePredicate(input.mailContentScope, {
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           if (contentPredicate) {
             query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));

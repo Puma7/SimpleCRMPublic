@@ -36,7 +36,10 @@ import {
   error,
   forbidUnlessCapability,
   positiveIntFromPath,
+  rejectUnlessWorkflowEdit,
   rejectUnlessWorkflowManage,
+  rejectUnlessWorkflowRun,
+  rejectUnlessWorkflowView,
   requireAdmin,
   requireCapability,
   requirePrincipal,
@@ -246,7 +249,7 @@ async function handleWorkflowNodeCatalogList(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
+  const denied = rejectUnlessWorkflowView(principal);
   if (denied) return denied;
   if (!ports.workflowNodeCatalog) {
     return error(503, 'workflow_node_catalog_unavailable', 'Workflow node catalog API nicht konfiguriert');
@@ -261,7 +264,7 @@ async function handleWorkflowPluginList(req: ApiRequest): Promise<ApiResponse> {
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
+  const denied = rejectUnlessWorkflowView(principal);
   if (denied) return denied;
   return data(200, []);
 }
@@ -270,7 +273,7 @@ async function handleWorkflowGraphCompileRoute(req: ApiRequest): Promise<ApiResp
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
+  const denied = rejectUnlessWorkflowEdit(principal);
   if (denied) return denied;
 
   try {
@@ -323,7 +326,7 @@ async function handleListRoute(
   if (resource === 'workflows' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
-    const denied = rejectUnlessWorkflowManage(principal);
+    const denied = rejectUnlessWorkflowEdit(principal);
     if (denied) return denied;
     return handleCreateWorkflow(req, ports);
   }
@@ -331,9 +334,9 @@ async function handleListRoute(
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
   // Prompt catalog and sanitized AI profile reads are needed by compose/settings
-  // for every authenticated user. Workflow lists stay behind workflows.manage.
+  // for every authenticated user. Workflow lists require at least workflows.view.
   if (resource === 'workflows') {
-    const listDenied = rejectUnlessWorkflowManage(principal);
+    const listDenied = rejectUnlessWorkflowView(principal);
     if (listDenied) return listDenied;
   }
 
@@ -411,7 +414,9 @@ async function handleGetRoute(
   const id = positiveIntFromPath(rawId);
   if (id === null) return error(400, `invalid_${resourceErrorName(resource)}_id`, `${resourceLabel(resource)} id muss eine positive Ganzzahl sein`);
   if (req.method === 'PATCH' || req.method === 'DELETE') {
-    const denied = rejectUnlessWorkflowManage(principal);
+    const denied = resource === 'workflows' && req.method === 'PATCH'
+      ? rejectUnlessWorkflowEdit(principal)
+      : rejectUnlessWorkflowManage(principal);
     if (denied) return denied;
   }
   if (resource === 'aiProfiles' && req.method === 'PATCH') return handleUpdateAiProfile(req, ports, principal, id);
@@ -423,7 +428,7 @@ async function handleGetRoute(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   // Prompt and sanitized profile reads are available to any authenticated user.
   if (resource === 'workflows') {
-    const getDenied = rejectUnlessWorkflowManage(principal);
+    const getDenied = rejectUnlessWorkflowView(principal);
     if (getDenied) return getDenied;
   }
 
@@ -463,7 +468,9 @@ async function handleWorkflowBySourceRoute(
 
   const workflow = await findWorkflowBySourceSqliteId(ports, principal.workspaceId, sourceSqliteId);
   if (req.method === 'PATCH' || req.method === 'DELETE') {
-    const denied = rejectUnlessWorkflowManage(principal);
+    const denied = req.method === 'PATCH'
+      ? rejectUnlessWorkflowEdit(principal)
+      : rejectUnlessWorkflowManage(principal);
     if (denied) return denied;
   }
   if (req.method === 'PATCH') {
@@ -477,7 +484,7 @@ async function handleWorkflowBySourceRoute(
       : error(404, 'workflow_not_found', 'Workflow nicht gefunden');
   }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  const getDenied = rejectUnlessWorkflowManage(principal);
+  const getDenied = rejectUnlessWorkflowView(principal);
   if (getDenied) return getDenied;
   return data(200, workflow ? sanitizeWorkflow(workflow) : null);
 }
@@ -527,7 +534,7 @@ async function handleWorkflowExecute(
   const parsed = parseWorkflowExecuteBody(req.body);
   if (!parsed.ok) return parsed.response;
 
-  const workflowDenied = rejectUnlessWorkflowManage(principal);
+  const workflowDenied = rejectUnlessWorkflowRun(principal);
   if (workflowDenied) return workflowDenied;
 
   const messageId = parsed.values.messageId;
@@ -543,7 +550,7 @@ async function handleWorkflowExecute(
   // (mutates mail/CRM state, sends mail, or reaches an external system) could
   // let a non-admin perform mailbox operations they otherwise can't. Until
   // per-node authorization lands, restrict such live runs to admins. Dry-runs
-  // and read-/notify-only graphs stay open to delegated `workflows.manage`
+  // and read-/notify-only graphs stay open to delegated `workflows.run`
   // holders.
   if (!dryRun && !requireAdmin(principal) && workflowGraphHasSideEffectNode(workflow.graph)) {
     return error(

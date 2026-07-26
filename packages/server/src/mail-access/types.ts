@@ -1,5 +1,14 @@
 import type { MailPermission, MailResource } from '@simplecrm/core';
 
+import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
+
+export type { MailAssignmentMode, MailBindingVisibilityConstraints } from './mail-acl-constraints';
+export {
+  EMPTY_MAIL_BINDING_CONSTRAINTS,
+  constraintsEqual,
+  hasMailBindingConstraints,
+} from './mail-acl-constraints';
+
 export type MailAccessActor = Readonly<{
   workspaceId: string;
   userId: string;
@@ -8,14 +17,42 @@ export type MailAccessActor = Readonly<{
 }>;
 
 export type MailAccessGrant =
-  | Readonly<{ resourceType: 'account'; accountId: number; folderId: null; messageId: null }>
-  | Readonly<{ resourceType: 'folder'; accountId: number; folderId: number; messageId: null }>
   | Readonly<{
+    bindingId: number;
+    resourceType: 'account';
+    accountId: number;
+    folderId: null;
+    messageId: null;
+    constraints: MailBindingVisibilityConstraints | null;
+  }>
+  | Readonly<{
+    bindingId: number;
+    resourceType: 'folder';
+    accountId: number;
+    folderId: number;
+    messageId: null;
+    constraints: MailBindingVisibilityConstraints | null;
+  }>
+  | Readonly<{
+    bindingId: number;
     resourceType: 'message';
     accountId: number;
     folderId: number;
     messageId: number;
+    constraints: MailBindingVisibilityConstraints | null;
   }>;
+
+export type MailScopeActorContext = Readonly<{
+  userId: string;
+  groupMemberUserIds: readonly string[];
+}>;
+
+export type MailScopeClause = Readonly<{
+  accountIds: readonly number[];
+  folderIds: readonly number[];
+  messageIds: readonly number[];
+  constraints: MailBindingVisibilityConstraints | null;
+}>;
 
 export type MailSqlScope =
   | Readonly<{ kind: 'all' }>
@@ -25,7 +62,16 @@ export type MailSqlScope =
     accountIds: readonly number[];
     folderIds: readonly number[];
     messageIds: readonly number[];
+    clauses?: readonly MailScopeClause[];
+    actor?: MailScopeActorContext;
   }>;
+
+export type MailMessageVisibilityFacts = Readonly<{
+  assignedToUserId: string | null;
+  assignedTo: string | null;
+  categoryIds: readonly number[];
+  tags: readonly string[];
+}>;
 
 export type ResolveMailAccessGrantsInput = Readonly<{
   workspaceId: string;
@@ -42,6 +88,16 @@ export interface MailAccessPort {
     input: ResolveMailAccessGrantsInput,
     evaluationContext?: MailAclRolloutEvaluationContext,
   ): Promise<readonly MailAccessGrant[]>;
+
+  resolveScopeActorContext?(input: Readonly<{
+    workspaceId: string;
+    userId: string;
+  }>): Promise<MailScopeActorContext>;
+
+  resolveMessageVisibilityFacts?(input: Readonly<{
+    workspaceId: string;
+    messageId: number;
+  }>): Promise<MailMessageVisibilityFacts | null>;
 }
 
 export interface MailAccessService {
@@ -215,3 +271,74 @@ export type WorkflowDelayedJobMailClassification =
     kind: 'message';
     resource: Extract<MailResource, { type: 'message' }>;
   }>;
+
+export function messageMatchesConstraints(
+  facts: MailMessageVisibilityFacts,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+  actor: MailScopeActorContext,
+): boolean {
+  if (!constraints) return true;
+  const mode = constraints.assignmentMode;
+  if (mode && mode !== 'any') {
+    const assignee = facts.assignedToUserId ?? facts.assignedTo;
+    if (mode === 'unassigned') {
+      if (assignee) return false;
+    } else if (mode === 'assigned_to_me') {
+      if (assignee !== actor.userId) return false;
+    } else if (mode === 'assigned_to_my_groups') {
+      if (!assignee || !actor.groupMemberUserIds.includes(assignee)) return false;
+    }
+  }
+  if (constraints.categoryAllowIds.length > 0) {
+    if (!constraints.categoryAllowIds.some((id) => facts.categoryIds.includes(id))) return false;
+  }
+  if (constraints.categoryExcludeIds.length > 0) {
+    if (constraints.categoryExcludeIds.some((id) => facts.categoryIds.includes(id))) return false;
+  }
+  if (constraints.tagAllowValues.length > 0) {
+    if (!constraints.tagAllowValues.some((tag) => facts.tags.includes(tag))) return false;
+  }
+  if (constraints.tagExcludeValues.length > 0) {
+    if (constraints.tagExcludeValues.some((tag) => facts.tags.includes(tag))) return false;
+  }
+  return true;
+}
+
+export function explainConstraintMismatch(
+  facts: MailMessageVisibilityFacts,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+  actor: MailScopeActorContext,
+): string | null {
+  if (messageMatchesConstraints(facts, constraints, actor)) return null;
+  if (!constraints) return null;
+  const mode = constraints.assignmentMode;
+  if (mode && mode !== 'any') {
+    const assignee = facts.assignedToUserId ?? facts.assignedTo;
+    if (mode === 'unassigned' && assignee) return 'Nachricht ist zugewiesen (Filter: unzugewiesen)';
+    if (mode === 'assigned_to_me' && assignee !== actor.userId) {
+      return 'Nachricht ist nicht dem Nutzer zugewiesen';
+    }
+    if (mode === 'assigned_to_my_groups' && (!assignee || !actor.groupMemberUserIds.includes(assignee))) {
+      return 'Nachricht ist keinem Mitglied der Nutzergruppen zugewiesen';
+    }
+  }
+  if (
+    constraints.categoryAllowIds.length > 0
+    && !constraints.categoryAllowIds.some((id) => facts.categoryIds.includes(id))
+  ) {
+    return 'Nachricht liegt ausserhalb der erlaubten Kategorien';
+  }
+  if (constraints.categoryExcludeIds.some((id) => facts.categoryIds.includes(id))) {
+    return 'Nachricht hat eine ausgeschlossene Kategorie';
+  }
+  if (
+    constraints.tagAllowValues.length > 0
+    && !constraints.tagAllowValues.some((tag) => facts.tags.includes(tag))
+  ) {
+    return 'Nachricht liegt ausserhalb der erlaubten Tags';
+  }
+  if (constraints.tagExcludeValues.some((tag) => facts.tags.includes(tag))) {
+    return 'Nachricht hat einen ausgeschlossenen Tag';
+  }
+  return 'Sichtbarkeitsfilter nicht erfuellt';
+}

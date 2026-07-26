@@ -38,6 +38,8 @@ type AuthState = {
   hasCapability: (capability: string) => boolean
   /** Desktop always true; server edition requires crm.write (or admin/owner). */
   canWriteCrm: boolean
+  /** Desktop always true; server edition requires settings.view (or admin/owner). */
+  canViewSettings: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   refresh: (options?: { force?: boolean }) => Promise<void>
@@ -177,6 +179,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return hasCapability("crm.write")
   }, [hasCapability, authenticated, user, capabilities])
 
+  const canViewSettings = useMemo(() => {
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("settings.view")
+  }, [hasCapability, authenticated, user, capabilities])
+
   const login = useCallback(async (username: string, passphrase: string) => {
     const transport = getRendererTransport()
     const serverAuth = getServerAuthClient(transport)
@@ -225,8 +232,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo(
-    () => ({ loading, authenticated, authRequired, user, hasCapability, canWriteCrm, login, logout, refresh }),
-    [loading, authenticated, authRequired, user, hasCapability, canWriteCrm, login, logout, refresh],
+    () => ({ loading, authenticated, authRequired, user, hasCapability, canWriteCrm, canViewSettings, login, logout, refresh }),
+    [loading, authenticated, authRequired, user, hasCapability, canWriteCrm, canViewSettings, login, logout, refresh],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

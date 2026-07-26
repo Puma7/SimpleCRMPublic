@@ -12,6 +12,8 @@ import type {
   MailDelegationSubject,
   MailDelegationSubjectOption,
 } from '../api/types';
+import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
+import { EMPTY_MAIL_BINDING_CONSTRAINTS, hasMailBindingConstraints } from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
 import {
   withWorkspaceTransaction,
@@ -288,6 +290,7 @@ export function createPostgresMailDelegationPort(
           subject: input.subject,
           resource: input.resource,
           permissions: uniquePermissions(input.permissions),
+          constraints: input.constraints ?? null,
         }),
         sessionOptions,
       );
@@ -304,6 +307,9 @@ export function createPostgresMailDelegationPort(
             subject: rowSubject(existing),
             resource: rowResource(existing),
             permissions: uniquePermissions(input.permissions),
+            constraints: input.constraints === undefined
+              ? undefined
+              : input.constraints,
             existing,
           });
         },
@@ -348,6 +354,8 @@ export function createPostgresMailDelegationPort(
       subject: MailDelegationSubject;
       resource: MailDelegationResource;
       permissions: readonly MailPermission[];
+      /** undefined = leave existing constraints unchanged on PATCH; null/object = replace */
+      constraints?: MailBindingVisibilityConstraints | null;
       existing?: BindingRow;
     },
   ): Promise<
@@ -445,6 +453,10 @@ export function createPostgresMailDelegationPort(
         permission_key: permission,
       })))
       .execute();
+
+    if (input.constraints !== undefined) {
+      await replaceBindingConstraints(trx, workspaceId, bindingRow.id, input.constraints, now);
+    }
 
     return {
       ok: true as const,
@@ -740,6 +752,7 @@ async function hydrateBindings(
   const groupLabels = new Map(groups.map((group) => [dbInteger(group.id, 'user group id'), group.name]));
   const accountLabels = new Map(accounts.map((account) => [dbInteger(account.id, 'email account id'), account.display_name]));
   const folderLabels = new Map(folders.map((folder) => [dbInteger(folder.id, 'email folder id'), folder.path]));
+  const constraintMap = await loadBindingConstraints(trx, bindingIds);
 
   return rows.map((row) => ({
     id: row.id,
@@ -752,7 +765,171 @@ async function hydrateBindings(
     permissions: permissionMap.get(row.id) ?? [],
     profile: null,
     updatedAt: formatTimestamp(row.updated_at),
+    constraints: constraintMap.get(row.id) ?? null,
   }));
+}
+
+async function loadBindingConstraints(
+  trx: Trx,
+  bindingIds: readonly number[],
+): Promise<Map<number, MailBindingVisibilityConstraints | null>> {
+  const map = new Map<number, MailBindingVisibilityConstraints | null>();
+  if (bindingIds.length === 0) return map;
+  let rows: Array<{
+    binding_id: number | string;
+    kind: string;
+    mode: string;
+    assignment_mode: string | null;
+    value_ids: number[] | null;
+    value_texts: string[] | null;
+  }> = [];
+  try {
+    rows = await trx
+      .selectFrom('mail_acl_binding_constraints')
+      .select(['binding_id', 'kind', 'mode', 'assignment_mode', 'value_ids', 'value_texts'])
+      .where('binding_id', 'in', [...bindingIds])
+      .execute() as typeof rows;
+  } catch {
+    return map;
+  }
+
+  const builders = new Map<number, {
+    assignmentMode: MailBindingVisibilityConstraints['assignmentMode'];
+    categoryAllowIds: number[];
+    categoryExcludeIds: number[];
+    tagAllowValues: string[];
+    tagExcludeValues: string[];
+  }>();
+  for (const row of rows) {
+    const bindingId = dbInteger(row.binding_id, 'constraint binding id');
+    const current = builders.get(bindingId) ?? {
+      assignmentMode: null,
+      categoryAllowIds: [],
+      categoryExcludeIds: [],
+      tagAllowValues: [],
+      tagExcludeValues: [],
+    };
+    if (row.kind === 'assignment' && row.assignment_mode) {
+      current.assignmentMode = row.assignment_mode as MailBindingVisibilityConstraints['assignmentMode'];
+    } else if (row.kind === 'category') {
+      const ids = Array.isArray(row.value_ids) ? row.value_ids.map(Number).filter((n) => n > 0) : [];
+      if (row.mode === 'allow') current.categoryAllowIds.push(...ids);
+      if (row.mode === 'exclude') current.categoryExcludeIds.push(...ids);
+    } else if (row.kind === 'tag') {
+      const texts = Array.isArray(row.value_texts) ? row.value_texts.map(String).filter(Boolean) : [];
+      if (row.mode === 'allow') current.tagAllowValues.push(...texts);
+      if (row.mode === 'exclude') current.tagExcludeValues.push(...texts);
+    }
+    builders.set(bindingId, current);
+  }
+  for (const bindingId of bindingIds) {
+    const built = builders.get(bindingId);
+    if (!built) {
+      map.set(bindingId, null);
+      continue;
+    }
+    const constraints: MailBindingVisibilityConstraints = {
+      assignmentMode: built.assignmentMode && built.assignmentMode !== 'any' ? built.assignmentMode : null,
+      categoryAllowIds: [...new Set(built.categoryAllowIds)].sort((a, b) => a - b),
+      categoryExcludeIds: [...new Set(built.categoryExcludeIds)].sort((a, b) => a - b),
+      tagAllowValues: [...new Set(built.tagAllowValues)].sort(),
+      tagExcludeValues: [...new Set(built.tagExcludeValues)].sort(),
+    };
+    map.set(bindingId, hasMailBindingConstraints(constraints) ? constraints : null);
+  }
+  return map;
+}
+
+async function replaceBindingConstraints(
+  trx: Trx,
+  workspaceId: string,
+  bindingId: number,
+  constraints: MailBindingVisibilityConstraints | null,
+  now: Date,
+): Promise<void> {
+  await trx.deleteFrom('mail_acl_binding_constraints').where('binding_id', '=', bindingId).execute();
+  if (!constraints || !hasMailBindingConstraints(constraints)) return;
+
+  const rows: Array<{
+    workspace_id: string;
+    binding_id: number;
+    kind: 'assignment' | 'category' | 'tag';
+    mode: 'allow' | 'exclude' | 'filter';
+    assignment_mode: MailBindingVisibilityConstraints['assignmentMode'];
+    value_ids: number[];
+    value_texts: string[];
+    created_at: Date;
+    updated_at: Date;
+  }> = [];
+
+  if (constraints.assignmentMode && constraints.assignmentMode !== 'any') {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'assignment',
+      mode: 'filter',
+      assignment_mode: constraints.assignmentMode,
+      value_ids: [],
+      value_texts: [],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.categoryAllowIds.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'category',
+      mode: 'allow',
+      assignment_mode: null,
+      value_ids: [...constraints.categoryAllowIds],
+      value_texts: [],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.categoryExcludeIds.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'category',
+      mode: 'exclude',
+      assignment_mode: null,
+      value_ids: [...constraints.categoryExcludeIds],
+      value_texts: [],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.tagAllowValues.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'tag',
+      mode: 'allow',
+      assignment_mode: null,
+      value_ids: [],
+      value_texts: [...constraints.tagAllowValues],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.tagExcludeValues.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'tag',
+      mode: 'exclude',
+      assignment_mode: null,
+      value_ids: [],
+      value_texts: [...constraints.tagExcludeValues],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (rows.length > 0) {
+    await trx.insertInto('mail_acl_binding_constraints').values(rows).execute();
+  }
 }
 
 function actorRole(actor: MailDelegationActor): 'owner' | 'admin' | 'user' {

@@ -341,7 +341,7 @@ async function handleMailSecuritySettings(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireCapability(principal, 'email_settings.manage')) return error(403, 'forbidden', 'Adminrechte oder E-Mail-Einstellungs-Berechtigung erforderlich');
+  if (!requireCapability(principal, 'settings.manage')) return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Berechtigung erforderlich');
 
   if (req.method === 'GET') {
     const loaded = await loadSyncInfo(req, ports, MAIL_SECURITY_KEYS);

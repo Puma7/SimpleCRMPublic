@@ -42,15 +42,15 @@ const USER_ACTOR = Object.freeze({
 });
 
 function accountGrant(accountId: number): MailAccessGrant {
-  return { resourceType: 'account', accountId, folderId: null, messageId: null };
+  return { bindingId: accountId, resourceType: 'account', accountId, folderId: null, messageId: null, constraints: null };
 }
 
 function folderGrant(accountId: number, folderId: number): MailAccessGrant {
-  return { resourceType: 'folder', accountId, folderId, messageId: null };
+  return { bindingId: folderId, resourceType: 'folder', accountId, folderId, messageId: null, constraints: null };
 }
 
 function messageGrant(accountId: number, folderId: number, messageId: number): MailAccessGrant {
-  return { resourceType: 'message', accountId, folderId, messageId };
+  return { bindingId: messageId, resourceType: 'message', accountId, folderId, messageId, constraints: null };
 }
 
 function messageResource(

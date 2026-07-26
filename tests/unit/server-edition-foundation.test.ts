@@ -376,6 +376,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0043_atomic_task_calendar',
   '0044_api_rate_limit_counters',
   '0045_api_rate_limit_window_idx',
+  '0046_group_rights_and_mail_constraints',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

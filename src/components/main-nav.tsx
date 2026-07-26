@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils"
 import { UserSwitcher } from "@/components/auth/user-switcher"
 import { LanguageToggle } from "@/components/language-toggle"
 import { useTranslation } from "@/lib/i18n"
+import { useAuth } from "@/components/auth/auth-context"
 
 const navLinks = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, exact: true },
@@ -39,6 +40,7 @@ export function MainNav({
   onOpenCommandPalette?: () => void
 }) {
   const { t } = useTranslation()
+  const { canViewSettings } = useAuth()
   return (
     <nav className={cn("border-b", className)} {...props}>
       <div className="flex h-16 items-center px-4">
@@ -79,17 +81,19 @@ export function MainNav({
             </button>
           ) : null}
           <UserSwitcher />
-          <Link
-            to="/settings"
-            className={cn(
-              "flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary",
-            )}
-            activeProps={{ className: "text-primary" }}
-            inactiveProps={{ className: "text-muted-foreground" }}
-          >
-            <Settings className="h-4 w-4" />
-            <span>{t("nav.settings")}</span>
-          </Link>
+          {canViewSettings ? (
+            <Link
+              to="/settings"
+              className={cn(
+                "flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary",
+              )}
+              activeProps={{ className: "text-primary" }}
+              inactiveProps={{ className: "text-muted-foreground" }}
+            >
+              <Settings className="h-4 w-4" />
+              <span>{t("nav.settings")}</span>
+            </Link>
+          ) : null}
         </div>
       </div>
     </nav>

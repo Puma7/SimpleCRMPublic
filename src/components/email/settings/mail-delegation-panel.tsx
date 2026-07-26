@@ -37,6 +37,13 @@ type DelegationBinding = {
   permissions: MailPermission[]
   profile: string | null
   updatedAt: string
+  constraints?: {
+    assignmentMode?: "any" | "assigned_to_me" | "assigned_to_my_groups" | "unassigned" | null
+    categoryAllowIds?: number[]
+    categoryExcludeIds?: number[]
+    tagAllowValues?: string[]
+    tagExcludeValues?: string[]
+  } | null
 }
 
 type NumericPage<T> = { items: T[]; nextCursor: number | null }
@@ -103,6 +110,12 @@ export function MailDelegationPanel() {
   const [folderId, setFolderId] = useState("")
   const [profile, setProfile] = useState<MailPermissionProfile | "custom">("viewer")
   const [permissions, setPermissions] = useState<MailPermission[]>([])
+  const [assignmentMode, setAssignmentMode] = useState<"any" | "assigned_to_me" | "assigned_to_my_groups" | "unassigned">("any")
+  const [categoryAllowText, setCategoryAllowText] = useState("")
+  const [categoryExcludeText, setCategoryExcludeText] = useState("")
+  const [tagAllowText, setTagAllowText] = useState("")
+  const [tagExcludeText, setTagExcludeText] = useState("")
+  const [showFilters, setShowFilters] = useState(false)
 
   const mountedRef = useRef(true)
   const loadGenerationRef = useRef(0)
@@ -138,6 +151,12 @@ export function MailDelegationPanel() {
     setEditingId(null)
     setProfile("viewer")
     setPermissions([])
+    setAssignmentMode("any")
+    setCategoryAllowText("")
+    setCategoryExcludeText("")
+    setTagAllowText("")
+    setTagExcludeText("")
+    setShowFilters(false)
   }, [])
 
   const load = useCallback(async () => {
@@ -216,9 +235,28 @@ export function MailDelegationPanel() {
         setEditingId(editingBinding.id)
         setProfile("custom")
         setPermissions([...editingBinding.permissions])
+        const constraints = editingBinding.constraints
+        setAssignmentMode(constraints?.assignmentMode && constraints.assignmentMode !== "any" ? constraints.assignmentMode : "any")
+        setCategoryAllowText((constraints?.categoryAllowIds ?? []).join(", "))
+        setCategoryExcludeText((constraints?.categoryExcludeIds ?? []).join(", "))
+        setTagAllowText((constraints?.tagAllowValues ?? []).join(", "))
+        setTagExcludeText((constraints?.tagExcludeValues ?? []).join(", "))
+        setShowFilters(Boolean(
+          (constraints?.assignmentMode && constraints.assignmentMode !== "any")
+          || (constraints?.categoryAllowIds?.length ?? 0) > 0
+          || (constraints?.categoryExcludeIds?.length ?? 0) > 0
+          || (constraints?.tagAllowValues?.length ?? 0) > 0
+          || (constraints?.tagExcludeValues?.length ?? 0) > 0,
+        ))
       } else {
         setProfile("viewer")
         setPermissions(nextSubject ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
+        setAssignmentMode("any")
+        setCategoryAllowText("")
+        setCategoryExcludeText("")
+        setTagAllowText("")
+        setTagExcludeText("")
+        setShowFilters(false)
       }
       authorizationReadyRef.current = true
       loadingRef.current = false
@@ -283,6 +321,12 @@ export function MailDelegationPanel() {
     setEditingId(null)
     setProfile("viewer")
     setPermissions(subjectId ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
+    setAssignmentMode("any")
+    setCategoryAllowText("")
+    setCategoryExcludeText("")
+    setTagAllowText("")
+    setTagExcludeText("")
+    setShowFilters(false)
   }
 
   const changeSubjectType = (next: "user" | "group") => {
@@ -323,6 +367,13 @@ export function MailDelegationPanel() {
         resource,
         profile,
         permissions: [...permissions].sort(),
+        constraints: {
+          assignmentMode: assignmentMode === "any" ? null : assignmentMode,
+          categoryAllowIds: parseIdCsv(categoryAllowText),
+          categoryExcludeIds: parseIdCsv(categoryExcludeText),
+          tagAllowValues: parseTagCsv(tagAllowText),
+          tagExcludeValues: parseTagCsv(tagExcludeText),
+        },
       }) as { success?: boolean; error?: string }
       if (result.success === false) throw new Error(result.error ?? "save_failed")
       if (mountedRef.current) await load()
@@ -487,6 +538,73 @@ export function MailDelegationPanel() {
               <span>{PERMISSION_LABELS[permission]}</span>
             </label>
           ))}
+        </div>
+
+        <div className="space-y-2 rounded-md border border-dashed p-3">
+          <button
+            type="button"
+            className="text-sm font-medium underline-offset-2 hover:underline"
+            onClick={() => setShowFilters((value) => !value)}
+          >
+            {showFilters ? "Sichtbarkeitsfilter ausblenden" : "Erweitert: Sichtbarkeitsfilter"}
+          </button>
+          {showFilters ? (
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className="space-y-1 text-sm font-medium sm:col-span-2">
+                Zuweisung
+                <select
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                  value={assignmentMode}
+                  onChange={(event) => setAssignmentMode(event.target.value as typeof assignmentMode)}
+                  disabled={!authorizationReady || loading}
+                >
+                  <option value="any">Alle im Postfach</option>
+                  <option value="assigned_to_me">Nur mir zugewiesen</option>
+                  <option value="assigned_to_my_groups">Mir oder meiner Gruppe zugewiesen</option>
+                  <option value="unassigned">Nur unzugewiesen</option>
+                </select>
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Kategorien erlauben (IDs, Komma)
+                <input
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                  value={categoryAllowText}
+                  onChange={(event) => setCategoryAllowText(event.target.value)}
+                  disabled={!authorizationReady || loading}
+                  placeholder="z. B. 12, 15"
+                />
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Kategorien ausschliessen (IDs)
+                <input
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                  value={categoryExcludeText}
+                  onChange={(event) => setCategoryExcludeText(event.target.value)}
+                  disabled={!authorizationReady || loading}
+                />
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Tags erlauben
+                <input
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                  value={tagAllowText}
+                  onChange={(event) => setTagAllowText(event.target.value)}
+                  disabled={!authorizationReady || loading}
+                  placeholder="Shop-X, VIP"
+                />
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Tags ausschliessen
+                <input
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                  value={tagExcludeText}
+                  onChange={(event) => setTagExcludeText(event.target.value)}
+                  disabled={!authorizationReady || loading}
+                  placeholder="Rechnung"
+                />
+              </label>
+            </div>
+          ) : null}
         </div>
 
         <div className="flex items-center gap-2">
@@ -661,4 +779,24 @@ function resourceIsVisible(resource: DelegationBinding["resource"], resources: r
 
 function sameSubject(left: SubjectOption, right: DelegationBinding["subject"]): boolean {
   return left.type === right.type && String(left.id) === String(right.id)
+}
+
+function parseIdCsv(value: string): number[] {
+  return [...new Set(
+    value
+      .split(/[,\s]+/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => Number(part))
+      .filter((id) => Number.isSafeInteger(id) && id > 0),
+  )].sort((a, b) => a - b)
+}
+
+function parseTagCsv(value: string): string[] {
+  return [...new Set(
+    value
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean),
+  )].sort()
 }

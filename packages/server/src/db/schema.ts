@@ -29,6 +29,7 @@ export type ServerDatabase = {
   user_group_permissions: UserGroupPermissionsTable;
   mail_acl_bindings: MailAclBindingsTable;
   mail_acl_binding_permissions: MailAclBindingPermissionsTable;
+  mail_acl_binding_constraints: MailAclBindingConstraintsTable;
   mail_acl_rollout_state: MailAclRolloutStateTable;
   deal_products: DealProductsTable;
   calendar_events: CalendarEventsTable;
@@ -450,6 +451,19 @@ export type MailAclBindingsTable = {
 export type MailAclBindingPermissionsTable = {
   binding_id: number;
   permission_key: MailPermission;
+};
+
+export type MailAclBindingConstraintsTable = {
+  id: Generated<number>;
+  workspace_id: string;
+  binding_id: number;
+  kind: 'assignment' | 'category' | 'tag';
+  mode: 'allow' | 'exclude' | 'filter';
+  assignment_mode: 'any' | 'assigned_to_me' | 'assigned_to_my_groups' | 'unassigned' | null;
+  value_ids: number[];
+  value_texts: string[];
+  created_at: TimestampColumn;
+  updated_at: TimestampColumn;
 };
 
 export type MailAclRolloutStateTable = {

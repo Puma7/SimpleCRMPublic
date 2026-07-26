@@ -1,11 +1,16 @@
 import type { MailResource } from '@simplecrm/core';
 
+import { hasMailBindingConstraints } from './mail-acl-constraints';
 import type {
   MailAccessGrant,
   MailAccessPort,
   MailAccessService as MailAccessServiceContract,
+  MailBindingVisibilityConstraints,
+  MailScopeActorContext,
+  MailScopeClause,
   MailSqlScope,
 } from './types';
+import { explainConstraintMismatch, messageMatchesConstraints } from './types';
 
 const PUBLIC_DENIAL_MESSAGE = 'Keine Berechtigung fuer diese E-Mail-Aktion.';
 
@@ -39,7 +44,22 @@ export class MailAccessService implements MailAccessServiceContract {
       userId: input.actor.userId,
       permission: input.permission,
     });
-    if (!grants.some((grant) => grantAllowsResource(grant, resource))) {
+    const matching = grants.filter((grant) => grantAllowsResource(grant, resource));
+    if (matching.length === 0) throw new MailAccessDeniedError();
+
+    if (resource.type !== 'message' || !matching.some((g) => hasMailBindingConstraints(g.constraints))) {
+      return;
+    }
+
+    const facts = this.port.resolveMessageVisibilityFacts
+      ? await this.port.resolveMessageVisibilityFacts({
+        workspaceId: input.workspaceId,
+        messageId: resource.messageId,
+      })
+      : null;
+    if (!facts) throw new MailAccessDeniedError();
+    const actor = await this.resolveActorContext(input.workspaceId, input.actor.userId);
+    if (!matching.some((grant) => messageMatchesConstraints(facts, grant.constraints, actor))) {
       throw new MailAccessDeniedError();
     }
   }
@@ -57,7 +77,111 @@ export class MailAccessService implements MailAccessServiceContract {
     });
     if (grants.length === 0) return { kind: 'none' };
 
-    return grantsToScope(grants);
+    const flat = grantsToFlatScope(grants);
+    if (flat.kind === 'none') return flat;
+
+    const needsClauses = grants.some((grant) => hasMailBindingConstraints(grant.constraints));
+    if (!needsClauses) return flat;
+
+    const actor = await this.resolveActorContext(input.workspaceId, input.actor.userId);
+    return {
+      ...flat,
+      clauses: grantsToClauses(grants),
+      actor,
+    };
+  }
+
+  async explainMessageVisibility(input: Readonly<{
+    workspaceId: string;
+    userId: string;
+    resource: Extract<MailResource, { type: 'message' }>;
+  }>): Promise<Readonly<{
+    visible: boolean;
+    reason: string;
+    bindings: readonly { bindingId: number; ok: boolean; reason: string | null }[];
+    facts: {
+      assignedToUserId: string | null;
+      assignedTo: string | null;
+      categoryIds: readonly number[];
+      tags: readonly string[];
+    } | null;
+  }>> {
+    const resource = normalizeResource(input.resource);
+    if (!resource || resource.type !== 'message') {
+      return { visible: false, reason: 'Ungueltige Nachricht', bindings: [], facts: null };
+    }
+
+    const grants = await this.port.resolveGrants({
+      workspaceId: input.workspaceId,
+      userId: input.userId,
+      permission: 'mail.metadata.read',
+    });
+    const matching = grants.filter((grant) => grantAllowsResource(grant, resource));
+    if (matching.length === 0) {
+      return {
+        visible: false,
+        reason: 'Kein ACL-Binding deckt diese Nachricht ab',
+        bindings: [],
+        facts: null,
+      };
+    }
+
+    const needsFacts = matching.some((grant) => hasMailBindingConstraints(grant.constraints));
+    if (!needsFacts) {
+      return {
+        visible: true,
+        reason: 'Nachricht ist fuer den Nutzer ueber Mail-ACL sichtbar',
+        bindings: matching.map((grant) => ({ bindingId: grant.bindingId, ok: true, reason: null })),
+        facts: null,
+      };
+    }
+
+    const facts = this.port.resolveMessageVisibilityFacts
+      ? await this.port.resolveMessageVisibilityFacts({
+        workspaceId: input.workspaceId,
+        messageId: resource.messageId,
+      })
+      : null;
+    if (!facts) {
+      return {
+        visible: false,
+        reason: 'Nachrichtendaten fuer Sichtbarkeitsfilter nicht ladbar',
+        bindings: matching.map((grant) => ({
+          bindingId: grant.bindingId,
+          ok: false,
+          reason: 'Fakten fehlen',
+        })),
+        facts: null,
+      };
+    }
+
+    const actor = await this.resolveActorContext(input.workspaceId, input.userId);
+    const bindings = matching.map((grant) => {
+      const mismatch = explainConstraintMismatch(facts, grant.constraints, actor);
+      return { bindingId: grant.bindingId, ok: mismatch === null, reason: mismatch };
+    });
+    const visible = bindings.some((entry) => entry.ok);
+    return {
+      visible,
+      reason: visible
+        ? 'Nachricht ist fuer den Nutzer ueber Mail-ACL sichtbar'
+        : (bindings.find((entry) => entry.reason)?.reason
+          ?? 'Sichtbarkeitsfilter blockieren die Nachricht'),
+      bindings,
+      facts: {
+        assignedToUserId: facts.assignedToUserId,
+        assignedTo: facts.assignedTo,
+        categoryIds: facts.categoryIds,
+        tags: facts.tags,
+      },
+    };
+  }
+
+  private async resolveActorContext(workspaceId: string, userId: string): Promise<MailScopeActorContext> {
+    if (this.port.resolveScopeActorContext) {
+      return this.port.resolveScopeActorContext({ workspaceId, userId });
+    }
+    return { userId, groupMemberUserIds: [userId] };
   }
 }
 
@@ -90,7 +214,7 @@ function grantAllowsResource(grant: MailAccessGrant, resource: NumericMailResour
   return resource.type === 'message' && grant.messageId === resource.messageId;
 }
 
-function grantsToScope(grants: readonly MailAccessGrant[]): MailSqlScope {
+function grantsToFlatScope(grants: readonly MailAccessGrant[]): Extract<MailSqlScope, { kind: 'restricted' | 'none' }> {
   const accountIds = new Set(
     grants
       .filter((grant) => grant.resourceType === 'account')
@@ -124,6 +248,36 @@ function grantsToScope(grants: readonly MailAccessGrant[]): MailSqlScope {
   };
 }
 
+function grantsToClauses(grants: readonly MailAccessGrant[]): MailScopeClause[] {
+  // One clause per grant so different constraints on the same mailbox OR correctly.
+  return grants.map((grant) => {
+    if (grant.resourceType === 'account') {
+      return {
+        accountIds: [grant.accountId],
+        folderIds: [],
+        messageIds: [],
+        constraints: grant.constraints,
+      };
+    }
+    if (grant.resourceType === 'folder') {
+      return {
+        accountIds: [],
+        folderIds: [grant.folderId],
+        messageIds: [],
+        constraints: grant.constraints,
+      };
+    }
+    return {
+      accountIds: [],
+      folderIds: [],
+      messageIds: [grant.messageId],
+      constraints: grant.constraints,
+    };
+  });
+}
+
 function compareNumbers(left: number, right: number): number {
   return left - right;
 }
+
+export type { MailBindingVisibilityConstraints };
