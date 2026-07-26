@@ -598,6 +598,8 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
             accountId: 'm.account_id',
             folderId: 'm.folder_id',
             messageId: 'm.id',
+            assignedToUserId: 'm.assigned_to_user_id',
+            assignedTo: 'm.assigned_to',
           });
           if (scopePredicate) {
             query = query
@@ -684,6 +686,8 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
             accountId: 'm.account_id',
             folderId: 'm.folder_id',
             messageId: 'm.id',
+            assignedToUserId: 'm.assigned_to_user_id',
+            assignedTo: 'm.assigned_to',
           });
           if (scopePredicate) {
             query = query
@@ -775,6 +779,8 @@ function threadMessageExistsPredicate(
     accountId: 'm.account_id',
     folderId: 'm.folder_id',
     messageId: 'm.id',
+    assignedToUserId: 'm.assigned_to_user_id',
+    assignedTo: 'm.assigned_to',
   }) ?? kyselySql<boolean>`true`;
   return kyselySql<boolean>`exists (
     select 1
@@ -1216,6 +1222,8 @@ export function createPostgresEmailMessageCategoryReadPort(options: PostgresMail
             accountId: 'm.account_id',
             folderId: 'm.folder_id',
             messageId: 'm.id',
+            assignedToUserId: 'm.assigned_to_user_id',
+            assignedTo: 'm.assigned_to',
           });
           if (scopePredicate) query = query.where(scopePredicate);
           if (input.accountId !== undefined) query = query.where('m.account_id', '=', input.accountId);
@@ -2202,6 +2210,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             accountId: 'alias_scope_message.account_id',
             folderId: 'alias_scope_message.folder_id',
             messageId: 'alias_scope_message.id',
+            assignedToUserId: 'alias_scope_message.assigned_to_user_id',
+            assignedTo: 'alias_scope_message.assigned_to',
           });
           if (accountScopePredicate || messageScopePredicate) {
             const msgPred = messageScopePredicate ?? kyselySql<boolean>`false`;
@@ -2282,6 +2292,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           if (scopePredicate) {
             // The join above already requires a scope-visible message in the ALIAS thread,
@@ -2296,6 +2308,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
               accountId: 'canonical_scope_message.account_id',
               folderId: 'canonical_scope_message.folder_id',
               messageId: 'canonical_scope_message.id',
+              assignedToUserId: 'canonical_scope_message.assigned_to_user_id',
+              assignedTo: 'canonical_scope_message.assigned_to',
             }) ?? kyselySql<boolean>`false`;
             const aliasAccountPred = mailScopePredicate(input.mailScope, {
               accountId: 'email_thread_aliases.account_id',

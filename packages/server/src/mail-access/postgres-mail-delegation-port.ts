@@ -13,7 +13,11 @@ import type {
   MailDelegationSubjectOption,
 } from '../api/types';
 import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
-import { EMPTY_MAIL_BINDING_CONSTRAINTS, hasMailBindingConstraints } from './mail-acl-constraints';
+import {
+  EMPTY_MAIL_BINDING_CONSTRAINTS,
+  hasMailBindingConstraints,
+  isConstraintsAtLeastAsRestrictive,
+} from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
 import {
   withWorkspaceTransaction,
@@ -290,7 +294,7 @@ export function createPostgresMailDelegationPort(
           subject: input.subject,
           resource: input.resource,
           permissions: uniquePermissions(input.permissions),
-          constraints: input.constraints ?? null,
+          ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
         }),
         sessionOptions,
       );
@@ -377,9 +381,27 @@ export function createPostgresMailDelegationPort(
     // serializes with this write rather than racing it under read-committed (R48-4).
     const manage = await canManageResource(trx, workspaceId, actor, input.resource, [], true);
     if (!manage) return { ok: false as const, code: 'permission_denied' };
+    let constraints = input.constraints;
     if (!actor.isOwner && !actor.isAdmin) {
       const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, input.resource, true);
       if (input.permissions.some((permission) => !held.has(permission))) {
+        return { ok: false as const, code: 'privilege_escalation' };
+      }
+      const authorityConstraints = await authorityConstraintsForResource(
+        trx,
+        workspaceId,
+        actor.userId,
+        input.resource,
+        true,
+      );
+      if (constraints === undefined && hasMailBindingConstraints(authorityConstraints)) {
+        // Non-admins inherit their own filters when omitting constraints on create/replace.
+        constraints = authorityConstraints;
+      }
+      if (
+        constraints !== undefined
+        && !isConstraintsAtLeastAsRestrictive(constraints, authorityConstraints)
+      ) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
     }
@@ -454,8 +476,8 @@ export function createPostgresMailDelegationPort(
       })))
       .execute();
 
-    if (input.constraints !== undefined) {
-      await replaceBindingConstraints(trx, workspaceId, bindingRow.id, input.constraints, now);
+    if (constraints !== undefined) {
+      await replaceBindingConstraints(trx, workspaceId, bindingRow.id, constraints, now);
     }
 
     return {
@@ -528,6 +550,105 @@ async function canManageResource(
   if (actor.isOwner || actor.isAdmin) return true;
   const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, resource, forUpdate);
   return held.has(MANAGE_PERMISSION) && permissions.every((permission) => held.has(permission));
+}
+
+/**
+ * Most-restrictive intersection of visibility filters on the actor's authorizing
+ * grants for this resource (those that include mail.delegation.manage).
+ */
+async function authorityConstraintsForResource(
+  trx: Trx,
+  workspaceId: string,
+  userId: string,
+  resource: MailDelegationResource,
+  _forUpdate = false,
+): Promise<MailBindingVisibilityConstraints | null> {
+  const groupRows = await trx
+    .selectFrom('user_group_members')
+    .select(['group_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('user_id', '=', userId)
+    .execute() as Array<{ group_id: number }>;
+  const bindingRows = await trx
+    .selectFrom('mail_acl_bindings')
+    .innerJoin('mail_acl_binding_permissions', 'mail_acl_binding_permissions.binding_id', 'mail_acl_bindings.id')
+    .select(['mail_acl_bindings.id'])
+    .where('mail_acl_bindings.workspace_id', '=', workspaceId)
+    .where('mail_acl_binding_permissions.permission_key', '=', MANAGE_PERMISSION)
+    .where((eb) => eb.or([
+      eb.and([
+        eb('mail_acl_bindings.subject_type', '=', 'user'),
+        eb('mail_acl_bindings.subject_id', '=', userId),
+      ]),
+      ...(groupRows.length > 0
+        ? [eb.and([
+          eb('mail_acl_bindings.subject_type', '=', 'group'),
+          eb('mail_acl_bindings.subject_id', 'in', groupRows.map((row) => String(row.group_id))),
+        ])]
+        : []),
+    ]))
+    .where((eb) => {
+      if (resource.type === 'account') {
+        return eb.and([
+          eb('mail_acl_bindings.resource_type', '=', 'account'),
+          eb('mail_acl_bindings.account_id', '=', resource.accountId),
+        ]);
+      }
+      return eb.or([
+        eb.and([
+          eb('mail_acl_bindings.resource_type', '=', 'account'),
+          eb('mail_acl_bindings.account_id', '=', resource.accountId),
+        ]),
+        eb.and([
+          eb('mail_acl_bindings.resource_type', '=', 'folder'),
+          eb('mail_acl_bindings.account_id', '=', resource.accountId),
+          eb('mail_acl_bindings.folder_id', '=', resource.folderId),
+        ]),
+      ]);
+    })
+    .execute() as Array<{ id: number | string }>;
+
+  const bindingIds = [...new Set(bindingRows.map((row) => dbInteger(row.id, 'authority binding id')))];
+  if (bindingIds.length === 0) return null;
+  const constraintMap = await loadBindingConstraints(trx, bindingIds);
+  let merged: MailBindingVisibilityConstraints | null = null;
+  for (const bindingId of bindingIds) {
+    const next = constraintMap.get(bindingId) ?? null;
+    if (!hasMailBindingConstraints(next) || !next) continue;
+    merged = mergeAuthorityConstraints(merged, next);
+  }
+  return merged;
+}
+
+function mergeAuthorityConstraints(
+  left: MailBindingVisibilityConstraints | null,
+  right: MailBindingVisibilityConstraints,
+): MailBindingVisibilityConstraints {
+  if (!left) return right;
+  // Intersection: keep assignment if either has one,
+  // allowlists become intersection, exclude lists become union.
+  const leftMode = left.assignmentMode && left.assignmentMode !== 'any' ? left.assignmentMode : null;
+  const rightMode = right.assignmentMode && right.assignmentMode !== 'any' ? right.assignmentMode : null;
+  const assignmentMode = leftMode ?? rightMode;
+  const categoryAllowIds = left.categoryAllowIds.length > 0 && right.categoryAllowIds.length > 0
+    ? left.categoryAllowIds.filter((id) => right.categoryAllowIds.includes(id))
+    : left.categoryAllowIds.length > 0
+      ? [...left.categoryAllowIds]
+      : [...right.categoryAllowIds];
+  const categoryExcludeIds = [...new Set([...left.categoryExcludeIds, ...right.categoryExcludeIds])].sort((a, b) => a - b);
+  const tagAllowValues = left.tagAllowValues.length > 0 && right.tagAllowValues.length > 0
+    ? left.tagAllowValues.filter((tag) => right.tagAllowValues.includes(tag))
+    : left.tagAllowValues.length > 0
+      ? [...left.tagAllowValues]
+      : [...right.tagAllowValues];
+  const tagExcludeValues = [...new Set([...left.tagExcludeValues, ...right.tagExcludeValues])].sort();
+  return {
+    assignmentMode,
+    categoryAllowIds: [...categoryAllowIds].sort((a, b) => a - b),
+    categoryExcludeIds,
+    tagAllowValues: [...tagAllowValues].sort(),
+    tagExcludeValues,
+  };
 }
 
 async function heldPermissionsForResource(
@@ -783,15 +904,11 @@ async function loadBindingConstraints(
     value_ids: number[] | null;
     value_texts: string[] | null;
   }> = [];
-  try {
-    rows = await trx
-      .selectFrom('mail_acl_binding_constraints')
-      .select(['binding_id', 'kind', 'mode', 'assignment_mode', 'value_ids', 'value_texts'])
-      .where('binding_id', 'in', [...bindingIds])
-      .execute() as typeof rows;
-  } catch {
-    return map;
-  }
+  rows = await trx
+    .selectFrom('mail_acl_binding_constraints')
+    .select(['binding_id', 'kind', 'mode', 'assignment_mode', 'value_ids', 'value_texts'])
+    .where('binding_id', 'in', [...bindingIds])
+    .execute() as typeof rows;
 
   const builders = new Map<number, {
     assignmentMode: MailBindingVisibilityConstraints['assignmentMode'];

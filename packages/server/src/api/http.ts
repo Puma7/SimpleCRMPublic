@@ -5,6 +5,7 @@ import type {
   ApiResponse,
   AuthenticatedPrincipal,
 } from './types';
+import { expandUserGroupCapabilities } from './capabilities';
 
 export function json<T>(status: number, body: T, headers?: Record<string, string>): ApiResponse<T> {
   return { status, body, headers };
@@ -41,10 +42,15 @@ export function requireAdmin(principal: AuthenticatedPrincipal): boolean {
 /**
  * Grant-only capability check. Owners and admins implicitly hold every
  * capability; other roles must have it granted through a group membership.
+ * Higher module levels imply lower ones (e.g. workflows.manage ⇒ workflows.view).
  */
 export function requireCapability(principal: AuthenticatedPrincipal, capability: string): boolean {
   if (requireAdmin(principal)) return true;
-  return principal.capabilities?.includes(capability) ?? false;
+  const granted = principal.capabilities;
+  if (!granted || granted.length === 0) return false;
+  if (granted.includes(capability)) return true;
+  // Defensive inclusive expand: tests and tokens may store only the highest key.
+  return expandUserGroupCapabilities(granted).includes(capability);
 }
 
 /** Returns a 403 response when the principal lacks the capability; otherwise null. */

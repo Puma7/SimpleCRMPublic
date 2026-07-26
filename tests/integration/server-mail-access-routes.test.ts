@@ -292,6 +292,12 @@ describe('server mailbox ACL migration', () => {
     await applyStatements(migration!.upSql);
   }
 
+  async function ensureMailAclConstraintsSchema(): Promise<void> {
+    const migration = serverMigrations.find((candidate) => candidate.id === '0046_group_rights_and_mail_constraints');
+    expect(migration).toBeDefined();
+    await applyStatements(migration!.upSql);
+  }
+
   async function seedLegacyMailAccess(): Promise<void> {
     await client.query(`
       INSERT INTO workspaces (id, name) VALUES
@@ -722,7 +728,11 @@ describe('server mailbox ACL migration', () => {
   afterAll(async () => {
     if (client) {
       const teardownMigrations = serverMigrations
-        .filter((candidate) => candidate.id === '0038_mail_acl' || candidate.id === '0039_mail_acl_rollout')
+        .filter((candidate) => (
+          candidate.id === '0038_mail_acl'
+          || candidate.id === '0039_mail_acl_rollout'
+          || candidate.id === '0046_group_rights_and_mail_constraints'
+        ))
         .reverse();
       if (!migrationDownApplied) {
         for (const migration of teardownMigrations) await applyStatements(migration.downSql);
@@ -887,6 +897,7 @@ describe('server mailbox ACL migration', () => {
     }
     expect(checkedPermissionKeys).toEqual(MIGRATION_0038_PERMISSION_KEYS);
     expect(schemaTypeAssertions).toEqual([true, true, true]);
+    await ensureMailAclConstraintsSchema();
   });
 
   test('backfills legacy read and send grants exactly and idempotently', async () => {
@@ -1157,12 +1168,21 @@ describe('server mailbox ACL migration', () => {
       });
 
       expect(grants).toEqual([
-        { resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null },
         {
+          bindingId: expect.any(Number),
+          resourceType: 'account',
+          accountId: ACCOUNT_A,
+          folderId: null,
+          messageId: null,
+          constraints: null,
+        },
+        {
+          bindingId: expect.any(Number),
           resourceType: 'folder',
           accountId: ACCOUNT_A_OTHER,
           folderId: FOLDER_A_OTHER,
           messageId: null,
+          constraints: null,
         },
       ]);
     } finally {
@@ -3846,6 +3866,7 @@ describe('server mailbox ACL migration', () => {
     const pageGroupIds = Array.from({ length: 10 }, (_, index) => 9310 + index);
 
     beforeAll(async () => {
+      await ensureMailAclConstraintsSchema();
       await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
       await client.query(`
         INSERT INTO workspaces (id, name) VALUES
@@ -5020,8 +5041,11 @@ describe('server mailbox ACL migration', () => {
   test('down removes only ACL objects and preserves the legacy table', async () => {
     const mailAclMigration = serverMigrations.find((candidate) => candidate.id === '0038_mail_acl');
     const rolloutMigration = serverMigrations.find((candidate) => candidate.id === '0039_mail_acl_rollout');
+    const constraintsMigration = serverMigrations.find((candidate) => candidate.id === '0046_group_rights_and_mail_constraints');
     expect(mailAclMigration).toBeDefined();
     expect(rolloutMigration).toBeDefined();
+    expect(constraintsMigration).toBeDefined();
+    await applyStatements(constraintsMigration!.downSql);
     await applyStatements(rolloutMigration!.downSql);
     await applyStatements(mailAclMigration!.downSql);
     migrationDownApplied = true;

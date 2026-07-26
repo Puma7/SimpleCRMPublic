@@ -153,7 +153,7 @@ async function loadConstraintsByBinding(
     FROM mail_acl_binding_constraints
     WHERE binding_id in (${sql.join(bindingIds)})
     ORDER BY binding_id, kind, mode
-  `.execute(trx).catch(() => ({ rows: [] as ConstraintRow[] }));
+  `.execute(trx);
 
   const builders = new Map<number, {
     assignmentMode: MailBindingVisibilityConstraints['assignmentMode'];

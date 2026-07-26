@@ -31,6 +31,8 @@ import {
   data,
   error,
   positiveIntFromPath,
+  rejectUnlessWorkflowEdit,
+  rejectUnlessWorkflowView,
   requireAdmin,
   requireCapability,
   requirePrincipal,
@@ -51,6 +53,15 @@ function rejectUnlessWorkflowRuntimeMutation(req: ApiRequest): ApiResponse | nul
   if (req.method !== 'POST' && req.method !== 'PATCH' && req.method !== 'DELETE') return null;
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Version snapshots and version creates are part of the editor save path.
+  const isEditorWrite = req.method === 'POST' && (
+    /^\/api\/v1\/workflows\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
+    || /^\/api\/v1\/workflows\/by-source\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
+  );
+  if (isEditorWrite) {
+    const denied = rejectUnlessWorkflowEdit(principal);
+    return denied;
+  }
   if (!requireCapability(principal, 'workflows.manage')) {
     return error(403, 'forbidden', 'Workflow-Verwaltung erfordert workflows.manage');
   }
@@ -85,6 +96,13 @@ export async function handleWorkflowRuntimeReadRoute(
 
   const mutationDenied = rejectUnlessWorkflowRuntimeMutation(req);
   if (mutationDenied) return mutationDenied;
+
+  if (req.method === 'GET') {
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    const viewDenied = rejectUnlessWorkflowView(principal);
+    if (viewDenied) return viewDenied;
+  }
 
   const workflowSourceVersionSnapshotMatch = /^\/api\/v1\/workflows\/by-source\/([^/]+)\/versions\/snapshot$/.exec(req.path);
   if (workflowSourceVersionSnapshotMatch) {

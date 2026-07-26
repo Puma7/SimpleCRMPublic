@@ -67,6 +67,7 @@ describe('server mail policy manifest', () => {
       'customer-routes',
       'user-group-routes',
       'mail-delegation-routes',
+      'mail-access-explain-routes',
       'mail-acl-rollout-routes',
       'diagnostics-routes',
       'maintenance-routes',

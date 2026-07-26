@@ -10,7 +10,6 @@ import {
   requireAdmin,
   requirePrincipal,
 } from './http';
-import { MailAccessService } from '../mail-access/service';
 
 const EXPLAIN_PATH = '/api/v1/email/access/explain';
 
@@ -45,6 +44,27 @@ export async function handleMailAccessExplainRoute(
     return error(400, 'invalid_message_id', 'messageId muss eine positive Ganzzahl sein');
   }
 
+  const targetRole = await resolveTargetUserRole(ports, principal.workspaceId, userId);
+  if (!targetRole) {
+    return data(200, {
+      visible: false,
+      reason: 'Benutzer nicht gefunden',
+      messageId,
+      userId,
+    });
+  }
+  if (targetRole === 'owner' || targetRole === 'admin') {
+    return data(200, {
+      visible: true,
+      reason: targetRole === 'owner'
+        ? 'Owner sieht alle Nachrichten im Workspace'
+        : 'Admin sieht alle Nachrichten im Workspace',
+      messageId,
+      userId,
+      role: targetRole,
+    });
+  }
+
   const resources = await ports.mailResourceLookup.resolve({
     workspaceId: principal.workspaceId,
     target: { kind: 'message', id: messageId },
@@ -56,11 +76,19 @@ export async function handleMailAccessExplainRoute(
       reason: 'Nachricht nicht gefunden',
       messageId,
       userId,
+      role: targetRole,
     });
   }
 
-  if (typeof (ports.mailAccess as { explainMessageVisibility?: unknown }).explainMessageVisibility !== 'function') {
-    // Rollout wrapper / alternate implementations: fall back to assertPermission only.
+  const explainFn = (ports.mailAccess as {
+    explainMessageVisibility?: (input: {
+      workspaceId: string;
+      userId: string;
+      resource: typeof messageResource;
+    }) => Promise<Record<string, unknown>>;
+  }).explainMessageVisibility;
+
+  if (typeof explainFn !== 'function') {
     try {
       await ports.mailAccess.assertPermission({
         workspaceId: principal.workspaceId,
@@ -78,6 +106,7 @@ export async function handleMailAccessExplainRoute(
         reason: 'Nachricht ist fuer den Nutzer ueber Mail-ACL sichtbar',
         messageId,
         userId,
+        role: targetRole,
         resource: messageResource,
       });
     } catch {
@@ -86,12 +115,13 @@ export async function handleMailAccessExplainRoute(
         reason: 'Keine Berechtigung fuer diese E-Mail-Aktion',
         messageId,
         userId,
+        role: targetRole,
         resource: messageResource,
       });
     }
   }
 
-  const explanation = await (ports.mailAccess as MailAccessService).explainMessageVisibility({
+  const explanation = await explainFn({
     workspaceId: principal.workspaceId,
     userId,
     resource: messageResource,
@@ -100,9 +130,35 @@ export async function handleMailAccessExplainRoute(
   return data(200, {
     messageId,
     userId,
+    role: targetRole,
     resource: messageResource,
     ...explanation,
   });
+}
+
+async function resolveTargetUserRole(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  userId: string,
+): Promise<'owner' | 'admin' | 'user' | null> {
+  const auth = ports.auth as {
+    getUser?: (input: { workspaceId: string; userId: string }) => Promise<{
+      role: 'owner' | 'admin' | 'user';
+    } | null>;
+    listUsers?: (input: { workspaceId: string }) => Promise<readonly {
+      id: string;
+      role: 'owner' | 'admin' | 'user';
+    }[]>;
+  } | undefined;
+  if (auth?.getUser) {
+    const user = await auth.getUser({ workspaceId, userId });
+    return user?.role ?? null;
+  }
+  if (auth?.listUsers) {
+    const users = await auth.listUsers({ workspaceId });
+    return users.find((user) => user.id === userId)?.role ?? null;
+  }
+  return null;
 }
 
 function queryParams(req: ApiRequest): Record<string, string> {

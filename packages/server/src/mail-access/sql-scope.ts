@@ -59,7 +59,12 @@ function clausePredicate(
   // Account/folder listings without a message id column cannot apply message filters.
   if (!columns.messageId) return resourcePred;
   const visibility = visibilityPredicate(constraints, columns, actor);
-  if (!visibility) return resourcePred;
+  // Fail closed: assignment filters without assignee columns must not widen access.
+  if (!visibility) {
+    const mode = constraints.assignmentMode;
+    if (mode && mode !== 'any') return sql<boolean>`false`;
+    return resourcePred;
+  }
   return sql<boolean>`(${resourcePred} and ${visibility})`;
 }
 

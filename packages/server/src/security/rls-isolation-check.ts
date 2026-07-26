@@ -91,6 +91,12 @@ export const RLS_POLICY_COVERAGE_TABLES: readonly RlsPolicyCoverageTable[] = [
     'app.can_access_workspace',
     'binding.workspace_id',
   ]),
+  rlsPolicyTable('mail_acl_binding_constraints', [
+    'mail_acl_bindings',
+    // Constraints inherit workspace isolation via binding FK + explicit workspace_id policy.
+    'app.can_access_workspace',
+    'workspace_id',
+  ]),
   rlsPolicyTable('mail_acl_rollout_state'),
   rlsPolicyTable('email_folders'),
   rlsPolicyTable('email_team_members'),

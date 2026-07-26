@@ -146,6 +146,8 @@ async function prepareAttachments(
         accountId: 'attachment_message.account_id',
         folderId: 'attachment_message.folder_id',
         messageId: 'attachment_message.id',
+        assignedToUserId: 'attachment_message.assigned_to_user_id',
+        assignedTo: 'attachment_message.assigned_to',
       });
       if (scopePredicate) {
         query = query.where((eb) => eb.exists(
@@ -165,6 +167,8 @@ async function prepareAttachments(
         accountId: 'attachment_message.account_id',
         folderId: 'attachment_message.folder_id',
         messageId: 'attachment_message.id',
+        assignedToUserId: 'attachment_message.assigned_to_user_id',
+        assignedTo: 'attachment_message.assigned_to',
       });
       if (attachmentScopePredicate) {
         query = query.where((eb) => eb.exists(
@@ -314,6 +318,8 @@ async function appendAccounts(
     accountId: 'export_account_message.account_id',
     folderId: 'export_account_message.folder_id',
     messageId: 'export_account_message.id',
+    assignedToUserId: 'export_account_message.assigned_to_user_id',
+    assignedTo: 'export_account_message.assigned_to',
   });
   if (accountScope || messageScope) {
     query = query.where((eb) => eb.or([
@@ -394,6 +400,8 @@ async function appendMessageIndex(
       accountId: 'email_messages.account_id',
       folderId: 'email_messages.folder_id',
       messageId: 'email_messages.id',
+      assignedToUserId: 'email_messages.assigned_to_user_id',
+      assignedTo: 'email_messages.assigned_to',
     });
     if (scopePredicate) query = query.where(scopePredicate);
     const batch = await query
@@ -438,6 +446,8 @@ async function appendInternalNotes(
       accountId: 'export_note_message.account_id',
       folderId: 'export_note_message.folder_id',
       messageId: 'export_note_message.id',
+      assignedToUserId: 'export_note_message.assigned_to_user_id',
+      assignedTo: 'export_note_message.assigned_to',
     });
     if (scopePredicate) {
       query = query.where((eb) => eb.exists(
@@ -478,6 +488,8 @@ async function appendWorkflows(
     accountId: 'export_workflow_message.account_id',
     folderId: 'export_workflow_message.folder_id',
     messageId: 'export_workflow_message.id',
+    assignedToUserId: 'export_workflow_message.assigned_to_user_id',
+    assignedTo: 'export_workflow_message.assigned_to',
   });
   if (accountScope || messageScope) {
     query = query.where((eb) => eb.or([
@@ -514,6 +526,8 @@ async function appendWorkflowRuns(
     accountId: 'export_run_message.account_id',
     folderId: 'export_run_message.folder_id',
     messageId: 'export_run_message.id',
+    assignedToUserId: 'export_run_message.assigned_to_user_id',
+    assignedTo: 'export_run_message.assigned_to',
   });
   if (scopePredicate) {
     query = query.where((eb) => eb.exists(
@@ -569,6 +583,8 @@ async function appendEmailTracking(
       accountId: 'export_tracking_message.account_id',
       folderId: 'export_tracking_message.folder_id',
       messageId: 'export_tracking_message.id',
+      assignedToUserId: 'export_tracking_message.assigned_to_user_id',
+      assignedTo: 'export_tracking_message.assigned_to',
     });
     if (scopePredicate) {
       query = query.where((eb) => eb.exists(
@@ -603,6 +619,8 @@ async function appendEmailTracking(
       accountId: 'export_link_message.account_id',
       folderId: 'export_link_message.folder_id',
       messageId: 'export_link_message.id',
+      assignedToUserId: 'export_link_message.assigned_to_user_id',
+      assignedTo: 'export_link_message.assigned_to',
     });
     if (scopePredicate) {
       query = query.where((eb) => eb.exists(
@@ -667,6 +685,8 @@ async function appendEmailTracking(
       accountId: 'export_event_message.account_id',
       folderId: 'export_event_message.folder_id',
       messageId: 'export_event_message.id',
+      assignedToUserId: 'export_event_message.assigned_to_user_id',
+      assignedTo: 'export_event_message.assigned_to',
     });
     if (scopePredicate) {
       query = query.where((eb) => eb.exists(

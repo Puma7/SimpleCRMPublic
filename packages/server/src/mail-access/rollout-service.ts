@@ -205,7 +205,21 @@ export class MailAccessRolloutService implements MailAccessService {
   private contextualNewAcl(context: MailAclRolloutEvaluationContext): NewMailAccessService {
     return new NewMailAccessService({
       resolveGrants: (input) => this.options.newAcl.resolveGrants(input, context),
+      resolveScopeActorContext: this.options.newAcl.resolveScopeActorContext
+        ? (input) => this.options.newAcl.resolveScopeActorContext!(input)
+        : undefined,
+      resolveMessageVisibilityFacts: this.options.newAcl.resolveMessageVisibilityFacts
+        ? (input) => this.options.newAcl.resolveMessageVisibilityFacts!(input)
+        : undefined,
     });
+  }
+
+  async explainMessageVisibility(input: Readonly<{
+    workspaceId: string;
+    userId: string;
+    resource: Extract<import('@simplecrm/core').MailResource, { type: 'message' }>;
+  }>) {
+    return this.contextualNewAcl({ workspaceId: input.workspaceId }).explainMessageVisibility(input);
   }
 
   private async newDecision(

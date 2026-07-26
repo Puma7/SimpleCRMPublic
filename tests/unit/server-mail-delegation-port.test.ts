@@ -115,8 +115,8 @@ describe('createPostgresMailDelegationPort', () => {
       limit: 20,
     });
 
-    expect(selectQueryCount(small)).toBe(6);
-    expect(selectQueryCount(large)).toBe(6);
+    expect(selectQueryCount(small)).toBe(7);
+    expect(selectQueryCount(large)).toBe(7);
     expect(smallResult).toMatchObject({ ok: true, nextCursor: null });
     expect(largeResult).toMatchObject({ ok: true, nextCursor: null });
   });
@@ -223,6 +223,7 @@ function createListTransaction(bindingCount: number) {
       binding_id: row.id,
       permission_key: 'mail.metadata.read',
     })),
+    mail_acl_binding_constraints: [],
     users: bindings
       .filter((row) => row.subject_type === 'user')
       .map((row) => ({ id: row.subject_id, workspace_id: WORKSPACE, display_name: `User ${row.id}` })),

@@ -7,6 +7,7 @@ export {
   EMPTY_MAIL_BINDING_CONSTRAINTS,
   constraintsEqual,
   hasMailBindingConstraints,
+  isConstraintsAtLeastAsRestrictive,
 } from './mail-acl-constraints';
 
 export type MailAccessActor = Readonly<{

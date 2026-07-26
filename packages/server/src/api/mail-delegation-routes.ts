@@ -145,7 +145,7 @@ async function handleCreate(
     subject: parsed.subject,
     resource: parsed.resource,
     permissions: parsed.permissions,
-    ...(parsed.constraintsProvided ? { constraints: parsed.constraints ?? null } : { constraints: null }),
+    ...(parsed.constraintsProvided ? { constraints: parsed.constraints ?? null } : {}),
   });
   if (!result.ok) return mutationError(result.code);
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {

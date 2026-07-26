@@ -831,11 +831,15 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'cursor_message.account_id',
             folderId: 'cursor_message.folder_id',
             messageId: 'cursor_message.id',
+            assignedToUserId: 'cursor_message.assigned_to_user_id',
+            assignedTo: 'cursor_message.assigned_to',
           });
           const threadCountScopePredicate = mailScopePredicate(input.mailScope, {
             accountId: 'thread_count_message.account_id',
             folderId: 'thread_count_message.folder_id',
             messageId: 'thread_count_message.id',
+            assignedToUserId: 'thread_count_message.assigned_to_user_id',
+            assignedTo: 'thread_count_message.assigned_to',
           });
           const relevanceSort = input.sort === 'relevance' && Boolean(search);
           const requestedCursor = relevanceSort ? undefined : input.cursor;
@@ -883,6 +887,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               accountId: 'reply_parent.account_id',
               folderId: 'reply_parent.folder_id',
               messageId: 'reply_parent.id',
+              assignedToUserId: 'reply_parent.assigned_to_user_id',
+              assignedTo: 'reply_parent.assigned_to',
             });
             if (replyParentScopePredicate) {
               // reply_parent_message_id may point to a message the scoped caller cannot see
@@ -1115,6 +1121,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'reply_parent.account_id',
             folderId: 'reply_parent.folder_id',
             messageId: 'reply_parent.id',
+            assignedToUserId: 'reply_parent.assigned_to_user_id',
+            assignedTo: 'reply_parent.assigned_to',
           });
           const attachmentReadablePredicate = mailScopePredicate(input.mailAttachmentScope, {
             accountId: 'email_messages.account_id',
@@ -1174,6 +1182,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'account_id',
             folderId: 'folder_id',
             messageId: 'id',
+            assignedToUserId: 'assigned_to_user_id',
+            assignedTo: 'assigned_to',
           });
           const composeDraftUpdate = trx
             .updateTable('email_messages')
@@ -1560,6 +1570,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'reply_parent.account_id',
             folderId: 'reply_parent.folder_id',
             messageId: 'reply_parent.id',
+            assignedToUserId: 'reply_parent.assigned_to_user_id',
+            assignedTo: 'reply_parent.assigned_to',
           });
           if (replyParentScopePredicate) {
             // A reply parent can live outside the scoped caller's view (cross-account
@@ -1912,6 +1924,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             accountId: 'account_id',
             folderId: 'folder_id',
             messageId: 'id',
+            assignedToUserId: 'assigned_to_user_id',
+            assignedTo: 'assigned_to',
           });
           const spamStatusUpdate = trx
             .updateTable('email_messages')
@@ -2420,11 +2434,15 @@ async function selectConversationMessages(
     accountId: 'email_messages.account_id',
     folderId: 'email_messages.folder_id',
     messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
   });
   const contentPredicate = mailScopePredicate(input.mailContentScope, {
     accountId: 'email_messages.account_id',
     folderId: 'email_messages.folder_id',
     messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
   });
   if (contentPredicate) {
     query = query.select(kyselySql<boolean>`(${contentPredicate})`.as('content_readable'));
@@ -2433,6 +2451,8 @@ async function selectConversationMessages(
     accountId: 'reply_parent.account_id',
     folderId: 'reply_parent.folder_id',
     messageId: 'reply_parent.id',
+    assignedToUserId: 'reply_parent.assigned_to_user_id',
+    assignedTo: 'reply_parent.assigned_to',
   });
   if (replyParentScopePredicate) {
     // A reply parent can live outside the scoped caller's view (cross-account replies are
@@ -2710,6 +2730,8 @@ async function linkMessageCustomer(
     accountId: 'account_id',
     folderId: 'folder_id',
     messageId: 'id',
+    assignedToUserId: 'assigned_to_user_id',
+    assignedTo: 'assigned_to',
   });
   const customerLinkUpdate = trx
     .updateTable('email_messages')
@@ -2862,6 +2884,7 @@ async function assignMessageTeamMember(
     throw new Error('email message id muss eine positive Ganzzahl sein');
   }
   const teamMemberId = input.teamMemberId === null ? null : input.teamMemberId.trim();
+  let assignedToUserId: string | null = null;
   if (teamMemberId !== null) {
     if (!teamMemberId || teamMemberId.length > 200) {
       throw new Error('team member id muss ein nicht-leerer String mit maximal 200 Zeichen sein');
@@ -2873,17 +2896,29 @@ async function assignMessageTeamMember(
       .where('id', '=', teamMemberId)
       .executeTakeFirst();
     if (!member) return { ok: false as const, reason: 'team_member_not_found' as const };
+    // When the team-member id coincides with a workspace user UUID, keep
+    // assigned_to_user_id in sync so assigned_to_me / assigned_to_my_groups work.
+    const linkedUser = await trx
+      .selectFrom('users')
+      .select('id')
+      .where('workspace_id', '=', input.workspaceId)
+      .where('id', '=', teamMemberId)
+      .executeTakeFirst();
+    assignedToUserId = linkedUser ? String(linkedUser.id) : null;
   }
 
   const assignContentPredicate = mailScopePredicate(input.mailContentScope, {
     accountId: 'account_id',
     folderId: 'folder_id',
     messageId: 'id',
+    assignedToUserId: 'assigned_to_user_id',
+    assignedTo: 'assigned_to',
   });
   const assignUpdate = trx
     .updateTable('email_messages')
     .set({
       assigned_to: teamMemberId,
+      assigned_to_user_id: assignedToUserId,
       updated_at: new Date(),
     })
     .where('workspace_id', '=', input.workspaceId)
@@ -3200,6 +3235,8 @@ async function selectMailFolderCounts(
     accountId: 'email_messages.account_id',
     folderId: 'email_messages.folder_id',
     messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
   });
   if (scopePredicate) query = query.where(scopePredicate);
   if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);

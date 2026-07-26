@@ -57,6 +57,40 @@ export function constraintsEqual(
   )
 }
 
+/**
+ * True when `candidate` never admits mail that `authority` would hide.
+ * Used to block non-admin re-delegation from widening visibility filters.
+ */
+export function isConstraintsAtLeastAsRestrictive(
+  candidate: MailBindingVisibilityConstraints | null | undefined,
+  authority: MailBindingVisibilityConstraints | null | undefined,
+): boolean {
+  if (!hasMailBindingConstraints(authority)) return true
+  if (!hasMailBindingConstraints(candidate) || !candidate || !authority) return false
+
+  const authMode = authority.assignmentMode && authority.assignmentMode !== 'any'
+    ? authority.assignmentMode
+    : null
+  const candMode = candidate.assignmentMode && candidate.assignmentMode !== 'any'
+    ? candidate.assignmentMode
+    : null
+  if (authMode && candMode !== authMode) return false
+
+  if (authority.categoryAllowIds.length > 0) {
+    if (candidate.categoryAllowIds.length === 0) return false
+    if (!isSubsetNumbers(candidate.categoryAllowIds, authority.categoryAllowIds)) return false
+  }
+  if (!isSubsetNumbers(authority.categoryExcludeIds, candidate.categoryExcludeIds)) return false
+
+  if (authority.tagAllowValues.length > 0) {
+    if (candidate.tagAllowValues.length === 0) return false
+    if (!isSubsetStrings(candidate.tagAllowValues, authority.tagAllowValues)) return false
+  }
+  if (!isSubsetStrings(authority.tagExcludeValues, candidate.tagExcludeValues)) return false
+
+  return true
+}
+
 function sameNumberSet(left: readonly number[], right: readonly number[]): boolean {
   if (left.length !== right.length) return false
   const set = new Set(left)
@@ -67,4 +101,14 @@ function sameStringSet(left: readonly string[], right: readonly string[]): boole
   if (left.length !== right.length) return false
   const set = new Set(left)
   return right.every((value) => set.has(value))
+}
+
+function isSubsetNumbers(subset: readonly number[], of: readonly number[]): boolean {
+  const set = new Set(of)
+  return subset.every((value) => set.has(value))
+}
+
+function isSubsetStrings(subset: readonly string[], of: readonly string[]): boolean {
+  const set = new Set(of)
+  return subset.every((value) => set.has(value))
 }

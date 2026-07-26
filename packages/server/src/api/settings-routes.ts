@@ -16,6 +16,7 @@ import {
   error,
   requireAdmin,
   requireCapability,
+  rejectUnlessSettingsManage,
   requirePrincipal,
 } from './http';
 
@@ -325,6 +326,8 @@ async function handleEmailMiscSettings(
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const settingsDenied = rejectUnlessSettingsManage(principal);
+  if (settingsDenied) return settingsDenied;
   const parsed = parseEmailMiscSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   if ('email_webhook_secret' in parsed.values && !requireAdmin(principal)) {
@@ -460,6 +463,8 @@ async function handleAccountMailSettings(
   }
 
   if (req.method === 'PATCH') {
+    const settingsDenied = rejectUnlessSettingsManage(principal);
+    if (settingsDenied) return settingsDenied;
     const parsed = parseAccountMailSettingsPayload(req.body);
     if (!parsed.ok) return parsed.response;
     const account = await resolveEmailAccountByPublicId(ports.emailAccounts, principal.workspaceId, parsed.values.accountId);
@@ -540,6 +545,10 @@ async function handleSnoozeSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const settingsDenied = rejectUnlessSettingsManage(principal);
+  if (settingsDenied) return settingsDenied;
   const parsed = parseSnoozeSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const saved = await saveSyncInfo(
@@ -567,6 +576,10 @@ async function handleReplySuggestionSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const settingsDenied = rejectUnlessSettingsManage(principal);
+  if (settingsDenied) return settingsDenied;
   const parsed = parseReplySuggestionSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const loaded = await loadSyncInfo(req, ports, replySuggestionReadKeys(parsed.accountId));

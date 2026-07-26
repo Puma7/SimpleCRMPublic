@@ -336,6 +336,7 @@ export function MailDelegationPanel() {
     setEditingId(null)
     setProfile("viewer")
     setPermissions(nextSubjectId ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
+    resetFilterFields()
   }
 
   const changeSubject = (nextSubjectId: string) => {
@@ -343,6 +344,16 @@ export function MailDelegationPanel() {
     setEditingId(null)
     setProfile("viewer")
     setPermissions(nextSubjectId ? [...MAIL_PERMISSION_PROFILES.viewer] : [])
+    resetFilterFields()
+  }
+
+  const resetFilterFields = () => {
+    setAssignmentMode("any")
+    setCategoryAllowText("")
+    setCategoryExcludeText("")
+    setTagAllowText("")
+    setTagExcludeText("")
+    setShowFilters(false)
   }
 
   const save = async () => {
@@ -359,6 +370,11 @@ export function MailDelegationPanel() {
     setSaving(true)
     setError(null)
     try {
+      const categoryAllow = parseIdCsvStrict(categoryAllowText)
+      const categoryExclude = parseIdCsvStrict(categoryExcludeText)
+      if (!categoryAllow.ok || !categoryExclude.ok) {
+        throw new Error("Kategorie-IDs müssen positive Ganzzahlen sein (Komma-getrennt).")
+      }
       const result = await invokeRenderer(IPCChannels.Email.SaveMailDelegationBinding, {
         ...(editingId === null ? {} : { id: editingId }),
         subject: subject.type === "user"
@@ -369,8 +385,8 @@ export function MailDelegationPanel() {
         permissions: [...permissions].sort(),
         constraints: {
           assignmentMode: assignmentMode === "any" ? null : assignmentMode,
-          categoryAllowIds: parseIdCsv(categoryAllowText),
-          categoryExcludeIds: parseIdCsv(categoryExcludeText),
+          categoryAllowIds: categoryAllow.ids,
+          categoryExcludeIds: categoryExclude.ids,
           tagAllowValues: parseTagCsv(tagAllowText),
           tagExcludeValues: parseTagCsv(tagExcludeText),
         },
@@ -782,14 +798,23 @@ function sameSubject(left: SubjectOption, right: DelegationBinding["subject"]): 
 }
 
 function parseIdCsv(value: string): number[] {
-  return [...new Set(
-    value
-      .split(/[,\s]+/)
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => Number(part))
-      .filter((id) => Number.isSafeInteger(id) && id > 0),
-  )].sort((a, b) => a - b)
+  const parsed = parseIdCsvStrict(value)
+  return parsed.ok ? parsed.ids : []
+}
+
+function parseIdCsvStrict(value: string): { ok: true; ids: number[] } | { ok: false } {
+  const tokens = value
+    .split(/[,\s]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const ids: number[] = []
+  for (const token of tokens) {
+    if (!/^[1-9]\d*$/.test(token)) return { ok: false }
+    const id = Number(token)
+    if (!Number.isSafeInteger(id) || id <= 0) return { ok: false }
+    ids.push(id)
+  }
+  return { ok: true, ids: [...new Set(ids)].sort((a, b) => a - b) }
 }
 
 function parseTagCsv(value: string): string[] {
