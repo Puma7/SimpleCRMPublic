@@ -193,4 +193,21 @@ describe('codex review regression guards', () => {
     expect(httpPolicy).toContain('resolveScheduledDraftReplyParent');
     expect(httpPolicy).toContain('approve-draft-send clears pending approval and arms scheduled send');
   });
+
+  test('codex round-7: sibling deferred, SEND not via HOLD, HOLD disarms schedule, draft idempotent+spam recheck', () => {
+    const runtime = readRepoFile('electron/workflow/runtime.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+
+    expect(runtime).toContain('Deferred (delay / async AI) must NOT abort sibling trigger branches');
+    expect(runtime).toContain('merged.deferred === true || r.deferred === true');
+    expect(execution).toContain('Keep walking sibling trigger branches after a deferred');
+    expect(execution).toContain('Success-path resume only');
+    expect(execution).toContain('const successResumeNodeId = portResumeTargets.send');
+    expect(draftNodes).toContain('scheduled_send_at: null');
+    expect(draftNodes).toContain('holdOnlyAnchor');
+    expect(draftNodes).toContain('aiDraftReplyDedupeKey');
+    expect(draftNodes).toContain('workflow_ai_draft_reply:');
+    expect(draftNodes).toContain('Re-check live spam/review after the external AI call');
+  });
 });

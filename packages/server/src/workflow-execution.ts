@@ -1193,7 +1193,7 @@ async function runServerWorkflowGraph(
   let result: GraphRunResult = { status: 'ok', blocked: false, deferred: false, blockReason: null, log };
   for (const edge of triggerEdges) {
     const branchContext = cloneServerWorkflowContext(input.context);
-    result = await walkGraph(trx, {
+    const branch = await walkGraph(trx, {
       doc,
       context: branchContext,
       startNodeId: edge.target,
@@ -1203,7 +1203,17 @@ async function runServerWorkflowGraph(
       ports: input.ports,
       inboundGate: branchContext.direction === 'inbound' ? { conditionOk: false } : undefined,
     });
-    if (result.status !== 'ok' || result.blocked || result.deferred) return result;
+    result = {
+      ...branch,
+      deferred: result.deferred === true || branch.deferred === true,
+      log,
+    };
+    if (branch.blocked) return result;
+    if (branch.inboundChainStop) return result;
+    // Keep walking sibling trigger branches after a deferred async/delay node.
+    if (branch.status === 'error') {
+      result = { ...result, status: 'error' };
+    }
   }
   return result;
 }
@@ -3075,9 +3085,11 @@ async function scheduleAiReviewDraftJob(
     send: resolveResumeNodeAfterPort(doc, node.id, 'send'),
     hold: resolveResumeNodeAfterPort(doc, node.id, 'hold'),
   };
-  const resumeNodeId = portResumeTargets.send
-    || portResumeTargets.hold
-    || resolveResumeNodeAfter(doc, node.id);
+  const defaultResume = resolveResumeNodeAfter(doc, node.id);
+  // Success-path resume only (explicit send or unlabeled default) — never HOLD.
+  const successResumeNodeId = portResumeTargets.send || defaultResume || undefined;
+  // Still defer when only a HOLD edge exists so the parent waits for the review.
+  const deferAnchor = successResumeNodeId || portResumeTargets.hold || undefined;
 
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
@@ -3101,13 +3113,15 @@ async function scheduleAiReviewDraftJob(
   if (typeof config.reviewPrompt === 'string' && config.reviewPrompt.trim()) {
     payload.reviewPrompt = config.reviewPrompt.trim();
   }
-  if (resumeNodeId) {
+  if (deferAnchor) {
     payload.workflowId = context.workflowId;
-    payload.resumeNodeId = resumeNodeId;
+    payload.resumeNodeId = deferAnchor;
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
-      resumeNodeId,
+      // Prefer success path; hold-only graphs temporarily park the hold id here
+      // as a deferral anchor — the job handler must not use it for SEND.
+      resumeNodeId: deferAnchor,
       eventStrings: context.strings,
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
@@ -3131,8 +3145,8 @@ async function scheduleAiReviewDraftJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    stop: Boolean(deferAnchor),
+    deferred: Boolean(deferAnchor),
     message: `queued_ai_review_draft:${jobId}`,
     variables: {
       'ai.review.status': 'pending',

@@ -441,23 +441,24 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
     const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, undefined, branchGate);
     merged.log.push(...r.log);
     if (r.blocked) return r;
-    // Propagate spam-chain stop / deferred — walkGraph sets these on the branch
-    // result, but the merge object previously dropped them so inboundChainStop
-    // never reached runInboundWorkflowsForMessage.
+    // Spam-chain stop ends the whole inbound priority chain — bail immediately.
     if (r.inboundChainStop) {
       return {
         ...r,
         log: merged.log,
         status: merged.status === 'error' ? 'error' : r.status,
+        deferred: merged.deferred === true || r.deferred === true,
       };
     }
+    // Deferred (delay / async AI) must NOT abort sibling trigger branches —
+    // those still need to run; the continuation only resumes this branch.
     if (r.deferred) {
-      return {
-        ...r,
-        log: merged.log,
-        status: merged.status === 'error' ? 'error' : r.status,
+      merged = {
+        ...merged,
         deferred: true,
+        status: merged.status === 'error' ? 'error' : r.status,
       };
+      continue;
     }
     if (r.status === 'error') merged.status = 'error';
   }

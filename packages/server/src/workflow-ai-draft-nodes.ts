@@ -2,6 +2,7 @@
  * Server execution for ai.draft_reply and ai.review_draft (Zwei-Stufen-KI-Antwort).
  */
 import addressparser from 'nodemailer/lib/addressparser';
+import { sql as kyselySql } from 'kysely';
 import {
   addressesFromRecipientJson,
   messageIsSpamOrReviewForInboundWorkflow,
@@ -373,12 +374,19 @@ export async function setDraftApprovalPending(
   draftId: number,
   reason: string,
 ): Promise<void> {
+  const now = new Date();
   await trx
     .updateTable('email_messages')
     .set({
       approval_state: 'pending',
       approval_reason: reason.slice(0, 500),
-      updated_at: new Date(),
+      // HOLD must disarm any armed scheduled send — otherwise the worker can
+      // transmit a draft the review explicitly held (and the approval banner
+      // stays hidden because inbox queries exclude scheduled drafts).
+      scheduled_send_at: null,
+      scheduled_send_actor_user_id: null,
+      scheduled_send_trusted_service_principal: null,
+      updated_at: now,
     })
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', draftId)
@@ -563,6 +571,16 @@ function replySubject(subject: string | null | undefined): string {
   const value = String(subject ?? '').trim();
   if (!value) return 'Re:';
   return /^re:/i.test(value) ? value : `Re: ${value}`;
+}
+
+function aiDraftReplyDedupeKey(input: {
+  messageId: number;
+  continuation?: { workflowId?: number } | null;
+}): string {
+  const workflowId = input.continuation?.workflowId;
+  return Number.isInteger(workflowId) && Number(workflowId) > 0
+    ? `workflow_ai_draft_reply:${Number(workflowId)}:${input.messageId}`
+    : `workflow_ai_draft_reply:${input.messageId}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +819,46 @@ export function createPostgresAiDraftReplyPort(
         deps.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          // Re-check live spam/review after the external AI call — a concurrent
+          // mark_spam during the call must not still mint an auto-reply draft.
+          const liveMessage = await trx
+            .selectFrom('email_messages')
+            .select(['is_spam', 'spam_status', 'spam_score_label'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.messageId)
+            .executeTakeFirst();
+          if (!liveMessage || messageIsSpamOrReviewForInboundWorkflow(liveMessage)) {
+            if (input.continuation) {
+              await enqueueContinuation(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation,
+                variables: {
+                  'ai.draft.status': 'skipped',
+                  'ai.draft.skip_reason': 'message_spam_or_review',
+                },
+                now: now(),
+              });
+            }
+            return;
+          }
+
+          // Idempotency: after a committed TX a worker crash can retry the same
+          // job. Reuse the prior draft + skip a second continuation enqueue.
+          const dedupeKey = aiDraftReplyDedupeKey(input);
+          const prior = await trx
+            .selectFrom('sync_info')
+            .select(['value'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('key', '=', dedupeKey)
+            .executeTakeFirst();
+          if (prior?.value) {
+            const priorDraftId = Number(prior.value);
+            if (Number.isInteger(priorDraftId) && priorDraftId > 0) {
+              return;
+            }
+          }
+
           const parts: string[] = [];
           if (config.greeting !== 'none' && !aiDraftLikelyIncludesGreeting(aiText)) {
             const customerName = variables['customer.name'];
@@ -850,15 +908,35 @@ export function createPostgresAiDraftReplyPort(
             throw new Error(`Entwurf konnte nicht angelegt werden: ${draft.reason}`);
           }
 
+          const draftId = Number(draft.message.id);
+          const stampedAt = now();
           await trx
             .updateTable('email_messages')
             .set({
               reply_parent_message_id: input.messageId,
               ai_suggestion_snapshot: aiText,
-              updated_at: now(),
+              updated_at: stampedAt,
             })
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', Number(draft.message.id))
+            .where('id', '=', draftId)
+            .execute();
+
+          await trx
+            .insertInto('sync_info')
+            .values({
+              workspace_id: input.workspaceId,
+              key: dedupeKey,
+              value: String(draftId),
+              last_updated: stampedAt,
+              source_row: kyselySql`jsonb_build_object('origin', 'workflow_ai_draft_reply')`,
+              imported_in_run_id: null,
+              updated_at: stampedAt,
+            })
+            .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+              value: String(draftId),
+              last_updated: stampedAt,
+              updated_at: stampedAt,
+            }))
             .execute();
 
           if (input.continuation) {
@@ -867,12 +945,12 @@ export function createPostgresAiDraftReplyPort(
               messageId: input.messageId,
               continuation: input.continuation,
               variables: {
-                'draft.id': draft.message.id,
+                'draft.id': draftId,
                 'ai.draft.text': bodyText.slice(0, 8000),
                 'ai.draft.subject': replySubject(prep.subject),
                 'ai.draft.sources': knowledgeSourcesLabel(prep.chunks),
               },
-              now: now(),
+              now: stampedAt,
             });
           }
         },
@@ -1054,8 +1132,15 @@ export function createPostgresAiReviewDraftPort(
           }
           const continuation = input.continuation;
           if (!continuation) return;
-          const resumeNodeId = input.portResumeTargets?.[port]
-            ?? (port === 'send' ? continuation.resumeNodeId : undefined);
+          const namedTarget = input.portResumeTargets?.[port];
+          let resumeNodeId = namedTarget;
+          if (!resumeNodeId && port === 'send') {
+            // Do not resume SEND through a HOLD-only deferral anchor.
+            const holdOnlyAnchor = Boolean(input.portResumeTargets?.hold)
+              && !input.portResumeTargets?.send
+              && continuation.resumeNodeId === input.portResumeTargets?.hold;
+            if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
+          }
           if (!resumeNodeId) {
             if (port !== 'send') {
               await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
