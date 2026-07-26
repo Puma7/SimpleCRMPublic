@@ -296,6 +296,8 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/email/messages/{id}/scheduled-send-state': { get: { summary: 'Get scheduled send state' } },
       '/email/messages/{id}/scheduled-send/retry': { patch: { summary: 'Retry scheduled send' } },
       '/email/messages/{id}/scheduled-send-failure': { delete: { summary: 'Clear scheduled send failure' } },
+      '/email/messages/{id}/approve-draft-send': { post: { summary: 'Approve AI draft for immediate send' } },
+      '/email/messages/{id}/dismiss-draft-approval': { post: { summary: 'Dismiss AI draft approval and keep as draft' } },
       '/email/messages/{id}/attachments': { get: { summary: 'List message attachments' } },
       '/email/messages/{id}/reply-suggestion': { get: { summary: 'Get AI reply suggestion' } },
       '/email/messages/{id}/reply-suggestion/ensure': { post: { summary: 'Ensure AI reply suggestion' } },

@@ -2499,6 +2499,10 @@ export type EmailRemoteContentPolicyMutationResult =
   | { ok: true; result: EmailRemoteContentPolicyResult; message: EmailMessageRecord }
   | { ok: false; reason: 'not_found' };
 
+export type EmailDraftApprovalActionResult =
+  | { ok: true }
+  | { ok: false; reason: 'not_found' | 'not_pending' | 'action_failed'; message: string };
+
 export type EmailMessageApiPort = {
   list(input: {
     workspaceId: string;
@@ -2572,6 +2576,15 @@ export type EmailMessageApiPort = {
     actorUserId: string;
     messageId: number;
   }): Promise<EmailComposeDraftMutationResult>;
+  approveDraftSend?(input: {
+    workspaceId: string;
+    actorUserId: string;
+    messageId: number;
+  }): Promise<EmailDraftApprovalActionResult>;
+  dismissDraftApproval?(input: {
+    workspaceId: string;
+    messageId: number;
+  }): Promise<EmailDraftApprovalActionResult>;
   getSecurity?(input: {
     workspaceId: string;
     id: number;

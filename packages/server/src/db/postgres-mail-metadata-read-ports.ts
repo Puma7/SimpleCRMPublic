@@ -818,7 +818,7 @@ function threadMessageViewPredicate(
   if (view === 'inbox') {
     return kyselySql<boolean>`m.soft_deleted = false AND ${inactiveSnooze} AND (
       ((${nonDraftMail}) AND (m.folder_kind = 'inbox' OR m.folder_kind IS NULL OR m.folder_kind = '') AND m.archived = false AND m.is_spam = false AND coalesce(m.spam_status, 'clean') = 'clean')
-      OR (m.uid < 0 AND m.folder_kind = 'draft' AND m.outbound_hold = true AND m.scheduled_send_at IS NULL)
+      OR (m.uid < 0 AND m.folder_kind = 'draft' AND m.scheduled_send_at IS NULL AND (m.outbound_hold = true OR m.approval_state = 'pending'))
     )`;
   }
   if (view === 'sent') {

@@ -350,6 +350,8 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/messages/:messageId/scheduled-send/retry', { PATCH: permissionPolicy('mail.send', messagePath()) });
   assign('/api/v1/email/messages/:messageId/post-process/retry', { POST: permissionPolicy('mail.triage', messagePath()) });
   assign('/api/v1/email/messages/:messageId/scheduled-send', { PATCH: permissionPolicy('mail.send', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/approve-draft-send', { POST: permissionPolicy('mail.send', messagePath()) });
+  assign('/api/v1/email/messages/:messageId/dismiss-draft-approval', { POST: permissionPolicy('mail.draft.edit', messagePath()) });
   assign('/api/v1/email/threads/:threadId/messages', { GET: permissionPolicy('mail.metadata.read', threadPath()) });
 
   for (const path of [

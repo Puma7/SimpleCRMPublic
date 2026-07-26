@@ -2655,6 +2655,22 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/scheduled-send/retry`,
     transform: () => ({ success: true }),
   })],
+  [IPCChannels.Email.ApproveDraftSend, ([payload]) => {
+    const input = objectPayload(payload, "draft approval payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/messages/${positiveId(input.draftId, "email message id")}/approve-draft-send`,
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.DismissDraftApproval, ([payload]) => {
+    const input = objectPayload(payload, "draft approval payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/messages/${positiveId(input.draftId, "email message id")}/dismiss-draft-approval`,
+      transform: () => ({ success: true }),
+    }
+  }],
   [IPCChannels.Email.SnoozeMessage, ([payload]) => {
     const input = objectPayload(payload, "email snooze payload")
     return {

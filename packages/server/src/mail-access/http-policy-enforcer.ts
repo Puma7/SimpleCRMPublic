@@ -1038,6 +1038,7 @@ async function assertSupplementalHttpPermissions(
   if (
     canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send'
     || canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send/retry'
+    || canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'
   ) {
     // Scheduling (PATCH sendAt), cancelling (PATCH sendAt:null), and retrying durably
     // ARM the EXISTING stored draft; the worker then transmits its stored body +
