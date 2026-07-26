@@ -402,10 +402,24 @@ export function createPostgresMailDelegationPort(
       if (constraints === undefined) {
         // Preserve existing filters on permission-only updates; inherit authority
         // filters only when creating a new binding without explicit constraints.
-        if (!existing && hasMailBindingConstraints(authorityConstraints)) {
+        if (existing) {
+          const existingMap = await loadBindingConstraints(trx, [existing.id]);
+          const existingConstraints = existingMap.get(existing.id) ?? null;
+          if (!isConstraintsAtLeastAsRestrictive(existingConstraints, authorityConstraints)) {
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
+        } else if (hasMailBindingConstraints(authorityConstraints)) {
           constraints = authorityConstraints;
         }
       } else if (!isConstraintsAtLeastAsRestrictive(constraints, authorityConstraints)) {
+        return { ok: false as const, code: 'privilege_escalation' };
+      }
+      // Relative assignment modes evaluate against the binding subject, not the
+      // delegating actor — block non-admin re-delegation onto other subjects.
+      if (
+        constraints !== undefined
+        && isRelativeAssignmentRedelegation(actor, input.subject, constraints)
+      ) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
     }
@@ -1058,6 +1072,30 @@ function actorRole(actor: MailDelegationActor): 'owner' | 'admin' | 'user' {
   if (actor.isOwner) return 'owner';
   if (actor.isAdmin) return 'admin';
   return 'user';
+}
+
+/** True when filters use modes that resolve relative to the evaluating subject. */
+function hasRelativeAssignmentMode(
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+): boolean {
+  const mode = constraints?.assignmentMode;
+  return mode === 'assigned_to_me' || mode === 'assigned_to_my_groups';
+}
+
+/**
+ * Non-admins may keep relative modes only on bindings for themselves. Delegating
+ * `assigned_to_me` / `assigned_to_my_groups` to another user or group silently
+ * widens (or shifts) the meaning of "me".
+ */
+function isRelativeAssignmentRedelegation(
+  actor: MailDelegationActor,
+  subject: MailDelegationSubject,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+): boolean {
+  if (actor.isOwner || actor.isAdmin) return false;
+  if (!hasRelativeAssignmentMode(constraints)) return false;
+  if (subject.type === 'user' && subject.id === actor.userId) return false;
+  return true;
 }
 
 function subjectId(subject: MailDelegationSubject): string {

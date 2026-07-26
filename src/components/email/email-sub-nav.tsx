@@ -12,12 +12,14 @@ const SVELTE_LAB_ENABLED = import.meta.env.VITE_ENABLE_SVELTE_LAB === "true"
 
 export function EmailSubNav() {
   const matchRoute = useMatchRoute()
-  const { canViewSettings } = useAuth()
+  const { canViewSettings, canViewWorkflows } = useAuth()
 
   const items = useMemo(() => {
     const list = [
       { to: "/email" as const, label: "Postfach", icon: Inbox, exact: true as const },
-      { to: "/email/workflows" as const, label: "Workflows", icon: Workflow, exact: false as const },
+      ...(canViewWorkflows
+        ? [{ to: "/email/workflows" as const, label: "Workflows", icon: Workflow, exact: false as const }]
+        : []),
       { to: "/email/reporting" as const, label: "Auswertung", icon: BarChart3, exact: false as const },
       // DMARC-Auswertung ist Server-Edition-only (kein Electron-IPC-Handler):
       // im Desktop-Modus ausblenden, damit der Aufruf nicht ins Leere läuft.
@@ -44,7 +46,7 @@ export function EmailSubNav() {
         : []),
     ]
     return list
-  }, [canViewSettings])
+  }, [canViewSettings, canViewWorkflows])
 
   return (
     <div className="border-b bg-muted/30">

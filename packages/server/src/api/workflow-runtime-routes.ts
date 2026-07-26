@@ -419,12 +419,33 @@ async function handleWorkflowVersionSourceRestore(
     return error(400, 'workflow_id_mismatch', 'workflowId passt nicht zur Version');
   }
 
+  // Restore is an editor write, but enabling side-effect graphs still needs manage
+  // (same gate as create/update on the workflow CRUD routes).
+  const existingWorkflow = ports.workflows.get
+    ? await ports.workflows.get({ workspaceId: principal.workspaceId, id: version.workflowId })
+    : null;
+  if (!existingWorkflow) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
+  const restoredGraph = version.graph ?? {};
+  if (
+    existingWorkflow.enabled !== false
+    && restoredGraph
+    && typeof restoredGraph === 'object'
+    && workflowGraphHasSideEffectNode(restoredGraph)
+    && !requireCapability(principal, 'workflows.manage')
+  ) {
+    return error(
+      403,
+      'forbidden',
+      'Aktive Workflows mit Seiteneffekten erfordern workflows.manage',
+    );
+  }
+
   const result = await ports.workflows.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id: version.workflowId,
     values: {
-      graph: version.graph ?? {},
+      graph: restoredGraph,
       definition: version.definition ?? {},
     },
   });

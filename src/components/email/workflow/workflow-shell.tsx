@@ -621,7 +621,7 @@ export function WorkflowShell() {
               type="button"
               size="sm"
               variant="outline"
-              disabled={!canEditWorkflows || selectedId == null}
+              disabled={!canManageWorkflows || selectedId == null}
               onClick={() => setTemplatesOpen(true)}
             >
               Vorlagen
@@ -912,7 +912,7 @@ export function WorkflowShell() {
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={!canEditWorkflows || !workflowBackfillAvailable || backfilling}
+                    disabled={!canManageWorkflows || !workflowBackfillAvailable || backfilling}
                     onClick={() => void handleBackfill()}
                     className="gap-2"
                   >
@@ -1071,7 +1071,7 @@ export function WorkflowShell() {
           open={templatesOpen}
           onOpenChange={setTemplatesOpen}
           onPick={(t: WorkflowTemplateDto) => {
-            if (!canEditWorkflows) return
+            if (!canManageWorkflows) return
             // Eine Vorlage ERSETZT den aktuellen Canvas — nie ohne Rückfrage
             // über bestehende Arbeit bügeln (mehr als nur der Trigger-Knoten).
             const currentNodes = useWorkflowEditorStore.getState().nodes

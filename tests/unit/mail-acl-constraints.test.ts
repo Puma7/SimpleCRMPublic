@@ -16,6 +16,11 @@ const ACTOR: MailScopeActorContext = {
 };
 
 describe('mail ACL visibility constraints', () => {
+  test('deny-all tag sentinel is Postgres-safe text', () => {
+    expect(DENY_ALL_TAG_ALLOW_VALUE.includes('\u0000')).toBe(false);
+    expect(DENY_ALL_TAG_ALLOW_VALUE.length).toBeGreaterThan(0);
+  });
+
   test('hasMailBindingConstraints detects active filters', () => {
     expect(hasMailBindingConstraints(null)).toBe(false);
     expect(hasMailBindingConstraints({

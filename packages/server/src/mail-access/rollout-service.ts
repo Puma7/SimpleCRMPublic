@@ -429,9 +429,11 @@ async function buildShadowScopeWithConstraints(input: Readonly<{
     // Legacy remainder: folders/messages not covered by constrained new grants stay
     // visible via the legacy full-account allow (assertPermission already does this).
     if (!hasUnconstrainedAccountGrant && !hasConstrainedAccountGrant) {
+      // Only folder grants remove the whole folder from the legacy remainder.
+      // Message grants must exclude that message only — otherwise siblings vanish.
       const excludeFolderIds = [...new Set(
         grantsForAccount
-          .filter((grant) => grant.resourceType === 'folder' || grant.resourceType === 'message')
+          .filter((grant) => grant.resourceType === 'folder')
           .map((grant) => grant.folderId)
           .filter((id): id is number => typeof id === 'number'),
       )].sort(compareNumbers);

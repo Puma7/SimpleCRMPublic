@@ -49,7 +49,7 @@ function pushRecent(id: string): void {
 
 export function CommandPalette({ open, onOpenChange }: Props) {
   const navigate = useNavigate()
-  const { canViewSettings } = useAuth()
+  const { canViewSettings, canViewWorkflows } = useAuth()
   const [recentIds, setRecentIds] = useState<string[]>([])
 
   useEffect(() => {
@@ -120,12 +120,14 @@ export function CommandPalette({ open, onOpenChange }: Props) {
               go("nav-email-settings", "/email/settings", emailSettingsSearch({ tab: "accounts" })),
           } satisfies CommandEntry]
         : []),
-      {
-        id: "nav-workflows",
-        label: "E-Mail Workflows",
-        section: "Springe zu",
-        run: () => go("nav-workflows", "/email/workflows"),
-      },
+      ...(canViewWorkflows
+        ? [{
+            id: "nav-workflows",
+            label: "E-Mail Workflows",
+            section: "Springe zu",
+            run: () => go("nav-workflows", "/email/workflows"),
+          } satisfies CommandEntry]
+        : []),
       {
         id: "nav-calendar",
         label: "Kalender",
@@ -148,7 +150,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
         run: () => go("compose", "/email"),
       },
     ],
-    [go, runAction, canViewSettings],
+    [go, runAction, canViewSettings, canViewWorkflows],
   )
 
   const recentEntries = entries.filter((e) => recentIds.includes(e.id))

@@ -94,6 +94,90 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
   });
 
+  test('blocks non-admin re-delegation of relative assignment modes onto other subjects', async () => {
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: null,
+      affectedUsers: [{ id: AGENT }],
+      actorPermissions: ['mail.delegation.manage', 'mail.metadata.read'],
+      actorAuthorityConstraints: [{
+        binding_id: 501,
+        kind: 'assignment',
+        mode: 'filter',
+        assignment_mode: 'assigned_to_me',
+        value_ids: null,
+        value_texts: null,
+      }],
+    });
+    const db = {
+      transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
+    };
+    const port = createPostgresMailDelegationPort({ db: db as never, applyWorkspaceSession: async () => {} });
+
+    await expect(port.replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read'],
+      constraints: {
+        assignmentMode: 'assigned_to_me',
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: [],
+        tagExcludeValues: [],
+      },
+    })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
+  });
+
+  test('revalidates preserved constraints on permission-only updates', async () => {
+    const existingBinding = {
+      id: 901,
+      workspace_id: WORKSPACE,
+      subject_type: 'user' as const,
+      subject_id: AGENT,
+      resource_type: 'account' as const,
+      account_id: 101,
+      folder_id: null,
+      message_id: null,
+      updated_at: '2026-07-20T10:00:00.000Z',
+    };
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+      actorPermissions: ['mail.delegation.manage', 'mail.metadata.read', 'mail.content.read'],
+      actorAuthorityConstraints: [{
+        binding_id: 501,
+        kind: 'category',
+        mode: 'allow',
+        assignment_mode: null,
+        value_ids: [7],
+        value_texts: null,
+      }],
+      existingConstraints: [], // unconstrained existing target binding
+    });
+    const db = {
+      transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
+    };
+    const port = createPostgresMailDelegationPort({ db: db as never, applyWorkspaceSession: async () => {} });
+
+    await expect(port.replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read', 'mail.content.read'],
+      // constraints omitted → preserve existing (null) which exceeds category authority
+    })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
+  });
+
   test('bulk-hydrates delegation pages with a constant query count', async () => {
     const small = createListTransaction(2);
     const large = createListTransaction(20);
@@ -290,6 +374,8 @@ function createDelegationTransaction(fixtures: {
   existingBinding: unknown;
   affectedUsers: unknown[];
   actorPermissions?: readonly MailPermission[];
+  actorAuthorityConstraints?: Array<Record<string, unknown>>;
+  existingConstraints?: Array<Record<string, unknown>>;
 }) {
   const calls: unknown[][] = [];
   const selectCounts = new Map<string, number>();
@@ -314,6 +400,7 @@ function createDelegationTransaction(fixtures: {
     }
     if (table === 'mail_acl_bindings' && joined.includes('mail_acl_binding_permissions')) {
       return (fixtures.actorPermissions ?? []).map((permission) => ({
+        id: 501,
         subject_type: 'user',
         subject_id: ACTOR,
         resource_type: 'account',
@@ -325,6 +412,13 @@ function createDelegationTransaction(fixtures: {
     if (table === 'mail_acl_bindings') return fixtures.existingBinding ? [fixtures.existingBinding] : [];
     if (table === 'mail_acl_binding_permissions') {
       return [{ binding_id: (fixtures.existingBinding as { id?: number } | null)?.id ?? 901, permission_key: 'mail.metadata.read' }];
+    }
+    if (table === 'mail_acl_binding_constraints') {
+      const index = nextCount('mail_acl_binding_constraints');
+      // First load is usually authority constraints; later loads target existing binding.
+      if (index === 0 && fixtures.actorAuthorityConstraints) return fixtures.actorAuthorityConstraints;
+      if (fixtures.existingConstraints) return fixtures.existingConstraints;
+      return fixtures.actorAuthorityConstraints ?? [];
     }
     return [];
   };

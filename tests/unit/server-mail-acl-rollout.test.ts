@@ -542,6 +542,47 @@ describe('MailAccessRolloutService', () => {
     ))).toBe(true);
   });
 
+  test('shadow resolveScope excludes only the message for constrained message grants', async () => {
+    const messageId = 9001;
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 2,
+        resourceType: 'message',
+        accountId: ACCOUNT_A,
+        folderId: FOLDER_A,
+        messageId,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+    });
+    fixture.newPort.resolveScopeActorContext = async () => ({
+      userId: USER_A,
+      groupMemberUserIds: [USER_A],
+    });
+
+    const scope = await fixture.service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+    });
+    expect(scope.kind).toBe('restricted');
+    if (scope.kind !== 'restricted') return;
+    const remainder = scope.clauses?.find((clause) => (
+      clause.accountIds.includes(ACCOUNT_A)
+      && !clause.constraints
+      && (clause.excludeMessageIds?.includes(messageId) ?? false)
+    ));
+    expect(remainder).toBeDefined();
+    expect(remainder?.excludeFolderIds ?? []).not.toContain(FOLDER_A);
+  });
+
   test('enforce mode uses only the new ACL and never calls the legacy port', async () => {
     const fixture = createRolloutFixture({
       mode: 'enforce',

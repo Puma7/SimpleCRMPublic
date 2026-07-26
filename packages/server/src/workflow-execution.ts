@@ -1748,9 +1748,17 @@ async function executeServerNode(
     }
     // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
     // stale UUID after workflow reassignment (mirrors the mail assign API).
-    const assignedToUserId = teamMemberId !== null && isUuidString(teamMemberId)
-      ? teamMemberId
-      : null;
+    // UUID-shaped team-member ids are only linked when a matching workspace user exists.
+    let assignedToUserId: string | null = null;
+    if (teamMemberId !== null && isUuidString(teamMemberId)) {
+      const linkedUser = await trx
+        .selectFrom('users')
+        .select('id')
+        .where('workspace_id', '=', context.workspaceId)
+        .where('id', '=', teamMemberId)
+        .executeTakeFirst();
+      assignedToUserId = linkedUser ? String(linkedUser.id) : null;
+    }
     const result = await updateWorkflowMessage(trx, context, {
       assigned_to: teamMemberId,
       assigned_to_user_id: assignedToUserId,

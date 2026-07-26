@@ -36,7 +36,8 @@ export const EMPTY_MAIL_BINDING_CONSTRAINTS: MailBindingVisibilityConstraints = 
  * "no filter" and incorrectly widen access.
  */
 export const DENY_ALL_CATEGORY_ALLOW_ID = -1
-export const DENY_ALL_TAG_ALLOW_VALUE = '\u0000deny_all'
+/** Postgres `text` cannot store NUL bytes; keep this sentinel printable. */
+export const DENY_ALL_TAG_ALLOW_VALUE = '__mail_acl_deny_all__'
 
 export const DENY_ALL_MAIL_BINDING_CONSTRAINTS: MailBindingVisibilityConstraints = Object.freeze({
   assignmentMode: null,
