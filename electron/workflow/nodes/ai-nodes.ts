@@ -269,6 +269,7 @@ export function registerAiNodes(register: Reg): void {
           return {
             status: 'ok',
             port: 'block',
+            blocked: true,
             blockReason: reason,
             variables: {
               'ai.outbound_review.verdict': 'block',
@@ -291,6 +292,7 @@ export function registerAiNodes(register: Reg): void {
         return {
           status: 'ok',
           port: 'error',
+          blocked: true,
           blockReason: reason,
           message: reason,
           variables: {

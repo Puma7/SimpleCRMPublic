@@ -1173,6 +1173,13 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             folderId: 'folder_id',
             messageId: 'id',
           });
+          const contentEdited =
+            input.values.subject !== undefined
+            || input.values.bodyText !== undefined
+            || input.values.bodyHtml !== undefined
+            || input.values.toJson !== undefined
+            || input.values.ccJson !== undefined
+            || input.values.bccJson !== undefined;
           const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
@@ -1204,6 +1211,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               scheduled_send_at: null,
               scheduled_send_actor_user_id: null,
               scheduled_send_trusted_service_principal: null,
+              // Content/recipient edits invalidate the KI approval snapshot (same as desktop).
+              ...(contentEdited
+                ? {
+                  approval_state: null,
+                  approval_reason: null,
+                  auto_submitted: 0,
+                }
+                : {}),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -5387,7 +5402,9 @@ function mapEmailMessageRow(
         ? null
         : Number(row.reply_parent_message_id),
     approvalState: row.approval_state ?? null,
-    approvalReason: row.approval_reason ?? null,
+    // approval_reason summarizes AI review of customer + draft content — redact for
+    // metadata-only callers (content_readable===false), same boundary as snippet/body.
+    approvalReason: row.content_readable === false ? null : (row.approval_reason ?? null),
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }

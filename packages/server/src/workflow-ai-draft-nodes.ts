@@ -1,6 +1,7 @@
 /**
  * Server execution for ai.draft_reply and ai.review_draft (Zwei-Stufen-KI-Antwort).
  */
+import addressparser from 'nodemailer/lib/addressparser';
 import {
   addressesFromRecipientJson,
   messageIsSpamOrReviewForInboundWorkflow,
@@ -13,6 +14,10 @@ import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read
 import type { WorkspaceSessionApplier, WorkspaceTransaction } from './db/workspace-context';
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import { runWorkflowTrackedChatCompletion, type WorkflowAiChatDeps } from './workflow-ai-chat';
+import {
+  buildSignatureTemplateContext,
+  interpolateSignatureTemplate,
+} from './signature-template.js';
 
 const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
 
@@ -49,6 +54,7 @@ export async function executeWorkflowAiDraftReply(
       'account_id',
       'subject',
       'from_json',
+      'raw_headers',
       'body_text',
       'snippet',
       'is_spam',
@@ -135,10 +141,18 @@ export async function executeWorkflowAiDraftReply(
   }
   parts.push(aiText);
   if (input.config.signature !== 'none') {
-    parts.push('', 'Mit freundlichen Grüßen');
+    const accountSig = await resolveAccountSignatureText(trx, {
+      workspaceId: input.workspaceId,
+      accountId: Number(message.account_id),
+      variables: input.variables,
+    });
+    parts.push('', accountSig || 'Mit freundlichen Grüßen');
   }
   const bodyText = parts.join('\n');
-  const replyTo = firstReplyAddress(message.from_json);
+  const replyTo = firstReplyAddress({
+    from_json: message.from_json,
+    raw_headers: message.raw_headers,
+  });
   if (!replyTo) return { status: 'error', message: 'Kein Antwort-Empfänger ermittelbar' };
 
   const draft = await createPostgresComposeDraftInTransaction(trx, {
@@ -341,11 +355,83 @@ function optionalPositiveInt(value: unknown): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-function firstReplyAddress(fromJson: unknown): string | null {
+function firstReplyAddress(message: {
+  from_json: unknown;
+  raw_headers?: string | null;
+}): string | null {
+  const fallback = firstFromAddress(message.from_json);
+  const rawHeaders = String(message.raw_headers ?? '').slice(0, 128_000);
+  if (!rawHeaders) return fallback;
+  try {
+    const unfolded = rawHeaders.replace(/\r?\n[ \t]+/g, ' ');
+    const replyTo = unfolded.match(/^Reply-To:\s*([^\r\n]+)/im)?.[1] ?? '';
+    return addressparser(replyTo, { flatten: true })[0]?.address.trim() || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function firstFromAddress(fromJson: unknown): string | null {
   const raw = typeof fromJson === 'string' ? fromJson : fromJson == null ? null : JSON.stringify(fromJson);
   const joined = addressesFromRecipientJson(raw);
   const first = joined.split(',')[0]?.trim();
   return first || null;
+}
+
+function signatureHtmlToText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function resolveAccountSignatureText(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    accountId: number;
+    variables: Record<string, string | number | boolean | null>;
+  },
+): Promise<string> {
+  const [account, signature] = await Promise.all([
+    trx
+      .selectFrom('email_accounts')
+      .select(['display_name', 'email_address'])
+      .where('workspace_id', '=', input.workspaceId)
+      .where('id', '=', input.accountId)
+      .executeTakeFirst(),
+    trx
+      .selectFrom('email_account_signatures')
+      .select(['signature_html'])
+      .where('workspace_id', '=', input.workspaceId)
+      .where('account_id', '=', input.accountId)
+      .executeTakeFirst(),
+  ]);
+  const sigHtml = signature?.signature_html?.trim();
+  if (!sigHtml || !account) return '';
+  return signatureHtmlToText(
+    interpolateSignatureTemplate(
+      sigHtml,
+      buildSignatureTemplateContext({
+        accountDisplayName: account.display_name,
+        accountEmail: account.email_address,
+        customerName:
+          typeof input.variables['customer.name'] === 'string'
+            ? input.variables['customer.name']
+            : '',
+        customerEmail:
+          typeof input.variables['customer.email'] === 'string'
+            ? input.variables['customer.email']
+            : '',
+      }),
+    ),
+  );
 }
 
 function replySubject(subject: string | null | undefined): string {

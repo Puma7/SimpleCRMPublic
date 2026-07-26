@@ -226,6 +226,8 @@ type NodeResult = {
   port?: string | null;
   message?: string | null;
   stop?: boolean;
+  /** When true with stop, do not enqueue the next inbound priority-chain workflow. */
+  inboundChainStop?: boolean;
   blocked?: boolean;
   deferred?: boolean;
   blockReason?: string | null;
@@ -567,11 +569,13 @@ export function createPostgresWorkflowExecutionJobPort(
           if (
             trigger === 'inbound'
             && message
-            && result.status === 'ok'
             && !result.deferred
             && !result.inboundChainStop
+            && (result.status === 'ok' || result.status === 'error')
           ) {
-            await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+            if (result.status === 'ok') {
+              await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+            }
             await maybeEnqueueNextInboundWorkflow(trx, {
               workspaceId: input.workspaceId,
               messageId: Number(message.id),
@@ -1385,7 +1389,9 @@ async function walkGraph(
         status: 'ok',
         blocked: false,
         deferred: result.deferred === true,
-        inboundChainStop: result.deferred !== true,
+        // Ordinary logic.stop ends only this workflow; only spam short-circuit
+        // (stop_after_spam / stopFurtherWorkflows) terminates the priority chain.
+        inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
         blockReason: null,
         log: input.log,
       };
@@ -1470,6 +1476,7 @@ async function executePreviewOutboundAiReview(
     return {
       status: 'ok',
       port: 'block',
+      blocked: true,
       blockReason: preview.reason,
       message: preview.reason,
       variables: {
@@ -1526,7 +1533,13 @@ async function executeServerNode(
         spam_score_label: spamLabel || message?.spam_score_label,
       });
     if (isSpam) {
-      return { status: 'ok', port: 'default', stop: true, message: 'stop_after_spam' };
+      return {
+        status: 'ok',
+        port: 'default',
+        stop: true,
+        inboundChainStop: true,
+        message: 'stop_after_spam',
+      };
     }
     return { status: 'ok', port: 'default', message: 'not_spam:continue' };
   }
@@ -5985,7 +5998,7 @@ async function setWorkflowSpamStatus(
     port: 'default',
     variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
     ...(options.stopFurtherWorkflows !== false && (status === 'spam' || status === 'review')
-      ? { stop: true, message: 'stop_further_workflows:spam_status' }
+      ? { stop: true, inboundChainStop: true, message: 'stop_further_workflows:spam_status' }
       : {}),
   };
 }

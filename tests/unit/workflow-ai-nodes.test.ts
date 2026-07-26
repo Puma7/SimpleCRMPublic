@@ -446,13 +446,13 @@ describe('ai.outbound_review — KI-Ausgangsprüfung (fail-closed)', () => {
     expect(r).toMatchObject({
       status: 'ok',
       port: 'block',
+      blocked: true,
       blockReason: 'Anhang fehlt laut Text',
       variables: {
         'ai.outbound_review.verdict': 'block',
         'ai.outbound_review.reason': 'Anhang fehlt laut Text',
       },
     });
-    expect(r.blocked).toBeUndefined();
   });
 
   test('STATUS: OK → port ok ohne Hold', async () => {
@@ -473,9 +473,9 @@ describe('ai.outbound_review — KI-Ausgangsprüfung (fail-closed)', () => {
     expect(r).toMatchObject({
       status: 'ok',
       port: 'error',
+      blocked: true,
       blockReason: 'KI-Fehler: offline',
       variables: { 'ai.outbound_review.verdict': 'error' },
     });
-    expect(r.blocked).toBeUndefined();
   });
 });
