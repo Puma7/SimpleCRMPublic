@@ -24,6 +24,22 @@ export const EMPTY_MAIL_BINDING_CONSTRAINTS: MailBindingVisibilityConstraints = 
   tagExcludeValues: Object.freeze([] as string[]),
 });
 
+/**
+ * Sentinel values that never match real categories/tags. Used when intersecting
+ * two non-empty allowlists yields an empty set — otherwise `[]` would mean
+ * "no filter" and incorrectly widen access.
+ */
+export const DENY_ALL_CATEGORY_ALLOW_ID = -1;
+export const DENY_ALL_TAG_ALLOW_VALUE = '\u0000deny_all';
+
+export const DENY_ALL_MAIL_BINDING_CONSTRAINTS: MailBindingVisibilityConstraints = Object.freeze({
+  assignmentMode: null,
+  categoryAllowIds: Object.freeze([DENY_ALL_CATEGORY_ALLOW_ID] as number[]),
+  categoryExcludeIds: Object.freeze([] as number[]),
+  tagAllowValues: Object.freeze([DENY_ALL_TAG_ALLOW_VALUE] as string[]),
+  tagExcludeValues: Object.freeze([] as string[]),
+});
+
 export function hasMailBindingConstraints(
   constraints: MailBindingVisibilityConstraints | null | undefined,
 ): boolean {
@@ -34,6 +50,61 @@ export function hasMailBindingConstraints(
   if (constraints.tagAllowValues.length > 0) return true;
   if (constraints.tagExcludeValues.length > 0) return true;
   return false;
+}
+
+/**
+ * Intersect two authority constraint sets. Empty allowlist intersection must
+ * stay deny-all (never collapse to "no filter").
+ */
+export function mergeAuthorityConstraints(
+  left: MailBindingVisibilityConstraints | null,
+  right: MailBindingVisibilityConstraints,
+): MailBindingVisibilityConstraints {
+  if (!left) return right;
+  const leftMode = left.assignmentMode && left.assignmentMode !== 'any' ? left.assignmentMode : null;
+  const rightMode = right.assignmentMode && right.assignmentMode !== 'any' ? right.assignmentMode : null;
+  const assignmentMode = leftMode ?? rightMode;
+  const categoryAllowIds = intersectAllowNumbers(left.categoryAllowIds, right.categoryAllowIds);
+  const categoryExcludeIds = [...new Set([...left.categoryExcludeIds, ...right.categoryExcludeIds])].sort((a, b) => a - b);
+  const tagAllowValues = intersectAllowStrings(left.tagAllowValues, right.tagAllowValues);
+  const tagExcludeValues = [...new Set([...left.tagExcludeValues, ...right.tagExcludeValues])].sort();
+  return {
+    assignmentMode,
+    categoryAllowIds,
+    categoryExcludeIds,
+    tagAllowValues,
+    tagExcludeValues,
+  };
+}
+
+function intersectAllowNumbers(
+  left: readonly number[],
+  right: readonly number[],
+): readonly number[] {
+  if (left.length > 0 && right.length > 0) {
+    const intersection = left.filter((id) => right.includes(id));
+    return intersection.length > 0
+      ? [...intersection].sort((a, b) => a - b)
+      : [DENY_ALL_CATEGORY_ALLOW_ID];
+  }
+  if (left.length > 0) return [...left].sort((a, b) => a - b);
+  if (right.length > 0) return [...right].sort((a, b) => a - b);
+  return [];
+}
+
+function intersectAllowStrings(
+  left: readonly string[],
+  right: readonly string[],
+): readonly string[] {
+  if (left.length > 0 && right.length > 0) {
+    const intersection = left.filter((tag) => right.includes(tag));
+    return intersection.length > 0
+      ? [...intersection].sort()
+      : [DENY_ALL_TAG_ALLOW_VALUE];
+  }
+  if (left.length > 0) return [...left].sort();
+  if (right.length > 0) return [...right].sort();
+  return [];
 }
 
 export function constraintsEqual(

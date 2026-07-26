@@ -265,6 +265,41 @@ describe('MailAccessRolloutService', () => {
     }]);
   });
 
+  test('shadow counts constrained account grants as narrower than legacy full accounts', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      newGrants: [{
+        bindingId: 1,
+        resourceType: 'account',
+        accountId: ACCOUNT_A,
+        folderId: null,
+        messageId: null,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+      legacyReadAccounts: [ACCOUNT_A],
+    });
+
+    await expect(fixture.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.content.read',
+      resource: messageResource(),
+    })).resolves.toBeUndefined();
+
+    expect(fixture.increments).toEqual([{
+      workspaceId: WORKSPACE_A,
+      evaluated: 1n,
+      legacyAllowNewDeny: 1n,
+      legacyDenyNewAllow: 0n,
+    }]);
+  });
+
   test('shadow uses legacy deny as runtime decision and counts legacy-deny/new-allow mismatches', async () => {
     const fixture = createRolloutFixture({
       mode: 'shadow',

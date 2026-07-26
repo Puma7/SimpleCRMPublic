@@ -121,7 +121,7 @@ export async function handleMailAccessExplainRoute(
     }
   }
 
-  const explanation = await explainFn({
+  const explanation = await explainFn.call(ports.mailAccess, {
     workspaceId: principal.workspaceId,
     userId,
     resource: messageResource,

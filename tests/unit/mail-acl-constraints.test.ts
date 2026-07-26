@@ -1,6 +1,9 @@
 import {
   constraintsEqual,
+  DENY_ALL_CATEGORY_ALLOW_ID,
+  DENY_ALL_TAG_ALLOW_VALUE,
   hasMailBindingConstraints,
+  mergeAuthorityConstraints,
   messageMatchesConstraints,
   type MailScopeActorContext,
 } from '../../packages/server/src/mail-access/types';
@@ -80,6 +83,58 @@ describe('mail ACL visibility constraints', () => {
         tagExcludeValues: [],
       },
     )).toBe(true);
+  });
+
+  test('mergeAuthorityConstraints keeps deny-all for disjoint allowlists', () => {
+    const merged = mergeAuthorityConstraints(
+      {
+        assignmentMode: null,
+        categoryAllowIds: [1, 2],
+        categoryExcludeIds: [],
+        tagAllowValues: ['a'],
+        tagExcludeValues: [],
+      },
+      {
+        assignmentMode: null,
+        categoryAllowIds: [3, 4],
+        categoryExcludeIds: [],
+        tagAllowValues: ['b'],
+        tagExcludeValues: [],
+      },
+    );
+    expect(merged.categoryAllowIds).toEqual([DENY_ALL_CATEGORY_ALLOW_ID]);
+    expect(merged.tagAllowValues).toEqual([DENY_ALL_TAG_ALLOW_VALUE]);
+    expect(hasMailBindingConstraints(merged)).toBe(true);
+    expect(messageMatchesConstraints({
+      assignedToUserId: null,
+      assignedTo: null,
+      categoryIds: [1, 3],
+      tags: ['a', 'b'],
+    }, merged, ACTOR)).toBe(false);
+  });
+
+  test('mergeAuthorityConstraints intersects overlapping allowlists', () => {
+    const merged = mergeAuthorityConstraints(
+      {
+        assignmentMode: 'assigned_to_me',
+        categoryAllowIds: [1, 2],
+        categoryExcludeIds: [9],
+        tagAllowValues: ['a', 'b'],
+        tagExcludeValues: [],
+      },
+      {
+        assignmentMode: null,
+        categoryAllowIds: [2, 3],
+        categoryExcludeIds: [8],
+        tagAllowValues: ['b', 'c'],
+        tagExcludeValues: ['x'],
+      },
+    );
+    expect(merged.assignmentMode).toBe('assigned_to_me');
+    expect(merged.categoryAllowIds).toEqual([2]);
+    expect(merged.categoryExcludeIds).toEqual([8, 9]);
+    expect(merged.tagAllowValues).toEqual(['b']);
+    expect(merged.tagExcludeValues).toEqual(['x']);
   });
 
   test('MailAccessService resolveScope attaches clauses when grants have constraints', async () => {

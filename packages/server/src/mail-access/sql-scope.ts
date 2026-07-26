@@ -12,6 +12,18 @@ export type MailScopeColumns = Readonly<{
   assignedTo?: string;
 }>;
 
+/** True when assignment constraints can be applied with the given columns/actor. */
+export function canEnforceAssignmentFilter(
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+  columns: MailScopeColumns,
+  actor: MailScopeActorContext | undefined,
+): boolean {
+  const mode = constraints?.assignmentMode;
+  if (!mode || mode === 'any') return true;
+  if (!actor) return false;
+  return Boolean(columns.assignedToUserId || columns.assignedTo);
+}
+
 export function effectiveMailScope(scope: MailSqlScope | undefined): MailSqlScope {
   return scope ?? { kind: 'all' };
 }
@@ -76,7 +88,12 @@ function visibilityPredicate(
   const parts: RawBuilder<boolean>[] = [];
   const messageCol = columns.messageId!;
   const mode = constraints.assignmentMode;
-  if (mode && mode !== 'any' && actor) {
+  if (mode && mode !== 'any') {
+    // Fail closed: assignment filters without actor or assignee columns must not
+    // widen via remaining category/tag predicates alone.
+    if (!canEnforceAssignmentFilter(constraints, columns, actor)) {
+      return sql<boolean>`false`;
+    }
     const assignedUserCol = columns.assignedToUserId ?? null;
     const assignedCol = columns.assignedTo ?? null;
     if (mode === 'unassigned') {
@@ -84,24 +101,24 @@ function visibilityPredicate(
         parts.push(sql<boolean>`(${sql.ref(assignedUserCol)} is null and (${sql.ref(assignedCol)} is null or ${sql.ref(assignedCol)} = ''))`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)} is null`);
-      } else if (assignedCol) {
+      } else {
         parts.push(sql<boolean>`(${sql.ref(assignedCol)} is null or ${sql.ref(assignedCol)} = '')`);
       }
     } else if (mode === 'assigned_to_me') {
       if (assignedUserCol && assignedCol) {
-        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) = ${actor.userId})`);
+        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) = ${actor!.userId})`);
       } else if (assignedUserCol) {
-        parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text = ${actor.userId}`);
-      } else if (assignedCol) {
-        parts.push(sql<boolean>`${sql.ref(assignedCol)} = ${actor.userId}`);
+        parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text = ${actor!.userId}`);
+      } else {
+        parts.push(sql<boolean>`${sql.ref(assignedCol)} = ${actor!.userId}`);
       }
     } else if (mode === 'assigned_to_my_groups') {
-      const ids = actor.groupMemberUserIds.length > 0 ? actor.groupMemberUserIds : [actor.userId];
+      const ids = actor!.groupMemberUserIds.length > 0 ? actor!.groupMemberUserIds : [actor!.userId];
       if (assignedUserCol && assignedCol) {
         parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) in (${sql.join(ids)}))`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text in (${sql.join(ids)})`);
-      } else if (assignedCol) {
+      } else {
         parts.push(sql<boolean>`${sql.ref(assignedCol)} in (${sql.join(ids)})`);
       }
     }

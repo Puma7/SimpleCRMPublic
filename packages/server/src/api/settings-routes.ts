@@ -344,9 +344,11 @@ async function handleMailSecuritySettings(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireCapability(principal, 'settings.manage')) return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Berechtigung erforderlich');
 
   if (req.method === 'GET') {
+    if (!requireCapability(principal, 'settings.view')) {
+      return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Ansicht erforderlich');
+    }
     const loaded = await loadSyncInfo(req, ports, MAIL_SECURITY_KEYS);
     if ('status' in loaded) return loaded;
     const values = loaded.values;
@@ -381,6 +383,9 @@ async function handleMailSecuritySettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  if (!requireCapability(principal, 'settings.manage')) {
+    return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Berechtigung erforderlich');
+  }
   const parsed = parseMailSecuritySettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   // rspamdUrl is an SSRF boundary: checkMessageWithRspamd POSTs stored raw

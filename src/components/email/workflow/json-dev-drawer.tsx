@@ -14,10 +14,18 @@ type Props = {
   open: boolean
   onOpenChange: Dispatch<SetStateAction<boolean>>
   jsonValue: string
-  onJsonChange: (value: string) => void
+  onJsonChange?: (value: string) => void
+  readOnly?: boolean
 }
 
-export function JsonDevDrawer({ open, onOpenChange, jsonValue, onJsonChange }: Props) {
+export function JsonDevDrawer({
+  open,
+  onOpenChange,
+  jsonValue,
+  onJsonChange,
+  readOnly = false,
+}: Props) {
+  const editable = !readOnly && typeof onJsonChange === "function"
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
       <DrawerContent className="max-h-[70vh]">
@@ -31,7 +39,10 @@ export function JsonDevDrawer({ open, onOpenChange, jsonValue, onJsonChange }: P
         <div className="px-4 pb-6">
           <Textarea
             value={jsonValue}
-            onChange={(e) => onJsonChange(e.target.value)}
+            onChange={(e) => {
+              if (editable) onJsonChange(e.target.value)
+            }}
+            readOnly={!editable}
             className="min-h-[260px] font-mono text-xs"
           />
         </div>

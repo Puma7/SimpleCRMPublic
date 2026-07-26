@@ -16,6 +16,7 @@ import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
 import {
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
+  mergeAuthorityConstraints,
 } from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
 import {
@@ -617,37 +618,6 @@ async function authorityConstraintsForResource(
     merged = mergeAuthorityConstraints(merged, next);
   }
   return merged;
-}
-
-function mergeAuthorityConstraints(
-  left: MailBindingVisibilityConstraints | null,
-  right: MailBindingVisibilityConstraints,
-): MailBindingVisibilityConstraints {
-  if (!left) return right;
-  // Intersection: keep assignment if either has one,
-  // allowlists become intersection, exclude lists become union.
-  const leftMode = left.assignmentMode && left.assignmentMode !== 'any' ? left.assignmentMode : null;
-  const rightMode = right.assignmentMode && right.assignmentMode !== 'any' ? right.assignmentMode : null;
-  const assignmentMode = leftMode ?? rightMode;
-  const categoryAllowIds = left.categoryAllowIds.length > 0 && right.categoryAllowIds.length > 0
-    ? left.categoryAllowIds.filter((id) => right.categoryAllowIds.includes(id))
-    : left.categoryAllowIds.length > 0
-      ? [...left.categoryAllowIds]
-      : [...right.categoryAllowIds];
-  const categoryExcludeIds = [...new Set([...left.categoryExcludeIds, ...right.categoryExcludeIds])].sort((a, b) => a - b);
-  const tagAllowValues = left.tagAllowValues.length > 0 && right.tagAllowValues.length > 0
-    ? left.tagAllowValues.filter((tag) => right.tagAllowValues.includes(tag))
-    : left.tagAllowValues.length > 0
-      ? [...left.tagAllowValues]
-      : [...right.tagAllowValues];
-  const tagExcludeValues = [...new Set([...left.tagExcludeValues, ...right.tagExcludeValues])].sort();
-  return {
-    assignmentMode,
-    categoryAllowIds: [...categoryAllowIds].sort((a, b) => a - b),
-    categoryExcludeIds,
-    tagAllowValues: [...tagAllowValues].sort(),
-    tagExcludeValues,
-  };
 }
 
 async function heldPermissionsForResource(

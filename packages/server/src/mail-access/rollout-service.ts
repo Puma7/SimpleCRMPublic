@@ -16,6 +16,7 @@ import type {
   MailAclRolloutTransitionResult,
   MailSqlScope,
 } from './types';
+import { hasMailBindingConstraints } from './mail-acl-constraints';
 
 export type MailAclRolloutDelta = Readonly<Partial<{
   evaluated: bigint;
@@ -283,9 +284,11 @@ function compareLegacyAccountScopeToNewGrants(
       : { legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n };
   }
 
+  // Constrained account grants are narrower than legacy full-account scope and
+  // must not count as parity with unconstrained legacy account access.
   const newFullAccounts = new Set(
     newGrants
-      .filter((grant) => grant.resourceType === 'account')
+      .filter((grant) => grant.resourceType === 'account' && !hasMailBindingConstraints(grant.constraints))
       .map((grant) => grant.accountId),
   );
   const newTouchedAccounts = new Set(newGrants.map((grant) => grant.accountId));

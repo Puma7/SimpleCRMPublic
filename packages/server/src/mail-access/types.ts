@@ -4,10 +4,14 @@ import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
 
 export type { MailAssignmentMode, MailBindingVisibilityConstraints } from './mail-acl-constraints';
 export {
+  DENY_ALL_CATEGORY_ALLOW_ID,
+  DENY_ALL_MAIL_BINDING_CONSTRAINTS,
+  DENY_ALL_TAG_ALLOW_VALUE,
   EMPTY_MAIL_BINDING_CONSTRAINTS,
   constraintsEqual,
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
+  mergeAuthorityConstraints,
 } from './mail-acl-constraints';
 
 export type MailAccessActor = Readonly<{
