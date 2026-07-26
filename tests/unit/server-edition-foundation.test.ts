@@ -30464,6 +30464,12 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+    const settingsPrincipal = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['crm.write', 'workflows.manage', 'settings.manage'],
+    };
     const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const workflow = await api.handle({
@@ -30644,7 +30650,7 @@ describe('server edition foundation', () => {
         nextWeekHour: 9,
         nextWeekMinute: 30,
       },
-      principal,
+      principal: settingsPrincipal,
     });
     expect(snoozePatch.status).toBe(200);
     expect(setCalls[3]).toMatchObject({
@@ -30687,7 +30693,7 @@ describe('server edition foundation', () => {
         categoryMode: 'only_listed',
         categoryIds: [8, 9, 9],
       },
-      principal,
+      principal: settingsPrincipal,
     });
     expect(replyPatch.status).toBe(200);
     expect((replyPatch.body as any).data).toEqual({
@@ -31163,7 +31169,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/settings/misc',
       body: {},
-      principal,
+      principal: adminPrincipal,
     });
     expect(emptyPatch.status).toBe(400);
     expect((emptyPatch.body as any).error.code).toBe('validation_error');
@@ -31181,7 +31187,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/settings/snooze',
       body: { eveningHour: 24 },
-      principal,
+      principal: adminPrincipal,
     });
     expect(invalidSnooze.status).toBe(400);
     expect((invalidSnooze.body as any).error.details.fields).toEqual(expect.arrayContaining([

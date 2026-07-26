@@ -3990,8 +3990,8 @@ describe('server mailbox ACL migration', () => {
 
         expect(small).toMatchObject({ ok: true, bindings: [{ id: 9501 }, { id: 9502 }], nextCursor: 9502 });
         expect(large).toMatchObject({ ok: true, nextCursor: 9520 });
-        expect(smallSelects).toBe(6);
-        expect(largeSelects).toBe(6);
+        expect(smallSelects).toBe(7);
+        expect(largeSelects).toBe(7);
         expect(managerPage).toMatchObject({ ok: true, bindings: [{ id: 9501 }] });
       } finally {
         await db.destroy();

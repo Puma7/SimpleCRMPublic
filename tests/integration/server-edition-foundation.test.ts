@@ -442,8 +442,8 @@ describe('server edition repository boundaries', () => {
         role: 'user',
       },
     });
-    // Admin token for the endpoints that are (now) admin-gated, e.g. the
-    // automation API-key inventory (credential-scope recon for non-admins).
+    // Admin/owner token for endpoints that are admin-gated (e.g. automation
+    // API-key inventory) or require workflows.view (workflow runtime reads).
     const adminAccessToken = createAccessToken({
       signer,
       issuedAt: new Date(),
@@ -1593,7 +1593,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflows/23/versions?search=Version',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowVersions.statusCode).toBe(200);
@@ -1609,7 +1609,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflows/23/runs?messageId=11&status=succeeded',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowRuns.statusCode).toBe(200);
@@ -1627,7 +1627,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflow-runs/80?includeLog=true',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowRun.statusCode).toBe(200);
@@ -1637,7 +1637,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflow-runs/80/steps?nodeType=ai.reply',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowRunSteps.statusCode).toBe(200);
@@ -1654,7 +1654,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflow-message-applied?messageId=11&workflowId=23',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowMessageApplied.statusCode).toBe(200);
@@ -1670,7 +1670,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflow-forward-dedup?dest=ops@example.com',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowForwardDedup.statusCode).toBe(200);
@@ -1685,7 +1685,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflow-knowledge-bases?search=Returns',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowKnowledgeBases.statusCode).toBe(200);
@@ -1696,7 +1696,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflow-knowledge-chunks?knowledgeBaseId=90&includeContent=true',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowKnowledgeChunks.statusCode).toBe(200);
@@ -1712,7 +1712,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflow-delayed-jobs?workflowId=23&status=pending',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflowDelayedJobs.statusCode).toBe(200);
