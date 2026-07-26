@@ -518,6 +518,13 @@ export function createPostgresWorkflowExecutionJobPort(
           });
           if (trigger === 'inbound' && message && result.status === 'ok' && !result.deferred) {
             await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+            await maybeEnqueueNextInboundWorkflow(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              actorUserId: input.actorUserId,
+              jobContext,
+              now,
+            });
           }
           if (delayedJob) {
             await markDelayedJobStatus(
@@ -1400,12 +1407,21 @@ async function executePreviewOutboundAiReview(
   if (!preview.ok) {
     return {
       status: 'ok',
-      blocked: true,
+      port: 'block',
       blockReason: preview.reason,
       message: preview.reason,
+      variables: {
+        'ai.outbound_review.verdict': 'block',
+        'ai.outbound_review.reason': preview.reason,
+      },
     };
   }
-  return { status: 'ok', port: 'default', message: 'preview_ai:ok' };
+  return {
+    status: 'ok',
+    port: 'ok',
+    message: 'preview_ai:ok',
+    variables: { 'ai.outbound_review.verdict': 'ok', 'ai.outbound_review.reason': '' },
+  };
 }
 
 async function executeServerNode(
@@ -1430,6 +1446,19 @@ async function executeServerNode(
   const config = interpolateServerSchemaFields(type, nodeConfig(node), context);
   if (type === 'logic.stop' || type === 'stop') {
     return { status: 'ok', port: 'default', stop: true };
+  }
+  if (type === 'logic.stop_after_spam') {
+    const message = context.message;
+    const spamStatus = String(context.variables['spam.status'] ?? message?.spam_status ?? '').toLowerCase();
+    const isSpam =
+      message?.is_spam === true
+      || spamStatus === 'spam'
+      || spamStatus === 'review'
+      || context.variables['email.is_spam'] === true;
+    if (isSpam) {
+      return { status: 'ok', port: 'default', stop: true, message: 'stop_after_spam' };
+    }
+    return { status: 'ok', port: 'default', message: 'not_spam:continue' };
   }
   if (type === 'logic.merge' || type === 'logic.loop') {
     return { status: 'ok', port: 'default' };
@@ -1541,11 +1570,18 @@ async function executeServerNode(
     if (context.direction !== 'outbound') {
       return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
     }
+    const portResumeTargets = {
+      ok: resolveResumeNodeAfterPort(doc, node.id, 'ok'),
+      block: resolveResumeNodeAfterPort(doc, node.id, 'block'),
+      error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
+    };
     return await scheduleAiReviewJob(trx, doc, context, node, {
       ...config,
       blockKeyword: 'BLOCK',
       systemPrompt: workflowOutboundReviewSystemPrompt(),
       fallbackUserTemplate: workflowOutboundReviewUserTemplate(),
+      parseMode: 'outbound_structured',
+      portResumeTargets,
     }, now);
   }
   if (type === 'ai.review' || type === 'ai_review') {
@@ -1560,6 +1596,17 @@ async function executeServerNode(
   if (type === 'ai.agent') {
     const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
     if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
+    if (context.messageId !== null) {
+      const currentMessage = await trx
+        .selectFrom('email_messages')
+        .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
+        .where('workspace_id', '=', context.workspaceId)
+        .where('id', '=', context.messageId)
+        .executeTakeFirst();
+      if (currentMessage && messageIsSpamOrReview(currentMessage)) {
+        return { status: 'skipped', port: 'default', message: 'skip:agent_message_spam_or_review' };
+      }
+    }
     return await scheduleAiAgentJob(trx, doc, context, node, config, createDraft.value, now);
   }
   if (type === 'ai.pick_canned') {
@@ -1693,7 +1740,11 @@ async function executeServerNode(
     if (!train.ok) return { status: 'error', port: 'error', message: train.message };
     const status = spamStatusConfig(config.status);
     const tag = String(config.tag ?? '').trim();
-    return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now);
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', true);
+    if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
+    return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now, {
+      stopFurtherWorkflows: stopFurther.value,
+    });
   }
   if (type === 'email.mark_spam') {
     const train = booleanConfig(config.train, 'train', false);
@@ -1702,12 +1753,16 @@ async function executeServerNode(
     if (!spam.ok) return { status: 'error', port: 'error', message: spam.message };
     const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
     if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', true);
+    if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
     if (moveImap.value && spam.value) {
       const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
       if (!moveResult.ok) return moveResult.node;
     }
     const tag = String(config.tag ?? 'auto-spam').trim();
-    return await setWorkflowSpamStatus(trx, context, spam.value ? 'spam' : 'clean', tag, train.value, now);
+    return await setWorkflowSpamStatus(trx, context, spam.value ? 'spam' : 'clean', tag, train.value, now, {
+      stopFurtherWorkflows: stopFurther.value,
+    });
   }
   if (type === 'email.move_imap') {
     return await moveWorkflowMessageOnImap(trx, context, config, now, ports, log);
@@ -2490,7 +2545,18 @@ async function scheduleAiReviewJob(
   const blockKeyword = workflowAiBlockKeyword(config.blockKeyword);
   if (!blockKeyword.ok) return { status: 'error', port: 'error', message: blockKeyword.message };
 
-  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const parseMode = config.parseMode === 'outbound_structured' ? 'outbound_structured' as const : undefined;
+  const rawPortTargets = objectRecord(config.portResumeTargets);
+  const portResumeTargets = rawPortTargets
+    ? Object.fromEntries(
+      Object.entries(rawPortTargets)
+        .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+        .map(([port, target]) => [port, target.trim()]),
+    )
+    : undefined;
+  const resumeNodeId = parseMode === 'outbound_structured'
+    ? (resolveResumeNodeAfterPort(doc, node.id, 'ok') || resolveResumeNodeAfter(doc, node.id))
+    : resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     direction: context.direction,
@@ -2499,6 +2565,10 @@ async function scheduleAiReviewJob(
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
+  if (parseMode) payload.parseMode = parseMode;
+  if (portResumeTargets && Object.keys(portResumeTargets).length > 0) {
+    payload.portResumeTargets = portResumeTargets;
+  }
   if (typeof config.systemPrompt === 'string' && config.systemPrompt.trim()) {
     payload.systemPrompt = config.systemPrompt.trim();
   }
@@ -3784,6 +3854,13 @@ async function workflowAiSpamScoreResult(
   context: ServerWorkflowContext,
   config: Record<string, unknown>,
 ): Promise<NodeResult> {
+  const hasIgnoredDesktopAiConfig =
+    (config.profileId !== null && config.profileId !== undefined && Number(config.profileId) > 0)
+    || (typeof config.customPrompt === 'string' && config.customPrompt.trim().length > 0)
+    || config.contextMode === 'full';
+  const serverNote = hasIgnoredDesktopAiConfig
+    ? 'Server: Profil/Prompt/contextMode werden ignoriert — es wird der gespeicherte oder lokal berechnete Spam-Score genutzt.'
+    : '';
   const score = numericVariable(context.variables['spam.score']);
   const mode = String(config.contextMode ?? 'stored').trim() || 'stored';
   if (score !== null) {
@@ -3793,6 +3870,7 @@ async function workflowAiSpamScoreResult(
       variables: {
         'ai.spam_score': score,
         'ai.spam_context': `stored:${mode}`,
+        ...(serverNote ? { 'ai.spam_score.server_note': serverNote } : {}),
       },
     };
   }
@@ -3824,6 +3902,7 @@ async function workflowAiSpamScoreResult(
   };
   if (decision.listMatch) variables['spam.list_match'] = decision.listMatch.listType;
   if (firstReason?.label) variables['spam.top_reason'] = firstReason.label;
+  if (serverNote) variables['ai.spam_score.server_note'] = serverNote;
   return {
     status: 'ok',
     port: 'default',
@@ -4327,7 +4406,12 @@ function boundedDelayMs(value: unknown): number {
 
 function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   const outs = outgoing(doc.edges, nodeId);
-  return pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
+  return pickEdge(outs, 'ok')?.target ?? pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
+}
+
+function resolveResumeNodeAfterPort(doc: WorkflowGraphDocument, nodeId: string, port: string): string {
+  const outs = outgoing(doc.edges, nodeId);
+  return pickEdge(outs, port)?.target ?? '';
 }
 
 function resolveHttpSuccessNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
@@ -5718,6 +5802,7 @@ async function setWorkflowSpamStatus(
   tag: string,
   train: boolean,
   now: Date,
+  options: { stopFurtherWorkflows?: boolean } = {},
 ): Promise<NodeResult> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
@@ -5770,6 +5855,9 @@ async function setWorkflowSpamStatus(
     status: 'ok',
     port: 'default',
     variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
+    ...(options.stopFurtherWorkflows !== false && (status === 'spam' || status === 'review')
+      ? { stop: true, message: 'stop_further_workflows:spam_status' }
+      : {}),
   };
 }
 
@@ -6570,7 +6658,88 @@ function contextSkipsSpamOrReview(value: Record<string, unknown>): boolean {
   return value.skipIfMessageSpamOrReview === true;
 }
 
-function messageIsSpamOrReview(message: MessageRow): boolean {
+type InboundWorkflowChainContext = {
+  workflowIds: number[];
+  index: number;
+};
+
+function parseInboundWorkflowChain(value: Record<string, unknown>): InboundWorkflowChainContext | null {
+  const raw = objectRecord(value.inboundWorkflowChain);
+  if (!raw) return null;
+  const workflowIds = Array.isArray(raw.workflowIds)
+    ? raw.workflowIds
+      .map((item) => Number(item))
+      .filter((item) => Number.isInteger(item) && item > 0)
+    : [];
+  const index = Number(raw.index ?? 0);
+  if (workflowIds.length === 0 || !Number.isInteger(index) || index < 0 || index >= workflowIds.length) {
+    return null;
+  }
+  return { workflowIds, index };
+}
+
+async function maybeEnqueueNextInboundWorkflow(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    actorUserId?: string;
+    jobContext: Record<string, unknown>;
+    now: Date;
+  },
+): Promise<void> {
+  const chain = parseInboundWorkflowChain(input.jobContext);
+  if (!chain) return;
+  const nextIndex = chain.index + 1;
+  if (nextIndex >= chain.workflowIds.length) return;
+
+  const message = await trx
+    .selectFrom('email_messages')
+    .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.messageId)
+    .executeTakeFirst();
+  if (!message || messageIsSpamOrReview(message)) return;
+
+  const payload = input.actorUserId
+    ? {
+      workspaceId: input.workspaceId,
+      actorUserId: input.actorUserId,
+      workflowId: chain.workflowIds[nextIndex]!,
+      messageId: input.messageId,
+      triggerName: 'inbound',
+      context: {
+        skipIfMessageSpamOrReview: true,
+        inboundWorkflowChain: { workflowIds: chain.workflowIds, index: nextIndex },
+      },
+    }
+    : buildTrustedServiceJobPayload({
+      workspaceId: input.workspaceId,
+      workflowId: chain.workflowIds[nextIndex]!,
+      messageId: input.messageId,
+      triggerName: 'inbound',
+      context: {
+        skipIfMessageSpamOrReview: true,
+        inboundWorkflowChain: { workflowIds: chain.workflowIds, index: nextIndex },
+      },
+    });
+
+  await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'workflow.execute',
+      payload,
+      run_after: input.now,
+      max_attempts: 3,
+      workspace_id: input.workspaceId,
+      updated_at: input.now,
+    })
+    .execute();
+}
+
+function messageIsSpamOrReview(
+  message: Pick<MessageRow, 'is_spam' | 'spam_status' | 'spam_score_label'>,
+): boolean {
   const status = String(message.spam_status ?? '').toLowerCase();
   const label = String(message.spam_score_label ?? '').toLowerCase();
   return (

@@ -16,6 +16,32 @@ export function registerLogicNodes(register: Reg): void {
   });
 
   register({
+    type: 'logic.stop_after_spam',
+    label: 'Stopp nach Spam',
+    category: 'logic',
+    canvasType: 'registry',
+    description:
+      'Beendet den Workflow, wenn die Mail als Spam oder „Spam prüfen" markiert ist. ' +
+      'Hilfsknoten hinter email.mark_spam in Spam-Pipelines.',
+    execute: async (ctx) => {
+      const row = ctx.message;
+      const isSpam =
+        row?.is_spam === 1
+        || row?.spam_status === 'spam'
+        || row?.spam_status === 'review'
+        || ctx.strings.spam_status === 'spam'
+        || ctx.strings.spam_status === 'review'
+        || ctx.variables['spam.status'] === 'spam'
+        || ctx.variables['spam.status'] === 'review'
+        || ctx.variables['email.is_spam'] === true;
+      if (isSpam) {
+        return { status: 'ok', stop: true, message: 'stop_after_spam' };
+      }
+      return { status: 'ok', message: 'not_spam:continue' };
+    },
+  });
+
+  register({
     type: 'logic.set_variable',
     label: 'Variable setzen',
     category: 'logic',

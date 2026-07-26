@@ -29,6 +29,15 @@ type LiveChecks = {
   autoReplyEnabled: boolean | null
 }
 
+const TEMPLATE_PORT_NOTES: Record<string, string> = {
+  "outbound-quality-check":
+    "OK → Versand freigeben (autoSend). BLOCK/FEHLER → Entwurf bleibt mit Banner; Tags ki-review-block bzw. ki-review-error.",
+  "inbound-spam-ai":
+    "Spam-Pipeline: Priorität 1–9 empfohlen. Nach mark_spam → Stopp — Agent-/Antwort-Workflows (ab 50) laufen nicht auf Spam-Mails.",
+  "agent-retoure":
+    "Nur wenn nicht Spam. Agent-Workflows bitte mit Priorität 50+ hinter Spam-Pipelines (1–9) anlegen.",
+}
+
 /** Welche Live-Voraussetzungen betreffen dieses Template? (aus den Node-Typen abgeleitet) */
 function requiredChecksFor(template: WorkflowTemplateDto): {
   needsAi: boolean
@@ -140,6 +149,9 @@ export function WorkflowTemplatesDialog({ open, onOpenChange, onPick }: Props) {
                 <li key={t.id} className="rounded-lg border p-3">
                   <div className="font-medium">{t.name}</div>
                   <p className="text-sm text-muted-foreground">{t.description}</p>
+                  {TEMPLATE_PORT_NOTES[t.id] ? (
+                    <p className="mt-1 text-[11px] text-muted-foreground">{TEMPLATE_PORT_NOTES[t.id]}</p>
+                  ) : null}
                   <div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
                     {nodeChain(t).map((label, i) => (
                       <span key={i} className="flex items-center gap-1">

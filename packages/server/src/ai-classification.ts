@@ -110,6 +110,8 @@ export type AiReviewJobPlan = Readonly<{
   direction: 'inbound' | 'outbound';
   systemPrompt?: string;
   fallbackUserTemplate?: string;
+  parseMode?: 'outbound_structured' | 'block_keyword';
+  portResumeTargets?: Readonly<Record<string, string>>;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
@@ -662,47 +664,92 @@ export function createPostgresAiReviewPort(
       const variables = variablePayload(input.eventVariables);
       const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
         .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
-      const output = await runTrackedChatCompletion(
-        options,
-        {
-          workspaceId: input.workspaceId,
-          aiProfileId: Number(context.profile.id),
-          model: context.profile.model,
-          nodeType: 'ai.review',
-          messageId: input.messageId ?? null,
-          actorUserId: input.actorUserId ?? null,
-        },
-        {
-          profile: context.profile,
-          apiKey,
-          system: input.systemPrompt
-            ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
-          user: interpolateWorkflowTemplate(userTemplate, strings, variables),
-        },
-      );
-      const blockKeyword = input.blockKeyword.trim() || 'BLOCK';
-      const blocked = output.toUpperCase().includes(blockKeyword.toUpperCase());
+      try {
+        const output = await runTrackedChatCompletion(
+          options,
+          {
+            workspaceId: input.workspaceId,
+            aiProfileId: Number(context.profile.id),
+            model: context.profile.model,
+            nodeType: 'ai.review',
+            messageId: input.messageId ?? null,
+            actorUserId: input.actorUserId ?? null,
+          },
+          {
+            profile: context.profile,
+            apiKey,
+            system: input.systemPrompt
+              ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
+            user: interpolateWorkflowTemplate(userTemplate, strings, variables),
+          },
+        );
+        const blockKeyword = input.blockKeyword.trim() || 'BLOCK';
 
-      await withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          if (blocked) {
-            await persistAiReviewBlock(trx, input, now());
-            return;
-          }
-          if (input.continuation) {
-            await enqueueContinuation(trx, {
-              workspaceId: input.workspaceId,
-              messageId: input.messageId,
-              continuation: input.continuation,
-              variables: { 'ai.review.status': 'ok' },
-              now: now(),
-            });
-          }
-        },
-        { applySession: options.applyWorkspaceSession },
-      );
+        if (input.parseMode === 'outbound_structured') {
+          const parsed = parseOutboundReviewResponse(output);
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => {
+              if (!parsed.ok) {
+                const reason = parsed.reason ?? 'Ausgehende KI-Pruefung: Versand blockiert';
+                await persistAiReviewBlock(trx, input, now(), reason);
+                await maybeEnqueueOutboundReviewContinuation(trx, input, 'block', {
+                  'ai.outbound_review.verdict': 'block',
+                  'ai.outbound_review.reason': reason,
+                }, now());
+                return;
+              }
+              await maybeEnqueueOutboundReviewContinuation(trx, input, 'ok', {
+                'ai.outbound_review.verdict': 'ok',
+                'ai.outbound_review.reason': '',
+                'ai.review.status': 'ok',
+              }, now());
+            },
+            { applySession: options.applyWorkspaceSession },
+          );
+          return;
+        }
+
+        const blocked = output.toUpperCase().includes(blockKeyword.toUpperCase());
+
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            if (blocked) {
+              await persistAiReviewBlock(trx, input, now());
+              return;
+            }
+            if (input.continuation) {
+              await enqueueContinuation(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation,
+                variables: { 'ai.review.status': 'ok' },
+                now: now(),
+              });
+            }
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      } catch (error) {
+        if (input.parseMode !== 'outbound_structured') throw error;
+        const msg = error instanceof Error ? error.message : String(error);
+        const holdReason = `KI-Fehler: ${msg}`;
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            await persistAiReviewBlock(trx, input, now(), holdReason);
+            await maybeEnqueueOutboundReviewContinuation(trx, input, 'error', {
+              'ai.outbound_review.verdict': 'error',
+              'ai.outbound_review.reason': holdReason,
+            }, now());
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      }
     },
   };
 }
@@ -1311,6 +1358,7 @@ async function persistAiReviewBlock(
   trx: WorkspaceTransaction,
   input: AiReviewJobPlan,
   now: Date,
+  reason = 'KI-Pruefung: Versand blockiert',
 ): Promise<void> {
   if (input.messageId === undefined) return;
   if (input.direction === 'outbound') {
@@ -1318,7 +1366,7 @@ async function persistAiReviewBlock(
       .updateTable('email_messages')
       .set({
         outbound_hold: true,
-        outbound_block_reason: 'KI-Pruefung: Versand blockiert',
+        outbound_block_reason: reason,
         updated_at: now,
       })
       .where('workspace_id', '=', input.workspaceId)
@@ -1329,6 +1377,26 @@ async function persistAiReviewBlock(
 
   const message = await selectClassificationMessage(trx, input.workspaceId, input.messageId);
   if (message) await addMessageTag(trx, input.workspaceId, message, 'ki-review-block', now);
+}
+
+async function maybeEnqueueOutboundReviewContinuation(
+  trx: WorkspaceTransaction,
+  input: AiReviewJobPlan,
+  port: 'ok' | 'block' | 'error',
+  variables: JobPayload,
+  now: Date,
+): Promise<void> {
+  const continuation = input.continuation;
+  if (!continuation) return;
+  const resumeNodeId = input.portResumeTargets?.[port] ?? (port === 'ok' ? continuation.resumeNodeId : undefined);
+  if (!resumeNodeId) return;
+  await enqueueContinuation(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    continuation: { ...continuation, resumeNodeId },
+    variables,
+    now,
+  });
 }
 
 async function enqueueClassificationContinuation(

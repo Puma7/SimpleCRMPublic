@@ -76,16 +76,21 @@ export async function enqueueInboundWorkflowsAfterSpam(
       { applySession: options.applyWorkspaceSession },
     );
 
-    for (const workflow of resolveScopedInboundWorkflowOverrides(workflows)) {
+    const scoped = resolveScopedInboundWorkflowOverrides(workflows);
+    const workflowIds = scoped.map((workflow) => Number(workflow.id));
+    if (workflowIds.length > 0) {
       await options.jobQueue.enqueue({
         workspaceId: input.workspaceId,
         type: 'workflow.execute',
         payload: withInboundWorkflowProvenance(input.actorUserId, {
           workspaceId: input.workspaceId,
-          workflowId: Number(workflow.id),
+          workflowId: workflowIds[0]!,
           messageId: input.messageId,
           triggerName: 'inbound',
-          context: { skipIfMessageSpamOrReview: true },
+          context: {
+            skipIfMessageSpamOrReview: true,
+            inboundWorkflowChain: { workflowIds, index: 0 },
+          },
         }),
         maxAttempts: 3,
       });

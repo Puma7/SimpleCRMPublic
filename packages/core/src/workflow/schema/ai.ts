@@ -78,18 +78,65 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
           'sonst das Standard-Profil aus den Einstellungen.',
       },
     ],
+    ports: [
+      {
+        id: 'ok',
+        label: 'OK',
+        description:
+          'Die KI hält den Entwurf für versandfertig — hier „Versand freigeben" (autoSend) oder „Entwurf versenden" anschließen.',
+        kind: 'success',
+        color: 'emerald',
+        synonyms: ['freigeben', 'senden'],
+      },
+      {
+        id: 'block',
+        label: 'Blockiert',
+        description:
+          'Die KI hat Beanstandungen: Der Entwurf bleibt mit Banner im Posteingang (Hold). ' +
+          'Hier z. B. Tag setzen oder Aufgabe anlegen — Versand-Knoten nicht an diesen Ausgang hängen.',
+        kind: 'branch',
+        color: 'amber',
+        synonyms: ['halten', 'prüfen'],
+      },
+      {
+        id: 'error',
+        label: 'KI-Fehler',
+        description:
+          'Der KI-Aufruf ist fehlgeschlagen — sicherheitshalber Hold (fail-closed). ' +
+          'Optional Tag ki-review-error setzen.',
+        kind: 'failure',
+        color: 'red',
+        synonyms: ['fehler'],
+      },
+    ],
+    outputs: [
+      {
+        name: 'ai.outbound_review.verdict',
+        label: 'Prüfergebnis',
+        description: 'ok, block oder error — entspricht dem gewählten Ausgang.',
+        example: 'ok',
+        type: 'string',
+      },
+      {
+        name: 'ai.outbound_review.reason',
+        label: 'Begründung (deutsch)',
+        description: 'KI-Begründung bei block oder error; bei ok leer.',
+        example: 'Anhang fehlt laut Text',
+        type: 'string',
+      },
+    ],
     docs: {
       longHelp:
         'Qualitätskontrolle vor dem Versand: prüft ausgehende Mails auf Ton, Anrede, Rechtschreibung, ' +
-        'fehlende Anhänge und Antworten auf Betrugs-Mails. Bei Beanstandung wird der Entwurf angehalten — ' +
-        'er erscheint im Postfach mit gelbem Hinweis und der deutschen Begründung der KI. ' +
-        'Schlägt der KI-Aufruf fehl, wird sicherheitshalber ebenfalls angehalten (fail-closed). ' +
+        'fehlende Anhänge und Antworten auf Betrugs-Mails. Drei sichtbare Ausgänge: OK (freigeben), ' +
+        'Blockiert (Hold mit Banner und Begründung) und KI-Fehler (Hold, fail-closed). ' +
+        'Ohne Kante an block/error stoppt der Graph — der Entwurf bleibt trotzdem gehalten. ' +
         'Der Knoten wirkt nur in Ausgangs-Workflows; bei eingehenden Mails wird er übersprungen.',
       prerequisites: [
         'Ein KI-Profil mit API-Schlüssel.',
         'Der Workflow muss als Ausgangs-Workflow laufen (Auslöser: ausgehende E-Mail).',
       ],
-      seeAlso: ['ai.review', 'email.send_draft', 'email.hold_outbound'],
+      seeAlso: ['ai.review', 'email.release_outbound', 'email.hold_outbound'],
     },
   },
 
@@ -210,9 +257,15 @@ export const AI_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
     docs: {
       longHelp:
         'Die KI schätzt, wie wahrscheinlich die Mail Spam ist, und legt die Zahl in ai.spam_score ab. ' +
-        'Der Knoten markiert selbst nichts als Spam — dafür danach „Schwellwert“ und „Als Spam markieren“ verwenden. ' +
+        'Der Knoten markiert selbst nichts als Spam — dafür danach „Schwellwert" (Ausgang ≥ Schwellwert) und „Als Spam markieren" verwenden. ' +
+        'Desktop: Profil, Prompt und Kontextmodus (nur Metadaten vs. Volltext) sind konfigurierbar. ' +
+        'Server: nutzt den gespeicherten oder lokal berechneten Score — Profil/Prompt/contextMode werden dort ignoriert ' +
+        '(Variable ai.spam_score.server_note im Laufprotokoll). ' +
         'Tipp: davor den Absender-Filter setzen, damit bekannte Absender gar nicht erst geprüft werden.',
-      prerequisites: ['Ein KI-Profil mit API-Schlüssel (Einstellungen → E-Mail → KI).'],
+      prerequisites: [
+        'Desktop: KI-Profil mit API-Schlüssel (Einstellungen → E-Mail → KI).',
+        'Server: Spam-Engine oder vorab gespeicherter spam.score auf der Nachricht.',
+      ],
       seeAlso: ['logic.threshold', 'email.sender_filter', 'email.mark_spam'],
     },
   },

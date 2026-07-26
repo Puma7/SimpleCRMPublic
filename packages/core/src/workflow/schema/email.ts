@@ -652,6 +652,15 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         interpolate: true,
         advanced: true,
       },
+      {
+        key: 'stopFurtherWorkflows',
+        type: 'boolean',
+        label: 'Weitere Inbound-Workflows stoppen',
+        help:
+          'Ein (Standard in Spam-Vorlagen): bei Status spam/review wird der Graph beendet; ' +
+          'nachfolgende Workflows mit niedrigerer Priorität laufen erst, wenn die Mail noch nicht als Spam gilt.',
+        advanced: true,
+      },
     ],
     outputs: [
       {
@@ -707,6 +716,15 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         type: 'boolean',
         label: 'Lokalen Spam-Filter mitlernen lassen',
         help: 'Ein: die Mail wird als Lern-Beispiel für den eingebauten Spam-Filter verwendet.',
+        advanced: true,
+      },
+      {
+        key: 'stopFurtherWorkflows',
+        type: 'boolean',
+        label: 'Weitere Inbound-Workflows stoppen',
+        help:
+          'Ein (Standard in Spam-Vorlagen): nach Spam/Review-Markierung wird der aktuelle Graph beendet. ' +
+          'Auf dem Server werden nachfolgende Workflows in der Priority-Kette erst gestartet, wenn die Mail noch nicht als Spam gilt.',
         advanced: true,
       },
     ],

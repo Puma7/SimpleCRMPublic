@@ -437,26 +437,45 @@ describe('ai.outbound_review — KI-Ausgangsprüfung (fail-closed)', () => {
     expect(runChatCompletion).not.toHaveBeenCalled();
   });
 
-  test('STATUS: BLOCK → setOutboundHold mit deutschem Grund', async () => {
+  test('STATUS: BLOCK → setOutboundHold mit deutschem Grund + port block', async () => {
     (runChatCompletion as jest.Mock).mockResolvedValue(
       'STATUS: BLOCK\nREASON: Anhang fehlt laut Text\nCODE: MISSING_ATTACHMENT',
     );
     const r = await node.execute(outboundCtx(), {}, 'o');
     expect(setOutboundHold).toHaveBeenCalledWith(99, true, 'Anhang fehlt laut Text');
-    expect(r).toMatchObject({ status: 'ok', blocked: true, blockReason: 'Anhang fehlt laut Text' });
+    expect(r).toMatchObject({
+      status: 'ok',
+      port: 'block',
+      blockReason: 'Anhang fehlt laut Text',
+      variables: {
+        'ai.outbound_review.verdict': 'block',
+        'ai.outbound_review.reason': 'Anhang fehlt laut Text',
+      },
+    });
+    expect(r.blocked).toBeUndefined();
   });
 
-  test('STATUS: OK → ok ohne Hold', async () => {
+  test('STATUS: OK → port ok ohne Hold', async () => {
     (runChatCompletion as jest.Mock).mockResolvedValue('STATUS: OK');
     const r = await node.execute(outboundCtx(), {}, 'o');
-    expect(r).toMatchObject({ status: 'ok' });
+    expect(r).toMatchObject({
+      status: 'ok',
+      port: 'ok',
+      variables: { 'ai.outbound_review.verdict': 'ok' },
+    });
     expect(setOutboundHold).not.toHaveBeenCalled();
   });
 
-  test('KI-Fehler → Hold + blocked (fail-closed statt Versand)', async () => {
+  test('KI-Fehler → Hold + port error (fail-closed statt Versand)', async () => {
     (runChatCompletion as jest.Mock).mockRejectedValue(new Error('offline'));
     const r = await node.execute(outboundCtx(), {}, 'o');
     expect(setOutboundHold).toHaveBeenCalledWith(99, true, 'KI-Fehler: offline');
-    expect(r).toMatchObject({ status: 'error', blocked: true, blockReason: 'KI-Fehler: offline' });
+    expect(r).toMatchObject({
+      status: 'ok',
+      port: 'error',
+      blockReason: 'KI-Fehler: offline',
+      variables: { 'ai.outbound_review.verdict': 'error' },
+    });
+    expect(r.blocked).toBeUndefined();
   });
 });

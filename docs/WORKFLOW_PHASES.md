@@ -59,6 +59,15 @@ Systemaudit-Overhaul in drei Commits (`f93354e`, `65966ef`, `8dc8298`). Endanwen
 | **2 — Deklaratives Node-Schema** | Eine Quelle der Wahrheit für ~52 Knoten (`packages/core/src/workflow/node-schema.ts` + `schema/`): Felder (Typ, DE-Label, Hilfe, Beispiel, Pflicht, Wertebereich), Ports und Output-Variablen treiben generischen Form-Renderer (`schema-fields.tsx`), Speichern-Validierung (Pflichtfelder blockieren, Knoten wird markiert), Variablen-Picker mit graph-sensitiven Vorschlägen, Canvas-Port-Handles und Kantenlabel-Auswahl statt Freitext; zentraler Interpolations-Pre-Pass: `{{Platzhalter}}` wirken in allen als `interpolate` markierten Feldern |
 | **3 — Zwei-Stufen-KI-Antwort** | `ai.draft_reply` (Agent 1: Entwurf mit Wissensbasis, Anrede, Signatur, korrekt adressiert) + `ai.review_draft` (Agent 2: Gegenprüfung, Ports `send`/`hold`, fail-safe immer Richtung Mensch); neutraler Freigabe-Zustand `approval_state` mit „Wartet auf Freigabe“-Banner (Jetzt senden / Als Entwurf behalten); Auto-Antwort-Master-Schalter jetzt mit UI (Einstellungen → Automatisierung) + Tageslimit pro Absender (`email_auto_reply_dedup`); Anti-Loop am Gate (RFC-3834-/List-*-Header eingehend, `Auto-Submitted: auto-replied` ausgehend); Vorlage „Eingehend: KI-Antwort mit Gegenprüfung (empfohlen)“; Vorlagen-Dialog mit Live-Voraussetzungs-Checkliste |
 
+## Überarbeitung 2026-07 — Workflow-Semantik (Welle 1–3)
+
+| Welle | Lieferung |
+|-------|-----------|
+| **1.1 Ausgangsprüfung** | `ai.outbound_review` mit Ports `ok`/`block`/`error`; Vorlage `outbound-quality-check` mit sichtbaren Zweigen |
+| **1.2/1.3 Spam Short-Circuit** | `stopFurtherWorkflows` an Spam-Knoten; `logic.stop_after_spam`; serielle Inbound-Kette auf dem Server; Agent-Vorlage mit Spam-Bedingung |
+| **2 Spam-Score-Parität** | Ehrliche Server-Hinweise zu `ai.spam_score`; Schema-Doku Desktop vs. Server |
+| **3 Editor-Transparenz** | Read-only Graph-JSON im Editor; Vorlagen-Port-Erklärungen; Doku-Updates |
+
 ## Smoke-Check 2026-06-01
 
 Automatisierte Stichprobe (CI-äquivalent, lokal):

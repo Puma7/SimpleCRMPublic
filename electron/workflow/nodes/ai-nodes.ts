@@ -177,7 +177,7 @@ export function registerAiNodes(register: Reg): void {
     defaultConfig: { promptId: 0, checkReplyContext: true },
     execute: async (ctx, config) => {
       if (ctx.dryRun && !ctx.previewOutbound) {
-        return { status: 'ok', message: 'dry-run outbound review skipped' };
+        return { status: 'ok', port: 'ok', message: 'dry-run outbound review skipped' };
       }
       if (ctx.direction !== 'outbound') {
         return { status: 'skipped', message: 'Nur für ausgehende E-Mails' };
@@ -255,13 +255,38 @@ export function registerAiNodes(register: Reg): void {
         if (!parsed.ok) {
           const reason = parsed.reason || 'Ausgehende KI-Prüfung fehlgeschlagen';
           if (!ctx.dryRun) setOutboundHold(id, true, reason);
-          return { status: 'ok', blocked: true, blockReason: reason };
+          return {
+            status: 'ok',
+            port: 'block',
+            blockReason: reason,
+            variables: {
+              'ai.outbound_review.verdict': 'block',
+              'ai.outbound_review.reason': reason,
+            },
+          };
         }
-        return { status: 'ok' };
+        return {
+          status: 'ok',
+          port: 'ok',
+          variables: {
+            'ai.outbound_review.verdict': 'ok',
+            'ai.outbound_review.reason': '',
+          },
+        };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (!ctx.dryRun) setOutboundHold(id, true, `KI-Fehler: ${msg}`);
-        return { status: 'error', blocked: true, blockReason: `KI-Fehler: ${msg}` };
+        const reason = `KI-Fehler: ${msg}`;
+        if (!ctx.dryRun) setOutboundHold(id, true, reason);
+        return {
+          status: 'ok',
+          port: 'error',
+          blockReason: reason,
+          message: reason,
+          variables: {
+            'ai.outbound_review.verdict': 'error',
+            'ai.outbound_review.reason': reason,
+          },
+        };
       }
     },
   });

@@ -295,6 +295,15 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     description: 'Beendet die Workflow-Ausführung an dieser Stelle sauber (kein Fehler).',
   },
   {
+    type: 'logic.stop_after_spam',
+    label: 'Stopp nach Spam',
+    category: 'logic',
+    canvasType: 'registry',
+    description:
+      'Beendet den Workflow, wenn die Mail als Spam oder „Spam prüfen" markiert ist. ' +
+      'Hinter email.mark_spam in Spam-Pipelines einsetzen.',
+  },
+  {
     type: 'logic.set_variable',
     label: 'Variable setzen',
     category: 'logic',

@@ -35,17 +35,24 @@ export function pickEdge(
 ): WorkflowGraphEdge | undefined {
   if (edges.length === 0) return undefined;
 
-  if (typeof port === 'string' && port !== 'yes' && port !== 'no' && port !== 'default') {
-    const lower = port.toLowerCase();
-    const byLabel = edges.find((edge) => (edge.label ?? '').toLowerCase() === lower);
-    if (byLabel) return byLabel;
-  }
   if (port === 'yes') return edges.find((edge) => edgeIsYes(edge));
   // Do not fall back to the first/yes edge when the condition failed. That caused
   // inbound workflows to archive every message when only a "ja" branch was wired.
   if (port === 'no') return edges.find((edge) => edgeIsNo(edge));
   if (port === 'done') return edges.find((edge) => edgeIsDone(edge)) ?? undefined;
   if (port === 'each') return edges.find((edge) => edgeIsEach(edge)) ?? edges[0];
+
+  if (typeof port === 'string' && port !== 'default') {
+    const lower = port.toLowerCase();
+    const byLabel = edges.find((edge) => (edge.label ?? '').toLowerCase() === lower);
+    if (byLabel) return byLabel;
+    // „ok“ darf auf eine unbeschriftete Default-Kante fallen (Abwärtskompatibilität).
+    if (lower === 'ok') {
+      return edges.find((edge) => edgeIsDefault(edge));
+    }
+    // Explizite Zweige (block, error, hold, send, …) ohne Kante: fail-closed.
+    return undefined;
+  }
 
   return edges.find((edge) => edgeIsDefault(edge));
 }
@@ -68,6 +75,19 @@ export function resolveResumeNodeAfter(
   nodeId: string,
 ): string | null {
   const outs = outgoing(doc.edges, nodeId);
+  const okEdge = pickEdge(outs, 'ok');
+  if (okEdge) return okEdge.target;
   const next = pickEdge(outs, 'default');
+  return next?.target ?? null;
+}
+
+/** Resolve the target node id for a named port on a node (e.g. ai.outbound_review). */
+export function resolveResumeNodeAfterPort(
+  doc: WorkflowGraphDocument,
+  nodeId: string,
+  port: string,
+): string | null {
+  const outs = outgoing(doc.edges, nodeId);
+  const next = pickEdge(outs, port);
   return next?.target ?? null;
 }

@@ -383,6 +383,18 @@ export function buildAiReviewJobPlan(
     direction: optionalWorkflowDirection(payload),
     ...optionalString(payload, 'systemPrompt', 4000),
     ...optionalString(payload, 'fallbackUserTemplate', 20_000),
+    ...(payload.parseMode === 'outbound_structured' || payload.parseMode === 'block_keyword'
+      ? { parseMode: payload.parseMode as 'outbound_structured' | 'block_keyword' }
+      : {}),
+    ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
+      ? {
+        portResumeTargets: Object.fromEntries(
+          Object.entries(payload.portResumeTargets as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+            .map(([port, target]) => [port, target.trim()]),
+        ),
+      }
+      : {}),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
