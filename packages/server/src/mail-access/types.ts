@@ -57,6 +57,10 @@ export type MailScopeClause = Readonly<{
   folderIds: readonly number[];
   messageIds: readonly number[];
   constraints: MailBindingVisibilityConstraints | null;
+  /** Shadow-mode remainder: exclude folders already covered by constrained grants. */
+  excludeFolderIds?: readonly number[];
+  /** Shadow-mode remainder: exclude messages already covered by constrained grants. */
+  excludeMessageIds?: readonly number[];
 }>;
 
 export type MailSqlScope =
@@ -285,7 +289,9 @@ export function messageMatchesConstraints(
   if (!constraints) return true;
   const mode = constraints.assignmentMode;
   if (mode && mode !== 'any') {
-    const assignee = facts.assignedToUserId ?? facts.assignedTo;
+    const assignee = (facts.assignedTo && facts.assignedTo.length > 0)
+      ? facts.assignedTo
+      : facts.assignedToUserId;
     if (mode === 'unassigned') {
       if (assignee) return false;
     } else if (mode === 'assigned_to_me') {
@@ -318,7 +324,9 @@ export function explainConstraintMismatch(
   if (!constraints) return null;
   const mode = constraints.assignmentMode;
   if (mode && mode !== 'any') {
-    const assignee = facts.assignedToUserId ?? facts.assignedTo;
+    const assignee = (facts.assignedTo && facts.assignedTo.length > 0)
+      ? facts.assignedTo
+      : facts.assignedToUserId;
     if (mode === 'unassigned' && assignee) return 'Nachricht ist zugewiesen (Filter: unzugewiesen)';
     if (mode === 'assigned_to_me' && assignee !== actor.userId) {
       return 'Nachricht ist nicht dem Nutzer zugewiesen';

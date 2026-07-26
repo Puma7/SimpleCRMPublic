@@ -53,10 +53,13 @@ function rejectUnlessWorkflowRuntimeMutation(req: ApiRequest): ApiResponse | nul
   if (req.method !== 'POST' && req.method !== 'PATCH' && req.method !== 'DELETE') return null;
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  // Version snapshots and version creates are part of the editor save path.
-  const isEditorWrite = req.method === 'POST' && (
-    /^\/api\/v1\/workflows\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
-    || /^\/api\/v1\/workflows\/by-source\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
+  // Version snapshots, version creates, and restore are part of the editor save path.
+  const isEditorWrite = (
+    (req.method === 'POST' && (
+      /^\/api\/v1\/workflows\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
+      || /^\/api\/v1\/workflows\/by-source\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
+    ))
+    || (req.method === 'POST' && /^\/api\/v1\/workflow-versions\/by-source\/[^/]+\/restore$/.test(req.path))
   );
   if (isEditorWrite) {
     const denied = rejectUnlessWorkflowEdit(principal);

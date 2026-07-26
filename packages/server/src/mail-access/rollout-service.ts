@@ -249,7 +249,51 @@ export class MailAccessRolloutService implements MailAccessService {
     userId: string;
     resource: Extract<import('@simplecrm/core').MailResource, { type: 'message' }>;
   }>) {
-    return this.contextualNewAcl({ workspaceId: input.workspaceId }).explainMessageVisibility(input);
+    const state = await this.options.state.getState(input.workspaceId);
+    const newExplanation = await this.contextualNewAcl({ workspaceId: input.workspaceId })
+      .explainMessageVisibility(input);
+
+    if (state.mode !== 'shadow' || state.diagnostic) {
+      return newExplanation;
+    }
+
+    const comparable = comparableLegacyFlag('mail.metadata.read');
+    if (!comparable) return newExplanation;
+    const accountId = resourceAccountId(input.resource);
+    if (accountId === null) return newExplanation;
+
+    const [legacyAllowed, newGrants] = await Promise.all([
+      this.options.legacy.canAccessAccount({
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        permission: 'mail.metadata.read',
+        accountId,
+      }),
+      this.options.newAcl.resolveGrants({
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        permission: 'mail.metadata.read',
+      }),
+    ]);
+    const enforceConstraints = shouldEnforceConstraintsInShadow(input.resource, newGrants);
+    const effectiveVisible = legacyAllowed && (!enforceConstraints || Boolean(newExplanation.visible));
+
+    return {
+      ...newExplanation,
+      visible: effectiveVisible,
+      reason: effectiveVisible
+        ? (enforceConstraints
+          ? newExplanation.reason
+          : (legacyAllowed && !newExplanation.visible
+            ? 'Shadow-Mode: Legacy-Kontozugriff erlaubt die Nachricht (neues ACL noch nicht deckungsgleich)'
+            : newExplanation.reason))
+        : (legacyAllowed
+          ? (newExplanation.reason || 'Sichtbarkeitsfilter blockieren die Nachricht')
+          : 'Kein Legacy-Kontozugriff und kein neues ACL-Binding'),
+      rolloutMode: 'shadow' as const,
+      legacyAllowed,
+      newAclVisible: Boolean(newExplanation.visible),
+    };
   }
 
   private async newDecision(
@@ -370,8 +414,41 @@ async function buildShadowScopeWithConstraints(input: Readonly<{
       });
       continue;
     }
+
+    const hasUnconstrainedAccountGrant = grantsForAccount.some((grant) => (
+      grant.resourceType === 'account' && !hasMailBindingConstraints(grant.constraints)
+    ));
+    const hasConstrainedAccountGrant = grantsForAccount.some((grant) => (
+      grant.resourceType === 'account' && hasMailBindingConstraints(grant.constraints)
+    ));
+
     for (const grant of grantsForAccount) {
       clauses.push(grantToClause(grant));
+    }
+
+    // Legacy remainder: folders/messages not covered by constrained new grants stay
+    // visible via the legacy full-account allow (assertPermission already does this).
+    if (!hasUnconstrainedAccountGrant && !hasConstrainedAccountGrant) {
+      const excludeFolderIds = [...new Set(
+        grantsForAccount
+          .filter((grant) => grant.resourceType === 'folder' || grant.resourceType === 'message')
+          .map((grant) => grant.folderId)
+          .filter((id): id is number => typeof id === 'number'),
+      )].sort(compareNumbers);
+      const excludeMessageIds = [...new Set(
+        grantsForAccount
+          .filter((grant) => grant.resourceType === 'message')
+          .map((grant) => grant.messageId)
+          .filter((id): id is number => typeof id === 'number'),
+      )].sort(compareNumbers);
+      clauses.push({
+        accountIds: [accountId],
+        folderIds: [],
+        messageIds: [],
+        constraints: null,
+        ...(excludeFolderIds.length > 0 ? { excludeFolderIds } : {}),
+        ...(excludeMessageIds.length > 0 ? { excludeMessageIds } : {}),
+      });
     }
   }
 

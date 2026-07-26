@@ -1163,17 +1163,14 @@ function workflowMessageVisibilityPredicate(
   const nonMail = kyselySql<boolean>`(${messageRef} is null and ${sourceRef} is null)`;
   if (scope.kind === 'none') return nonMail;
 
-  const branches: RawBuilder<boolean>[] = [];
-  if (scope.accountIds.length > 0) {
-    branches.push(kyselySql<boolean>`workflow_scope_message.account_id in (${kyselySql.join(scope.accountIds)})`);
-  }
-  if (scope.folderIds.length > 0) {
-    branches.push(kyselySql<boolean>`workflow_scope_message.folder_id in (${kyselySql.join(scope.folderIds)})`);
-  }
-  if (scope.messageIds.length > 0) {
-    branches.push(kyselySql<boolean>`workflow_scope_message.id in (${kyselySql.join(scope.messageIds)})`);
-  }
-  if (branches.length === 0) return nonMail;
+  const scopePred = mailScopePredicate(scope, {
+    accountId: 'workflow_scope_message.account_id',
+    folderId: 'workflow_scope_message.folder_id',
+    messageId: 'workflow_scope_message.id',
+    assignedToUserId: 'workflow_scope_message.assigned_to_user_id',
+    assignedTo: 'workflow_scope_message.assigned_to',
+  });
+  if (!scopePred) return nonMail;
 
   return kyselySql<boolean>`(
     ${nonMail}
@@ -1182,7 +1179,7 @@ function workflowMessageVisibilityPredicate(
       from email_messages as workflow_scope_message
       where workflow_scope_message.workspace_id = ${workspaceId}
         and workflow_scope_message.id = ${messageRef}
-        and (${kyselySql.join(branches, kyselySql` or `)})
+        and ${scopePred}
     )
   )`;
 }

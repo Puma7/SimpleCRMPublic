@@ -1000,6 +1000,22 @@ function outboundWorkflowGuardError(input: {
   return error(422, 'outbound_workflow_traps_mail', formatOutboundGraphTraps(issues));
 }
 
+/** Enabled graphs with side-effect nodes require workflows.manage (admins inherit). */
+function rejectUnlessSideEffectWorkflowManage(
+  principal: AuthenticatedPrincipal,
+  input: Readonly<{ graph: unknown; enabled: boolean | undefined }>,
+): ApiResponse | null {
+  if (input.enabled === false) return null;
+  if (!input.graph || typeof input.graph !== 'object') return null;
+  if (!workflowGraphHasSideEffectNode(input.graph as WorkflowGraphDocument)) return null;
+  if (requireCapability(principal, 'workflows.manage')) return null;
+  return error(
+    403,
+    'forbidden',
+    'Aktive Workflows mit Seiteneffekten erfordern workflows.manage',
+  );
+}
+
 async function handleCreateWorkflow(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1025,6 +1041,12 @@ async function handleCreateWorkflow(
     executionMode: parsed.values.executionMode,
   });
   if (trap) return trap;
+
+  const sideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
+    graph: parsed.values.graph,
+    enabled: parsed.values.enabled ?? true,
+  });
+  if (sideEffectDenied) return sideEffectDenied;
 
   const result = await ports.workflows.create({
     workspaceId: principal.workspaceId,
@@ -1076,6 +1098,11 @@ async function handleUpdateWorkflow(
       executionMode: parsed.values.executionMode ?? existing?.executionMode,
     });
     if (trap) return trap;
+    const sideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
+      graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
+      enabled: parsed.values.enabled ?? existing?.enabled,
+    });
+    if (sideEffectDenied) return sideEffectDenied;
   }
 
   const result = await ports.workflows.update({

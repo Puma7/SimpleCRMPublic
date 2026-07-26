@@ -12,6 +12,7 @@ import {
   CommandShortcut,
 } from "@/components/ui/command"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
+import { useAuth } from "@/components/auth/auth-context"
 
 type CommandEntry = {
   id: string
@@ -48,6 +49,7 @@ function pushRecent(id: string): void {
 
 export function CommandPalette({ open, onOpenChange }: Props) {
   const navigate = useNavigate()
+  const { canViewSettings } = useAuth()
   const [recentIds, setRecentIds] = useState<string[]>([])
 
   useEffect(() => {
@@ -109,13 +111,15 @@ export function CommandPalette({ open, onOpenChange }: Props) {
         shortcut: "G M",
         run: () => go("nav-email", "/email"),
       },
-      {
-        id: "nav-email-settings",
-        label: "E-Mail Einstellungen",
-        section: "Springe zu",
-        run: () =>
-          go("nav-email-settings", "/email/settings", emailSettingsSearch({ tab: "accounts" })),
-      },
+      ...(canViewSettings
+        ? [{
+            id: "nav-email-settings",
+            label: "E-Mail Einstellungen",
+            section: "Springe zu",
+            run: () =>
+              go("nav-email-settings", "/email/settings", emailSettingsSearch({ tab: "accounts" })),
+          } satisfies CommandEntry]
+        : []),
       {
         id: "nav-workflows",
         label: "E-Mail Workflows",
@@ -128,12 +132,14 @@ export function CommandPalette({ open, onOpenChange }: Props) {
         section: "Springe zu",
         run: () => go("nav-calendar", "/calendar"),
       },
-      {
-        id: "nav-settings",
-        label: "Einstellungen",
-        section: "Springe zu",
-        run: () => go("nav-settings", "/settings"),
-      },
+      ...(canViewSettings
+        ? [{
+            id: "nav-settings",
+            label: "Einstellungen",
+            section: "Springe zu",
+            run: () => go("nav-settings", "/settings"),
+          } satisfies CommandEntry]
+        : []),
       {
         id: "compose",
         label: "Neue E-Mail verfassen",
@@ -142,7 +148,7 @@ export function CommandPalette({ open, onOpenChange }: Props) {
         run: () => go("compose", "/email"),
       },
     ],
-    [go, runAction],
+    [go, runAction, canViewSettings],
   )
 
   const recentEntries = entries.filter((e) => recentIds.includes(e.id))

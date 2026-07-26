@@ -692,6 +692,28 @@ async function callerCanTrainAllMessages(
   });
   if (scope.kind === 'all') return true;
   if (scope.kind === 'none') return false;
+  // Constrained scopes cannot be approximated by flat account/folder/message IDs.
+  if (scope.clauses && scope.clauses.length > 0) {
+    for (const messageId of messageIds) {
+      const resources = await ports.mailResourceLookup.resolve({
+        workspaceId: principal.workspaceId,
+        target: { kind: 'message', id: messageId },
+      });
+      const messageResource = resources.find((resource) => resource.type === 'message');
+      if (!messageResource || messageResource.type !== 'message') return false;
+      try {
+        await ports.mailAccess.assertPermission({
+          workspaceId: principal.workspaceId,
+          actor,
+          permission: 'mail.content.read',
+          resource: messageResource,
+        });
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
   const accountIds = new Set(scope.accountIds);
   const folderIds = new Set(scope.folderIds);
   const scopedMessageIds = new Set(scope.messageIds);

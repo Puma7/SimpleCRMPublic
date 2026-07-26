@@ -153,6 +153,7 @@ type WorkflowStepStatus = 'ok' | 'error' | 'skipped';
 type WorkflowMessagePatch = {
   archived?: boolean;
   assigned_to?: string | null;
+  assigned_to_user_id?: string | null;
   done_local?: boolean;
   folder_kind?: string;
   is_spam?: boolean;
@@ -1745,8 +1746,14 @@ async function executeServerNode(
     if (teamMemberId !== null && !teamMemberId) {
       return { status: 'error', port: 'error', message: 'teamMemberId leer' };
     }
+    // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
+    // stale UUID after workflow reassignment (mirrors the mail assign API).
+    const assignedToUserId = teamMemberId !== null && isUuidString(teamMemberId)
+      ? teamMemberId
+      : null;
     const result = await updateWorkflowMessage(trx, context, {
       assigned_to: teamMemberId,
+      assigned_to_user_id: assignedToUserId,
       updated_at: now,
     });
     return result ?? { status: 'ok', port: 'default', variables: { 'email.assigned_to': teamMemberId } };
@@ -4380,6 +4387,10 @@ async function updateWorkflowMessage(
     .where('id', '=', context.messageId)
     .execute();
   return null;
+}
+
+function isUuidString(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 /**

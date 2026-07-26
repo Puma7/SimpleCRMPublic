@@ -69,6 +69,14 @@ export function mergeAuthorityConstraints(
   if (!left) return right
   const leftMode = left.assignmentMode && left.assignmentMode !== 'any' ? left.assignmentMode : null
   const rightMode = right.assignmentMode && right.assignmentMode !== 'any' ? right.assignmentMode : null
+  // Conflicting assignment modes have an empty intersection → deny-all.
+  if (leftMode && rightMode && leftMode !== rightMode) {
+    return {
+      ...DENY_ALL_MAIL_BINDING_CONSTRAINTS,
+      categoryExcludeIds: [...new Set([...left.categoryExcludeIds, ...right.categoryExcludeIds])].sort((a, b) => a - b),
+      tagExcludeValues: [...new Set([...left.tagExcludeValues, ...right.tagExcludeValues])].sort(),
+    }
+  }
   const assignmentMode = leftMode ?? rightMode
   const categoryAllowIds = intersectAllowNumbers(left.categoryAllowIds, right.categoryAllowIds)
   const categoryExcludeIds = [...new Set([...left.categoryExcludeIds, ...right.categoryExcludeIds])].sort((a, b) => a - b)

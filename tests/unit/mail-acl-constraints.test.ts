@@ -137,6 +137,28 @@ describe('mail ACL visibility constraints', () => {
     expect(merged.tagExcludeValues).toEqual(['x']);
   });
 
+  test('mergeAuthorityConstraints denies conflicting assignment modes', () => {
+    const merged = mergeAuthorityConstraints(
+      {
+        assignmentMode: 'assigned_to_me',
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: [],
+        tagExcludeValues: [],
+      },
+      {
+        assignmentMode: 'unassigned',
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: [],
+        tagExcludeValues: [],
+      },
+    );
+    expect(merged.categoryAllowIds).toEqual([DENY_ALL_CATEGORY_ALLOW_ID]);
+    expect(merged.tagAllowValues).toEqual([DENY_ALL_TAG_ALLOW_VALUE]);
+    expect(hasMailBindingConstraints(merged)).toBe(true);
+  });
+
   test('deny-all category sentinel survives positive-id filtering', () => {
     const ids = [DENY_ALL_CATEGORY_ALLOW_ID, 0, 1, 2]
       .filter((id) => Number.isSafeInteger(id) && (id > 0 || id === DENY_ALL_CATEGORY_ALLOW_ID));

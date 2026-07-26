@@ -502,6 +502,46 @@ describe('MailAccessRolloutService', () => {
     expect(scope.actor?.userId).toBe(USER_A);
   });
 
+  test('shadow resolveScope keeps legacy remainder beside constrained folder grants', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 1,
+        resourceType: 'folder',
+        accountId: ACCOUNT_A,
+        folderId: FOLDER_A,
+        messageId: null,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+    });
+    fixture.newPort.resolveScopeActorContext = async () => ({
+      userId: USER_A,
+      groupMemberUserIds: [USER_A],
+    });
+
+    const scope = await fixture.service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+    });
+    expect(scope.kind).toBe('restricted');
+    if (scope.kind !== 'restricted') return;
+    expect(scope.clauses).toHaveLength(2);
+    expect(scope.clauses?.some((clause) => clause.folderIds.includes(FOLDER_A))).toBe(true);
+    expect(scope.clauses?.some((clause) => (
+      clause.accountIds.includes(ACCOUNT_A)
+      && (clause.excludeFolderIds?.includes(FOLDER_A) ?? false)
+      && !clause.constraints
+    ))).toBe(true);
+  });
+
   test('enforce mode uses only the new ACL and never calls the legacy port', async () => {
     const fixture = createRolloutFixture({
       mode: 'enforce',

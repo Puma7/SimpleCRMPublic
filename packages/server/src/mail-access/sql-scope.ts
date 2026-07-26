@@ -1,7 +1,12 @@
 import { sql, type RawBuilder } from 'kysely';
 
 import { hasMailBindingConstraints } from './mail-acl-constraints';
-import type { MailBindingVisibilityConstraints, MailScopeActorContext, MailSqlScope } from './types';
+import type {
+  MailBindingVisibilityConstraints,
+  MailScopeActorContext,
+  MailScopeClause,
+  MailSqlScope,
+} from './types';
 
 export type MailScopeColumns = Readonly<{
   accountId?: string;
@@ -39,7 +44,7 @@ export function mailScopePredicate(
 
   if (effective.clauses && effective.clauses.length > 0) {
     const clausePreds = effective.clauses
-      .map((clause) => clausePredicate(clause.accountIds, clause.folderIds, clause.messageIds, clause.constraints, columns, effective.actor))
+      .map((clause) => clausePredicate(clause, columns, effective.actor))
       .filter((pred): pred is RawBuilder<boolean> => pred !== undefined);
     if (clausePreds.length === 0) return sql<boolean>`false`;
     return sql<boolean>`(${sql.join(clausePreds, sql` or `)})`;
@@ -54,19 +59,25 @@ export function mailScopePredicate(
 }
 
 function clausePredicate(
-  accountIds: readonly number[],
-  folderIds: readonly number[],
-  messageIds: readonly number[],
-  constraints: MailBindingVisibilityConstraints | null,
+  clause: MailScopeClause,
   columns: MailScopeColumns,
   actor: MailScopeActorContext | undefined,
 ): RawBuilder<boolean> | undefined {
   const branches: RawBuilder<boolean>[] = [];
-  addIdBranches(branches, columns.accountId, accountIds);
-  addIdBranches(branches, columns.folderId, folderIds);
-  addIdBranches(branches, columns.messageId, messageIds);
+  addIdBranches(branches, columns.accountId, clause.accountIds);
+  addIdBranches(branches, columns.folderId, clause.folderIds);
+  addIdBranches(branches, columns.messageId, clause.messageIds);
   if (branches.length === 0) return undefined;
-  const resourcePred = sql<boolean>`(${sql.join(branches, sql` or `)})`;
+  let resourcePred = sql<boolean>`(${sql.join(branches, sql` or `)})`;
+  const excludeFolderIds = clause.excludeFolderIds ?? [];
+  const excludeMessageIds = clause.excludeMessageIds ?? [];
+  if (excludeFolderIds.length > 0 && columns.folderId) {
+    resourcePred = sql<boolean>`(${resourcePred} and ${sql.ref(columns.folderId)} not in (${sql.join(excludeFolderIds)}))`;
+  }
+  if (excludeMessageIds.length > 0 && columns.messageId) {
+    resourcePred = sql<boolean>`(${resourcePred} and ${sql.ref(columns.messageId)} not in (${sql.join(excludeMessageIds)}))`;
+  }
+  const constraints = clause.constraints;
   if (!hasMailBindingConstraints(constraints) || !constraints) return resourcePred;
   // Account/folder listings without a message id column cannot apply message filters.
   if (!columns.messageId) return resourcePred;
@@ -108,7 +119,9 @@ function visibilityPredicate(
       }
     } else if (mode === 'assigned_to_me') {
       if (assignedUserCol && assignedCol) {
-        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) = ${actorId})`);
+        // Prefer free-text assigned_to when set so workflow/UI reassignment is not
+        // masked by a stale assigned_to_user_id UUID.
+        parts.push(sql<boolean>`(coalesce(nullif(${sql.ref(assignedCol)}, ''), ${sql.ref(assignedUserCol)}::text) = ${actorId})`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text = ${actorId}`);
       } else if (assignedCol) {
@@ -117,7 +130,7 @@ function visibilityPredicate(
     } else if (mode === 'assigned_to_my_groups') {
       const ids = actor!.groupMemberUserIds.length > 0 ? actor!.groupMemberUserIds : [actorId];
       if (assignedUserCol && assignedCol) {
-        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, ${sql.ref(assignedCol)}) in (${sql.join(ids)}))`);
+        parts.push(sql<boolean>`(coalesce(nullif(${sql.ref(assignedCol)}, ''), ${sql.ref(assignedUserCol)}::text) in (${sql.join(ids)}))`);
       } else if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text in (${sql.join(ids)})`);
       } else if (assignedCol) {
