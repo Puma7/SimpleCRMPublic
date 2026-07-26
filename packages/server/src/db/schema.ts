@@ -14,6 +14,7 @@ export type ServerDatabase = {
   auth_login_failures: AuthLoginFailuresTable;
   auth_mfa_email_codes: AuthMfaEmailCodesTable;
   auth_challenge_tokens: AuthChallengeTokensTable;
+  api_rate_limit_counters: ApiRateLimitCountersTable;
   email_auto_reply_reservations: EmailAutoReplyReservationsTable;
   email_auto_reply_daily_counters: EmailAutoReplyDailyCountersTable;
   conversation_locks: ConversationLocksTable;
@@ -224,6 +225,14 @@ export type AuthChallengeTokensTable = {
   attempt_count: number;
   consumed_at: TimestampColumn | null;
   expires_at: TimestampColumn;
+  updated_at: TimestampColumn;
+};
+
+export type ApiRateLimitCountersTable = {
+  bucket: string;
+  client_key: string;
+  window_start_ms: string;
+  request_count: number;
   updated_at: TimestampColumn;
 };
 

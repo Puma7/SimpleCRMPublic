@@ -1587,6 +1587,20 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     result: z.object({}).passthrough(),
   });
   set(IPCChannels.Email.ListWorkflowRuns, { payload: positiveInt, result: recordArray });
+  set(IPCChannels.Email.ListWorkflowDelayedJobs, {
+    payload: z.object({
+      status: z.string().optional(),
+      limit: z.number().int().positive().optional(),
+    }).optional(),
+    result: z.object({
+      items: recordArray,
+      nextCursor: z.number().nullable(),
+    }),
+  });
+  set(IPCChannels.Email.CancelWorkflowDelayedJob, {
+    payload: z.object({ id: z.number().int().positive() }),
+    result: z.object({ success: z.boolean(), error: z.string().optional() }),
+  });
   set(IPCChannels.Email.GetWorkflowRunLog, { payload: positiveInt, result: z.array(z.string()) });
   set(IPCChannels.Email.ListWorkflowRunSteps, { payload: positiveInt, result: recordArray });
   set(IPCChannels.Email.ListWorkflowTemplates, { payload: voidPayload, result: recordArray });

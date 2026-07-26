@@ -2,6 +2,11 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { toast } from 'sonner';
 
+const mockUseAuth = jest.fn();
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => mockUseAuth(),
+}));
+
 import { ApplyWorkflowMenu } from '@/components/email/apply-workflow-menu';
 import {
   configureRendererTransport,
@@ -80,6 +85,11 @@ describe('ApplyWorkflowMenu server-client mode', () => {
   beforeEach(() => {
     mockOpenMenu = null;
     jest.clearAllMocks();
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-1', role: 'user' },
+      loading: false,
+      hasCapability: (cap: string) => cap === 'workflows.manage',
+    });
     resetRendererTransportForTests();
     delete (window as any).electronAPI;
   });
@@ -87,6 +97,21 @@ describe('ApplyWorkflowMenu server-client mode', () => {
   afterEach(() => {
     resetRendererTransportForTests();
     delete (window as any).electronAPI;
+  });
+
+  test('hides the menu when workflows.manage is missing in HTTP mode', () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-1', role: 'user' },
+      loading: false,
+      hasCapability: () => false,
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: jest.fn() as unknown as typeof fetch,
+    }));
+
+    const { container } = render(<ApplyWorkflowMenu message={message()} />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   test('runs dry-run and executes workflow through HTTP transport', async () => {

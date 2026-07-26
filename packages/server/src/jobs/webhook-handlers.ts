@@ -101,7 +101,14 @@ export async function guardedFetch(args: {
   allowlist: string | readonly string[];
   lookup: WebhookLookup;
   fetchImpl: GuardedFetch;
-  init: { method: WebhookHttpMethod; headers: Record<string, string>; body?: string; timeoutMs: number };
+  init: {
+    method: WebhookHttpMethod;
+    headers: Record<string, string>;
+    body?: string;
+    timeoutMs: number;
+    /** Optional caller AbortSignal; combined with the per-hop timeout when available. */
+    signal?: AbortSignal;
+  };
   maxRedirects?: number;
 }): Promise<{ ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string> }> {
   const maxRedirects = args.maxRedirects ?? 3;
@@ -115,15 +122,26 @@ export async function guardedFetch(args: {
   let body = args.init.body;
   let headers: Record<string, string> = { ...args.init.headers };
   for (let hop = 0; ; hop += 1) {
+    if (args.init.signal?.aborted) {
+      throw new Error('request was aborted');
+    }
     const remainingMs = Math.max(0, deadline - Date.now());
     if (remainingMs <= 0) {
       throw new Error('webhook request exceeded its total timeout');
     }
-    const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup);
-    const signal =
+    const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup, {
+      signal: args.init.signal,
+      timeoutMs: remainingMs,
+    });
+    const hopRemainingMs = Math.max(0, deadline - Date.now());
+    if (hopRemainingMs <= 0) {
+      throw new Error('webhook request exceeded its total timeout');
+    }
+    const timeoutSignal =
       typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-        ? AbortSignal.timeout(remainingMs)
+        ? AbortSignal.timeout(hopRemainingMs)
         : undefined;
+    const signal = combineAbortSignals(args.init.signal, timeoutSignal);
     const response = await args.fetchImpl(currentUrl, {
       method,
       headers,
@@ -203,6 +221,7 @@ export async function assertWebhookUrlAllowed(
   url: string,
   allowlist: string | readonly string[],
   lookup: WebhookLookup,
+  options?: { signal?: AbortSignal; timeoutMs?: number },
 ): Promise<readonly string[]> {
   let parsed: URL;
   try {
@@ -228,7 +247,7 @@ export async function assertWebhookUrlAllowed(
     throw new Error('webhook URL host is not in the allowlist');
   }
 
-  const records = await lookup(hostname);
+  const records = await runWebhookLookupWithBudget(lookup, hostname, options);
   if (records.length === 0) {
     throw new Error('webhook DNS lookup returned no addresses');
   }
@@ -238,6 +257,53 @@ export async function assertWebhookUrlAllowed(
     }
   }
   return records.map((record) => record.address);
+}
+
+async function runWebhookLookupWithBudget(
+  lookup: WebhookLookup,
+  hostname: string,
+  options?: { signal?: AbortSignal; timeoutMs?: number },
+): Promise<readonly { address: string }[]> {
+  if (options?.signal?.aborted) {
+    throw new Error('request was aborted');
+  }
+  const lookupPromise = lookup(hostname);
+  if (options?.timeoutMs === undefined && !options?.signal) {
+    return lookupPromise;
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer !== undefined) clearTimeout(timer);
+      options?.signal?.removeEventListener('abort', onAbort);
+    };
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn();
+    };
+    const onAbort = () => {
+      finish(() => reject(new Error('request was aborted')));
+    };
+
+    if (typeof options?.timeoutMs === 'number') {
+      if (options.timeoutMs <= 0) {
+        finish(() => reject(new Error('webhook DNS lookup timed out')));
+        return;
+      }
+      timer = setTimeout(() => {
+        finish(() => reject(new Error('webhook DNS lookup timed out')));
+      }, options.timeoutMs);
+    }
+    options?.signal?.addEventListener('abort', onAbort, { once: true });
+    lookupPromise.then(
+      (records) => finish(() => resolve(records)),
+      (error) => finish(() => reject(error)),
+    );
+  });
 }
 
 function requiredString(payload: JobPayload, key: string): string {
@@ -369,7 +435,8 @@ function isPrivateOrReservedWebhookIp(host: string): boolean {
   }
   if (kind === 6) {
     if (value === '::1' || value === '::') return true;
-    if (value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+    // fe80::/10 (link-local), not only the fe80: textual prefix.
+    if (isIpv6LinkLocalAddress(value) || value.startsWith('fc') || value.startsWith('fd')) return true;
     const mapped = ipv4FromMappedV6(value);
     if (mapped !== null) return isPrivateOrReservedWebhookIp(mapped);
     // A mapped-looking (::ffff:) address we couldn't decode → fail safe (block).
@@ -378,6 +445,30 @@ function isPrivateOrReservedWebhookIp(host: string): boolean {
   return false;
 }
 
+function isIpv6LinkLocalAddress(host: string): boolean {
+  const first = host.split(':', 1)[0] ?? '';
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
+  const n = Number.parseInt(first, 16);
+  return n >= 0xfe80 && n <= 0xfebf;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function combineAbortSignals(
+  external: AbortSignal | undefined,
+  timeout: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (!external) return timeout;
+  if (!timeout) return external;
+  const anyFn = (AbortSignal as typeof AbortSignal & {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  }).any;
+  if (typeof anyFn === 'function') {
+    return anyFn([external, timeout]);
+  }
+  // Fallback: prefer the external signal (caller timeout) when AbortSignal.any
+  // is unavailable; the guarded hop still uses Date.now() deadline checks.
+  return external;
 }

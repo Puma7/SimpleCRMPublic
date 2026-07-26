@@ -1,5 +1,6 @@
 import { randomBytes } from 'crypto';
 import type { Kysely } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   ReturnCreateInput,
@@ -166,7 +167,7 @@ async function listReturns(
   if (input.status) query = query.where('status', '=', input.status);
   if (typeof input.customerId === 'number') query = query.where('customer_id', '=', input.customerId);
   if (input.search) {
-    const needle = `%${input.search.toLowerCase()}%`;
+    const needle = ilikeContainsPattern(input.search);
     query = query.where((eb) => eb.or([
       eb('return_number', 'ilike', needle),
       eb('jtl_order_number', 'ilike', needle),

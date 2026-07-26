@@ -378,7 +378,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         patch: { summary: 'Update mail category' },
         delete: { summary: 'Delete mail category' },
       },
-      '/email/categories/reorder': { patch: { summary: 'Reorder mail categories' } },
+      '/email/categories/reorder': { post: { summary: 'Reorder mail categories' } },
       '/email/messages/{id}/tags': {
         get: { summary: 'List message tags' },
         post: { summary: 'Add message tag' },

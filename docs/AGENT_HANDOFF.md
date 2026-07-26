@@ -1,9 +1,9 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-26 (Workflow-Semantik Wellen 1–4)
+**Last updated:** 2026-07-26 (Workflow-Semantik Wellen 1–4 + Multinutzer-Server-Audit)
 **Integration branch:** `cursor/workflow-system-improvements-07bc`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
-**Current audit:** [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) · [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
+**Current audit:** [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) (Workflow-Wellen); Multinutzer-Server: [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md); Mail/UX: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
 ---
 
@@ -58,6 +58,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Dedicated `ubuntu-22.04` CI gate with Chromium sandbox, Xvfb, isolated standalone user-data, first-run authentication, HTML/trace/video/screenshot artifacts, and Electron/renderer logs |
 | System audit | Viewer races, compose zones/signatures, scheduled sends, AI drafts, auto-reply headers, RLS-sichere MFA-Mutationen und multi-replizierter Login-Challenge-State gehärtet; siehe aktuellen Auditbericht |
+| Server multiuser audit (2026-07-26) | Alle validierten Findings behoben: `crm.write`, AI pinned-fetch + `workflows.manage` für Profile, CRM-WS-Payloads, Draft-Approval ausgeblendet, Delayed-Jobs Cancel, Maintenance-Shims; siehe Auditbericht |
 | E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 | CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
 | Aufgaben/Kalender | `calendar_events.task_id` ist die kanonische 1:1-Verknuepfung; Erstellen, Verschieben, Entkoppeln und Loeschen laufen in PostgreSQL und SQLite atomar |

@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   WorkflowDelayedJobApiPort,
@@ -47,6 +48,7 @@ import type {
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
 } from './workspace-context';
 import {
   resolveEmailAccountReference,
@@ -239,7 +241,7 @@ export function createPostgresWorkflowVersionReadPort(
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.workflowId !== undefined) query = query.where('workflow_id', '=', input.workflowId);
           const search = input.search?.trim();
-          if (search) query = query.where('label', 'ilike', `%${search}%`);
+          if (search) query = query.where('label', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapWorkflowVersionRow);
@@ -614,7 +616,7 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('description', 'ilike', pattern),
@@ -765,7 +767,7 @@ export function createPostgresWorkflowKnowledgeChunkReadPort(
           if (input.knowledgeBaseId !== undefined) query = query.where('knowledge_base_id', '=', input.knowledgeBaseId);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('title', 'ilike', pattern),
               eb('content', 'ilike', pattern),
@@ -1027,7 +1029,7 @@ export function createPostgresWorkflowDelayedJobReadPort(
         async (trx) => {
           let currentQuery = trx
             .selectFrom('workflow_delayed_jobs')
-            .select(['id'])
+            .select(['id', 'status'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id);
           const currentVisibility = workflowMessageVisibilityPredicate(
@@ -1038,6 +1040,12 @@ export function createPostgresWorkflowDelayedJobReadPort(
           if (currentVisibility) currentQuery = currentQuery.where(currentVisibility);
           const current = await currentQuery.forUpdate().executeTakeFirst();
           if (!current) return null;
+
+          // Cancel must not overwrite running/done/failed after the worker claimed
+          // the row between the diagnostics list and this click.
+          if (values.status === 'cancelled' && current.status !== 'pending') {
+            return { ok: false, code: 'job_not_cancellable' };
+          }
 
           const workflow = values.workflowId === undefined
             ? undefined
@@ -1059,11 +1067,22 @@ export function createPostgresWorkflowDelayedJobReadPort(
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id);
+          if (values.status === 'cancelled') {
+            updateQuery = updateQuery.where('status', '=', 'pending');
+          }
           if (currentVisibility) updateQuery = updateQuery.where(currentVisibility);
           const row = await updateQuery
             .returning(workflowDelayedJobDetailColumns)
             .executeTakeFirst();
-          if (!row) return null;
+          if (!row) {
+            if (values.status === 'cancelled') return { ok: false, code: 'job_not_cancellable' };
+            return null;
+          }
+          // Cancelling only the delayed-job row leaves the queued workflow.execute
+          // continuation runnable; drop unlocked queue rows for this delayedJobId.
+          if (values.status === 'cancelled') {
+            await cancelQueuedDelayedJobExecute(trx, input.workspaceId, input.id);
+          }
           return { ok: true, job: mapWorkflowDelayedJobRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1089,12 +1108,28 @@ export function createPostgresWorkflowDelayedJobReadPort(
           );
           if (visibility) query = query.where(visibility);
           const row = await query.returning(workflowDelayedJobSummaryColumns).executeTakeFirst();
-          return row ? mapWorkflowDelayedJobRow(row, false) : null;
+          if (!row) return null;
+          await cancelQueuedDelayedJobExecute(trx, input.workspaceId, input.id);
+          return mapWorkflowDelayedJobRow(row, false);
         },
         { applySession: options.applyWorkspaceSession },
       );
     },
   };
+}
+
+async function cancelQueuedDelayedJobExecute(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  delayedJobId: number,
+): Promise<void> {
+  await trx
+    .deleteFrom('job_queue')
+    .where('workspace_id', '=', workspaceId)
+    .where('type', '=', 'workflow.execute')
+    .where('locked_at', 'is', null)
+    .where(kyselySql<boolean>`payload->>'delayedJobId' = ${String(delayedJobId)}`)
+    .execute();
 }
 
 function pageNumeric<TRow, TRecord>(

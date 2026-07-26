@@ -11,22 +11,25 @@ import { invokeRenderer } from "@/services/transport"
 interface ProductTableProps {
   data: Product[];
   actions?: React.ReactNode;
+  canWriteCrm?: boolean;
   onProductUpdated: () => void; // Callback after successful update
   onProductDeleted: () => void; // Callback after successful deletion
 }
 
-export function ProductTable({ data, actions, onProductUpdated, onProductDeleted }: ProductTableProps) {
+export function ProductTable({ data, actions, canWriteCrm = true, onProductUpdated, onProductDeleted }: ProductTableProps) {
   const [isEditDialogOpen, setEditDialogOpen] = React.useState(false);
   const [selectedProduct, setSelectedProduct] = React.useState<Product | null>(null);
 
   // Handler to open the edit dialog
   const handleEdit = (product: Product) => {
+    if (!canWriteCrm) return;
     setSelectedProduct(product);
     setEditDialogOpen(true);
   };
 
   // Handler for deleting a product (calls IPC)
   const handleDelete = async (productId: number) => {
+    if (!canWriteCrm) return;
     try {
       console.log(`Invoking products:delete for ID: ${productId}`);
       const result = await invokeRenderer(
@@ -49,8 +52,9 @@ export function ProductTable({ data, actions, onProductUpdated, onProductDeleted
 
   // Define meta object to pass handlers to columns
   const meta = {
-    onEdit: handleEdit,
-    onDelete: handleDelete,
+    onEdit: canWriteCrm ? handleEdit : undefined,
+    onDelete: canWriteCrm ? handleDelete : undefined,
+    canWriteCrm,
   }
 
   return (
@@ -64,7 +68,7 @@ export function ProductTable({ data, actions, onProductUpdated, onProductDeleted
         searchPlaceholder='Suche nach Name, Artikel-Nr. oder Beschreibung...'
       />
       {/* Render Edit Dialog */} 
-      {selectedProduct && (
+      {canWriteCrm && selectedProduct && (
         <EditProductDialog
           key={selectedProduct.id} // Ensure dialog re-renders when product changes
           product={selectedProduct}

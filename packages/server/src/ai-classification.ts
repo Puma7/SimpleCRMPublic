@@ -1490,8 +1490,6 @@ function defaultChatCompletion(
   options: PostgresAiClassificationPortOptions,
 ): (input: ChatCompletionInput) => Promise<string> {
   return async (input) => {
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-    if (!fetchImpl) throw new Error('fetch is not available for AI classification');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), OPENAI_CHAT_TIMEOUT_MS);
     try {
@@ -1503,8 +1501,10 @@ function defaultChatCompletion(
         system: input.system,
         user: input.user,
         temperature: 0.1,
-        fetchImpl,
         signal: controller.signal,
+        ...(options.fetchImpl
+          ? { fetchImpl: options.fetchImpl, allowUnguardedFetch: true }
+          : {}),
       });
       input.captureUsage?.(result.usage);
       return result.content;

@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type { Kysely, Selectable } from 'kysely';
 
@@ -77,7 +78,7 @@ export function createPostgresAutomationApiKeyReadPort(
           if (input.revoked === true) query = query.where('revoked_at', 'is not', null);
           if (input.revoked === false) query = query.where('revoked_at', 'is', null);
           const search = input.search?.trim();
-          if (search) query = query.where('label', 'ilike', `%${search}%`);
+          if (search) query = query.where('label', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           const pageRows = rows.slice(0, limit);

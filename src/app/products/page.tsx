@@ -14,8 +14,10 @@ import {
   isProductListRefreshEvent,
   subscribeServerEvents,
 } from '@/services/transport';
+import { useAuth } from '@/components/auth/auth-context';
 
 export default function ProductsPage() {
+  const { canWriteCrm } = useAuth();
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -116,21 +118,26 @@ export default function ProductsPage() {
       {/* Render ProductTable */}
       <ProductTable
           data={products}
+          canWriteCrm={canWriteCrm}
           actions={
-            <Button onClick={() => setCreateDialogOpen(true)}>
-              <PlusCircle className="mr-2 h-4 w-4" /> Neues Produkt
-            </Button>
+            canWriteCrm ? (
+              <Button onClick={() => setCreateDialogOpen(true)}>
+                <PlusCircle className="mr-2 h-4 w-4" /> Neues Produkt
+              </Button>
+            ) : null
           }
           onProductUpdated={handleProductUpdated}
           onProductDeleted={handleProductDeleted}
       /> 
 
       {/* Render CreateProductDialog */}
-      <CreateProductDialog 
-        isOpen={isCreateDialogOpen} 
-        onOpenChange={setCreateDialogOpen}
-        onProductCreated={handleProductCreated} 
-      /> 
+      {canWriteCrm ? (
+        <CreateProductDialog 
+          isOpen={isCreateDialogOpen} 
+          onOpenChange={setCreateDialogOpen}
+          onProductCreated={handleProductCreated} 
+        />
+      ) : null} 
 
     </div>
     </main>

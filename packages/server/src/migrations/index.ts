@@ -41,7 +41,9 @@ import { scheduledSendProvenanceMigration } from './0040_scheduled_send_provenan
 import { mailAclBindingMessageFkCascadeMigration } from './0041_mail_acl_binding_message_fk_cascade';
 import { quarantineLegacyProvenancelessJobsMigration } from './0042_quarantine_legacy_provenanceless_jobs';
 import { atomicTaskCalendarMigration } from './0043_atomic_task_calendar';
-import { emailDraftApprovalFieldsMigration } from './0044_email_draft_approval_fields';
+import { apiRateLimitCountersMigration } from './0044_api_rate_limit_counters';
+import { apiRateLimitWindowIdxMigration } from './0045_api_rate_limit_window_idx';
+import { emailDraftApprovalFieldsMigration } from './0046_email_draft_approval_fields';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -89,6 +91,8 @@ export const serverMigrations: readonly SqlMigration[] = [
   mailAclBindingMessageFkCascadeMigration,
   quarantineLegacyProvenancelessJobsMigration,
   atomicTaskCalendarMigration,
+  apiRateLimitCountersMigration,
+  apiRateLimitWindowIdxMigration,
   emailDraftApprovalFieldsMigration,
 ];
 

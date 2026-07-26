@@ -5,6 +5,7 @@ const principal = {
   userId: 'user-a',
   workspaceId: 'workspace-a',
   role: 'user' as const,
+  capabilities: ['crm.write'] as const,
 };
 
 const event = {

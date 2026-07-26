@@ -65,13 +65,22 @@ export function isPrivateOrReservedIp(host: string): boolean {
   }
   if (kind === 6) {
     if (h === '::1' || h === '::') return true;
-    if (h.startsWith('fe80:') || h.startsWith('fc') || h.startsWith('fd')) return true;
+    // fe80::/10 (link-local), not only the fe80: textual prefix.
+    if (isIpv6LinkLocal(h) || h.startsWith('fc') || h.startsWith('fd')) return true;
     if (h.startsWith('::ffff:')) {
       const mapped = h.slice('::ffff:'.length);
       if (isIP(mapped) === 4) return isPrivateOrReservedIp(mapped);
     }
   }
   return false;
+}
+
+/** IPv6 link-local is fe80::/10 (fe80–febf), not merely hosts starting with "fe80:". */
+function isIpv6LinkLocal(host: string): boolean {
+  const first = host.split(':', 1)[0] ?? '';
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
+  const n = Number.parseInt(first, 16);
+  return n >= 0xfe80 && n <= 0xfebf;
 }
 
 export function isHttpMethodAllowed(method: string): boolean {

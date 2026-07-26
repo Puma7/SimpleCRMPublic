@@ -19,6 +19,7 @@ interface ExecutionListToolbarProps {
   selectedCount: number
   onBulkComplete: () => void
   onBulkSnooze: (snoozedUntil: string) => void
+  canWriteCrm?: boolean
 }
 
 export function ExecutionListToolbar({
@@ -29,6 +30,7 @@ export function ExecutionListToolbar({
   selectedCount,
   onBulkComplete,
   onBulkSnooze,
+  canWriteCrm = true,
 }: ExecutionListToolbarProps) {
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-b">
@@ -54,7 +56,7 @@ export function ExecutionListToolbar({
         </SelectContent>
       </Select>
 
-      {selectedCount > 0 && (
+      {canWriteCrm && selectedCount > 0 && (
         <div className="flex items-center gap-1.5 ml-auto">
           <Badge variant="secondary" className="text-xs">
             {selectedCount} ausgewählt

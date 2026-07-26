@@ -39,6 +39,7 @@ import {
   PaginationNext,
   PaginationPrevious
 } from "@/components/ui/pagination"
+import { useAuth } from "@/components/auth/auth-context"
 import { GroupSelector, GroupOption } from "@/components/grouping/group-selector"
 import { GroupedList } from "@/components/grouping/grouped-list"
 import { dealGroupingFields, groupItemsByField } from "@/lib/grouping"
@@ -115,6 +116,7 @@ const formatCurrency = (value: string | number | null | undefined): string => {
 const PAGE_SIZE = 10
 
 export default function DealsPage() {
+  const { canWriteCrm } = useAuth()
   const [allDeals, setAllDeals] = useState<Deal[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [searchInput, setSearchInput] = useState("")
@@ -428,6 +430,7 @@ export default function DealsPage() {
             <ExportButton data={deals} fileName="deals.json">
               Exportieren
             </ExportButton>
+            {canWriteCrm ? (
             <Dialog
               open={isAddDealOpen}
               onOpenChange={setIsAddDealOpen}
@@ -553,6 +556,7 @@ export default function DealsPage() {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
+            ) : null}
         </div>
         <Card>
           <CardHeader className="pb-2">
@@ -716,8 +720,8 @@ export default function DealsPage() {
               <DndContext
                 sensors={sensors}
                 collisionDetection={closestCenter}
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
+                onDragStart={canWriteCrm ? handleDragStart : undefined}
+                onDragEnd={canWriteCrm ? handleDragEnd : undefined}
               >
                 <div className="flex gap-4 overflow-x-auto pb-4">
                   {dealStages.map((stage) => (
@@ -726,7 +730,8 @@ export default function DealsPage() {
                       id={stage}
                       title={stage}
                       deals={groupedDeals[stage] || []}
-                      onStageChange={handleKanbanStageChange}
+                      onStageChange={canWriteCrm ? handleKanbanStageChange : undefined}
+                      canWriteCrm={canWriteCrm}
                     />
                   ))}
                 </div>

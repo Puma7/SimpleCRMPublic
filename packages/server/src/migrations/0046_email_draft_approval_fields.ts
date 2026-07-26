@@ -1,7 +1,7 @@
 import type { SqlMigration } from './types';
 
 export const emailDraftApprovalFieldsMigration: SqlMigration = {
-  id: '0044_email_draft_approval_fields',
+  id: '0046_email_draft_approval_fields',
   description: 'Add draft approval state for two-stage KI reply (ai.review_draft)',
   upSql: [
     'ALTER TABLE email_messages ADD COLUMN IF NOT EXISTS approval_state text;',

@@ -6,6 +6,7 @@ import {
   normalizeMessageId,
 } from '@simplecrm/core';
 import { randomBytes } from 'crypto';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
@@ -403,7 +404,7 @@ export function createPostgresEmailFolderReadPort(options: PostgresMailMetadataR
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.accountId !== undefined) query = query.where('account_id', '=', input.accountId);
           const search = input.search?.trim();
-          if (search) query = query.where('path', 'ilike', `%${search}%`);
+          if (search) query = query.where('path', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapEmailFolderRow);
@@ -450,7 +451,7 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           if (input.role !== undefined) query = query.where('role', '=', input.role);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('id', 'ilike', pattern),
               eb('display_name', 'ilike', pattern),
@@ -641,7 +642,7 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             // Under a restricted scope, match ticket/subject only against
             // scope-visible messages so search can't surface a thread by a hidden
             // message's subject or ticket code. The thread id is not sensitive.
@@ -868,7 +869,7 @@ export function createPostgresEmailMessageTagReadPort(options: PostgresMailMetad
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
           if (input.tag !== undefined) query = query.where('tag', '=', input.tag);
           const search = input.search?.trim();
-          if (search) query = query.where('tag', 'ilike', `%${search}%`);
+          if (search) query = query.where('tag', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapEmailMessageTagRow);
@@ -963,7 +964,7 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.parentId !== undefined) query = query.where('parent_id', '=', input.parentId);
           const search = input.search?.trim();
-          if (search) query = query.where('name', 'ilike', `%${search}%`);
+          if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapEmailCategoryRow);
@@ -1315,7 +1316,7 @@ export function createPostgresEmailInternalNoteReadPort(options: PostgresMailMet
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.messageId !== undefined) query = query.where('message_id', '=', input.messageId);
           const search = input.search?.trim();
-          if (search) query = query.where('body', 'ilike', `%${search}%`);
+          if (search) query = query.where('body', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapEmailInternalNoteRow);
@@ -1452,7 +1453,7 @@ export function createPostgresEmailCannedResponseReadPort(options: PostgresMailM
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('title', 'ilike', pattern),
               eb('body', 'ilike', pattern),
@@ -1869,7 +1870,7 @@ export function createPostgresEmailRemoteContentAllowlistReadPort(
           if (input.scope !== undefined) query = query.where('scope', '=', input.scope);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('scope', 'ilike', pattern),
               eb('value', 'ilike', pattern),

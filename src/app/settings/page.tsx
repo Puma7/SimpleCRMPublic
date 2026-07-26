@@ -48,7 +48,7 @@ const settingsSchema = z.object({
 type SettingsForm = z.infer<typeof settingsSchema>
 
 export default function SettingsPage() {
-  const { user } = useAuth()
+  const { user, canWriteCrm } = useAuth()
   const serverClientMode = getRendererTransport().kind === "http"
   const isAdmin = user?.role === "owner" || user?.role === "admin"
   const localSyncAvailable =
@@ -353,14 +353,16 @@ export default function SettingsPage() {
             <CardTitle className="text-base">JTL-Synchronisation</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={handleSync}
-              disabled={isSyncing || !syncAvailable}
-            >
-              {isSyncing ? "Synchronisiere..." : "Synchronisation starten"}
-            </Button>
+            {canWriteCrm ? (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleSync}
+                disabled={isSyncing || !syncAvailable}
+              >
+                {isSyncing ? "Synchronisiere..." : "Synchronisation starten"}
+              </Button>
+            ) : null}
             {(syncStatusMessage || lastSyncTimestamp) && (
               <div className="space-y-1">
                 {lastSyncTimestamp && (
@@ -634,15 +636,17 @@ export default function SettingsPage() {
                     </Button>
                     {getConnectionStatusIcon()}
                   </div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={handleSync}
-                    disabled={isTesting || isConnecting || isSyncing || isClearingPassword || !syncAvailable}
-                    title={!syncAvailable ? "JTL Sync ist in dieser Laufzeit nicht verfuegbar." : undefined}
-                  >
-                    {isSyncing ? "Synchronisiere..." : "Synchronisation starten"}
-                  </Button>
+                  {canWriteCrm ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleSync}
+                      disabled={isTesting || isConnecting || isSyncing || isClearingPassword || !syncAvailable}
+                      title={!syncAvailable ? "JTL Sync ist in dieser Laufzeit nicht verfuegbar." : undefined}
+                    >
+                      {isSyncing ? "Synchronisiere..." : "Synchronisation starten"}
+                    </Button>
+                  ) : null}
                 </div>
 
                 {(syncStatusMessage || lastSyncTimestamp) && (

@@ -18,6 +18,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/components/auth/auth-context";
 import {
   Dialog,
   DialogContent,
@@ -232,6 +233,7 @@ const CustomEvent: React.FC<EventProps<CalendarRBCEvent>> = ({ event }) => {
 
 export default function CalendarPage() {
   const { toast } = useToast();
+  const { canWriteCrm } = useAuth();
   const [events, setEvents] = useState<CalendarRBCEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -889,25 +891,27 @@ export default function CalendarPage() {
               })}
             </span>
             <div className="flex-1" />
-            <Button
-              onClick={() => {
-                const now = new Date();
-                const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
-                const end = new Date(start.getTime() + 60 * 60 * 1000);
-                setEventFormData({
-                  title: "",
-                  start,
-                  end,
-                  allDay: false,
-                  description: "",
-                  color_code: "#3174ad",
-                });
-                setFormTaskData(null);
-                setIsAddModalOpen(true);
-              }}
-            >
-              Ereignis hinzufügen
-            </Button>
+            {canWriteCrm ? (
+              <Button
+                onClick={() => {
+                  const now = new Date();
+                  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
+                  const end = new Date(start.getTime() + 60 * 60 * 1000);
+                  setEventFormData({
+                    title: "",
+                    start,
+                    end,
+                    allDay: false,
+                    description: "",
+                    color_code: "#3174ad",
+                  });
+                  setFormTaskData(null);
+                  setIsAddModalOpen(true);
+                }}
+              >
+                Ereignis hinzufügen
+              </Button>
+            ) : null}
           </div>
 
           {fetchError && !loading && (
@@ -953,9 +957,9 @@ export default function CalendarPage() {
               onNavigate={(newDate: Date) => {
                 setCurrentDate(newDate);
               }}
-              selectable
+              selectable={canWriteCrm}
               onSelectEvent={handleSelectEvent}
-              onSelectSlot={handleSelectSlot}
+              onSelectSlot={canWriteCrm ? handleSelectSlot : undefined}
               popup
               defaultView={Views.MONTH}
               step={30}
@@ -979,8 +983,8 @@ export default function CalendarPage() {
               dayPropGetter={(date: Date) => ({
                 className: `rbc-day ${date.getDay() === 0 || date.getDay() === 6 ? 'rbc-weekend' : ''}`,
               })}
-              onEventDrop={handleEventDrop as any}
-              onEventResize={handleEventResize as any}
+              onEventDrop={canWriteCrm ? handleEventDrop as any : undefined}
+              onEventResize={canWriteCrm ? handleEventResize as any : undefined}
               messages={{
                 next: "Weiter",
                 previous: "Zurück",
@@ -998,8 +1002,8 @@ export default function CalendarPage() {
               }}
               culture='de-DE'
               tooltipAccessor={(event: CalendarRBCEvent) => event.title + (event.description ? `\n${event.description.substring(0, 100)}${event.description.length > 100 ? '...' : ''}` : '')}
-              resizable
-              draggableAccessor={() => true}
+              resizable={canWriteCrm}
+              draggableAccessor={() => canWriteCrm}
             />
           </section>
 
@@ -1014,6 +1018,7 @@ export default function CalendarPage() {
               <CalendarEventDetails
                 event={selectedEvent}
                 recurrenceText={selectedEvent.recurrence_rule ? getRecurrenceText(selectedEvent.recurrence_rule) : undefined}
+                canWrite={canWriteCrm}
                 onClose={() => {
                   setIsModalOpen(false);
                   setSelectedEvent(null);

@@ -19,9 +19,11 @@ import type { FollowUpItem, ActivityLogEntry, QueueCounts, SavedView } from "@/s
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Keyboard } from "lucide-react"
+import { useAuth } from "@/components/auth/auth-context"
 
 export default function FollowUpPage() {
   // State
+  const { canWriteCrm } = useAuth()
   const [activeQueue, setActiveQueue] = useState('heute')
   const [queueCounts, setQueueCounts] = useState<QueueCounts>({
     heute: 0,
@@ -290,13 +292,13 @@ export default function FollowUpPage() {
         }
         case 'e': {
           e.preventDefault()
-          if (selectedItem) handleComplete(selectedItem)
+          if (canWriteCrm && selectedItem) handleComplete(selectedItem)
           break
         }
         case 's': {
           e.preventDefault()
           // Snooze to tomorrow as default keyboard shortcut
-          if (selectedItem && selectedItem.source_type === 'task') {
+          if (canWriteCrm && selectedItem && selectedItem.source_type === 'task') {
             const tomorrow = new Date()
             tomorrow.setDate(tomorrow.getDate() + 1)
             tomorrow.setHours(9, 0, 0, 0)
@@ -306,7 +308,7 @@ export default function FollowUpPage() {
         }
         case 'n': {
           e.preventDefault()
-          if (selectedItem) openLogDialog('note')
+          if (canWriteCrm && selectedItem) openLogDialog('note')
           break
         }
       }
@@ -314,7 +316,7 @@ export default function FollowUpPage() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedItem, items, handleComplete, handleSnooze, openLogDialog])
+  }, [selectedItem, items, handleComplete, handleSnooze, openLogDialog, canWriteCrm])
 
   return (
     <div className="flex flex-col px-6" style={{ height: 'calc(100vh - 104px)' }}>
@@ -377,6 +379,7 @@ export default function FollowUpPage() {
               selectedCount={selectedItemIds.size}
               onBulkComplete={handleBulkComplete}
               onBulkSnooze={handleBulkSnooze}
+              canWriteCrm={canWriteCrm}
             />
             <ExecutionList
               items={items}
@@ -389,6 +392,7 @@ export default function FollowUpPage() {
               onComplete={handleComplete}
               onSnooze={handleSnooze}
               onQueueSwitch={handleQueueSelect}
+              canWriteCrm={canWriteCrm}
             />
           </div>
         </ResizablePanel>
@@ -411,6 +415,7 @@ export default function FollowUpPage() {
               onComplete={() => {
                 if (selectedItem) handleComplete(selectedItem)
               }}
+              canWrite={canWriteCrm}
             />
           </div>
         </ResizablePanel>

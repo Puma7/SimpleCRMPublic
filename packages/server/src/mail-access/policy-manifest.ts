@@ -489,7 +489,7 @@ function assignMetadataPolicies(assign: AssignRoutePolicy): void {
     PATCH: permissionPolicy('mail.triage', mailScope()),
     DELETE: permissionPolicy('mail.triage', mailScope()),
   });
-  assign('/api/v1/email/categories/reorder', { PATCH: permissionPolicy('mail.triage', mailScope()) });
+  assign('/api/v1/email/categories/reorder', { POST: permissionPolicy('mail.triage', mailScope()) });
   assign('/api/v1/email/category-counts', { GET: permissionPolicy('mail.metadata.read', mailScope()) });
 
   assign('/api/v1/email/message-categories', {

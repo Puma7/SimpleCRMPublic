@@ -17,6 +17,8 @@ describe('SettingsPage server-client sync controls', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'owner-1', role: 'owner' },
       loading: false,
+      canWriteCrm: true,
+      hasCapability: () => true,
     });
     resetRendererTransportForTests();
     (globalThis as any).ResizeObserver = class ResizeObserver {
@@ -71,6 +73,8 @@ describe('SettingsPage server-client sync controls', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-1', role: 'user' },
       loading: false,
+      canWriteCrm: false,
+      hasCapability: () => false,
     });
     const fetchImpl = jest.fn((url: string) => Promise.resolve(jsonResponse({
       data: url.endsWith('/api/v1/jtl/sync/status')
@@ -90,7 +94,30 @@ describe('SettingsPage server-client sync controls', () => {
       expect.objectContaining({ method: 'GET' }),
     ));
     expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('/api/v1/mssql/'))).toBe(false);
-    expect(screen.getByRole('button', { name: 'Synchronisation starten' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Synchronisation starten' })).toBeNull();
+  });
+
+  test('shows JTL sync for non-admin users with crm.write', async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-1', role: 'user' },
+      loading: false,
+      canWriteCrm: true,
+      hasCapability: (cap: string) => cap === 'crm.write',
+    });
+    const fetchImpl = jest.fn((url: string) => Promise.resolve(jsonResponse({
+      data: url.endsWith('/api/v1/jtl/sync/status')
+        ? { status: 'Success', message: 'Server sync ok', timestamp: null }
+        : null,
+    })));
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<SettingsPage />);
+
+    expect(await screen.findByText(/nur von Ownern und Admins/)).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Synchronisation starten' })).toBeEnabled();
   });
 });
 

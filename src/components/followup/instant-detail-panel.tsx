@@ -14,6 +14,7 @@ interface InstantDetailPanelProps {
   onAddNote: () => void
   onSnooze: (snoozedUntil: string) => void
   onComplete: () => void
+  canWrite?: boolean
 }
 
 export function InstantDetailPanel({
@@ -25,6 +26,7 @@ export function InstantDetailPanel({
   onAddNote,
   onSnooze,
   onComplete,
+  canWrite = true,
 }: InstantDetailPanelProps) {
   if (!item) {
     return (
@@ -96,6 +98,7 @@ export function InstantDetailPanel({
         onSnooze={onSnooze}
         onComplete={onComplete}
         sourceType={item.source_type}
+        canWrite={canWrite}
       />
 
       <Separator />

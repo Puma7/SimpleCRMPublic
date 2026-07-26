@@ -978,9 +978,18 @@ describe('server edition repository boundaries', () => {
     try {
       await app.ready();
 
+      const unauthenticatedOpenapi = await app.inject({
+        method: 'GET',
+        url: '/api/v1/openapi.json',
+      });
+      expect(unauthenticatedOpenapi.statusCode).toBe(401);
+
       const openapi = await app.inject({
         method: 'GET',
         url: '/api/v1/openapi.json',
+        headers: {
+          authorization: `Bearer ${adminAccessToken}`,
+        },
       });
       expect(openapi.statusCode).toBe(200);
       const spec = JSON.parse(openapi.body);
@@ -1525,7 +1534,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/ai/profiles?search=OpenAI',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(aiProfiles.statusCode).toBe(200);
@@ -1536,7 +1545,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/ai/prompts?target=reply&profileId=21',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(aiPrompts.statusCode).toBe(200);
@@ -1568,7 +1577,7 @@ describe('server edition repository boundaries', () => {
         method: 'GET',
         url: '/api/v1/workflows?triggerName=mail.received&enabled=true',
         headers: {
-          authorization: `Bearer ${accessToken}`,
+          authorization: `Bearer ${adminAccessToken}`,
         },
       });
       expect(workflows.statusCode).toBe(200);

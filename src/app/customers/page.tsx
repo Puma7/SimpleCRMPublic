@@ -32,6 +32,7 @@ import {
 } from "@/services/transport"
 import type { Customer } from "@/services/data/types"
 import { AddCustomerDialog } from "@/components/add-customer-dialog"
+import { useAuth } from "@/components/auth/auth-context"
 import { getPrimaryPhone, getPrimaryContact } from "@/lib/contact-utils"
 import { SyncStatusDisplay } from "@/components/sync-status-display"
 import { DataTablePagination } from "@/components/data-table-pagination"
@@ -204,6 +205,7 @@ const columnDisplayNames: Record<string, string> = {
 const CUSTOMER_EXPORT_PAGE_SIZE = 500
 
 export default function CustomersPage() {
+  const { canWriteCrm } = useAuth()
   const [customers, setCustomers] = useState<Customer[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
@@ -496,11 +498,11 @@ export default function CustomersPage() {
             <ExportButton data={customers} getData={loadExportCustomers} fileName="customers_export.json">
               Exportieren
             </ExportButton>
-            <AddCustomerDialog onCustomerAdded={handleCustomerAdded} />
+            {canWriteCrm ? <AddCustomerDialog onCustomerAdded={handleCustomerAdded} /> : null}
           </div>
 
            {/* Bulk Actions Bar (appears when rows are selected) */}
-           {table.getFilteredSelectedRowModel().rows.length > 0 && (
+           {canWriteCrm && table.getFilteredSelectedRowModel().rows.length > 0 && (
              <div className="mb-4 flex items-center gap-2 rounded-md border bg-muted p-2">
                 <span className="text-sm font-medium">
                     {table.getFilteredSelectedRowModel().rows.length} von{" "}

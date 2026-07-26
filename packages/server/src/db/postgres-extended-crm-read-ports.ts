@@ -8,6 +8,7 @@ import {
   type SqlBool,
   type Updateable,
 } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   ActivityLogApiPort,
@@ -192,7 +193,7 @@ export function createPostgresActivityLogReadPort(options: PostgresExtendedCrmRe
           if (input.taskId !== undefined) query = query.where('task_id', '=', input.taskId);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('title', 'ilike', pattern),
               eb('description', 'ilike', pattern),
@@ -319,7 +320,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
           if (input.startTo !== undefined) query = query.where('start_date', '<=', new Date(input.startTo));
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('title', 'ilike', pattern),
               eb('description', 'ilike', pattern),
@@ -498,7 +499,7 @@ export function createPostgresCustomerCustomFieldReadPort(
           if (input.active !== undefined) query = query.where('active', '=', input.active);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('label', 'ilike', pattern),
@@ -663,7 +664,7 @@ export function createPostgresCustomerCustomFieldValueReadPort(
           }
           if (input.fieldId !== undefined) query = query.where('field_id', '=', input.fieldId);
           const search = input.search?.trim();
-          if (search) query = query.where('value', 'ilike', `%${search}%`);
+          if (search) query = query.where('value', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapCustomFieldValueRow);
@@ -705,11 +706,11 @@ export function createPostgresCustomerCustomFieldValueReadPort(
           if (!customer) return { ok: false, code: 'customer_not_found' };
           const field = await resolveCustomFieldReference(trx, input.workspaceId, values.fieldId as number);
           if (!field) return { ok: false, code: 'custom_field_not_found' };
-          if (await hasCustomFieldValueConflict(trx, input.workspaceId, customer.sourceSqliteId, field.sourceSqliteId)) {
-            return { ok: false, code: 'value_conflict' };
-          }
 
           const now = new Date();
+          // Desktop SetValue is an upsert; the HTTP registry maps the same IPC
+          // channel to POST create. Use atomic INSERT … ON CONFLICT so concurrent
+          // writers cannot race into a unique-constraint 500.
           const row = await trx
             .insertInto('customer_custom_field_values')
             .values({
@@ -724,9 +725,24 @@ export function createPostgresCustomerCustomFieldValueReadPort(
               created_at: now,
               updated_at: now,
             })
-            .returning(customFieldValueSelectColumns)
+            .onConflict((oc) => oc
+              .columns(['workspace_id', 'customer_source_sqlite_id', 'field_source_sqlite_id'])
+              .doUpdateSet({
+                value: values.value ?? null,
+                customer_id: customer.id,
+                field_id: field.id,
+                updated_at: now,
+              }))
+            .returning([
+              ...customFieldValueSelectColumns,
+              kyselySql<boolean>`(xmax = 0)`.as('was_inserted'),
+            ])
             .executeTakeFirstOrThrow();
-          return { ok: true, value: mapCustomFieldValueRow(row) };
+          return {
+            ok: true,
+            value: mapCustomFieldValueRow(row),
+            created: row.was_inserted === true,
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -792,7 +808,7 @@ export function createPostgresCustomerCustomFieldValueReadPort(
             .where('id', '=', input.id)
             .returning(customFieldValueSelectColumns)
             .executeTakeFirst();
-          return row ? { ok: true, value: mapCustomFieldValueRow(row) } : null;
+          return row ? { ok: true, value: mapCustomFieldValueRow(row), created: false } : null;
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -837,7 +853,7 @@ export function createPostgresSavedViewReadPort(options: PostgresExtendedCrmRead
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           const search = input.search?.trim();
-          if (search) query = query.where('name', 'ilike', `%${search}%`);
+          if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapSavedViewRow);
@@ -967,7 +983,7 @@ export function createPostgresJtlReferenceReadPort(
 
           if (input.cursor !== undefined) query = query.where('source_sqlite_id', '>', input.cursor);
           const search = input.search?.trim();
-          if (search) query = query.where('name', 'ilike', `%${search}%`);
+          if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.source_sqlite_id), mapJtlReferenceRow);

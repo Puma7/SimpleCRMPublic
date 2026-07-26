@@ -21,6 +21,10 @@ describe('workflow-http-allowlist', () => {
     expect(isBlockedHttpHostname('localhost')).toBe(true);
     expect(isPrivateOrReservedIp('127.0.0.1')).toBe(true);
     expect(isPrivateOrReservedIp('169.254.169.254')).toBe(true);
+    expect(isPrivateOrReservedIp('fe80::1')).toBe(true);
+    expect(isPrivateOrReservedIp('fe90::1')).toBe(true);
+    expect(isPrivateOrReservedIp('febf::1')).toBe(true);
+    expect(isPrivateOrReservedIp('fec0::1')).toBe(false);
   });
 
   test('validateHttpRequestUrl requires allowlist', () => {
