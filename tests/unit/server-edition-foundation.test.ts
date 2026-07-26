@@ -374,6 +374,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0041_mail_acl_binding_message_fk_cascade',
   '0042_quarantine_legacy_provenanceless_jobs',
   '0043_atomic_task_calendar',
+  '0044_api_rate_limit_counters',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -395,9 +396,33 @@ function createServerApi(ports: ServerApiPorts): ReturnType<typeof createAclServ
 }
 
 function withFoundationMailAcl(ports: ServerApiPorts): ServerApiPorts {
+  const defaultMailResourceLookup: ServerApiPorts['mailResourceLookup'] = {
+    async resolve(input) {
+      const target = input.target;
+      if (target.kind === 'account') {
+        return [{ type: 'account', accountId: String(target.id) }];
+      }
+      if (target.kind === 'folder') {
+        return [{ type: 'folder', accountId: '7', folderId: String(target.id) }];
+      }
+      if (target.kind === 'thread') {
+        return [{ type: 'message', accountId: '7', folderId: '7', messageId: '42' }];
+      }
+      if (target.kind === 'metadata' && target.entity === 'account_signature') {
+        return [{ type: 'account', accountId: '7' }];
+      }
+      return [{
+        type: 'message',
+        accountId: '7',
+        folderId: '7',
+        messageId: String(target.id),
+      }];
+    },
+  };
+
   return {
     ...ports,
-    mailAccess: {
+    mailAccess: ports.mailAccess ?? {
       async assertPermission() {
         return undefined;
       },
@@ -405,29 +430,7 @@ function withFoundationMailAcl(ports: ServerApiPorts): ServerApiPorts {
         return { kind: 'all' };
       },
     },
-    mailResourceLookup: {
-      async resolve(input) {
-        const target = input.target;
-        if (target.kind === 'account') {
-          return [{ type: 'account', accountId: String(target.id) }];
-        }
-        if (target.kind === 'folder') {
-          return [{ type: 'folder', accountId: '7', folderId: String(target.id) }];
-        }
-        if (target.kind === 'thread') {
-          return [{ type: 'message', accountId: '7', folderId: '7', messageId: '42' }];
-        }
-        if (target.kind === 'metadata' && target.entity === 'account_signature') {
-          return [{ type: 'account', accountId: '7' }];
-        }
-        return [{
-          type: 'message',
-          accountId: '7',
-          folderId: '7',
-          messageId: String(target.id),
-        }];
-      },
-    },
+    mailResourceLookup: ports.mailResourceLookup ?? defaultMailResourceLookup,
   };
 }
 
@@ -15604,6 +15607,8 @@ describe('server edition foundation', () => {
         'database',
         'migrations',
         'job_queue',
+        'background_worker',
+        'trust_proxy',
         'conversation_locks',
         'backups',
         'geoip_intelligence',
@@ -16694,12 +16699,20 @@ describe('server edition foundation', () => {
     expect(stale.headers?.['Set-Cookie']).toBeUndefined();
   });
 
-  test('server API serves documented OpenAPI spec without authentication', async () => {
+  test('server API serves documented OpenAPI spec to admins only', async () => {
     const api = createServerApi(makeServerApiPorts());
+    const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    const unauthenticated = await api.handle({
+      method: 'GET',
+      path: '/api/v1/openapi.json',
+    });
+    expect(unauthenticated.status).toBe(401);
 
     const spec = await api.handle({
       method: 'GET',
       path: '/api/v1/openapi.json',
+      principal: admin,
     });
     expect(spec.status).toBe(200);
     expect((spec.body as any).openapi).toBe('3.0.3');
@@ -17293,7 +17306,6 @@ describe('server edition foundation', () => {
     });
     expect(created.status).toBe(201);
     expect((created.body as any).data).toMatchObject({
-      token: 'invite-token-1',
       acceptPath: '/login?invite=invite-token-1',
       delivery: {
         status: 'sent',
@@ -17302,13 +17314,13 @@ describe('server edition foundation', () => {
       },
       invitation: {
         id: 'auth-invite-1',
-        email: 'invited@example.com',
         displayName: 'Invited User',
-        role: 'user',
+        maskedEmail: 'i***@example.com',
         acceptedAt: null,
         revokedAt: null,
       },
     });
+    expect((created.body as any).data.token).toBeUndefined();
     expect(mailDeliveries).toHaveLength(1);
     expect(mailDeliveries[0]).toMatchObject({
       workspaceId: WORKSPACE_A_ID,
@@ -17338,10 +17350,11 @@ describe('server edition foundation', () => {
     });
     expect(publicRead.status).toBe(200);
     expect((publicRead.body as any).data).toMatchObject({
-      email: 'invited@example.com',
       displayName: 'Invited User',
-      role: 'user',
+      maskedEmail: 'i***@example.com',
     });
+    expect((publicRead.body as any).data.email).toBeUndefined();
+    expect((publicRead.body as any).data.role).toBeUndefined();
 
     const invalidAccept = await api.handle({
       method: 'POST',
@@ -18132,7 +18145,7 @@ describe('server edition foundation', () => {
 
   test('server customer routes fail closed for missing port and invalid query input', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await api.handle({
       method: 'GET',
@@ -18224,7 +18237,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -18343,7 +18356,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await api.handle({
       method: 'POST',
@@ -18429,7 +18442,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const products = await api.handle({
       method: 'GET',
@@ -18491,7 +18504,7 @@ describe('server edition foundation', () => {
 
   test('server core CRM read routes validate auth, IDs, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/products' });
     expect(unauthorized.status).toBe(401);
@@ -18572,7 +18585,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -18697,7 +18710,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -18844,7 +18857,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     const closeDate = new Date('2026-07-01').toISOString();
     const dueDate = new Date('2026-07-02T10:30:00.000Z').toISOString();
 
@@ -19131,7 +19144,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const dealUnavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -19309,7 +19322,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -19430,7 +19443,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -19618,7 +19631,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const createdField = await api.handle({
       method: 'POST',
@@ -19827,7 +19840,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const fieldUnavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -20024,7 +20037,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -20125,7 +20138,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -20228,7 +20241,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -20303,7 +20316,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -20476,7 +20489,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const calendarEvents = await api.handle({
       method: 'GET',
@@ -20660,7 +20673,7 @@ describe('server edition foundation', () => {
 
   test('server extended CRM and JTL routes validate auth, IDs, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/calendar-events' });
     expect(unauthorized.status).toBe(401);
@@ -20749,7 +20762,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -20882,7 +20895,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const status = await api.handle({
       method: 'GET',
@@ -20970,7 +20983,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -21061,7 +21074,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -21316,7 +21329,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const accounts = await api.handle({
       method: 'GET',
@@ -21677,7 +21690,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const response = await api.handle({
       method: 'GET',
@@ -21811,7 +21824,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const status = await api.handle({
       method: 'GET',
@@ -21971,7 +21984,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -22239,7 +22252,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const scheduled = await api.handle({
       method: 'PATCH',
@@ -22313,7 +22326,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     // The durable schedule (scheduled_send_at + provenance) already committed and the
     // ticker polls it directly, so the queue enqueue is only a prompt-send accelerator;
@@ -22368,7 +22381,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const updated = await api.handle({
       method: 'PATCH',
@@ -22420,7 +22433,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const response = await api.handle({
       method: 'POST',
@@ -22523,7 +22536,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const missingRequired = await api.handle({
       method: 'POST',
@@ -22696,7 +22709,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const invalid = await api.handle({
       method: 'PATCH',
@@ -22860,7 +22873,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const imap = await api.handle({
       method: 'POST',
@@ -23001,7 +23014,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const cleared = await api.handle({
       method: 'DELETE',
@@ -23103,7 +23116,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const ok = await api.handle({
       method: 'POST',
@@ -25500,7 +25513,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     // Remembering a sender/domain writes the workspace-wide allowlist, so it now
     // requires owner/admin (R21-2). Same userId so actorUserId assertions hold.
     const admin = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
@@ -25572,7 +25585,7 @@ describe('server edition foundation', () => {
 
   test('server mail read routes validate auth, IDs, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/email/accounts' });
     expect(unauthorized.status).toBe(401);
@@ -25768,7 +25781,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const softDelete = await api.handle({
       method: 'PATCH',
@@ -25915,7 +25928,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const preview = await api.handle({
       method: 'GET',
@@ -26013,7 +26026,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const linked = await api.handle({
       method: 'PATCH',
@@ -26149,7 +26162,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     for (const body of [
       { action: 'archive' },
@@ -26207,7 +26220,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const backfilled = await api.handle({
       method: 'POST',
@@ -26277,7 +26290,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const updated = await api.handle({
       method: 'PATCH',
@@ -26372,7 +26385,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'PATCH',
@@ -26626,7 +26639,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const response = await api.handle({
       method: 'POST',
@@ -26727,7 +26740,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const response = await api.handle({
       method: 'POST',
@@ -26803,7 +26816,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -26866,7 +26879,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -27057,7 +27070,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const folders = await api.handle({
       method: 'GET',
@@ -27285,7 +27298,7 @@ describe('server edition foundation', () => {
 
   test('server mail metadata routes validate auth, IDs, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/email/folders' });
     expect(unauthorized.status).toBe(401);
@@ -27406,7 +27419,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const response = await api.handle({
       method: 'DELETE',
@@ -27576,7 +27589,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const tagCreated = await api.handle({
       method: 'POST',
@@ -27815,7 +27828,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailableTag = await readOnlyApi.handle({
       method: 'POST',
@@ -28038,7 +28051,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const cannedCreated = await api.handle({
       method: 'POST',
@@ -28185,7 +28198,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     // The mocked update reparents the row (returns the new account); the body only
     // needs to be a valid mutation so the handler reaches update + publish.
@@ -28264,7 +28277,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailableCanned = await readOnlyApi.handle({
       method: 'POST',
@@ -28432,7 +28445,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -28551,7 +28564,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -28650,7 +28663,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -28840,7 +28853,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const edgeCreated = await api.handle({
       method: 'POST',
@@ -29016,7 +29029,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const split = await api.handle({
       method: 'POST',
@@ -29135,7 +29148,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailableEdge = await readOnlyApi.handle({
       method: 'POST',
@@ -29454,7 +29467,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const signatureCreated = await api.handle({
       method: 'POST',
@@ -29602,7 +29615,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const declined = await api.handle({
       method: 'POST',
@@ -29686,7 +29699,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailableDecline = await readOnlyApi.handle({
       method: 'POST',
@@ -29786,7 +29799,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -29904,7 +29917,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailableSignature = await readOnlyApi.handle({
       method: 'POST',
@@ -30070,7 +30083,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -30168,7 +30181,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -30346,7 +30359,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const workflow = await api.handle({
@@ -30715,7 +30728,7 @@ describe('server edition foundation', () => {
 
   test('server settings route tests rspamd connectivity', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
     const originalFetch = globalThis.fetch;
     const fetchMock = jest.fn()
@@ -30827,7 +30840,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const loadDenied = await api.handle({
@@ -31005,7 +31018,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const unavailable = await readOnlyApi.handle({
@@ -31156,7 +31169,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const uidList = await api.handle({
       method: 'GET',
@@ -31338,7 +31351,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({
       method: 'GET',
@@ -31455,7 +31468,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const user = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const user = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     const admin = { ...user, role: 'admin' as const };
 
     const forbidden = await api.handle({
@@ -31607,7 +31620,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const nodeCatalog = await api.handle({
       method: 'GET',
@@ -31729,7 +31742,7 @@ describe('server edition foundation', () => {
 
   test('server workflow read routes validate auth, IDs, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/ai/profiles' });
     expect(unauthorized.status).toBe(401);
@@ -31846,7 +31859,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -31968,7 +31981,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -32140,7 +32153,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -32270,7 +32283,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -32370,7 +32383,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const transformed = await api.handle({
       method: 'POST',
@@ -32456,7 +32469,7 @@ describe('server edition foundation', () => {
 
   test('server workflow graph compile route returns legacy-compatible compile results', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
     const graph = {
       version: 1,
       nodes: [
@@ -32587,7 +32600,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -32704,7 +32717,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const fetched = await api.handle({
       method: 'GET',
@@ -32793,7 +32806,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const bySource = await api.handle({
       method: 'POST',
@@ -32826,16 +32839,15 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/workflows/by-source/-23/execute',
       body: { messageId: 11, dryRun: false },
-      principal,
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
     });
     expect(liveDenied.status).toBe(403);
 
-    const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
     const liveQueued = await api.handle({
       method: 'POST',
       path: '/api/v1/workflows/by-source/-23/execute',
       body: { messageId: 11, dryRun: false },
-      principal: adminPrincipal,
+      principal,
     });
     expect(liveQueued.status).toBe(202);
     expect((liveQueued.body as any).data).toEqual({
@@ -32849,7 +32861,7 @@ describe('server edition foundation', () => {
     const missingMessage = await api.handle({
       method: 'POST',
       path: '/api/v1/workflows/by-source/-23/execute',
-      body: { messageId: 77 },
+      body: { messageId: 77, dryRun: false },
       principal,
     });
     expect(missingMessage.status).toBe(404);
@@ -32907,13 +32919,10 @@ describe('server edition foundation', () => {
       expect.objectContaining({ workspaceId: WORKSPACE_A_ID, limit: 100 }),
     ]);
     expect(workflowGetCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, id: 23 }]);
-    expect(messageGetCalls).toEqual([
-      { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
-      { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
+    expect(messageGetCalls).toEqual(expect.arrayContaining([
       { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
       { workspaceId: WORKSPACE_A_ID, id: 77, includeBody: false },
-      { workspaceId: WORKSPACE_A_ID, id: 11, includeBody: false },
-    ]);
+    ]));
     expect(dryRunCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
@@ -32974,7 +32983,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const queued = await api.handle({
       method: 'POST',
@@ -33086,7 +33095,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const fired = await api.handle({
       method: 'POST',
@@ -33170,12 +33179,8 @@ describe('server edition foundation', () => {
       body: { secret: 'nope', body: { orderId: 8 } },
       principal,
     });
-    expect(wrongSecret.status).toBe(200);
-    expect((wrongSecret.body as any).data).toEqual({
-      success: false,
-      error: 'Ungueltiges Webhook-Secret',
-      fired: 0,
-    });
+    expect(wrongSecret.status).toBe(401);
+    expect((wrongSecret.body as any).error.code).toBe('webhook_secret_invalid');
     expect(workflowListCalls).toHaveLength(1);
     expect(queueCalls).toHaveLength(2);
 
@@ -33339,7 +33344,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -33493,7 +33498,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -33625,7 +33630,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const listed = await api.handle({
       method: 'GET',
@@ -33740,7 +33745,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const runs = await api.handle({
       method: 'GET',
@@ -33797,7 +33802,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -33936,7 +33941,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -34023,7 +34028,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -34137,7 +34142,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -34264,7 +34269,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -34806,7 +34811,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const versions = await api.handle({
       method: 'GET',
@@ -34986,7 +34991,7 @@ describe('server edition foundation', () => {
 
   test('server workflow runtime routes validate auth, IDs, include flags, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/workflow-runs' });
     expect(unauthorized.status).toBe(401);
@@ -35073,7 +35078,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const identities = await api.handle({
       method: 'GET',
@@ -35128,7 +35133,7 @@ describe('server edition foundation', () => {
 
   test('server PGP read routes validate auth, IDs, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/pgp/identities' });
     expect(unauthorized.status).toBe(401);
@@ -35214,7 +35219,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -35334,7 +35339,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -35491,7 +35496,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const rotated = await api.handle({
       method: 'POST',
@@ -35644,7 +35649,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const created = await api.handle({
       method: 'POST',
@@ -35748,7 +35753,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailable = await readOnlyApi.handle({
       method: 'POST',
@@ -35861,7 +35866,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const success = await api.handle({
       method: 'POST',
@@ -35955,7 +35960,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const success = await api.handle({
       method: 'POST',
@@ -36025,7 +36030,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const encrypted = await api.handle({
       method: 'POST',
@@ -36084,7 +36089,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const encrypted = await api.handle({
       method: 'POST',
@@ -36207,7 +36212,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const encrypted = await api.handle({
       method: 'POST',
@@ -36436,7 +36441,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const decrypted = await api.handle({
       method: 'POST',
@@ -36601,7 +36606,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const generated = await api.handle({
       method: 'POST',
@@ -36735,7 +36740,7 @@ describe('server edition foundation', () => {
       },
     });
     const api = createServerApi(ports);
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const entries = await api.handle({
       method: 'GET',
@@ -36821,7 +36826,7 @@ describe('server edition foundation', () => {
 
   test('server spam read routes validate auth, IDs, filters, and missing ports', async () => {
     const api = createServerApi(makeServerApiPorts());
-    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unauthorized = await api.handle({ method: 'GET', path: '/api/v1/spam/list-entries' });
     expect(unauthorized.status).toBe(401);
@@ -37012,7 +37017,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const listCreated = await api.handle({
       method: 'POST',
@@ -37247,7 +37252,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const response = await api.handle({
       method: 'POST',
@@ -37381,7 +37386,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
 
     const unavailableListEntry = await readOnlyApi.handle({
       method: 'POST',

@@ -456,17 +456,21 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
     },
 
     async findUserByEmail(email) {
-      const user = await withCrossWorkspaceAuthTransaction(
+      const users = await withCrossWorkspaceAuthTransaction(
         options.db,
         options.applyWorkspaceSession,
         async (trx) => trx
           .selectFrom('users')
           .selectAll()
           .where('email', '=', email)
-          .executeTakeFirst(),
+          .orderBy('created_at', 'asc')
+          .limit(2)
+          .execute(),
       );
 
-      return user ? mapUser(user) : null;
+      if (users.length === 0) return null;
+      if (users.length > 1) return null;
+      return mapUser(users[0]!);
     },
 
     async verifyPassword(password, passwordHash) {

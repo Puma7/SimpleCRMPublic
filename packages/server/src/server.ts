@@ -21,9 +21,8 @@ import {
   type ServerJobWorkerConfig,
 } from './config';
 import {
-  createEmailTrackingIpIntelligence,
-  type EmailTrackingIpIntelligencePort,
-} from './email-tracking-ip-intelligence';
+  createPostgresApiRateLimitPort,
+} from './security/postgres-api-rate-limit';
 import {
   createPostgresAuditPort,
   createPostgresAiProfileReadPort,
@@ -166,6 +165,10 @@ import {
   startEmailTrackingRetentionTicker,
   type EmailTrackingService,
 } from './email-tracking';
+import {
+  createEmailTrackingIpIntelligence,
+  type EmailTrackingIpIntelligencePort,
+} from './email-tracking-ip-intelligence';
 import {
   startInboundSmtpService,
   type InboundSmtpService,
@@ -351,6 +354,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   const app = createFastifyServer({
     ports,
     accessTokenSigner,
+    ...(db ? { apiRateLimit: createPostgresApiRateLimitPort(db) } : {}),
     logger: captureLogs
       ? { level: env.LOG_LEVEL?.trim() || 'info', stream: createPinoLogCaptureStream(serverLogStore) }
       : (options.logger ?? false),

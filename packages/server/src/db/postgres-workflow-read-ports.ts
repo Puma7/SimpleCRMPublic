@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   AiProfileApiPort,
@@ -122,7 +123,7 @@ export function createPostgresAiProfileReadPort(options: PostgresWorkflowReadPor
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('label', 'ilike', pattern),
               eb('provider', 'ilike', pattern),
@@ -368,7 +369,7 @@ export function createPostgresAiPromptReadPort(options: PostgresWorkflowReadPort
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('label', 'ilike', pattern),
               eb('user_template', 'ilike', pattern),
@@ -601,7 +602,7 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('trigger_name', 'ilike', pattern),

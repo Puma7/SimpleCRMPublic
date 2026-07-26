@@ -573,7 +573,7 @@ async function handleCreateInvitation(req: ApiRequest, ports: ServerApiPorts): P
 
   return data(201, {
     invitation: publicInvitation(result.invitation),
-    token: result.token,
+    ...(delivery.status === 'sent' ? {} : { token: result.token }),
     acceptPath,
     delivery,
   });
@@ -775,17 +775,28 @@ function publicInvitation(invitation: {
   acceptedAt?: string | null;
   revokedAt?: string | null;
   createdAt?: string | null;
-}) {
+}, options: { includePrivateFields?: boolean } = {}) {
+  const includePrivateFields = options.includePrivateFields === true;
   return {
     id: invitation.id,
-    email: invitation.email,
     displayName: invitation.displayName,
-    role: invitation.role,
     expiresAt: invitation.expiresAt,
     acceptedAt: invitation.acceptedAt ?? null,
     revokedAt: invitation.revokedAt ?? null,
     ...(invitation.createdAt === undefined ? {} : { createdAt: invitation.createdAt }),
+    ...(includePrivateFields
+      ? { email: invitation.email, role: invitation.role }
+      : { maskedEmail: maskInvitationEmail(invitation.email) }),
   };
+}
+
+function maskInvitationEmail(email: string): string {
+  const at = email.indexOf('@');
+  if (at <= 0) return '***';
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  const visible = local.slice(0, 1);
+  return `${visible}***@${domain}`;
 }
 
 function parseInitialSetupBody(body: unknown):

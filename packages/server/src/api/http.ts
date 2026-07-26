@@ -47,6 +47,20 @@ export function requireCapability(principal: AuthenticatedPrincipal, capability:
   return principal.capabilities?.includes(capability) ?? false;
 }
 
+export function rejectUnlessCrmWrite(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  if (requireCapability(principal, 'crm.write')) return null;
+  return error(403, 'forbidden', 'Adminrechte oder CRM-Bearbeitungs-Berechtigung erforderlich');
+}
+
+export function rejectUnlessWorkflowManage(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  if (requireCapability(principal, 'workflows.manage')) return null;
+  return error(403, 'forbidden', 'Adminrechte oder Workflow-Berechtigung erforderlich');
+}
+
 export function positiveIntFromPath(value: string | undefined): number | null {
   if (!value || !/^[1-9]\d*$/.test(value)) return null;
   const n = Number(value);

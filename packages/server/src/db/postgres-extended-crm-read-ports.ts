@@ -8,6 +8,7 @@ import {
   type SqlBool,
   type Updateable,
 } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   ActivityLogApiPort,
@@ -192,7 +193,7 @@ export function createPostgresActivityLogReadPort(options: PostgresExtendedCrmRe
           if (input.taskId !== undefined) query = query.where('task_id', '=', input.taskId);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('title', 'ilike', pattern),
               eb('description', 'ilike', pattern),
@@ -319,7 +320,7 @@ export function createPostgresCalendarEventReadPort(options: PostgresExtendedCrm
           if (input.startTo !== undefined) query = query.where('start_date', '<=', new Date(input.startTo));
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('title', 'ilike', pattern),
               eb('description', 'ilike', pattern),
@@ -498,7 +499,7 @@ export function createPostgresCustomerCustomFieldReadPort(
           if (input.active !== undefined) query = query.where('active', '=', input.active);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('label', 'ilike', pattern),
@@ -663,7 +664,7 @@ export function createPostgresCustomerCustomFieldValueReadPort(
           }
           if (input.fieldId !== undefined) query = query.where('field_id', '=', input.fieldId);
           const search = input.search?.trim();
-          if (search) query = query.where('value', 'ilike', `%${search}%`);
+          if (search) query = query.where('value', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapCustomFieldValueRow);
@@ -837,7 +838,7 @@ export function createPostgresSavedViewReadPort(options: PostgresExtendedCrmRead
 
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           const search = input.search?.trim();
-          if (search) query = query.where('name', 'ilike', `%${search}%`);
+          if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapSavedViewRow);
@@ -967,7 +968,7 @@ export function createPostgresJtlReferenceReadPort(
 
           if (input.cursor !== undefined) query = query.where('source_sqlite_id', '>', input.cursor);
           const search = input.search?.trim();
-          if (search) query = query.where('name', 'ilike', `%${search}%`);
+          if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.source_sqlite_id), mapJtlReferenceRow);

@@ -12,7 +12,8 @@ import {
   verifyAccessToken,
   type AccessTokenSigner,
 } from '../security';
-import { checkApiRateLimit } from '../security/api-rate-limit';
+import { checkApiRateLimitShared } from '../security/api-rate-limit';
+import type { PostgresApiRateLimitPort } from '../security/postgres-api-rate-limit';
 import type {
   ApiRequest,
   AuthenticatedPrincipal,
@@ -56,6 +57,7 @@ export type FastifyServerOptions = Readonly<{
    * (trust all hops), a hop count, or a proxy-addr subnet/preset string.
    */
   trustProxy?: boolean | number | string;
+  apiRateLimit?: PostgresApiRateLimitPort;
 }>;
 
 /**
@@ -121,22 +123,20 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   const handler = createFastifyHandler(api, resolvePrincipal);
 
   void app.register(websocketPlugin);
-  app.addHook('onRequest', (request, reply, done) => {
+  app.addHook('onRequest', async (request, reply) => {
     if (request.method === 'OPTIONS') {
-      done();
       return;
     }
     const path = request.url.split('?')[0] ?? request.url;
     if (path.startsWith('/t/')) {
-      done();
       return;
     }
     if (path.startsWith('/api/v1/')) {
-      const rate = checkApiRateLimit({
+      const rate = await checkApiRateLimitShared({
         ip: safeRequestIp(request),
         path,
         method: request.method,
-      });
+      }, { shared: options.apiRateLimit });
       if (!rate.allowed) {
         // Attach CORS headers BEFORE returning: on a cross-origin server-client
         // install the browser hides a header-less 429 as a CORS failure, so the
@@ -166,7 +166,6 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
       });
       return;
     }
-    done();
   });
   app.after(() => {
     app.get('/api/v1/events', { websocket: true }, (socket, request) => {

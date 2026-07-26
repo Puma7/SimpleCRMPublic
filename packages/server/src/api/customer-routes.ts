@@ -11,6 +11,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  rejectUnlessCrmWrite,
   requirePrincipal,
 } from './http';
 
@@ -47,6 +48,8 @@ export async function handleCustomerRoute(
     if ('status' in principal) return principal;
 
     if (req.method === 'POST') {
+      const denied = rejectUnlessCrmWrite(principal);
+      if (denied) return denied;
       return handleCreateCustomer(req, ports, principal);
     }
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
@@ -104,9 +107,13 @@ export async function handleCustomerRoute(
   if (!ports.customers) return error(503, 'customers_unavailable', 'Customer API nicht konfiguriert');
 
   if (req.method === 'PATCH') {
+    const denied = rejectUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleUpdateCustomer(req, ports, principal, id);
   }
   if (req.method === 'DELETE') {
+    const denied = rejectUnlessCrmWrite(principal);
+    if (denied) return denied;
     return handleDeleteCustomer(ports, principal, id);
   }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');

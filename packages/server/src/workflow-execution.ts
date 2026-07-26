@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ilikeContainsPattern } from './db/sql-ilike';
 
 import { sql, type Kysely, type Selectable } from 'kysely';
 import {
@@ -3121,7 +3122,7 @@ async function executeWorkflowJtlLookup(
     .limit(limit);
 
   if (sourceSqliteId.value !== undefined) query = query.where('source_sqlite_id', '=', sourceSqliteId.value);
-  if (search) query = query.where('name', 'ilike', `%${search}%`);
+  if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
   const rows = await query.execute();
   const items = rows.map((row) => ({

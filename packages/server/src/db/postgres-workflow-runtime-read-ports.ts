@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   WorkflowDelayedJobApiPort,
@@ -239,7 +240,7 @@ export function createPostgresWorkflowVersionReadPort(
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           if (input.workflowId !== undefined) query = query.where('workflow_id', '=', input.workflowId);
           const search = input.search?.trim();
-          if (search) query = query.where('label', 'ilike', `%${search}%`);
+          if (search) query = query.where('label', 'ilike', ilikeContainsPattern(search));
 
           const rows = await query.execute();
           return pageNumeric(rows, limit, (row) => Number(row.id), mapWorkflowVersionRow);
@@ -614,7 +615,7 @@ export function createPostgresWorkflowKnowledgeBaseReadPort(
           }
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('description', 'ilike', pattern),
@@ -765,7 +766,7 @@ export function createPostgresWorkflowKnowledgeChunkReadPort(
           if (input.knowledgeBaseId !== undefined) query = query.where('knowledge_base_id', '=', input.knowledgeBaseId);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('title', 'ilike', pattern),
               eb('content', 'ilike', pattern),

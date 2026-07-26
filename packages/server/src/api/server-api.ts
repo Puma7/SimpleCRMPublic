@@ -28,7 +28,7 @@ import { handleUserSignatureRoute, USER_SIGNATURE_ROUTE_INVENTORY } from './user
 import { handleWorkflowReadRoute, WORKFLOW_MAIL_ROUTE_INVENTORY } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
 import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
-import { data, error } from './http';
+import { data, error, requireAdmin, requirePrincipal } from './http';
 
 export type ServerApi = {
   handle(req: ApiRequest): Promise<ApiResponse>;
@@ -137,6 +137,11 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
       }
       if (req.path === '/openapi.json' || req.path === '/api/v1/openapi.json') {
         if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+        const principal = requirePrincipal(req);
+        if ('status' in principal) return principal;
+        if (!requireAdmin(principal)) {
+          return error(403, 'forbidden', 'Adminrechte erforderlich');
+        }
         return {
           status: 200,
           body: getServerOpenApiSpec(),

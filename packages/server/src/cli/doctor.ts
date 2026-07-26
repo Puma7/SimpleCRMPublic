@@ -12,6 +12,7 @@ import {
   createEmailTrackingIpIntelligence,
   type EmailTrackingIpIntelligencePort,
 } from '../email-tracking-ip-intelligence';
+import { parseBooleanEnv } from '../config';
 
 export type DoctorStatus = 'ok' | 'warn' | 'fail';
 
@@ -137,6 +138,7 @@ export async function runDoctorCli(options: DoctorCliRunOptions = {}): Promise<n
     connected = true;
     const result = await runDoctorChecks(client, {
       backupDir: parsed.backupDir ?? env.BACKUP_DIR,
+      env,
       emailTrackingIpIntelligence: options.emailTrackingIpIntelligence
         ?? createEmailTrackingIpIntelligence({
           countryDatabasePath: env.GEOIP_COUNTRY_DB_PATH,
@@ -166,13 +168,17 @@ export async function runDoctorChecks(
   options: {
     backupDir?: string;
     emailTrackingIpIntelligence?: EmailTrackingIpIntelligencePort;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<DoctorResult> {
   const checks: DoctorCheck[] = [];
+  const env = options.env ?? process.env;
 
   checks.push(await checkDatabase(client));
   checks.push(await checkMigrations(client));
   checks.push(await checkJobQueue(client));
+  checks.push(checkBackgroundWorker(env));
+  checks.push(checkTrustProxy(env));
   checks.push(await checkConversationLocks(client));
   checks.push(await checkBackups(options.backupDir));
   checks.push(await checkGeoIpIntelligence(
@@ -290,6 +296,38 @@ async function checkMigrations(client: PgQueryClient): Promise<DoctorCheck> {
       },
     };
   });
+}
+
+function checkBackgroundWorker(env: NodeJS.ProcessEnv): DoctorCheck {
+  const enabled = parseBooleanEnv(env.JOB_WORKER_ENABLED, false, 'JOB_WORKER_ENABLED');
+  if (enabled) {
+    return {
+      name: 'background_worker',
+      status: 'ok',
+      message: 'JOB_WORKER_ENABLED=true (mail sync, scheduled send and workflow jobs are active)',
+    };
+  }
+  return {
+    name: 'background_worker',
+    status: 'warn',
+    message: 'JOB_WORKER_ENABLED is false: mail sync, scheduled send and workflow jobs are not processed',
+  };
+}
+
+function checkTrustProxy(env: NodeJS.ProcessEnv): DoctorCheck {
+  const value = env.TRUST_PROXY?.trim();
+  if (!value) {
+    return {
+      name: 'trust_proxy',
+      status: 'warn',
+      message: 'TRUST_PROXY is unset; per-IP rate limits use the direct socket address (set to 1 behind Caddy)',
+    };
+  }
+  return {
+    name: 'trust_proxy',
+    status: 'ok',
+    message: `TRUST_PROXY=${value}`,
+  };
 }
 
 async function checkJobQueue(client: PgQueryClient): Promise<DoctorCheck> {
