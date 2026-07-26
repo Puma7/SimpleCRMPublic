@@ -48,6 +48,7 @@ import type {
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
 } from './workspace-context';
 import {
   resolveEmailAccountReference,

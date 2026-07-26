@@ -957,8 +957,6 @@ function shouldReduceCrmEventPayload(event: ServerEvent): boolean {
     event.type.endsWith('.created')
     || event.type.endsWith('.updated')
     || event.type.endsWith('.deleted')
-    || event.type === 'jtl_sync.completed'
-    || event.type === 'jtl_sync.failed'
   );
 }
 
