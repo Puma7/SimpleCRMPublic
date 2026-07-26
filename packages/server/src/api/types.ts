@@ -1476,7 +1476,7 @@ export type CustomerCustomFieldValueMutationInput = {
 };
 
 export type CustomerCustomFieldValueMutationPortResult =
-  | { ok: true; value: CustomerCustomFieldValueRecord }
+  | { ok: true; value: CustomerCustomFieldValueRecord; created: boolean }
   | { ok: false; code: 'customer_not_found' | 'custom_field_not_found' | 'value_conflict' };
 
 export type CustomerCustomFieldValueApiPort = {

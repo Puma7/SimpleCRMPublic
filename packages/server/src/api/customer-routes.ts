@@ -12,6 +12,7 @@ import {
   error,
   forbidUnlessCrmWrite,
   positiveIntFromPath,
+  rejectUnlessCrmWrite,
   requirePrincipal,
 } from './http';
 
@@ -48,7 +49,7 @@ export async function handleCustomerRoute(
     if ('status' in principal) return principal;
 
     if (req.method === 'POST') {
-      const denied = forbidUnlessCrmWrite(principal);
+      const denied = rejectUnlessCrmWrite(principal);
       if (denied) return denied;
       return handleCreateCustomer(req, ports, principal);
     }
@@ -107,12 +108,12 @@ export async function handleCustomerRoute(
   if (!ports.customers) return error(503, 'customers_unavailable', 'Customer API nicht konfiguriert');
 
   if (req.method === 'PATCH') {
-    const denied = forbidUnlessCrmWrite(principal);
+    const denied = rejectUnlessCrmWrite(principal);
     if (denied) return denied;
     return handleUpdateCustomer(req, ports, principal, id);
   }
   if (req.method === 'DELETE') {
-    const denied = forbidUnlessCrmWrite(principal);
+    const denied = rejectUnlessCrmWrite(principal);
     if (denied) return denied;
     return handleDeleteCustomer(ports, principal, id);
   }

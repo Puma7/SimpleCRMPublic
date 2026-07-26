@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ilikeContainsPattern } from './db/sql-ilike';
 
 import { sql, type Kysely, type Selectable } from 'kysely';
 import {
@@ -926,8 +927,10 @@ async function markDelayedJobStatus(
     })
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', delayedJobId);
-  // Do not revive a job that ops cancelled while the worker was claiming it.
+  // Do not revive/overwrite a job that ops cancelled (claim race or finish race).
   if (status === 'running') {
+    query = query.where('status', 'in', ['pending', 'running']);
+  } else if (status === 'done' || status === 'failed') {
     query = query.where('status', 'in', ['pending', 'running']);
   }
   const row = await query.returning('id').executeTakeFirst();
@@ -3140,7 +3143,7 @@ async function executeWorkflowJtlLookup(
     .limit(limit);
 
   if (sourceSqliteId.value !== undefined) query = query.where('source_sqlite_id', '=', sourceSqliteId.value);
-  if (search) query = query.where('name', 'ilike', `%${search}%`);
+  if (search) query = query.where('name', 'ilike', ilikeContainsPattern(search));
 
   const rows = await query.execute();
   const items = rows.map((row) => ({

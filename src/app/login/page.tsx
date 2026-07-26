@@ -85,7 +85,7 @@ export default function LoginPage() {
         try {
           const invitation = await serverAuth.getInvitation(pendingInviteToken)
           setInvite(invitation)
-          setUsername(invitation.email)
+          if (invitation.email) setUsername(invitation.email)
         } catch (err) {
           setError(formatAuthError(err, true))
         }

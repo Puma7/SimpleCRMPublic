@@ -57,13 +57,29 @@ export function forbidUnlessCapability(
   return error(403, 'forbidden', message);
 }
 
-export function forbidUnlessCrmWrite(
+export function rejectUnlessCrmWrite(
   principal: AuthenticatedPrincipal,
 ): ApiResponse<ApiErrorBody> | null {
   return forbidUnlessCapability(
     principal,
     'crm.write',
     'Adminrechte oder CRM-Schreibberechtigung erforderlich',
+  );
+}
+
+export function forbidUnlessCrmWrite(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return rejectUnlessCrmWrite(principal);
+}
+
+export function rejectUnlessWorkflowManage(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return forbidUnlessCapability(
+    principal,
+    'workflows.manage',
+    'Adminrechte oder Workflow-Berechtigung erforderlich',
   );
 }
 

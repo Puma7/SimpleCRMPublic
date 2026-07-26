@@ -208,6 +208,8 @@ export async function callAiChat(req: AiChatRequest): Promise<AiChatResult> {
       headers: spec.headers,
       body: bodyJson,
       signal: req.signal,
+      // Align guarded deadline with caller AbortController (classification/reply use 90s).
+      timeoutMs: 90_000,
     });
   }
 

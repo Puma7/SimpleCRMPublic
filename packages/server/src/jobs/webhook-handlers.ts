@@ -101,7 +101,14 @@ export async function guardedFetch(args: {
   allowlist: string | readonly string[];
   lookup: WebhookLookup;
   fetchImpl: GuardedFetch;
-  init: { method: WebhookHttpMethod; headers: Record<string, string>; body?: string; timeoutMs: number };
+  init: {
+    method: WebhookHttpMethod;
+    headers: Record<string, string>;
+    body?: string;
+    timeoutMs: number;
+    /** Optional caller AbortSignal; combined with the per-hop timeout when available. */
+    signal?: AbortSignal;
+  };
   maxRedirects?: number;
 }): Promise<{ ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string> }> {
   const maxRedirects = args.maxRedirects ?? 3;
@@ -115,15 +122,19 @@ export async function guardedFetch(args: {
   let body = args.init.body;
   let headers: Record<string, string> = { ...args.init.headers };
   for (let hop = 0; ; hop += 1) {
+    if (args.init.signal?.aborted) {
+      throw new Error('request was aborted');
+    }
     const remainingMs = Math.max(0, deadline - Date.now());
     if (remainingMs <= 0) {
       throw new Error('webhook request exceeded its total timeout');
     }
     const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup);
-    const signal =
+    const timeoutSignal =
       typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
         ? AbortSignal.timeout(remainingMs)
         : undefined;
+    const signal = combineAbortSignals(args.init.signal, timeoutSignal);
     const response = await args.fetchImpl(currentUrl, {
       method,
       headers,
@@ -380,4 +391,21 @@ function isPrivateOrReservedWebhookIp(host: string): boolean {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function combineAbortSignals(
+  external: AbortSignal | undefined,
+  timeout: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (!external) return timeout;
+  if (!timeout) return external;
+  const anyFn = (AbortSignal as typeof AbortSignal & {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  }).any;
+  if (typeof anyFn === 'function') {
+    return anyFn([external, timeout]);
+  }
+  // Fallback: prefer the external signal (caller timeout) when AbortSignal.any
+  // is unavailable; the guarded hop still uses Date.now() deadline checks.
+  return external;
 }

@@ -1,4 +1,5 @@
 import { sql as kyselySql, type Kysely } from 'kysely';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   FollowUpApiPort,
@@ -143,7 +144,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
 
             const search = input.filters?.query?.trim();
             if (search) {
-              const pattern = `%${search}%`;
+              const pattern = ilikeContainsPattern(search);
               query = query.where((eb) => eb.or([
                 eb('deals.name', 'ilike', pattern),
                 eb('customers.name', 'ilike', pattern),
@@ -211,7 +212,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
 
           const search = input.filters?.query?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('tasks.title', 'ilike', pattern),
               eb('tasks.description', 'ilike', pattern),

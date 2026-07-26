@@ -9,6 +9,7 @@ import {
   error,
   forbidUnlessCrmWrite,
   positiveIntFromPath,
+  rejectUnlessCrmWrite,
   requirePrincipal,
 } from './http';
 
@@ -58,7 +59,7 @@ export async function handleFollowUpRoute(
   const snoozeMatch = /^\/api\/v1\/follow-up\/tasks\/([^/]+)\/snooze$/.exec(req.path);
   if (snoozeMatch) {
     if (req.method !== 'PATCH') return methodNotAllowed();
-    const denied = forbidUnlessCrmWrite(principal);
+    const denied = rejectUnlessCrmWrite(principal);
     if (denied) return denied;
     const taskId = positiveIntFromPath(snoozeMatch[1]);
     if (taskId === null) return error(400, 'invalid_task_id', 'task id muss eine positive Ganzzahl sein');

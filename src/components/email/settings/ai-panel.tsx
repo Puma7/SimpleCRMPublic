@@ -8,6 +8,7 @@ import {
   type AiProviderPresetId,
 } from "@shared/ai-provider-presets"
 import { toast } from "sonner"
+import { useAuth } from "@/components/auth/auth-context"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { Input } from "@/components/ui/input"
@@ -53,6 +54,7 @@ function mergePresets(
 }
 
 export function AiPanel() {
+  const { hasCapability } = useAuth()
   const [profiles, setProfiles] = useState<AiProfile[]>([])
   const [presets, setPresets] = useState<Record<string, ProviderPreset>>(
     () => mergePresets(),
@@ -68,6 +70,9 @@ export function AiPanel() {
   const [apiKey, setApiKey] = useState("")
   const [saving, setSaving] = useState(false)
   const serverClientMode = getRendererTransport().kind === "http"
+  // Capability model is server-edition only; desktop remains unrestricted.
+  const canManageAiProfiles =
+    getRendererTransport().kind !== "http" || hasCapability("workflows.manage")
 
   const applyPreset = useCallback(
     (p: AiProviderPresetId, presetMap: Record<string, ProviderPreset>) => {
@@ -144,7 +149,7 @@ export function AiPanel() {
   }
 
   const save = async () => {
-    if (saving) return
+    if (!canManageAiProfiles || saving) return
     if (!label.trim()) {
       toast.error("Bitte eine Bezeichnung eingeben.")
       return
@@ -191,6 +196,7 @@ export function AiPanel() {
   }
 
   const addNew = () => {
+    if (!canManageAiProfiles) return
     setSelectedId(null)
     setLabel("Neues Profil")
     setApiKey("")
@@ -225,6 +231,12 @@ export function AiPanel() {
           Wissensbasis (semantische Suche) — nicht gleichzeitig als Chat-Modell gedacht, sondern
           als zweiter Endpunkt desselben Anbieters.
         </p>
+        {serverClientMode && !canManageAiProfiles ? (
+          <p className="mt-2 text-sm text-muted-foreground">
+            KI-Profile können nur von Ownern, Admins oder Nutzern mit der Berechtigung
+            „Workflows verwalten“ geändert werden.
+          </p>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -240,11 +252,13 @@ export function AiPanel() {
             {p.isDefault ? " · Standard" : ""}
           </Button>
         ))}
-        <Button type="button" size="sm" variant="secondary" onClick={addNew}>
-          + Profil
-        </Button>
+        {canManageAiProfiles ? (
+          <Button type="button" size="sm" variant="secondary" onClick={addNew}>
+            + Profil
+          </Button>
+        ) : null}
       </div>
-      {selectedId == null ? (
+      {canManageAiProfiles && selectedId == null ? (
         <p className="text-xs text-amber-700 dark:text-amber-400">
           Neues Profil: Bezeichnung eintragen und <strong>Speichern</strong> — jeder Speichern-Klick
           ohne ausgewähltes Profil legt sonst ein weiteres Profil an.
@@ -254,13 +268,18 @@ export function AiPanel() {
       <div className="grid gap-3 rounded-lg border p-4">
         <div className="space-y-1.5">
           <Label>Bezeichnung</Label>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} />
+          <Input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            disabled={!canManageAiProfiles}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>Anbieter-Vorlage</Label>
           <Select
             value={provider}
             onValueChange={(v) => applyPreset(v as AiProviderPresetId, presets)}
+            disabled={!canManageAiProfiles}
           >
             <SelectTrigger>
               <SelectValue />
@@ -280,7 +299,11 @@ export function AiPanel() {
         </div>
         <div className="space-y-1.5">
           <Label>Base URL (OpenAI-kompatibel)</Label>
-          <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+          <Input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            disabled={!canManageAiProfiles}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>Chat-Modell</Label>
@@ -288,6 +311,7 @@ export function AiPanel() {
             value={model}
             onChange={(e) => setModel(e.target.value)}
             placeholder="z. B. gpt-4o-mini"
+            disabled={!canManageAiProfiles}
           />
         </div>
         <div className="space-y-1.5">
@@ -296,6 +320,7 @@ export function AiPanel() {
             value={embeddingModel}
             onChange={(e) => setEmbeddingModel(e.target.value)}
             placeholder="z. B. text-embedding-3-small"
+            disabled={!canManageAiProfiles}
           />
         </div>
         <div className="space-y-1.5">
@@ -313,47 +338,51 @@ export function AiPanel() {
                 : "Für dieses Profil ist noch kein API-Key hinterlegt — bitte eintragen und Speichern."}
             </p>
           ) : null}
-          <Input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="sk-… / or-…"
-          />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" disabled={saving} onClick={() => void save()}>
-            {saving ? "Speichern…" : selectedId == null ? "Profil anlegen" : "Speichern"}
-          </Button>
-          {selectedId != null ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() =>
-                void invokeRenderer(IPCChannels.Email.ClearAiProfileApiKey, selectedId)
-                  .then(() => toast.success("API-Key des Profils entfernt"))
-                  .catch(() => toast.error("API-Key konnte nicht entfernt werden."))
-              }
-            >
-              Key löschen
-            </Button>
-          ) : null}
-          {selectedId != null ? (
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={() =>
-                void invokeRenderer(IPCChannels.Email.DeleteAiProfile, selectedId)
-                  .then(async () => {
-                    toast.success("Profil gelöscht")
-                    await load()
-                  })
-                  .catch(() => toast.error("Profil konnte nicht gelöscht werden."))
-              }
-            >
-              Profil löschen
-            </Button>
+          {canManageAiProfiles ? (
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="sk-… / or-…"
+            />
           ) : null}
         </div>
+        {canManageAiProfiles ? (
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" disabled={saving} onClick={() => void save()}>
+              {saving ? "Speichern…" : selectedId == null ? "Profil anlegen" : "Speichern"}
+            </Button>
+            {selectedId != null ? (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  void invokeRenderer(IPCChannels.Email.ClearAiProfileApiKey, selectedId)
+                    .then(() => toast.success("API-Key des Profils entfernt"))
+                    .catch(() => toast.error("API-Key konnte nicht entfernt werden."))
+                }
+              >
+                Key löschen
+              </Button>
+            ) : null}
+            {selectedId != null ? (
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() =>
+                  void invokeRenderer(IPCChannels.Email.DeleteAiProfile, selectedId)
+                    .then(async () => {
+                      toast.success("Profil gelöscht")
+                      await load()
+                    })
+                    .catch(() => toast.error("Profil konnte nicht gelöscht werden."))
+                }
+              >
+                Profil löschen
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   )

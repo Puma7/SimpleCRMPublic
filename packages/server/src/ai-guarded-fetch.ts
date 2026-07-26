@@ -5,7 +5,8 @@ import { assertWebhookUrlAllowed, guardedFetch } from './jobs/webhook-handlers';
 
 type AiLookup = (hostname: string) => Promise<readonly { address: string }[]>;
 
-const DEFAULT_AI_TIMEOUT_MS = 60_000;
+/** Matches classification/reply AbortController budgets (90s). */
+const DEFAULT_AI_TIMEOUT_MS = 90_000;
 
 /**
  * Performs an outbound AI HTTP POST with the same SSRF controls as webhooks:
@@ -50,23 +51,29 @@ export async function guardedAiPost(input: {
   // the single configured profile host.
   await assertWebhookUrlAllowed(input.url, [allowHost], lookup);
 
-  const response = await guardedFetch({
-    url: input.url,
-    allowlist: [allowHost],
-    lookup,
-    fetchImpl,
-    init: {
-      method: 'POST',
-      headers: input.headers,
-      body: input.body,
-      timeoutMs,
-    },
-    maxRedirects: 0,
-  });
-
   if (input.signal?.aborted) {
     throw new Error('KI API request was aborted');
   }
 
-  return response;
+  try {
+    return await guardedFetch({
+      url: input.url,
+      allowlist: [allowHost],
+      lookup,
+      fetchImpl,
+      init: {
+        method: 'POST',
+        headers: input.headers,
+        body: input.body,
+        timeoutMs,
+        ...(input.signal ? { signal: input.signal } : {}),
+      },
+      maxRedirects: 0,
+    });
+  } catch (error) {
+    if (input.signal?.aborted) {
+      throw new Error('KI API request was aborted');
+    }
+    throw error;
+  }
 }

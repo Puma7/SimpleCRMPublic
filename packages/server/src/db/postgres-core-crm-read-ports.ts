@@ -1,5 +1,6 @@
 import { sql as kyselySql, type Expression, type ExpressionBuilder, type Kysely, type RawBuilder, type Selectable, type SqlBool, type Updateable } from 'kysely';
 import type { TaskScheduleInput } from '@simplecrm/core';
+import { ilikeContainsPattern } from './sql-ilike';
 
 import type {
   DealApiPort,
@@ -193,7 +194,7 @@ export function createPostgresProductReadPort(options: PostgresCoreCrmReadPortOp
           if (input.cursor !== undefined) query = query.where('id', '>', input.cursor);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('sku', 'ilike', pattern),
@@ -339,7 +340,7 @@ export function createPostgresDealReadPort(options: PostgresCoreCrmReadPortOptio
           if (stage) query = query.where('stage', '=', stage);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
               eb('stage', 'ilike', pattern),
@@ -655,7 +656,7 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
           if (input.completed !== undefined) query = query.where('tasks.completed', '=', input.completed);
           const search = input.search?.trim();
           if (search) {
-            const pattern = `%${search}%`;
+            const pattern = ilikeContainsPattern(search);
             query = query.where((eb) => eb.or([
               eb('tasks.title', 'ilike', pattern),
               eb('tasks.description', 'ilike', pattern),
