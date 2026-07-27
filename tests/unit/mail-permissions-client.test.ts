@@ -54,11 +54,26 @@ describe('client mail permissions', () => {
     expect(hasMailPermissionForAccount({ ...server(), serverClientMode: false }, 'mail.account.manage', 9)).toBe(true);
   });
 
-  test('nothing is gated while the report is still loading', () => {
-    // Sonst blitzen Bedienelemente im ersten Render weg und kommen zurueck.
+  test('the anywhere question stays open while the report loads', () => {
+    // Sie entscheidet, ob ein Bereich ueberhaupt angeboten wird — dort waere ein
+    // Aufblitzen das groessere Uebel.
     const loading = server(EMPTY_MAIL_PERMISSION_REPORT, false);
     expect(hasMailPermission(loading, 'mail.account.manage')).toBe(true);
-    expect(hasMailPermissionForAccount(loading, 'mail.account.manage', 3)).toBe(true);
+  });
+
+  test('the per-account question fails CLOSED while the report loads', () => {
+    // Sie gatet mutierende Aktionen (Konto loeschen, IMAP/SMTP/OAuth). Waeren
+    // die waehrend des Ladens bedienbar, liefe ein eingeschraenkter Nutzer
+    // sicher ins 403 — ein kurz verzoegertes Bedienelement ist der bessere
+    // Fehler.
+    const loading = server(EMPTY_MAIL_PERMISSION_REPORT, false);
+    expect(hasMailPermissionForAccount(loading, 'mail.account.manage', 3)).toBe(false);
+    // Im Desktop gibt es keine ACL — dort bleibt alles erlaubt.
+    expect(hasMailPermissionForAccount(
+      { ...loading, serverClientMode: false },
+      'mail.account.manage',
+      3,
+    )).toBe(true);
   });
 
   test('a loaded but empty report gates everything', () => {

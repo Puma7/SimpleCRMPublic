@@ -309,6 +309,18 @@ export function createPostgresMailDelegationPort(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
         async (trx) => {
+          // Zuerst OHNE Sperre lesen, nur um das Subjekt zu erfahren, dann die
+          // Subjektsperre nehmen und erst danach die Zeile sperrend erneut
+          // lesen.
+          //
+          // Sonst laufen POST und PATCH in umgekehrter Reihenfolge in dieselben
+          // zwei Sperren: der PATCH haette die Binding-Zeile und wartete auf die
+          // Advisory-Sperre, der POST haette die Advisory-Sperre und wartete auf
+          // die Zeile — Postgres bricht dann eine der beiden Anfragen als
+          // Deadlock ab, statt sie zu serialisieren.
+          const unlocked = await findBindingById(trx, input.workspaceId, input.bindingId, false);
+          if (!unlocked) return { ok: false as const, code: 'binding_not_found' as const };
+          await lockConstraintBudgetSubject(trx, input.workspaceId, subjectOfRow(unlocked));
           const existing = await findBindingById(trx, input.workspaceId, input.bindingId);
           if (!existing) return { ok: false as const, code: 'binding_not_found' as const };
           return replaceBySubjectResource(trx, input.workspaceId, input.actor, {
@@ -902,14 +914,19 @@ async function findBindingById(
   trx: Trx,
   workspaceId: string,
   bindingId: number,
+  lock = true,
 ): Promise<BindingRow | null> {
-  const row = await trx
+  let query = trx
     .selectFrom('mail_acl_bindings')
     .selectAll()
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', bindingId)
-    .forUpdate()
-    .executeTakeFirst();
+    .where('id', '=', bindingId);
+  // Der ungesperrte Vorablick dient nur dazu, das Subjekt zu erfahren, damit die
+  // Subjektsperre VOR der Zeilensperre genommen werden kann — sonst nehmen POST
+  // und PATCH dieselben zwei Sperren in umgekehrter Reihenfolge und Postgres
+  // bricht eine der beiden Anfragen als Deadlock ab.
+  if (lock) query = query.forUpdate();
+  const row = await query.executeTakeFirst();
   return row ? normalizeBindingRow(row) : null;
 }
 
@@ -1138,6 +1155,13 @@ async function loadBindingConstraints(
  * parallele Bindings nicht beide am halben Budget vorbeikommen: die Bindings
  * des Subjekts werden dafuer gesperrt.
  */
+/** Subjekt einer gespeicherten Binding-Zeile. */
+function subjectOfRow(row: BindingRow): MailDelegationSubject {
+  return row.subject_type === 'group'
+    ? { type: 'group', id: Number(row.subject_id) }
+    : { type: 'user', id: row.subject_id };
+}
+
 /**
  * Transaktionsweite Advisory-Sperre auf das Subjekt.
  *

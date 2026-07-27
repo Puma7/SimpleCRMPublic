@@ -88,6 +88,7 @@ export {
   isJtlReferenceRefreshEvent,
   isMailAccountDataRefreshEvent,
   isMailAclRefreshEvent,
+  isMailVisibilityOnlyAclEvent,
   isMailAiProfileRefreshEvent,
   isMailComposeAuxDataRefreshEvent,
   isMailListRefreshEvent,

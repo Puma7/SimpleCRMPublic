@@ -349,6 +349,27 @@ export function isMailAclRefreshEvent(event: ServerEvent): boolean {
   return event.entityType === "email_acl" && MAIL_ACL_REFRESH_EVENT_TYPES.has(event.type)
 }
 
+/**
+ * Reine SICHTBARKEITS-Auffrischung: ein Workflow oder die KI-Klassifizierung
+ * hat einen Tag bzw. eine Kategorie geschrieben, die in einem
+ * Sichtbarkeitsfilter vorkommt. Weder Rolle noch Rechte noch die Konten- oder
+ * Team-Liste haben sich geaendert — nur WELCHE Nachrichten ein Betroffener
+ * sieht.
+ *
+ * Ohne diese Unterscheidung behandelt jeder Verbraucher von
+ * email_acl.changed das Ereignis als echte ACL-Mutation: der AuthProvider
+ * erneuert die Sitzung samt Token-Rotation und Audit-Eintrag, und
+ * use-email-accounts wirft Konten-, Team- und Auswahlzustand weg und springt
+ * zurueck in den Posteingang. Ein Tagging-Workflow laeuft auf JEDER
+ * eingehenden Nachricht — das waere Dauerstoerung fuer jeden verbundenen
+ * Betroffenen. Die Nachrichtenliste selbst haengt an ihrem eigenen Filter und
+ * aktualisiert sich weiterhin.
+ */
+export function isMailVisibilityOnlyAclEvent(event: ServerEvent): boolean {
+  if (!isMailAclRefreshEvent(event)) return false
+  return (event.payload as { reason?: unknown } | undefined)?.reason === "visibility_filter"
+}
+
 export function isMailComposeAuxDataRefreshEvent(event: ServerEvent): boolean {
   if (event.entityType === "email_canned_response") {
     return MAIL_CANNED_RESPONSE_REFRESH_EVENT_TYPES.has(event.type)

@@ -24,6 +24,7 @@ import {
   getRendererTransport,
   invokeRenderer,
   isMailAclRefreshEvent,
+  isMailVisibilityOnlyAclEvent,
   ServerAuthClientError,
   subscribeServerEvents,
   type ServerAuthClient,
@@ -278,8 +279,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // Audit-Eintrag) und beide Rechtelisten neu zu laden waere bei
         // laufender Mailverarbeitung Dauerlast. Die Nachrichtenliste haengt an
         // ihrem eigenen Filter und aktualisiert sich weiterhin.
-        const reason = (event.payload as { reason?: unknown } | undefined)?.reason
-        if (reason === "visibility_filter") return
+        if (isMailVisibilityOnlyAclEvent(event)) return
         if (debounceTimer) clearTimeout(debounceTimer)
         debounceTimer = setTimeout(() => {
           // Der Server veroeffentlicht ein selbstadressiertes email_acl.changed

@@ -45,14 +45,25 @@ export function hasMailPermission(
   return context.report.permissions.includes(permission)
 }
 
-/** Dieselbe Frage fuer ein KONKRETES Konto. */
+/**
+ * Dieselbe Frage fuer ein KONKRETES Konto.
+ *
+ * Bewusst FAIL CLOSED, solange der Bericht laedt — anders als
+ * `hasMailPermission`. Der Unterschied ist der Zweck: die Anywhere-Frage
+ * entscheidet, ob ein Bereich ueberhaupt angeboten wird (dort waere ein
+ * Aufblitzen das groessere Uebel), die Konto-Frage gatet MUTIERENDE Aktionen —
+ * Konto loeschen, IMAP/SMTP/OAuth bearbeiten. Waeren die waehrend des Ladens
+ * bedienbar, koennte ein eingeschraenkter Nutzer sie ausloesen und liefe sicher
+ * ins 403. Ein kurz verzoegertes Bedienelement ist der bessere Fehler; dieselbe
+ * Regel gilt fuer `mailAccessUnrestricted` beim Anlegen.
+ */
 export function hasMailPermissionForAccount(
   context: MailPermissionContext,
   permission: string,
   accountId: number | string | null | undefined,
 ): boolean {
   if (!context.serverClientMode) return true
-  if (!context.ready) return true
+  if (!context.ready) return false
   if (context.report.unrestricted) return true
   if (accountId == null) return false
   const held = context.report.accountPermissions[String(accountId)]
