@@ -28772,6 +28772,38 @@ describe('server edition foundation', () => {
     expect((unknown.body as any).error.code).toBe('linked_user_not_found');
   });
 
+  test('team member patch reports an unknown linked user as a client error', async () => {
+    const api = createServerApi(makeServerApiPorts({
+      authUsers: [],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async update() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+    const unknown = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/team-members/agent-9',
+      body: { linkedUserId: '99999999-9999-4999-8999-999999999999' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+    });
+
+    expect(unknown.status).toBe(404);
+    expect((unknown.body as any).error.code).toBe('linked_user_not_found');
+  });
+
   test('team member upsert accepts and validates the workspace user link', async () => {
     // Die Server-UI schickt linkedUserId bei jedem Speichern mit (null = keine
     // Verknuepfung). Faellt das Feld aus der Allowlist, scheitert JEDES Anlegen

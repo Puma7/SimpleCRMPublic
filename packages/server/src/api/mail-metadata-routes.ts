@@ -1274,6 +1274,13 @@ async function handleUpdateEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const unknownLinkedUser = await rejectUnknownLinkedUser(
+    ports,
+    principal.workspaceId,
+    parsed.values.linkedUserId,
+  );
+  if (unknownLinkedUser) return unknownLinkedUser;
+
   const member = await ports.emailTeamMembers.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
