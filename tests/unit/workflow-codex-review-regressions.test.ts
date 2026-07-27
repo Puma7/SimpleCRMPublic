@@ -112,6 +112,21 @@ describe('codex review regression guards', () => {
     expect(desktopStore).toContain('draftAttachmentPaths !== undefined');
   });
 
+  test('stopFurtherWorkflows runtime default is false for legacy graphs without the field', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const emailNodes = readRepoFile('electron/workflow/nodes/email-nodes.ts');
+
+    // New nodes still default to true in catalog/UI — only runtime omits stop when unset.
+    expect(execution).toMatch(
+      /email\.set_spam_status[\s\S]*?booleanConfig\(config\.stopFurtherWorkflows, 'stopFurtherWorkflows', false\)/,
+    );
+    expect(execution).toMatch(
+      /email\.mark_spam[\s\S]*?booleanConfig\(config\.stopFurtherWorkflows, 'stopFurtherWorkflows', false\)/,
+    );
+    expect(emailNodes).toContain('config.stopFurtherWorkflows === true');
+    expect(emailNodes).not.toContain('config.stopFurtherWorkflows !== false');
+  });
+
   test('codex round-4: snapshot guard, chain, ACL, approval sanitize, reply context', () => {
     const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
     const execution = readRepoFile('packages/server/src/workflow-execution.ts');

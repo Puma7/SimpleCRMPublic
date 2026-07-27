@@ -2057,7 +2057,8 @@ async function executeServerNode(
     if (!train.ok) return { status: 'error', port: 'error', message: train.message };
     const status = spamStatusConfig(config.status);
     const tag = String(config.tag ?? '').trim();
-    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', true);
+    // Legacy graphs without this field must keep pre-PR behavior (no graph/chain stop).
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
     if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
     return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now, {
       stopFurtherWorkflows: stopFurther.value,
@@ -2070,7 +2071,7 @@ async function executeServerNode(
     if (!spam.ok) return { status: 'error', port: 'error', message: spam.message };
     const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
     if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
-    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', true);
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
     if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
     if (moveImap.value && spam.value) {
       const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
