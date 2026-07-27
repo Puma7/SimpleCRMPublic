@@ -27,6 +27,7 @@ import {
 import {
   createPostgresEmailFolderReadPort,
   createPostgresEmailMessageCategoryReadPort,
+  createPostgresEmailTeamMemberReadPort,
   createPostgresEmailThreadReadPort,
 } from '../../packages/server/src/db/postgres-mail-metadata-read-ports';
 import {
@@ -5123,6 +5124,12 @@ describe('server mailbox ACL migration', () => {
       VALUES ('${WORKSPACE_A}', '${USER_READ}', 'Read User')
       ON CONFLICT DO NOTHING
     `);
+    // Bestandszuweisung aus der Zeit vor der Verknuepfung: nur assigned_to.
+    await client.query(`
+      UPDATE email_messages
+      SET assigned_to = '${USER_READ}', assigned_to_user_id = NULL
+      WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}
+    `);
     await client.query('RESET app.role; RESET app.cross_workspace_access');
 
     await applyStatementsInTransaction(migration!.upSql.slice(0, backfillIndex));
@@ -5144,9 +5151,103 @@ describe('server mailbox ACL migration', () => {
     `);
     expect(linked.rows).toEqual([{ id: USER_READ, linked_user_id: USER_READ }]);
 
+    // Und die Bestandszuweisungen: ohne dieses Backfill blieben historische
+    // Nachrichten fuer assigned_to_me / assigned_to_my_groups unsichtbar.
+    const backfilledMessages = await client.query<{ id: string; assigned_to_user_id: string | null }>(`
+      SELECT id::text AS id, assigned_to_user_id::text AS assigned_to_user_id
+      FROM email_messages
+      WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}
+    `);
+    expect(backfilledMessages.rows).toEqual([{ id: String(MESSAGE_A), assigned_to_user_id: USER_READ }]);
+
+    await client.query(`
+      UPDATE email_messages
+      SET assigned_to = NULL, assigned_to_user_id = NULL
+      WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}
+    `);
     await client.query(`DELETE FROM email_team_members WHERE workspace_id = '${WORKSPACE_A}' AND id = '${USER_READ}'`);
     await applyStatements(migration!.downSql);
     await client.query('RESET app.role; RESET app.cross_workspace_access');
+  });
+
+  test('deleting a team member clears the assignment and its user link', async () => {
+    // Parität zum Desktop-Trigger email_team_members_clear_assigned_ad: bleibt
+    // assigned_to_user_id nach dem Loeschen stehen, behalten der verknuepfte
+    // Nutzer und seine Gruppen-Peers ueber assigned_to_me Zugriff auf
+    // Nachrichten eines Mitglieds, das es nicht mehr gibt.
+    const migration = serverMigrations.find((candidate) => candidate.id === '0048_email_team_member_linked_user');
+    expect(migration).toBeDefined();
+    await applyStatementsInTransaction(migration!.upSql);
+    const db = createApplicationDb();
+    const memberId = 'agent-delete-cleanup';
+    try {
+      const port = createPostgresEmailTeamMemberReadPort({ db });
+      const created = await port.create!({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+        values: { id: memberId, displayName: 'Delete Cleanup', linkedUserId: USER_READ },
+      });
+      expect(created).toMatchObject({ ok: true });
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        UPDATE email_messages
+        SET assigned_to = '${memberId}', assigned_to_user_id = '${USER_READ}'
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      const deleted = await port.delete!({ workspaceId: WORKSPACE_A, actorUserId: USER_READ, id: memberId });
+      expect(deleted).toMatchObject({ id: memberId, linkedUserId: USER_READ });
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const rows = await client.query<{ assigned_to: string | null; assigned_to_user_id: string | null }>(`
+        SELECT assigned_to, assigned_to_user_id::text AS assigned_to_user_id
+        FROM email_messages
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}
+      `);
+      expect(rows.rows).toEqual([{ assigned_to: null, assigned_to_user_id: null }]);
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      await client.query(`
+        UPDATE email_messages SET assigned_to = NULL, assigned_to_user_id = NULL
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}
+      `).catch(() => undefined);
+      await client.query(`DELETE FROM email_team_members WHERE workspace_id = '${WORKSPACE_A}' AND id = '${memberId}'`).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('an explicitly empty user link is not auto-linked by a coinciding user id', async () => {
+    // linkedUserId: null ist eine Aussage ("bewusst nicht verknuepfen") und darf
+    // nicht wie ein ausgelassenes Feld behandelt werden.
+    const migration = serverMigrations.find((candidate) => candidate.id === '0048_email_team_member_linked_user');
+    expect(migration).toBeDefined();
+    await applyStatementsInTransaction(migration!.upSql);
+    const db = createApplicationDb();
+    try {
+      const port = createPostgresEmailTeamMemberReadPort({ db });
+      const explicitNull = await port.create!({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+        values: { id: USER_SEND, displayName: 'Explizit ohne Verknuepfung', linkedUserId: null },
+      });
+      expect(explicitNull).toMatchObject({ ok: true, member: { id: USER_SEND, linkedUserId: null } });
+
+      // Kontrolle: ohne das Feld greift die Namensgleichheit weiterhin.
+      const omitted = await port.create!({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+        values: { id: USER_BOTH, displayName: 'Automatisch verknuepft' },
+      });
+      expect(omitted).toMatchObject({ ok: true, member: { id: USER_BOTH, linkedUserId: USER_BOTH } });
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      await client.query(`DELETE FROM email_team_members WHERE workspace_id = '${WORKSPACE_A}' AND id IN ('${USER_SEND}', '${USER_BOTH}')`).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
   });
 
   test('caps stored visibility constraint arrays at the database level', async () => {

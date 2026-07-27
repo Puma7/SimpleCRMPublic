@@ -522,8 +522,15 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .executeTakeFirst();
           if (existing) return { ok: false, code: 'team_member_conflict' };
 
+          // Ausgelassen != ausdruecklich null: wer ein UUID-foermiges Mitglied
+          // bewusst OHNE Nutzerverknuepfung anlegt (linkedUserId: null), darf
+          // nicht ueber die Namensgleichheit doch wieder verknuepft werden —
+          // sonst gewaehrt assigned_to_me Zugriff entgegen der sichtbaren
+          // Einstellung.
+          const linkedUserOmitted = !Object.prototype.hasOwnProperty.call(values, 'linkedUserId')
+            || values.linkedUserId === undefined;
           let linkedUserId = values.linkedUserId ?? null;
-          if (linkedUserId === null && isUuidString(values.id as string)) {
+          if (linkedUserId === null && linkedUserOmitted && isUuidString(values.id as string)) {
             const coincidingUser = await trx
               .selectFrom('users')
               .select('id')
@@ -642,7 +649,22 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .where('id', '=', input.id)
             .returning(emailTeamMemberSelectColumns)
             .executeTakeFirst();
-          return row ? mapEmailTeamMemberRow(row) : null;
+          if (!row) return null;
+          // Parität zur Desktop-Edition (email-assigned-to-integrity.ts:
+          // Trigger email_team_members_clear_assigned_ad): mit dem Mitglied
+          // verschwindet auch dessen Zuweisung. Ohne das Aufraeumen bliebe
+          // assigned_to als toter Freitext stehen UND — sicherheitsrelevant —
+          // assigned_to_user_id gesetzt, sodass der frueher verknuepfte Nutzer
+          // und seine Gruppen-Peers ueber assigned_to_me /
+          // assigned_to_my_groups weiterhin Zugriff auf die Nachrichten haetten.
+          // Atomar in derselben Transaktion wie das DELETE.
+          await trx
+            .updateTable('email_messages')
+            .set({ assigned_to: null, assigned_to_user_id: null, updated_at: new Date() })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('assigned_to', '=', input.id)
+            .execute();
+          return mapEmailTeamMemberRow(row);
         },
         { applySession: options.applyWorkspaceSession },
       );

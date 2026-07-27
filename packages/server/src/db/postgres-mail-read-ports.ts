@@ -2968,18 +2968,14 @@ async function assignMessageTeamMember(
       .where('id', '=', teamMemberId)
       .executeTakeFirst();
     if (!member) return { ok: false as const, reason: 'team_member_not_found' as const };
-    // Prefer the explicit linked workspace user. Fall back to UUID-shaped member
-    // ids that coincide with users.id for backwards compatibility.
+    // Ausschliesslich die explizite Verknuepfung. Der frueher noetige Fallback
+    // ueber UUID-foermige Mitglieds-Ids, die zufaellig einer users.id
+    // entsprechen, ist seit Migration 0048 ueberfluessig (sie backfillt genau
+    // diese Faelle) — und schaedlich: bei einem Mitglied, dessen Verknuepfung
+    // ein Admin bewusst entfernt hat, haette die naechste Zuweisung sie still
+    // wiederhergestellt und assigned_to_me erneut Zugriff gegeben.
     if (member.linked_user_id) {
       assignedToUserId = String(member.linked_user_id);
-    } else if (isUuidString(teamMemberId)) {
-      const linkedUser = await trx
-        .selectFrom('users')
-        .select('id')
-        .where('workspace_id', '=', input.workspaceId)
-        .where('id', '=', teamMemberId)
-        .executeTakeFirst();
-      assignedToUserId = linkedUser ? String(linkedUser.id) : null;
     }
   }
 
@@ -3324,10 +3320,6 @@ function normalizeRestoreFolderKind(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
-}
-
-function isUuidString(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function normalizeMessageIdList(messageIds: readonly number[]): number[] {

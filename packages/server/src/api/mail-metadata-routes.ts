@@ -1442,6 +1442,14 @@ async function handleDeleteEmailTeamMember(
 
   await auditEmailTeamMember(ports, principal, 'email_team_member.deleted', member, { role: member.role });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.deleted', member, principal.userId);
+  // Der Delete-Pfad raeumt assigned_to/assigned_to_user_id der Nachrichten mit
+  // auf — der zuvor verknuepfte Nutzer und seine Gruppen-Peers verlieren damit
+  // sofort Sichtbarkeit und muessen ihre Liste neu laden.
+  if (member.linkedUserId) {
+    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
+      member.linkedUserId,
+    ]);
+  }
   return data(200, { deleted: true, teamMember: sanitizeEmailTeamMember(member) });
 }
 
