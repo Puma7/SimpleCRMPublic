@@ -502,6 +502,22 @@ export function createPostgresWorkflowExecutionJobPort(
               // der Marker faende ihn angewendet, obwohl ein Geschwisterzweig
               // noch laeuft oder gescheitert ist. Gleiche Reihenfolge wie im
               // regulaeren Abschluss weiter unten: erst Join, dann Marker.
+              //
+              // Einmal-Schranke wie beim terminalen KI-Kindjob: wird dieser
+              // Fortsetzungsjob nach dem Commit, aber vor der Bestaetigung
+              // erneut zugestellt, zaehlte er die Barriere sonst ein zweites
+              // Mal herunter. Beim ersten Durchlauf mit `wait` gibt es noch
+              // keinen Applied-Marker, der den Retry abfangen koennte — der
+              // zweite Lauf bekaeme verfrueht `ready`, markierte angewendet
+              // und startete die naechste Prioritaetsstufe mitten im Fan-out.
+              const claimed = await claimTerminalHttpCompletion(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                jobContext,
+                now,
+              });
+              if (!claimed) return;
               const join = await completeInboundDeferredJoinSibling(trx, {
                 workspaceId: input.workspaceId,
                 messageId: Number(message.id),
@@ -3113,6 +3129,46 @@ async function scheduleAiTransformTextJob(
 }
 
 /**
+ * Einmal-Schranke fuer den terminalen HTTP-Abschluss (`workflowTerminalSuccess`).
+ *
+ * Ohne `terminalNodeId` in der Fortsetzung — etwa aus einem Job der
+ * Vorgaengerversion — gibt es keine stabile Identitaet ueber eine erneute
+ * Zustellung hinweg; dann wird bewusst NICHT geblockt, sonst bliebe die
+ * Barriere haengen. Der seltene Doppelabbau ist das kleinere Uebel als ein
+ * garantierter Stillstand.
+ */
+async function claimTerminalHttpCompletion(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    jobContext: Record<string, unknown>;
+    now: Date;
+  },
+): Promise<boolean> {
+  const nodeId = typeof input.jobContext.terminalNodeId === 'string'
+    ? input.jobContext.terminalNodeId.trim()
+    : '';
+  if (!nodeId) return true;
+  const claimed = await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      key: `inbound_terminal_http_done:${input.messageId}:${input.workflowId}:${nodeId}`,
+      value: '1',
+      last_updated: input.now,
+      source_row: { origin: 'inbound_terminal_http' },
+      imported_in_run_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())
+    .returning('key')
+    .executeTakeFirst();
+  return Boolean(claimed);
+}
+
+/**
  * Identitaet EINER Ausfuehrung eines terminalen Knotens.
  *
  * Zwei Trigger-Zweige koennen auf denselben Knoten zusammenlaufen; jeder Zweig
@@ -3578,7 +3634,9 @@ async function scheduleWorkflowHttpRequestJob(
       triggerName: context.trigger,
       ...(resumeNodeId ? { resumeNodeId } : {}),
       ...(errorResumeNodeId ? { errorResumeNodeId } : {}),
-      ...(!resumeNodeId && errorResumeNodeId ? { completeOnSuccess: true } : {}),
+      ...(!resumeNodeId && errorResumeNodeId
+        ? { completeOnSuccess: true, terminalNodeId: terminalNodeExecutionId(context, node) }
+        : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),

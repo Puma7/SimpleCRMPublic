@@ -82,6 +82,9 @@ export function takeDeferredSendHold(draftId: number): string | null {
   return reason;
 }
 
+/** Nur der erste Aufruf in diesem Prozess ist ein echter Boot. */
+let bootSweepDone = false;
+
 /**
  * Beim App-Start: ALLE Versand-Claims aufräumen.
  *
@@ -94,8 +97,18 @@ export function takeDeferredSendHold(draftId: number): string | null {
  * aber überleben und den Entwurf bis zum Ablauf von `STALE_CLAIM_MS` blockieren.
  * Der Ablauf bleibt trotzdem als zweite Sicherung bestehen (Absturz ohne
  * Neustart, mehrere Fenster auf derselben Datenbank).
+ *
+ * Genau deshalb greift der Sweep NUR beim ersten Aufruf im Prozess.
+ * `startEmailBackgroundServices` läuft auch im laufenden Prozess erneut
+ * (Reparatur, Restore-Fehlerbehandlung), und `stopEmailBackgroundServices`
+ * wartet einen bereits laufenden Versand nicht ab — dort gehört ein Claim noch
+ * zu einem aktiven SMTP-Aufruf. Würde er gelöscht, könnte eine gleichzeitig
+ * endende Gegenprüfung den Entwurf auf „Wartet auf Freigabe" stempeln und
+ * `scheduled_send_at` löschen, während die Mail rausgeht.
  */
 export function releaseStaleScheduledSendClaims(): number {
+  if (bootSweepDone) return 0;
+  bootSweepDone = true;
   const rows = getDb()
     .prepare(`SELECT key FROM sync_info WHERE key LIKE ?`)
     .all(`${SCHEDULED_SEND_CLAIMED_AT_PREFIX}%`) as { key: string }[];

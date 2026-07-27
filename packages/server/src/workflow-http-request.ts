@@ -31,6 +31,8 @@ export type WorkflowHttpRequestContinuation = Readonly<{
   resumeNodeId?: string;
   errorResumeNodeId?: string;
   completeOnSuccess?: boolean;
+  /** Identitaet dieser Knotenausfuehrung — Einmal-Schranke des terminalen Abschlusses. */
+  terminalNodeId?: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
 } & InboundChainContinuationFields>;
@@ -229,7 +231,12 @@ async function enqueueWorkflowHttpContinuation(
     context: {
       ...(resumeNodeId
         ? { resumeNodeId }
-        : { workflowTerminalSuccess: true }),
+        : {
+          workflowTerminalSuccess: true,
+          // Ohne diese Identitaet koennte eine erneute Zustellung desselben
+          // Fortsetzungsjobs die Join-Barriere ein zweites Mal herunterzaehlen.
+          ...(continuation.terminalNodeId ? { terminalNodeId: continuation.terminalNodeId } : {}),
+        }),
       eventStrings: continuation.eventStrings ?? {},
       eventVariables: {
         ...(continuation.eventVariables ?? {}),

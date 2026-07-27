@@ -833,6 +833,7 @@ function optionalWorkflowHttpContinuation(
       ...resumeNodeId,
       ...errorResumeNodeId,
       ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),
+      ...optionalString(continuationPayload, 'terminalNodeId', 200),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(continuationPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
       ...inboundChainFieldsFromRecord(continuationPayload as Record<string, unknown>),

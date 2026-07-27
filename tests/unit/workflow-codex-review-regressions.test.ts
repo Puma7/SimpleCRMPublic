@@ -583,10 +583,25 @@ describe('codex review regression guards', () => {
     ).toHaveLength(4);
 
     // Gleiche Reihenfolge im HTTP-Terminalpfad: ein Knoten mit Fehler-, aber
-    // ohne Erfolgskante deferiert ebenfalls und zaehlt in der Join-Barriere.
+    // ohne Erfolgskante deferiert ebenfalls und zaehlt in der Join-Barriere —
+    // und braucht darum dieselbe Einmal-Schranke wie der KI-Kindjob, sonst
+    // zaehlt eine erneute Zustellung die Barriere ein zweites Mal herunter.
     expect(execution).toMatch(
-      /continuation:terminal_success[\s\S]*?completeInboundDeferredJoinSibling\([\s\S]*?join === 'ready'[\s\S]*?markInboundWorkflowApplied/,
+      /continuation:terminal_success[\s\S]*?claimTerminalHttpCompletion\([\s\S]*?completeInboundDeferredJoinSibling\([\s\S]*?join === 'ready'[\s\S]*?markInboundWorkflowApplied/,
     );
+    expect(execution).toContain('inbound_terminal_http_done:');
+    // Die Identitaet dafuer reist durch den HTTP-Job hindurch.
+    expect(execution).toContain('{ completeOnSuccess: true, terminalNodeId: terminalNodeExecutionId(context, node) }');
+    expect(readRepoFile('packages/server/src/workflow-http-request.ts'))
+      .toContain('terminalNodeId: continuation.terminalNodeId');
+    expect(readRepoFile('packages/server/src/jobs/production-handlers.ts'))
+      .toContain("optionalString(continuationPayload, 'terminalNodeId', 200)");
+
+    // Desktop: der Sweep raeumt nur beim echten Prozessstart ab.
+    // startEmailBackgroundServices laeuft auch im laufenden Prozess erneut
+    // (Reparatur, Restore) — dort gehoert ein Claim noch zu einem aktiven
+    // SMTP-Aufruf und darf nicht geloescht werden.
+    expect(claim).toContain('if (bootSweepDone) return 0;');
 
     // Desktop: Boot-Sweep raeumt JEDEN Claim ab — nach einem Neustart kann
     // keiner mehr zu einem laufenden SMTP-Aufruf gehoeren.
