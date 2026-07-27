@@ -11,6 +11,7 @@ import {
   SELF_HANDLED_CHAIN_STOP_NODE_TYPES,
   chainStopFlagEnabled,
   nodeRequestsChainStop,
+  workflowGraphHasExplicitChainStopConfig,
 } from '../../packages/core/src/workflow/node-chain-stop';
 
 const okResult = { status: 'ok' } as const;
@@ -74,5 +75,42 @@ describe('generischer Ketten-Stopp am Knoten', () => {
     }
     expect(SELF_HANDLED_CHAIN_STOP_NODE_TYPES.has('email.mark_spam')).toBe(true);
     expect(SELF_HANDLED_CHAIN_STOP_NODE_TYPES.has('email.set_spam_status')).toBe(true);
+  });
+});
+
+describe('workflowGraphHasExplicitChainStopConfig', () => {
+  test('legacy graph without the field is not explicit', () => {
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 't', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 's', type: 'registry', data: { nodeType: 'email.mark_spam', config: { spam: true } } },
+      ],
+      edges: [],
+    };
+    expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(false);
+    expect(workflowGraphHasExplicitChainStopConfig(JSON.stringify(graph))).toBe(false);
+  });
+
+  test('graph with explicit stopFurtherWorkflows on any node is explicit', () => {
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 't', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 's',
+          type: 'registry',
+          data: { nodeType: 'email.mark_spam', config: { spam: true, stopFurtherWorkflows: false } },
+        },
+      ],
+      edges: [],
+    };
+    expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(true);
+  });
+
+  test('invalid graph input returns false', () => {
+    expect(workflowGraphHasExplicitChainStopConfig(null)).toBe(false);
+    expect(workflowGraphHasExplicitChainStopConfig('{bad json')).toBe(false);
+    expect(workflowGraphHasExplicitChainStopConfig({ nodes: 'x' })).toBe(false);
   });
 });

@@ -570,6 +570,70 @@ describe('email-workflow-engine core', () => {
         expect.objectContaining({ status: 'error', direction: 'inbound' }),
       );
     });
+
+    test('legacy graph hard-stops inbound priority chain after spam without inboundChainStop', async () => {
+      const row = inboundRow();
+      const spamRow = inboundRow({ is_spam: 1, spam_status: 'spam' });
+      const legacyGraph = JSON.stringify({
+        version: 1,
+        nodes: [
+          { id: 't', type: 'trigger', data: { kind: 'inbound' } },
+          { id: 's', type: 'registry', data: { nodeType: 'email.mark_spam', config: { spam: true } } },
+        ],
+        edges: [],
+      });
+      const wf1 = { id: 1, name: 'Spam', trigger: 'inbound', enabled: 1, graph_json: legacyGraph };
+      const wf2 = { id: 2, name: 'AI', trigger: 'inbound', enabled: 1, graph_json: legacyGraph };
+      mockListWorkflowsByTrigger.mockReturnValue([wf1, wf2]);
+      mockGetEmailMessageById.mockImplementation(() => spamRow);
+      mockExecuteWorkflowForTrigger.mockResolvedValue({
+        status: 'ok',
+        blocked: false,
+        blockReason: null,
+        log: [],
+      });
+
+      await runInboundWorkflowsForMessage(row.id, { row, inboundWorkflows: [wf1, wf2] });
+
+      expect(mockExecuteWorkflowForTrigger).toHaveBeenCalledTimes(1);
+      expect(mockExecuteWorkflowForTrigger).toHaveBeenCalledWith(
+        expect.objectContaining({ workflow: wf1 }),
+      );
+    });
+
+    test('explicit stopFurtherWorkflows:false continues inbound priority chain after spam', async () => {
+      const row = inboundRow();
+      const spamRow = inboundRow({ is_spam: 1, spam_status: 'spam' });
+      const explicitGraph = JSON.stringify({
+        version: 1,
+        nodes: [
+          { id: 't', type: 'trigger', data: { kind: 'inbound' } },
+          {
+            id: 's',
+            type: 'registry',
+            data: {
+              nodeType: 'email.mark_spam',
+              config: { spam: true, stopFurtherWorkflows: false },
+            },
+          },
+        ],
+        edges: [],
+      });
+      const wf1 = { id: 1, name: 'Spam', trigger: 'inbound', enabled: 1, graph_json: explicitGraph };
+      const wf2 = { id: 2, name: 'AI', trigger: 'inbound', enabled: 1, graph_json: explicitGraph };
+      mockListWorkflowsByTrigger.mockReturnValue([wf1, wf2]);
+      mockGetEmailMessageById.mockImplementation(() => spamRow);
+      mockExecuteWorkflowForTrigger.mockResolvedValue({
+        status: 'ok',
+        blocked: false,
+        blockReason: null,
+        log: [],
+      });
+
+      await runInboundWorkflowsForMessage(row.id, { row, inboundWorkflows: [wf1, wf2] });
+
+      expect(mockExecuteWorkflowForTrigger).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('runDraftCreatedWorkflowsForMessage', () => {

@@ -93,7 +93,8 @@ describe('codex review regression guards', () => {
     expect(templates).not.toMatch(/agent-retoure[\s\S]*?field: 'is_spam'/);
     expect(aiClass).toMatch(/try \{[\s\S]*?if \(!context\) throw new Error\('Prompt nicht gefunden'\)/);
     expect(desktopEngine).toContain('if (r.inboundChainStop)');
-    expect(desktopEngine).not.toContain('afterWorkflowRow.is_spam === 1');
+    expect(desktopEngine).toContain('workflowGraphHasExplicitChainStopConfig');
+    expect(desktopEngine).toContain('messageIsSpamOrReviewForInboundWorkflow');
     expect(emailNodes).toContain('inboundChainStop: true');
     expect(execution).toContain("log: ['skip:workflow_disabled']");
     expect(execution).toMatch(/skip:workflow_disabled[\s\S]*?maybeEnqueueNextInboundWorkflow/);
