@@ -6,6 +6,7 @@ import { sql as kyselySql } from 'kysely';
 import {
   addressesFromRecipientJson,
   messageIsSpamOrReviewForInboundWorkflow,
+  extractDraftBodyForOutboundBlock,
   outboundDraftFingerprint,
   parseDraftReviewResponse,
   scheduledSendClaimedAtKey,
@@ -400,6 +401,18 @@ export async function setDraftApprovalPending(
   // weiterlaeuft. Ein Pending-Stempel koennte den Versand dann nicht mehr
   // stoppen, die Oberflaeche meldete aber „Wartet auf Freigabe", obwohl die
   // Mail rausgeht. In dem Fall den Stempel auslassen — der Versand gewinnt.
+  // Zuerst die Entwurfszeile sperren: der Scheduled-Send-Worker claimt per
+  // `SELECT … FOR UPDATE SKIP LOCKED` auf email_messages und schreibt den
+  // sync_info-Claim in DERSELBEN Transaktion. Ohne diese Sperre koennte der
+  // Lookup unten den noch nicht committeten Claim uebersehen, waehrend das
+  // Update danach auf den Worker wartet und trotzdem pending stempelt.
+  await trx
+    .selectFrom('email_messages')
+    .select(['id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', draftId)
+    .forUpdate()
+    .executeTakeFirst();
   const activeClaim = await trx
     .selectFrom('sync_info')
     .select(['key'])
@@ -1216,7 +1229,14 @@ export function createPostgresAiReviewDraftPort(
             '--- Antwort-Entwurf ---',
             `Betreff: ${draft.subject ?? ''}`,
             '',
-            (draft.body_text ?? '').slice(0, 6000),
+            // Compose-Entwuerfe speichern den Text oft NUR in body_html. Ohne
+            // die Textdarstellung saehe die Gegenlese-KI einen leeren Entwurf
+            // und koennte SEND liefern, waehrend email.send_draft anschliessend
+            // ungepruefte HTML-Inhalte verschickt.
+            extractDraftBodyForOutboundBlock({
+              body_text: draft.body_text,
+              body_html: draft.body_html,
+            }).plain.slice(0, 6000),
           ].join('\n');
 
           return {

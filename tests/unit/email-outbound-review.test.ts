@@ -44,6 +44,16 @@ describe('email outbound review', () => {
     expect(missing.reason).toBeTruthy();
   });
 
+  test('parseOutboundReviewResponse blockt negierte OK-Status', () => {
+    // \bOK\b allein wuerde hier ein eigenstaendiges OK-Wort finden und freigeben.
+    expect(parseOutboundReviewResponse('STATUS: NOT OK').ok).toBe(false);
+    expect(parseOutboundReviewResponse('STATUS: ERROR, NOT OK').ok).toBe(false);
+    expect(parseOutboundReviewResponse('STATUS: NICHT OK').ok).toBe(false);
+    // Markdown und Schlusszeichen bleiben tolerierbar.
+    expect(parseOutboundReviewResponse('STATUS: **OK**.').ok).toBe(true);
+    expect(parseOutboundReviewResponse('STATUS: OK.').ok).toBe(true);
+  });
+
   test('parseOutboundReviewResponse parses BLOCK with REASON and CODE', () => {
     const r = parseOutboundReviewResponse(
       'STATUS: BLOCK\nREASON: Anhang fehlt\nCODE: MISSING_ATTACHMENT',

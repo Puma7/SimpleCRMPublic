@@ -540,6 +540,18 @@ export function createPostgresWorkflowExecutionJobPort(
               log: [delayedJob.status === 'cancelled' ? 'skip:delayed_job_cancelled' : 'skip:delayed_job_done'],
               now,
             });
+            // Storniertes Delay-Geschwister: siehe unten — die Join-Barriere
+            // zaehlt es weiterhin als pending und bliebe sonst fuer immer offen.
+            if (trigger === 'inbound' && message) {
+              await completeInboundDeferredJoinSibling(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                chainStop: true,
+                now,
+              });
+            }
             return;
           }
           if (delayedJob && !resumeNodeId) {
@@ -566,6 +578,21 @@ export function createPostgresWorkflowExecutionJobPort(
                 log: ['skip:delayed_job_cancelled'],
                 now,
               });
+              // Der Delay-Zweig wurde als Geschwister eines Kettenstopps
+              // storniert, zaehlt in der Join-Barriere aber weiterhin als
+              // pending. Ohne diesen Abschluss erreichte der Zaehler nie null —
+              // die Barriere und der Sibling-Abort-Marker blieben fuer immer
+              // liegen und vergifteten jede spaetere Wiederholung.
+              if (trigger === 'inbound' && message) {
+                await completeInboundDeferredJoinSibling(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: Number(message.id),
+                  workflowId: Number(workflow.id),
+                  chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                  chainStop: true,
+                  now,
+                });
+              }
               return;
             }
           }
