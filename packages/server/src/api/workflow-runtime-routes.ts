@@ -1099,6 +1099,7 @@ async function handleDelayedJobUpdate(
   // the live-execution route (workflow-routes.ts) forbids them from running. Mirror
   // that route's admin gate for redirect edits on a side-effecting workflow. Reschedule
   // (executeAt) and cancel (status) edits stay open to workflows.manage.
+  let expectedWorkflow: { id: number; graph: unknown | null } | undefined;
   if (
     (parsed.values.resumeNodeId !== undefined || parsed.values.context !== undefined)
     && !requireAdmin(principal)
@@ -1118,6 +1119,13 @@ async function handleDelayedJobUpdate(
       ) {
         return error(403, 'forbidden', 'Umleiten von Workflows mit schreibenden Knoten erfordert Adminrechte');
       }
+      if (workflow) {
+        // Der gepruefte Graph geht als optimistische Bedingung mit in den
+        // Write: erweitert ein Admin ihn zwischen Pruefung und UPDATE um
+        // schreibende Knoten, liefe die umgeleitete Fortsetzung unter seiner
+        // Autoritaet hinein — das muss ein 409 sein.
+        expectedWorkflow = { id: workflow.id, graph: workflow.graph ?? null };
+      }
     }
   }
 
@@ -1126,6 +1134,7 @@ async function handleDelayedJobUpdate(
     actorUserId: principal.userId,
     id,
     values: parsed.values,
+    ...(expectedWorkflow ? { expectedWorkflow } : {}),
   });
   if (!result) return error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
   if (!result.ok) return delayedJobMutationError(result.code);
@@ -1166,9 +1175,16 @@ async function handleDelayedJobDelete(
 }
 
 function delayedJobMutationError(
-  code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable',
+  code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable' | 'workflow_state_conflict',
 ): ApiResponse {
   if (code === 'workflow_not_found') return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
+  if (code === 'workflow_state_conflict') {
+    return error(
+      409,
+      'workflow_state_conflict',
+      'Workflow wurde zwischenzeitlich geaendert — bitte neu laden und erneut versuchen',
+    );
+  }
   if (code === 'job_not_cancellable') {
     return error(409, 'workflow_delayed_job_not_cancellable', 'Delayed Job laeuft bereits oder ist abgeschlossen');
   }

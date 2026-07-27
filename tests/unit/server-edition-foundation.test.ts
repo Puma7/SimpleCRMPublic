@@ -35856,6 +35856,9 @@ describe('server edition foundation', () => {
         context: { secret: 'updated-delayed-context-secret' },
         status: 'cancelled',
       },
+      // context-Aenderung ist eine Umleitung: der gepruefte Workflow-Graph geht
+      // als optimistische Bedingung mit in den Write.
+      expectedWorkflow: { id: 23, graph: expect.anything() },
     }]);
 
     const deleted = await api.handle({
@@ -35893,6 +35896,58 @@ describe('server edition foundation', () => {
     expect(JSON.stringify(events)).not.toContain('delayed-context-secret');
     expect(JSON.stringify(auditEvents)).not.toContain('updated-delayed-context-secret');
     expect(JSON.stringify(events)).not.toContain('updated-delayed-context-secret');
+  });
+
+  test('a delayed-job redirect carries the checked workflow graph as an optimistic condition', async () => {
+    // Sonst erweitert ein Admin den Graphen zwischen Pruefung und UPDATE um
+    // schreibende Knoten und die umgeleitete Fortsetzung laeuft unter seiner
+    // Autoritaet hinein.
+    const updateCalls: any[] = [];
+    const readOnlyGraph = {
+      version: 1,
+      nodes: [{ id: 'branch-1', type: 'registry', data: { nodeType: 'logic.set_variable' } }],
+      edges: [],
+    };
+    const existingJob: WorkflowDelayedJobRecord = {
+      ...makeWorkflowDelayedJobRecord(87, true),
+      workflowId: 23,
+      messageId: 11,
+      resumeNodeId: 'wait-1',
+      executeAt: '2026-06-03T12:00:00.000Z',
+      status: 'pending',
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get(input) {
+          return input.id === 23 ? { ...makeWorkflowRecord(23), graph: readOnlyGraph } : null;
+        },
+      },
+      workflowDelayedJobs: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return existingJob; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, job: existingJob };
+        },
+      },
+    }));
+
+    const redirected = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
+      body: { resumeNodeId: 'branch-1' },
+      principal: {
+        userId: USER_A_ID,
+        workspaceId: WORKSPACE_A_ID,
+        role: 'user' as const,
+        capabilities: ['workflows.manage'],
+      },
+    });
+
+    expect(redirected.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].expectedWorkflow).toEqual({ id: 23, graph: readOnlyGraph });
   });
 
   test('non-admin cannot redirect a side-effecting delayed job resume node into a writing node', async () => {

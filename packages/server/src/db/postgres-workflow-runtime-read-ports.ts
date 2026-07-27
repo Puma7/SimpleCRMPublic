@@ -1048,6 +1048,25 @@ export function createPostgresWorkflowDelayedJobReadPort(
             return { ok: false, code: 'job_not_cancellable' };
           }
 
+          // Optimistischer Vergleich des Workflow-Graphen, gegen den die Route
+          // ihr Umleitungs-Gate geprueft hat — mit FOR SHARE, damit eine
+          // parallele Graph-Aenderung bis zum Commit blockiert. jsonb-Vergleich
+          // ist schluesselreihenfolge-unabhaengig, IS NOT DISTINCT FROM haelt
+          // "kein Graph" (NULL) vergleichbar.
+          if (input.expectedWorkflow) {
+            const expectedGraph = input.expectedWorkflow.graph ?? null;
+            const stillMatches = await trx
+              .selectFrom('email_workflows')
+              .select(kyselySql<boolean>`graph_json is not distinct from ${
+                expectedGraph === null ? null : JSON.stringify(expectedGraph)
+              }::jsonb`.as('matches'))
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.expectedWorkflow.id)
+              .forShare()
+              .executeTakeFirst();
+            if (!stillMatches?.matches) return { ok: false, code: 'workflow_state_conflict' };
+          }
+
           const workflow = values.workflowId === undefined
             ? undefined
             : await resolveWorkflowReference(trx, input.workspaceId, values.workflowId);

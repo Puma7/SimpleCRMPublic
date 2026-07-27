@@ -8,6 +8,28 @@ function registryType(node: WorkflowGraphNode): string {
   return typeof data?.nodeType === 'string' ? data.nodeType : '';
 }
 
+/**
+ * Laufzeit-Typ eines Knotens — identisch zu nodeRuntimeType in
+ * workflow-execution: `data.nodeType` zaehlt AUSSCHLIESSLICH bei den
+ * Canvas-Typen `registry` und `action`. Ein als `condition` gespeicherter
+ * Knoten mit `data.nodeType = "email.release_outbound"` wird zur Laufzeit nur
+ * als Bedingung ausgefuehrt und gibt nie frei; wuerde die Trap-Erkennung ihn
+ * als Freigabe (oder als beabsichtigtes Hold-Ende) akzeptieren, liesse sie
+ * einen aktiven Ausgangs-Workflow durch, der jede Mail dauerhaft festhaelt.
+ */
+function runtimeType(node: WorkflowGraphNode): string {
+  const data = node.data as Record<string, unknown> | undefined;
+  if (node.type === 'registry') {
+    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
+  }
+  if (node.type === 'action') {
+    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
+    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
+    return 'action';
+  }
+  return node.type;
+}
+
 function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
   const data = node.data as Record<string, unknown> | undefined;
   const config = data?.config;
@@ -26,7 +48,7 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
  *    and errors at runtime instead of sending.
  */
 function isReleaseNode(node: WorkflowGraphNode): boolean {
-  const type = registryType(node);
+  const type = runtimeType(node);
   if (type === 'email.release_outbound') return nodeConfig(node).autoSend === true;
   if (type === 'email.send_draft') {
     const config = nodeConfig(node);
@@ -43,7 +65,7 @@ function isHoldNode(node: WorkflowGraphNode): boolean {
   const data = node.data as Record<string, unknown> | undefined;
   return (
     (node.type === 'action' && data?.actionType === 'hold_outbound') ||
-    registryType(node) === 'email.hold_outbound'
+    runtimeType(node) === 'email.hold_outbound'
   );
 }
 
@@ -67,7 +89,7 @@ const NAMED_PORT_BRANCH_NODES: Readonly<
 function namedPortBranch(
   node: WorkflowGraphNode,
 ): { ports: readonly string[]; releasePorts: readonly string[] } | null {
-  return NAMED_PORT_BRANCH_NODES[registryType(node)] ?? null;
+  return NAMED_PORT_BRANCH_NODES[runtimeType(node)] ?? null;
 }
 
 /**

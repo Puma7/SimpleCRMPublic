@@ -1,10 +1,12 @@
 import {
+  findOutboundGraphTraps as coreFindOutboundGraphTraps,
   LOGIC_INMEMORY_NODE_TYPES as CORE_LOGIC_INMEMORY_NODE_TYPES,
   READ_ONLY_WORKFLOW_NODE_TYPES as CORE_READ_ONLY_WORKFLOW_NODE_TYPES,
   workflowGraphHasChainStopNode as coreWorkflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode as coreWorkflowGraphHasSideEffectNode,
 } from '../../packages/core/src/workflow/graph-validate';
 import {
+  findOutboundGraphTraps as sharedFindOutboundGraphTraps,
   LOGIC_INMEMORY_NODE_TYPES as SHARED_LOGIC_INMEMORY_NODE_TYPES,
   READ_ONLY_WORKFLOW_NODE_TYPES as SHARED_READ_ONLY_WORKFLOW_NODE_TYPES,
   workflowGraphHasChainStopNode as sharedWorkflowGraphHasChainStopNode,
@@ -109,6 +111,37 @@ describe('side-effect allowlist mirror', () => {
       expect({ label: testCase.label, chainStop: coreWorkflowGraphHasChainStopNode(testCase.doc) })
         .toEqual({ label: testCase.label, chainStop: testCase.expected });
     }
+  });
+
+  test('a release node disguised as a condition does not satisfy the outbound guard', () => {
+    // nodeRuntimeType (workflow-execution) wertet data.nodeType NUR bei den
+    // Canvas-Typen registry/action aus. Ein als condition gespeicherter
+    // „Freigabe"-Knoten laeuft zur Laufzeit als blosse Bedingung und gibt nie
+    // frei — die Trap-Erkennung darf ihn deshalb nicht als Freigabe zaehlen,
+    // sonst passiert ein aktiver Ausgangs-Workflow den Guard, der jede Mail
+    // dauerhaft festhaelt.
+    const disguised = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'r1', type: 'condition', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+      ],
+      edges: [{ id: 'e1', source: 't1', target: 'r1' }],
+    } as never;
+    expect(sharedFindOutboundGraphTraps(disguised, { effectiveTrigger: 'outbound' }).length).toBeGreaterThan(0);
+    expect(coreFindOutboundGraphTraps(disguised, { effectiveTrigger: 'outbound' }).length).toBeGreaterThan(0);
+
+    // Derselbe Knoten als registry-Typ ist eine echte Freigabe.
+    const genuine = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'r1', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+      ],
+      edges: [{ id: 'e1', source: 't1', target: 'r1' }],
+    } as never;
+    expect(sharedFindOutboundGraphTraps(genuine, { effectiveTrigger: 'outbound' })).toEqual([]);
+    expect(coreFindOutboundGraphTraps(genuine, { effectiveTrigger: 'outbound' })).toEqual([]);
   });
 
   test('a genuine side-effect node still trips both', () => {
