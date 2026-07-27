@@ -148,6 +148,39 @@ function signatureHtmlToText(html: string): string {
     .trim();
 }
 
+/**
+ * HOLD stempeln — ausser der Entwurf wird gerade versendet. In dem Fall ginge
+ * die Mail ohnehin raus; ein 'hold' im Lauf-Verlauf waere schlicht falsch.
+ */
+function holdResultOrSendInFlight(
+  draftId: number,
+  reason: string,
+  variables?: Record<string, string | number | boolean | null>,
+): NodeExecuteResult {
+  const held = setDraftApprovalPending(draftId, reason);
+  if (held) {
+    return {
+      status: 'ok',
+      port: 'hold',
+      variables: variables ?? {
+        'ai.review.verdict': 'hold',
+        'ai.review.answered': false,
+        'ai.review.reason': reason,
+      },
+    };
+  }
+  return {
+    status: 'ok',
+    port: 'send',
+    message: 'review_hold_skipped:send_in_flight',
+    variables: {
+      'ai.review.verdict': 'send',
+      'ai.review.answered': false,
+      'ai.review.reason': 'Versand lief bereits — Gegenprüfung kam zu spät',
+    },
+  };
+}
+
 export function registerAiNodes(register: Reg): void {
   register({
     type: 'ai.review',
@@ -877,36 +910,31 @@ export function registerAiNodes(register: Reg): void {
             : null;
           if (liveFp !== reviewedFingerprint) {
             const reason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
-            setDraftApprovalPending(draftId, reason);
-            return {
-              status: 'ok',
-              port: 'hold',
-              variables: {
-                'ai.review.verdict': 'hold',
-                'ai.review.answered': false,
-                'ai.review.reason': reason,
-              },
-            };
+            return holdResultOrSendInFlight(draftId, reason);
           }
           return { status: 'ok', port: 'send', variables };
         }
-        setDraftApprovalPending(
+        return holdResultOrSendInFlight(
           draftId,
           parsed.reason || 'Gegenlese-KI empfiehlt menschliche Prüfung',
+          variables,
         );
-        return { status: 'ok', port: 'hold', variables };
       } catch (e) {
         // KI-Fehler: fail-safe Richtung Mensch — Entwurf wartet auf Freigabe.
         const msg = e instanceof Error ? e.message : String(e);
-        setDraftApprovalPending(draftId, `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`);
+        const held = holdResultOrSendInFlight(
+          draftId,
+          `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`,
+        );
         return {
-          status: 'ok',
-          port: 'hold',
-          message: `review_error:${msg}`,
+          ...held,
+          message: held.port === 'hold' ? `review_error:${msg}` : held.message,
           variables: {
-            'ai.review.verdict': 'hold',
+            'ai.review.verdict': held.port === 'hold' ? 'hold' : 'send',
             'ai.review.answered': false,
-            'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
+            'ai.review.reason': held.port === 'hold'
+              ? 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen'
+              : 'Versand lief bereits — Gegenprüfung kam zu spät',
           },
         };
       }

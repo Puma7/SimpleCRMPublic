@@ -363,6 +363,9 @@ export function buildAiAgentJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -383,6 +386,9 @@ export function buildAiPickCannedJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -439,8 +445,8 @@ export function buildAiDraftReplyJobPlan(
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
     // Terminaler KI-Knoten (keine Resume-Kante ⇒ keine Continuation): der
     // Kettenkontext steckt dann in payload.context und wird durchgereicht,
-    // damit der Kindjob die Kette selbst weiterschalten kann.
-    ...(payload.continuation === undefined && payload.context !== undefined
+    // damit der Kindjob Applied-Marker, Join und Kette selbst abschliesst.
+    ...(payload.terminalWorkflowCompletion === true
       ? { terminalChainPayload: payload as Record<string, unknown> }
       : {}),
   };
@@ -471,6 +477,9 @@ export function buildAiReviewDraftJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
   };
 }
 

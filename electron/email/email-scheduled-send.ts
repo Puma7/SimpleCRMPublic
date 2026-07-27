@@ -4,6 +4,10 @@ import { listDueScheduledDraftIds, setDraftScheduledSendAt } from './email-messa
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 import {
+  claimScheduledSend,
+  releaseScheduledSendClaim,
+} from './email-scheduled-send-claim';
+import {
   clearScheduledSendDraftMeta,
   markScheduledSendDraftFailed,
   recordScheduledSendAttemptFailure,
@@ -17,6 +21,10 @@ export async function processDueScheduledSends(
   const ids = listDueScheduledDraftIds();
   let sent = 0;
   for (const draftId of ids) {
+    // Claim VOR dem Lesen/Senden: solange er steht, darf die Gegenlese-KI den
+    // Entwurf nicht auf „Wartet auf Freigabe" stempeln und scheduled_send_at
+    // nicht löschen — der SMTP-Aufruf laeuft ausserhalb jeder Transaktion.
+    if (!claimScheduledSend(draftId)) continue;
     try {
       const draft = getEmailMessageById(draftId);
       if (!draft || draft.uid >= 0) continue;
@@ -68,6 +76,8 @@ export async function processDueScheduledSends(
         setDraftScheduledSendAt(draftId, null);
         markScheduledSendDraftFailed(draftId, errMsg);
       }
+    } finally {
+      releaseScheduledSendClaim(draftId);
     }
   }
   return sent;

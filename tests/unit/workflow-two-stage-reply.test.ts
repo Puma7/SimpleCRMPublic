@@ -49,7 +49,7 @@ jest.mock('../../electron/workflow/knowledge-base', () => ({
 
 jest.mock('../../electron/email/email-draft-approval', () => ({
   markDraftAutoSubmitted: jest.fn(),
-  setDraftApprovalPending: jest.fn(),
+  setDraftApprovalPending: jest.fn(() => true),
 }));
 
 jest.mock('../../electron/workflow/auto-reply-guard', () => ({

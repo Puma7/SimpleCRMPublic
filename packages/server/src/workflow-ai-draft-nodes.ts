@@ -39,6 +39,7 @@ import {
   isInboundSiblingAborted,
 } from './workflow-inbound-chain-advance';
 import type { InboundChainContinuationFields } from './workflow-inbound-chain-context';
+import { completeTerminalInboundChild } from './workflow-inbound-terminal-child';
 import type { JobPayload } from './jobs/types';
 
 /** Match ai-classification agent/classify caps so draft_reply cannot blow the model context. */
@@ -723,6 +724,12 @@ export type AiReviewDraftJobPlan = Readonly<{
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
+  /**
+   * Roh-Payload eines TERMINALEN Knotens (keine Resume-Kante, keine
+   * Continuation). Traegt Workflow- und Inbound-Kettenkontext, damit der
+   * Kindjob Abbruchpruefung und Kettenabschluss selbst durchfuehren kann.
+   */
+  terminalChainPayload?: Record<string, unknown>;
 }>;
 
 export type AiReviewDraftJobPort = Readonly<{
@@ -766,7 +773,7 @@ async function finishTerminalDraftReplyChain(
     deps.db,
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => {
-      await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, payload, now);
+      await completeTerminalInboundChild(trx, payload, { applied: false, now });
     },
     { applySession: deps.applyWorkspaceSession },
   );
@@ -1121,13 +1128,11 @@ export function createPostgresAiDraftReplyPort(
             });
           } else if (input.terminalChainPayload) {
             // Terminaler Knoten (keine Resume-Kante): der Elternlauf wartet auf
-            // diesen Kindjob, also Join-Barriere abbauen und Kette hier
-            // weiterschalten.
-            await enqueueNextInboundWorkflowAfterTerminalChildFailure(
-              trx,
-              input.terminalChainPayload,
-              stampedAt,
-            );
+            // diesen Kindjob — Applied-Marker, Join-Barriere und Kette hier.
+            await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+              applied: true,
+              now: stampedAt,
+            });
           }
         },
         { applySession: deps.applyWorkspaceSession },
@@ -1388,7 +1393,17 @@ export function createPostgresAiReviewDraftPort(
             await setDraftApprovalPending(trx, input.workspaceId, draftId, approvalReason);
           }
           const continuation = input.continuation;
-          if (!continuation) return;
+          if (!continuation) {
+            if (input.terminalChainPayload) {
+              // Terminale Gegenpruefung: der Elternlauf wartet auf sie.
+              // Angewendet nur, wenn sie tatsaechlich ein Urteil gefaellt hat.
+              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                applied: port === 'send' || port === 'hold',
+                now: now(),
+              });
+            }
+            return;
+          }
           const namedTarget = input.portResumeTargets?.[port];
           let resumeNodeId = namedTarget;
           if (!resumeNodeId && port === 'send') {

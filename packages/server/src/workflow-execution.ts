@@ -3112,6 +3112,15 @@ async function scheduleAiAgentJob(
     workspaceId: context.workspaceId,
     systemPrompt: systemPrompt.value,
     ...workflowJobProvenance(context),
+    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
+    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
+    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
+    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    ...(resumeNodeId ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+    }),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -3156,8 +3165,8 @@ async function scheduleAiAgentJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    stop: true,
+    deferred: true,
     message: `queued_ai_agent:${jobId}`,
     variables: {
       'ai.agent.status': 'pending',
@@ -3194,10 +3203,15 @@ async function scheduleAiDraftReplyJob(
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
-    // Kettenkontext auch ohne Resume-Kante: ein terminaler KI-Knoten hat keine
-    // Continuation, muss die Kette nach getaner Arbeit aber trotzdem
-    // weiterschalten (inboundChainFromJobPayload liest payload.context).
-    context: { ...inboundChainFieldsFromContext(context) },
+    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
+    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
+    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
+    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    ...(resumeNodeId ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+    }),
   };
   if (profileId.value !== undefined) payload.profileId = profileId.value;
   if (knowledgeBaseId.value !== undefined) payload.knowledgeBaseId = knowledgeBaseId.value;
@@ -3289,6 +3303,15 @@ async function scheduleAiReviewDraftJob(
     // Continuation — der erste Elternlauf bliebe fuer immer deferred.
     runId: context.runId,
     ...workflowJobProvenance(context),
+    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
+    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
+    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
+    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    ...(deferAnchor ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+    }),
     eventStrings: context.strings,
     eventVariables: context.variables,
     portResumeTargets: Object.fromEntries(
@@ -3340,8 +3363,8 @@ async function scheduleAiReviewDraftJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(deferAnchor),
-    deferred: Boolean(deferAnchor),
+    stop: true,
+    deferred: true,
     message: `queued_ai_review_draft:${jobId}`,
     variables: {
       'ai.review.status': 'pending',
@@ -3370,6 +3393,15 @@ async function scheduleAiPickCannedJob(
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     ...workflowJobProvenance(context),
+    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
+    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
+    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
+    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    ...(resumeNodeId ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+    }),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -3406,8 +3438,8 @@ async function scheduleAiPickCannedJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    stop: true,
+    deferred: true,
     message: `queued_ai_pick_canned:${jobId}`,
     variables: {
       'ai.canned.status': 'pending',

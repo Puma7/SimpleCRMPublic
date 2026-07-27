@@ -37,8 +37,10 @@ import {
 } from './workflow-inbound-chain-context';
 import {
   enqueueNextInboundWorkflowAfterTerminalChildFailure,
+  inboundChainFromJobPayload,
   isInboundSiblingAborted,
 } from './workflow-inbound-chain-advance';
+import { completeTerminalInboundChild } from './workflow-inbound-terminal-child';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -167,6 +169,12 @@ export type AiAgentJobPlan = Readonly<{
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
+  /**
+   * Roh-Payload eines TERMINALEN Knotens (keine Resume-Kante, keine
+   * Continuation). Traegt Workflow- und Inbound-Kettenkontext, damit der
+   * Kindjob Abbruchpruefung und Kettenabschluss selbst durchfuehren kann.
+   */
+  terminalChainPayload?: Record<string, unknown>;
 }>;
 
 export type AiAgentJobPort = Readonly<{
@@ -801,6 +809,7 @@ export function createPostgresAiAgentPort(
             workspaceId: input.workspaceId,
             messageId: input.messageId,
             continuation: input.continuation,
+            terminalChainPayload: input.terminalChainPayload,
           });
           if (abort) return abort;
           const message = input.messageId === undefined
@@ -875,6 +884,7 @@ export function createPostgresAiAgentPort(
               workspaceId: input.workspaceId,
               messageId: input.messageId,
               continuation: input.continuation,
+              terminalChainPayload: input.terminalChainPayload,
             });
             if (abort) {
               if (input.continuation) {
@@ -924,6 +934,14 @@ export function createPostgresAiAgentPort(
                 .where('id', '=', Number(draft.message.id))
                 .execute();
             }
+            if (!input.continuation && input.terminalChainPayload) {
+              // Terminaler Knoten: Applied-Marker setzen, Join abbauen, Kette
+              // weiterschalten — der Elternlauf hat auf diesen Job gewartet.
+              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                applied: true,
+                now: now(),
+              });
+            }
             if (input.continuation) {
               await enqueueContinuation(trx, {
                 workspaceId: input.workspaceId,
@@ -954,6 +972,12 @@ export type AiPickCannedJobPlan = Readonly<{
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
+  /**
+   * Roh-Payload eines TERMINALEN Knotens (keine Resume-Kante, keine
+   * Continuation). Traegt Workflow- und Inbound-Kettenkontext, damit der
+   * Kindjob Abbruchpruefung und Kettenabschluss selbst durchfuehren kann.
+   */
+  terminalChainPayload?: Record<string, unknown>;
 }>;
 
 export type AiPickCannedJobPort = Readonly<{
@@ -982,6 +1006,7 @@ export function createPostgresAiPickCannedPort(
             workspaceId: input.workspaceId,
             messageId: input.messageId,
             continuation: input.continuation,
+            terminalChainPayload: input.terminalChainPayload,
           });
           if (abort) return abort;
           const message = input.messageId === undefined
@@ -1062,6 +1087,7 @@ export function createPostgresAiPickCannedPort(
               workspaceId: input.workspaceId,
               messageId: input.messageId,
               continuation: input.continuation,
+              terminalChainPayload: input.terminalChainPayload,
             });
             if (abort) {
               if (input.continuation) {
@@ -1105,6 +1131,12 @@ export function createPostgresAiPickCannedPort(
                 .where('workspace_id', '=', input.workspaceId)
                 .where('id', '=', Number(draft.message.id))
                 .execute();
+            }
+            if (!input.continuation && input.terminalChainPayload) {
+              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                applied: true,
+                now: now(),
+              });
             }
             if (shouldEnqueueContinuation) {
               await enqueueContinuation(trx, {
@@ -1186,12 +1218,18 @@ async function inboundAsyncChildAbortReason(
     workspaceId: string;
     messageId?: number;
     continuation?: AiClassificationContinuation;
+    /** Terminaler Knoten: Kettenkontext statt Continuation. */
+    terminalChainPayload?: Record<string, unknown>;
   },
 ): Promise<InboundAsyncChildAbortReason | null> {
   const messageId = input.messageId;
   const continuation = input.continuation;
-  if (messageId === undefined || !continuation) return null;
-  if (continuation.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
+  const terminal = continuation ? null : inboundChainFromJobPayload(input.terminalChainPayload ?? {});
+  // Ohne Continuation UND ohne terminalen Kettenkontext ist der Job
+  // compose-initiiert (manuelle KI-Aktion) — der darf nicht am Spamstatus
+  // scheitern, sonst waeren manuelle Aktionen auf „Spam pruefen"-Mails gesperrt.
+  if (messageId === undefined || (!continuation && !terminal)) return null;
+  if (continuation?.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
 
   const live = await trx
     .selectFrom('email_messages')
@@ -1201,11 +1239,13 @@ async function inboundAsyncChildAbortReason(
     .executeTakeFirst();
   if (live && messageIsSpamOrReviewForInboundWorkflow(live)) return 'message_spam_or_review';
 
+  const workflowId = continuation?.workflowId ?? terminal?.chain.workflowIds[terminal.chain.index];
+  if (workflowId == null) return null;
   const aborted = await isInboundSiblingAborted(trx, {
     workspaceId: input.workspaceId,
     messageId,
-    workflowId: continuation.workflowId,
-    chain: continuation.inboundWorkflowChain ?? null,
+    workflowId,
+    chain: continuation?.inboundWorkflowChain ?? terminal?.chain ?? null,
   });
   return aborted ? 'sibling_terminal_abort' : null;
 }
@@ -1227,13 +1267,28 @@ async function enqueueAiChildSkipContinuation(
     workspaceId: string;
     messageId?: number;
     continuation?: AiClassificationContinuation;
+    terminalChainPayload?: Record<string, unknown>;
   },
   nodeType: 'ai.agent' | 'ai.pick_canned',
   reason: InboundAsyncChildAbortReason,
   now: Date,
 ): Promise<void> {
   const continuation = input.continuation;
-  if (!continuation) return;
+  if (!continuation) {
+    // Terminaler Knoten: keine Fortsetzung, aber Join und Kette muessen weiter.
+    // NICHT als angewendet markieren — die Arbeit ist ausgefallen.
+    if (!input.terminalChainPayload) return;
+    await withWorkspaceTransaction(
+      options.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => completeTerminalInboundChild(trx, input.terminalChainPayload!, {
+        applied: false,
+        now,
+      }),
+      { applySession: options.applyWorkspaceSession },
+    );
+    return;
+  }
   await withWorkspaceTransaction(
     options.db,
     { workspaceId: input.workspaceId, role: 'system' },

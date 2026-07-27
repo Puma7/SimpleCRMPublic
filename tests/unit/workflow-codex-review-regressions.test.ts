@@ -459,6 +459,48 @@ describe('codex review regression guards', () => {
     expect(parse).toContain('statusMatches.length > 1');
   });
 
+  test('folgearbeit: terminale KI-Knoten und Desktop-Versand-Claim', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const terminal = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
+    const classification = readRepoFile('packages/server/src/ai-classification.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const claim = readRepoFile('electron/email/email-scheduled-send-claim.ts');
+    const scheduled = readRepoFile('electron/email/email-scheduled-send.ts');
+    const approval = readRepoFile('electron/email/email-draft-approval.ts');
+    const desktopActions = readRepoFile('electron/workflow/draft-approval-actions.ts');
+
+    // Alle vier KI-Knoten stempeln Kettenkontext auch ohne Resume-Kante …
+    expect(execution.match(/terminalWorkflowCompletion: true/g)).toHaveLength(4);
+    // … und lassen den Elternlauf auf den Kindjob warten (alle vier Knoten).
+    for (const queued of [
+      'queued_ai_agent',
+      'queued_ai_draft_reply',
+      'queued_ai_review_draft',
+      'queued_ai_pick_canned',
+    ]) {
+      expect(execution).toMatch(
+        new RegExp(`stop: true,\\s*\\n\\s*deferred: true,\\s*\\n\\s*message: \`${queued}`),
+      );
+    }
+
+    // Gemeinsamer Abschluss: Applied-Marker nur bei Erfolg.
+    expect(terminal).toContain('markInboundWorkflowAppliedByIds');
+    expect(terminal).toContain('applied: boolean');
+    expect(classification).toContain('completeTerminalInboundChild');
+    expect(draftNodes).toContain('completeTerminalInboundChild');
+
+    // Abbruchpruefung haengt nicht mehr allein an der Continuation, bleibt aber
+    // fuer compose-initiierte Jobs (weder Continuation noch Kettenkontext) aus.
+    expect(classification).toContain('(!continuation && !terminal)');
+
+    // Desktop-Versand-Claim serialisiert Gegenpruefung und Versand.
+    expect(claim).toContain('scheduledSendClaimedAtKey');
+    expect(scheduled).toContain('claimScheduledSend(draftId)');
+    expect(scheduled).toContain('releaseScheduledSendClaim(draftId)');
+    expect(approval).toContain('scheduledSendIsClaimed(messageId)');
+    expect(desktopActions).toContain('scheduledSendIsClaimed(draftId)');
+  });
+
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {
     const parse = readRepoFile('packages/core/src/email/outbound-review-parse.ts');
     expect(parse).toContain('OUTBOUND_STATUS_LINE');
