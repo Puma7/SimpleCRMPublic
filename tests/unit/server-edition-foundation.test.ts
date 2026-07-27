@@ -33154,6 +33154,86 @@ describe('server edition foundation', () => {
     expect(enablePatch.status).toBe(409);
   });
 
+  test('priority is execution relevant: only a real change needs workflows.manage', async () => {
+    // priority bestimmt die Reihenfolge (ORDER BY priority) und beim Ausgang,
+    // wer das Limit pro Versand noch erreicht — ein Editor koennte einen aktiven
+    // Seiteneffekt-Workflow sonst vor einen abbrechenden ziehen. Weil die UI
+    // priority bei JEDEM Speichern mitsendet, zaehlt nur eine echte Aenderung.
+    const updateCalls: any[] = [];
+    const stored = {
+      ...makeWorkflowRecord(23),
+      enabled: true,
+      priority: 100,
+      graph: {
+        nodes: [
+          { id: 'trigger-1', type: 'trigger' },
+          { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+        ],
+        edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+      },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [stored], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? stored : null; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow: { ...stored, ...input.values } };
+        },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const reorder = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { priority: 1 },
+      principal: editor,
+    });
+    expect(reorder.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    // Namensaenderung mit unveraendert mitgesendeter Prioritaet bleibt erlaubt.
+    const rename = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { name: 'Neuer Name', priority: 100 },
+      principal: editor,
+    });
+    expect(rename.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].values).toMatchObject({ name: 'Neuer Name', priority: 100 });
+    // Reines Metadaten-Patch: kein optimistischer Vorzustand noetig.
+    expect(updateCalls[0].expected).toBeUndefined();
+
+    // Und mit workflows.manage ist das Umsortieren erlaubt.
+    const manager = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit', 'workflows.manage'],
+    };
+    const managed = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { priority: 1 },
+      principal: manager,
+    });
+    expect(managed.status).toBe(200);
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[1].expected).toEqual({
+      enabled: stored.enabled,
+      graph: stored.graph,
+      triggerName: stored.triggerName,
+      executionMode: stored.executionMode,
+    });
+  });
+
   test('server workflow mutation routes write audit records and server events', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const events: ServerEvent[] = [];

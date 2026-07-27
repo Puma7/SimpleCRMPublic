@@ -19,6 +19,13 @@ export type WorkflowSaveBaseline = {
   graphJson: string
   cronExpr: string | null
   scheduleAccountId: number | null
+  /**
+   * Die Prioritaet bestimmt die Ausfuehrungsreihenfolge (und beim Ausgang, wer
+   * das Limit pro Versand noch erreicht). Der Server prueft sie deshalb — anders
+   * als die uebrigen Felder — auf eine TATSAECHLICHE Aenderung, weil der Editor
+   * sie bei jedem Speichern mitsendet.
+   */
+  priority: number
 }
 
 export type WorkflowSaveCandidate = {
@@ -26,6 +33,7 @@ export type WorkflowSaveCandidate = {
   graphJson: string
   cronExpr: string | null
   scheduleAccountId: number | null
+  priority: number
 }
 
 export type WorkflowSaveGateDecision = {
@@ -48,6 +56,7 @@ export function decideWorkflowSaveGate(
     || baseline.enabled !== next.enabled
     || baseline.cronExpr !== next.cronExpr
     || baseline.scheduleAccountId !== next.scheduleAccountId
+    || baseline.priority !== next.priority
   // Spiegelt rejectUnlessSideEffectWorkflowManage: nur aktive Workflows mit
   // Seiteneffekt-Knoten brauchen manage.
   const needsManage = next.enabled && options.hasSideEffects

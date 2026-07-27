@@ -241,7 +241,8 @@ export function outboundGraphReleasesMail(
 
 // --- Side-effect detection (mirror of packages/core workflowGraphHasSideEffectNode) ---
 
-const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+/** Exportiert fuer den Spiegel-Test gegen packages/core (workflow-side-effect-mirror). */
+export const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'email.auth_check',
   'email.read_tracking_evidence',
   'email.sender_filter',
@@ -250,8 +251,14 @@ const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'jtl.prepare_action',
 ]);
 
-const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+/** Exportiert fuer den Spiegel-Test gegen packages/core (workflow-side-effect-mirror). */
+export const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'logic.stop',
+  // Reiner Kontrollknoten (Spam-Kette abbrechen) — wie logic.stop kein
+  // Seiteneffekt. Fehlte er hier, haette der Editor Workflows mit diesem
+  // Knoten (mehrere Vorlagen nutzen ihn) fuer workflows.edit gesperrt,
+  // obwohl der Server sie zulaesst.
+  'logic.stop_after_spam',
   'logic.set_variable',
   'logic.merge',
   'logic.threshold',

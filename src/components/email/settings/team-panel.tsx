@@ -13,6 +13,7 @@ import {
   isMailAccountDataRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 import type { TeamMember } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
@@ -20,11 +21,18 @@ import { logError } from "../log"
 
 export function TeamPanel() {
   const { bumpAccountsRevision } = useMailWorkspace()
+  const { user } = useAuth()
   // Die Benutzer-Verknuepfung existiert nur in der Server-Edition: das
   // SaveTeamMember-IPC-Schema und der Electron-Handler kennen linkedUserId
   // nicht (zod strippt das Feld), es gaebe also einen Erfolgs-Toast ohne
   // gespeicherten Wert. Darum ausserhalb des HTTP-Transports ausblenden.
   const serverClientMode = getRendererTransport().kind === "http"
+  // Die Verknuepfung schreibt assigned_to_user_id workspaceweit um und ist
+  // serverseitig Administratoren vorbehalten (rejectLinkedUserMutationWithoutAdmin
+  // antwortet auf die blosse ANWESENHEIT des Feldes mit 403). Fuer alle anderen
+  // — etwa einen delegierten Kontoverwalter, der nur die Signatur pflegt — darf
+  // das Feld daher weder sichtbar sein noch im Payload landen.
+  const canLinkUser = serverClientMode && (user?.role === "owner" || user?.role === "admin")
   const [team, setTeam] = useState<TeamMember[]>([])
   const [newId, setNewId] = useState("")
   const [newName, setNewName] = useState("")
@@ -88,7 +96,7 @@ export function TeamPanel() {
         <p className="text-sm text-muted-foreground">
           Mitglieder können Nachrichten zugewiesen bekommen. Die Team-Signatur dient als Fallback,
           wenn für ein Postfach keine eigene Signatur hinterlegt ist (unter Konten → Signatur).
-          {serverClientMode
+          {canLinkUser
             ? " Für Zuweisungsfilter (assigned_to_me) eine Workspace-User-UUID verknüpfen."
             : ""}
         </p>
@@ -133,7 +141,7 @@ export function TeamPanel() {
               </div>
               {editingId === t.id ? (
                 <div className="space-y-2 border-t pt-2">
-                  {serverClientMode ? (
+                  {canLinkUser ? (
                     <div className="space-y-1.5">
                       <Label className="text-xs">Verknüpfte User-UUID</Label>
                       <Input
@@ -157,7 +165,7 @@ export function TeamPanel() {
                         id: t.id,
                         displayName: t.display_name,
                         signatureHtml: editSignature,
-                        ...(serverClientMode
+                        ...(canLinkUser
                           ? { linkedUserId: editLinkedUserId.trim() || null }
                           : {}),
                       }).then(() => {
@@ -197,7 +205,7 @@ export function TeamPanel() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
-          {serverClientMode ? (
+          {canLinkUser ? (
             <Input
               className="min-w-[220px] flex-1 font-mono text-xs"
               placeholder="Verknüpfte User-UUID (optional)"
@@ -220,7 +228,7 @@ export function TeamPanel() {
                 id: newId.trim(),
                 displayName: newName.trim(),
                 signatureHtml: newSignature,
-                ...(serverClientMode
+                ...(canLinkUser
                   ? { linkedUserId: newLinkedUserId.trim() || null }
                   : {}),
               })

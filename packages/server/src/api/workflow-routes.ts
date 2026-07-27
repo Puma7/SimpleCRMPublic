@@ -1044,7 +1044,7 @@ async function handleUpdateWorkflow(
   // Seiteneffekt-Workflows von selten auf minuetlich stellen oder ihn auf ein
   // anderes Konto richten, ohne workflows.manage zu besitzen: der Guard lief bei
   // einem reinen Zeitplan-Patch gar nicht erst an.
-  const patchTouchesOutbound =
+  const patchTouchesOutboundField =
     parsed.values.triggerName !== undefined ||
     parsed.values.enabled !== undefined ||
     parsed.values.graph !== undefined ||
@@ -1056,6 +1056,14 @@ async function handleUpdateWorkflow(
     // reines accountId-Patch koennte einen privilegierten Seiteneffekt-Workflow
     // sonst ohne manage auf weitere Postfaecher ausweiten.
     parsed.values.accountId !== undefined;
+  // priority bestimmt die tatsaechliche Ausfuehrungsreihenfolge (ORDER BY
+  // priority in mail-inbound-workflow-enqueue) und beim Ausgang zusaetzlich,
+  // WELCHE Workflows das LIMIT MAX_OUTBOUND_WORKFLOWS_PER_SEND ueberhaupt noch
+  // erreichen — ein Editor koennte einen aktiven Seiteneffekt-Workflow sonst
+  // vor einen abbrechenden ziehen oder einen anderen aus der Menge draengen.
+  // Anders als die Felder oben zaehlt hier nur eine TATSAECHLICHE Aenderung:
+  // die UI sendet priority bei jedem Speichern mit.
+  const patchMayTouchPriority = parsed.values.priority !== undefined;
   // Vorzustand, gegen den unten validiert wurde — er geht als optimistischer
   // Guard mit in den Write, damit ein paralleler Patch die geprueften Felder
   // nicht zwischen Pruefung und Schreiben veraendern kann.
@@ -1065,35 +1073,45 @@ async function handleUpdateWorkflow(
     triggerName?: string;
     executionMode?: string | null;
   } | undefined;
-  if (patchTouchesOutbound) {
+  if (patchTouchesOutboundField || patchMayTouchPriority) {
     const existing = ports.workflows.get
       ? await ports.workflows.get({ workspaceId: principal.workspaceId, id })
       : null;
-    if (existing) {
-      expectedState = {
-        // Nur die Felder absichern, die aus dem gespeicherten Row stammen: was der
-        // Patch selbst setzt, ist ohnehin Teil dieses Writes.
-        ...(parsed.values.enabled === undefined ? { enabled: existing.enabled } : {}),
-        ...(parsed.values.graph === undefined ? { graph: existing.graph ?? null } : {}),
-        ...(parsed.values.triggerName === undefined ? { triggerName: existing.triggerName } : {}),
-        ...(parsed.values.executionMode === undefined
-          ? { executionMode: existing.executionMode ?? null }
-          : {}),
-      };
-      if (Object.keys(expectedState).length === 0) expectedState = undefined;
+    // Ohne gespeicherten Vorzustand laesst sich eine Prioritaetsaenderung nicht
+    // ausschliessen — dann fail closed und den Guard laufen lassen.
+    const priorityChanged = patchMayTouchPriority
+      && (!existing || parsed.values.priority !== existing.priority);
+    // Ein reines Metadaten-Patch (Name/Prioritaet unveraendert) laeuft ohne
+    // Guard und ohne optimistischen Vorzustand weiter — es aendert nichts
+    // Ausfuehrungsrelevantes.
+    const guardRequired = patchTouchesOutboundField || priorityChanged;
+    if (guardRequired) {
+      if (existing) {
+        expectedState = {
+          // Nur die Felder absichern, die aus dem gespeicherten Row stammen: was der
+          // Patch selbst setzt, ist ohnehin Teil dieses Writes.
+          ...(parsed.values.enabled === undefined ? { enabled: existing.enabled } : {}),
+          ...(parsed.values.graph === undefined ? { graph: existing.graph ?? null } : {}),
+          ...(parsed.values.triggerName === undefined ? { triggerName: existing.triggerName } : {}),
+          ...(parsed.values.executionMode === undefined
+            ? { executionMode: existing.executionMode ?? null }
+            : {}),
+        };
+        if (Object.keys(expectedState).length === 0) expectedState = undefined;
+      }
+      const trap = outboundWorkflowGuardError({
+        graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
+        triggerName: parsed.values.triggerName ?? existing?.triggerName,
+        enabled: parsed.values.enabled ?? existing?.enabled,
+        executionMode: parsed.values.executionMode ?? existing?.executionMode,
+      });
+      if (trap) return trap;
+      const sideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
+        graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
+        enabled: parsed.values.enabled ?? existing?.enabled,
+      });
+      if (sideEffectDenied) return sideEffectDenied;
     }
-    const trap = outboundWorkflowGuardError({
-      graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
-      triggerName: parsed.values.triggerName ?? existing?.triggerName,
-      enabled: parsed.values.enabled ?? existing?.enabled,
-      executionMode: parsed.values.executionMode ?? existing?.executionMode,
-    });
-    if (trap) return trap;
-    const sideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
-      graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
-      enabled: parsed.values.enabled ?? existing?.enabled,
-    });
-    if (sideEffectDenied) return sideEffectDenied;
   }
 
   const result = await ports.workflows.update({

@@ -182,8 +182,8 @@ export function WorkflowShell() {
   /**
    * Baseline for omitting unchanged execution-relevant fields on editor-only
    * saves. Enthaelt ALLE Felder, die der Server als ausfuehrungsrelevant
-   * behandelt (Graph, enabled, Zeitplan, Zeitplan-Konto) — sonst laesst ein
-   * unveraendert mitgesendeter Zeitplan das manage-Gate anschlagen.
+   * behandelt (Graph, enabled, Zeitplan, Zeitplan-Konto, Prioritaet) — sonst
+   * laesst ein unveraendert mitgesendeter Zeitplan das manage-Gate anschlagen.
    */
   const saveBaselineRef = useRef<WorkflowSaveBaseline | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
@@ -296,6 +296,7 @@ export function WorkflowShell() {
       // Exakt die Normalisierung, die handleSave beim Senden anwendet.
       cronExpr: (w.cron_expr ?? "").trim() || null,
       scheduleAccountId: w.schedule_account_id ?? null,
+      priority: w.priority,
     }
   }
 
@@ -450,6 +451,7 @@ export function WorkflowShell() {
       const graphJson = JSON.stringify(graphDoc)
       const cronValue = cronTrim || null
       const scheduleAccountValue = editScheduleAccountId === "" ? null : editScheduleAccountId
+      const priorityValue = parseInt(editPriority, 10) || 100
       // Zeitplan und Zeitplan-Konto sind serverseitig ausfuehrungsrelevant
       // (patchTouchesOutbound): unveraendert mitgesendet wuerden sie das
       // manage-Gate ausloesen und eine reine Namensaenderung mit 403 abweisen.
@@ -460,6 +462,7 @@ export function WorkflowShell() {
           graphJson,
           cronExpr: cronValue,
           scheduleAccountId: scheduleAccountValue,
+          priority: priorityValue,
         },
         {
           canManageWorkflows,
@@ -474,7 +477,7 @@ export function WorkflowShell() {
       await invokeRenderer(IPCChannels.Email.UpdateWorkflow, {
         id: selectedId,
         name: editName.trim(),
-        priority: parseInt(editPriority, 10) || 100,
+        priority: priorityValue,
         definitionJson,
         ...(gate.omitExecutionFields
           ? {}
@@ -492,6 +495,7 @@ export function WorkflowShell() {
         graphJson,
         cronExpr: cronValue,
         scheduleAccountId: scheduleAccountValue,
+        priority: priorityValue,
       }
       toast.success("Gespeichert.")
       await load()

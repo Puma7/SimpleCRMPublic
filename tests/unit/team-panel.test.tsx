@@ -32,6 +32,11 @@ jest.mock('@/components/email/workspace-context', () => ({
   useMailWorkspace: () => ({ bumpAccountsRevision: jest.fn() }),
 }));
 
+let mockRole: 'owner' | 'admin' | 'user' = 'admin';
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => ({ user: { id: 'u1', role: mockRole } }),
+}));
+
 import { TeamPanel } from '../../src/components/email/settings/team-panel';
 
 describe('TeamPanel', () => {

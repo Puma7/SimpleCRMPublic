@@ -16,6 +16,7 @@ describe('workflow save gate', () => {
     graphJson: '{"version":1,"nodes":[],"edges":[]}',
     cronExpr: '0 8 * * 1',
     scheduleAccountId: 7,
+    priority: 100,
   };
   const unchanged = { ...baseline };
   const sideEffects = { canManageWorkflows: false, hasSideEffects: true };
@@ -62,6 +63,13 @@ describe('workflow save gate', () => {
     expect(disabling.executionChanged).toBe(true);
     expect(disabling.omitExecutionFields).toBe(false);
     expect(disabling.blocked).toBe(false);
+  });
+
+  test('a changed priority is an execution change: it reorders live workflows', () => {
+    const decision = decideWorkflowSaveGate(baseline, { ...unchanged, priority: 10 }, sideEffects);
+
+    expect(decision.executionChanged).toBe(true);
+    expect(decision.blocked).toBe(true);
   });
 
   test('workflows.manage always sends the full payload', () => {

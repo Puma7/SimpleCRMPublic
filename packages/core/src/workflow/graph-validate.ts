@@ -80,7 +80,7 @@ function namedPortBranch(
  * `logic.delay` is NOT among them (it persists a workflow_delayed_jobs row and
  * enqueues a future workflow.execute — a side effect), so it is not exempt.
  */
-const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+export const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'email.auth_check',
   'email.read_tracking_evidence',
   'email.sender_filter',
@@ -106,7 +106,7 @@ const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
 // workflow.execute (executeServerNode → scheduleWorkflowDelay), and any future `logic.*`
 // type must be reviewed before it is treated as read-only. Kept in sync with the
 // logic.* branches in executeServerNode (packages/server/src/workflow-execution.ts).
-const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+export const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'logic.stop',
   'logic.stop_after_spam',
   'logic.set_variable',
