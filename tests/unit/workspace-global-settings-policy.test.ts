@@ -116,6 +116,24 @@ describe('workspace-global mail settings policy', () => {
       .toEqual({ status: 404, code: 'mail_resource_not_found' });
   });
 
+  test('a per-account reply-suggestion write still needs mail.account.manage on that account', async () => {
+    // Die Ausnahme gilt dem WORKSPACE-GLOBALEN Fall. Mit einer accountId im Body
+    // ist der Schreibzugriff postfachbezogen — vorher erzwang das
+    // optionalAccount('body') im Manifest, und der Handler selbst prueft die
+    // accountId nirgends. Ohne diese Pruefung koennte jeder settings.manage-
+    // Halter die KI-Antwortvorschlaege JEDES Postfachs umschreiben.
+    const api = makeApi();
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/settings/reply-suggestion',
+      body: { accountId: 7, autoEnabled: false },
+      principal: settingsManager,
+    });
+    expect({ status: res.status, code: (res.body as { error?: { code?: string } }).error?.code })
+      .toEqual({ status: 404, code: 'mail_resource_not_found' });
+    expect(setCalls).toEqual([]);
+  });
+
   test('an unauthenticated write is rejected before the handler', async () => {
     const api = makeApi();
     const res = await api.handle({

@@ -884,7 +884,8 @@ export type MailDelegationApiPort = {
     constraints?: MailBindingVisibilityConstraints | null;
   }): Promise<
     | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted: boolean }
-    | { ok: false; code: MailDelegationMutationCode }
+    /** `used`/`limit` nur bei constraint_budget_exceeded — wie im Create-Pfad. */
+    | { ok: false; code: MailDelegationMutationCode; used?: number; limit?: number }
   >;
   deleteBinding(input: {
     workspaceId: string;

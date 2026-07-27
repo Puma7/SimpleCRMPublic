@@ -182,7 +182,9 @@ async function handlePatch(
     permissions: parsed.permissions,
     ...(parsed.constraintsProvided ? { constraints: parsed.constraints ?? null } : {}),
   });
-  if (!result.ok) return mutationError(result.code);
+  // Wie im Create-Pfad: used/limit durchreichen, sonst nennt die Meldung beim
+  // BEARBEITEN eines Bindings die Zahl nicht — der haeufigere Alltagsfall.
+  if (!result.ok) return mutationError(result.code, result);
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {
     bindingId,
     subject: result.binding?.subject,
