@@ -2958,6 +2958,8 @@ function parseEmailRemoteContentAllowlistMutationBody(
   return { ok: true, values };
 }
 
+const TEAM_MEMBER_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function parseEmailTeamMemberMutationBody(
   body: unknown,
   options: {
@@ -2977,8 +2979,8 @@ function parseEmailTeamMemberMutationBody(
   const values: EmailTeamMemberMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
   const allowedFields = new Set(options.allowId
-    ? ['id', 'displayName', 'role', 'signatureHtml', 'sortOrder']
-    : ['displayName', 'role', 'signatureHtml', 'sortOrder']);
+    ? ['id', 'displayName', 'role', 'signatureHtml', 'sortOrder', 'linkedUserId']
+    : ['displayName', 'role', 'signatureHtml', 'sortOrder', 'linkedUserId']);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -3016,6 +3018,19 @@ function parseEmailTeamMemberMutationBody(
     const sortOrder = normalizeIntegerBody(body.sortOrder, 'sortOrder', 0);
     if (sortOrder.ok) values.sortOrder = sortOrder.value;
     else errors.push({ field: 'sortOrder', message: sortOrder.message });
+  }
+  // Link to a workspace user so assigned_to_me / assigned_to_my_groups can resolve
+  // free-text assignees (e.g. agent-2). null clears the link. The UUID form is
+  // checked here so a typo is a 400 instead of a thrown port error; the port still
+  // verifies that the user actually exists in this workspace.
+  if (Object.prototype.hasOwnProperty.call(body, 'linkedUserId')) {
+    if (body.linkedUserId === null) {
+      values.linkedUserId = null;
+    } else if (typeof body.linkedUserId === 'string' && TEAM_MEMBER_UUID_PATTERN.test(body.linkedUserId.trim())) {
+      values.linkedUserId = body.linkedUserId.trim();
+    } else {
+      errors.push({ field: 'linkedUserId', message: 'linkedUserId muss eine Workspace-User-UUID oder null sein' });
+    }
   }
 
   if (errors.length > 0) {

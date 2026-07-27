@@ -3855,7 +3855,7 @@ export type WorkflowMutationInput = {
 
 export type WorkflowMutationPortResult =
   | { ok: true; workflow: WorkflowRecord }
-  | { ok: false; code: 'schedule_account_not_found' };
+  | { ok: false; code: 'schedule_account_not_found' | 'workflow_state_conflict' };
 
 export type WorkflowApiPort = {
   list(input: {
@@ -3881,6 +3881,13 @@ export type WorkflowApiPort = {
     actorUserId: string;
     id: number;
     values: WorkflowMutationInput;
+    /**
+     * Optimistic guard for the side-effect / outbound gates: the route validates the
+     * MERGED state (patch + stored row) outside this transaction, so a concurrent
+     * patch could change the fields it relied on between check and write. Pass the
+     * values that were read; the update then applies only while they still hold.
+     */
+    expected?: { enabled?: boolean; graph?: unknown | null };
   }): Promise<WorkflowMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;

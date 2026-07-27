@@ -737,16 +737,35 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
             return { ok: false, code: 'schedule_account_not_found' };
           }
 
-          const row = await trx
+          // Optimistic guard: the route validated the merged post-patch state against
+          // the stored row OUTSIDE this transaction (side-effect / outbound gates).
+          // Two concurrent patches — one supplying a side-effecting graph, one
+          // supplying enabled: true — would otherwise each pass against the old safe
+          // row and merge into an enabled side-effecting workflow. Applying only while
+          // the read values still hold turns that race into a 409.
+          let updateQuery = trx
             .updateTable('email_workflows')
             .set({
               ...mutationToWorkflowPatch(values, scheduleAccount, account),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
+            .where('id', '=', input.id);
+          if (input.expected?.enabled !== undefined) {
+            updateQuery = updateQuery.where('enabled', '=', input.expected.enabled);
+          }
+          if (input.expected && 'graph' in input.expected) {
+            const expectedGraph = input.expected.graph ?? null;
+            updateQuery = updateQuery.where(
+              // jsonb comparison is key-order independent; IS NOT DISTINCT FROM keeps
+              // "no graph stored" (NULL) comparable instead of yielding NULL.
+              kyselySql<boolean>`graph_json is not distinct from ${expectedGraph === null ? null : JSON.stringify(expectedGraph)}::jsonb`,
+            );
+          }
+          const row = await updateQuery
             .returning(workflowSelectColumns)
-            .executeTakeFirstOrThrow();
+            .executeTakeFirst();
+          if (!row) return { ok: false, code: 'workflow_state_conflict' };
           return { ok: true, workflow: mapWorkflowRow(row) };
         },
         { applySession: options.applyWorkspaceSession },

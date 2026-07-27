@@ -1087,10 +1087,23 @@ async function handleUpdateWorkflow(
     parsed.values.enabled !== undefined ||
     parsed.values.graph !== undefined ||
     parsed.values.executionMode !== undefined;
+  // Vorzustand, gegen den unten validiert wurde — er geht als optimistischer
+  // Guard mit in den Write, damit ein paralleler Patch die geprueften Felder
+  // nicht zwischen Pruefung und Schreiben veraendern kann.
+  let expectedState: { enabled?: boolean; graph?: unknown | null } | undefined;
   if (patchTouchesOutbound) {
     const existing = ports.workflows.get
       ? await ports.workflows.get({ workspaceId: principal.workspaceId, id })
       : null;
+    if (existing) {
+      expectedState = {
+        // Nur die Felder absichern, die aus dem gespeicherten Row stammen: was der
+        // Patch selbst setzt, ist ohnehin Teil dieses Writes.
+        ...(parsed.values.enabled === undefined ? { enabled: existing.enabled } : {}),
+        ...(parsed.values.graph === undefined ? { graph: existing.graph ?? null } : {}),
+      };
+      if (Object.keys(expectedState).length === 0) expectedState = undefined;
+    }
     const trap = outboundWorkflowGuardError({
       graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
       triggerName: parsed.values.triggerName ?? existing?.triggerName,
@@ -1110,6 +1123,7 @@ async function handleUpdateWorkflow(
     actorUserId: principal.userId,
     id,
     values: parsed.values,
+    ...(expectedState ? { expected: expectedState } : {}),
   });
   if (!result) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
   if (!result.ok) return workflowMutationError(result.code);
@@ -1141,7 +1155,14 @@ async function handleDeleteWorkflow(
   return data(200, { deleted: true, workflow: sanitizeWorkflow(workflow) });
 }
 
-function workflowMutationError(code: 'schedule_account_not_found'): ApiResponse {
+function workflowMutationError(code: 'schedule_account_not_found' | 'workflow_state_conflict'): ApiResponse {
+  if (code === 'workflow_state_conflict') {
+    return error(
+      409,
+      'workflow_state_conflict',
+      'Workflow wurde zwischenzeitlich geaendert — bitte neu laden und erneut speichern',
+    );
+  }
   return error(404, 'email_account_not_found', 'Email account nicht gefunden');
 }
 

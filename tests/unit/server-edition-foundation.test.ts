@@ -28738,6 +28738,67 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('team member upsert accepts and validates the workspace user link', async () => {
+    // Die Server-UI schickt linkedUserId bei jedem Speichern mit (null = keine
+    // Verknuepfung). Faellt das Feld aus der Allowlist, scheitert JEDES Anlegen
+    // und Bearbeiten an einem 400, bevor die Persistenz ueberhaupt laeuft.
+    const upsertCalls: any[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create(input) {
+          upsertCalls.push(input);
+          return { ok: true as const, member: makeEmailTeamMemberRecord(input.values.id as string) };
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+    const principal = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['crm.write'],
+    };
+
+    const linked = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-2/upsert',
+      body: { displayName: 'Agent Zwei', linkedUserId: ` ${USER_A_ID} ` },
+      principal,
+    });
+    const cleared = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-3/upsert',
+      body: { displayName: 'Agent Drei', linkedUserId: null },
+      principal,
+    });
+    const invalid = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-4/upsert',
+      body: { displayName: 'Agent Vier', linkedUserId: 'nicht-uuid' },
+      principal,
+    });
+
+    expect(linked.status).toBe(201);
+    expect(cleared.status).toBe(201);
+    expect(upsertCalls[0].values.linkedUserId).toBe(USER_A_ID);
+    expect(upsertCalls[1].values.linkedUserId).toBeNull();
+    expect(invalid.status).toBe(400);
+    expect((invalid.body as any).error.details.fields).toEqual([
+      { field: 'linkedUserId', message: 'linkedUserId muss eine Workspace-User-UUID oder null sein' },
+    ]);
+  });
+
   test('server email team member mutation routes reject unsafe payloads and conflicts', async () => {
     const readOnlyApi = createServerApi(makeServerApiPorts({
       emailTeamMembers: {
@@ -32797,6 +32858,73 @@ describe('server edition foundation', () => {
       body: graph,
     });
     expect(unauthorized.status).toBe(401);
+  });
+
+  test('side-effect workflow gate guards the write against a concurrent patch', async () => {
+    // Zwei parallele PATCHes auf einen deaktivierten, harmlosen Workflow — einer
+    // liefert einen Seiteneffekt-Graphen, der andere enabled: true. Beide pruefen
+    // gegen den alten Row und wuerden ohne Guard zu einem aktiven Seiteneffekt-
+    // Workflow ohne workflows.manage verschmelzen.
+    const updateCalls: any[] = [];
+    const stored = {
+      ...makeWorkflowRecord(23),
+      enabled: false,
+      graph: { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] },
+    };
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() {
+          return { items: [stored], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 23 ? stored : null;
+        },
+        async create() {
+          throw new Error('not used');
+        },
+        async update(input) {
+          updateCalls.push(input);
+          // Der Port meldet den verlorenen Wettlauf.
+          return { ok: false as const, code: 'workflow_state_conflict' as const };
+        },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const graphPatch = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { graph: sideEffectGraph },
+      principal: editor,
+    });
+    const enablePatch = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { enabled: true },
+      principal: editor,
+    });
+
+    // Beide Patches sind fuer sich genommen erlaubt (deaktiviert bzw. harmloser Graph)…
+    expect(updateCalls).toHaveLength(2);
+    // …tragen aber den geprueften Vorzustand als Bedingung in den Write.
+    expect(updateCalls[0].expected).toEqual({ enabled: false });
+    expect(updateCalls[1].expected).toEqual({ graph: stored.graph });
+    // Verliert einer den Wettlauf, wird daraus ein 409 statt eines stillen Merges.
+    expect(graphPatch.status).toBe(409);
+    expect((graphPatch.body as any).error.code).toBe('workflow_state_conflict');
+    expect(enablePatch.status).toBe(409);
   });
 
   test('server workflow mutation routes write audit records and server events', async () => {
