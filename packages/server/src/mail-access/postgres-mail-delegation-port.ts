@@ -391,13 +391,25 @@ export function createPostgresMailDelegationPort(
       if (input.permissions.some((permission) => !held.has(permission))) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
+      // Die eigene VERWALTUNGS-Autoritaet zaehlt mit: wer nur eingeschraenkt
+      // verwalten darf (z. B. manage nur fuer Kategorie X), soll auch nur
+      // innerhalb dieser Filter berechtigen koennen — selbst wenn er die
+      // delegierte Berechtigung selbst unbeschraenkt haelt. isConstraintsAllowedBy
+      // DelegationAuthority verknuepft die Eintraege per every(), die Vererbung
+      // schneidet sie, also genuegt der zusaetzliche Eintrag.
+      // Bei leeren permissions NICHT ergaenzen: das ist der Loeschpfad weiter
+      // unten, der ohne Autoritaetspruefung auskommen muss.
+      const authorityPermissions = input.permissions.length === 0
+        || input.permissions.includes(MANAGE_PERMISSION)
+        ? input.permissions
+        : [...input.permissions, MANAGE_PERMISSION];
       // Serialized by the canManageResource(forUpdate: true) lock taken above.
       const authority = await loadDelegationAuthority(
         trx,
         workspaceId,
         actor.userId,
         input.resource,
-        input.permissions,
+        authorityPermissions,
       );
       if (constraints === undefined) {
         // Preserve existing filters on permission-only updates; inherit authority

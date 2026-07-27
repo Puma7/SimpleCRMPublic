@@ -94,6 +94,109 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
   });
 
+  test('bounds re-delegation by the actor\'s own manage-grant filters', async () => {
+    // Manage nur fuer Kategorie 5 (Binding 501), metadata.read dagegen
+    // unbeschraenkt (Binding 502). Ohne die Verwaltungs-Autoritaet koennte der
+    // Manager ein Binding ohne jeden Filter vergeben und damit mehr verteilen,
+    // als er verwalten darf.
+    const fixtures = {
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: null,
+      affectedUsers: [{ id: AGENT }],
+      actorPermissionBindings: [
+        { bindingId: 501, permission: 'mail.delegation.manage' as const },
+        { bindingId: 502, permission: 'mail.metadata.read' as const },
+      ],
+      actorAuthorityConstraints: [{
+        binding_id: 501,
+        kind: 'category',
+        mode: 'allow',
+        assignment_mode: null,
+        value_ids: [5],
+        value_texts: null,
+      }],
+    };
+    const portFor = (trx: ReturnType<typeof createDelegationTransaction>) => createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    const unfiltered = createDelegationTransaction(fixtures);
+    await expect(portFor(unfiltered).replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read'],
+      constraints: null,
+    })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
+
+    const withinManageScope = createDelegationTransaction(fixtures);
+    await expect(portFor(withinManageScope).replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read'],
+      constraints: {
+        assignmentMode: null,
+        categoryAllowIds: [5],
+        categoryExcludeIds: [],
+        tagAllowValues: [],
+        tagExcludeValues: [],
+      },
+    })).resolves.toMatchObject({ ok: true });
+  });
+
+  test('still allows a constrained manager to delete a binding (empty permissions)', async () => {
+    // Der Loeschpfad darf nicht an der neuen Verwaltungs-Autoritaet scheitern.
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: {
+        id: 901,
+        workspace_id: WORKSPACE,
+        subject_type: 'user',
+        subject_id: AGENT,
+        resource_type: 'account',
+        account_id: 101,
+        folder_id: null,
+        message_id: null,
+        updated_at: new Date('2026-07-19T12:00:00.000Z'),
+      },
+      affectedUsers: [{ id: AGENT }],
+      actorPermissionBindings: [
+        { bindingId: 501, permission: 'mail.delegation.manage' as const },
+        { bindingId: 502, permission: 'mail.metadata.read' as const },
+      ],
+      actorAuthorityConstraints: [{
+        binding_id: 501,
+        kind: 'category',
+        mode: 'allow',
+        assignment_mode: null,
+        value_ids: [5],
+        value_texts: null,
+      }],
+    });
+    const port = createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    await expect(port.replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: [],
+    })).resolves.toMatchObject({ ok: true, deleted: true });
+  });
+
   test('blocks non-admin re-delegation of relative assignment modes onto other subjects', async () => {
     const trx = createDelegationTransaction({
       actor: { id: ACTOR, role: 'user', disabled_at: null },
@@ -425,6 +528,8 @@ function createDelegationTransaction(fixtures: {
   existingBinding: unknown;
   affectedUsers: unknown[];
   actorPermissions?: readonly MailPermission[];
+  /** Verteilt die Berechtigungen des Actors auf mehrere Bindings (Autoritaet je Binding). */
+  actorPermissionBindings?: ReadonlyArray<{ bindingId: number; permission: MailPermission }>;
   actorAuthorityConstraints?: Array<Record<string, unknown>>;
   existingConstraints?: Array<Record<string, unknown>>;
 }) {
@@ -450,6 +555,17 @@ function createDelegationTransaction(fixtures: {
       return [];
     }
     if (table === 'mail_acl_bindings' && joined.includes('mail_acl_binding_permissions')) {
+      if (fixtures.actorPermissionBindings) {
+        return fixtures.actorPermissionBindings.map((entry) => ({
+          id: entry.bindingId,
+          subject_type: 'user',
+          subject_id: ACTOR,
+          resource_type: 'account',
+          account_id: 101,
+          folder_id: null,
+          permission_key: entry.permission,
+        }));
+      }
       return (fixtures.actorPermissions ?? []).map((permission) => ({
         id: 501,
         subject_type: 'user',
