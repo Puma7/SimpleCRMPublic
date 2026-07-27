@@ -2168,11 +2168,15 @@ async function executeServerNode(
     // gegeben — entgegen der gespeicherten Einstellung.
     let assignedToUserId: string | null = null;
     if (teamMemberId !== null) {
+      // Zeilensperre wie im API-Assign-Pfad: eine parallele Link-Aenderung des
+      // Admins darf hier keinen veralteten Nutzer in assigned_to_user_id
+      // schreiben.
       const member = await trx
         .selectFrom('email_team_members')
         .select(['id', 'linked_user_id'])
         .where('workspace_id', '=', context.workspaceId)
         .where('id', '=', teamMemberId)
+        .forUpdate()
         .executeTakeFirst();
       if (member?.linked_user_id) assignedToUserId = String(member.linked_user_id);
     }

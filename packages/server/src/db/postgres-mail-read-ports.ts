@@ -2961,11 +2961,18 @@ async function assignMessageTeamMember(
     if (!teamMemberId || teamMemberId.length > 200) {
       throw new Error('team member id muss ein nicht-leerer String mit maximal 200 Zeichen sein');
     }
+    // Zeilensperre auf dem Teammitglied: sonst liest die Zuweisung
+    // linked_user_id = X, waehrend ein Admin parallel auf Y umstellt und seinen
+    // Nachrichten-Backfill abschliesst — die Zuweisung schriebe danach das
+    // veraltete X und gaebe X samt Gruppen dauerhaft Sicht auf die Nachricht.
+    // Der Link-Update-Pfad sperrt dieselbe Zeile (postgres-mail-metadata-read-
+    // ports), beide Seiten serialisieren also.
     const member = await trx
       .selectFrom('email_team_members')
       .select(['id', 'linked_user_id'])
       .where('workspace_id', '=', input.workspaceId)
       .where('id', '=', teamMemberId)
+      .forUpdate()
       .executeTakeFirst();
     if (!member) return { ok: false as const, reason: 'team_member_not_found' as const };
     // Ausschliesslich die explizite Verknuepfung. Der frueher noetige Fallback

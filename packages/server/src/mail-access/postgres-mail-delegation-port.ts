@@ -492,6 +492,10 @@ export function createPostgresMailDelegationPort(
       }
     }
 
+    if (constraints !== undefined && await unknownConstraintCategoryExists(trx, workspaceId, constraints)) {
+      return { ok: false as const, code: 'category_not_found' as const };
+    }
+
     const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
     if (input.permissions.length === 0) {
       if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
@@ -1091,6 +1095,35 @@ async function loadBindingConstraints(
     map.set(bindingId, hasMailBindingConstraints(constraints) ? constraints : null);
   }
   return map;
+}
+
+
+/**
+ * Kategorie-Ids aus den Sichtbarkeitsfiltern gegen den Workspace aufloesen.
+ * Eine unbekannte (oder aus einem fremden Workspace stammende) Id wird sonst
+ * unveraendert gespeichert und laeuft ins Leere: der SQL-Scope findet dafuer
+ * nie eine email_message_categories-Zeile, ein Ausschlussfilter liesse also
+ * JEDE Nachricht durch — ein stillschweigend wirkungsloser Filter ist
+ * gefaehrlicher als eine Fehlermeldung. Das Deny-All-Sentinel (-1) ist keine
+ * echte Kategorie und wird uebersprungen.
+ */
+async function unknownConstraintCategoryExists(
+  trx: Trx,
+  workspaceId: string,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+): Promise<boolean> {
+  if (!constraints) return false;
+  const ids = [...new Set([...constraints.categoryAllowIds, ...constraints.categoryExcludeIds])]
+    .filter((id) => id !== DENY_ALL_CATEGORY_ALLOW_ID && id > 0);
+  if (ids.length === 0) return false;
+  const rows = await trx
+    .selectFrom('email_categories')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', 'in', ids)
+    .execute();
+  const known = new Set(rows.map((row) => Number(row.id)));
+  return ids.some((id) => !known.has(id));
 }
 
 async function replaceBindingConstraints(

@@ -771,6 +771,9 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
               kyselySql<boolean>`graph_json is not distinct from ${expectedGraph === null ? null : JSON.stringify(expectedGraph)}::jsonb`,
             );
           }
+          if (input.expected?.priority !== undefined) {
+            updateQuery = updateQuery.where('priority', '=', input.expected.priority);
+          }
           if (input.expected && 'overrideKey' in input.expected) {
             const expectedOverrideKey = input.expected.overrideKey ?? null;
             updateQuery = updateQuery.where(

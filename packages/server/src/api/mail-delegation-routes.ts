@@ -636,6 +636,9 @@ function mutationError(code: MailDelegationMutationCode | 'permission_denied' | 
   if (code === 'binding_not_found') return error(404, 'mail_delegation_binding_not_found', 'Delegation nicht gefunden');
   if (code === 'binding_conflict') return error(409, 'mail_delegation_conflict', 'Delegation wurde gleichzeitig geaendert');
   if (code === 'subject_not_found') return error(404, 'mail_delegation_subject_not_found', 'Subjekt nicht gefunden');
+  if (code === 'category_not_found') {
+    return error(404, 'mail_delegation_category_not_found', 'Sichtbarkeitsfilter verweist auf eine unbekannte Kategorie');
+  }
   if (code === 'resource_not_found') return error(404, 'mail_delegation_resource_not_found', 'Ressource nicht gefunden');
   return error(403, 'mail_delegation_owner_admin_subject_forbidden', 'Owner/Admins werden nicht als ACL-Subjekt gespeichert');
 }

@@ -490,6 +490,11 @@ async function handleWorkflowVersionSourceRestore(
       enabled: existingWorkflow.enabled,
       triggerName: existingWorkflow.triggerName,
       executionMode: existingWorkflow.executionMode ?? null,
+      // Auch der Override-Schluessel: setzt ihn ein Admin zwischen dem Read
+      // oben und diesem Write, waere der Workflow inzwischen manage-pflichtig
+      // — dann muss der Restore mit 409 scheitern statt den verdraengenden
+      // Graphen doch zu ersetzen.
+      overrideKey: existingWorkflow.overrideKey ?? null,
     },
   });
   if (!result) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');

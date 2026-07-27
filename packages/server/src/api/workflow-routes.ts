@@ -1118,6 +1118,7 @@ async function handleUpdateWorkflow(
     triggerName?: string;
     executionMode?: string | null;
     overrideKey?: string | null;
+    priority?: number;
   } | undefined;
   if (patchTouchesOutboundField || patchMayTouchPriority) {
     const existing = ports.workflows.get
@@ -1128,9 +1129,14 @@ async function handleUpdateWorkflow(
     const priorityChanged = patchMayTouchPriority
       && (!existing || parsed.values.priority !== existing.priority);
     // Ein reines Metadaten-Patch (Name/Prioritaet unveraendert) laeuft ohne
-    // Guard und ohne optimistischen Vorzustand weiter — es aendert nichts
-    // Ausfuehrungsrelevantes.
+    // Guard weiter — es aendert nichts Ausfuehrungsrelevantes. Die unveraendert
+    // mitgesendete Prioritaet geht aber als optimistische Bedingung mit in den
+    // Write: aendert ein Admin sie zwischen Read und UPDATE, wuerde dieser
+    // Patch sie sonst ohne workflows.manage auf den alten Wert zuruecksetzen.
     const guardRequired = patchTouchesOutboundField || priorityChanged;
+    if (!guardRequired && patchMayTouchPriority && existing) {
+      expectedState = { priority: existing.priority };
+    }
     if (guardRequired) {
       if (existing) {
         expectedState = {

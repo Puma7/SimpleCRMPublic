@@ -816,6 +816,7 @@ export type MailDelegationMutationCode =
   | 'privilege_escalation'
   | 'resource_not_found'
   | 'subject_not_found'
+  | 'category_not_found'
   | 'owner_admin_subject_forbidden';
 
 export type MailDelegationApiPort = {
@@ -3932,6 +3933,11 @@ export type WorkflowApiPort = {
        *  manage-pflichtig — er gehoert deshalb in denselben optimistischen
        *  Vergleich wie Graph und enabled. */
       overrideKey?: string | null;
+      /** Nur bei einem unveraendert mitgesendeten Wert gesetzt: dann wurde
+       *  gegen den gelesenen Stand entschieden, dass sich die Prioritaet NICHT
+       *  aendert — aendert ein Admin sie zwischenzeitlich, muss der Write
+       *  scheitern statt sie stillschweigend zurueckzusetzen. */
+      priority?: number;
     };
   }): Promise<WorkflowMutationPortResult | null>;
   delete?(input: {

@@ -33755,8 +33755,10 @@ describe('server edition foundation', () => {
     expect(rename.status).toBe(200);
     expect(updateCalls).toHaveLength(1);
     expect(updateCalls[0].values).toMatchObject({ name: 'Neuer Name', priority: 100 });
-    // Reines Metadaten-Patch: kein optimistischer Vorzustand noetig.
-    expect(updateCalls[0].expected).toBeUndefined();
+    // Reines Metadaten-Patch: kein Manage-Gate — die unveraendert mitgesendete
+    // Prioritaet geht aber als optimistische Bedingung mit, sonst setzt dieser
+    // Write eine zwischenzeitliche Admin-Aenderung stillschweigend zurueck.
+    expect(updateCalls[0].expected).toEqual({ priority: 100 });
 
     // Und mit workflows.manage ist das Umsortieren erlaubt.
     const manager = {
@@ -34915,12 +34917,14 @@ describe('server edition foundation', () => {
         graph: { nodes: [{ id: 'versioned' }], edges: [] },
         definition: { steps: [{ id: 'versioned' }] },
       },
-      // Restore prueft Outbound-Falle und Seiteneffekt-Gate gegen den gelesenen
-      // Row — derselbe optimistische Guard wie im PATCH-Pfad.
+      // Restore prueft Outbound-Falle, Seiteneffekt-/Kettenabbruch- und
+      // Override-Gate gegen den gelesenen Row — derselbe optimistische Guard
+      // wie im PATCH-Pfad, inklusive overrideKey.
       expected: {
         enabled: true,
         triggerName: 'mail.received',
         executionMode: 'graph',
+        overrideKey: null,
       },
     }]);
     expect(versionListCalls).toEqual([

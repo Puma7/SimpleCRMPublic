@@ -209,6 +209,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const subscription = subscribeServerEvents({
       onEvent: (event) => {
         if (!isMailAclRefreshEvent(event)) return
+        // NUR selbstadressierte Ereignisse: Owner/Admins und konto-begrenzte
+        // Delegationsmanager bekommen auch Peer-Invalidierungen zugestellt.
+        // Auf jede davon die eigene Sitzung zu erneuern wuerde bei jedem
+        // Zuweisungs- oder Filter-Fanout das Refresh-Token rotieren und einen
+        // auth.refresh_rotated-Audit-Eintrag erzeugen. Fremde ACL-Ereignisse
+        // gehen die fachlichen Refresh-Handler etwas an, nicht die Sitzung.
+        const targetUserId = (event.payload as { targetUserId?: unknown } | undefined)?.targetUserId
+        if (typeof targetUserId === "string" && targetUserId !== user.id) return
         if (debounceTimer) clearTimeout(debounceTimer)
         debounceTimer = setTimeout(() => {
           // Der Server veroeffentlicht ein selbstadressiertes email_acl.changed

@@ -146,7 +146,7 @@ function triggerFromGraph(doc: WorkflowGraphDocument): string {
 export function WorkflowShell() {
   const electronReady = useHasElectron()
   const serverClientMode = getRendererTransport().kind === "http"
-  const { hasCapability } = useAuth()
+  const { hasCapability, canViewWorkflows, capabilitiesReady } = useAuth()
   // Desktop edition has full local control; server edition respects capabilities.
   const canEditWorkflows = !serverClientMode || hasCapability("workflows.edit")
   const canManageWorkflows = !serverClientMode || hasCapability("workflows.manage")
@@ -242,9 +242,28 @@ export function WorkflowShell() {
     }
   }, [accountScope])
 
+  // Wird workflows.view waehrend der Sitzung entzogen (Gruppenrecht geaendert →
+  // email_acl.changed → neue Capability-Liste), reicht es nicht, Navigation und
+  // Aktionen auszublenden: die bereits geladenen Zeilen und der offene Graph
+  // blieben sonst vollstaendig sichtbar. Deshalb hier alles verwerfen und gar
+  // nicht erst neu laden.
+  const workflowsVisible = !serverClientMode || !capabilitiesReady || canViewWorkflows
+
   useEffect(() => {
+    if (serverClientMode && capabilitiesReady && !canViewWorkflows) {
+      setRows([])
+      setAccounts([])
+      setSelectedId(null)
+      setSelectedNodeId(null)
+      setSelectedEdgeId(null)
+      setEditJson("")
+      useWorkflowEditorStore.getState().resetFromGraph(null)
+      saveBaselineRef.current = null
+      setLoading(false)
+      return
+    }
     void load()
-  }, [load])
+  }, [canViewWorkflows, capabilitiesReady, load, serverClientMode])
 
   useEffect(() => {
     const subscription = subscribeServerEvents({
@@ -661,6 +680,19 @@ export function WorkflowShell() {
     } finally {
       setBackfilling(false)
     }
+  }
+
+  if (!workflowsVisible) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-background p-8 text-center">
+        <Workflow className="h-6 w-6 text-muted-foreground" />
+        <h1 className="text-lg font-semibold tracking-tight">Workflows</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          Für diesen Bereich fehlt die Berechtigung „Workflows ansehen“. Wenden Sie sich an eine
+          Administratorin oder einen Administrator.
+        </p>
+      </div>
+    )
   }
 
   return (
