@@ -1408,6 +1408,7 @@ async function publishLinkedUserAclInvalidation(
   workspaceId: string,
   actorUserId: string,
   affectedUserIds: ReadonlyArray<string | null | undefined>,
+  options: { includeAssignmentFilterUsers?: boolean } = {},
 ): Promise<void> {
   const direct = [...new Set(affectedUserIds.filter((id): id is string => Boolean(id)))];
   // Auch die Gruppen-Peers: assigned_to_my_groups bezieht alle Nutzer mit
@@ -1426,7 +1427,27 @@ async function publishLinkedUserAclInvalidation(
       );
     }
   }
-  const targets = [...new Set([...direct, ...peers])];
+  // Zusaetzlich alle Nutzer mit einem Zuweisungsfilter: wechselt eine Nachricht
+  // in den Zustand "nicht zugewiesen", wird sie fuer assignmentMode:'unassigned'
+  // sofort sichtbar — das betrifft Nutzer, die mit dem geloeschten Mitglied gar
+  // nichts zu tun hatten (und greift auch, wenn es nie verknuepft war).
+  const assignmentFiltered: string[] = [];
+  if (options.includeAssignmentFilterUsers) {
+    try {
+      const resolveConstrained = ports.mailAccess?.resolveConstraintSubjectUserIds;
+      if (resolveConstrained) {
+        assignmentFiltered.push(...await resolveConstrained.call(ports.mailAccess, {
+          workspaceId,
+          includeAssignmentModes: true,
+        }));
+      }
+    } catch (error) {
+      console.warn(
+        `[email-team-member] assignment filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const targets = [...new Set([...direct, ...peers, ...assignmentFiltered])];
   for (const targetUserId of targets) {
     try {
       await ports.events?.publish({
@@ -1540,13 +1561,18 @@ async function handleDeleteEmailTeamMember(
   await auditEmailTeamMember(ports, principal, 'email_team_member.deleted', member, { role: member.role });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.deleted', member, principal.userId);
   // Der Delete-Pfad raeumt assigned_to/assigned_to_user_id der Nachrichten mit
-  // auf — der zuvor verknuepfte Nutzer und seine Gruppen-Peers verlieren damit
-  // sofort Sichtbarkeit und muessen ihre Liste neu laden.
-  if (member.linkedUserId) {
-    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
-      member.linkedUserId,
-    ]);
-  }
+  // auf: der zuvor verknuepfte Nutzer und seine Gruppen-Peers verlieren sofort
+  // Sichtbarkeit — und alle Nutzer mit Zuweisungsfilter GEWINNEN sie, weil die
+  // Nachrichten jetzt als "nicht zugewiesen" gelten. Letzteres unabhaengig
+  // davon, ob das Mitglied je verknuepft war; email_team_member.deleted allein
+  // loest bei der Shell keinen Listen-Refresh aus.
+  await publishLinkedUserAclInvalidation(
+    ports,
+    principal.workspaceId,
+    principal.userId,
+    [member.linkedUserId],
+    { includeAssignmentFilterUsers: true },
+  );
   return data(200, { deleted: true, teamMember: sanitizeEmailTeamMember(member) });
 }
 

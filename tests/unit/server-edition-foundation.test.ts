@@ -29089,6 +29089,61 @@ describe('server edition foundation', () => {
       .toEqual([USER_A_ID]);
   });
 
+  test('deleting a team member invalidates assignment-filtered users too', async () => {
+    // Der Cleanup setzt assigned_to/assigned_to_user_id auf null — die
+    // Nachrichten gelten damit als "nicht zugewiesen" und werden fuer Bindings
+    // mit assignmentMode:'unassigned' sichtbar. Das betrifft Nutzer, die mit
+    // dem geloeschten Mitglied nichts zu tun hatten, und greift auch, wenn es
+    // nie verknuepft war.
+    const events: ServerEvent[] = [];
+    const lookups: unknown[] = [];
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailTeamMembers: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async create() {
+            return { ok: false as const, code: 'team_member_conflict' as const };
+          },
+          async update() {
+            return null;
+          },
+          async delete(input) {
+            return { ...makeEmailTeamMemberRecord(input.id), linkedUserId: null };
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          lookups.push(input);
+          return ['unassigned-filtered-user'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const deleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/team-members/agent-2',
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(deleted.status).toBe(200);
+    expect(lookups).toEqual([{ workspaceId: WORKSPACE_A_ID, includeAssignmentModes: true }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual(['unassigned-filtered-user']);
+  });
+
   test('a non-admin cannot auto-link a team member through a matching user id', async () => {
     // Die automatische Verknuepfung im Port ist ein IMPLIZITES linkedUserId und
     // loest denselben workspaceweiten Backfill aus — sonst umgeht ein
