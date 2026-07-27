@@ -2248,16 +2248,27 @@ describe('server edition foundation', () => {
       .toBe('ai.draft_reply:workspace-a:11:101');
     expect(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
       'workspace-a',
-    )).toBe('ai.review_draft:workspace-a:23:11:send-1:77');
+    )).toBe('ai.review_draft:workspace-a:23:11:send-1:77:101');
+    // Zwei Laeufe desselben Workflows fuer denselben Entwurf duerfen sich nicht
+    // gegenseitig ersetzen (jobKeyMode 'replace').
     expect(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 78 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 102 },
       'workspace-a',
     )).not.toBe(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
+      'workspace-a',
+    ));
+    expect(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 78, runId: 101 },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
       'workspace-a',
     ));
     expect(graphileJobKeyForJob('webhook.fire', { dedupeKey: 'customer-7' }, 'workspace-a'))

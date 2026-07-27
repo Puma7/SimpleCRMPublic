@@ -713,6 +713,8 @@ export type AiReviewDraftJobPlan = Readonly<{
   messageId?: number;
   /** Concrete draft id (preferred for ACL); falls back to eventVariables[draftIdVariable]. */
   draftId?: number;
+  /** Workflow run id — scopes den Graphile-Job-Key auf den konkreten Lauf. */
+  runId?: number;
   actorUserId?: string;
   profileId?: number;
   draftIdVariable?: string;

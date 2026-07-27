@@ -518,10 +518,13 @@ export function graphileJobKeyForJob(
     // Analog zu ai.draft_reply: der konkrete Entwurf gehört in den Key, sonst
     // ersetzt eine zweite Gegenprüfung die erste und ein Entwurf bleibt ungeprüft.
     const draftId = graphileKeyScalar(payload.draftId);
+    const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}`;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
     }
-    if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}`;
+    if (workspaceKey && messageId) {
+      return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
+    }
   }
   if (type === 'ai.transform_text') {
     const messageId = graphileKeyScalar(payload.messageId);

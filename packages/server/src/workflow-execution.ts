@@ -3283,6 +3283,11 @@ async function scheduleAiReviewDraftJob(
 
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    // runId wie bei ai.draft_reply: sonst erzeugen zwei Laeufe desselben
+    // Workflows fuer dieselbe Mail denselben Graphile-Job-Key und
+    // jobKeyMode 'replace' verschluckt die erste Gegenpruefung samt ihrer
+    // Continuation — der erste Elternlauf bliebe fuer immer deferred.
+    runId: context.runId,
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
