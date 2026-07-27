@@ -177,6 +177,16 @@ export class MailAccessService implements MailAccessServiceContract {
     };
   }
 
+  /**
+   * Nutzer, die sich mit `userId` eine Gruppe teilen (inklusive ihm selbst) —
+   * genau der Satz, den assigned_to_my_groups in die Sichtbarkeit einbezieht.
+   * Routen brauchen ihn, um ACL-Invalidierungen an alle Betroffenen zu fassen.
+   */
+  async resolveGroupPeerUserIds(workspaceId: string, userId: string): Promise<readonly string[]> {
+    const context = await this.resolveActorContext(workspaceId, userId);
+    return context.groupMemberUserIds.length > 0 ? context.groupMemberUserIds : [userId];
+  }
+
   private async resolveActorContext(workspaceId: string, userId: string): Promise<MailScopeActorContext> {
     if (this.port.resolveScopeActorContext) {
       return this.port.resolveScopeActorContext({ workspaceId, userId });

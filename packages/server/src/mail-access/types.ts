@@ -129,6 +129,14 @@ export interface MailAccessService {
     actor: MailAccessActor;
     permission: MailPermission;
   }>): Promise<MailSqlScope>;
+
+  /**
+   * Nutzer, die sich mit `userId` eine Gruppe teilen (inkl. ihm selbst) — der
+   * Satz, den assigned_to_my_groups in die Sichtbarkeit einbezieht. Routen
+   * brauchen ihn, um ACL-Invalidierungen an alle Betroffenen zu fassen.
+   * Optional, damit schlanke Test-Doubles den Contract weiterhin erfuellen.
+   */
+  resolveGroupPeerUserIds?(workspaceId: string, userId: string): Promise<readonly string[]>;
 }
 
 export type MailAclRolloutMode = 'shadow' | 'enforce';

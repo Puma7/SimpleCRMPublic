@@ -1278,7 +1278,24 @@ async function publishLinkedUserAclInvalidation(
   actorUserId: string,
   affectedUserIds: ReadonlyArray<string | null | undefined>,
 ): Promise<void> {
-  const targets = [...new Set(affectedUserIds.filter((id): id is string => Boolean(id)))];
+  const direct = [...new Set(affectedUserIds.filter((id): id is string => Boolean(id)))];
+  // Auch die Gruppen-Peers: assigned_to_my_groups bezieht alle Nutzer mit
+  // gemeinsamer Gruppe ein, deren Sicht auf die umgehaengten Nachrichten
+  // aendert sich also mit. Best effort — die Mutation ist committed.
+  const peers: string[] = [];
+  for (const userId of direct) {
+    try {
+      const resolvePeers = ports.mailAccess?.resolveGroupPeerUserIds;
+      if (resolvePeers) {
+        peers.push(...await resolvePeers.call(ports.mailAccess, workspaceId, userId));
+      }
+    } catch (error) {
+      console.warn(
+        `[email-team-member] group peer lookup failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const targets = [...new Set([...direct, ...peers])];
   for (const targetUserId of targets) {
     try {
       await ports.events?.publish({

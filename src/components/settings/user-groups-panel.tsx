@@ -6,6 +6,8 @@ import { IPCChannels } from "@shared/ipc/channels"
 import { invokeRenderer } from "@/services/transport"
 import { userGroupService, type UserGroup, type UserGroupMember } from "@/services/data/userGroupService"
 import { useTranslation } from "@/lib/i18n"
+import { useAuth } from "@/components/auth/auth-context"
+import { isServerClientMode } from "@/lib/runtime-mode"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -84,6 +86,11 @@ function moduleLevelLabel(
 
 export function UserGroupsPanel() {
   const { t } = useTranslation()
+  // Saemtliche Gruppen-Mutationsrouten verlangen requireAdmin. Ein delegierter
+  // settings.view/settings.manage-Nutzer darf den Tab sehen, bekommt die
+  // Aktionen aber nur lesend — sonst enden sie garantiert im 403.
+  const { user } = useAuth()
+  const canMutateGroups = !isServerClientMode() || user?.role === "owner" || user?.role === "admin"
   const [groups, setGroups] = useState<UserGroup[]>([])
   const [users, setUsers] = useState<AppUser[]>([])
   const [name, setName] = useState("")
@@ -253,6 +260,11 @@ export function UserGroupsPanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!canMutateGroups ? (
+          <p className="text-xs text-muted-foreground">
+            Nur lesbar — Gruppen und Mitgliedschaften ändern dürfen nur Administratoren.
+          </p>
+        ) : null}
         {error ? (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
@@ -284,7 +296,11 @@ export function UserGroupsPanel() {
             </Select>
           </div>
         </div>
-        <Button type="button" disabled={busy || !name.trim()} onClick={() => void createGroup()}>
+        <Button
+          type="button"
+          disabled={busy || !name.trim() || !canMutateGroups}
+          onClick={() => void createGroup()}
+        >
           {t("userGroups.create")}
         </Button>
 
@@ -303,7 +319,7 @@ export function UserGroupsPanel() {
                 <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void openMembers(group.id)}>
                   <Users className="mr-1 h-3.5 w-3.5" /> Rechte
                 </Button>
-                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void deleteGroup(group.id)}>
+                <Button type="button" variant="ghost" size="sm" disabled={busy || !canMutateGroups} onClick={() => void deleteGroup(group.id)}>
                   <Trash2 className="h-3.5 w-3.5 text-destructive" />
                 </Button>
               </span>
@@ -326,7 +342,7 @@ export function UserGroupsPanel() {
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={busy}
+                    disabled={busy || !canMutateGroups}
                     title={template.description}
                     onClick={() => void applyTemplate(template.id)}
                   >
@@ -346,7 +362,7 @@ export function UserGroupsPanel() {
                     <Select
                       value={String(level)}
                       onValueChange={(value) => void setModuleLevel(option.module, Number(value))}
-                      disabled={busy}
+                      disabled={busy || !canMutateGroups}
                     >
                       <SelectTrigger>
                         <SelectValue />
@@ -377,7 +393,7 @@ export function UserGroupsPanel() {
                 {members.map((member) => (
                   <li key={member.userId} className="flex items-center justify-between gap-2">
                     <span>{member.displayName} ({member.email})</span>
-                    <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void removeMember(member.userId)}>
+                    <Button type="button" variant="ghost" size="sm" disabled={busy || !canMutateGroups} onClick={() => void removeMember(member.userId)}>
                       {t("common.remove")}
                     </Button>
                   </li>
@@ -397,7 +413,7 @@ export function UserGroupsPanel() {
                     </SelectContent>
                   </Select>
                 </div>
-                <Button type="button" disabled={busy || !addUserId} onClick={() => void addMember()}>
+                <Button type="button" disabled={busy || !addUserId || !canMutateGroups} onClick={() => void addMember()}>
                   {t("common.add")}
                 </Button>
               </div>

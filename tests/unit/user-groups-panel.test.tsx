@@ -6,10 +6,17 @@ jest.mock('@/services/transport', () => ({
   invokeRenderer: (...args: unknown[]) => mockInvoke(...args),
 }));
 
+let mockRole: 'owner' | 'admin' | 'user' = 'admin';
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => ({ user: { id: 'u1', role: mockRole } }),
+}));
+jest.mock('@/lib/runtime-mode', () => ({ isServerClientMode: () => true }));
+
 import { UserGroupsPanel } from '../../src/components/settings/user-groups-panel';
 
 describe('UserGroupsPanel', () => {
   beforeEach(() => {
+    mockRole = 'admin';
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (channel: string, payload?: { name?: string; permissions?: string[] }) => {
       switch (channel) {
@@ -58,6 +65,16 @@ describe('UserGroupsPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Gruppe anlegen' }));
 
     expect(await screen.findByText(/existiert bereits/)).toBeInTheDocument();
+  });
+
+  test('renders read-only for non-admins because every mutation route is admin-only', async () => {
+    mockRole = 'user';
+    render(<UserGroupsPanel />);
+    await screen.findByText(/Support/);
+
+    expect(screen.getByText(/Nur lesbar/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Vertrieb' } });
+    expect(screen.getByRole('button', { name: 'Gruppe anlegen' })).toBeDisabled();
   });
 
   describe('applying a rights template to an existing group', () => {

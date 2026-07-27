@@ -162,6 +162,14 @@ export class MailAccessRolloutService implements MailAccessService {
     if (!decision.allowed) throw decision.error;
   }
 
+  /** Gruppen-Peers kommen immer aus der NEUEN ACL — auch im Shadow-Modus, wo
+   *  die Sichtbarkeitsfilter bereits echt greifen. */
+  async resolveGroupPeerUserIds(workspaceId: string, userId: string): Promise<readonly string[]> {
+    if (!this.options.newAcl.resolveScopeActorContext) return [userId];
+    const context = await this.options.newAcl.resolveScopeActorContext({ workspaceId, userId });
+    return context.groupMemberUserIds.length > 0 ? context.groupMemberUserIds : [userId];
+  }
+
   async resolveScope(input: Parameters<MailAccessService['resolveScope']>[0]): Promise<MailSqlScope> {
     if (input.actor.workspaceId !== input.workspaceId) return { kind: 'none' };
     if (input.actor.isOwner || input.actor.isAdmin) return { kind: 'all' };

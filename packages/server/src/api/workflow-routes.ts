@@ -1039,11 +1039,18 @@ async function handleUpdateWorkflow(
   // a live outbound workflow, so resolve the fields the patch omits from the
   // stored row and guard the merged result. This catches re-enabling, switching
   // the trigger to outbound, and compiled/no-graph outbound workflows.
+  // cronExpr und scheduleAccountId steuern die AUSFUEHRUNG eines bereits aktiven
+  // Workflows mit — ein Editor koennte sonst den Zeitplan eines privilegierten
+  // Seiteneffekt-Workflows von selten auf minuetlich stellen oder ihn auf ein
+  // anderes Konto richten, ohne workflows.manage zu besitzen: der Guard lief bei
+  // einem reinen Zeitplan-Patch gar nicht erst an.
   const patchTouchesOutbound =
     parsed.values.triggerName !== undefined ||
     parsed.values.enabled !== undefined ||
     parsed.values.graph !== undefined ||
-    parsed.values.executionMode !== undefined;
+    parsed.values.executionMode !== undefined ||
+    parsed.values.cronExpr !== undefined ||
+    parsed.values.scheduleAccountId !== undefined;
   // Vorzustand, gegen den unten validiert wurde — er geht als optimistischer
   // Guard mit in den Write, damit ein paralleler Patch die geprueften Felder
   // nicht zwischen Pruefung und Schreiben veraendern kann.
