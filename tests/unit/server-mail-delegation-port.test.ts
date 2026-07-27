@@ -133,6 +133,39 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toEqual({ ok: false, code: 'privilege_escalation' });
   });
 
+  test('inherits authority constraints when a non-admin creates without explicit constraints', async () => {
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: null,
+      affectedUsers: [{ id: AGENT }],
+      actorPermissions: ['mail.delegation.manage', 'mail.metadata.read'],
+      actorAuthorityConstraints: [{
+        binding_id: 501,
+        kind: 'assignment',
+        mode: 'filter',
+        assignment_mode: 'assigned_to_me',
+        value_ids: null,
+        value_texts: null,
+      }],
+    });
+    const db = {
+      transaction: () => ({ execute: async (operation: (transaction: typeof trx) => unknown) => operation(trx) }),
+    };
+    const port = createPostgresMailDelegationPort({ db: db as never, applyWorkspaceSession: async () => {} });
+
+    await expect(port.replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read'],
+      // constraints omitted → inherit assigned_to_me from actor authority
+    })).resolves.toMatchObject({ ok: true, affectedUserIds: [AGENT] });
+  });
+
   test('revalidates preserved constraints on permission-only updates', async () => {
     const existingBinding = {
       id: 901,

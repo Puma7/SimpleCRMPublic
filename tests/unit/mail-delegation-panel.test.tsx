@@ -52,6 +52,30 @@ describe('MailDelegationPanel', () => {
         permissions: expect.arrayContaining(['mail.metadata.read', 'mail.triage', 'mail.send']),
       }),
     ));
+    const saves = mockInvoke.mock.calls.filter(([channel]) => channel === 'email:save-mail-delegation-binding');
+    expect(saves.at(-1)?.[1]).not.toHaveProperty('constraints');
+  });
+
+  test('omits constraints until the visibility filter panel is opened', async () => {
+    render(<MailDelegationPanel />);
+    expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      'email:save-mail-delegation-binding',
+      expect.not.objectContaining({ constraints: expect.anything() }),
+    ));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Erweitert: Sichtbarkeitsfilter' }));
+    fireEvent.change(screen.getByLabelText('Zuweisung'), { target: { value: 'assigned_to_me' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      'email:save-mail-delegation-binding',
+      expect.objectContaining({
+        constraints: expect.objectContaining({ assignmentMode: 'assigned_to_me' }),
+      }),
+    ));
   });
 
   test('loads every bounded resource, subject, and binding page', async () => {

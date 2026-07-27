@@ -396,13 +396,18 @@ export function MailDelegationPanel() {
         resource,
         profile,
         permissions: [...permissions].sort(),
-        constraints: {
-          assignmentMode: assignmentMode === "any" ? null : assignmentMode,
-          categoryAllowIds: categoryAllow.ids,
-          categoryExcludeIds: categoryExclude.ids,
-          tagAllowValues,
-          tagExcludeValues,
-        },
+        // Only send constraints when the user opened the filter panel — otherwise
+        // the server auto-inherits from the delegator's own authority (create) or
+        // preserves existing filters (edit).
+        ...(showFilters ? {
+          constraints: {
+            assignmentMode: assignmentMode === "any" ? null : assignmentMode,
+            categoryAllowIds: categoryAllow.ids,
+            categoryExcludeIds: categoryExclude.ids,
+            tagAllowValues,
+            tagExcludeValues,
+          },
+        } : {}),
       }) as { success?: boolean; error?: string }
       if (result.success === false) throw new Error(result.error ?? "save_failed")
       if (mountedRef.current) await load()
