@@ -1,5 +1,6 @@
 import { isTrashMailboxName } from '../email/imap-mailbox-names';
 import type { WorkflowGraphDocument, WorkflowGraphNode } from './graph-types';
+import { edgeIsDefault } from './graph-walk-utils';
 
 function registryType(node: WorkflowGraphNode): string {
   const data = node.data as Record<string, unknown> | undefined;
@@ -54,6 +55,20 @@ function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
   return node.type === 'condition' || registryType(node) === 'logic.threshold';
 }
 
+/** Multi-port KI review nodes — walk every port; only release ports must reach send. */
+const NAMED_PORT_BRANCH_NODES: Readonly<
+  Record<string, { ports: readonly string[]; releasePorts: readonly string[] }>
+> = {
+  'ai.outbound_review': { ports: ['ok', 'block', 'error'], releasePorts: ['ok'] },
+  'ai.review_draft': { ports: ['send', 'hold'], releasePorts: ['send'] },
+};
+
+function namedPortBranch(
+  node: WorkflowGraphNode,
+): { ports: readonly string[]; releasePorts: readonly string[] } | null {
+  return NAMED_PORT_BRANCH_NODES[registryType(node)] ?? null;
+}
+
 /**
  * Runtime node types that only read state, branch, or produce in-run variables
  * — they never mutate persisted mailbox/CRM state, send mail, or reach an
@@ -93,6 +108,7 @@ const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
 // logic.* branches in executeServerNode (packages/server/src/workflow-execution.ts).
 const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'logic.stop',
+  'logic.stop_after_spam',
   'logic.set_variable',
   'logic.merge',
   'logic.threshold',
@@ -602,7 +618,7 @@ export function findOutboundGraphTraps(
     }
   };
 
-  const walk = (nodeId: string, pathVisited: Set<string>): void => {
+  const walk = (nodeId: string, pathVisited: Set<string>, holdPath = false): void => {
     const node = byId.get(nodeId);
     if (!node) {
       add({ code: 'dead_end', nodeId }); // edge to a missing/deleted node
@@ -612,7 +628,11 @@ export function findOutboundGraphTraps(
       add({ code: 'dead_end', nodeId }); // loop that never releases
       return;
     }
-    if (isReleaseNode(node)) return; // sends the mail — safe
+    if (isReleaseNode(node)) {
+      // Release on a hold/block/error path would send mail after a fail verdict.
+      if (holdPath) add({ code: 'dead_end', nodeId });
+      return;
+    }
     if (isHoldNode(node)) return; // explicit, intended hold — safe terminal
     const next = new Set(pathVisited).add(nodeId);
     const outs = outgoing(nodeId);
@@ -620,15 +640,37 @@ export function findOutboundGraphTraps(
     if (isYesNoBranchNode(node)) {
       const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
       const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
-      if (yesEdge) walk(yesEdge.target, next);
+      if (yesEdge) walk(yesEdge.target, next, holdPath);
       else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
-      if (noEdge) walk(noEdge.target, next);
+      if (noEdge) walk(noEdge.target, next, holdPath);
       else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
       return;
     }
 
+    const portBranch = namedPortBranch(node);
+    if (portBranch) {
+      for (const port of portBranch.ports) {
+        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+        // `ok` fällt zur Laufzeit auf eine unbeschriftete Default-Kante zurück
+        // (pickEdge, Abwärtskompatibilität für Graphen aus der Zeit vor den
+        // benannten Ports). Der Validator muss dieselbe Kante akzeptieren, sonst
+        // meldet er einen lauffähigen Altgraphen als dead_end — und
+        // outboundWorkflowGuardError lehnt jedes Speichern mit 422 ab.
+        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefault) : undefined);
+        const isReleasePort = portBranch.releasePorts.includes(port);
+        if (edge) {
+          walk(edge.target, next, holdPath || !isReleasePort);
+        } else if (isReleasePort) {
+          // Missing ok/send port — a successful verdict could never release mail.
+          add({ code: 'dead_end', nodeId });
+        }
+        // Missing block/error/hold ports fail closed at runtime (draft stays held).
+      }
+      return;
+    }
+
     if (outs.length === 0) {
-      add({ code: 'dead_end', nodeId }); // nothing to route to
+      if (!holdPath) add({ code: 'dead_end', nodeId }); // intentional hold branch terminal
       return;
     }
     // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
@@ -636,13 +678,13 @@ export function findOutboundGraphTraps(
     // branch) are not taken, so they must not be treated as reachable traps.
     const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
     if (defaultEdge) {
-      walk(defaultEdge.target, next);
+      walk(defaultEdge.target, next, holdPath);
       return;
     }
     // Every outgoing edge is labeled (e.g. success/error) and none is a
     // default/unlabeled edge, so pickEdge(..., 'default') returns undefined:
     // the runtime stops here and the draft is never released — a dead end.
-    add({ code: 'dead_end', nodeId });
+    if (!holdPath) add({ code: 'dead_end', nodeId });
   };
 
   for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));

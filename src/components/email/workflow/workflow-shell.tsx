@@ -180,6 +180,14 @@ export function WorkflowShell() {
 
   const { catalog, labelByType, catalogLoaded } = useWorkflowNodeCatalog()
   const graphNodes = useWorkflowEditorStore((s) => s.nodes)
+  const graphEdges = useWorkflowEditorStore((s) => s.edges)
+  const graphJsonPreview = useMemo(() => {
+    try {
+      return JSON.stringify(useWorkflowEditorStore.getState().toGraphDocument(), null, 2)
+    } catch {
+      return ""
+    }
+  }, [graphNodes, graphEdges])
 
   const filteredRows = useMemo(() => {
     if (triggerFilter === "all") return rows
@@ -649,7 +657,7 @@ export function WorkflowShell() {
                   <Code2 className="h-4 w-4" />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent>Kompilierte JSON-Definition</TooltipContent>
+              <TooltipContent>Graph- und kompilierte JSON-Ansicht</TooltipContent>
             </Tooltip>
           </div>
         </header>
@@ -1033,6 +1041,7 @@ export function WorkflowShell() {
           onOpenChange={setJsonDrawerOpen}
           jsonValue={editJson}
           onJsonChange={setEditJson}
+          graphJson={graphJsonPreview}
         />
         <WorkflowReferenceDialog open={referenceOpen} onOpenChange={setReferenceOpen} />
         <WorkflowTemplatesDialog

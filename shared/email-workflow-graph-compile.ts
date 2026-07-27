@@ -152,6 +152,20 @@ function edgeIsNo(e: WorkflowGraphEdge): boolean {
   return label === 'no' || label === 'nein' || label === 'false';
 }
 
+function edgeIsDefault(e: WorkflowGraphEdge): boolean {
+  const label = (e.label ?? '').toLowerCase();
+  return !label || label === 'default' || label === 'standard' || label === 'fallback';
+}
+
+function pickCompileEdge(edges: WorkflowGraphEdge[], port: string): WorkflowGraphEdge | undefined {
+  if (edges.length === 0) return undefined;
+  const lower = port.toLowerCase();
+  const byLabel = edges.find((edge) => (edge.label ?? '').toLowerCase() === lower);
+  if (byLabel) return byLabel;
+  if (lower === 'ok') return edges.find((edge) => edgeIsDefault(edge));
+  return undefined;
+}
+
 function conditionFromNode(data: GraphConditionNodeData): WorkflowConditionItem {
   const condition: WorkflowCondition = {
     field: data.field,
@@ -238,7 +252,8 @@ function walkFrom(
 
     const outs = outgoingEdges(edges, currentId);
     if (outs.length === 0) break;
-    currentId = (outs.find((e) => edgeIsYes(e)) ?? outs[0])?.target;
+    currentId = pickCompileEdge(outs, 'ok')?.target
+      ?? (outs.find((e) => edgeIsYes(e)) ?? outs[0])?.target;
   }
 
   flushRule(state, rules);

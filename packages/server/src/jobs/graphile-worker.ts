@@ -1,5 +1,6 @@
 import {
   assertServerJobType,
+  buildTrustedServiceJobPayload,
   calculateMailSyncPoolSize,
   normalizeAiJobConcurrency,
   normalizeMaxAttempts,
@@ -42,10 +43,19 @@ export type GraphileWorkerFactory = (options: {
 }) => Promise<GraphileWorkerRuntime>;
 
 export type GraphileJobHelpers = Readonly<{
-  job?: Readonly<{ id?: string | number }>;
+  job?: Readonly<{
+    id?: string | number;
+    attempts?: number;
+    max_attempts?: number;
+  }>;
   withPgClient?: (callback: (client: {
     query: (sql: string, values?: readonly unknown[]) => Promise<unknown>;
   }) => Promise<unknown>) => Promise<unknown>;
+  addJob?: (
+    identifier: string,
+    payload: JobPayload,
+    spec?: GraphileTaskSpec,
+  ) => Promise<unknown>;
 }>;
 
 export type GraphileWorkerUtilsFactory = (options: {
@@ -166,10 +176,11 @@ export function buildGraphileTaskList(
       if (!handler) {
         throw new Error(`No handler registered for job type ${type}`);
       }
+      const normalizedPayload = normalizePayload(payload);
       const job: QueuedJob = {
         id: 0,
         type,
-        payload: normalizePayload(payload),
+        payload: normalizedPayload,
         runAfter: new Date(0).toISOString(),
         attempts: 0,
         maxAttempts: 1,
@@ -190,11 +201,199 @@ export function buildGraphileTaskList(
         // without a trace. Rethrow so the failure is visible: graphile retries
         // and, after maxAttempts, keeps the row as permanently failed — mirroring
         // the legacy worker's failTerminal handling of MailAsyncAuthorizationError.
+        await maybeAdvanceInboundChainAfterGraphileTerminalFailure(normalizedPayload, helpers);
         throw error;
       }
-      await handler(mailAuthorization ? { ...job, mailAuthorization } : job);
+      try {
+        await handler(mailAuthorization ? { ...job, mailAuthorization } : job);
+      } catch (error) {
+        await maybeAdvanceInboundChainAfterGraphileTerminalFailure(normalizedPayload, helpers);
+        throw error;
+      }
     },
   ]));
+}
+
+/**
+ * When a Graphile job exhausts retries, advance the inbound priority chain the
+ * same way postgres-job-queue-port failTerminal does. Without this, a failed
+ * AI/HTTP child (or workflow.execute) strands later workflows forever.
+ */
+async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
+  payload: JobPayload,
+  helpers: GraphileJobHelpers | undefined,
+): Promise<void> {
+  // Graphile bumps `attempts` when claiming the job (before the handler runs).
+  // Terminal = same predicate Graphile uses for job:failed (`attempts >= max_attempts`).
+  const attempts = Number(helpers?.job?.attempts ?? 0);
+  const maxAttempts = Number(helpers?.job?.max_attempts ?? 1);
+  if (!(attempts >= maxAttempts)) return;
+
+  const {
+    completeInboundDeferredJoinSiblingOnPgClient,
+    inboundChainFromJobPayload,
+    inboundChainHopClaimKey,
+  } = await import('../workflow-inbound-chain-advance.js');
+  const parsed = inboundChainFromJobPayload(payload as Record<string, unknown>);
+  if (!parsed) return;
+  const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
+  if (currentWorkflowId == null) return;
+  const nextIndex = parsed.chain.index + 1;
+  // Kein vorzeitiges return am letzten Kettenplatz: die Deferred-Join-Barriere
+  // muss auch dann abgebaut werden, wenn es keinen Folge-Workflow zu enqueuen
+  // gibt — sonst wartet ein erfolgreicher Geschwisterzweig dauerhaft an ihr.
+  const nextWorkflowId = nextIndex < parsed.chain.workflowIds.length
+    ? parsed.chain.workflowIds[nextIndex]
+    : undefined;
+
+  const nextPayload: JobPayload | null = nextWorkflowId == null
+    ? null
+    : parsed.actorUserId
+      ? {
+        workspaceId: parsed.workspaceId,
+        actorUserId: parsed.actorUserId,
+        workflowId: nextWorkflowId,
+        messageId: parsed.messageId,
+        triggerName: 'inbound',
+        context: {
+          inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
+        },
+      }
+      : buildTrustedServiceJobPayload({
+        workspaceId: parsed.workspaceId,
+        workflowId: nextWorkflowId,
+        messageId: parsed.messageId,
+        triggerName: 'inbound',
+        context: {
+          inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
+        },
+      });
+
+  const claimKey = nextPayload === null
+    ? null
+    : inboundChainHopClaimKey(parsed.messageId, parsed.chain, nextIndex);
+
+  const graphileJobId = helpers?.job?.id;
+  const advanceGuardKey = graphileJobId === undefined || graphileJobId === null
+    ? null
+    : `inbound_chain_terminal_advance:${String(graphileJobId)}`;
+
+  try {
+    // Prefer a single PG client so the hop claim + enqueue share one connection
+    // (sibling terminal failures must not double-enqueue the next workflow).
+    // FORCE RLS on sync_info requires app.workspace_id / app.role; set_config(..., true)
+    // is transaction-local so wrap BEGIN/COMMIT (autocommit would discard settings).
+    if (helpers?.withPgClient) {
+      await helpers.withPgClient(async (client) => {
+        await client.query('BEGIN');
+        try {
+          await client.query(
+            `SELECT set_config('app.workspace_id', $1, true),
+                    set_config('app.user_id', '', true),
+                    set_config('app.role', 'system', true),
+                    set_config('app.cross_workspace_access', 'off', true)`,
+            [parsed.workspaceId],
+          );
+          // Idempotenz pro Graphile-Job. Anders als beim Legacy-Queue-Port
+          // (postgres-job-queue-port failJob/failTerminal) läuft die
+          // Kettenfortschaltung hier NICHT in derselben Transaktion, in der
+          // Graphile den Job als failed festschreibt: dieser Block committet
+          // zuerst, das throw danach. Stirbt der Prozess dazwischen, wird der
+          // Job erneut geclaimt und der Block liefe ein zweites Mal — der
+          // Join-Zähler würde doppelt dekrementiert und die Barriere zu früh
+          // öffnen. Der Marker macht das Ganze einmalig. Ohne Job-ID (ältere
+          // Helper/Tests) bleibt das Verhalten wie bisher.
+          if (advanceGuardKey) {
+            const firstRun = asPgResult(await client.query(
+              `INSERT INTO sync_info (
+                 workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
+               ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
+               ON CONFLICT (workspace_id, key) DO NOTHING
+               RETURNING key`,
+              [
+                parsed.workspaceId,
+                advanceGuardKey,
+                JSON.stringify({ origin: 'inbound_chain_terminal_advance' }),
+              ],
+            ));
+            if (!firstRun.rowCount) {
+              await client.query('COMMIT');
+              return;
+            }
+          }
+          const join = await completeInboundDeferredJoinSiblingOnPgClient(client, {
+            workspaceId: parsed.workspaceId,
+            messageId: parsed.messageId,
+            workflowId: currentWorkflowId,
+            chain: parsed.chain,
+            chainStop: false,
+            now: new Date(),
+          });
+          // 'ready_error' zaehlt hier ebenfalls als fortschaltbar: der Job ist
+          // endgueltig gescheitert, die Kette darf nicht stehen bleiben.
+          if (join !== 'ready' && join !== 'ready_error') {
+            await client.query('COMMIT');
+            return;
+          }
+          if (nextPayload === null || claimKey === null) {
+            // Letzter Kettenplatz: Barriere ist abgebaut, nichts mehr zu enqueuen.
+            await client.query('COMMIT');
+            return;
+          }
+          const claimed = asPgResult(await client.query(
+            `INSERT INTO sync_info (
+               workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
+             ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
+             ON CONFLICT (workspace_id, key) DO NOTHING
+             RETURNING key`,
+            [
+              parsed.workspaceId,
+              claimKey,
+              JSON.stringify({ origin: 'inbound_chain_hop' }),
+            ],
+          ));
+          if (!claimed.rowCount) {
+            await client.query('COMMIT');
+            return;
+          }
+          await client.query(
+            `SELECT graphile_worker.add_job(
+               $1::text,
+               $2::json,
+               'workflow',
+               now(),
+               3
+             )`,
+            ['workflow.execute', JSON.stringify(nextPayload)],
+          );
+          await client.query('COMMIT');
+        } catch (inner) {
+          try {
+            await client.query('ROLLBACK');
+          } catch {
+            // ignore rollback errors
+          }
+          throw inner;
+        }
+      });
+      return;
+    }
+    // Test helpers without withPgClient: best-effort enqueue (no claim available).
+    if (helpers?.addJob && nextPayload) {
+      await helpers.addJob('workflow.execute', nextPayload, {
+        maxAttempts: 3,
+        queueName: 'workflow',
+      });
+    }
+  } catch (advanceErr) {
+    // Never mask the original job failure if chain advance itself fails.
+    console.error('[graphile-worker] inbound chain advance after terminal failure failed', advanceErr);
+  }
+}
+
+function asPgResult(value: unknown): { rowCount?: number | null } {
+  if (!value || typeof value !== 'object') return {};
+  return value as { rowCount?: number | null };
 }
 
 export function graphileSpecFromJob(input: EnqueueJobInput): GraphileTaskSpec {
@@ -218,6 +417,8 @@ export function graphileQueueNameForJob(type: ServerJobType, payload: JobPayload
     || type === 'ai.agent'
     || type === 'ai.classify'
     || type === 'ai.review'
+    || type === 'ai.draft_reply'
+    || type === 'ai.review_draft'
     || type === 'ai.transform_text'
   ) {
     return 'ai';
@@ -294,6 +495,36 @@ export function graphileJobKeyForJob(
       return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
+  }
+  if (type === 'ai.draft_reply') {
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    // runId gehört in den Key: wird derselbe Workflow erneut auf dieselbe
+    // Nachricht angewandt, während der erste KI-Job noch wartet, würde
+    // jobKeyMode 'replace' sonst die erste Fortsetzung verschlucken (der erste
+    // Lauf bliebe dauerhaft deferred). Die Entwurfs-Dedupe ist ebenfalls
+    // run-skopiert (aiDraftReplyDedupeKey).
+    const runId = graphileKeyScalar(payload.runId);
+    if (workspaceKey && workflowId && resumeNodeId) {
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${runId ?? 'none'}`;
+    }
+    if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}:${runId ?? 'none'}`;
+  }
+  if (type === 'ai.review_draft') {
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    // Analog zu ai.draft_reply: der konkrete Entwurf gehört in den Key, sonst
+    // ersetzt eine zweite Gegenprüfung die erste und ein Entwurf bleibt ungeprüft.
+    const draftId = graphileKeyScalar(payload.draftId);
+    const runId = graphileKeyScalar(payload.runId);
+    if (workspaceKey && workflowId && resumeNodeId) {
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
+    }
+    if (workspaceKey && messageId) {
+      return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
+    }
   }
   if (type === 'ai.transform_text') {
     const messageId = graphileKeyScalar(payload.messageId);

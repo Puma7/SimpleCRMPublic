@@ -24,7 +24,7 @@ function edgeIsEach(edge: WorkflowGraphEdge): boolean {
   return label === 'each' || label === 'je' || label === 'loop';
 }
 
-function edgeIsDefault(edge: WorkflowGraphEdge): boolean {
+export function edgeIsDefault(edge: WorkflowGraphEdge): boolean {
   const label = (edge.label ?? '').toLowerCase();
   return !label || label === 'default' || label === 'standard' || label === 'fallback';
 }
@@ -39,6 +39,15 @@ export function pickEdge(
     const lower = port.toLowerCase();
     const byLabel = edges.find((edge) => (edge.label ?? '').toLowerCase() === lower);
     if (byLabel) return byLabel;
+    // „ok“ darf auf eine unbeschriftete Default-Kante fallen (Abwärtskompatibilität).
+    if (lower === 'ok') {
+      return edges.find((edge) => edgeIsDefault(edge));
+    }
+    // Fail-closed nur für explizite Hold/Block-Ausgänge — andere Ports (z. B. approved,
+    // send_tracking-Fallback) fallen wie bisher auf die Default-Kante durch.
+    if (lower === 'block' || lower === 'error' || lower === 'hold' || lower === 'send') {
+      return undefined;
+    }
   }
   if (port === 'yes') return edges.find((edge) => edgeIsYes(edge));
   // Do not fall back to the first/yes edge when the condition failed. That caused
@@ -68,6 +77,19 @@ export function resolveResumeNodeAfter(
   nodeId: string,
 ): string | null {
   const outs = outgoing(doc.edges, nodeId);
+  const okEdge = pickEdge(outs, 'ok');
+  if (okEdge) return okEdge.target;
   const next = pickEdge(outs, 'default');
+  return next?.target ?? null;
+}
+
+/** Resolve the target node id for a named port on a node (e.g. ai.outbound_review). */
+export function resolveResumeNodeAfterPort(
+  doc: WorkflowGraphDocument,
+  nodeId: string,
+  port: string,
+): string | null {
+  const outs = outgoing(doc.edges, nodeId);
+  const next = pickEdge(outs, port);
   return next?.target ?? null;
 }

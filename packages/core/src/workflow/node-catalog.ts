@@ -147,7 +147,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'email',
     canvasType: 'registry',
     description: 'Setzt den lokalen Spam-Status: clean, review oder spam.',
-    defaultConfig: { status: 'review', train: false, tag: '' },
+    defaultConfig: { status: 'review', train: false, tag: '', stopFurtherWorkflows: false },
   },
   {
     type: 'email.mark_spam',
@@ -155,7 +155,7 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'email',
     canvasType: 'registry',
     description: 'Markiert die Nachricht als Spam (lokal + optional IMAP-Verschiebung in den Spam-Ordner).',
-    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false },
+    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false, stopFurtherWorkflows: false },
   },
   {
     type: 'email.assign',
@@ -293,6 +293,15 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     category: 'logic',
     canvasType: 'action',
     description: 'Beendet die Workflow-Ausführung an dieser Stelle sauber (kein Fehler).',
+  },
+  {
+    type: 'logic.stop_after_spam',
+    label: 'Stopp nach Spam',
+    category: 'logic',
+    canvasType: 'registry',
+    description:
+      'Beendet den Workflow, wenn die Mail als Spam oder „Spam prüfen" markiert ist. ' +
+      'Hinter email.mark_spam in Spam-Pipelines einsetzen.',
   },
   {
     type: 'logic.set_variable',
@@ -462,7 +471,6 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Antwort entwerfen',
     category: 'ai',
     canvasType: 'registry',
-    runtime: 'desktop',
     description:
       'Agent 1 der Zwei-Stufen-Antwort: schreibt mit System-Prompt und Wissensbasis eine Antwort, ergänzt Anrede und Konto-Signatur und legt einen fertig adressierten Entwurf an (setzt draft.id).',
     defaultConfig: {
@@ -480,7 +488,6 @@ const BUILTIN_WORKFLOW_NODE_CATALOG_ENTRIES: WorkflowNodeCatalogEntry[] = [
     label: 'KI-Gegenprüfung (Entwurf)',
     category: 'ai',
     canvasType: 'registry',
-    runtime: 'desktop',
     description:
       'Agent 2 der Zwei-Stufen-Antwort: liest den Entwurf gegen die Kundenmail gegen und entscheidet — Ausgang „senden" (Antwort darf raus) oder „prüfen" (Entwurf wartet auf menschliche Freigabe). Im Zweifel immer „prüfen".',
     defaultConfig: { draftIdVariable: 'draft.id', reviewPrompt: '', profileId: null },

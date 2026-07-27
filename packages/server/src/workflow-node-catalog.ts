@@ -12,10 +12,10 @@ const SERVER_UNSUPPORTED_WORKFLOW_NODE_TYPES = new Set([
 ]);
 
 /**
- * Desktop-only-Knoten (runtime: 'desktop' im Core-Katalog, z. B.
- * ai.draft_reply / ai.review_draft) werden generisch ausgeblendet — neue
- * Desktop-only-Nodes verschwinden damit automatisch aus dem Server-Katalog,
- * ohne dass SERVER_UNSUPPORTED_WORKFLOW_NODE_TYPES gepflegt werden muss.
+ * Desktop-only-Knoten (runtime: 'desktop' im Core-Katalog) werden generisch
+ * ausgeblendet — neue Desktop-only-Nodes verschwinden damit automatisch aus dem
+ * Server-Katalog, ohne dass SERVER_UNSUPPORTED_WORKFLOW_NODE_TYPES gepflegt
+ * werden muss. Zwei-Stufen-KI (ai.draft_reply / ai.review_draft) ist serverfähig.
  */
 let desktopOnlyWorkflowNodeTypes: ReadonlySet<string> | null = null;
 

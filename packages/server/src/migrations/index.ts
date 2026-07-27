@@ -43,6 +43,7 @@ import { quarantineLegacyProvenancelessJobsMigration } from './0042_quarantine_l
 import { atomicTaskCalendarMigration } from './0043_atomic_task_calendar';
 import { apiRateLimitCountersMigration } from './0044_api_rate_limit_counters';
 import { apiRateLimitWindowIdxMigration } from './0045_api_rate_limit_window_idx';
+import { emailDraftApprovalFieldsMigration } from './0046_email_draft_approval_fields';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -92,6 +93,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   atomicTaskCalendarMigration,
   apiRateLimitCountersMigration,
   apiRateLimitWindowIdxMigration,
+  emailDraftApprovalFieldsMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

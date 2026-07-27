@@ -63,6 +63,13 @@ const EXACT_MESSAGES: Record<string, string> = {
   trigger_no_edges:
     'Der Auslöser ist mit keinem weiteren Knoten verbunden – es wurde nichts ausgeführt.',
   stop: 'Workflow wurde hier planmäßig gestoppt.',
+  stop_after_spam: 'Nachfolgende Workflows werden übersprungen (Spam erkannt).',
+  'stop_further_workflows:spam_status':
+    'Spam/Review erkannt — nachfolgende eingehende Workflows für diese Mail werden nicht ausgeführt.',
+  'skip:message_spam_or_review':
+    'Übersprungen: Die Nachricht ist als Spam oder zur Prüfung markiert — kein KI-Token-Verbrauch.',
+  'skip:agent_message_spam_or_review':
+    'KI-Agent übersprungen: Nachricht ist Spam oder wartet auf Prüfung.',
   'loop:empty': 'Schleife übersprungen: Keine Elemente zum Durchlaufen gefunden.',
 };
 
@@ -166,6 +173,8 @@ export function humanizeWorkflowStepMessage(message: string | null | undefined):
 }
 
 const PORT_LABELS: Record<string, string> = {
+  ok: 'OK',
+  block: 'Blockiert',
   approved: 'Erlaubt',
   blocked: 'Blockiert',
   send: 'Senden',
@@ -208,6 +217,7 @@ export function stepTone(
   const s = (status ?? '').trim().toLowerCase();
   if (s === 'error') return 'error';
   const p = (port ?? '').trim().toLowerCase();
-  if (s === 'skipped' || s === 'blocked' || p === 'blocked' || p === 'hold') return 'warn';
+  if (s === 'skipped' || s === 'blocked' || p === 'blocked' || p === 'hold' || p === 'block') return 'warn';
+  if (p === 'error') return 'error';
   return 'ok';
 }

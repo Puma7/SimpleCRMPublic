@@ -7,6 +7,7 @@ import type {
   WorkflowGraphEdge,
   WorkflowGraphNode,
 } from './graph-types';
+import { outgoing as coreOutgoing, pickEdge } from './graph-walk-utils';
 
 export type WorkflowCondition = {
   field: GraphConditionField;
@@ -139,7 +140,7 @@ function mapRegistryAction(data: { nodeType: string; config?: Record<string, unk
 }
 
 function outgoingEdges(edges: WorkflowGraphEdge[], sourceId: string): WorkflowGraphEdge[] {
-  return edges.filter((edge) => edge.source === sourceId).sort((a, b) => a.id.localeCompare(b.id));
+  return coreOutgoing(edges, sourceId);
 }
 
 function edgeIsYes(edge: WorkflowGraphEdge): boolean {
@@ -238,7 +239,8 @@ function walkFrom(
 
     const outs = outgoingEdges(edges, currentId);
     if (outs.length === 0) break;
-    currentId = (outs.find((edge) => edgeIsYes(edge)) ?? outs[0])?.target;
+    currentId = pickEdge(outs, 'ok')?.target
+      ?? (outs.find((edge) => edgeIsYes(edge)) ?? outs[0])?.target;
   }
 
   flushRule(state, rules);

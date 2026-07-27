@@ -233,6 +233,7 @@ export async function enforceMailJobPolicy(
     if (
       (
         job.type === 'ai.reply_suggestion'
+        || job.type === 'ai.draft_reply'
         || job.type === 'ai.classify'
         || job.type === 'workflow.http_request'
         || job.type === 'mail.spam.score'
@@ -248,6 +249,13 @@ export async function enforceMailJobPolicy(
         });
       }
     }
+    // ai.review_draft reads the draft body for the LLM and may write approval_* on HOLD.
+    // Base policy only covers the inbound messageId — also require content.read + draft.edit
+    // on the concrete draft (payload.draftId or eventVariables[draftIdVariable]).
+    await assertAiReviewDraftAccess(job, actor.actor, requiredPorts);
+    // Outbound review with checkReplyContext loads the reply parent for the LLM —
+    // require content.read on that parent at execution time.
+    await assertAiReviewReplyParentAccess(job, actor.actor, requiredPorts);
     // A compose-originated ai.agent / ai.pick_canned with createDraft:true calls
     // createPostgresComposeDraftInTransaction() under the SYSTEM role, minting a reply
     // draft the base content.read policy never covers. Recheck mail.draft.create on the
@@ -392,6 +400,8 @@ const WORKFLOW_CHILD_SIDE_EFFECT_JOB_TYPES: ReadonlySet<string> = new Set([
   'ai.agent',
   'ai.pick_canned',
   'ai.review',
+  'ai.draft_reply',
+  'ai.review_draft',
   'ai.transform_text',
   'ai.reply_suggestion',
   'workflow.forward_copy',
@@ -598,7 +608,10 @@ async function assertWorkflowExecuteDraftCreateNodePrivilege(
     workspaceId: job.workspaceId,
     workflowId,
   });
-  if (!loaded || !workflowGraphHasNodeType(loaded.graph, 'email.create_draft')) return;
+  if (!loaded || !(
+    workflowGraphHasNodeType(loaded.graph, 'email.create_draft')
+    || workflowGraphHasNodeType(loaded.graph, 'ai.draft_reply')
+  )) return;
   for (const resource of resources) {
     await ports.mailAccess.assertPermission({
       workspaceId: job.workspaceId,
@@ -797,6 +810,71 @@ async function assertScheduledSendReplyParentTriage(
       resource,
     });
   }
+}
+
+async function assertAiReviewDraftAccess(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'ai.review_draft') return;
+  const draftId = resolveAiReviewDraftId(job.payload);
+  if (draftId === null) return;
+  const draftResources = await ports.mailResourceLookup.resolve({
+    workspaceId: job.workspaceId,
+    target: { kind: 'message', id: draftId },
+  });
+  if (draftResources.length === 0) throw new MailAsyncAuthorizationError();
+  for (const resource of draftResources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.content.read',
+      resource,
+    });
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.draft.edit',
+      resource,
+    });
+  }
+}
+
+async function assertAiReviewReplyParentAccess(
+  job: QueuedJob,
+  actor: MailAccessActor,
+  ports: Required<Pick<MailAsyncPolicyPorts, 'mailAccess' | 'mailResourceLookup'>>,
+): Promise<void> {
+  if (job.type !== 'ai.review') return;
+  const parentId = optionalPositiveInt(job.payload.replyParentMessageId);
+  if (parentId === null) return;
+  const resources = await ports.mailResourceLookup.resolve({
+    workspaceId: job.workspaceId,
+    target: { kind: 'message', id: parentId },
+  });
+  if (resources.length === 0) throw new MailAsyncAuthorizationError();
+  for (const resource of resources) {
+    await ports.mailAccess.assertPermission({
+      workspaceId: job.workspaceId,
+      actor,
+      permission: 'mail.content.read',
+      resource,
+    });
+  }
+}
+
+function resolveAiReviewDraftId(payload: QueuedJob['payload']): number | null {
+  const stamped = optionalPositiveInt(payload.draftId);
+  if (stamped !== null) return stamped;
+  const draftIdVar = typeof payload.draftIdVariable === 'string' && payload.draftIdVariable.trim()
+    ? payload.draftIdVariable.trim()
+    : 'draft.id';
+  const eventVariables = payload.eventVariables;
+  if (!eventVariables || typeof eventVariables !== 'object' || Array.isArray(eventVariables)) {
+    return null;
+  }
+  return optionalPositiveInt((eventVariables as Record<string, unknown>)[draftIdVar]);
 }
 
 async function assertScheduledSendDraftAndAttachmentAccess(

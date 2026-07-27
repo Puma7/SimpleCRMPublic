@@ -1,6 +1,7 @@
 import type { JobPayload, MailJobAuthorization } from './types';
 import type { JobHandlerRegistry } from './worker';
 import { isTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './policy';
+import { inboundChainFieldsFromRecord } from '../workflow-inbound-chain-context';
 import type {
   AiClassificationContextMode,
   AiAgentJobPlan,
@@ -14,6 +15,12 @@ import type {
   AiTransformTextJobPlan,
   AiTransformTextJobPort,
 } from '../ai-classification';
+import type {
+  AiDraftReplyJobPlan,
+  AiDraftReplyJobPort,
+  AiReviewDraftJobPlan,
+  AiReviewDraftJobPort,
+} from '../workflow-ai-draft-nodes';
 import type {
   WorkflowHttpMethod,
   WorkflowHttpRequestJobPlan,
@@ -150,6 +157,8 @@ export type ProductionJobHandlersOptions = Readonly<{
   aiPickCanned?: AiPickCannedJobPort;
   aiClassification?: AiClassificationJobPort;
   aiReview?: AiReviewJobPort;
+  aiDraftReply?: AiDraftReplyJobPort;
+  aiReviewDraft?: AiReviewDraftJobPort;
   aiTransformText?: AiTransformTextJobPort;
   workflowExecution?: WorkflowExecutionJobPort;
   workflowHttpRequest?: WorkflowHttpRequestPort;
@@ -207,6 +216,14 @@ export function createProductionJobHandlers(options: ProductionJobHandlersOption
     'ai.review': async (job) => {
       if (!options.aiReview) throw new Error('AI review job port is not configured');
       await options.aiReview.review(buildAiReviewJobPlan(job.payload, job.workspaceId));
+    },
+    'ai.draft_reply': async (job) => {
+      if (!options.aiDraftReply) throw new Error('AI draft-reply job port is not configured');
+      await options.aiDraftReply.draftReply(buildAiDraftReplyJobPlan(job.payload, job.workspaceId));
+    },
+    'ai.review_draft': async (job) => {
+      if (!options.aiReviewDraft) throw new Error('AI review-draft job port is not configured');
+      await options.aiReviewDraft.reviewDraft(buildAiReviewDraftJobPlan(job.payload, job.workspaceId));
     },
     'ai.transform_text': async (job) => {
       if (!options.aiTransformText) throw new Error('AI transform text job port is not configured');
@@ -383,6 +400,74 @@ export function buildAiReviewJobPlan(
     direction: optionalWorkflowDirection(payload),
     ...optionalString(payload, 'systemPrompt', 4000),
     ...optionalString(payload, 'fallbackUserTemplate', 20_000),
+    ...optionalPositiveInteger(payload, 'replyParentMessageId'),
+    ...(payload.parseMode === 'outbound_structured' || payload.parseMode === 'block_keyword'
+      ? { parseMode: payload.parseMode as 'outbound_structured' | 'block_keyword' }
+      : {}),
+    ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
+      ? {
+        portResumeTargets: Object.fromEntries(
+          Object.entries(payload.portResumeTargets as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+            .map(([port, target]) => [port, target.trim()]),
+        ),
+      }
+      : {}),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+  };
+}
+
+export function buildAiDraftReplyJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiDraftReplyJobPlan {
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    messageId: requiredPositiveInteger(payload, 'messageId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalPositiveInteger(payload, 'runId'),
+    ...optionalPositiveInteger(payload, 'profileId'),
+    ...optionalPositiveInteger(payload, 'knowledgeBaseId'),
+    ...optionalString(payload, 'systemPrompt', 4000),
+    ...(payload.includeCanned === undefined ? {} : { includeCanned: optionalBoolean(payload, 'includeCanned', false) }),
+    ...optionalString(payload, 'greeting', 40),
+    ...optionalString(payload, 'signature', 40),
+    ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
+    ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
+    ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    // Terminaler KI-Knoten (keine Resume-Kante ⇒ keine Continuation): der
+    // Kettenkontext steckt dann in payload.context und wird durchgereicht,
+    // damit der Kindjob die Kette selbst weiterschalten kann.
+    ...(payload.continuation === undefined && payload.context !== undefined
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
+  };
+}
+
+export function buildAiReviewDraftJobPlan(
+  payload: JobPayload,
+  jobWorkspaceId: string,
+): AiReviewDraftJobPlan {
+  return {
+    workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
+    ...optionalPositiveInteger(payload, 'messageId'),
+    ...optionalPositiveInteger(payload, 'draftId'),
+    ...optionalPositiveInteger(payload, 'runId'),
+    ...optionalString(payload, 'actorUserId'),
+    ...optionalPositiveInteger(payload, 'profileId'),
+    ...optionalString(payload, 'draftIdVariable', 120),
+    ...optionalString(payload, 'reviewPrompt', 4000),
+    ...(payload.portResumeTargets && typeof payload.portResumeTargets === 'object' && !Array.isArray(payload.portResumeTargets)
+      ? {
+        portResumeTargets: Object.fromEntries(
+          Object.entries(payload.portResumeTargets as Record<string, unknown>)
+            .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+            .map(([port, target]) => [port, target.trim()]),
+        ),
+      }
+      : {}),
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
@@ -700,6 +785,7 @@ function optionalClassificationContinuation(
       resumeNodeId: requiredString(value as JobPayload, 'resumeNodeId'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(value as JobPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(value as JobPayload, 'eventVariables') }),
+      ...inboundChainFieldsFromRecord(value as Record<string, unknown>),
     },
   };
 }
@@ -732,6 +818,7 @@ function optionalWorkflowHttpContinuation(
       ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(continuationPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
+      ...inboundChainFieldsFromRecord(continuationPayload as Record<string, unknown>),
     },
   };
 }

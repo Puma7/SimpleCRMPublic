@@ -74,6 +74,53 @@ describe('server mail job and event ACL', () => {
     expect(queries).toEqual([]);
   });
 
+  test('graphile task-list advances inbound chain only after terminal attempt exhaustion', async () => {
+    const added: Array<{ id: string; payload: unknown }> = [];
+    const taskList = buildGraphileTaskList(
+      {
+        'ai.classify': async () => {
+          throw new Error('classify permanently failed');
+        },
+      } satisfies JobHandlerRegistry,
+      makePolicyPorts({}),
+    );
+    const chainPayload = {
+      workspaceId: 'workspace-a',
+      actorUserId: 'user-a',
+      messageId: 12,
+      context: {
+        inboundWorkflowChain: { workflowIds: [10, 20], index: 0 },
+      },
+    };
+
+    // Non-terminal attempt: still has retries left → do not enqueue next workflow.
+    await expect(taskList['ai.classify']?.(chainPayload, {
+      job: { id: 'g1', attempts: 1, max_attempts: 3 },
+      addJob: async (id, payload) => { added.push({ id, payload }); },
+    } as never)).rejects.toThrow('classify permanently failed');
+    expect(added).toEqual([]);
+
+    // Terminal attempt: Graphile sets attempts == max_attempts before handler.
+    await expect(taskList['ai.classify']?.(chainPayload, {
+      job: { id: 'g2', attempts: 3, max_attempts: 3 },
+      addJob: async (id, payload) => { added.push({ id, payload }); },
+    } as never)).rejects.toThrow('classify permanently failed');
+
+    expect(added).toEqual([
+      {
+        id: 'workflow.execute',
+        payload: expect.objectContaining({
+          workspaceId: 'workspace-a',
+          actorUserId: 'user-a',
+          workflowId: 20,
+          messageId: 12,
+          triggerName: 'inbound',
+          context: { inboundWorkflowChain: { workflowIds: [10, 20], index: 1 } },
+        }),
+      },
+    ]);
+  });
+
   test('graphile task-list carries the authorized delayed message linkage to workflow execution', async () => {
     let handledJob: QueuedJob | null = null;
     const ports = makePolicyPorts({
@@ -881,7 +928,7 @@ describe('server mail job and event ACL', () => {
     // ai.pick_canned is covered separately: a user actor now always returns a
     // canned-scope authorization (not undefined), so it doesn't fit this loop's
     // toBeUndefined assertions.
-    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.review', 'ai.transform_text'] as const;
+    const childTypes = ['workflow.http_request', 'ai.agent', 'ai.review', 'ai.review_draft', 'ai.transform_text'] as const;
     for (const type of childTypes) {
       // A demoted (non-admin) initiator's MARKED message-less child would otherwise
       // hit the non_mail early return and run its side-effecting node unchecked.
@@ -1379,9 +1426,11 @@ describe('server mail job and event ACL', () => {
     expect(initiating).toEqual([
       'ai.agent',
       'ai.classify',
+      'ai.draft_reply',
       'ai.pick_canned',
       'ai.reply_suggestion',
       'ai.review',
+      'ai.review_draft',
       'ai.transform_text',
       'mail.send.scheduled',
       'mail.spam.score',

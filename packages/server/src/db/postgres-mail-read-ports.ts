@@ -98,6 +98,10 @@ import type { ServerWorkflowImapActionPort } from '../workflow-imap-actions';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
 import type { MailSqlScope } from '../mail-access/types';
 import { persistManualOutboundApproval } from '../mail-outbound-approval-store';
+import {
+  approveDraftSendInTransaction,
+  dismissDraftApprovalInTransaction,
+} from '../draft-approval-actions';
 
 export type PostgresMailReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -200,6 +204,8 @@ const emailMessageSummaryColumns = [
   'snoozed_until',
   'draft_attachment_paths_json',
   'reply_parent_message_id',
+  'approval_state',
+  'approval_reason',
   'tracking_override',
   'updated_at',
 ] as const;
@@ -1167,6 +1173,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             folderId: 'folder_id',
             messageId: 'id',
           });
+          const contentEdited =
+            input.values.subject !== undefined
+            || input.values.bodyText !== undefined
+            || input.values.bodyHtml !== undefined
+            || input.values.toJson !== undefined
+            || input.values.ccJson !== undefined
+            || input.values.bccJson !== undefined
+            || input.values.draftAttachmentPaths !== undefined;
           const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
@@ -1198,6 +1212,14 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
               scheduled_send_at: null,
               scheduled_send_actor_user_id: null,
               scheduled_send_trusted_service_principal: null,
+              // Content/recipient edits invalidate the KI approval snapshot (same as desktop).
+              ...(contentEdited
+                ? {
+                  approval_state: null,
+                  approval_reason: null,
+                  auto_submitted: 0,
+                }
+                : {}),
               updated_at: new Date(),
             })
             .where('workspace_id', '=', input.workspaceId)
@@ -1331,6 +1353,56 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             .returning(emailMessageDetailColumns)
             .executeTakeFirstOrThrow();
           return { ok: true as const, message: mapEmailMessageRow(row, true) };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async approveDraftSend(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const result = await approveDraftSendInTransaction(trx, {
+            workspaceId: input.workspaceId,
+            actorUserId: input.actorUserId,
+            draftId: input.messageId,
+          });
+          if (!result.success) {
+            const reason = result.error.includes('nicht gefunden')
+              ? 'not_found' as const
+              : result.error.includes('wartet nicht')
+                ? 'not_pending' as const
+                : 'action_failed' as const;
+            return { ok: false as const, reason, message: result.error };
+          }
+          await clearScheduledSendDraftMeta(trx, input.workspaceId, input.messageId);
+          return { ok: true as const };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+    async dismissDraftApproval(input) {
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          const result = await dismissDraftApprovalInTransaction(trx, {
+            workspaceId: input.workspaceId,
+            draftId: input.messageId,
+          });
+          if (!result.success) {
+            const reason = result.error.includes('nicht gefunden')
+              ? 'not_found' as const
+              : result.error.includes('wartet nicht') || result.error.includes('bereits zum Versand')
+                ? 'not_pending' as const
+                : 'action_failed' as const;
+            return {
+              ok: false as const,
+              reason,
+              message: result.error,
+            };
+          }
+          return { ok: true as const };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -3117,7 +3189,7 @@ async function selectMailFolderCounts(
             and archived = false
             and is_spam = false
             and coalesce(spam_status, 'clean') = 'clean')
-          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true and scheduled_send_at is null)
+          or (uid < 0 and folder_kind = 'draft' and scheduled_send_at is null and (outbound_hold = true or approval_state = 'pending'))
         )
         and coalesce(done_local, false) = false
       ) then 1 else 0 end), 0)`.as('inbox'),
@@ -3130,7 +3202,7 @@ async function selectMailFolderCounts(
             and archived = false
             and is_spam = false
             and coalesce(spam_status, 'clean') = 'clean')
-          or (uid < 0 and folder_kind = 'draft' and outbound_hold = true and scheduled_send_at is null)
+          or (uid < 0 and folder_kind = 'draft' and scheduled_send_at is null and (outbound_hold = true or approval_state = 'pending'))
         )
         and coalesce(done_local, false) = false
         and seen_local = false
@@ -3235,7 +3307,7 @@ function applyMessageViewFilter(query: any, view: Parameters<EmailMessageApiPort
   if (view === 'inbox') {
     return query.where(kyselySql<boolean>`(
       ((${nonDraftMail}) AND (folder_kind = 'inbox' OR folder_kind IS NULL OR folder_kind = '') AND archived = false AND is_spam = false AND coalesce(spam_status, 'clean') = 'clean')
-      OR (uid < 0 AND folder_kind = 'draft' AND outbound_hold = true AND scheduled_send_at IS NULL)
+      OR (uid < 0 AND folder_kind = 'draft' AND scheduled_send_at IS NULL AND (outbound_hold = true OR approval_state = 'pending'))
     )`);
   }
   if (view === 'sent') {
@@ -5330,6 +5402,10 @@ function mapEmailMessageRow(
       row.reply_parent_message_id === null || row.reply_parent_visible === false
         ? null
         : Number(row.reply_parent_message_id),
+    approvalState: row.approval_state ?? null,
+    // approval_reason summarizes AI review of customer + draft content — redact for
+    // metadata-only callers (content_readable===false), same boundary as snippet/body.
+    approvalReason: row.content_readable === false ? null : (row.approval_reason ?? null),
     ...(row.content_readable !== false
       && row.search_snippet !== undefined && row.search_snippet !== null && String(row.search_snippet).includes(SEARCH_MARK_START)
       ? { searchSnippet: String(row.search_snippet) }

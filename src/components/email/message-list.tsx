@@ -945,7 +945,7 @@ export function MessageList({
                               : formatMessageFrom(m, accounts)}
                           </span>
                           <span className="flex shrink-0 items-center justify-end gap-1 text-[10px] tabular-nums text-muted-foreground">
-                            {(!serverClientMode && m.approval_state === "pending") ? (
+                            {(m.approval_state === "pending") ? (
                               <span
                                 className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-sky-700 dark:text-sky-400"
                                 title={(m.approval_reason || "Wartet auf Freigabe").toString()}

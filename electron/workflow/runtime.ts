@@ -10,10 +10,15 @@ import type { EmailWorkflowRow } from '../email/email-workflow-store';
 import { createWorkflowContext, interpolateTemplate } from './context';
 import { ensureBuiltinWorkflowNodes, getWorkflowNode, LEGACY_ACTION_MAP } from './registry';
 import { inboundNodeRequiresConditionGate } from './inbound-gate';
+import { cancelPendingDelayedJobsForMessageSafe } from './delayed-jobs-store';
 import { insertWorkflowRunStep } from './run-steps';
 import type { GraphRunResult, NodeExecuteResult, WorkflowContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 import { getBuiltinWorkflowNodeCatalogEntry } from '../../packages/core/src/workflow/node-catalog';
+import {
+  NODE_CHAIN_STOP_MESSAGE,
+  nodeRequestsChainStop,
+} from '../../packages/core/src/workflow/node-chain-stop';
 
 /**
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
@@ -84,6 +89,39 @@ function registryTypeOf(node: WorkflowGraphNode): string | undefined {
   if (data.nodeType) return String(data.nodeType);
   const actionType = String(data.actionType ?? '');
   return LEGACY_ACTION_MAP[actionType];
+}
+
+function nodeConfigOf(node: WorkflowGraphNode): Record<string, unknown> {
+  const data = node.data as Record<string, unknown>;
+  return data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+    ? (data.config as Record<string, unknown>)
+    : data;
+}
+
+/**
+ * Generischer „Weitere Workflows stoppen"-Schalter — Parität zur Server-Runtime
+ * (packages/server/src/workflow-execution.ts withNodeChainStop). Opt-in pro
+ * Knoten, damit z. B. der Blocklist-Zweig die Inbound-Kette beendet, der
+ * Whitelist-/Weiterleitungszweig aber normal weiterläuft.
+ */
+function withNodeChainStop(
+  node: WorkflowGraphNode,
+  regType: string | undefined,
+  result: NodeExecuteResult,
+): NodeExecuteResult {
+  if (!nodeRequestsChainStop({
+    nodeType: regType ?? node.type,
+    config: nodeConfigOf(node),
+    result,
+  })) {
+    return result;
+  }
+  return {
+    ...result,
+    stop: true,
+    inboundChainStop: true,
+    message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
+  };
 }
 
 async function executeNode(
@@ -260,6 +298,7 @@ async function walkGraph(
         port: 'error',
       };
     }
+    result = withNodeChainStop(node, regType, result);
     const durationMs = Date.now() - t0;
 
     insertWorkflowRunStep({
@@ -280,20 +319,52 @@ async function walkGraph(
     }
     if (result.ai?.lastResponse) ctx.ai.lastResponse = result.ai.lastResponse;
 
-    if (result.blocked) {
-      return {
-        log,
-        status: 'blocked',
-        blocked: true,
-        blockReason: result.blockReason ?? 'Workflow blockiert',
-      };
-    }
+    // Hold as side effect: follow only explicit block/error ports so template
+    // branches still run, then finish blocked. Ordinary errors and port
+    // 'blocked' (unsupported) must terminate without walking further edges.
+    const pendingBlockReason = result.blocked
+      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      : null;
     if (result.status === 'error') {
       return {
         log,
         status: 'error',
         blocked: false,
         blockReason: result.message ?? null,
+      };
+    }
+    if (result.blocked) {
+      const blockPort = typeof result.port === 'string' ? result.port : '';
+      const followBlockPort = blockPort === 'block' || blockPort === 'error';
+      const outs = outgoing(doc.edges, currentId);
+      const blockEdge = followBlockPort ? pickEdge(outs, blockPort) : undefined;
+      if (blockEdge) {
+        const branch = await walkGraph(
+          ctx,
+          doc,
+          blockEdge.target,
+          log,
+          seen,
+          options,
+          gate,
+        );
+        if (branch.blocked || branch.status === 'blocked') return branch;
+        if (branch.deferred) {
+          return { ...branch, status: 'blocked', blocked: true, blockReason: pendingBlockReason };
+        }
+        if (branch.status === 'error') return branch;
+        return {
+          log: branch.log,
+          status: 'blocked',
+          blocked: true,
+          blockReason: pendingBlockReason,
+        };
+      }
+      return {
+        log,
+        status: 'blocked',
+        blocked: true,
+        blockReason: pendingBlockReason,
       };
     }
     if (result.stop) {
@@ -304,6 +375,7 @@ async function walkGraph(
         blocked: false,
         blockReason: null,
         deferred: result.deferred === true,
+        inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
       };
     }
 
@@ -408,6 +480,30 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
     const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, undefined, branchGate);
     merged.log.push(...r.log);
     if (r.blocked) return r;
+    // Spam-chain stop ends the whole inbound priority chain — bail immediately.
+    if (r.inboundChainStop) {
+      // Ein früherer Geschwisterzweig kann bereits einen logic.delay-Job
+      // eingeplant haben. Der darf nach dem Spam-Stopp nicht später aufwachen
+      // und Folgeaktionen (Entwurf senden, Weiterleitung) ausführen — sonst
+      // antwortet der Desktop trotz stopFurtherWorkflows auf eine Spam-Mail.
+      cancelPendingDelayedJobsForMessageSafe(input.workflow.id, input.message?.id ?? null);
+      return {
+        ...r,
+        log: merged.log,
+        status: merged.status === 'error' ? 'error' : r.status,
+        deferred: merged.deferred === true || r.deferred === true,
+      };
+    }
+    // Deferred (delay / async AI) must NOT abort sibling trigger branches —
+    // those still need to run; the continuation only resumes this branch.
+    if (r.deferred) {
+      merged = {
+        ...merged,
+        deferred: true,
+        status: merged.status === 'error' ? 'error' : r.status,
+      };
+      continue;
+    }
     if (r.status === 'error') merged.status = 'error';
   }
   return merged;

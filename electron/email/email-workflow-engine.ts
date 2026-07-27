@@ -352,15 +352,23 @@ export async function runInboundWorkflowsForMessage(
     if (applied?.has(wf.id)) continue;
     if (!tryClaimInboundWorkflowForMessage(messageId, wf.id)) continue;
     try {
+      // Re-read before each workflow so a prior run with stopFurther=false that
+      // marked spam/review is visible to logic.stop_after_spam and other guards.
+      const currentRow = getEmailMessageById(messageId) ?? freshRow;
       const r = await executeWorkflowForTrigger({
         workflow: wf,
         trigger: 'inbound',
         direction: 'inbound',
-        message: freshRow,
+        message: currentRow,
       });
       if (r.deferred) inboundWorkflowDeferred = true;
       if (r.status !== 'ok') {
         releaseInboundWorkflowClaim(messageId, wf.id);
+      }
+      // Honor stopFurtherWorkflows / inboundChainStop from the graph — do not
+      // re-bail solely because the node persisted is_spam (stopFurther=false).
+      if (r.inboundChainStop) {
+        return;
       }
     } catch (e) {
       releaseInboundWorkflowClaim(messageId, wf.id);
@@ -371,15 +379,6 @@ export async function runInboundWorkflowsForMessage(
         status: 'error',
         logJson: JSON.stringify([`error:${e instanceof Error ? e.message : String(e)}`]),
       });
-    }
-    const afterWorkflowRow = getEmailMessageById(messageId);
-    if (
-      !afterWorkflowRow ||
-      afterWorkflowRow.is_spam === 1 ||
-      afterWorkflowRow.spam_status === 'spam' ||
-      afterWorkflowRow.spam_status === 'review'
-    ) {
-      return;
     }
   }
 

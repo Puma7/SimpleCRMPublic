@@ -376,6 +376,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0043_atomic_task_calendar',
   '0044_api_rate_limit_counters',
   '0045_api_rate_limit_window_idx',
+  '0046_email_draft_approval_fields',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -552,6 +553,8 @@ describe('server edition foundation', () => {
       'http.request',
       'mssql.query',
       'workflow.subflow',
+      'ai.draft_reply',
+      'ai.review_draft',
     ]));
     expect(serverTypes).not.toEqual(expect.arrayContaining([
       'code.javascript',
@@ -559,17 +562,15 @@ describe('server edition foundation', () => {
       'plugin.custom',
     ]));
 
-    // Generisch: JEDER runtime:'desktop'-Eintrag des Core-Katalogs fehlt im
-    // Server-Katalog — auch künftige Desktop-only-Nodes ohne Pflege der
-    // SERVER_UNSUPPORTED-Liste (aktuell ai.draft_reply / ai.review_draft).
     const desktopOnlyTypes = builtin
       .filter((entry) => entry.runtime === 'desktop')
       .map((entry) => entry.type);
-    expect(desktopOnlyTypes).toEqual(expect.arrayContaining(['ai.draft_reply', 'ai.review_draft']));
     for (const type of desktopOnlyTypes) {
       expect(serverTypes).not.toContain(type);
       expect(isServerWorkflowNodeTypeSupported(type)).toBe(false);
     }
+    expect(isServerWorkflowNodeTypeSupported('ai.draft_reply')).toBe(true);
+    expect(isServerWorkflowNodeTypeSupported('ai.review_draft')).toBe(true);
 
     // Feld-Ebene: Desktop-only-Felder (der Server-Executor wertet sie nicht
     // aus) verschwinden aus dem Server-Katalog — z. B. bewirbt ai.spam_score
@@ -653,9 +654,7 @@ describe('server edition foundation', () => {
 
   test('server template list omits templates with server-unsupported nodes', () => {
     const templateIds = listServerWorkflowTemplates().map((template) => template.id);
-    // Die Zwei-Stufen-Vorlage nutzt ai.draft_reply/ai.review_draft
-    // (desktop-only) und bliebe im Server-Modus zur Laufzeit stecken.
-    expect(templateIds).not.toContain('inbound-ai-two-stage-reply');
+    expect(templateIds).toContain('inbound-ai-two-stage-reply');
     // Die klassische Auto-Antwort-Vorlage besteht nur aus Server-fähigen
     // Knoten und bleibt anwählbar.
     expect(templateIds).toContain('inbound-ai-auto-reply');
@@ -1962,6 +1961,8 @@ describe('server edition foundation', () => {
       'ai.pick_canned',
       'ai.classify',
       'ai.review',
+      'ai.draft_reply',
+      'ai.review_draft',
       'ai.transform_text',
       'workflow.execute',
       'workflow.http_request',
@@ -2192,6 +2193,8 @@ describe('server edition foundation', () => {
     expect(graphileQueueNameForJob('ai.agent', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.classify', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.review', {})).toBe('ai');
+    expect(graphileQueueNameForJob('ai.draft_reply', {})).toBe('ai');
+    expect(graphileQueueNameForJob('ai.review_draft', {})).toBe('ai');
     expect(graphileQueueNameForJob('ai.transform_text', {})).toBe('ai');
     expect(graphileQueueNameForJob('mail.spam.score', {})).toBe('spam');
     expect(graphileQueueNameForJob('mail.vacation.auto_reply', {})).toBe('mail');
@@ -2224,6 +2227,50 @@ describe('server edition foundation', () => {
       resumeNodeId: 'tag-1',
       targetVariable: 'ai.summary',
     }, 'workspace-a')).toBe('ai.transform_text:workspace-a:23:11:tag-1:ai.summary');
+    // Codex R12: der Run bzw. der konkrete Entwurf gehört in den Key — sonst
+    // ersetzt (jobKeyMode 'replace') eine erneute Anwendung desselben Workflows
+    // auf dieselbe Nachricht den noch wartenden ersten KI-Job.
+    expect(graphileJobKeyForJob(
+      'ai.draft_reply',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101 },
+      'workspace-a',
+    )).toBe('ai.draft_reply:workspace-a:23:11:tag-1:101');
+    expect(graphileJobKeyForJob(
+      'ai.draft_reply',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 102 },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'ai.draft_reply',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101 },
+      'workspace-a',
+    ));
+    expect(graphileJobKeyForJob('ai.draft_reply', { messageId: 11, runId: 101 }, 'workspace-a'))
+      .toBe('ai.draft_reply:workspace-a:11:101');
+    expect(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
+      'workspace-a',
+    )).toBe('ai.review_draft:workspace-a:23:11:send-1:77:101');
+    // Zwei Laeufe desselben Workflows fuer denselben Entwurf duerfen sich nicht
+    // gegenseitig ersetzen (jobKeyMode 'replace').
+    expect(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 102 },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
+      'workspace-a',
+    ));
+    expect(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 78, runId: 101 },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
+      'workspace-a',
+    ));
     expect(graphileJobKeyForJob('webhook.fire', { dedupeKey: 'customer-7' }, 'workspace-a'))
       .toBe('webhook.fire:workspace-a:customer-7');
     expect(graphileJobKeyForJob('webhook.fire', { url: 'https://hooks.example.com' }, 'workspace-a'))
@@ -2800,6 +2847,16 @@ describe('server edition foundation', () => {
           calls.push(`review:${input.messageId ?? 0}:${input.direction}:${input.blockKeyword}:${input.continuation?.resumeNodeId ?? ''}`);
         },
       },
+      aiDraftReply: {
+        async draftReply(input) {
+          calls.push(`draft_reply:${input.messageId}:${input.continuation?.resumeNodeId ?? ''}`);
+        },
+      },
+      aiReviewDraft: {
+        async reviewDraft(input) {
+          calls.push(`review_draft:${input.messageId ?? 0}:${input.continuation?.resumeNodeId ?? ''}`);
+        },
+      },
       aiTransformText: {
         async transformText(input) {
           calls.push(`transform:${input.messageId ?? 0}:${input.targetVariable}:${input.continuation?.resumeNodeId ?? ''}`);
@@ -2874,6 +2931,24 @@ describe('server edition foundation', () => {
         continuation: { workflowId: 23, resumeNodeId: 'tag-1' },
       },
     }));
+    await handlers['ai.draft_reply']?.(makeQueuedJob({
+      type: 'ai.draft_reply',
+      workspaceId: WORKSPACE_A_ID,
+      payload: {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 11,
+        continuation: { workflowId: 23, resumeNodeId: 'review-1' },
+      },
+    }));
+    await handlers['ai.review_draft']?.(makeQueuedJob({
+      type: 'ai.review_draft',
+      workspaceId: WORKSPACE_A_ID,
+      payload: {
+        workspaceId: WORKSPACE_A_ID,
+        messageId: 11,
+        continuation: { workflowId: 23, resumeNodeId: 'send-1' },
+      },
+    }));
     await handlers['ai.transform_text']?.(makeQueuedJob({
       type: 'ai.transform_text',
       workspaceId: WORKSPACE_A_ID,
@@ -2921,6 +2996,8 @@ describe('server edition foundation', () => {
       'agent:11:5:tag-1',
       'classify:11:Rechnung|Support:switch-1',
       'review:11:outbound:BLOCK:tag-1',
+      'draft_reply:11:review-1',
+      'review_draft:11:send-1',
       'transform:11:ai.summary:tag-1',
       'workflow:23:sync',
       'http:POST:https://api.example.com/hook:tag-1',
@@ -11585,8 +11662,10 @@ describe('server edition foundation', () => {
       messageId: 20,
       direction: 'outbound',
       blockKeyword: 'BLOCK',
+      parseMode: 'outbound_structured',
       workflowId: 32,
       resumeNodeId: 'tag-ok',
+      portResumeTargets: { ok: 'tag-ok' },
       continuation: {
         workflowId: 32,
         triggerName: 'outbound',
@@ -11820,6 +11899,7 @@ describe('server edition foundation', () => {
     ]);
     expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port, step.message])).toEqual([
       ['move-1', 'email.move_imap', 'ok', 'default', null],
+      // Gespeicherte Config ohne stopFurtherWorkflows ⇒ kein Stopp (Opt-in).
       ['spam-move-1', 'email.mark_spam', 'ok', 'default', null],
       ['delete-1', 'email.delete_server', 'ok', 'default', null],
     ]);
@@ -13510,7 +13590,7 @@ describe('server edition foundation', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/db/postgres-mail-metadata-read-ports.ts'), 'utf8');
     expect(source).toMatch(/view === 'scheduled_send'[\s\S]*m\.scheduled_send_at IS NOT NULL/);
     expect(source).toMatch(/view === 'drafts'[\s\S]*m\.scheduled_send_at IS NULL/);
-    expect(source).toMatch(/view === 'inbox'[\s\S]*m\.outbound_hold = true AND m\.scheduled_send_at IS NULL/);
+    expect(source).toMatch(/view === 'inbox'[\s\S]*m\.outbound_hold = true OR m\.approval_state = 'pending'/);
   });
 
   test('scheduled-send ticker isolates workspace failures', () => {
@@ -21312,6 +21392,8 @@ describe('server edition foundation', () => {
               ...makeEmailMessageRecord(11, true),
               threadMessageCount: 3,
               trackingOverride: false,
+              approvalState: 'pending',
+              approvalReason: 'Gegenlese empfohlen',
               ...((input as { search?: string }).search ? { searchSnippet: 'Treffer: \uE000Hello\uE001' } : {}),
             })],
             nextCursor: 11,
@@ -21327,6 +21409,8 @@ describe('server edition foundation', () => {
               ...makeEmailMessageRecord(11, input.includeBody),
               threadMessageCount: 3,
               trackingOverride: false,
+              approvalState: 'pending',
+              approvalReason: 'Gegenlese empfohlen',
             })
             : null;
         },
@@ -21506,6 +21590,9 @@ describe('server edition foundation', () => {
     // breaking the list thread chevron and draft tracking checkbox in server mode).
     expect((messages.body as any).data.items[0].threadMessageCount).toBe(3);
     expect((messages.body as any).data.items[0].trackingOverride).toBe(false);
+    // Freigabe-Felder müssen den Sanitizer passieren, sonst fehlen Banner/Buttons.
+    expect((messages.body as any).data.items[0].approvalState).toBe('pending');
+    expect((messages.body as any).data.items[0].approvalReason).toBe('Gegenlese empfohlen');
 
     // Suche Phase 3: Broad-Scope + Relevanz-Sortierung laufen bis in den Port.
     const broadSearch = await api.handle({
@@ -31751,13 +31838,19 @@ describe('server edition foundation', () => {
         docs: { longHelp: 'Setzt einen Tag.', seeAlso: ['email.categorize'] },
         customWidget: 'tagPicker',
       },
+      {
+        type: 'ai.draft_reply',
+        label: 'KI-Antwort entwerfen',
+        category: 'ai',
+        canvasType: 'registry',
+      },
     ]);
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('should-not-leak');
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('code.javascript');
-    // runtime:'desktop' am Eintrag selbst UND desktop-only-Typen aus dem
-    // Core-Katalog (ai.draft_reply) werden serverseitig gefiltert.
+    // runtime:'desktop' am Eintrag selbst wird serverseitig gefiltert.
+    // ai.draft_reply ist seit Welle 4 server-fähig und bleibt im Katalog.
     expect(JSON.stringify(nodeCatalog.body)).not.toContain('custom.desktop_only');
-    expect(JSON.stringify(nodeCatalog.body)).not.toContain('ai.draft_reply');
+    expect(JSON.stringify(nodeCatalog.body)).toContain('ai.draft_reply');
     expect(workflowNodeCatalogCalls).toEqual([{ workspaceId: WORKSPACE_A_ID }]);
 
     const templates = await api.handle({

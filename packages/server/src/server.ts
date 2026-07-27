@@ -139,6 +139,10 @@ import {
   createPostgresAiTextTransformApiPort,
   createPostgresAiTransformTextPort,
 } from './ai-classification';
+import {
+  createPostgresAiDraftReplyPort,
+  createPostgresAiReviewDraftPort,
+} from './workflow-ai-draft-nodes';
 import { createServerEmailOAuthPort } from './email-oauth';
 import { createPostgresJtlOrderPort } from './jtl-order';
 import { createPostgresJtlSyncPort } from './jtl-sync';
@@ -999,6 +1003,10 @@ function buildServerJobHandlers(input: {
           aiClassification: createPostgresAiClassificationPort({ db, secrets }),
           aiReview: createPostgresAiReviewPort({ db, secrets }),
           aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),
+          ...(secrets ? {
+            aiDraftReply: createPostgresAiDraftReplyPort({ db, secrets }),
+            aiReviewDraft: createPostgresAiReviewDraftPort({ db, secrets }),
+          } : {}),
         } : {}),
         ...(db && ports.jobQueue ? {
           mailSync: createPostgresMailSyncJobPort({

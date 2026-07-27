@@ -65,6 +65,9 @@ import {
 } from '../ai-classification-parse';
 import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
+import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint } from '@simplecrm/core';
+import { recipientFieldFromJson } from '../../../shared/email-recipient-parse';
+import { parseDraftAttachmentPathsJson } from '../../../shared/compose-draft-attachments';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
@@ -72,9 +75,39 @@ type Reg = (def: RegisteredWorkflowNode) => void;
 // aber ein harter Riegel gegen entartete LLM-Ausgaben (Wiederholungsschleifen),
 // die sonst ungedeckelt in DB und SMTP-Versand landen würden.
 const MAX_AI_DRAFT_REPLY_CHARS = 16_000;
+/** Match server/agent caps so draft_reply cannot blow the model context. */
+const DRAFT_REPLY_BODY_MAX = 12_000;
+const DRAFT_REPLY_KNOWLEDGE_MAX = 12_000;
 
 function accountScopeFromContext(ctx: WorkflowContext): AccountOverrideScope {
   return ctx.message?.account_id ?? ctx.outbound?.accountId ?? null;
+}
+
+function skipInboundIfSpamOrReview(ctx: WorkflowContext): NodeExecuteResult | null {
+  if (ctx.direction !== 'inbound' || ctx.messageId == null) return null;
+  // Same-workflow spam nodes update variables even when ctx.message is a stale snapshot.
+  const spamStatus = ctx.variables['spam.status'];
+  if (
+    ctx.variables['email.is_spam'] === true
+    || spamStatus === 'spam'
+    || spamStatus === 'review'
+  ) {
+    return { status: 'skipped', message: 'skip:message_spam_or_review' };
+  }
+  // Prefer the live DB row when available (prior workflow may have marked spam with
+  // stopFurtherWorkflows:false). Unit tests without SQLite keep the context snapshot.
+  let row = ctx.message;
+  try {
+    const live = getEmailMessageById(ctx.messageId);
+    if (live) row = live;
+  } catch {
+    // keep snapshot
+  }
+  if (!row) return null;
+  if (messageIsSpamOrReviewForInboundWorkflow(row)) {
+    return { status: 'skipped', message: 'skip:message_spam_or_review' };
+  }
+  return null;
 }
 
 /** Wissensbasis wie ai.agent: explizit gewählte KB, sonst passend zur Richtung. */
@@ -177,7 +210,7 @@ export function registerAiNodes(register: Reg): void {
     defaultConfig: { promptId: 0, checkReplyContext: true },
     execute: async (ctx, config) => {
       if (ctx.dryRun && !ctx.previewOutbound) {
-        return { status: 'ok', message: 'dry-run outbound review skipped' };
+        return { status: 'ok', port: 'ok', message: 'dry-run outbound review skipped' };
       }
       if (ctx.direction !== 'outbound') {
         return { status: 'skipped', message: 'Nur für ausgehende E-Mails' };
@@ -255,13 +288,40 @@ export function registerAiNodes(register: Reg): void {
         if (!parsed.ok) {
           const reason = parsed.reason || 'Ausgehende KI-Prüfung fehlgeschlagen';
           if (!ctx.dryRun) setOutboundHold(id, true, reason);
-          return { status: 'ok', blocked: true, blockReason: reason };
+          return {
+            status: 'ok',
+            port: 'block',
+            blocked: true,
+            blockReason: reason,
+            variables: {
+              'ai.outbound_review.verdict': 'block',
+              'ai.outbound_review.reason': reason,
+            },
+          };
         }
-        return { status: 'ok' };
+        return {
+          status: 'ok',
+          port: 'ok',
+          variables: {
+            'ai.outbound_review.verdict': 'ok',
+            'ai.outbound_review.reason': '',
+          },
+        };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (!ctx.dryRun) setOutboundHold(id, true, `KI-Fehler: ${msg}`);
-        return { status: 'error', blocked: true, blockReason: `KI-Fehler: ${msg}` };
+        const reason = `KI-Fehler: ${msg}`;
+        if (!ctx.dryRun) setOutboundHold(id, true, reason);
+        return {
+          status: 'ok',
+          port: 'error',
+          blocked: true,
+          blockReason: reason,
+          message: reason,
+          variables: {
+            'ai.outbound_review.verdict': 'error',
+            'ai.outbound_review.reason': reason,
+          },
+        };
       }
     },
   });
@@ -400,6 +460,8 @@ export function registerAiNodes(register: Reg): void {
       createDraft: true,
     },
     execute: async (ctx, config) => {
+      const spamSkip = skipInboundIfSpamOrReview(ctx);
+      if (spamSkip) return spamSkip;
       const system = String(config.systemPrompt ?? '');
       const chunks = await resolveKnowledgeChunks(ctx, config);
       const kbText = chunks.map((c) => c.content).join('\n---\n');
@@ -450,6 +512,8 @@ export function registerAiNodes(register: Reg): void {
       if (ctx.direction !== 'inbound') {
         return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
       }
+      const spamSkip = skipInboundIfSpamOrReview(ctx);
+      if (spamSkip) return spamSkip;
       const messageId = ctx.messageId;
       if (messageId == null) return { status: 'error', message: 'Keine Nachricht' };
 
@@ -566,6 +630,8 @@ export function registerAiNodes(register: Reg): void {
       if (ctx.direction !== 'inbound') {
         return { status: 'skipped', message: 'Nur für eingehende Nachrichten' };
       }
+      const spamSkip = skipInboundIfSpamOrReview(ctx);
+      if (spamSkip) return spamSkip;
       const { message } = ctx;
       if (!message || ctx.messageId == null) {
         return { status: 'error', message: 'Keine Nachricht im Kontext' };
@@ -581,7 +647,7 @@ export function registerAiNodes(register: Reg): void {
       }
 
       const chunks = await resolveKnowledgeChunks(ctx, config);
-      const kbText = chunks.map((c) => c.content).join('\n---\n');
+      const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
 
       let cannedBlock = '';
       if (config.includeCanned === true) {
@@ -597,7 +663,7 @@ export function registerAiNodes(register: Reg): void {
       const system = String(config.systemPrompt ?? '').trim() || 'Beantworte die Kundenmail freundlich auf Deutsch.';
       const user = [
         'Kundenmail:',
-        ctx.strings.combined_text,
+        (ctx.strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX),
         kbText ? `\nWissensbasis (relevante Auszüge):\n${kbText}` : '',
         cannedBlock ? `\nVorhandene Textbausteine (als Formulierungshilfe):\n${cannedBlock}` : '',
       ]
@@ -612,6 +678,10 @@ export function registerAiNodes(register: Reg): void {
       }
       ctx.ai.lastResponse = aiText;
       if (!aiText) return { status: 'error', message: 'KI lieferte keinen Antworttext' };
+      // Re-check live spam/review after the external AI call — a concurrent mark_spam
+      // during the call must not still mint an auto-reply draft.
+      const postAiSpamSkip = skipInboundIfSpamOrReview(ctx);
+      if (postAiSpamSkip) return postAiSpamSkip;
       // Entartete KI-Ausgaben (Wiederholungsschleifen) hart abfangen: Fehler
       // statt stillem Abschneiden — sonst ginge ein kaputter, nur teilweise
       // gegengelesener Text an echte Kunden. Der Branch endet fail-safe.
@@ -775,6 +845,15 @@ export function registerAiNodes(register: Reg): void {
       ].join('\n');
 
       try {
+        const reviewedFingerprint = outboundDraftFingerprint({
+          subject: draft.subject,
+          bodyText: draft.body_text,
+          bodyHtml: draft.body_html,
+          to: recipientFieldFromJson(draft.to_json),
+          cc: recipientFieldFromJson(draft.cc_json) || null,
+          bcc: recipientFieldFromJson(draft.bcc_json) || null,
+          attachmentPaths: parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json),
+        });
         const out = await runChatCompletion(system, user, profileIdFromConfig(config));
         ctx.ai.lastResponse = out;
         const parsed = parseDraftReviewResponse(out);
@@ -784,6 +863,31 @@ export function registerAiNodes(register: Reg): void {
           'ai.review.reason': parsed.reason,
         };
         if (parsed.verdict === 'send') {
+          const live = getEmailMessageById(draftId);
+          const liveFp = live
+            ? outboundDraftFingerprint({
+              subject: live.subject,
+              bodyText: live.body_text,
+              bodyHtml: live.body_html,
+              to: recipientFieldFromJson(live.to_json),
+              cc: recipientFieldFromJson(live.cc_json) || null,
+              bcc: recipientFieldFromJson(live.bcc_json) || null,
+              attachmentPaths: parseDraftAttachmentPathsJson(live.draft_attachment_paths_json),
+            })
+            : null;
+          if (liveFp !== reviewedFingerprint) {
+            const reason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
+            setDraftApprovalPending(draftId, reason);
+            return {
+              status: 'ok',
+              port: 'hold',
+              variables: {
+                'ai.review.verdict': 'hold',
+                'ai.review.answered': false,
+                'ai.review.reason': reason,
+              },
+            };
+          }
           return { status: 'ok', port: 'send', variables };
         }
         setDraftApprovalPending(

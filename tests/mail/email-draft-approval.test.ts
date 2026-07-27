@@ -18,11 +18,14 @@ type Row = {
   approval_state: string | null;
   approval_reason: string | null;
   auto_submitted: number;
+  scheduled_send_at: string | null;
 };
 
 function row(id: number): Row {
   return db
-    .prepare('SELECT approval_state, approval_reason, auto_submitted FROM email_messages WHERE id = ?')
+    .prepare(
+      'SELECT approval_state, approval_reason, auto_submitted, scheduled_send_at FROM email_messages WHERE id = ?',
+    )
     .get(id) as Row;
 }
 
@@ -32,7 +35,8 @@ beforeAll(() => {
       id INTEGER PRIMARY KEY,
       approval_state TEXT,
       approval_reason TEXT,
-      auto_submitted INTEGER NOT NULL DEFAULT 0
+      auto_submitted INTEGER NOT NULL DEFAULT 0,
+      scheduled_send_at TEXT
     );
   `);
 });
@@ -44,10 +48,12 @@ beforeEach(() => {
 
 describe('email-draft-approval', () => {
   test('setDraftApprovalPending setzt Zustand und Grund (Grund gekappt auf 500 Zeichen)', () => {
+    db.prepare('UPDATE email_messages SET scheduled_send_at = ? WHERE id = 42').run('2026-07-26T12:00:00.000Z');
     setDraftApprovalPending(42, 'Kulanz-Zusage bitte prüfen');
     expect(row(42)).toMatchObject({
       approval_state: 'pending',
       approval_reason: 'Kulanz-Zusage bitte prüfen',
+      scheduled_send_at: null,
     });
     // Nachbar-Datensatz unberührt
     expect(row(43)).toMatchObject({ approval_state: null, approval_reason: null });

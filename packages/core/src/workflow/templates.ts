@@ -40,7 +40,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'outbound-quality-check',
     name: 'Ausgehend: KI-Qualitätsprüfung',
     description:
-      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. BLOCK hält den Entwurf zurück (Banner im Posteingang); OK gibt den Entwurf frei und sendet ihn automatisch über den scheduled-send-Worker.',
+      'Prüft Ton, Inhalt, Anhänge und Betrugs-Antworten vor Versand. OK → automatischer Versand; BLOCK/FEHLER → Entwurf bleibt mit Banner (Hold). Empfohlene Priorität: 10–49.',
     trigger: 'outbound',
     graph: {
       version: 1,
@@ -54,19 +54,27 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
             config: { promptId: 0, checkReplyContext: true },
           },
         },
-        // OK-Pfad: Sperre lösen + autoSend = der scheduled-send-Worker greift
-        // sofort und schickt den Entwurf raus. reviewOutbound.review erkennt den
-        // Approval-Marker und lässt den nächsten Sende-Aufruf durch, statt eine
-        // erneute Prüfung einzureihen.
         {
           id: 'release',
           type: 'registry',
           data: { nodeType: 'email.release_outbound', config: { autoSend: true } },
         },
+        {
+          id: 'tag_block',
+          type: 'registry',
+          data: { nodeType: 'email.tag', config: { tag: 'ki-review-block' } },
+        },
+        {
+          id: 'tag_error',
+          type: 'registry',
+          data: { nodeType: 'email.tag', config: { tag: 'ki-review-error' } },
+        },
       ],
       edges: [
         { id: 'e0', source: 't1', target: 'r1' },
-        { id: 'e1', source: 'r1', target: 'release' },
+        { id: 'e_ok', source: 'r1', target: 'release', label: 'ok' },
+        { id: 'e_block', source: 'r1', target: 'tag_block', label: 'block' },
+        { id: 'e_error', source: 'r1', target: 'tag_error', label: 'error' },
       ],
     } as WorkflowGraphDocument,
   },
@@ -424,12 +432,18 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
   {
     id: 'agent-retoure',
     name: 'KI-Agent: Retouren-Entwurf',
-    description: 'Agent mit Wissensbasis erstellt Antwort-Entwurf (manuell senden).',
+    description:
+      'Agent mit Wissensbasis erstellt Antwort-Entwurf (manuell senden). Nur wenn die Mail nicht als Spam markiert ist. Empfohlene Priorität: 50+.',
     trigger: 'inbound',
     graph: {
       version: 1,
       nodes: [
         { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+        {
+          id: 'stop_spam',
+          type: 'registry',
+          data: { nodeType: 'logic.stop_after_spam', config: {} },
+        },
         {
           id: 'c1',
           type: 'condition',
@@ -449,7 +463,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         },
       ],
       edges: [
-        { id: 'e0', source: 't1', target: 'c1' },
+        { id: 'e0', source: 't1', target: 'stop_spam' },
+        { id: 'e_spam', source: 'stop_spam', target: 'c1' },
         { id: 'e1', source: 'c1', target: 'a1', label: 'ja' },
       ],
     } as WorkflowGraphDocument,
@@ -509,7 +524,8 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
     id: 'inbound-spam-ai',
     name: 'Eingehend: KI-Spam-Pipeline (DSGVO)',
     description:
-      'Absender-Filter (Whitelist/Blacklist/PayPal/Amazon) → KI-Spam-Score nur Metadaten → Schwellwert → Spam markieren.',
+      'Absender-Filter → KI-Spam-Score (nur Metadaten) → Schwellwert → Spam markieren → Stopp. ' +
+      'Empfohlene Priorität: 1–9 (vor Agent-/Antwort-Workflows ab Priorität 50).',
     trigger: 'inbound',
     graph: {
       version: 1,
@@ -528,7 +544,15 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         {
           id: 'spam_bl',
           type: 'registry',
-          data: { nodeType: 'email.mark_spam', config: { spam: true, tag: 'blacklist', moveImap: false } },
+          data: {
+            nodeType: 'email.mark_spam',
+            config: { spam: true, tag: 'blacklist', moveImap: false, stopFurtherWorkflows: true },
+          },
+        },
+        {
+          id: 'stop_bl',
+          type: 'registry',
+          data: { nodeType: 'logic.stop_after_spam', config: {} },
         },
         {
           id: 'ai_score',
@@ -546,16 +570,26 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         {
           id: 'spam_ai',
           type: 'registry',
-          data: { nodeType: 'email.mark_spam', config: { spam: true, tag: 'ki-spam', moveImap: false } },
+          data: {
+            nodeType: 'email.mark_spam',
+            config: { spam: true, tag: 'ki-spam', moveImap: false, stopFurtherWorkflows: true },
+          },
+        },
+        {
+          id: 'stop_ai',
+          type: 'registry',
+          data: { nodeType: 'logic.stop_after_spam', config: {} },
         },
       ],
       edges: [
         { id: 'e0', source: 't1', target: 'sf1' },
         { id: 'e_wl', source: 'sf1', target: 'tag_trusted', label: 'whitelist' },
         { id: 'e_bl', source: 'sf1', target: 'spam_bl', label: 'blacklist' },
+        { id: 'e_bl_stop', source: 'spam_bl', target: 'stop_bl' },
         { id: 'e_def', source: 'sf1', target: 'ai_score', label: 'default' },
         { id: 'e_ai', source: 'ai_score', target: 'th1' },
         { id: 'e_yes', source: 'th1', target: 'spam_ai', label: 'yes' },
+        { id: 'e_ai_stop', source: 'spam_ai', target: 'stop_ai' },
       ],
     } as WorkflowGraphDocument,
   },

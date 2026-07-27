@@ -11,7 +11,18 @@ export const LOGIC_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         'Beendet den Workflow an dieser Stelle sauber — ohne Fehler und ohne dass etwas blockiert wird. ' +
         'Praktisch als klar sichtbares Ende eines Zweigs, z. B. „Spam erkannt → markieren → Stopp“. ' +
         'Knoten hinter dem Stopp werden nie ausgeführt. Der Knoten braucht keine Einstellungen.',
-      seeAlso: ['logic.merge', 'email.hold_outbound'],
+      seeAlso: ['logic.merge', 'email.hold_outbound', 'logic.stop_after_spam'],
+    },
+  },
+
+  'logic.stop_after_spam': {
+    docs: {
+      longHelp:
+        'Prüft nach einer Spam-Markierung, ob die aktuelle Mail als Spam oder „Spam prüfen" gilt — ' +
+        'und beendet dann den Workflow sauber. In Spam-Vorlagen typischerweise direkt hinter ' +
+        'email.mark_spam oder email.set_spam_status (status spam/review). ' +
+        'Verhindert, dass nachfolgende Knoten im selben Graph noch laufen.',
+      seeAlso: ['logic.stop', 'email.mark_spam', 'email.set_spam_status'],
     },
   },
 
