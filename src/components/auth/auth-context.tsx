@@ -11,6 +11,13 @@ import {
 } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { expandUserGroupCapabilities } from "@shared/user-capabilities"
+import {
+  EMPTY_MAIL_PERMISSION_REPORT,
+  hasMailPermission,
+  hasMailPermissionForAccount,
+  parseMailPermissionReport,
+  type MailPermissionReport,
+} from "@/components/auth/mail-permissions"
 import { invokeIpc, hasElectron } from "@/components/email/types"
 import {
   createServerAuthClient,
@@ -57,6 +64,17 @@ type AuthState = {
   canManageUsers: boolean
   /** Desktop always true; server edition requires workflows.view (or admin/owner). */
   canViewWorkflows: boolean
+  /**
+   * Haelt der Nutzer diese Mail-Berechtigung IRGENDWO? Die Mail-ACL ist von den
+   * Capability-Stufen unabhaengig — `settings.manage` sagt nichts darueber, ob
+   * jemand ein Postfach anlegen darf. Im Desktop und waehrend des Ladens true,
+   * damit kein Gate im ersten Render faelschlich zuschlaegt.
+   */
+  hasMailPermission: (permission: string) => boolean
+  /** Dieselbe Frage fuer ein konkretes Konto. */
+  hasMailPermissionForAccount: (permission: string, accountId: number | string | null | undefined) => boolean
+  /** false, solange der Mail-Rechte-Bericht der Server-Edition noch laedt. */
+  mailPermissionsReady: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   refresh: (options?: { force?: boolean }) => Promise<void>
@@ -77,6 +95,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // leiteten z. B. die Einstellungsseite sofort auf den Konto-Tab um. An die
   // User-Id gebunden ist der Zustand beim Sitzungswechsel sofort korrekt.
   const [capabilitiesUserId, setCapabilitiesUserId] = useState<string | null>(null)
+  // Die Mail-ACL ist ein von den Capabilities UNABHAENGIGES System. Ohne diesen
+  // Bericht bietet die Oberflaeche Konto-, SMTP-, OAuth- und Signatur-Aktionen
+  // an, die mail.account.manage verlangen und sonst garantiert im 403 enden.
+  const [mailPermissions, setMailPermissions] = useState<MailPermissionReport>(
+    EMPTY_MAIL_PERMISSION_REPORT,
+  )
+  const [mailPermissionsUserId, setMailPermissionsUserId] = useState<string | null>(null)
   const [serverSessionExpiresAt, setServerSessionExpiresAt] = useState<string | null>(null)
 
   const applyServerSession = useCallback((session: ServerAuthSession | null) => {
@@ -178,6 +203,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!authenticated || !user || getRendererTransport().kind !== "http") {
       setCapabilities([])
       setCapabilitiesUserId(null)
+      setMailPermissions(EMPTY_MAIL_PERMISSION_REPORT)
+      setMailPermissionsUserId(null)
       return
     }
     // Owner/Admin halten alle Rechte implizit — fuer sie entfaellt der Abruf,
@@ -203,12 +230,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    // Auch fuer Owner/Admins abrufen: die Antwort meldet ihnen unrestricted und
+    // spart jede Sonderbehandlung im Renderer.
+    const loadMailPermissions = async () => {
+      try {
+        const res = await invokeRenderer(IPCChannels.Auth.ListMailPermissions, undefined)
+        if (!cancelled) setMailPermissions(parseMailPermissionReport(res))
+      } catch {
+        // Fail closed: lieber ein Bedienelement zu wenig als eines, das 403 liefert.
+        if (!cancelled) setMailPermissions(EMPTY_MAIL_PERMISSION_REPORT)
+      } finally {
+        if (!cancelled) setMailPermissionsUserId(user.id)
+      }
+    }
+
     if (!adminRole) {
       // Vor JEDEM Abruf zuruecksetzen — bei einem Nutzerwechsel gilt die alte
       // Liste nicht mehr.
       setCapabilitiesUserId(null)
       void loadCapabilities()
     }
+    setMailPermissionsUserId(null)
+    void loadMailPermissions()
     const subscription = subscribeServerEvents({
       onEvent: (event) => {
         if (!isMailAclRefreshEvent(event)) return
@@ -233,6 +276,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setCapabilitiesUserId(null)
             void loadCapabilities()
           }
+          // Eine ACL-Aenderung ist genau das Signal, dass sich die eigenen
+          // Mail-Rechte verschoben haben koennen.
+          setMailPermissionsUserId(null)
+          void loadMailPermissions()
         }, 250)
       },
     })
@@ -303,6 +350,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return hasCapability("workflows.view")
   }, [hasCapability, authenticated, user, expandedCapabilities])
 
+  const mailPermissionsReady = useMemo(() => {
+    if (!authenticated || !user || getRendererTransport().kind !== "http") return true
+    return mailPermissionsUserId === user.id
+  }, [authenticated, user, mailPermissionsUserId])
+
+  const mailPermissionContext = useMemo(() => ({
+    serverClientMode: getRendererTransport().kind === "http",
+    ready: mailPermissionsReady,
+    report: mailPermissions,
+  }), [mailPermissionsReady, mailPermissions])
+
+  const hasMailPermissionFn = useCallback(
+    (permission: string) => hasMailPermission(mailPermissionContext, permission),
+    [mailPermissionContext],
+  )
+
+  const hasMailPermissionForAccountFn = useCallback(
+    (permission: string, accountId: number | string | null | undefined) =>
+      hasMailPermissionForAccount(mailPermissionContext, permission, accountId),
+    [mailPermissionContext],
+  )
+
   const login = useCallback(async (username: string, passphrase: string) => {
     const transport = getRendererTransport()
     const serverAuth = getServerAuthClient(transport)
@@ -364,6 +433,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       capabilitiesReady,
       canManageUsers,
       canViewWorkflows,
+      hasMailPermission: hasMailPermissionFn,
+      hasMailPermissionForAccount: hasMailPermissionForAccountFn,
+      mailPermissionsReady,
       login,
       logout,
       refresh,
@@ -381,6 +453,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       capabilitiesReady,
       canManageUsers,
       canViewWorkflows,
+      hasMailPermissionFn,
+      hasMailPermissionForAccountFn,
+      mailPermissionsReady,
       login,
       logout,
       refresh,

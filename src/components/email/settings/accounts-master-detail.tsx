@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 import type { EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 import { AccountForm } from "./account-form"
@@ -56,6 +57,12 @@ export function AccountsMasterDetailSettings() {
   const [editAccount, setEditAccount] = useState<EmailAccount | null>(null)
   const [tab, setTab] = useState<AccountTab>("imap")
   const [creating, setCreating] = useState(false)
+  // Konto anlegen, bearbeiten und loeschen haengen serverseitig an
+  // mail.account.manage — einer Mail-ACL-Berechtigung, NICHT an settings.manage.
+  // Ohne sie waeren die Knoepfe garantierte 403er. „Anlegen" fragt nach dem
+  // Recht irgendwo, „loeschen" nach dem Recht auf genau diesem Konto.
+  const { hasMailPermission, hasMailPermissionForAccount } = useAuth()
+  const canCreateAccount = hasMailPermission("mail.account.manage")
 
   const load = useCallback(async () => {
     try {
@@ -148,19 +155,21 @@ export function AccountsMasterDetailSettings() {
           <p className="text-xs text-muted-foreground">
             <span className="font-semibold text-foreground">{accounts.length}</span> verbunden
           </p>
-          <Button
-            type="button"
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={() => {
-              setCreating(true)
-              setSelectedId(null)
-              setEditAccount(null)
-            }}
-          >
-            <Plus className="h-3 w-3" />
-            Konto
-          </Button>
+          {canCreateAccount ? (
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              onClick={() => {
+                setCreating(true)
+                setSelectedId(null)
+                setEditAccount(null)
+              }}
+            >
+              <Plus className="h-3 w-3" />
+              Konto
+            </Button>
+          ) : null}
         </div>
         <ScrollArea className="flex-1">
           <ul className="space-y-1 p-2">
@@ -217,7 +226,7 @@ export function AccountsMasterDetailSettings() {
                   </p>
                 ) : null}
               </div>
-              {!creating && selected ? (
+              {!creating && selected && hasMailPermissionForAccount("mail.account.manage", selected.id) ? (
                 <Button
                   type="button"
                   size="sm"
@@ -310,7 +319,7 @@ export function AccountsMasterDetailSettings() {
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-            Postfach wählen oder neues Konto anlegen.
+            {canCreateAccount ? "Postfach wählen oder neues Konto anlegen." : "Postfach wählen."}
           </div>
         )}
       </div>

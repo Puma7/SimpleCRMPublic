@@ -1,4 +1,4 @@
-import type { MailResource } from '@simplecrm/core';
+import { MAIL_PERMISSIONS, type MailPermission, type MailResource } from '@simplecrm/core';
 
 import { hasMailBindingConstraints } from './mail-acl-constraints';
 import type {
@@ -203,6 +203,46 @@ export class MailAccessService implements MailAccessServiceContract {
     const resolve = this.port.resolveConstraintSubjectUserIds;
     if (!resolve) return [];
     return resolve.call(this.port, input);
+  }
+
+  /**
+   * Welche Mail-Berechtigungen der Nutzer SELBST haelt — und auf welchen Konten.
+   *
+   * Gegenstueck zu explainMessageVisibility, das bewusst admin-only ist: der
+   * Renderer kennt die Mail-ACL nicht und bot deshalb Bedienelemente an, deren
+   * Aufruf garantiert im 403 endet (Konto anlegen/loeschen, SMTP, OAuth,
+   * Signaturen). Ohne Selbstauskunft laesst sich das clientseitig nicht
+   * entscheiden.
+   *
+   * Absichtlich nur die EIGENEN Rechte: die Antwort verraet nichts ueber andere
+   * Nutzer und ist damit fuer jeden authentifizierten Principal unbedenklich.
+   */
+  async resolveSelfPermissions(
+    input: Readonly<{ workspaceId: string; userId: string }>,
+  ): Promise<{
+    permissions: MailPermission[];
+    accountPermissions: Record<number, MailPermission[]>;
+  }> {
+    const permissions: MailPermission[] = [];
+    const byAccount = new Map<number, Set<MailPermission>>();
+    for (const permission of MAIL_PERMISSIONS) {
+      const grants = await this.port.resolveGrants(
+        { workspaceId: input.workspaceId, userId: input.userId, permission },
+        { workspaceId: input.workspaceId },
+      );
+      if (grants.length === 0) continue;
+      permissions.push(permission);
+      for (const grant of grants) {
+        const existing = byAccount.get(grant.accountId) ?? new Set<MailPermission>();
+        existing.add(permission);
+        byAccount.set(grant.accountId, existing);
+      }
+    }
+    const accountPermissions: Record<number, MailPermission[]> = {};
+    for (const [accountId, held] of [...byAccount.entries()].sort((a, b) => a[0] - b[0])) {
+      accountPermissions[accountId] = [...held].sort();
+    }
+    return { permissions: permissions.sort(), accountPermissions };
   }
 
   private async resolveActorContext(workspaceId: string, userId: string): Promise<MailScopeActorContext> {

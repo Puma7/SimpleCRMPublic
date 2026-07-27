@@ -155,6 +155,20 @@ export interface MailAccessService {
   resolveGroupPeerUserIds?(workspaceId: string, userId: string): Promise<readonly string[]>;
 
   /**
+   * Die EIGENEN Mail-Berechtigungen des Nutzers, plus die Konten, auf denen er
+   * sie haelt. Speist die Selbstauskunft (GET /api/v1/email/access/self), mit
+   * der der Renderer Bedienelemente ausblendet, deren Aufruf ohnehin im 403
+   * endet. Optional, damit schlanke Test-Doubles den Contract erfuellen.
+   */
+  resolveSelfPermissions?(input: Readonly<{
+    workspaceId: string;
+    userId: string;
+  }>): Promise<{
+    permissions: MailPermission[];
+    accountPermissions: Record<number, MailPermission[]>;
+  }>;
+
+  /**
    * Nutzer, deren Sichtbarkeitsfilter die genannten Kategorien/Tags
    * referenzieren — Routen invalidieren nach einer Kategorie-/Tag-Mutation
    * genau diese, weil deren Liste die Nachricht sonst weiter zeigt (oder

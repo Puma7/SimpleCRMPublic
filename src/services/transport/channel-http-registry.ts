@@ -959,6 +959,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: "/api/v1/auth/capabilities",
     transform: (body) => dataBody<{ role: string; capabilities: string[] }>(body),
   })],
+  [IPCChannels.Auth.ListMailPermissions, () => ({
+    method: "GET",
+    path: "/api/v1/email/access/self",
+    transform: (body) => dataBody<{
+      role: string
+      unrestricted: boolean
+      permissions: string[]
+      accountPermissions: Record<string, string[]>
+    }>(body),
+  })],
   [IPCChannels.Auth.SaveUser, ([payload]) => {
     const input = objectPayload(payload, "auth user payload")
     const id = optionalTextQueryValue(input.id, "auth user id", 120)

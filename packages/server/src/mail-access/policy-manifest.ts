@@ -117,7 +117,20 @@ export type MailResourceResolution =
 export type MailRouteExemptionReason =
   | 'signed_public_tracking'
   | 'mail_auth_setup'
-  | 'workspace_admin_security';
+  | 'workspace_admin_security'
+  /**
+   * Workspace-globale Mail-EINSTELLUNGEN, die schon serverseitig `settings.manage`
+   * verlangen (settings-routes: rejectUnlessSettingsManage). Sie beschreiben keine
+   * Postfachdaten, sondern Konfiguration — sie an eine Mail-Delegation zu binden,
+   * vermengt zwei unabhaengige Berechtigungssysteme: ein reiner
+   * Einstellungsverwalter ohne jede Postfachfreigabe konnte das Anhanglimit oder
+   * die Snooze-Zeiten sonst nicht aendern.
+   *
+   * Die Ausnahme WEITET nur: der Handler pruefte `settings.manage` schon vorher,
+   * ein Mail-Delegierter ohne diese Stufe kam also ohnehin nicht durch. Die
+   * zugehoerigen GET-Methoden bleiben absichtlich am Mail-Gate.
+   */
+  | 'workspace_global_settings';
 
 export type MailRoutePermissionPolicy = Readonly<{
   kind: 'permission';
@@ -284,7 +297,7 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
 
   assign('/api/v1/email/settings/misc', {
     GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
-    PATCH: permissionPolicy('mail.account.manage', { kind: 'workspace_global' }),
+    PATCH: exemptPolicy('workspace_global_settings'),
   });
   assign('/api/v1/email/settings/security', { GET: workspaceSecurity, PATCH: workspaceSecurity });
   assign('/api/v1/email/settings/security/test-rspamd', { POST: workspaceSecurity });
@@ -294,11 +307,11 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   });
   assign('/api/v1/email/settings/snooze', {
     GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
-    PATCH: permissionPolicy('mail.triage', { kind: 'workspace_global' }),
+    PATCH: exemptPolicy('workspace_global_settings'),
   });
   assign('/api/v1/email/settings/reply-suggestion', {
     GET: permissionPolicy('mail.metadata.read', optionalAccount('query')),
-    PATCH: permissionPolicy('mail.account.manage', optionalAccount('body')),
+    PATCH: exemptPolicy('workspace_global_settings'),
   });
 
   assign('/api/v1/email/accounts', {
