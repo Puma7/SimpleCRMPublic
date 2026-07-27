@@ -1556,6 +1556,14 @@ describe('renderer transport', () => {
     };
 
     expect(isMailListRefreshEvent(baseEvent)).toBe(true);
+    // ACL-Entzug muss die Liste neu laden, nicht nur die Konten: sonst bleiben
+    // bereits geladene, jetzt gesperrte Nachrichten sichtbar.
+    expect(isMailListRefreshEvent({
+      ...baseEvent,
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      entityId: 'user-1',
+    })).toBe(true);
     expect(isMailListRefreshEvent({
       ...baseEvent,
       type: 'email_message_tag.created',
