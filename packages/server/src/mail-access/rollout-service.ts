@@ -217,20 +217,43 @@ export class MailAccessRolloutService implements MailAccessService {
     // funktionieren wuerde — bewusst: fuer ein Gate auf mutierende Aktionen ist
     // Verbergen der sichere Fehler, und genau diese Faelle soll der Rollout
     // ohnehin abstellen, bevor er auf enforce schaltet.
-    const accountPermissions: Record<number, MailPermission[]> = {};
-    const held = new Set<MailPermission>();
-    for (const [rawAccountId, permissions] of Object.entries(fromNewAcl.accountPermissions)) {
-      const accountId = Number(rawAccountId);
-      const effective: MailPermission[] = [];
-      for (const permission of permissions) {
-        const legacyAccounts = await this.options.legacy.resolveAccountScope({
+    //
+    // Der Schnitt gilt NUR fuer vergleichbare Berechtigungen. Fuer alle anderen
+    // (mail.account.manage, mail.triage, mail.delegation.manage, …) kennt die
+    // Legacy-Seite gar keine Entsprechung: assertPermission entscheidet sie auch
+    // im Shadow-Modus allein nach der neuen ACL, und resolveAccountScope liefert
+    // fuer sie ausnahmslos []. Sie mitzuschneiden haette sie IMMER entfernt —
+    // die Oberflaeche verbaerge dann genau die Konto- und Delegationsaktionen,
+    // die der Server erlaubt (derselbe Fehler, den die Selbstauskunft beheben
+    // sollte).
+    //
+    // resolveAccountScope haengt nur an (Workspace, Nutzer, Berechtigung), nicht
+    // am Konto: eine Antwort je Berechtigung genuegt. Ohne den Cache kostete ein
+    // Bericht ueber M Konten M sequenzielle Workspace-Transaktionen.
+    const legacyScopeByPermission = new Map<MailPermission, Promise<readonly number[]>>();
+    const legacyScope = (permission: MailPermission): Promise<readonly number[]> => {
+      let pending = legacyScopeByPermission.get(permission);
+      if (!pending) {
+        pending = this.options.legacy.resolveAccountScope({
           workspaceId: input.workspaceId,
           userId: input.userId,
           permission,
         });
-        if (!legacyAccounts.includes(accountId)) continue;
+        legacyScopeByPermission.set(permission, pending);
+      }
+      return pending;
+    };
+
+    const accountPermissions: Record<number, MailPermission[]> = {};
+    for (const [rawAccountId, permissions] of Object.entries(fromNewAcl.accountPermissions)) {
+      const accountId = Number(rawAccountId);
+      const effective: MailPermission[] = [];
+      for (const permission of permissions) {
+        if (comparableLegacyFlag(permission)) {
+          const legacyAccounts = await legacyScope(permission);
+          if (!legacyAccounts.includes(accountId)) continue;
+        }
         effective.push(permission);
-        held.add(permission);
       }
       if (effective.length > 0) accountPermissions[accountId] = effective;
     }

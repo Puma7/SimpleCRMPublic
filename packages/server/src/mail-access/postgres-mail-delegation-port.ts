@@ -516,17 +516,21 @@ export function createPostgresMailDelegationPort(
       }
     }
 
-    if (constraints !== undefined && await unknownConstraintCategoryExists(trx, workspaceId, constraints)) {
-      return { ok: false as const, code: 'category_not_found' as const };
-    }
-
-    if (constraints !== undefined) {
-      const budget = await constraintBudgetExceeded(trx, workspaceId, input.subject, existing?.id ?? null, constraints);
-      if (budget) return { ok: false as const, code: 'constraint_budget_exceeded' as const, ...budget };
-    }
-
-    const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
+    // Der LOESCHPFAD kommt VOR Kategorie- und Budgetpruefung.
+    //
+    // Beide beschreiben den Zielzustand eines Bindings — der ist hier aber
+    // "kein Binding". Die Budgetpruefung zaehlt den Verbrauch der GESCHWISTER
+    // mit: liegt der bereits ueber dem Limit (Altbestand aus der Zeit vor der
+    // Pruefung oder ein spaeter gesenktes Limit), lehnte sie ausgerechnet die
+    // Loeschung mit constraint_budget_exceeded ab — obwohl gerade sie den
+    // Verbrauch senkt und die einzige Bewegung aus der Sackgasse heraus ist.
+    // Dasselbe gilt fuer eine inzwischen geloeschte Kategorie in den
+    // mitgeschickten (und ohnehin verworfenen) Filtern.
+    //
+    // Der Nicht-Admin-Zweig oben hat den Loeschfall bereits samt seiner
+    // Autoritaetspruefung beantwortet; hier landen nur Owner/Admins.
     if (input.permissions.length === 0) {
+      const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
       if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
       // Surface the deleted row's id AND its resource so the route can still publish the
       // email_acl.changed invalidation (binding is null on delete) WITH the tombstone
@@ -542,6 +546,16 @@ export function createPostgresMailDelegationPort(
       };
     }
 
+    if (constraints !== undefined && await unknownConstraintCategoryExists(trx, workspaceId, constraints)) {
+      return { ok: false as const, code: 'category_not_found' as const };
+    }
+
+    if (constraints !== undefined) {
+      const budget = await constraintBudgetExceeded(trx, workspaceId, input.subject, existing?.id ?? null, constraints);
+      if (budget) return { ok: false as const, code: 'constraint_budget_exceeded' as const, ...budget };
+    }
+
+    const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
     const now = options.now?.() ?? new Date();
     let bindingRow: BindingRow | null;
     if (existing) {

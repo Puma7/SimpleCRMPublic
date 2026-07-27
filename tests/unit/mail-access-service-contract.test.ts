@@ -83,7 +83,7 @@ describe('mail access service contract', () => {
     expect(asked.length).toBeGreaterThan(1);
   });
 
-  test('in shadow mode the report is intersected with the legacy account scope', async () => {
+  test('in shadow mode a COMPARABLE permission is intersected with the legacy account scope', async () => {
     // Im Shadow-Modus lautet die tatsaechliche Entscheidung
     // `legacyAllowed && (!enforceConstraints || newAllowed)`. Nur die neue ACL
     // zu melden liesse den Renderer bei legacyDenyNewAllow Bedienelemente
@@ -96,7 +96,7 @@ describe('mail access service contract', () => {
       } as never,
       newAcl: {
         async resolveGrants({ permission }: { permission: string }) {
-          if (permission !== 'mail.account.manage') return [];
+          if (permission !== 'mail.metadata.read') return [];
           return [
             { bindingId: 1, resourceType: 'account', accountId: 5, folderId: null, messageId: null, constraints: null },
             { bindingId: 2, resourceType: 'account', accountId: 9, folderId: null, messageId: null, constraints: null },
@@ -112,6 +112,76 @@ describe('mail access service contract', () => {
 
     // Konto 9 faellt raus: die neue ACL erlaubt es, die alte nicht — der Server
     // wuerde im Shadow-Modus ablehnen.
-    expect(result.accountPermissions).toEqual({ 5: ['mail.account.manage'] });
+    expect(result.accountPermissions).toEqual({ 5: ['mail.metadata.read'] });
+  });
+
+  test('in shadow mode a NON-COMPARABLE permission survives untouched', async () => {
+    // mail.account.manage, mail.triage und mail.delegation.manage haben keine
+    // Legacy-Entsprechung: comparableLegacyFlag liefert null, assertPermission
+    // entscheidet sie auch im Shadow-Modus allein nach der neuen ACL — und der
+    // Legacy-Port antwortet fuer sie ausnahmslos mit [].
+    //
+    // Wuerden sie mitgeschnitten, verschwaenden sie IMMER aus der Selbstauskunft
+    // und die Oberflaeche verbaerge genau die Konto- und Delegationsaktionen,
+    // die der Server erlaubt.
+    const askedLegacy: string[] = [];
+    const rollout = new MailAccessRolloutService({
+      state: { async getState() { return { mode: 'shadow', diagnostic: null }; } } as never,
+      legacy: {
+        async resolveAccountScope({ permission }: { permission: string }) {
+          askedLegacy.push(permission);
+          return [];
+        },
+      } as never,
+      newAcl: {
+        async resolveGrants({ permission }: { permission: string }) {
+          if (permission !== 'mail.account.manage' && permission !== 'mail.triage') return [];
+          return [
+            { bindingId: 1, resourceType: 'account', accountId: 5, folderId: null, messageId: null, constraints: null },
+          ];
+        },
+      } as never,
+    });
+
+    const result = await rollout.resolveSelfPermissions({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      userId: 'user-a',
+    });
+
+    expect(result.accountPermissions).toEqual({ 5: ['mail.account.manage', 'mail.triage'] });
+    // Die Legacy-Seite wird fuer sie gar nicht erst gefragt.
+    expect(askedLegacy).toEqual([]);
+  });
+
+  test('the legacy account scope is asked once per permission, not once per account', async () => {
+    // resolveAccountScope haengt nur an (Workspace, Nutzer, Berechtigung). Je
+    // Konto erneut zu fragen kostete eine eigene Workspace-Transaktion pro
+    // Konto — bei einem Delegierten mit vielen Postfaechern summiert sich das.
+    let calls = 0;
+    const rollout = new MailAccessRolloutService({
+      state: { async getState() { return { mode: 'shadow', diagnostic: null }; } } as never,
+      legacy: {
+        async resolveAccountScope() {
+          calls += 1;
+          return [1, 2, 3, 4];
+        },
+      } as never,
+      newAcl: {
+        async resolveGrants({ permission }: { permission: string }) {
+          if (permission !== 'mail.metadata.read') return [];
+          return [1, 2, 3, 4].map((accountId) => ({
+            bindingId: accountId, resourceType: 'account', accountId, folderId: null, messageId: null, constraints: null,
+          }));
+        },
+      } as never,
+    });
+
+    const result = await rollout.resolveSelfPermissions({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      userId: 'user-a',
+    });
+
+    expect(Object.keys(result.accountPermissions)).toHaveLength(4);
+    expect(calls).toBe(1);
   });
 });

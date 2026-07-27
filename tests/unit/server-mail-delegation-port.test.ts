@@ -374,6 +374,51 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toMatchObject({ ok: true, deleted: true });
   });
 
+  test('deleting a binding is never rejected by the constraint budget', async () => {
+    // Das Budget zaehlt den Verbrauch der GESCHWISTER mit. Liegt der bereits
+    // ueber dem Limit — Altbestand aus der Zeit vor der Pruefung oder ein
+    // spaeter gesenktes Limit —, lehnte die Pruefung ausgerechnet die Loeschung
+    // mit constraint_budget_exceeded ab: die einzige Bewegung, die den
+    // Verbrauch senkt, waere blockiert und das Subjekt sitzt in der Sackgasse.
+    // Der Zielzustand des Loeschpfads ist "kein Binding" — es gibt nichts zu
+    // budgetieren.
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'admin', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: {
+        id: 901,
+        workspace_id: WORKSPACE,
+        subject_type: 'user',
+        subject_id: AGENT,
+        resource_type: 'account',
+        account_id: 101,
+        folder_id: null,
+        message_id: null,
+        updated_at: new Date('2026-07-19T12:00:00.000Z'),
+      },
+      affectedUsers: [{ id: AGENT }],
+      oversizedSiblingBindingIds: [902],
+    });
+    const port = createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    await expect(port.replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: [],
+      // Die Route reicht mitgeschickte Filter durch (constraintsProvided) —
+      // auch dann, wenn die leere Berechtigungsliste sie ohnehin verwirft.
+      constraints: null,
+    })).resolves.toMatchObject({ ok: true, deleted: true });
+    expect(trx.calls).toContainEqual(['deleteFrom', 'mail_acl_bindings']);
+  });
+
   test('blocks non-admin re-delegation of relative assignment modes onto other subjects', async () => {
     const trx = createDelegationTransaction({
       actor: { id: ACTOR, role: 'user', disabled_at: null },
@@ -711,6 +756,11 @@ function createDelegationTransaction(fixtures: {
   existingConstraints?: Array<Record<string, unknown>>;
   /** Kategorie-Ids, die es im Workspace NICHT gibt (Default: alle existieren). */
   unknownCategoryIds?: readonly number[];
+  /**
+   * Weitere Bindings desselben Subjekts, deren Filter zusammen bereits ueber
+   * dem Budget liegen — die Sackgasse, aus der nur eine Loeschung herausfuehrt.
+   */
+  oversizedSiblingBindingIds?: readonly number[];
 }) {
   const calls: unknown[][] = [];
   const selectCounts = new Map<string, number>();
@@ -761,11 +811,20 @@ function createDelegationTransaction(fixtures: {
         permission_key: permission,
       }));
     }
-    if (table === 'mail_acl_bindings') return fixtures.existingBinding ? [fixtures.existingBinding] : [];
+    if (table === 'mail_acl_bindings') {
+      const own = fixtures.existingBinding ? [fixtures.existingBinding] : [];
+      // Die Geschwisterabfrage der Budget-Pruefung liest dieselbe Tabelle;
+      // findBinding nimmt weiterhin die erste Zeile.
+      return [...own, ...(fixtures.oversizedSiblingBindingIds ?? []).map((id) => ({ id }))];
+    }
     if (table === 'mail_acl_binding_permissions') {
       return [{ binding_id: (fixtures.existingBinding as { id?: number } | null)?.id ?? 901, permission_key: 'mail.metadata.read' }];
     }
     if (table === 'mail_acl_binding_constraints') {
+      const siblingIds = fixtures.oversizedSiblingBindingIds ?? [];
+      if (siblingIds.length > 0 && inIds.some((id) => siblingIds.includes(id))) {
+        return [{ value_ids: [], value_texts: Array.from({ length: 2001 }, (_, index) => `t-${index}`) }];
+      }
       const index = nextCount('mail_acl_binding_constraints');
       // First load is usually authority constraints; later loads target existing binding.
       if (index === 0 && fixtures.actorAuthorityConstraints) return fixtures.actorAuthorityConstraints;

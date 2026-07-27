@@ -278,6 +278,9 @@ export function isMailListRefreshEvent(event: ServerEvent): boolean {
   // behaelt die verbotenen Nachrichten bis zum naechsten zufaelligen Refresh —
   // genau das erwartet auth-routes beim Herabstufen/Deaktivieren ("clears loaded
   // mail immediately"). Der erneute Abruf ist fail-closed: der Server scoped neu.
+  // Die reine Sichtbarkeitsauffrischung gehoert hier ausdruecklich DAZU — sie
+  // aendert genau das, was diese Liste zeigt (im Gegensatz zur Konten- und
+  // Teamliste, siehe isMailAccountDataRefreshEvent).
   if (isMailAclRefreshEvent(event)) return true
   if (event.entityType === "email_message") {
     return MAIL_MESSAGE_REFRESH_EVENT_TYPES.has(event.type)
@@ -332,7 +335,12 @@ export function isMailTrackingRefreshEvent(event: ServerEvent, messageId?: numbe
 }
 
 export function isMailAccountDataRefreshEvent(event: ServerEvent): boolean {
-  if (isMailAclRefreshEvent(event)) return true
+  // Eine reine Sichtbarkeitsauffrischung laesst Konten, Team und Signaturen
+  // unangetastet — nur WELCHE Nachrichten sichtbar sind, aendert sich. Sie hier
+  // durchzulassen machte die Unterscheidung in use-email-accounts wirkungslos:
+  // die mail-shell bumpt daraufhin ihre accountsRevision und laedt Konten- und
+  // Teamliste neu, bei jeder getaggten eingehenden Nachricht erneut.
+  if (isMailAclRefreshEvent(event)) return !isMailVisibilityOnlyAclEvent(event)
   if (event.entityType === "email_account") {
     return MAIL_ACCOUNT_REFRESH_EVENT_TYPES.has(event.type)
   }
