@@ -13,35 +13,74 @@
  * (`scheduledSendClaimedAtKey`, @simplecrm/core), damit beide Editionen dieselbe
  * Semantik haben.
  *
- * Der Wert ist ein ISO-Zeitstempel und der Claim läuft nach `STALE_CLAIM_MS`
- * von selbst ab. Damit blockiert ein Absturz mitten im SMTP-Aufruf den Entwurf
- * nicht dauerhaft, auch wenn der Boot-Sweep nicht lief. Werte, die kein
+ * Der Wert ist `<ISO-Zeitstempel>|<Prozess-Token>`. Ein FREMDER Claim läuft nach
+ * `STALE_CLAIM_MS` ab — so blockiert ein Absturz mitten im SMTP-Aufruf den
+ * Entwurf nicht dauerhaft, auch wenn der Boot-Sweep nicht lief. Ein Claim des
+ * EIGENEN Prozesses gehört dagegen zu einem nachweislich laufenden Versand und
+ * darf nicht nach fester Zeit verfallen (siehe `claimIsActive`). Werte, die kein
  * gültiger Zeitstempel sind, zählen nicht als Claim — der Schlüsselraum
  * sync_info wird von vielen Features geteilt.
  */
+import { randomUUID } from 'node:crypto';
+
 import { scheduledSendClaimedAtKey, SCHEDULED_SEND_CLAIMED_AT_PREFIX } from '@simplecrm/core';
 
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 
-/** Nach dieser Zeit gilt ein Claim als verwaist (Absturz mitten im SMTP-Call). */
+/** Nach dieser Zeit gilt ein FREMDER Claim als verwaist (Absturz im SMTP-Call). */
 export const STALE_CLAIM_MS = 15 * 60_000;
 
-function activeClaimAge(value: string | null | undefined, now: Date): number | null {
-  const claimedAt = Date.parse(String(value ?? ''));
+/**
+ * Absolute Obergrenze auch für eigene Claims.
+ *
+ * Der `finally`-Block der Sendeschleife gibt jeden Claim frei, auch im
+ * Fehlerfall. Sollte er dennoch einmal ausfallen, darf ein Entwurf nicht für
+ * die restliche Prozesslaufzeit gesperrt bleiben — die Grenze liegt bewusst weit
+ * jenseits jedes realistischen Versands.
+ */
+const OWN_CLAIM_MAX_MS = 2 * 60 * 60_000;
+
+/**
+ * Identität dieses Prozesses. Ein Claim mit diesem Token gehört zu einem HIER
+ * laufenden `sendComposeDraft` — unabhängig davon, wie alt er ist.
+ */
+const PROCESS_TOKEN = randomUUID();
+
+function parseClaim(value: string | null | undefined): { claimedAt: number; token: string } | null {
+  const raw = String(value ?? '');
+  const separator = raw.indexOf('|');
+  const stamp = separator === -1 ? raw : raw.slice(0, separator);
+  const claimedAt = Date.parse(stamp);
   if (!Number.isFinite(claimedAt)) return null;
-  const age = now.getTime() - claimedAt;
-  return age >= 0 && age < STALE_CLAIM_MS ? age : null;
+  return { claimedAt, token: separator === -1 ? '' : raw.slice(separator + 1) };
+}
+
+function claimIsActive(value: string | null | undefined, now: Date): boolean {
+  const parsed = parseClaim(value);
+  if (!parsed) return false;
+  const age = now.getTime() - parsed.claimedAt;
+  if (age < 0) return false;
+  // Eigener Prozess: NICHT nach STALE_CLAIM_MS verfallen lassen. Ein Versand
+  // kann legitim länger dauern — `imapTimeoutsForMessageBytes` erlaubt bis zu
+  // 12 Minuten Socket-Timeout je Sent-Ordner-Kandidat, und es werden mehrere
+  // Kandidaten probiert. Verfiele der Claim mittendrin, könnte eine parallel
+  // endende Gegenprüfung eine bereits versendete Mail wieder als
+  // freigabepflichtig stempeln.
+  if (parsed.token && parsed.token === PROCESS_TOKEN) return age < OWN_CLAIM_MAX_MS;
+  // Fremder oder tokenloser Claim (anderer Prozess, anderes Fenster, Altbestand):
+  // dessen Lebendigkeit können wir nur über das Alter schätzen.
+  return age < STALE_CLAIM_MS;
 }
 
 /** Läuft für diesen Entwurf gerade ein Versand? */
 export function scheduledSendIsClaimed(draftId: number, now: Date = new Date()): boolean {
-  return activeClaimAge(getSyncInfo(scheduledSendClaimedAtKey(draftId)), now) !== null;
+  return claimIsActive(getSyncInfo(scheduledSendClaimedAtKey(draftId)), now);
 }
 
 /** Claim setzen. false ⇒ ein anderer Durchlauf sendet diesen Entwurf bereits. */
 export function claimScheduledSend(draftId: number, now: Date = new Date()): boolean {
   if (scheduledSendIsClaimed(draftId, now)) return false;
-  setSyncInfo(scheduledSendClaimedAtKey(draftId), now.toISOString());
+  setSyncInfo(scheduledSendClaimedAtKey(draftId), `${now.toISOString()}|${PROCESS_TOKEN}`);
   return true;
 }
 

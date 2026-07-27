@@ -647,6 +647,11 @@ describe('codex review regression guards', () => {
     // (Reparatur, Restore) — dort gehoert ein Claim noch zu einem aktiven
     // SMTP-Aufruf und darf nicht geloescht werden.
     expect(claim).toContain('if (bootSweepDone) return 0;');
+    // Ein Claim des EIGENEN Prozesses darf nicht nach fester Zeit verfallen:
+    // ein IMAP-APPEND kann laenger dauern als STALE_CLAIM_MS (bis zu 12 Minuten
+    // Socket-Timeout je Sent-Ordner-Kandidat, mehrere Kandidaten).
+    expect(claim).toContain('if (parsed.token && parsed.token === PROCESS_TOKEN) return age < OWN_CLAIM_MAX_MS;');
+    expect(claim).toContain('`${now.toISOString()}|${PROCESS_TOKEN}`');
     // Der Einmal-Guard wird erst NACH dem Sweep verbraucht: scheitert die
     // DB-Operation, muss ein spaeterer Dienste-Start noch aufraeumen duerfen.
     expect(claim).toMatch(/\.run\(row\.key\);\n\s*\}\n[\s\S]{0,500}?bootSweepDone = true;/);

@@ -43,14 +43,37 @@ describe('desktop scheduled-send claim', () => {
     expect(claimScheduledSend(8)).toBe(true);
   });
 
-  test('abgelaufener Claim blockiert nicht dauerhaft (Absturz im SMTP-Call)', () => {
+  test('Claim eines FREMDEN Prozesses laeuft ab (Absturz im SMTP-Call)', () => {
+    // Nach einem Absturz startet die App mit neuem Token; der liegengebliebene
+    // Claim ist fremd und darf den Entwurf nicht dauerhaft blockieren.
     const start = new Date('2026-07-27T10:00:00.000Z');
-    claimScheduledSend(7, start);
+    store.set('scheduled_send_claimed_at:7', `${start.toISOString()}|fremder-prozess`);
     const stillFresh = new Date(start.getTime() + STALE_CLAIM_MS - 1000);
     expect(scheduledSendIsClaimed(7, stillFresh)).toBe(true);
     const expired = new Date(start.getTime() + STALE_CLAIM_MS + 1000);
     expect(scheduledSendIsClaimed(7, expired)).toBe(false);
     expect(claimScheduledSend(7, expired)).toBe(true);
+  });
+
+  test('eigener Claim verfaellt nicht nach STALE_CLAIM_MS', () => {
+    // Ein IMAP-APPEND darf laenger dauern als die Ablauffrist: bis zu 12 Minuten
+    // Socket-Timeout je Sent-Ordner-Kandidat, mehrere Kandidaten. Verfiele der
+    // Claim mittendrin, koennte die Gegenpruefung eine bereits versendete Mail
+    // wieder als freigabepflichtig stempeln.
+    const start = new Date('2026-07-27T10:00:00.000Z');
+    expect(claimScheduledSend(7, start)).toBe(true);
+    const wayPastTtl = new Date(start.getTime() + STALE_CLAIM_MS * 3);
+    expect(scheduledSendIsClaimed(7, wayPastTtl)).toBe(true);
+    expect(claimScheduledSend(7, wayPastTtl)).toBe(false);
+  });
+
+  test('auch ein eigener Claim hat eine absolute Obergrenze', () => {
+    // Fiele der finally-Block einmal aus, darf der Entwurf nicht fuer die
+    // restliche Prozesslaufzeit gesperrt bleiben.
+    const start = new Date('2026-07-27T10:00:00.000Z');
+    claimScheduledSend(7, start);
+    const afterHours = new Date(start.getTime() + 3 * 60 * 60_000);
+    expect(scheduledSendIsClaimed(7, afterHours)).toBe(false);
   });
 
   test('fremde sync_info-Werte zaehlen nicht als Claim', () => {
