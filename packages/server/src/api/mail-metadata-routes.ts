@@ -1240,6 +1240,10 @@ async function handleUpsertEmailTeamMember(
     return data(201, sanitizeEmailTeamMember(member));
   }
 
+  const previousLinkedUserId = parsed.values.linkedUserId !== undefined && ports.emailTeamMembers.get
+    ? (await ports.emailTeamMembers.get({ workspaceId: principal.workspaceId, id }))?.linkedUserId ?? null
+    : null;
+
   const updated = await ports.emailTeamMembers.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1250,7 +1254,48 @@ async function handleUpsertEmailTeamMember(
 
   await auditEmailTeamMember(ports, principal, 'email_team_member.updated', updated, { fields: Object.keys(parsed.values).sort() });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.updated', updated, principal.userId);
+  if (parsed.values.linkedUserId !== undefined) {
+    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
+      previousLinkedUserId,
+      updated.linkedUserId,
+    ]);
+  }
   return data(200, sanitizeEmailTeamMember(updated));
+}
+
+/**
+ * Ein geaenderter/geloeschter linkedUserId schreibt email_messages.assigned_to_user_id
+ * fuer alle Nachrichten dieses Mitglieds um und entzieht damit Nutzern mit
+ * assigned_to_me / assigned_to_my_groups sofort die Sichtbarkeit. Das reine
+ * email_team_member.updated behandelt die Shell nur als Konto-Refresh, nicht als
+ * Listen-/ACL-Refresh — die betroffenen Nutzer saehen sonst gesperrte Nachrichten
+ * bis zum naechsten zufaelligen Refresh weiter. Best effort: die Mutation ist
+ * committed, ein Event-Fehler darf daraus keinen 500 machen.
+ */
+async function publishLinkedUserAclInvalidation(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  actorUserId: string,
+  affectedUserIds: ReadonlyArray<string | null | undefined>,
+): Promise<void> {
+  const targets = [...new Set(affectedUserIds.filter((id): id is string => Boolean(id)))];
+  for (const targetUserId of targets) {
+    try {
+      await ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId,
+        entityType: 'email_acl',
+        entityId: targetUserId,
+        actorUserId,
+        occurredAt: new Date().toISOString(),
+        payload: { targetUserId, state: 'changed' },
+      });
+    } catch (error) {
+      console.warn(
+        `[email-team-member] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 }
 
 async function handleUpdateEmailTeamMember(
@@ -1274,6 +1319,19 @@ async function handleUpdateEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const unknownLinkedUser = await rejectUnknownLinkedUser(
+    ports,
+    principal.workspaceId,
+    parsed.values.linkedUserId,
+  );
+  if (unknownLinkedUser) return unknownLinkedUser;
+
+  // Vorherige Verknuepfung merken: aendert sie sich, verlieren beide Seiten
+  // (alter und neuer Nutzer) Sichtbarkeit bzw. bekommen sie neu.
+  const previousLinkedUserId = parsed.values.linkedUserId !== undefined && ports.emailTeamMembers.get
+    ? (await ports.emailTeamMembers.get({ workspaceId: principal.workspaceId, id }))?.linkedUserId ?? null
+    : null;
+
   const member = await ports.emailTeamMembers.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1284,6 +1342,12 @@ async function handleUpdateEmailTeamMember(
 
   await auditEmailTeamMember(ports, principal, 'email_team_member.updated', member, { fields: Object.keys(parsed.values).sort() });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.updated', member, principal.userId);
+  if (parsed.values.linkedUserId !== undefined) {
+    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
+      previousLinkedUserId,
+      member.linkedUserId,
+    ]);
+  }
   return data(200, sanitizeEmailTeamMember(member));
 }
 

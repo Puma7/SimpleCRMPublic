@@ -959,6 +959,16 @@ export function WorkflowShell() {
                                 `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
                               )
                             }
+                          } catch (e) {
+                            // Der Server lehnt echte Laeufe mit Seiteneffekt-Knoten
+                            // fuer Nicht-Admins ab; ohne catch endet das als
+                            // unbehandelte Rejection ohne jede Rueckmeldung.
+                            logError("workflow-shell: execute now", e)
+                            toast.error(
+                              e instanceof Error
+                                ? e.message
+                                : "Ausführung abgelehnt — für diesen Graph ist nur ein Testlauf möglich.",
+                            )
                           } finally {
                             setExecutingNow(false)
                           }

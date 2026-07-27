@@ -330,8 +330,22 @@ async function handleEmailMiscSettings(
   if (settingsDenied) return settingsDenied;
   const parsed = parseEmailMiscSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
+  // Der Client laedt das Secret maskiert und schickt es beim Speichern immer mit.
+  // Ein delegierter settings.manage-Halter koennte sonst nie das Anhanglimit
+  // aendern. Wie beim Rspamd-URL-Vergleich zaehlt daher nur eine echte
+  // AENDERUNG als Adminvorgang: ein unveraendert zurueckgeschickter Maskenwert
+  // wird verworfen statt abgelehnt.
   if ('email_webhook_secret' in parsed.values && !requireAdmin(principal)) {
-    return error(403, 'forbidden', 'Adminrechte erforderlich');
+    const current = await loadSyncInfo(req, ports, ['email_webhook_secret']);
+    if ('status' in current) return current;
+    const storedMasked = maskSyncInfoSecret(current.values.get('email_webhook_secret'));
+    if (parsed.values.email_webhook_secret !== storedMasked) {
+      return error(403, 'forbidden', 'Adminrechte erforderlich');
+    }
+    delete parsed.values.email_webhook_secret;
+    if (Object.keys(parsed.values).length === 0) {
+      return error(400, 'validation_error', 'Email misc settings update braucht mindestens ein Feld');
+    }
   }
   const saved = await saveSyncInfo(req, ports, parsed.values, 'email_settings.misc.updated', 'email.settings.misc');
   if ('status' in saved) return saved;

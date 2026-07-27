@@ -28738,6 +28738,57 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('changing the user link invalidates the ACL for old and new user', async () => {
+    // Der Backfill schreibt assigned_to_user_id um und entzieht damit
+    // assigned_to_me-Nutzern sofort Sichtbarkeit — email_team_member.updated
+    // allein ist fuer die Shell nur ein Konto-Refresh.
+    const events: ServerEvent[] = [];
+    const previousUser = '55555555-5555-4555-8555-555555555555';
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return { ...makeEmailTeamMemberRecord('agent-2'), linkedUserId: previousUser };
+        },
+        async create() {
+          return { ok: false as const, code: 'team_member_conflict' as const };
+        },
+        async update(input) {
+          return {
+            ...makeEmailTeamMemberRecord(input.id),
+            linkedUserId: (input.values.linkedUserId ?? null) as string | null,
+          };
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/team-members/agent-2',
+      body: { linkedUserId: USER_A_ID },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+    });
+
+    expect(res.status).toBe(200);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId).sort())
+      .toEqual([USER_A_ID, previousUser].sort());
+  });
+
   test('team member upsert reports an unknown linked user as a client error', async () => {
     // Syntaktisch gueltige, aber unbekannte UUID: ohne Aufloesung wirft der Port
     // und aus dem Eingabefehler wird ein HTTP 500.

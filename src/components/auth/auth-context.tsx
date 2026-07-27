@@ -50,6 +50,8 @@ type AuthState = {
    * warten — sonst greifen sie im ersten Render faelschlich.
    */
   capabilitiesReady: boolean
+  /** Desktop always true; server edition requires users.manage (or admin/owner). */
+  canManageUsers: boolean
   /** Desktop always true; server edition requires workflows.view (or admin/owner). */
   canViewWorkflows: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
@@ -195,7 +197,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    if (!adminRole) void loadCapabilities()
+    if (!adminRole) {
+      // Vor JEDEM Abruf zuruecksetzen: der unauthentifizierte Erst-Render hat
+      // ready bereits auf true gesetzt, sonst saehe die Settings-Seite nach dem
+      // Login kurz "ready mit leerer Liste" und wuerde zum Konto-Tab umleiten.
+      setCapabilitiesReady(false)
+      void loadCapabilities()
+    }
     const subscription = subscribeServerEvents({
       onEvent: (event) => {
         if (!isMailAclRefreshEvent(event)) return
@@ -208,7 +216,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // Token-Refresh alle Gates. Deshalb die Sitzung neu einlesen; schlaegt
           // das fehl, raeumt refresh() den Auth-State ab.
           void refresh({ force: true })
-          if (!adminRole) void loadCapabilities()
+          if (!adminRole) {
+            setCapabilitiesReady(false)
+            void loadCapabilities()
+          }
         }, 250)
       },
     })
@@ -239,6 +250,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const canManageSettings = useMemo(() => {
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("settings.manage")
+  }, [hasCapability, authenticated, user, capabilities])
+
+  const canManageUsers = useMemo(() => {
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("users.manage")
   }, [hasCapability, authenticated, user, capabilities])
 
   const canViewWorkflows = useMemo(() => {
@@ -304,6 +320,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       canViewSettings,
       canManageSettings,
       capabilitiesReady,
+      canManageUsers,
       canViewWorkflows,
       login,
       logout,
@@ -319,6 +336,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       canViewSettings,
       canManageSettings,
       capabilitiesReady,
+      canManageUsers,
       canViewWorkflows,
       login,
       logout,

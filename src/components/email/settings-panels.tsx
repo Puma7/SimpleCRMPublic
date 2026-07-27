@@ -164,10 +164,15 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
 ]
 
 function SettingsPanels({ current, personalOnly }: { current: SettingsTab; personalOnly: boolean }) {
+  const { canManageUsers } = useAuth()
   if (personalOnly) {
+    // users.manage ohne settings.view: die Server-Endpunkte lassen diesen Nutzer
+    // ausdruecklich zu, es gaebe sonst aber keinen Weg zur Benutzerverwaltung.
+    // Der Rest der Einstellungen bleibt zu.
     return (
       <div className="mx-auto w-full max-w-2xl space-y-6 p-6">
         <ChangePasswordCard />
+        {canManageUsers ? <UsersPanel /> : null}
       </div>
     )
   }
