@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -59,8 +60,16 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     } catch {
       /* localStorage unavailable */
     }
-    if (typeof document !== "undefined") document.documentElement.lang = next
   }, [])
+
+  // Sprache am <html>-Element spiegeln — auch beim ERSTEN Rendern, nicht nur
+  // beim Wechsel. Vorher blieb das Dokument auf dem statischen lang aus
+  // index.html stehen, waehrend die Oberflaeche in einer anderen Sprache
+  // erschien; genau diese Diskrepanz laesst Chrome eine Uebersetzung anbieten
+  // bzw. automatisch anwenden, was React den DOM unter den Fuessen wegzieht.
+  useEffect(() => {
+    if (typeof document !== "undefined") document.documentElement.lang = language
+  }, [language])
 
   const t = useCallback<TranslateFn>(
     (key, params) => translate(language, key, params),
