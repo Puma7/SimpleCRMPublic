@@ -148,7 +148,8 @@ async function handleCreate(
     permissions: parsed.permissions,
     ...(parsed.constraintsProvided ? { constraints: parsed.constraints ?? null } : {}),
   });
-  if (!result.ok) return mutationError(result.code);
+  // used/limit reicht der Budget-Fehler durch, damit die Meldung die Zahl nennt.
+  if (!result.ok) return mutationError(result.code, result);
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {
     bindingId: result.binding?.id ?? result.deletedBindingId,
     subject: parsed.subject,
@@ -628,7 +629,10 @@ function actor(principal: AuthenticatedPrincipal) {
   };
 }
 
-function mutationError(code: MailDelegationMutationCode | 'permission_denied' | 'resource_not_found'): ApiResponse<ApiErrorBody> {
+function mutationError(
+  code: MailDelegationMutationCode | 'permission_denied' | 'resource_not_found',
+  details?: Readonly<{ used?: number; limit?: number }>,
+): ApiResponse<ApiErrorBody> {
   if (code === 'permission_denied') return error(403, 'mail_delegation_denied', 'Keine Berechtigung zur Mail-Delegation');
   if (code === 'privilege_escalation') {
     return error(403, 'mail_delegation_privilege_escalation', 'Rechte duerfen nicht ueber eigene Rechte hinaus delegiert werden');
@@ -638,6 +642,18 @@ function mutationError(code: MailDelegationMutationCode | 'permission_denied' | 
   if (code === 'subject_not_found') return error(404, 'mail_delegation_subject_not_found', 'Subjekt nicht gefunden');
   if (code === 'category_not_found') {
     return error(404, 'mail_delegation_category_not_found', 'Sichtbarkeitsfilter verweist auf eine unbekannte Kategorie');
+  }
+  if (code === 'constraint_budget_exceeded') {
+    // Der Deckel gilt fuer die SUMME ueber alle Bindings des Subjekts — die Zahl
+    // im Text ist deshalb wichtig, sonst ist die Ablehnung nicht nachvollziehbar.
+    return error(
+      400,
+      'mail_delegation_constraint_budget_exceeded',
+      details?.used != null && details.limit != null
+        ? `Sichtbarkeitsfilter dieses Subjekts umfassen zusammen ${details.used} Eintraege, erlaubt sind ${details.limit}`
+        : 'Sichtbarkeitsfilter dieses Subjekts ueberschreiten zusammen das erlaubte Budget',
+      details,
+    );
   }
   if (code === 'resource_not_found') return error(404, 'mail_delegation_resource_not_found', 'Ressource nicht gefunden');
   return error(403, 'mail_delegation_owner_admin_subject_forbidden', 'Owner/Admins werden nicht als ACL-Subjekt gespeichert');

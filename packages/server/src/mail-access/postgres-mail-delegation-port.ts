@@ -18,6 +18,8 @@ import {
   DENY_ALL_TAG_ALLOW_VALUE,
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
+  mailBindingConstraintEntryCount,
+  MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH,
   mergeAuthorityConstraints,
 } from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
@@ -494,6 +496,11 @@ export function createPostgresMailDelegationPort(
 
     if (constraints !== undefined && await unknownConstraintCategoryExists(trx, workspaceId, constraints)) {
       return { ok: false as const, code: 'category_not_found' as const };
+    }
+
+    if (constraints !== undefined) {
+      const budget = await constraintBudgetExceeded(trx, workspaceId, input.subject, existing?.id ?? null, constraints);
+      if (budget) return { ok: false as const, code: 'constraint_budget_exceeded' as const, ...budget };
     }
 
     const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
@@ -1107,6 +1114,56 @@ async function loadBindingConstraints(
  * gefaehrlicher als eine Fehlermeldung. Das Deny-All-Sentinel (-1) ist keine
  * echte Kategorie und wird uebersprungen.
  */
+/**
+ * Kumulatives Budget ueber ALLE Bindings eines Subjekts.
+ *
+ * Das Limit pro Liste (MAX_..._LIST_LENGTH, Routen-Validierung) deckelt genau
+ * ein Binding. sql-scope bettet aber die Constraints JEDES Bindings des
+ * Betroffenen in dieselbe gescopte Mail-Query ein und ODER-verknuepft sie —
+ * die Summe bestimmt also die Abfragekosten, nicht das Maximum. Ohne diesen
+ * Deckel baut ein Subjekt mit vielen gefilterten Bindings beliebig grosse
+ * `in (...)`-Listen auf.
+ *
+ * Gezaehlt wird in DERSELBEN Transaktion wie die Schreibung, damit zwei
+ * parallele Bindings nicht beide am halben Budget vorbeikommen: die Bindings
+ * des Subjekts werden dafuer gesperrt.
+ */
+async function constraintBudgetExceeded(
+  trx: Trx,
+  workspaceId: string,
+  subject: MailDelegationSubject,
+  replacedBindingId: number | null,
+  next: MailBindingVisibilityConstraints | null,
+): Promise<{ used: number; limit: number } | null> {
+  const nextCount = mailBindingConstraintEntryCount(next);
+  const siblings = await trx
+    .selectFrom('mail_acl_bindings')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('subject_type', '=', subject.type)
+    .where('subject_id', '=', subjectId(subject))
+    .forUpdate()
+    .execute();
+  const otherIds = siblings
+    .map((row) => Number(row.id))
+    .filter((id) => id !== replacedBindingId);
+
+  let used = nextCount;
+  if (otherIds.length > 0) {
+    const rows = await trx
+      .selectFrom('mail_acl_binding_constraints')
+      .select(['value_ids', 'value_texts'])
+      .where('workspace_id', '=', workspaceId)
+      .where('binding_id', 'in', otherIds)
+      .execute();
+    for (const row of rows) {
+      used += (row.value_ids?.length ?? 0) + (row.value_texts?.length ?? 0);
+    }
+  }
+  if (used <= MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH) return null;
+  return { used, limit: MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH };
+}
+
 async function unknownConstraintCategoryExists(
   trx: Trx,
   workspaceId: string,

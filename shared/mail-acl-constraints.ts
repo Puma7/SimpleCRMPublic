@@ -41,6 +41,21 @@ export const DENY_ALL_TAG_ALLOW_VALUE = '__mail_acl_deny_all__'
 
 /** Max entries per category/tag visibility filter list (client + server). */
 export const MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH = 500
+
+/**
+ * Kumulatives Budget ueber ALLE Bindings eines Subjekts.
+ *
+ * Das Limit pro Liste deckelt ein einzelnes Binding, nicht die Summe: ein
+ * Subjekt mit vielen gefilterten Bindings baut trotzdem beliebig grosse
+ * `in (...)`-Listen auf, weil sql-scope die Constraints jedes Bindings pro
+ * gescopter Mail-Query ODER-verknuepft einbettet. Gezaehlt werden die
+ * gespeicherten Eintraege (Kategorie-Ids plus Tag-Werte) ueber alle Bindings
+ * desselben Subjekts.
+ *
+ * 2000 entspricht vier vollen Bindings. Bewusst grosszuegig — der Deckel soll
+ * die Abfragekosten begrenzen, nicht echte Setups behindern.
+ */
+export const MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH = 2000
 /** Max length of a single tag value in a visibility filter. */
 export const MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH = 200
 

@@ -4157,6 +4157,109 @@ describe('server mailbox ACL migration', () => {
       }
     });
 
+    test('caps the cumulative constraint budget across a subject\'s bindings', async () => {
+      // Das Limit pro Liste deckelt genau EIN Binding. sql-scope bettet aber die
+      // Constraints JEDES Bindings des Betroffenen in dieselbe gescopte Query ein
+      // und ODER-verknuepft sie — die Summe bestimmt die Abfragekosten. Ohne
+      // kumulatives Budget baut ein Subjekt mit vielen gefilterten Bindings
+      // beliebig grosse `in (...)`-Listen auf.
+      await ensureMailAclConstraintsSchema();
+      const subjectId = '30000000-0000-4000-8000-000000000009';
+      const db = createApplicationDb();
+      const port = createPostgresMailDelegationPort({ db });
+      const actor = { userId: DELEGATION_OWNER, isOwner: true, isAdmin: false };
+      const subject = { type: 'user' as const, id: subjectId };
+      const tags = (prefix: string, count: number) =>
+        Array.from({ length: count }, (_, index) => `${prefix}-${index}`);
+      // Jede Liste bleibt unter MAX_..._LIST_LENGTH (500) — nur die SUMME kippt.
+      const constraints = (prefix: string, allow: number, exclude: number) => ({
+        assignmentMode: null,
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: tags(`${prefix}-a`, allow),
+        tagExcludeValues: tags(`${prefix}-x`, exclude),
+      });
+      const cleanup = async () => {
+        await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+        for (const table of ['mail_acl_binding_constraints', 'mail_acl_binding_permissions']) {
+          await client.query(`
+            DELETE FROM ${table} WHERE binding_id IN (
+              SELECT id FROM mail_acl_bindings
+              WHERE workspace_id = '${DELEGATION_WORKSPACE}' AND subject_id = '${subjectId}'
+            )
+          `).catch(() => undefined);
+        }
+        await client.query(`DELETE FROM mail_acl_bindings WHERE workspace_id = '${DELEGATION_WORKSPACE}' AND subject_id = '${subjectId}'`).catch(() => undefined);
+        await client.query(`DELETE FROM users WHERE id = '${subjectId}'`).catch(() => undefined);
+        await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      };
+
+      try {
+        await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+        await client.query(`
+          INSERT INTO users (id, workspace_id, email, display_name, password_hash, role, disabled_at)
+          VALUES ('${subjectId}', '${DELEGATION_WORKSPACE}', 'budget@example.test', 'Budget Target', 'hash', 'user', NULL)
+          ON CONFLICT (id) DO NOTHING
+        `);
+        await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+        // Zwei Bindings a 1000 Eintraegen: zusammen exakt das Budget.
+        for (const [index, accountId] of [DELEGATION_ACCOUNT, DELEGATION_UNMANAGED_ACCOUNT].entries()) {
+          const created = await port.replaceBinding({
+            workspaceId: DELEGATION_WORKSPACE,
+            actor,
+            subject,
+            resource: { type: 'account' as const, accountId },
+            permissions: ['mail.metadata.read'],
+            constraints: constraints(`b${index}`, 500, 500),
+          });
+          expect({ index, ok: created.ok }).toEqual({ index, ok: true });
+        }
+
+        // Ein EINZIGER Eintrag mehr sprengt es.
+        const overflow = await port.replaceBinding({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          subject,
+          resource: { type: 'folder' as const, accountId: DELEGATION_ACCOUNT, folderId: DELEGATION_FOLDER },
+          permissions: ['mail.metadata.read'],
+          constraints: constraints('b2', 1, 0),
+        });
+        expect(overflow).toMatchObject({
+          ok: false,
+          code: 'constraint_budget_exceeded',
+          used: 2001,
+          limit: 2000,
+        });
+
+        // Ein BESTEHENDES Binding zu ersetzen zaehlt seinen alten Verbrauch nicht
+        // doppelt: 1000 (anderes Binding) + 900 (neu) liegt wieder im Budget.
+        const shrunk = await port.replaceBinding({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          subject,
+          resource: { type: 'account' as const, accountId: DELEGATION_UNMANAGED_ACCOUNT },
+          permissions: ['mail.metadata.read'],
+          constraints: constraints('b1', 450, 450),
+        });
+        expect(shrunk.ok).toBe(true);
+
+        // Und jetzt passt das dritte Binding.
+        const fits = await port.replaceBinding({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          subject,
+          resource: { type: 'folder' as const, accountId: DELEGATION_ACCOUNT, folderId: DELEGATION_FOLDER },
+          permissions: ['mail.metadata.read'],
+          constraints: constraints('b2', 100, 0),
+        });
+        expect(fits.ok).toBe(true);
+      } finally {
+        await cleanup();
+        await db.destroy();
+      }
+    });
+
     test('resolves parallel patch and delete as serialized success or binding_not_found without throwing', async () => {
       const db = createApplicationDb({ maxConnections: 4 });
       const port = createPostgresMailDelegationPort({ db });
