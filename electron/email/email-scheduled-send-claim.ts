@@ -118,12 +118,17 @@ let bootSweepDone = false;
  */
 export function releaseStaleScheduledSendClaims(): number {
   if (bootSweepDone) return 0;
-  bootSweepDone = true;
   const rows = getDb()
     .prepare(`SELECT key FROM sync_info WHERE key LIKE ?`)
     .all(`${SCHEDULED_SEND_CLAIMED_AT_PREFIX}%`) as { key: string }[];
   for (const row of rows) {
     getDb().prepare(`DELETE FROM sync_info WHERE key = ?`).run(row.key);
   }
+  // Erst nach vollstaendigem Sweep verbrauchen. Wirft SELECT oder DELETE
+  // (der Aufrufer faengt das im Startup-Catch), muss ein spaeterer Start der
+  // Hintergrunddienste noch einmal aufraeumen duerfen — sonst blieben verwaiste
+  // Claims bis zum Ablauf von STALE_CLAIM_MS liegen und blockierten faellige
+  // Entwuerfe. Der Sweep ist idempotent, ein zweiter Lauf schadet nicht.
+  bootSweepDone = true;
   return rows.length;
 }

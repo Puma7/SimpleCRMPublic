@@ -1292,6 +1292,14 @@ export function createPostgresAiReviewDraftPort(
           'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
         };
         let approvalReason = 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen';
+        // Hat die Gegenlese-KI ueberhaupt ein Urteil gefaellt? Nur dann gilt der
+        // terminale Knoten als angewendet. `port` taugt dafuer nicht: er ist
+        // 'send' | 'hold' und faellt bei Abbruch, Modellfehler und echtem HOLD
+        // gleichermassen auf 'hold'. Ohne die Unterscheidung galte ein
+        // abgebrochener Review als angewendet — eine spaetere Wiederverarbeitung
+        // (etwa nach Korrektur der Spam-Markierung) liesse die Gegenpruefung
+        // dann dauerhaft aus.
+        let verdictRendered = false;
         const reviewedFingerprint = 'abort' in prep ? null : prep.reviewedFingerprint;
 
         if ('abort' in prep) {
@@ -1315,6 +1323,7 @@ export function createPostgresAiReviewDraftPort(
             user: prep.user,
           });
           const parsed = parseDraftReviewResponse(out);
+          verdictRendered = true;
           continuationVariables = {
             'ai.review.verdict': parsed.verdict,
             'ai.review.answered': parsed.answered,
@@ -1365,6 +1374,8 @@ export function createPostgresAiReviewDraftPort(
               terminalChainPayload: input.terminalChainPayload,
             }) !== null) {
               port = 'hold';
+              // Urteil verworfen ⇒ der Knoten hat nichts angewendet.
+              verdictRendered = false;
               approvalReason = 'Quellnachricht/Kette wurde während der Prüfung gestoppt — bitte manuell freigeben';
               continuationVariables = {
                 'ai.review.verdict': 'hold',
@@ -1427,9 +1438,10 @@ export function createPostgresAiReviewDraftPort(
             if (!continuation) {
               if (input.terminalChainPayload) {
                 // Terminale Gegenpruefung: der Elternlauf wartet auf sie.
-                // Angewendet nur, wenn sie tatsaechlich ein Urteil gefaellt hat.
+                // Angewendet nur, wenn sie tatsaechlich ein Urteil gefaellt hat —
+                // nicht bei Abbruch (Spam/Kettenstopp) oder Modellfehler.
                 await completeTerminalInboundChild(trx, input.terminalChainPayload, {
-                  applied: port === 'send' || port === 'hold',
+                  applied: verdictRendered,
                   now: now(),
                 });
               }

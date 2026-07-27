@@ -647,6 +647,14 @@ describe('codex review regression guards', () => {
     // (Reparatur, Restore) — dort gehoert ein Claim noch zu einem aktiven
     // SMTP-Aufruf und darf nicht geloescht werden.
     expect(claim).toContain('if (bootSweepDone) return 0;');
+    // Der Einmal-Guard wird erst NACH dem Sweep verbraucht: scheitert die
+    // DB-Operation, muss ein spaeterer Dienste-Start noch aufraeumen duerfen.
+    expect(claim).toMatch(/\.run\(row\.key\);\n\s*\}\n[\s\S]{0,500}?bootSweepDone = true;/);
+
+    // Terminale Gegenpruefung: Abbruch/Modellfehler duerfen NICHT als
+    // angewendet gelten (port ist 'send' | 'hold' und taugt nicht als Signal).
+    expect(draftNodes).toContain('applied: verdictRendered,');
+    expect(draftNodes).not.toContain("applied: port === 'send' || port === 'hold',");
 
     // Desktop: Boot-Sweep raeumt JEDEN Claim ab — nach einem Neustart kann
     // keiner mehr zu einem laufenden SMTP-Aufruf gehoeren.
