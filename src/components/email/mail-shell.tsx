@@ -29,13 +29,14 @@ import {
   subscribeServerEvents,
 } from "@/services/transport"
 import {
+  createMailEventRefreshScheduler,
   mailEventRefreshRequestFor,
-  mergeMailEventRefreshRequests,
-  NO_MAIL_EVENT_REFRESH,
-  type MailEventRefreshRequest,
 } from "./mail-event-refresh"
 
 const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer", "metadata"] as const
+
+/** Sammelfenster fuer Mail-Ereignisse (Schuebe aus Gruppenmutationen). */
+const MAIL_EVENT_REFRESH_DEBOUNCE_MS = 250
 
 /** Minimum gap between actual IMAP polls when the refresh button is clicked. */
 const IMAP_SYNC_MIN_GAP_MS = 15_000
@@ -208,8 +209,6 @@ function MailShellInner() {
     useMessageMetadata()
   const { cannedList, aiPrompts, reloadCanned, reloadPrompts } = useMailAuxData()
   const serverClientMode = getRendererTransport().kind === "http"
-  const mailEventRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const mailEventRefreshRequestRef = useRef<MailEventRefreshRequest>(NO_MAIL_EVENT_REFRESH)
   const [remoteContentPolicyRefreshKey, setRemoteContentPolicyRefreshKey] = useState(0)
   const mailEventHandlersRef = useRef({
     refreshList,
@@ -247,18 +246,9 @@ function MailShellInner() {
   useEffect(() => {
     if (!serverClientMode) return
 
-    const scheduleRefresh = (request: Partial<MailEventRefreshRequest>) => {
-      mailEventRefreshRequestRef.current = mergeMailEventRefreshRequests(
-        mailEventRefreshRequestRef.current,
-        request,
-      )
-      if (mailEventRefreshTimerRef.current !== null) {
-        clearTimeout(mailEventRefreshTimerRef.current)
-      }
-      mailEventRefreshTimerRef.current = setTimeout(() => {
-        mailEventRefreshTimerRef.current = null
-        const refreshRequest = mailEventRefreshRequestRef.current
-        mailEventRefreshRequestRef.current = NO_MAIL_EVENT_REFRESH
+    const scheduler = createMailEventRefreshScheduler({
+      delayMs: MAIL_EVENT_REFRESH_DEBOUNCE_MS,
+      flush(refreshRequest) {
         const handlers = mailEventHandlersRef.current
 
         if (refreshRequest.accounts) {
@@ -282,22 +272,18 @@ function MailShellInner() {
         if (refreshRequest.remotePolicy) {
           setRemoteContentPolicyRefreshKey((value) => value + 1)
         }
-      }, 250)
-    }
+      },
+    })
 
     const subscription = subscribeServerEvents({
       onEvent(event) {
         const request = mailEventRefreshRequestFor(event)
-        if (request) scheduleRefresh(request)
+        if (request) scheduler.schedule(request)
       },
     })
 
     return () => {
-      if (mailEventRefreshTimerRef.current !== null) {
-        clearTimeout(mailEventRefreshTimerRef.current)
-        mailEventRefreshTimerRef.current = null
-      }
-      mailEventRefreshRequestRef.current = NO_MAIL_EVENT_REFRESH
+      scheduler.cancel()
       subscription.unsubscribe()
     }
   }, [serverClientMode])

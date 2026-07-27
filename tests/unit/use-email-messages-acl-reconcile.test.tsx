@@ -146,6 +146,62 @@ describe('useEmailMessages — ACL reconcile', () => {
     expect(mockWorkspace.setSelectedMessage).toHaveBeenCalledWith(null);
   });
 
+  test('a FAILED reconcile clears list and selection instead of trusting them', async () => {
+    // Der Abgleich sollte pruefen, ob geladene Nachrichten noch sichtbar sind.
+    // Konnte er das nicht — Netz- oder Serverfehler —, weiss niemand es. Die
+    // alte Liste stehenzulassen hiesse, moeglicherweise entzogene Inhalte
+    // weiter anzuzeigen; der Detailbereich haelt ohnehin an seinem geladenen
+    // Inhalt fest.
+    const rejecters = new Map<number, (reason: unknown) => void>();
+    const { result, rerender } = renderHook(() => useEmailMessages());
+    await loadInitial(rerender);
+
+    mockInvokeRenderer.mockImplementation((channel: unknown, payload: any) => {
+      if (channel === IPCChannels.Email.ListMessagesByView) {
+        return new Promise((_resolve, reject) => {
+          rejecters.set(payload.accountId as number, reject);
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    await act(async () => {
+      void result.current.refreshList({ preserveSelection: true, dropMissing: true });
+    });
+    await waitFor(() => expect(rejecters.has(1)).toBe(true));
+    await act(async () => {
+      rejecters.get(1)!(new Error('network down'));
+    });
+
+    await waitFor(() => expect(result.current.messages).toEqual([]));
+    expect(mockWorkspace.setSelectedMessage).toHaveBeenCalledWith(null);
+  });
+
+  test('a failed ORDINARY silent refresh keeps the list — nothing was revoked', async () => {
+    const rejecters = new Map<number, (reason: unknown) => void>();
+    const { result, rerender } = renderHook(() => useEmailMessages());
+    await loadInitial(rerender);
+
+    mockInvokeRenderer.mockImplementation((channel: unknown, payload: any) => {
+      if (channel === IPCChannels.Email.ListMessagesByView) {
+        return new Promise((_resolve, reject) => {
+          rejecters.set(payload.accountId as number, reject);
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    await act(async () => {
+      void result.current.refreshList({ preserveSelection: true });
+    });
+    await waitFor(() => expect(rejecters.has(1)).toBe(true));
+    await act(async () => {
+      rejecters.get(1)!(new Error('network down'));
+    });
+
+    expect(result.current.messages.map((m) => m.id)).toEqual([1, 2, 3]);
+  });
+
   test('a still-visible selection is kept across the reconcile', async () => {
     const { result, rerender } = renderHook(() => useEmailMessages());
     await loadInitial(rerender);

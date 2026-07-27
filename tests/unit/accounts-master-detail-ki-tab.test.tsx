@@ -12,7 +12,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
  * Fehler endet — genau die Klasse, gegen die die Selbstauskunft antritt.
  */
 const mockInvoke = jest.fn();
-const permissions = { account: new Map<string, boolean>() };
+const permissions = { account: new Map<string, boolean>(), settings: false };
 
 jest.mock('@/services/transport', () => ({
   invokeRenderer: (...args: unknown[]) => mockInvoke(...args),
@@ -23,6 +23,7 @@ jest.mock('@/services/transport', () => ({
 jest.mock('@/components/auth/auth-context', () => ({
   useAuth: () => ({
     mailAccessUnrestricted: false,
+    canManageSettings: permissions.settings,
     hasMailPermissionForAccount: (permission: string, accountId: number | string | null) =>
       permissions.account.get(`${permission}:${accountId}`) === true,
   }),
@@ -57,7 +58,6 @@ jest.mock('@/components/email/settings/reply-suggestion-settings-section', () =>
 jest.mock('@/components/email/settings/account-signatures-section', () => ({ AccountSignaturesSection: stub('account-signatures') }));
 jest.mock('@/components/email/settings/user-signatures-section', () => ({ UserSignaturesSection: stub('user-signatures') }));
 jest.mock('@/components/email/settings/account-knowledge-slots', () => ({ AccountKnowledgeSlots: stub('knowledge-slots') }));
-jest.mock('@/components/email/settings/account-advanced-panel', () => ({ AccountAdvancedPanel: stub('advanced-panel') }));
 jest.mock('@/components/email/settings/accounts-shipping-hint', () => ({ AccountsShippingHint: stub('shipping-hint') }));
 
 import { AccountsMasterDetailSettings } from '@/components/email/settings/accounts-master-detail';
@@ -65,10 +65,14 @@ import { AccountsMasterDetailSettings } from '@/components/email/settings/accoun
 describe('AccountsMasterDetailSettings — per-account gates', () => {
   beforeEach(() => {
     permissions.account.clear();
+    permissions.settings = false;
     mockInvoke.mockReset();
     mockInvoke.mockImplementation(async (channel: string) => {
       if (channel === 'email:list-accounts') {
         return [{ id: 7, email_address: 'support@example.test', display_name: 'Support' }];
+      }
+      if (channel === 'email:get-account-mail-settings') {
+        return { accountId: 7, ticketPrefix: '', ticketEnabled: false };
       }
       return [];
     });
@@ -114,6 +118,31 @@ describe('AccountsMasterDetailSettings — per-account gates', () => {
 
     expect(screen.queryByText('user-signatures')).toBeNull();
     expect(screen.getByText(/Berechtigung zum Verfassen/)).toBeTruthy();
+  });
+
+  const openAdvancedTab = async () => {
+    render(<AccountsMasterDetailSettings />);
+    await waitFor(() => expect(screen.getAllByText('support@example.test').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Erweitert' }));
+  };
+
+  test('the advanced panel stays read-only without mail.account.manage', async () => {
+    // GET /email/settings/account-mail verlangt mail.metadata.read, PATCH aber
+    // mail.account.manage auf DIESEM Konto. settings.manage allein reichte
+    // nicht — die Felder waren bedienbar und der Save endete im 403.
+    permissions.settings = true;
+    permissions.account.set('mail.metadata.read:7', true);
+    await openAdvancedTab();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Speichern/ })).toBeDisabled());
+  });
+
+  test('with mail.account.manage the advanced panel is editable', async () => {
+    permissions.settings = true;
+    permissions.account.set('mail.account.manage:7', true);
+    await openAdvancedTab();
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /Speichern/ })).toBeEnabled());
   });
 
   test('a delegate who may compose gets the personal signature section', async () => {

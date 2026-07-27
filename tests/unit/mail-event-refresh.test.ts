@@ -1,4 +1,5 @@
 import {
+  createMailEventRefreshScheduler,
   mailEventRefreshRequestFor,
   mergeMailEventRefreshRequests,
   NO_MAIL_EVENT_REFRESH,
@@ -62,5 +63,60 @@ describe('mail event refresh mapping', () => {
     expect(merged).toMatchObject({ list: true, listReconcile: true });
     // Und der Ausgangswert bleibt unberuehrt — er ist die geteilte Konstante.
     expect(NO_MAIL_EVENT_REFRESH.listReconcile).toBe(false);
+  });
+});
+
+describe('mail event refresh scheduler', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  const aclEvent = { list: true, listReconcile: true } as const;
+  const messageEvent = { list: true } as const;
+
+  test('an ordinary burst collapses into one flush', () => {
+    const flushed: unknown[] = [];
+    const scheduler = createMailEventRefreshScheduler({ delayMs: 250, flush: (r) => flushed.push(r) });
+    scheduler.schedule(messageEvent);
+    jest.advanceTimersByTime(200);
+    scheduler.schedule(messageEvent);
+    jest.advanceTimersByTime(200);
+    // Der Timer wurde neu gestartet — noch nichts geflossen.
+    expect(flushed).toHaveLength(0);
+    jest.advanceTimersByTime(100);
+    expect(flushed).toHaveLength(1);
+  });
+
+  test('a pending ACL reconcile is NOT starved by a continuous event stream', () => {
+    // Ein Tagging-Workflow erzeugt auf einem belebten Postfach leicht dichter
+    // als das Sammelfenster ein Ereignis. Startete die Entprellung dabei jedes
+    // Mal neu, liefe die sicherheitsrelevante Auffrischung nie — eine entzogene
+    // Nachricht bliebe samt geladenem Inhalt unbegrenzt stehen.
+    const flushed: Array<{ listReconcile: boolean }> = [];
+    const scheduler = createMailEventRefreshScheduler({ delayMs: 250, flush: (r) => flushed.push(r) });
+    scheduler.schedule(aclEvent);
+    for (let tick = 0; tick < 20; tick += 1) {
+      jest.advanceTimersByTime(100);
+      scheduler.schedule(messageEvent);
+    }
+    expect(flushed).toHaveLength(1);
+    expect(flushed[0]!.listReconcile).toBe(true);
+  });
+
+  test('events arriving during the wait still reach the flush', () => {
+    const flushed: Array<Record<string, boolean>> = [];
+    const scheduler = createMailEventRefreshScheduler({ delayMs: 250, flush: (r) => flushed.push(r) });
+    scheduler.schedule(aclEvent);
+    scheduler.schedule({ metadata: true });
+    jest.advanceTimersByTime(250);
+    expect(flushed[0]).toMatchObject({ list: true, listReconcile: true, metadata: true });
+  });
+
+  test('cancel drops the pending flush', () => {
+    const flushed: unknown[] = [];
+    const scheduler = createMailEventRefreshScheduler({ delayMs: 250, flush: (r) => flushed.push(r) });
+    scheduler.schedule(aclEvent);
+    scheduler.cancel();
+    jest.advanceTimersByTime(1000);
+    expect(flushed).toHaveLength(0);
   });
 });

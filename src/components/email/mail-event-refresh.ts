@@ -70,3 +70,43 @@ export function mergeMailEventRefreshRequests(
     remotePolicy: current.remotePolicy || next.remotePolicy === true,
   }
 }
+
+/**
+ * Entprellte Sammlung der Auffrischungen.
+ *
+ * Ereignisse kommen in Schueben (eine Gruppenmutation faechert je Mitglied ein
+ * Ereignis auf); die Entprellung fasst sie zusammen. Fuer den ACL-ABGLEICH
+ * gilt dabei eine Ausnahme: steht er aus, laeuft ein bereits geplanter Timer
+ * weiter, statt neu zu starten. Sonst verhungert er — ein Tagging-Workflow
+ * erzeugt auf einem belebten Postfach leicht dichter als die Entprellzeit ein
+ * Ereignis, und die sicherheitsrelevante Auffrischung liefe nie. Verloren geht
+ * dabei nur Verzoegerung, kein Auftrag: die Sammelanfrage waechst weiter.
+ */
+export function createMailEventRefreshScheduler(options: Readonly<{
+  delayMs: number
+  flush: (request: MailEventRefreshRequest) => void
+}>) {
+  let pending: MailEventRefreshRequest = NO_MAIL_EVENT_REFRESH
+  let timer: ReturnType<typeof setTimeout> | null = null
+
+  return {
+    schedule(request: Partial<MailEventRefreshRequest>): void {
+      pending = mergeMailEventRefreshRequests(pending, request)
+      if (timer !== null) {
+        if (pending.listReconcile) return
+        clearTimeout(timer)
+      }
+      timer = setTimeout(() => {
+        timer = null
+        const flushed = pending
+        pending = NO_MAIL_EVENT_REFRESH
+        options.flush(flushed)
+      }, options.delayMs)
+    },
+    cancel(): void {
+      if (timer !== null) clearTimeout(timer)
+      timer = null
+      pending = NO_MAIL_EVENT_REFRESH
+    },
+  }
+}

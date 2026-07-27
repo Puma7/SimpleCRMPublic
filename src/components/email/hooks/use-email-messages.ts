@@ -85,6 +85,10 @@ export function useEmailMessages() {
   const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Ref statt Dependency: der Fehlerpfad des Abgleichs plant eine Wiederholung,
+  // und loadMessages darf davon nicht seine Identitaet aendern (daran haengen
+  // mehrere Reload-Effekte).
+  const scheduleSilentReconcileRef = useRef<() => void>(() => {})
   const loadMessagesRef = useRef<(
     accountScope: MailAccountScope,
     view: MailView,
@@ -347,7 +351,25 @@ export function useEmailMessages() {
         }
       } catch (e) {
         logError("use-email-messages: load", e)
-        if (!silent && generation === loadGenerationRef.current) {
+        if (generation !== loadGenerationRef.current) return
+        if (reconcile) {
+          // FAIL CLOSED. Der Abgleich sollte pruefen, ob geladene Nachrichten
+          // noch sichtbar sind — konnte er das nicht, weiss niemand es. Die
+          // alte Liste einfach stehenzulassen hiesse, moeglicherweise bereits
+          // entzogene Inhalte weiter anzuzeigen, und der Detailbereich haelt
+          // ohnehin an seinem geladenen Inhalt fest (ein abgelehnter
+          // Nachladeversuch protokolliert nur).
+          //
+          // Also: Auswahl und ungeprueften Bestand raeumen und EINEN neuen
+          // Versuch planen. Klappt er, fuellt der Server die Liste selbst
+          // wieder — gescopt und damit per Definition unbedenklich.
+          setMessages([])
+          offsetRef.current = 0
+          setHasMore(false)
+          await selectMessageById(null, true)
+          scheduleSilentReconcileRef.current()
+        }
+        if (!silent) {
           toast.error("Nachrichten konnten nicht geladen werden.")
         }
       } finally {
@@ -363,6 +385,10 @@ export function useEmailMessages() {
   useEffect(() => {
     loadMessagesRef.current = loadMessages
   }, [loadMessages])
+
+  useEffect(() => {
+    scheduleSilentReconcileRef.current = scheduleSilentReconcile
+  }, [scheduleSilentReconcile])
 
   // Scope-Änderungen lösen nur bei aktiver Suche einen Reload aus; ohne Query
   // bleibt der Toggle folgenlos (die Auswahl gilt ab der nächsten Suche).

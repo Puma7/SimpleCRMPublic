@@ -22,9 +22,14 @@ type Props = {
 }
 
 export function AccountAdvancedPanel({ accountId }: Props) {
-  // PATCH /email/settings/account-mail verlangt settings.manage — ohne die Stufe
-  // waere jeder Save ein garantierter 403 (wie bei Snooze und Antwortvorschlaegen).
-  const { canManageSettings } = useAuth()
+  // Die Route ist ZWEISTUFIG, und beide Stufen muessen hier zusammenkommen:
+  //   GET   /email/settings/account-mail → mail.metadata.read (accountQuery)
+  //   PATCH /email/settings/account-mail → mail.account.manage (accountBody)
+  // settings.manage allein reicht also nicht: wer die Stufe hat, aber auf DIESEM
+  // Konto nicht verwalten darf, konnte die Felder bedienen und lief beim
+  // Speichern garantiert ins 403.
+  const { canManageSettings, hasMailPermissionForAccount } = useAuth()
+  const canEdit = canManageSettings && hasMailPermissionForAccount("mail.account.manage", accountId)
   const { accountsRevision } = useMailWorkspace()
   const [settings, setSettings] = useState<AccountMailSettings | null>(null)
   const [loading, setLoading] = useState(true)
@@ -115,7 +120,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
                 <div className="space-y-2">
                   <Label htmlFor="ticket-prefix">Ticket-Präfix</Label>
                   <Input
-                    disabled={!canManageSettings}
+                    disabled={!canEdit}
                     id="ticket-prefix"
                     value={settings.ticketPrefix}
                     maxLength={12}
@@ -126,7 +131,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
                 <div className="space-y-2">
                   <Label htmlFor="ticket-next-number">Nächste Nummer</Label>
                   <Input
-                    disabled={!canManageSettings}
+                    disabled={!canEdit}
                     id="ticket-next-number"
                     type="number"
                     min={1}
@@ -139,7 +144,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
                 <div className="space-y-2">
                   <Label htmlFor="ticket-padding">Auffüllung (Stellen)</Label>
                   <Input
-                    disabled={!canManageSettings}
+                    disabled={!canEdit}
                     id="ticket-padding"
                     type="number"
                     min={1}
@@ -169,7 +174,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
             <CardContent className="space-y-2">
               <Label htmlFor="thread-namespace">Namespace-Kennung</Label>
               <Input
-                disabled={!canManageSettings}
+                disabled={!canEdit}
                 id="thread-namespace"
                 value={settings.threadNamespace}
                 maxLength={64}
@@ -179,7 +184,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
             </CardContent>
           </Card>
 
-          <Button type="button" onClick={() => void save()} disabled={saving || !canManageSettings}>
+          <Button type="button" onClick={() => void save()} disabled={saving || !canEdit}>
             {saving ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
