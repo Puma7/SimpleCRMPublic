@@ -400,13 +400,12 @@ export async function runInboundWorkflowsForMessage(
   if (inboundWorkflowDeferred) return;
 
   const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
-  if (
-    postWorkflowRow.is_spam === 1 ||
-    postWorkflowRow.spam_status === 'spam' ||
-    postWorkflowRow.spam_status === 'review' ||
-    postWorkflowRow.spam_score_label === 'spam' ||
-    postWorkflowRow.spam_score_label === 'review'
-  ) {
+  // Dieselbe Pruefung wie in der Kette oben — bewusst ueber den gemeinsamen
+  // Helfer statt als zweite, handgeschriebene Kopie: die inline-Variante war
+  // strenger (kein Lowercasing, kein `is_spam === true`) und konnte damit
+  // abweichend entscheiden, ob nach Spam noch Antwortvorschlag und
+  // Abwesenheitsantwort laufen.
+  if (messageIsSpamOrReviewForInboundWorkflow(postWorkflowRow)) {
     return;
   }
 

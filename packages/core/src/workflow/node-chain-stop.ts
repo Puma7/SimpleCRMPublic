@@ -64,6 +64,21 @@ export function nodeRequestsChainStop(input: {
   return chainStopFlagEnabled(input.config[NODE_CHAIN_STOP_CONFIG_KEY]);
 }
 
+/**
+ * Muss exakt dieselbe Stelle lesen wie die Laufzeit. `nodeConfigOf`
+ * (electron/workflow/runtime.ts) verzweigt NICHT ueber den Canvas-Typ, sondern
+ * nimmt `data.config`, wenn das ein Objekt (kein Array) ist, und sonst `data`
+ * selbst. Eine Verzweigung ueber `node.type === 'registry'` liest bei einem
+ * registry-Knoten ohne config-Objekt und bei einem action-Knoten MIT config
+ * jeweils an der falschen Stelle — der Graph gilt dann faelschlich als „ohne
+ * explizite Konfiguration" und bekaeme trotz bewusstem
+ * `stopFurtherWorkflows: false` wieder den harten Legacy-Stopp.
+ */
+function chainStopConfigOf(data: Record<string, unknown>): unknown {
+  const config = data.config;
+  return config && typeof config === 'object' && !Array.isArray(config) ? config : data;
+}
+
 function configHasChainStopKey(config: unknown): boolean {
   if (!config || typeof config !== 'object') return false;
   return Object.prototype.hasOwnProperty.call(config, NODE_CHAIN_STOP_CONFIG_KEY);
@@ -91,11 +106,7 @@ export function workflowGraphHasExplicitChainStopConfig(graph: unknown): boolean
     const node = raw as { type?: string; data?: Record<string, unknown> };
     const data = node.data;
     if (!data || typeof data !== 'object') continue;
-    if (node.type === 'registry') {
-      if (configHasChainStopKey(data.config)) return true;
-      continue;
-    }
-    if (configHasChainStopKey(data)) return true;
+    if (configHasChainStopKey(chainStopConfigOf(data))) return true;
   }
   return false;
 }

@@ -124,6 +124,79 @@ describe('workflowGraphHasExplicitChainStopConfig', () => {
     expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(true);
   });
 
+  /**
+   * Der Helfer MUSS dieselbe Stelle lesen wie die Laufzeit. `nodeConfigOf`
+   * (electron/workflow/runtime.ts) verzweigt nicht ueber den Canvas-Typ, sondern
+   * nimmt `data.config`, wenn das ein Objekt (kein Array) ist, sonst `data`
+   * selbst. Eine Verzweigung ueber `node.type === 'registry'` las in beiden
+   * folgenden Faellen an der falschen Stelle: der Graph galt faelschlich als
+   * „ohne explizite Konfiguration" und bekam trotz bewusstem
+   * `stopFurtherWorkflows: false` wieder den harten Legacy-Stopp — also genau
+   * die Regression, die dieser Schalter verhindern soll, nur andersherum.
+   */
+  test('a registry node carries the flag directly on data when it has no config object', () => {
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 't', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 's', type: 'registry', data: { nodeType: 'email.mark_spam', stopFurtherWorkflows: false } },
+      ],
+      edges: [],
+    };
+    expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(true);
+  });
+
+  test('a non-registry node carries the flag inside data.config', () => {
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 't', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'a', type: 'action', data: { actionType: 'tag', config: { tag: 'vip', stopFurtherWorkflows: false } } },
+      ],
+      edges: [],
+    };
+    expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(true);
+  });
+
+  test('an array config falls back to data, exactly like the runtime', () => {
+    // nodeConfigOf verlangt ausdruecklich ein Objekt und KEIN Array.
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 'n', type: 'registry', data: { nodeType: 'logic.stop', config: [], stopFurtherWorkflows: true } },
+      ],
+      edges: [],
+    };
+    expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(true);
+  });
+
+  test('the decision is per GRAPH, not per node', () => {
+    // Bewusst festgehalten: setzt der Autor das Feld irgendwo, gilt der ganze
+    // Graph als „modern" und behaelt die Opt-in-Semantik — auch wenn der
+    // Spam-Knoten selbst kein Feld traegt. Wer das je auf knotenweise
+    // Auswertung umstellt, aendert damit das Verhalten von Bestandsgraphen.
+    const graph = {
+      version: 1,
+      nodes: [
+        { id: 's', type: 'registry', data: { nodeType: 'email.mark_spam', config: { spam: true } } },
+        { id: 'b', type: 'registry', data: { nodeType: 'logic.stop', config: { stopFurtherWorkflows: true } } },
+      ],
+      edges: [],
+    };
+    expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(true);
+  });
+
+  test('a false value still counts as explicit — presence is what matters', () => {
+    const graph = {
+      version: 1,
+      nodes: [{ id: 'n', type: 'registry', data: { nodeType: 'logic.stop', config: { stopFurtherWorkflows: false } } }],
+      edges: [],
+    };
+    expect(workflowGraphHasExplicitChainStopConfig(graph)).toBe(true);
+    // Der Schalter selbst bleibt davon unberuehrt: false stoppt nicht.
+    expect(chainStopFlagEnabled(false)).toBe(false);
+  });
+
   test('invalid graph input returns false', () => {
     expect(workflowGraphHasExplicitChainStopConfig(null)).toBe(false);
     expect(workflowGraphHasExplicitChainStopConfig('{bad json')).toBe(false);
