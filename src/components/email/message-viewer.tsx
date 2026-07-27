@@ -253,7 +253,7 @@ export function MessageViewer(props: Props) {
     conversationLocks,
     upsertConversationLock,
   } = useMailWorkspace()
-  const { user } = useAuth()
+  const { user, canViewWorkflows } = useAuth()
   const rendererTransport = getRendererTransport()
   const serverClientMode = rendererTransport.kind === "http"
   const serverAttachmentBaseUrl =
@@ -1223,6 +1223,9 @@ export function MessageViewer(props: Props) {
                         {selectedMessage.outbound_block_reason ||
                           "Die E-Mail entspricht nicht den Prüfkriterien. Bitte korrigieren und erneut senden."}
                       </p>
+                      {/* Die Run-Endpunkte verlangen workflows.view; ohne die Stufe
+                          endet der sichtbare Diagnosepfad garantiert im 403. */}
+                      {canViewWorkflows ? (
                       <Button
                         type="button"
                         size="sm"
@@ -1250,6 +1253,7 @@ export function MessageViewer(props: Props) {
                       >
                         Workflow-Details ansehen
                       </Button>
+                      ) : null}
                     </div>
                   ) : null}
                   {isAwaitingApproval ? (

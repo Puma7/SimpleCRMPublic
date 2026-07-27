@@ -9,6 +9,28 @@ function registryType(node: WorkflowGraphNode): string {
   return typeof data?.nodeType === 'string' ? data.nodeType : '';
 }
 
+/**
+ * Laufzeit-Typ eines Knotens — identisch zu nodeRuntimeType in
+ * workflow-execution: `data.nodeType` zaehlt AUSSCHLIESSLICH bei den
+ * Canvas-Typen `registry` und `action`. Ein als `condition` gespeicherter
+ * Knoten mit `data.nodeType = "email.release_outbound"` wird zur Laufzeit nur
+ * als Bedingung ausgefuehrt und gibt nie frei; wuerde die Trap-Erkennung ihn
+ * als Freigabe (oder als beabsichtigtes Hold-Ende) akzeptieren, liesse sie
+ * einen aktiven Ausgangs-Workflow durch, der jede Mail dauerhaft festhaelt.
+ */
+function runtimeType(node: WorkflowGraphNode): string {
+  const data = node.data as Record<string, unknown> | undefined;
+  if (node.type === 'registry') {
+    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
+  }
+  if (node.type === 'action') {
+    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
+    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
+    return 'action';
+  }
+  return node.type;
+}
+
 function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
   const data = node.data as Record<string, unknown> | undefined;
   const config = data?.config;
@@ -16,7 +38,7 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
 }
 
 function isReleaseNode(node: WorkflowGraphNode): boolean {
-  const type = registryType(node);
+  const type = runtimeType(node);
   if (type === 'email.release_outbound') return nodeConfig(node).autoSend === true;
   if (type === 'email.send_draft') {
     const config = nodeConfig(node);
@@ -32,7 +54,7 @@ function isHoldNode(node: WorkflowGraphNode): boolean {
   const data = node.data as Record<string, unknown> | undefined;
   return (
     (node.type === 'action' && data?.actionType === 'hold_outbound') ||
-    registryType(node) === 'email.hold_outbound'
+    runtimeType(node) === 'email.hold_outbound'
   );
 }
 
@@ -55,7 +77,7 @@ function edgeIsDefaultLabel(edge: { label?: string | null }): boolean {
 function namedPortBranch(
   node: WorkflowGraphNode,
 ): { ports: readonly string[]; releasePorts: readonly string[] } | null {
-  return NAMED_PORT_BRANCH_NODES[registryType(node)] ?? null;
+  return NAMED_PORT_BRANCH_NODES[runtimeType(node)] ?? null;
 }
 
 function triggerKind(doc: WorkflowGraphDocument): string | null {
@@ -237,4 +259,122 @@ export function outboundGraphReleasesMail(
   opts?: FindOutboundGraphTrapsOptions,
 ): boolean {
   return findOutboundGraphTraps(doc, opts).length === 0;
+}
+
+// --- Side-effect detection (mirror of packages/core workflowGraphHasSideEffectNode) ---
+
+/** Exportiert fuer den Spiegel-Test gegen packages/core (workflow-side-effect-mirror). */
+export const READ_ONLY_WORKFLOW_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'email.auth_check',
+  'email.read_tracking_evidence',
+  'email.sender_filter',
+  'returns.evaluate',
+  'jtl.lookup',
+  'jtl.prepare_action',
+]);
+
+/** Exportiert fuer den Spiegel-Test gegen packages/core (workflow-side-effect-mirror). */
+export const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
+  'logic.stop',
+  // Reiner Kontrollknoten (Spam-Kette abbrechen) — wie logic.stop kein
+  // Seiteneffekt. Fehlte er hier, haette der Editor Workflows mit diesem
+  // Knoten (mehrere Vorlagen nutzen ihn) fuer workflows.edit gesperrt,
+  // obwohl der Server sie zulaesst.
+  'logic.stop_after_spam',
+  'logic.set_variable',
+  'logic.merge',
+  'logic.threshold',
+  'logic.switch',
+  'logic.loop',
+]);
+
+function sideEffectRuntimeType(node: WorkflowGraphNode): string {
+  const data = node.data as Record<string, unknown> | undefined;
+  if (node.type === 'registry') {
+    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
+  }
+  if (node.type === 'action') {
+    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
+    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
+    return 'action';
+  }
+  return node.type;
+}
+
+/**
+ * True if the graph has at least one side-effecting node when run live.
+ * Keep in sync with packages/core/src/workflow/graph-validate.ts.
+ */
+export function workflowGraphHasSideEffectNode(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    if (node.type === 'trigger' || node.type === 'condition') continue;
+    if (node.type !== 'action' && node.type !== 'registry') return true;
+    const type = sideEffectRuntimeType(node);
+    if (LOGIC_INMEMORY_NODE_TYPES.has(type)) continue;
+    if (READ_ONLY_WORKFLOW_NODE_TYPES.has(type)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Spiegel von packages/core/src/workflow/node-chain-stop.ts. */
+const NODE_CHAIN_STOP_CONFIG_KEY = 'stopFurtherWorkflows';
+
+function chainStopFlagEnabled(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1';
+  }
+  return false;
+}
+
+/**
+ * Kann dieser Graph die gesamte Inbound-Priority-Kette abbrechen?
+ *
+ * Zwei Wege fuehren dorthin (workflow-execution): jeder Knoten mit
+ * `stopFurtherWorkflows: true` (nodeRequestsChainStop) und `logic.stop_after_spam`,
+ * das bei Spam `inboundChainStop` setzt — wobei `email.is_spam` vorher per
+ * `logic.set_variable` frei gesetzt werden kann. Ein solcher Workflow schaltet
+ * alle nachrangigen Inbound-Workflows ab (z. B. globale Spam- oder
+ * Compliance-Automation), ohne einen einzigen schreibenden Knoten zu enthalten.
+ * Die Berechtigungsschicht behandelt ihn deshalb wie einen Seiteneffekt-
+ * Workflow — in der Seiteneffekt-Allowlist bleiben die Knoten dagegen bewusst
+ * ausgenommen, denn sie schreiben selbst nichts.
+ */
+export function workflowGraphHasChainStopNode(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    const data = (node.data ?? {}) as Record<string, unknown>;
+    const config = (data.config ?? {}) as Record<string, unknown>;
+    if (chainStopFlagEnabled(config[NODE_CHAIN_STOP_CONFIG_KEY])) return true;
+    if (chainStopFlagEnabled(data[NODE_CHAIN_STOP_CONFIG_KEY])) return true;
+    if (sideEffectRuntimeType(node) === 'logic.stop_after_spam') return true;
+  }
+  return false;
 }

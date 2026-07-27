@@ -1,5 +1,26 @@
 import type { MailPermission, MailResource } from '@simplecrm/core';
 
+import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
+import {
+  isDenyAllCategoryAllowlist,
+  isDenyAllTagAllowlist,
+} from './mail-acl-constraints';
+
+export type { MailAssignmentMode, MailBindingVisibilityConstraints } from './mail-acl-constraints';
+export {
+  DENY_ALL_CATEGORY_ALLOW_ID,
+  DENY_ALL_MAIL_BINDING_CONSTRAINTS,
+  DENY_ALL_TAG_ALLOW_VALUE,
+  EMPTY_MAIL_BINDING_CONSTRAINTS,
+  constraintsEqual,
+  hasMailBindingConstraints,
+  isConstraintsAtLeastAsRestrictive,
+  isDenyAllCategoryAllowlist,
+  isDenyAllTagAllowlist,
+  mergeAuthorityConstraints,
+  unionAuthorityConstraints,
+} from './mail-acl-constraints';
+
 export type MailAccessActor = Readonly<{
   workspaceId: string;
   userId: string;
@@ -8,14 +29,46 @@ export type MailAccessActor = Readonly<{
 }>;
 
 export type MailAccessGrant =
-  | Readonly<{ resourceType: 'account'; accountId: number; folderId: null; messageId: null }>
-  | Readonly<{ resourceType: 'folder'; accountId: number; folderId: number; messageId: null }>
   | Readonly<{
+    bindingId: number;
+    resourceType: 'account';
+    accountId: number;
+    folderId: null;
+    messageId: null;
+    constraints: MailBindingVisibilityConstraints | null;
+  }>
+  | Readonly<{
+    bindingId: number;
+    resourceType: 'folder';
+    accountId: number;
+    folderId: number;
+    messageId: null;
+    constraints: MailBindingVisibilityConstraints | null;
+  }>
+  | Readonly<{
+    bindingId: number;
     resourceType: 'message';
     accountId: number;
     folderId: number;
     messageId: number;
+    constraints: MailBindingVisibilityConstraints | null;
   }>;
+
+export type MailScopeActorContext = Readonly<{
+  userId: string;
+  groupMemberUserIds: readonly string[];
+}>;
+
+export type MailScopeClause = Readonly<{
+  accountIds: readonly number[];
+  folderIds: readonly number[];
+  messageIds: readonly number[];
+  constraints: MailBindingVisibilityConstraints | null;
+  /** Shadow-mode remainder: exclude folders already covered by constrained grants. */
+  excludeFolderIds?: readonly number[];
+  /** Shadow-mode remainder: exclude messages already covered by constrained grants. */
+  excludeMessageIds?: readonly number[];
+}>;
 
 export type MailSqlScope =
   | Readonly<{ kind: 'all' }>
@@ -25,7 +78,16 @@ export type MailSqlScope =
     accountIds: readonly number[];
     folderIds: readonly number[];
     messageIds: readonly number[];
+    clauses?: readonly MailScopeClause[];
+    actor?: MailScopeActorContext;
   }>;
+
+export type MailMessageVisibilityFacts = Readonly<{
+  assignedToUserId: string | null;
+  assignedTo: string | null;
+  categoryIds: readonly number[];
+  tags: readonly string[];
+}>;
 
 export type ResolveMailAccessGrantsInput = Readonly<{
   workspaceId: string;
@@ -42,6 +104,32 @@ export interface MailAccessPort {
     input: ResolveMailAccessGrantsInput,
     evaluationContext?: MailAclRolloutEvaluationContext,
   ): Promise<readonly MailAccessGrant[]>;
+
+  resolveScopeActorContext?(input: Readonly<{
+    workspaceId: string;
+    userId: string;
+  }>): Promise<MailScopeActorContext>;
+
+  resolveMessageVisibilityFacts?(input: Readonly<{
+    workspaceId: string;
+    messageId: number;
+  }>): Promise<MailMessageVisibilityFacts | null>;
+
+  /**
+   * Nutzer, deren Bindings eine der genannten Kategorien/Tags als
+   * Sichtbarkeitsfilter referenzieren (Gruppen bereits auf Mitglieder
+   * aufgeloest). Eine Kategorie-/Tag-Aenderung an einer Nachricht kann deren
+   * Sichtbarkeit fuer genau diese Nutzer kippen.
+   */
+  resolveConstraintSubjectUserIds?(input: Readonly<{
+    workspaceId: string;
+    categoryIds?: readonly number[];
+    tags?: readonly string[];
+    /** Zusaetzlich alle Nutzer mit einem Zuweisungsfilter (assigned_to_me,
+     *  assigned_to_my_groups, unassigned) — deren Sicht kippt mit jeder
+     *  Zuweisungsaenderung, unabhaengig von Kategorie/Tag. */
+    includeAssignmentModes?: boolean;
+  }>): Promise<readonly string[]>;
 }
 
 export interface MailAccessService {
@@ -57,6 +145,30 @@ export interface MailAccessService {
     actor: MailAccessActor;
     permission: MailPermission;
   }>): Promise<MailSqlScope>;
+
+  /**
+   * Nutzer, die sich mit `userId` eine Gruppe teilen (inkl. ihm selbst) — der
+   * Satz, den assigned_to_my_groups in die Sichtbarkeit einbezieht. Routen
+   * brauchen ihn, um ACL-Invalidierungen an alle Betroffenen zu fassen.
+   * Optional, damit schlanke Test-Doubles den Contract weiterhin erfuellen.
+   */
+  resolveGroupPeerUserIds?(workspaceId: string, userId: string): Promise<readonly string[]>;
+
+  /**
+   * Nutzer, deren Sichtbarkeitsfilter die genannten Kategorien/Tags
+   * referenzieren — Routen invalidieren nach einer Kategorie-/Tag-Mutation
+   * genau diese, weil deren Liste die Nachricht sonst weiter zeigt (oder
+   * verpasst). Optional, damit schlanke Test-Doubles den Contract erfuellen.
+   */
+  resolveConstraintSubjectUserIds?(input: Readonly<{
+    workspaceId: string;
+    categoryIds?: readonly number[];
+    tags?: readonly string[];
+    /** Zusaetzlich alle Nutzer mit einem Zuweisungsfilter (assigned_to_me,
+     *  assigned_to_my_groups, unassigned) — deren Sicht kippt mit jeder
+     *  Zuweisungsaenderung, unabhaengig von Kategorie/Tag. */
+    includeAssignmentModes?: boolean;
+  }>): Promise<readonly string[]>;
 }
 
 export type MailAclRolloutMode = 'shadow' | 'enforce';
@@ -215,3 +327,88 @@ export type WorkflowDelayedJobMailClassification =
     kind: 'message';
     resource: Extract<MailResource, { type: 'message' }>;
   }>;
+
+export function messageMatchesConstraints(
+  facts: MailMessageVisibilityFacts,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+  actor: MailScopeActorContext,
+): boolean {
+  if (!constraints) return true;
+  const mode = constraints.assignmentMode;
+  if (mode && mode !== 'any') {
+    // Die positiven Modi vergleichen NUR die explizite Nutzerverknuepfung (der
+    // freie assigned_to-Text kann eine UUID-foermige Mitglieds-Id sein, deren
+    // Verknuepfung bewusst entfernt wurde). "Nicht zugewiesen" bleibt dagegen an
+    // BEIDEN Feldern: ein Mitglied ohne Nutzerverknuepfung ist trotzdem ein
+    // Bearbeiter.
+    const assignedUserId = facts.assignedToUserId ?? null;
+    const isAssigned = Boolean(assignedUserId || (facts.assignedTo && facts.assignedTo.length > 0));
+    if (mode === 'unassigned') {
+      if (isAssigned) return false;
+    } else if (mode === 'assigned_to_me') {
+      if (assignedUserId !== actor.userId) return false;
+    } else if (mode === 'assigned_to_my_groups') {
+      if (!assignedUserId || !actor.groupMemberUserIds.includes(assignedUserId)) return false;
+    }
+  }
+  if (constraints.categoryAllowIds.length > 0) {
+    if (isDenyAllCategoryAllowlist(constraints.categoryAllowIds)) return false;
+    if (!constraints.categoryAllowIds.some((id) => facts.categoryIds.includes(id))) return false;
+  }
+  if (constraints.categoryExcludeIds.length > 0) {
+    if (constraints.categoryExcludeIds.some((id) => facts.categoryIds.includes(id))) return false;
+  }
+  if (constraints.tagAllowValues.length > 0) {
+    if (isDenyAllTagAllowlist(constraints.tagAllowValues)) return false;
+    if (!constraints.tagAllowValues.some((tag) => facts.tags.includes(tag))) return false;
+  }
+  if (constraints.tagExcludeValues.length > 0) {
+    if (constraints.tagExcludeValues.some((tag) => facts.tags.includes(tag))) return false;
+  }
+  return true;
+}
+
+export function explainConstraintMismatch(
+  facts: MailMessageVisibilityFacts,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+  actor: MailScopeActorContext,
+): string | null {
+  if (messageMatchesConstraints(facts, constraints, actor)) return null;
+  if (!constraints) return null;
+  const mode = constraints.assignmentMode;
+  if (mode && mode !== 'any') {
+    const assignedUserId = facts.assignedToUserId ?? null;
+    const isAssigned = Boolean(assignedUserId || (facts.assignedTo && facts.assignedTo.length > 0));
+    if (mode === 'unassigned' && isAssigned) return 'Nachricht ist zugewiesen (Filter: unzugewiesen)';
+    if (mode === 'assigned_to_me' && assignedUserId !== actor.userId) {
+      return 'Nachricht ist nicht dem Nutzer zugewiesen';
+    }
+    if (
+      mode === 'assigned_to_my_groups'
+      && (!assignedUserId || !actor.groupMemberUserIds.includes(assignedUserId))
+    ) {
+      return 'Nachricht ist keinem Mitglied der Nutzergruppen zugewiesen';
+    }
+  }
+  if (
+    constraints.categoryAllowIds.length > 0
+    && (isDenyAllCategoryAllowlist(constraints.categoryAllowIds)
+      || !constraints.categoryAllowIds.some((id) => facts.categoryIds.includes(id)))
+  ) {
+    return 'Nachricht liegt ausserhalb der erlaubten Kategorien';
+  }
+  if (constraints.categoryExcludeIds.some((id) => facts.categoryIds.includes(id))) {
+    return 'Nachricht hat eine ausgeschlossene Kategorie';
+  }
+  if (
+    constraints.tagAllowValues.length > 0
+    && (isDenyAllTagAllowlist(constraints.tagAllowValues)
+      || !constraints.tagAllowValues.some((tag) => facts.tags.includes(tag)))
+  ) {
+    return 'Nachricht liegt ausserhalb der erlaubten Tags';
+  }
+  if (constraints.tagExcludeValues.some((tag) => facts.tags.includes(tag))) {
+    return 'Nachricht hat einen ausgeschlossenen Tag';
+  }
+  return 'Sichtbarkeitsfilter nicht erfuellt';
+}

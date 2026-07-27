@@ -38,11 +38,18 @@ type ServerAutomationApiSettings = AutomationApiSettings & {
 }
 
 export function AutomationPanel() {
-  const { user } = useAuth()
+  const { user, canManageSettings } = useAuth()
   const rendererTransport = getRendererTransport()
   const serverClientMode = rendererTransport.kind === "http"
   // Admin-only: this panel edits the workflow HTTP allowlist (SSRF boundary).
   const canManage = user?.role === "owner" || user?.role === "admin"
+  // Die Workflow-Optionen schreiben auf /workflow/settings/automation — dort ist
+  // der Schreibzugriff ausdruecklich admin-only. Webhook/Anhaenge haengen an
+  // settings.manage, das Secret zusaetzlich an der Adminrolle. Ohne diese
+  // Trennung stuenden einem delegierten settings.view-Nutzer Bedienelemente
+  // offen, deren PATCH garantiert 403 liefert.
+  const canEditWorkflowOptions = !serverClientMode || canManage
+  const canEditMiscSettings = !serverClientMode || Boolean(canManageSettings)
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false)
@@ -468,12 +475,18 @@ export function AutomationPanel() {
           </p>
         </div>
 
+        {canEditWorkflowOptions ? null : (
+          <p className="text-xs text-muted-foreground">
+            Nur lesbar: Workflow-Optionen können nur von Ownern und Admins geändert werden.
+          </p>
+        )}
+
         <AutoReplySettingsSection
           enabled={autoReplyEnabled}
           onEnabledChange={setAutoReplyEnabled}
           maxPerDay={autoReplyMaxPerDay}
           onMaxPerDayChange={setAutoReplyMaxPerDay}
-          disabled={loading}
+          disabled={loading || !canEditWorkflowOptions}
         />
 
         <div className="flex items-center justify-between gap-4 rounded-lg border p-4">
@@ -487,7 +500,7 @@ export function AutomationPanel() {
           <Switch
             id="imap-delete-opt-in"
             checked={imapDeleteOptIn}
-            disabled={loading}
+            disabled={loading || !canEditWorkflowOptions}
             onCheckedChange={setImapDeleteOptIn}
           />
         </div>
@@ -501,18 +514,22 @@ export function AutomationPanel() {
           <Input
             id="http-allowlist"
             value={httpAllowlist}
-            disabled={loading}
+            disabled={loading || !canEditWorkflowOptions}
             onChange={(e) => setHttpAllowlist(e.target.value)}
             placeholder="api.example.com, hooks.zapier.com"
           />
         </div>
 
-        <Button type="button" onClick={() => void saveWorkflowOpts()} disabled={loading}>
+        <Button
+          type="button"
+          onClick={() => void saveWorkflowOpts()}
+          disabled={loading || !canEditWorkflowOptions}
+        >
           Workflow-Optionen speichern
         </Button>
       </section>
 
-      <AutomationMiscSettingsSection />
+      <AutomationMiscSettingsSection canEdit={canEditMiscSettings} canEditSecret={canManage} />
     </div>
   )
 }

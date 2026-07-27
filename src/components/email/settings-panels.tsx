@@ -1,6 +1,7 @@
 "use client"
 
 import type { ReactElement } from "react"
+import { useEffect } from "react"
 import { useNavigate } from "@tanstack/react-router"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { cn } from "@/lib/utils"
@@ -24,6 +25,7 @@ import {
   Stethoscope,
 } from "lucide-react"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
+import { isSettingsTabAvailable } from "./settings-tab-access"
 import { type SettingsTab, useMailWorkspace } from "./workspace-context"
 import { AccountsMasterDetailSettings } from "./settings/accounts-master-detail"
 import { OAuthAppsPanel } from "./settings/oauth-apps-panel"
@@ -40,6 +42,7 @@ import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 import { AuthSecurityPanel } from "@/components/settings/auth-security-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
 import { ChangePasswordCard } from "@/components/settings/change-password-card"
+import { AppUsersTab } from "@/components/email/settings-app-users-tab"
 import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
@@ -48,6 +51,7 @@ export { SETTINGS_TAB_IDS } from "./settings-tab-ids"
 import { TrackingSettingsPanel } from "./settings/tracking-settings-panel"
 import { RelaySettingsPanel } from "./settings/relay-settings-panel"
 import { MailDelegationPanel } from "./settings/mail-delegation-panel"
+import { useAuth } from "@/components/auth/auth-context"
 
 type TabDef = {
   id: SettingsTab
@@ -58,6 +62,15 @@ type TabDef = {
   /** Tab depends on server-only IPC channels (no Electron handlers); hidden in
    *  standalone mode so it doesn't error on open. */
   serverOnly?: boolean
+  /** Reachable without settings.view (personal account / password). */
+  personalAccount?: boolean
+  /**
+   * Schon der initiale GET dieses Tabs ist serverseitig admin-only
+   * (OAuth-Apps: mail-routes, SMTP-Relay: relay-routes, Audit-Log:
+   * auth-routes). Fuer einen delegierten settings.view-Nutzer waere der Tab
+   * ein garantierter 403 — deshalb gar nicht erst anbieten.
+   */
+  adminOnly?: boolean
 }
 
 const TAB_DEFS: TabDef[] = [
@@ -70,6 +83,7 @@ const TAB_DEFS: TabDef[] = [
   },
   {
     id: "oauthApps",
+    adminOnly: true,
     label: "OAuth-Apps",
     icon: KeyRound,
     render: () => <OAuthAppsPanel />,
@@ -97,6 +111,7 @@ const TAB_DEFS: TabDef[] = [
   },
   {
     id: "smtpRelay",
+    adminOnly: true,
     label: "SMTP-Relay",
     icon: Send,
     render: () => <RelaySettingsPanel />,
@@ -127,19 +142,16 @@ const TAB_DEFS: TabDef[] = [
     id: "appUsers",
     label: "App-Benutzer",
     icon: Users,
-    render: () => (
-      <div className="space-y-6">
-        <ChangePasswordCard />
-        <UsersPanel />
-      </div>
-    ),
+    render: () => <AppUsersTab />,
+    /** Always available for self-service password change without settings.view. */
+    personalAccount: true,
   },
   { id: "authSecurity", label: "Login-Sicherheit", icon: Shield, render: () => <AuthSecurityPanel />, serverOnly: true },
   { id: "userGroups", label: "Benutzergruppen", icon: Users, serverOnly: true, render: () => <UserGroupsPanel /> },
   { id: "canned", label: "Textbausteine", icon: Type, render: () => <CannedPanel /> },
   { id: "export", label: "Datenschutz-Export", icon: Download, render: () => <ExportPanel /> },
   { id: "pgp", label: "PGP", icon: KeyRound, render: () => <PgpPanel /> },
-  { id: "auditLog", label: "Audit-Log", icon: ShieldCheck, render: () => <AuditLogPanel /> },
+  { id: "auditLog", label: "Audit-Log", icon: ShieldCheck, adminOnly: true, render: () => <AuditLogPanel /> },
   { id: "threadTools", label: "Threads", icon: Workflow, render: () => <ThreadToolsPanel /> },
   { id: "snooze", label: "Snooze", icon: Clock, render: () => <SnoozePanel /> },
   { id: "diagnostics", label: "Diagnose", icon: Stethoscope, render: () => <DiagnosticsPanel /> },
@@ -157,7 +169,19 @@ export const SETTINGS_GROUPS: { label: string; tabIds: SettingsTab[] }[] = [
   { label: "Sonstiges", tabIds: ["misc"] },
 ]
 
-function SettingsPanels({ current }: { current: SettingsTab }) {
+function SettingsPanels({ current, personalOnly }: { current: SettingsTab; personalOnly: boolean }) {
+  const { canManageUsers } = useAuth()
+  if (personalOnly) {
+    // users.manage ohne settings.view: die Server-Endpunkte lassen diesen Nutzer
+    // ausdruecklich zu, es gaebe sonst aber keinen Weg zur Benutzerverwaltung.
+    // Der Rest der Einstellungen bleibt zu.
+    return (
+      <div className="mx-auto w-full max-w-2xl space-y-6 p-6">
+        <ChangePasswordCard />
+        {canManageUsers ? <UsersPanel /> : null}
+      </div>
+    )
+  }
   const active = TAB_DEFS.find(
     (t) => t.id === current && (!t.serverOnly || isServerClientMode()),
   ) ?? TAB_DEFS[0]!
@@ -177,20 +201,25 @@ function SettingsPanels({ current }: { current: SettingsTab }) {
 type NavProps = {
   current: SettingsTab
   onSelect: (t: SettingsTab) => void
+  personalOnly: boolean
+  isAdmin: boolean
 }
 
-function SettingsNav({ current, onSelect }: NavProps) {
+function SettingsNav({ current, onSelect, personalOnly, isAdmin }: NavProps) {
   const tabById = new Map(TAB_DEFS.map((t) => [t.id, t]))
+  const groups = personalOnly
+    ? [{ label: "Konto", tabIds: ["appUsers"] as SettingsTab[] }]
+    : SETTINGS_GROUPS
 
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r bg-muted/40">
       <div className="border-b px-4 py-3">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          E-Mail-Einstellungen
+          {personalOnly ? "Konto" : "E-Mail-Einstellungen"}
         </p>
       </div>
       <nav className="flex-1 space-y-4 overflow-y-auto p-2">
-        {SETTINGS_GROUPS.map((group) => (
+        {groups.map((group) => (
           <div key={group.label}>
             <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               {group.label}
@@ -201,9 +230,14 @@ function SettingsNav({ current, onSelect }: NavProps) {
                 if (!t) return null
                 // Hide server-only tabs in standalone Electron (their IPC
                 // channels have no local handler).
-                if (t.serverOnly && !isServerClientMode()) return null
+                if (!isSettingsTabAvailable(t, {
+                  serverClientMode: isServerClientMode(),
+                  personalOnly,
+                  isAdmin,
+                })) return null
                 const Icon = t.icon
                 const active = t.id === current
+                const label = personalOnly && t.id === "appUsers" ? "Passwort" : t.label
                 return (
                   <button
                     key={t.id}
@@ -217,7 +251,7 @@ function SettingsNav({ current, onSelect }: NavProps) {
                     )}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
-                    {t.label}
+                    {label}
                   </button>
                 )
               })}
@@ -232,27 +266,84 @@ function SettingsNav({ current, onSelect }: NavProps) {
 export function SettingsPanelsPage() {
   const { settingsTab, setSettingsTab } = useMailWorkspace()
   const navigate = useNavigate()
-  const active = TAB_DEFS.find(
-    (t) => t.id === settingsTab && (!t.serverOnly || isServerClientMode()),
-  ) ?? TAB_DEFS[0]!
+  const { canViewSettings, capabilitiesReady, user } = useAuth()
+  const isAdmin = !isServerClientMode() || user?.role === "owner" || user?.role === "admin"
+  // Erst nach dem Laden der Gruppenrechte entscheiden: davor ist WEDER
+  // personalOnly noch Vollzugriff korrekt. Ein direkt angeforderter Tab wuerde
+  // sonst kurz vollstaendig mounten (und seine Requests abfeuern), obwohl der
+  // Nutzer am Ende vielleicht kein settings.view hat.
+  const capabilitiesPending = isServerClientMode() && !capabilitiesReady
+  const personalOnly = isServerClientMode() && capabilitiesReady && !canViewSettings
+  const active = personalOnly
+    ? TAB_DEFS.find((t) => t.id === "appUsers")!
+    : TAB_DEFS.find((t) => t.id === settingsTab && isSettingsTabAvailable(t, {
+      serverClientMode: isServerClientMode(),
+      personalOnly,
+      isAdmin,
+    })) ?? TAB_DEFS[0]!
 
   const selectTab = (tab: SettingsTab) => {
-    setSettingsTab(tab)
-    void navigate({ to: "/email/settings", search: emailSettingsSearch({ tab }) })
+    const next = personalOnly ? "appUsers" : tab
+    setSettingsTab(next)
+    void navigate({ to: "/email/settings", search: emailSettingsSearch({ tab: next }) })
+  }
+
+  useEffect(() => {
+    if (!personalOnly) return
+    if (settingsTab === "appUsers") return
+    setSettingsTab("appUsers")
+    void navigate({ to: "/email/settings", search: emailSettingsSearch({ tab: "appUsers" }), replace: true })
+  }, [personalOnly, settingsTab, setSettingsTab, navigate])
+
+  // Ein admin-only Tab per Direkt-URL: nicht mounten, sondern auf den ersten
+  // erlaubten Tab zuruecksetzen — der GET dahinter endet sonst im 403.
+  useEffect(() => {
+    if (capabilitiesPending || personalOnly || isAdmin) return
+    const requested = TAB_DEFS.find((t) => t.id === settingsTab)
+    if (!requested?.adminOnly) return
+    setSettingsTab(TAB_DEFS[0]!.id)
+    void navigate({
+      to: "/email/settings",
+      search: emailSettingsSearch({ tab: TAB_DEFS[0]!.id }),
+      replace: true,
+    })
+  }, [capabilitiesPending, isAdmin, personalOnly, settingsTab, setSettingsTab, navigate])
+
+  if (capabilitiesPending) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
+        <header className="flex h-12 shrink-0 items-center border-b px-4">
+          <h1 className="text-lg font-semibold tracking-tight">Einstellungen</h1>
+        </header>
+        <div className="flex flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
+          Berechtigungen werden geladen…
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       <header className="flex h-12 shrink-0 items-center border-b px-4">
-        <h1 className="text-lg font-semibold tracking-tight">Einstellungen</h1>
+        <h1 className="text-lg font-semibold tracking-tight">
+          {personalOnly ? "Konto" : "Einstellungen"}
+        </h1>
       </header>
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <SettingsNav current={settingsTab} onSelect={selectTab} />
-        {active.fullBleed ? (
+        <SettingsNav
+          current={personalOnly ? "appUsers" : settingsTab}
+          onSelect={selectTab}
+          personalOnly={personalOnly}
+          isAdmin={isAdmin}
+        />
+        {active.fullBleed && !personalOnly ? (
           active.render()
         ) : (
           <ScrollArea className="flex-1">
-            <SettingsPanels current={settingsTab} />
+            <SettingsPanels
+              current={active.id}
+              personalOnly={personalOnly}
+            />
           </ScrollArea>
         )}
       </div>

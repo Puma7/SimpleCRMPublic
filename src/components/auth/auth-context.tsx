@@ -10,12 +10,15 @@ import {
   type ReactNode,
 } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import { expandUserGroupCapabilities } from "@shared/user-capabilities"
 import { invokeIpc, hasElectron } from "@/components/email/types"
 import {
   createServerAuthClient,
   getRendererTransport,
   invokeRenderer,
+  isMailAclRefreshEvent,
   ServerAuthClientError,
+  subscribeServerEvents,
   type ServerAuthClient,
   type ServerAuthSession,
   type ServerAuthUser,
@@ -36,8 +39,24 @@ type AuthState = {
   user: AuthUser | null
   /** Owners/admins hold every capability; other roles gain group-granted ones. */
   hasCapability: (capability: string) => boolean
+  /** Desktop always true; server edition requires crm.read (or admin/owner). */
+  canReadCrm: boolean
   /** Desktop always true; server edition requires crm.write (or admin/owner). */
   canWriteCrm: boolean
+  /** Desktop always true; server edition requires settings.view (or admin/owner). */
+  canViewSettings: boolean
+  /** Desktop always true; server edition requires settings.manage (or admin/owner). */
+  canManageSettings: boolean
+  /**
+   * false, solange die Gruppenrechte der Server-Edition noch geladen werden.
+   * Gates, die bei fehlendem Recht umleiten oder Inhalte ersetzen, muessen darauf
+   * warten — sonst greifen sie im ersten Render faelschlich.
+   */
+  capabilitiesReady: boolean
+  /** Desktop always true; server edition requires users.manage (or admin/owner). */
+  canManageUsers: boolean
+  /** Desktop always true; server edition requires workflows.view (or admin/owner). */
+  canViewWorkflows: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   refresh: (options?: { force?: boolean }) => Promise<void>
@@ -51,6 +70,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authRequired, setAuthRequired] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [capabilities, setCapabilities] = useState<readonly string[]>([])
+  // Fuer WELCHEN Nutzer die geladene Capability-Liste gilt. Bewusst kein
+  // ready-Flag: das wurde im unauthentifizierten Zweig auf true gesetzt und war
+  // beim ersten Login eines gewoehnlichen Server-Nutzers im Render VOR dem
+  // Ladeeffekt noch true — Gates sahen "fertig geladen mit leerer Liste" und
+  // leiteten z. B. die Einstellungsseite sofort auf den Konto-Tab um. An die
+  // User-Id gebunden ist der Zustand beim Sitzungswechsel sofort korrekt.
+  const [capabilitiesUserId, setCapabilitiesUserId] = useState<string | null>(null)
   const [serverSessionExpiresAt, setServerSessionExpiresAt] = useState<string | null>(null)
 
   const applyServerSession = useCallback((session: ServerAuthSession | null) => {
@@ -146,36 +172,136 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Load group-granted capabilities for non-admin users (server edition only).
   // Owners/admins hold all implicitly, so the fetch is skipped for them.
+  // Also reload on email_acl.changed — group membership/permission updates publish
+  // that event, and nav gates must reflect the new capability set without re-login.
   useEffect(() => {
-    if (!authenticated || !user || getRendererTransport().kind !== "http"
-      || user.role === "owner" || user.role === "admin") {
+    if (!authenticated || !user || getRendererTransport().kind !== "http") {
       setCapabilities([])
+      setCapabilitiesUserId(null)
       return
     }
+    // Owner/Admin halten alle Rechte implizit — fuer sie entfaellt der Abruf,
+    // NICHT aber das Event-Abo: email_acl.changed ist zugleich das Signal fuer
+    // Herabstufung/Deaktivierung des eigenen Kontos.
+    const adminRole = user.role === "owner" || user.role === "admin"
+    if (adminRole) {
+      setCapabilities([])
+      setCapabilitiesUserId(null)
+    }
     let cancelled = false
-    void (async () => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
+    const loadCapabilities = async () => {
       try {
         const res = await invokeRenderer(IPCChannels.Auth.ListCapabilities, undefined) as
           { capabilities?: string[] } | null
         if (!cancelled && res && Array.isArray(res.capabilities)) setCapabilities(res.capabilities)
       } catch {
         if (!cancelled) setCapabilities([])
+      } finally {
+        if (!cancelled) setCapabilitiesUserId(user.id)
       }
-    })()
-    return () => { cancelled = true }
-  }, [authenticated, user])
+    }
+
+    if (!adminRole) {
+      // Vor JEDEM Abruf zuruecksetzen — bei einem Nutzerwechsel gilt die alte
+      // Liste nicht mehr.
+      setCapabilitiesUserId(null)
+      void loadCapabilities()
+    }
+    const subscription = subscribeServerEvents({
+      onEvent: (event) => {
+        if (!isMailAclRefreshEvent(event)) return
+        // NUR selbstadressierte Ereignisse: Owner/Admins und konto-begrenzte
+        // Delegationsmanager bekommen auch Peer-Invalidierungen zugestellt.
+        // Auf jede davon die eigene Sitzung zu erneuern wuerde bei jedem
+        // Zuweisungs- oder Filter-Fanout das Refresh-Token rotieren und einen
+        // auth.refresh_rotated-Audit-Eintrag erzeugen. Fremde ACL-Ereignisse
+        // gehen die fachlichen Refresh-Handler etwas an, nicht die Sitzung.
+        const targetUserId = (event.payload as { targetUserId?: unknown } | undefined)?.targetUserId
+        if (typeof targetUserId === "string" && targetUserId !== user.id) return
+        if (debounceTimer) clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => {
+          // Der Server veroeffentlicht ein selbstadressiertes email_acl.changed
+          // auch bei Rollenwechsel, Deaktivierung und Loeschung (auth-routes).
+          // Nur die Capability-Liste nachzuladen wuerde die alte Rolle stehen
+          // lassen — ein herabgestufter Admin behielte bis zum naechsten
+          // Token-Refresh alle Gates. Deshalb die Sitzung neu einlesen; schlaegt
+          // das fehl, raeumt refresh() den Auth-State ab.
+          void refresh({ force: true })
+          if (!adminRole) {
+            setCapabilitiesUserId(null)
+            void loadCapabilities()
+          }
+        }, 250)
+      },
+    })
+    return () => {
+      cancelled = true
+      if (debounceTimer) clearTimeout(debounceTimer)
+      subscription.unsubscribe()
+    }
+  }, [authenticated, user, refresh])
+
+  // Abgeleitet statt gespeichert: „fertig" heisst entweder „hier gibt es nichts
+  // zu laden" (Desktop, abgemeldet, Owner/Admin) oder „die geladene Liste gehoert
+  // zu GENAU diesem Nutzer".
+  const capabilitiesReady = useMemo(() => {
+    if (!authenticated || !user || getRendererTransport().kind !== "http") return true
+    if (user.role === "owner" || user.role === "admin") return true
+    return capabilitiesUserId === user.id
+  }, [authenticated, user, capabilitiesUserId])
+
+  // Genau wie serverseitig in requireCapability defensiv expandieren: die
+  // gespeicherten Grants halten pro Modul nur die HOECHSTE Stufe
+  // (normalizeStoredUserGroupPermissions), und `email_settings.manage` ist ein
+  // akzeptiertes Legacy-Alias. Ein exakter String-Vergleich wuerde einem
+  // crm.write-Inhaber crm.read absprechen — und seit die Navigation danach
+  // gefiltert wird, waere das nicht mehr nur ein 403, sondern eine
+  // verschwundene Oberflaeche. Der aktuelle Produktionspfad liefert die Liste
+  // bereits expandiert; diese Zeile haelt den Client davon unabhaengig.
+  const expandedCapabilities = useMemo(
+    () => expandUserGroupCapabilities(capabilities),
+    [capabilities],
+  )
 
   const hasCapability = useCallback((capability: string): boolean => {
     if (!user) return false
     if (user.role === "owner" || user.role === "admin") return true
-    return capabilities.includes(capability)
-  }, [user, capabilities])
+    return expandedCapabilities.includes(capability)
+  }, [user, expandedCapabilities])
+
+  const canReadCrm = useMemo(() => {
+    // Capability model is server-edition only; desktop remains unrestricted.
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("crm.read")
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const canWriteCrm = useMemo(() => {
     // Capability model is server-edition only; desktop remains unrestricted.
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("crm.write")
-  }, [hasCapability, authenticated, user, capabilities])
+  }, [hasCapability, authenticated, user, expandedCapabilities])
+
+  const canViewSettings = useMemo(() => {
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("settings.view")
+  }, [hasCapability, authenticated, user, expandedCapabilities])
+
+  const canManageSettings = useMemo(() => {
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("settings.manage")
+  }, [hasCapability, authenticated, user, expandedCapabilities])
+
+  const canManageUsers = useMemo(() => {
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("users.manage")
+  }, [hasCapability, authenticated, user, expandedCapabilities])
+
+  const canViewWorkflows = useMemo(() => {
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("workflows.view")
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const login = useCallback(async (username: string, passphrase: string) => {
     const transport = getRendererTransport()
@@ -225,8 +351,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo(
-    () => ({ loading, authenticated, authRequired, user, hasCapability, canWriteCrm, login, logout, refresh }),
-    [loading, authenticated, authRequired, user, hasCapability, canWriteCrm, login, logout, refresh],
+    () => ({
+      loading,
+      authenticated,
+      authRequired,
+      user,
+      hasCapability,
+      canReadCrm,
+      canWriteCrm,
+      canViewSettings,
+      canManageSettings,
+      capabilitiesReady,
+      canManageUsers,
+      canViewWorkflows,
+      login,
+      logout,
+      refresh,
+    }),
+    [
+      loading,
+      authenticated,
+      authRequired,
+      user,
+      hasCapability,
+      canReadCrm,
+      canWriteCrm,
+      canViewSettings,
+      canManageSettings,
+      capabilitiesReady,
+      canManageUsers,
+      canViewWorkflows,
+      login,
+      logout,
+      refresh,
+    ],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -18,6 +18,9 @@ import { cn } from "@/lib/utils"
 import { UserSwitcher } from "@/components/auth/user-switcher"
 import { LanguageToggle } from "@/components/language-toggle"
 import { useTranslation } from "@/lib/i18n"
+import { useAuth } from "@/components/auth/auth-context"
+import { isCrmRoutePath } from "@/components/crm-route-access"
+import { isServerClientMode } from "@/lib/runtime-mode"
 
 const navLinks = [
   { to: "/", labelKey: "nav.dashboard", icon: LayoutDashboard, exact: true },
@@ -39,6 +42,13 @@ export function MainNav({
   onOpenCommandPalette?: () => void
 }) {
   const { t } = useTranslation()
+  const { canViewSettings, canReadCrm, capabilitiesReady } = useAuth()
+  // Ohne crm.read liefert jeder CRM-Pfad serverseitig 403 — die Links dorthin
+  // waeren Sackgassen. Solange die Rechte noch laden, bleibt alles sichtbar.
+  const hideCrmLinks = isServerClientMode() && capabilitiesReady && !canReadCrm
+  const visibleLinks = hideCrmLinks
+    ? navLinks.filter((link) => !isCrmRoutePath(link.to))
+    : navLinks
   return (
     <nav className={cn("border-b", className)} {...props}>
       <div className="flex h-16 items-center px-4">
@@ -47,7 +57,7 @@ export function MainNav({
           <span className="font-bold">SimpleCRM</span>
         </Link>
         <div className="flex flex-1 items-center space-x-4 lg:space-x-6">
-          {navLinks.map(({ to, labelKey, icon: Icon }) => (
+          {visibleLinks.map(({ to, labelKey, icon: Icon }) => (
             <Link
               key={to}
               to={to}
@@ -79,17 +89,19 @@ export function MainNav({
             </button>
           ) : null}
           <UserSwitcher />
-          <Link
-            to="/settings"
-            className={cn(
-              "flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary",
-            )}
-            activeProps={{ className: "text-primary" }}
-            inactiveProps={{ className: "text-muted-foreground" }}
-          >
-            <Settings className="h-4 w-4" />
-            <span>{t("nav.settings")}</span>
-          </Link>
+          {canViewSettings ? (
+            <Link
+              to="/settings"
+              className={cn(
+                "flex items-center space-x-2 text-sm font-medium transition-colors hover:text-primary",
+              )}
+              activeProps={{ className: "text-primary" }}
+              inactiveProps={{ className: "text-muted-foreground" }}
+            >
+              <Settings className="h-4 w-4" />
+              <span>{t("nav.settings")}</span>
+            </Link>
+          ) : null}
         </div>
       </div>
     </nav>

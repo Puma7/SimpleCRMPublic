@@ -14,8 +14,10 @@ import type {
   MailAclRolloutReadiness,
   MailAclRolloutState,
   MailAclRolloutTransitionResult,
+  MailScopeClause,
   MailSqlScope,
 } from './types';
+import { hasMailBindingConstraints } from './mail-acl-constraints';
 
 export type MailAclRolloutDelta = Readonly<Partial<{
   evaluated: bigint;
@@ -127,7 +129,7 @@ export class MailAccessRolloutService implements MailAccessService {
       const accountId = resourceAccountId(input.resource);
       if (accountId === null) return { value: deniedDecision() };
 
-      const [legacyAllowed, newDecision] = await Promise.all([
+      const [legacyAllowed, newDecision, newGrants] = await Promise.all([
         this.options.legacy.canAccessAccount({
           workspaceId: input.workspaceId,
           userId: input.actor.userId,
@@ -135,9 +137,18 @@ export class MailAccessRolloutService implements MailAccessService {
           accountId,
         }, context),
         this.newDecision(newAcl, input),
+        this.options.newAcl.resolveGrants({
+          workspaceId: input.workspaceId,
+          userId: input.actor.userId,
+          permission: input.permission,
+        }, context),
       ]);
+      // Shadow keeps legacy account allow/deny for readiness comparison, but still
+      // enforces assignment/category/tag filters so constrained bindings are not inert.
+      const enforceConstraints = shouldEnforceConstraintsInShadow(input.resource, newGrants);
+      const allowed = legacyAllowed && (!enforceConstraints || newDecision.allowed);
       return {
-        value: legacyAllowed ? allowedDecision() : deniedDecision(),
+        value: allowed ? allowedDecision() : deniedDecision(),
         delta: {
           evaluated: 1n,
           legacyAllowNewDeny: legacyAllowed && !newDecision.allowed ? 1n : 0n,
@@ -149,6 +160,29 @@ export class MailAccessRolloutService implements MailAccessService {
     if (!evaluation.telemetry.healthy) this.reportTelemetryDiagnostic(evaluation.telemetry.code);
     const decision = evaluation.value;
     if (!decision.allowed) throw decision.error;
+  }
+
+  /** Gruppen-Peers kommen immer aus der NEUEN ACL — auch im Shadow-Modus, wo
+   *  die Sichtbarkeitsfilter bereits echt greifen. */
+  async resolveGroupPeerUserIds(workspaceId: string, userId: string): Promise<readonly string[]> {
+    if (!this.options.newAcl.resolveScopeActorContext) return [userId];
+    const context = await this.options.newAcl.resolveScopeActorContext({ workspaceId, userId });
+    return context.groupMemberUserIds.length > 0 ? context.groupMemberUserIds : [userId];
+  }
+
+  /** Wie die Gruppen-Peers: die Sichtbarkeitsfilter stammen immer aus der NEUEN
+   *  ACL, auch im Shadow-Modus. */
+  async resolveConstraintSubjectUserIds(
+    input: Readonly<{
+      workspaceId: string;
+      categoryIds?: readonly number[];
+      tags?: readonly string[];
+      includeAssignmentModes?: boolean;
+    }>,
+  ): Promise<readonly string[]> {
+    const resolve = this.options.newAcl.resolveConstraintSubjectUserIds;
+    if (!resolve) return [];
+    return resolve.call(this.options.newAcl, input);
   }
 
   async resolveScope(input: Parameters<MailAccessService['resolveScope']>[0]): Promise<MailSqlScope> {
@@ -187,10 +221,29 @@ export class MailAccessRolloutService implements MailAccessService {
       ]);
       const mismatch = compareLegacyAccountScopeToNewGrants(legacyAccountIds, newGrants);
       const accountIds = [...new Set(legacyAccountIds)].sort(compareNumbers);
+      if (accountIds.length === 0) {
+        return {
+          value: { kind: 'none' as const },
+          delta: {
+            evaluated: 1n,
+            legacyAllowNewDeny: mismatch.legacyAllowNewDeny,
+            legacyDenyNewAllow: mismatch.legacyDenyNewAllow,
+          },
+        };
+      }
+
+      const scope = await buildShadowScopeWithConstraints({
+        accountIds,
+        newGrants,
+        resolveActor: this.options.newAcl.resolveScopeActorContext
+          ? () => this.options.newAcl.resolveScopeActorContext!({
+            workspaceId: input.workspaceId,
+            userId: input.actor.userId,
+          })
+          : async () => ({ userId: input.actor.userId, groupMemberUserIds: [input.actor.userId] }),
+      });
       return {
-        value: accountIds.length === 0
-          ? { kind: 'none' as const }
-          : { kind: 'restricted' as const, accountIds, folderIds: [], messageIds: [] },
+        value: scope,
         delta: {
           evaluated: 1n,
           legacyAllowNewDeny: mismatch.legacyAllowNewDeny,
@@ -205,7 +258,71 @@ export class MailAccessRolloutService implements MailAccessService {
   private contextualNewAcl(context: MailAclRolloutEvaluationContext): NewMailAccessService {
     return new NewMailAccessService({
       resolveGrants: (input) => this.options.newAcl.resolveGrants(input, context),
+      resolveScopeActorContext: this.options.newAcl.resolveScopeActorContext
+        ? (input) => this.options.newAcl.resolveScopeActorContext!(input)
+        : undefined,
+      resolveMessageVisibilityFacts: this.options.newAcl.resolveMessageVisibilityFacts
+        ? (input) => this.options.newAcl.resolveMessageVisibilityFacts!(input)
+        : undefined,
     });
+  }
+
+  async explainMessageVisibility(input: Readonly<{
+    workspaceId: string;
+    userId: string;
+    resource: Extract<import('@simplecrm/core').MailResource, { type: 'message' }>;
+  }>) {
+    const evaluation = await this.options.state.withSharedEvaluation(input.workspaceId, async (context) => {
+      const state = await this.options.state.getState(input.workspaceId, context);
+      const newExplanation = await this.contextualNewAcl(context)
+        .explainMessageVisibility(input);
+
+      if (state.mode !== 'shadow' || state.diagnostic) {
+        return { value: newExplanation };
+      }
+
+      const comparable = comparableLegacyFlag('mail.metadata.read');
+      if (!comparable) return { value: newExplanation };
+      const accountId = resourceAccountId(input.resource);
+      if (accountId === null) return { value: newExplanation };
+
+      const [legacyAllowed, newGrants] = await Promise.all([
+        this.options.legacy.canAccessAccount({
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          permission: 'mail.metadata.read',
+          accountId,
+        }, context),
+        this.options.newAcl.resolveGrants({
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          permission: 'mail.metadata.read',
+        }, context),
+      ]);
+      const enforceConstraints = shouldEnforceConstraintsInShadow(input.resource, newGrants);
+      const effectiveVisible = legacyAllowed && (!enforceConstraints || Boolean(newExplanation.visible));
+
+      return {
+        value: {
+          ...newExplanation,
+          visible: effectiveVisible,
+          reason: effectiveVisible
+            ? (enforceConstraints
+              ? newExplanation.reason
+              : (legacyAllowed && !newExplanation.visible
+                ? 'Shadow-Mode: Legacy-Kontozugriff erlaubt die Nachricht (neues ACL noch nicht deckungsgleich)'
+                : newExplanation.reason))
+            : (legacyAllowed
+              ? (newExplanation.reason || 'Sichtbarkeitsfilter blockieren die Nachricht')
+              : 'Kein Legacy-Kontozugriff und kein neues ACL-Binding'),
+          rolloutMode: 'shadow' as const,
+          legacyAllowed,
+          newAclVisible: Boolean(newExplanation.visible),
+        },
+      };
+    });
+    if (!evaluation.telemetry.healthy) this.reportTelemetryDiagnostic(evaluation.telemetry.code);
+    return evaluation.value;
   }
 
   private async newDecision(
@@ -269,9 +386,11 @@ function compareLegacyAccountScopeToNewGrants(
       : { legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n };
   }
 
+  // Constrained account grants are narrower than legacy full-account scope and
+  // must not count as parity with unconstrained legacy account access.
   const newFullAccounts = new Set(
     newGrants
-      .filter((grant) => grant.resourceType === 'account')
+      .filter((grant) => grant.resourceType === 'account' && !hasMailBindingConstraints(grant.constraints))
       .map((grant) => grant.accountId),
   );
   const newTouchedAccounts = new Set(newGrants.map((grant) => grant.accountId));
@@ -282,4 +401,139 @@ function compareLegacyAccountScopeToNewGrants(
 
 function compareNumbers(left: number, right: number): number {
   return left - right;
+}
+
+function shouldEnforceConstraintsInShadow(
+  resource: MailResource,
+  newGrants: readonly MailAccessGrant[],
+): boolean {
+  if (resource.type !== 'message') return false;
+  const accountId = resourceAccountId(resource);
+  const folderId = parsePositiveId(resource.folderId);
+  const messageId = parsePositiveId(resource.messageId);
+  if (accountId === null || folderId === null || messageId === null) return false;
+  return newGrants.some((grant) => (
+    hasMailBindingConstraints(grant.constraints)
+    && grantCoversMessage(grant, accountId, folderId, messageId)
+  ));
+}
+
+async function buildShadowScopeWithConstraints(input: Readonly<{
+  accountIds: readonly number[];
+  newGrants: readonly MailAccessGrant[];
+  resolveActor: () => Promise<{ userId: string; groupMemberUserIds: readonly string[] }>;
+}>): Promise<MailSqlScope> {
+  const accountIds = [...input.accountIds];
+  const hasConstrainedGrant = input.newGrants.some((grant) => (
+    accountIds.includes(grant.accountId) && hasMailBindingConstraints(grant.constraints)
+  ));
+  if (!hasConstrainedGrant) {
+    return { kind: 'restricted', accountIds, folderIds: [], messageIds: [] };
+  }
+
+  const clauses: MailScopeClause[] = [];
+  for (const accountId of accountIds) {
+    const grantsForAccount = input.newGrants.filter((grant) => grant.accountId === accountId);
+    if (!grantsForAccount.some((grant) => hasMailBindingConstraints(grant.constraints))) {
+      clauses.push({
+        accountIds: [accountId],
+        folderIds: [],
+        messageIds: [],
+        constraints: null,
+      });
+      continue;
+    }
+
+    const hasUnconstrainedAccountGrant = grantsForAccount.some((grant) => (
+      grant.resourceType === 'account' && !hasMailBindingConstraints(grant.constraints)
+    ));
+    const hasConstrainedAccountGrant = grantsForAccount.some((grant) => (
+      grant.resourceType === 'account' && hasMailBindingConstraints(grant.constraints)
+    ));
+
+    for (const grant of grantsForAccount) {
+      clauses.push(grantToClause(grant));
+    }
+
+    // Legacy remainder: folders/messages not covered by constrained new grants stay
+    // visible via the legacy full-account allow (assertPermission already does this).
+    if (!hasUnconstrainedAccountGrant && !hasConstrainedAccountGrant) {
+      // Only folder grants remove the whole folder from the legacy remainder.
+      // Message grants must exclude that message only — otherwise siblings vanish.
+      const excludeFolderIds = [...new Set(
+        grantsForAccount
+          .filter((grant) => grant.resourceType === 'folder')
+          .map((grant) => grant.folderId)
+          .filter((id): id is number => typeof id === 'number'),
+      )].sort(compareNumbers);
+      const excludeMessageIds = [...new Set(
+        grantsForAccount
+          .filter((grant) => grant.resourceType === 'message')
+          .map((grant) => grant.messageId)
+          .filter((id): id is number => typeof id === 'number'),
+      )].sort(compareNumbers);
+      clauses.push({
+        accountIds: [accountId],
+        folderIds: [],
+        messageIds: [],
+        constraints: null,
+        ...(excludeFolderIds.length > 0 ? { excludeFolderIds } : {}),
+        ...(excludeMessageIds.length > 0 ? { excludeMessageIds } : {}),
+      });
+    }
+  }
+
+  const actor = await input.resolveActor();
+  return {
+    kind: 'restricted',
+    accountIds,
+    folderIds: [],
+    messageIds: [],
+    clauses,
+    actor,
+  };
+}
+
+function grantToClause(grant: MailAccessGrant): MailScopeClause {
+  if (grant.resourceType === 'account') {
+    return {
+      accountIds: [grant.accountId],
+      folderIds: [],
+      messageIds: [],
+      constraints: grant.constraints,
+    };
+  }
+  if (grant.resourceType === 'folder') {
+    return {
+      accountIds: [],
+      folderIds: [grant.folderId],
+      messageIds: [],
+      constraints: grant.constraints,
+    };
+  }
+  return {
+    accountIds: [],
+    folderIds: [],
+    messageIds: [grant.messageId],
+    constraints: grant.constraints,
+  };
+}
+
+function grantCoversMessage(
+  grant: MailAccessGrant,
+  accountId: number,
+  folderId: number,
+  messageId: number,
+): boolean {
+  if (grant.accountId !== accountId) return false;
+  if (grant.resourceType === 'account') return true;
+  if (grant.folderId !== folderId) return false;
+  if (grant.resourceType === 'folder') return true;
+  return grant.messageId === messageId;
+}
+
+function parsePositiveId(value: string): number | null {
+  if (!/^[1-9]\d*$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && String(parsed) === value ? parsed : null;
 }

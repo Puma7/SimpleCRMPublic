@@ -17,6 +17,14 @@ jest.mock('@/components/auth/user-switcher', () => ({
   UserSwitcher: () => null,
 }));
 
+jest.mock('@/components/auth/auth-context', () => ({
+  useAuth: () => ({
+    canViewSettings: true,
+    hasCapability: () => true,
+    canWriteCrm: true,
+  }),
+}));
+
 import { MainNav } from '@/components/main-nav';
 
 describe('MainNav', () => {

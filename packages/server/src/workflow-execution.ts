@@ -176,6 +176,7 @@ type WorkflowStepStatus = 'ok' | 'error' | 'skipped';
 type WorkflowMessagePatch = {
   archived?: boolean;
   assigned_to?: string | null;
+  assigned_to_user_id?: string | null;
   done_local?: boolean;
   folder_kind?: string;
   is_spam?: boolean;
@@ -2158,8 +2159,41 @@ async function executeServerNode(
     if (teamMemberId !== null && !teamMemberId) {
       return { status: 'error', port: 'error', message: 'teamMemberId leer' };
     }
+    // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
+    // stale UUID after workflow reassignment (mirrors the mail assign API).
+    // AUSSCHLIESSLICH email_team_members.linked_user_id: der frueher genutzte
+    // Fallback ueber die Id-Namensgleichheit haette eine bewusst entfernte
+    // Verknuepfung bei der naechsten Workflow-Zuweisung wiederhergestellt und
+    // dem Nutzer (plus seinen Gruppen-Peers) erneut assigned_to_me-Sicht
+    // gegeben — entgegen der gespeicherten Einstellung.
+    let assignedToUserId: string | null = null;
+    if (teamMemberId !== null) {
+      // Zeilensperre wie im API-Assign-Pfad: eine parallele Link-Aenderung des
+      // Admins darf hier keinen veralteten Nutzer in assigned_to_user_id
+      // schreiben.
+      const member = await trx
+        .selectFrom('email_team_members')
+        .select(['id', 'linked_user_id'])
+        .where('workspace_id', '=', context.workspaceId)
+        .where('id', '=', teamMemberId)
+        .forUpdate()
+        .executeTakeFirst();
+      // Fehlt die Zeile (geloeschtes Mitglied im gespeicherten Knoten, oder das
+      // Loeschen hat die Sperre zuerst bekommen), darf hier NICHT geschrieben
+      // werden: assigned_to truege eine tote Id und assigned_to_user_id waere
+      // null. Die Nachricht passte danach auf keinen Zuweisungsfilter mehr —
+      // weder assigned_to_me/assigned_to_my_groups (brauchen die User-Id) noch
+      // unassigned (verlangt zusaetzlich ein leeres assigned_to) — und bliebe
+      // fuer eingeschraenkte Betrachter dauerhaft verwaist. Der API-Assign-Pfad
+      // antwortet in derselben Lage mit team_member_not_found.
+      if (!member) {
+        return { status: 'error', port: 'error', message: 'Teammitglied nicht gefunden' };
+      }
+      if (member.linked_user_id) assignedToUserId = String(member.linked_user_id);
+    }
     const result = await updateWorkflowMessage(trx, context, {
       assigned_to: teamMemberId,
+      assigned_to_user_id: assignedToUserId,
       updated_at: now,
     });
     return result ?? { status: 'ok', port: 'default', variables: { 'email.assigned_to': teamMemberId } };

@@ -377,6 +377,8 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0044_api_rate_limit_counters',
   '0045_api_rate_limit_window_idx',
   '0046_email_draft_approval_fields',
+  '0047_group_rights_and_mail_constraints',
+  '0048_email_team_member_linked_user',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -7266,6 +7268,14 @@ describe('server edition foundation', () => {
         spam_status: 'spam',
         assigned_to: null,
       }],
+      // Das Mitglied MUSS existieren: email.assign schreibt sonst eine tote Id
+      // nach assigned_to und laesst die Nachricht fuer eingeschraenkte
+      // Betrachter dauerhaft verwaist zurueck (siehe Test unten).
+      teamMembers: [{
+        id: 'agent-1',
+        workspace_id: WORKSPACE_A_ID,
+        linked_user_id: null,
+      }],
     });
     const port = createPostgresWorkflowExecutionJobPort({
       db,
@@ -7348,6 +7358,82 @@ describe('server edition foundation', () => {
       ['archive-1', 'email.archive', 'ok', 'default'],
       ['assign-1', 'email.assign', 'ok', 'default'],
     ]);
+  });
+
+  test('email.assign refuses a deleted team member instead of orphaning the message', async () => {
+    // Verweist ein gespeicherter email.assign-Knoten auf ein inzwischen
+    // geloeschtes Mitglied (oder bekommt dessen Loeschung die Zeilensperre
+    // zuerst), schrieb der Knoten frueher trotzdem: assigned_to trug eine tote
+    // Id, assigned_to_user_id blieb null. Die Nachricht passte danach auf KEINEN
+    // Zuweisungsfilter mehr — assigned_to_me/assigned_to_my_groups brauchen die
+    // User-Id, unassigned verlangt zusaetzlich ein leeres assigned_to — und war
+    // fuer eingeschraenkte Betrachter dauerhaft unsichtbar.
+    const now = new Date('2026-07-04T10:31:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'assign-1',
+              type: 'registry',
+              data: { nodeType: 'email.assign', config: { teamMemberId: 'geloescht-1' } },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'assign-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 14,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 140,
+        subject: 'Bitte bearbeiten',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Bitte bearbeiten',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        seen_local: false,
+        archived: false,
+        done_local: false,
+        is_spam: false,
+        spam_status: null,
+        assigned_to: null,
+      }],
+      teamMembers: [],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 27,
+      messageId: 14,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      ['assign-1', 'email.assign', 'error', 'error'],
+    ]);
+    // Entscheidend: die Nachricht bleibt unangetastet und damit weiter
+    // „unassigned" — sichtbar fuer jeden entsprechenden Filter.
+    expect(rows.messages[0]).toMatchObject({ assigned_to: null });
+    expect(rows.messages[0]!.assigned_to_user_id ?? null).toBeNull();
   });
 
   test('postgres workflow execution job port dry-runs mutating nodes without persisted side effects', async () => {
@@ -17315,6 +17401,57 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('deleting a user also invalidates the ACL of its group peers', async () => {
+    // user_group_members kaskadiert mit dem Nutzer weg und assigned_to_user_id
+    // faellt auf null: die uebrigen Gruppenmitglieder verlieren sofort ihre
+    // assigned_to_my_groups-Sicht auf dessen Nachrichten. Ohne Invalidierung
+    // behalten ihre offenen Listen die nun gesperrten Nachrichten geladen.
+    const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt: null,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const events: ServerEvent[] = [];
+    const peerLookups: Array<{ workspaceId: string; userId: string }> = [];
+    let deleted = false;
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        authUsers: [userRecord('owner-x', 'owner'), userRecord('target', 'user')],
+        events,
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveGroupPeerUserIds(workspaceId: string, userId: string) {
+          peerLookups.push({ workspaceId, userId });
+          // Nach der Loeschung waere die Mitgliedschaft weg — der Lookup MUSS
+          // vorher passieren, sonst kaeme hier nur noch der Nutzer selbst.
+          return deleted ? [userId] : [userId, 'peer-a', 'peer-b'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const res = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/auth/users/target',
+      principal: { userId: 'owner-x', workspaceId: WORKSPACE_A_ID, role: 'owner' as const },
+    });
+    deleted = true;
+
+    expect(res.status).toBe(200);
+    expect(peerLookups).toEqual([{ workspaceId: WORKSPACE_A_ID, userId: 'target' }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual(['target', 'peer-a', 'peer-b']);
+  });
+
   test('a rejecting event port does not fail a committed user delete or role change (R40-1)', async () => {
     const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
       id,
@@ -18190,6 +18327,23 @@ describe('server edition foundation', () => {
     });
     expect(unauthorized.status).toBe(401);
 
+    // Ohne crm.read ist auch das LESEN gesperrt — sonst waere die CRM-Stufe
+    // „Keins" im Gruppenpanel wirkungslos.
+    const withoutCrmRead = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customers',
+      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+    });
+    expect(withoutCrmRead.status).toBe(403);
+    expect(listCalls).toEqual([]);
+
+    const reader = {
+      userId: 'user-a',
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['crm.read'],
+    };
+
     const list = await api.handle({
       method: 'GET',
       path: '/api/v1/customers',
@@ -18201,7 +18355,7 @@ describe('server edition foundation', () => {
         sortBy: 'fullName',
         sortDirection: 'desc',
       },
-      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+      principal: reader,
     });
     expect(list.status).toBe(200);
     expect((list.body as any).data.items[0].id).toBe(7);
@@ -18218,7 +18372,7 @@ describe('server edition foundation', () => {
     const get = await api.handle({
       method: 'GET',
       path: '/api/v1/customers/7',
-      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+      principal: reader,
     });
     expect(get.status).toBe(200);
     expect((get.body as any).data.email).toBe('customer7@example.com');
@@ -18227,7 +18381,7 @@ describe('server edition foundation', () => {
     const missing = await api.handle({
       method: 'GET',
       path: '/api/v1/customers/8',
-      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+      principal: reader,
     });
     expect(missing.status).toBe(404);
   });
@@ -28659,6 +28813,10 @@ describe('server edition foundation', () => {
         role: 'manager',
         signatureHtml: '<p>Signature</p>',
         sortOrder: 4,
+        // Nicht-Admins legen ausdruecklich OHNE Verknuepfung an: die
+        // automatische Verknuepfung ueber Id-Namensgleichheit waere ein
+        // implizites linkedUserId und wuerde den Admin-Guard umgehen.
+        linkedUserId: null,
       },
     }]);
 
@@ -28680,10 +28838,20 @@ describe('server edition foundation', () => {
       },
     }]);
 
-    const deleted = await api.handle({
+    // Loeschen wirkt workspaceweit (Rolle weg + Zuweisungen in ALLEN Konten
+    // abgeraeumt) und bleibt darum Administratoren vorbehalten.
+    const deleteDenied = await api.handle({
       method: 'DELETE',
       path: '/api/v1/email/team-members/agent-2',
       principal,
+    });
+    expect(deleteDenied.status).toBe(403);
+    expect(deleteCalls).toEqual([]);
+
+    const deleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/team-members/agent-2',
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
     });
     expect(deleted.status).toBe(200);
     expect((deleted.body as any).data.deleted).toBe(true);
@@ -28790,6 +28958,8 @@ describe('server edition foundation', () => {
           displayName: 'Agent New',
           signatureHtml: '<p>New</p>',
           sortOrder: 2,
+          // Nicht-Admin: ausdruecklich ohne Verknuepfung (kein implizites Auto-Link).
+          linkedUserId: null,
         },
       },
       {
@@ -28800,6 +28970,7 @@ describe('server edition foundation', () => {
           displayName: 'Agent Existing',
           role: 'manager',
           signatureHtml: null,
+          linkedUserId: null,
         },
       },
     ]);
@@ -28820,6 +28991,713 @@ describe('server edition foundation', () => {
     expect(events.map((event) => [event.type, event.entityId])).toEqual([
       ['email_team_member.created', 'agent-new'],
       ['email_team_member.updated', 'agent-existing'],
+    ]);
+  });
+
+  test('changing the user link invalidates the ACL for old and new user', async () => {
+    // Der Backfill schreibt assigned_to_user_id um und entzieht damit
+    // assigned_to_me-Nutzern sofort Sichtbarkeit — email_team_member.updated
+    // allein ist fuer die Shell nur ein Konto-Refresh.
+    const events: ServerEvent[] = [];
+    const previousUser = '55555555-5555-4555-8555-555555555555';
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return { ...makeEmailTeamMemberRecord('agent-2'), linkedUserId: previousUser };
+        },
+        async create() {
+          return { ok: false as const, code: 'team_member_conflict' as const };
+        },
+        async update(input) {
+          return {
+            ...makeEmailTeamMemberRecord(input.id),
+            linkedUserId: (input.values.linkedUserId ?? null) as string | null,
+          };
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/team-members/agent-2',
+      body: { linkedUserId: USER_A_ID },
+      // Die Verknuepfung ist workspace-global (Backfill ueber alle Konten) und
+      // darum Administratoren vorbehalten.
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(res.status).toBe(200);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId).sort())
+      .toEqual([USER_A_ID, previousUser].sort());
+  });
+
+  test('non-admins cannot change the workspace-wide user link', async () => {
+    // Der Backfill schreibt assigned_to_user_id ueber ALLE Konten des Workspace
+    // um; ein account-gebundener mail.account.manage-Halter koennte sich sonst
+    // fremde Nachrichten zuschreiben.
+    const api = createServerApi(makeServerApiPorts({
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async update() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const denied = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/team-members/agent-2',
+      body: { linkedUserId: USER_A_ID },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+    });
+
+    expect(denied.status).toBe(403);
+  });
+
+  test('the port reported previous link wins over the pre-read', async () => {
+    // Der Vorher-Read der Route ist nicht atomar: zwei parallele Aenderungen
+    // X→Y und X→Z lesen beide X. Meldet der Port den TATSAECHLICH ersetzten
+    // Wert aus derselben gesperrten Transaktion, muss dieser gelten — sonst
+    // behaelt Y gesperrte Nachrichten geladen.
+    const events: ServerEvent[] = [];
+    const staleUser = '55555555-5555-4555-8555-555555555555';
+    const raceWinner = '66666666-6666-4666-8666-666666666666';
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          // Was die Route VOR der Transaktion sieht — inzwischen veraltet.
+          return { ...makeEmailTeamMemberRecord('agent-2'), linkedUserId: staleUser };
+        },
+        async create() {
+          return { ok: false as const, code: 'team_member_conflict' as const };
+        },
+        async update(input) {
+          return {
+            ...makeEmailTeamMemberRecord(input.id),
+            linkedUserId: (input.values.linkedUserId ?? null) as string | null,
+            previousLinkedUserId: raceWinner,
+          };
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/team-members/agent-2',
+      body: { linkedUserId: USER_A_ID },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(res.status).toBe(200);
+    const invalidated = events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId).sort();
+    expect(invalidated).toEqual([USER_A_ID, raceWinner].sort());
+    expect(invalidated).not.toContain(staleUser);
+  });
+
+  test('creating a team member invalidates the ACL for the linked user', async () => {
+    // Der Create-Backfill ordnet vorhandene freie Zuweisungen sofort dem
+    // verknuepften Nutzer zu — dessen Liste zeigt sie sonst erst beim naechsten
+    // zufaelligen Refresh.
+    const events: ServerEvent[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create(input) {
+          return {
+            ok: true as const,
+            member: {
+              ...makeEmailTeamMemberRecord(input.values.id ?? 'agent-2'),
+              linkedUserId: (input.values.linkedUserId ?? null) as string | null,
+            },
+          };
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members',
+      body: { id: 'agent-2', displayName: 'Agent Zwei', linkedUserId: USER_A_ID },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(created.status).toBe(201);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual([USER_A_ID]);
+  });
+
+  test('deleting a team member invalidates assignment-filtered users too', async () => {
+    // Der Cleanup setzt assigned_to/assigned_to_user_id auf null — die
+    // Nachrichten gelten damit als "nicht zugewiesen" und werden fuer Bindings
+    // mit assignmentMode:'unassigned' sichtbar. Das betrifft Nutzer, die mit
+    // dem geloeschten Mitglied nichts zu tun hatten, und greift auch, wenn es
+    // nie verknuepft war.
+    const events: ServerEvent[] = [];
+    const lookups: unknown[] = [];
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailTeamMembers: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async create() {
+            return { ok: false as const, code: 'team_member_conflict' as const };
+          },
+          async update() {
+            return null;
+          },
+          async delete(input) {
+            return { ...makeEmailTeamMemberRecord(input.id), linkedUserId: null };
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          lookups.push(input);
+          return ['unassigned-filtered-user'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const deleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/team-members/agent-2',
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(deleted.status).toBe(200);
+    expect(lookups).toEqual([{ workspaceId: WORKSPACE_A_ID, includeAssignmentModes: true }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual(['unassigned-filtered-user']);
+  });
+
+  test('a non-admin cannot auto-link a team member through a matching user id', async () => {
+    // Die automatische Verknuepfung im Port ist ein IMPLIZITES linkedUserId und
+    // loest denselben workspaceweiten Backfill aus — sonst umgeht ein
+    // konto-gebundener mail.account.manage-Halter den Admin-Guard, indem er
+    // seine eigene Nutzer-UUID als Team-Id anlegt.
+    const createCalls: any[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, member: makeEmailTeamMemberRecord(input.values.id ?? 'agent-2') };
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members',
+      body: { id: USER_A_ID, displayName: 'Ich selbst' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+    });
+
+    expect(created.status).toBe(201);
+    expect(createCalls[0].values.linkedUserId).toBeNull();
+
+    // Ein Admin darf weiterhin implizit verknuepfen (Feld bleibt ausgelassen).
+    await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members',
+      body: { id: USER_A_ID, displayName: 'Ich selbst' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+    expect(Object.prototype.hasOwnProperty.call(createCalls[1].values, 'linkedUserId')).toBe(false);
+  });
+
+  test('tag and category mutations invalidate users whose visibility filter names them', async () => {
+    // sql-scope wertet categoryAllow/Exclude und tagAllow/Exclude aus: verliert
+    // eine Nachricht ihre einzige Allow-Kategorie oder bekommt sie einen
+    // ausgeschlossenen Tag, ist sie fuer den gefilterten Nutzer sofort gesperrt.
+    // Das email_message_tag/category-Ereignis erreicht ihn dann nicht mehr (es
+    // wird ueber den AKTUELLEN Nachrichten-Lookup autorisiert), seine Liste
+    // zeigt die Nachricht also weiter.
+    const events: ServerEvent[] = [];
+    const lookups: unknown[] = [];
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailMessageTags: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async create(input) {
+            return {
+              ok: true as const,
+              tag: {
+                id: 5,
+                sourceSqliteId: 5,
+                messageSourceSqliteId: input.values.messageId ?? 11,
+                messageId: input.values.messageId ?? 11,
+                tag: input.values.tag ?? 'intern',
+                createdAt: '2026-06-01T12:00:00.000Z',
+                updatedAt: '2026-06-02T12:00:00.000Z',
+              },
+            };
+          },
+          async delete() {
+            return null;
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          lookups.push(input);
+          return ['filtered-user-a', 'filtered-user-b'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      body: { messageId: 11, tag: 'intern' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(created.status).toBe(201);
+    expect(lookups).toEqual([{ workspaceId: WORKSPACE_A_ID, tags: ['intern'] }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual(['filtered-user-a', 'filtered-user-b']);
+  });
+
+  test('an assignment change invalidates old and new assignee plus assignment-filtered users', async () => {
+    // Die Zuweisung schreibt assigned_to_user_id und kippt damit assigned_to_me,
+    // assigned_to_my_groups und unassigned — ohne Invalidierung behalten offene
+    // Clients eine jetzt gesperrte Nachricht geladen.
+    const events: ServerEvent[] = [];
+    const constraintLookups: unknown[] = [];
+    const previousUser = '55555555-5555-4555-8555-555555555555';
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailMessages: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async assign() {
+            return {
+              ok: true as const,
+              message: { ...makeEmailMessageRecord(11), assignedToUserId: USER_A_ID },
+              previousAssignedToUserId: previousUser,
+            };
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveGroupPeerUserIds(_workspaceId: string, userId: string) {
+          return [userId, `${userId}-peer`];
+        },
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          constraintLookups.push(input);
+          return ['unassigned-filtered-user'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/11/assignment',
+      body: { teamMemberId: 'agent-2' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(res.status).toBe(200);
+    expect(constraintLookups).toEqual([{ workspaceId: WORKSPACE_A_ID, includeAssignmentModes: true }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId).sort())
+      .toEqual([
+        previousUser,
+        `${previousUser}-peer`,
+        USER_A_ID,
+        `${USER_A_ID}-peer`,
+        'unassigned-filtered-user',
+      ].sort());
+  });
+
+  test('an active chain-stopping workflow requires workflows.manage', async () => {
+    // logic.set_variable (email.is_spam=true) + logic.stop_after_spam setzt
+    // inboundChainStop und ueberspringt damit ALLE nachrangigen Inbound-
+    // Workflows — ein Editor koennte so globale Spam-/Compliance-Automation
+    // abschalten, ohne einen einzigen schreibenden Knoten zu verwenden.
+    const createCalls: unknown[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, workflow: { ...makeWorkflowRecord(31), ...input.values } };
+        },
+        async update() { throw new Error('darf nicht erreicht werden'); },
+      },
+    }));
+    const chainStopGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'var-1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.is_spam', value: true } } },
+        { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop_after_spam' } },
+      ],
+      edges: [
+        { id: 'e1', source: 'trigger-1', target: 'var-1' },
+        { id: 'e2', source: 'var-1', target: 'stop-1' },
+      ],
+    };
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const denied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Kette kappen',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        graph: chainStopGraph,
+      },
+      principal: editor,
+    });
+    expect(denied.status).toBe(403);
+    expect(createCalls).toEqual([]);
+
+    // Deaktiviert bleibt es erlaubt …
+    const disabled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Kette kappen (inaktiv)',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: false,
+        graph: chainStopGraph,
+      },
+      principal: editor,
+    });
+    expect(disabled.status).toBe(201);
+
+    // … und ein Graph ohne Kettenabbruch ebenfalls.
+    const harmless = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Harmlos',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        graph: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop' } },
+          ],
+          edges: [{ id: 'e1', source: 'trigger-1', target: 'stop-1' }],
+        },
+      },
+      principal: editor,
+    });
+    expect(harmless.status).toBe(201);
+
+    // Mit workflows.manage geht der Kettenabbruch durch.
+    const managed = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Kette kappen',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        graph: chainStopGraph,
+      },
+      principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
+    });
+    expect(managed.status).toBe(201);
+  });
+
+  test('an active workflow with an override key requires workflows.manage', async () => {
+    // Bei gleichem overrideKey verdraengt der konto-spezifische Workflow den
+    // globalen (resolveScopedInboundWorkflowOverrides) — ein Editor koennte so
+    // einen privilegierten Spam-/Compliance-Workflow stilllegen.
+    const createCalls: unknown[] = [];
+    const stored = { ...makeWorkflowRecord(23), enabled: true, overrideKey: null, graph: null };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [stored], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? stored : null; },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, workflow: { ...makeWorkflowRecord(24), ...input.values } };
+        },
+        async update() { throw new Error('darf nicht erreicht werden'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Konto-Override',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        overrideKey: 'spam-guard',
+      },
+      principal: editor,
+    });
+    expect(created.status).toBe(403);
+    expect(createCalls).toEqual([]);
+
+    // Reines overrideKey-PATCH: greift ebenfalls.
+    const patched = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { overrideKey: 'spam-guard' },
+      principal: editor,
+    });
+    expect(patched.status).toBe(403);
+
+    // Deaktiviert ist es harmlos …
+    const disabled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Inaktiv',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: false,
+        overrideKey: 'spam-guard',
+      },
+      principal: editor,
+    });
+    expect(disabled.status).toBe(201);
+
+    // … und mit workflows.manage ohnehin erlaubt.
+    const managed = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Konto-Override',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        overrideKey: 'spam-guard',
+      },
+      principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
+    });
+    expect(managed.status).toBe(201);
+  });
+
+  test('team member upsert reports an unknown linked user as a client error', async () => {
+    // Syntaktisch gueltige, aber unbekannte UUID: ohne Aufloesung wirft der Port
+    // und aus dem Eingabefehler wird ein HTTP 500.
+    const api = createServerApi(makeServerApiPorts({
+      authUsers: [],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+    const unknown = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-9/upsert',
+      body: { displayName: 'Agent Neun', linkedUserId: '99999999-9999-4999-8999-999999999999' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(unknown.status).toBe(404);
+    expect((unknown.body as any).error.code).toBe('linked_user_not_found');
+  });
+
+  test('team member upsert accepts and validates the workspace user link', async () => {
+    // Die Server-UI schickt linkedUserId bei jedem Speichern mit (null = keine
+    // Verknuepfung). Faellt das Feld aus der Allowlist, scheitert JEDES Anlegen
+    // und Bearbeiten an einem 400, bevor die Persistenz ueberhaupt laeuft.
+    const upsertCalls: any[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create(input) {
+          upsertCalls.push(input);
+          return { ok: true as const, member: makeEmailTeamMemberRecord(input.values.id as string) };
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    const linked = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-2/upsert',
+      body: { displayName: 'Agent Zwei', linkedUserId: ` ${USER_A_ID} ` },
+      principal,
+    });
+    const cleared = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-3/upsert',
+      body: { displayName: 'Agent Drei', linkedUserId: null },
+      principal,
+    });
+    const invalid = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-4/upsert',
+      body: { displayName: 'Agent Vier', linkedUserId: 'nicht-uuid' },
+      principal,
+    });
+
+    expect(linked.status).toBe(201);
+    expect(cleared.status).toBe(201);
+    expect(upsertCalls[0].values.linkedUserId).toBe(USER_A_ID);
+    expect(upsertCalls[1].values.linkedUserId).toBeNull();
+    expect(invalid.status).toBe(400);
+    expect((invalid.body as any).error.details.fields).toEqual([
+      { field: 'linkedUserId', message: 'linkedUserId muss eine Workspace-User-UUID oder null sein' },
     ]);
   });
 
@@ -28927,9 +29805,20 @@ describe('server edition foundation', () => {
 
     const missingWrites = await Promise.all([
       writableApi.handle({ method: 'PATCH', path: '/api/v1/email/team-members/agent-2', body: { displayName: 'Agent Two' }, principal }),
-      writableApi.handle({ method: 'DELETE', path: '/api/v1/email/team-members/agent-2', principal }),
+      writableApi.handle({
+        method: 'DELETE',
+        path: '/api/v1/email/team-members/agent-2',
+        // Loeschen ist admin-only; der 404 gilt dem fehlenden Mitglied.
+        principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+      }),
     ]);
     expect(missingWrites.map((response) => response.status)).toEqual([404, 404]);
+    const deleteWithoutAdmin = await writableApi.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/team-members/agent-2',
+      principal,
+    });
+    expect(deleteWithoutAdmin.status).toBe(403);
   });
 
   test('server email thread edge and alias mutation routes write audit records and server events', async () => {
@@ -30550,6 +31439,12 @@ describe('server edition foundation', () => {
       },
     }));
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+    const settingsPrincipal = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['crm.write', 'workflows.manage', 'settings.manage'],
+    };
     const adminPrincipal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const };
 
     const workflow = await api.handle({
@@ -30730,7 +31625,7 @@ describe('server edition foundation', () => {
         nextWeekHour: 9,
         nextWeekMinute: 30,
       },
-      principal,
+      principal: settingsPrincipal,
     });
     expect(snoozePatch.status).toBe(200);
     expect(setCalls[3]).toMatchObject({
@@ -30748,11 +31643,21 @@ describe('server edition foundation', () => {
       },
     });
 
-    const reply = await api.handle({
+    // Reine Einstellungs-Konfiguration: Lesen erfordert settings.view (wie
+    // mail-security). Ein Nutzer ohne Einstellungsrechte bekommt 403.
+    const replyDenied = await api.handle({
       method: 'GET',
       path: '/api/v1/email/settings/reply-suggestion',
       query: { accountId: '5' },
       principal,
+    });
+    expect(replyDenied.status).toBe(403);
+
+    const reply = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/reply-suggestion',
+      query: { accountId: '5' },
+      principal: settingsPrincipal,
     });
     expect(reply.status).toBe(200);
     expect((reply.body as any).data).toEqual({
@@ -30773,7 +31678,7 @@ describe('server edition foundation', () => {
         categoryMode: 'only_listed',
         categoryIds: [8, 9, 9],
       },
-      principal,
+      principal: settingsPrincipal,
     });
     expect(replyPatch.status).toBe(200);
     expect((replyPatch.body as any).data).toEqual({
@@ -31249,7 +32154,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/settings/misc',
       body: {},
-      principal,
+      principal: adminPrincipal,
     });
     expect(emptyPatch.status).toBe(400);
     expect((emptyPatch.body as any).error.code).toBe('validation_error');
@@ -31267,7 +32172,7 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/settings/snooze',
       body: { eveningHour: 24 },
-      principal,
+      principal: adminPrincipal,
     });
     expect(invalidSnooze.status).toBe(400);
     expect((invalidSnooze.body as any).error.details.fields).toEqual(expect.arrayContaining([
@@ -32874,6 +33779,167 @@ describe('server edition foundation', () => {
     expect(unauthorized.status).toBe(401);
   });
 
+  test('side-effect workflow gate guards the write against a concurrent patch', async () => {
+    // Zwei parallele PATCHes auf einen deaktivierten, harmlosen Workflow — einer
+    // liefert einen Seiteneffekt-Graphen, der andere enabled: true. Beide pruefen
+    // gegen den alten Row und wuerden ohne Guard zu einem aktiven Seiteneffekt-
+    // Workflow ohne workflows.manage verschmelzen.
+    const updateCalls: any[] = [];
+    const stored = {
+      ...makeWorkflowRecord(23),
+      enabled: false,
+      graph: { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] },
+    };
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() {
+          return { items: [stored], nextCursor: null };
+        },
+        async get(input) {
+          return input.id === 23 ? stored : null;
+        },
+        async create() {
+          throw new Error('not used');
+        },
+        async update(input) {
+          updateCalls.push(input);
+          // Der Port meldet den verlorenen Wettlauf.
+          return { ok: false as const, code: 'workflow_state_conflict' as const };
+        },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const graphPatch = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { graph: sideEffectGraph },
+      principal: editor,
+    });
+    const enablePatch = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { enabled: true },
+      principal: editor,
+    });
+
+    // Beide Patches sind fuer sich genommen erlaubt (deaktiviert bzw. harmloser Graph)…
+    expect(updateCalls).toHaveLength(2);
+    // …tragen aber den geprueften Vorzustand als Bedingung in den Write.
+    // Alle Felder, die der Validator aus dem gespeicherten Row gelesen hat.
+    expect(updateCalls[0].expected).toEqual({
+      enabled: false,
+      triggerName: stored.triggerName,
+      executionMode: stored.executionMode,
+      overrideKey: stored.overrideKey ?? null,
+    });
+    expect(updateCalls[1].expected).toEqual({
+      graph: stored.graph,
+      triggerName: stored.triggerName,
+      executionMode: stored.executionMode,
+      overrideKey: stored.overrideKey ?? null,
+    });
+    // Verliert einer den Wettlauf, wird daraus ein 409 statt eines stillen Merges.
+    expect(graphPatch.status).toBe(409);
+    expect((graphPatch.body as any).error.code).toBe('workflow_state_conflict');
+    expect(enablePatch.status).toBe(409);
+  });
+
+  test('priority is execution relevant: only a real change needs workflows.manage', async () => {
+    // priority bestimmt die Reihenfolge (ORDER BY priority) und beim Ausgang,
+    // wer das Limit pro Versand noch erreicht — ein Editor koennte einen aktiven
+    // Seiteneffekt-Workflow sonst vor einen abbrechenden ziehen. Weil die UI
+    // priority bei JEDEM Speichern mitsendet, zaehlt nur eine echte Aenderung.
+    const updateCalls: any[] = [];
+    const stored = {
+      ...makeWorkflowRecord(23),
+      enabled: true,
+      priority: 100,
+      graph: {
+        nodes: [
+          { id: 'trigger-1', type: 'trigger' },
+          { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+        ],
+        edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+      },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [stored], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? stored : null; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow: { ...stored, ...input.values } };
+        },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const reorder = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { priority: 1 },
+      principal: editor,
+    });
+    expect(reorder.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    // Namensaenderung mit unveraendert mitgesendeter Prioritaet bleibt erlaubt.
+    const rename = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { name: 'Neuer Name', priority: 100 },
+      principal: editor,
+    });
+    expect(rename.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].values).toMatchObject({ name: 'Neuer Name', priority: 100 });
+    // Reines Metadaten-Patch: kein Manage-Gate — die unveraendert mitgesendete
+    // Prioritaet geht aber als optimistische Bedingung mit, sonst setzt dieser
+    // Write eine zwischenzeitliche Admin-Aenderung stillschweigend zurueck.
+    expect(updateCalls[0].expected).toEqual({ priority: 100 });
+
+    // Und mit workflows.manage ist das Umsortieren erlaubt.
+    const manager = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit', 'workflows.manage'],
+    };
+    const managed = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { priority: 1 },
+      principal: manager,
+    });
+    expect(managed.status).toBe(200);
+    expect(updateCalls).toHaveLength(2);
+    expect(updateCalls[1].expected).toEqual({
+      enabled: stored.enabled,
+      graph: stored.graph,
+      triggerName: stored.triggerName,
+      executionMode: stored.executionMode,
+      overrideKey: stored.overrideKey ?? null,
+    });
+  });
+
   test('server workflow mutation routes write audit records and server events', async () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const events: ServerEvent[] = [];
@@ -33926,8 +34992,8 @@ describe('server edition foundation', () => {
           workflowListCalls.push(input);
           return { items: [workflow], nextCursor: null };
         },
-        async get() {
-          return null;
+        async get(input) {
+          return input.id === workflow.id ? workflow : null;
         },
         async update(input) {
           workflowUpdateCalls.push(input);
@@ -34007,6 +35073,15 @@ describe('server edition foundation', () => {
         graph: { nodes: [{ id: 'versioned' }], edges: [] },
         definition: { steps: [{ id: 'versioned' }] },
       },
+      // Restore prueft Outbound-Falle, Seiteneffekt-/Kettenabbruch- und
+      // Override-Gate gegen den gelesenen Row — derselbe optimistische Guard
+      // wie im PATCH-Pfad, inklusive overrideKey.
+      expected: {
+        enabled: true,
+        triggerName: 'mail.received',
+        executionMode: 'graph',
+        overrideKey: null,
+      },
     }]);
     expect(versionListCalls).toEqual([
       { workspaceId: WORKSPACE_A_ID, limit: 50, workflowId: 23 },
@@ -34024,6 +35099,132 @@ describe('server edition foundation', () => {
       ['workflow_version.created', WORKSPACE_A_ID, 'workflow_version', '82'],
       ['workflow.updated', WORKSPACE_A_ID, 'workflow', '23'],
     ]);
+  });
+
+  test('restoring a chain-stopping version needs workflows.manage too', async () => {
+    // Sonst laedt ein Editor die beim Anlegen verbotene Konstruktion einfach
+    // ueber eine gespeicherte Version in denselben aktiven Workflow.
+    const updateCalls: unknown[] = [];
+    const workflow = { ...makeWorkflowRecord(23), sourceSqliteId: -23, enabled: true, triggerName: 'inbound' };
+    const chainStopVersion = {
+      ...makeWorkflowVersionRecord(82),
+      sourceSqliteId: -82,
+      workflowId: 23,
+      workflowSourceSqliteId: -23,
+      graph: {
+        version: 1,
+        nodes: [
+          { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+          { id: 'var-1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.is_spam', value: true } } },
+          { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop_after_spam' } },
+        ],
+        edges: [],
+      },
+      definition: { steps: [] },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [workflow], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? workflow : null; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow };
+        },
+      },
+      workflowVersions: {
+        async list() { return { items: [chainStopVersion], nextCursor: null }; },
+        async get() { return chainStopVersion; },
+        async create() { throw new Error('nicht verwendet'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const denied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal: editor,
+    });
+    expect(denied.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    const allowed = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
+    });
+    expect(allowed.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+  });
+
+  test('restoring into an active override workflow needs workflows.manage', async () => {
+    // Der Override verdraengt den globalen Workflow; per Restore koennte ein
+    // Editor dessen Graphen sonst zum No-op machen.
+    const updateCalls: unknown[] = [];
+    const workflow = {
+      ...makeWorkflowRecord(23),
+      sourceSqliteId: -23,
+      enabled: true,
+      triggerName: 'inbound',
+      overrideKey: 'spam-guard',
+    };
+    const harmlessVersion = {
+      ...makeWorkflowVersionRecord(82),
+      sourceSqliteId: -82,
+      workflowId: 23,
+      workflowSourceSqliteId: -23,
+      graph: {
+        version: 1,
+        nodes: [{ id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } }],
+        edges: [],
+      },
+      definition: { steps: [] },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [workflow], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? workflow : null; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow };
+        },
+      },
+      workflowVersions: {
+        async list() { return { items: [harmlessVersion], nextCursor: null }; },
+        async get() { return harmlessVersion; },
+        async create() { throw new Error('nicht verwendet'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const denied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal: editor,
+    });
+    expect(denied.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    const allowed = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
+    });
+    expect(allowed.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
   });
 
   test('server workflow run by-source routes resolve legacy ids for history reads', async () => {
@@ -34797,7 +35998,9 @@ describe('server edition foundation', () => {
         context: { secret: 'updated-delayed-context-secret' },
         status: 'cancelled',
       },
-      principal,
+      // context zaehlt als Umleitung und ist damit admin-only; der uebrige
+      // Patch (Reschedule/Abbruch) bliebe auch fuer workflows.manage offen.
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
     });
     expect(updated.status).toBe(200);
     expect((updated.body as any).data.status).toBe('cancelled');
@@ -34880,8 +36083,8 @@ describe('server edition foundation', () => {
     const manager = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
     const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
-    // Non-admin manager redirecting a side-effecting job's resume node → 403, update
-    // port never reached (execution would otherwise run the node as the admin).
+    // Manager (workflows.manage, kein Admin) darf gar nicht umleiten — der
+    // Update-Port wird nicht erreicht.
     const denied = await makeApi(sideEffectGraph).handle({
       method: 'PATCH',
       path: '/api/v1/workflow-delayed-jobs/87',
@@ -34909,7 +36112,10 @@ describe('server edition foundation', () => {
     });
     expect(adminRedirect.status).toBe(200);
 
-    // No over-restriction: a manager may still redirect a read-only-graph job.
+    // Auch bei einem nebenwirkungsfreien Graphen bleibt das Umleiten
+    // Administratoren vorbehalten: der optimistische Vergleich haette nur bis
+    // zum Commit geschuetzt, waehrend die Fortsetzung erst spaeter — und unter
+    // dem urspruenglichen Akteur — in den DANN gespeicherten Graphen laeuft.
     updateCalls.length = 0;
     const readOnlyRedirect = await makeApi(readOnlyGraph).handle({
       method: 'PATCH',
@@ -34917,8 +36123,8 @@ describe('server edition foundation', () => {
       body: { resumeNodeId: 'branch-1' },
       principal: manager,
     });
-    expect(readOnlyRedirect.status).toBe(200);
-    expect(updateCalls).toHaveLength(1);
+    expect(readOnlyRedirect.status).toBe(403);
+    expect(updateCalls).toEqual([]);
   });
 
   test('server workflow delayed job mutation routes reject unsafe payloads and missing references', async () => {
@@ -39116,6 +40322,7 @@ function makeEmailTeamMemberRecord(id: string): EmailTeamMemberRecord {
     role: 'agent',
     signatureHtml: '<p>Agent signature</p>',
     sortOrder: 1,
+    linkedUserId: null,
     createdAt: '2026-06-01T12:00:00.000Z',
     updatedAt: '2026-06-02T12:00:00.000Z',
   };
@@ -41581,6 +42788,7 @@ type WorkflowExecutionFakeRows = {
   trackingMessages: Array<Record<string, unknown>>;
   trackingEvents: Array<Record<string, unknown>>;
   trackingEventClassifications: Array<Record<string, unknown>>;
+  teamMembers: Array<Record<string, unknown>>;
 };
 
 function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
@@ -41626,6 +42834,7 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
     trackingMessages: input.trackingMessages ?? [],
     trackingEvents: input.trackingEvents ?? [],
     trackingEventClassifications: input.trackingEventClassifications ?? [],
+    teamMembers: input.teamMembers ?? [],
   };
   const tableRows = (table: string): Array<Record<string, unknown>> => {
     switch (table.split(' ')[0]) {
@@ -41697,6 +42906,8 @@ function makeWorkflowExecutionDb(input: Partial<WorkflowExecutionFakeRows>): {
         return rows.trackingEvents;
       case 'email_tracking_event_classifications':
         return rows.trackingEventClassifications;
+      case 'email_team_members':
+        return rows.teamMembers;
       default:
         throw new Error(`unexpected workflow execution table: ${table}`);
     }

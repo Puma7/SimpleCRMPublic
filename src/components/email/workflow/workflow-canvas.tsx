@@ -313,9 +313,11 @@ const nodeTypes = {
 
 type Props = {
   onSelectionChange: (selection: { nodeId: string | null; edgeId: string | null }) => void
+  /** When true, graph is view-only (no drag/connect/edit). */
+  readOnly?: boolean
 }
 
-export function WorkflowCanvas({ onSelectionChange }: Props) {
+export function WorkflowCanvas({ onSelectionChange, readOnly = false }: Props) {
   const nodes = useWorkflowEditorStore((s) => s.nodes)
   const edges = useWorkflowEditorStore((s) => s.edges)
   const setNodes = useWorkflowEditorStore((s) => s.setNodes)
@@ -323,20 +325,23 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
+      if (readOnly) return
       setNodes(applyNodeChanges(changes, useWorkflowEditorStore.getState().nodes))
     },
-    [setNodes],
+    [setNodes, readOnly],
   )
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
+      if (readOnly) return
       setEdges(applyEdgeChanges(changes, useWorkflowEditorStore.getState().edges))
     },
-    [setEdges],
+    [setEdges, readOnly],
   )
 
   const onConnect = useCallback(
     (params: Connection) => {
+      if (readOnly) return
       const state = useWorkflowEditorStore.getState()
       const sourceNode = state.nodes.find((n) => n.id === params.source)
       const label = defaultLabelForConnection(
@@ -355,7 +360,7 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
         ),
       )
     },
-    [setEdges],
+    [setEdges, readOnly],
   )
 
   const handleSelectionChange = useCallback(
@@ -379,6 +384,9 @@ export function WorkflowCanvas({ onSelectionChange }: Props) {
       onConnect={onConnect}
       onSelectionChange={handleSelectionChange}
       nodeTypes={nodeTypes}
+      nodesDraggable={!readOnly}
+      nodesConnectable={!readOnly}
+      elementsSelectable
       snapToGrid
       snapGrid={[16, 16]}
       fitView

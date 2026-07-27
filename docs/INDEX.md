@@ -12,6 +12,8 @@
 | [**PRODUCT_REQUIREMENTS.md**](PRODUCT_REQUIREMENTS.md) | **Muss/Soll/Ist** — CRM, Mail, KI, Workflows, Backup |
 | [**LEARNINGS.md**](LEARNINGS.md) | Master learning index + cross-cutting rules |
 | [**LOGIN_SECURITY.md**](LOGIN_SECURITY.md) | **Server login** — CAPTCHA, PIN, MFA, Setup-Token, API |
+| [**GROUP_RIGHTS_MATRIX.md**](GROUP_RIGHTS_MATRIX.md) | Gruppenrechte — Capability-Matrix & Vorlagen |
+| [**GROUP_RIGHTS_ADMIN.md**](GROUP_RIGHTS_ADMIN.md) | Admin-Kurzanleitung Gruppen & Postfach-Rechte |
 | [**PR_156_FOLLOWUP_AUDIT.md**](PR_156_FOLLOWUP_AUDIT.md) | Validierung und Aufloesung der dokumentierten Claude-/Bugbot-Follow-ups in PR 156 |
 | [**SECURITY_DEPENDENCY_EXCEPTIONS.md**](SECURITY_DEPENDENCY_EXCEPTIONS.md) | Time-bound dependency risk acceptances, owners and controls |
 | [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md) | Auth hardening pitfalls + audit learnings |

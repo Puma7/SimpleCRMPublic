@@ -140,6 +140,58 @@ describe('server user groups API', () => {
     expect(targets.sort()).toEqual(['user-3', 'user-9']);
   });
 
+  test('permission changes invalidate the atomically-captured members', async () => {
+    const userGroups = groupPort();
+    // Die Mitglieder kommen aus DERSELBEN Transaktion wie die Rechteschreibung.
+    // Ein nachgelagertes listMembers war ein zweiter Fehlerpunkt NACH dem
+    // Commit: warf es, antwortete die Route mit 500, obwohl die neuen Rechte
+    // bereits galten — und kein Client erfuhr davon.
+    userGroups.setPermissions.mockResolvedValueOnce({
+      ok: true,
+      permissions: ['crm.write'],
+      memberUserIds: ['user-9', 'user-3'],
+    });
+    userGroups.listMembers.mockRejectedValue(new Error('listMembers darf hier gar nicht laufen'));
+    const published: Array<{ type: string; payload: { targetUserId?: string } }> = [];
+    const events = {
+      publish: jest.fn(async (event: { type: string; payload: { targetUserId?: string } }) => {
+        published.push(event);
+      }),
+    };
+    const api = createServerApi(ports({ userGroups, events } as Partial<ServerApiPorts>));
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/user-groups/5/permissions',
+      body: { permissions: ['crm.write'] },
+      principal: admin,
+    });
+    expect(res.status).toBe(200);
+    expect((res.body as any).data.permissions).toEqual(['crm.write']);
+    expect(userGroups.listMembers).not.toHaveBeenCalled();
+    expect(published.map((event) => event.payload.targetUserId).sort())
+      .toEqual(['user-3', 'user-9']);
+  });
+
+  test('a failed invalidation after a committed permission change does not 500', async () => {
+    const userGroups = groupPort();
+    userGroups.setPermissions.mockResolvedValueOnce({
+      ok: true,
+      permissions: [],
+      memberUserIds: ['user-9'],
+    });
+    const events = { publish: jest.fn(async () => { throw new Error('publish failed'); }) };
+    const api = createServerApi(ports({ userGroups, events } as Partial<ServerApiPorts>));
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/user-groups/5/permissions',
+      body: { permissions: [] },
+      principal: admin,
+    });
+    expect(res.status).toBe(200);
+  });
+
   test('returns 503 when the port is not configured', async () => {
     const api = createServerApi(ports({ userGroups: undefined }));
     const res = await api.handle({ method: 'GET', path: '/api/v1/user-groups', principal: admin });
@@ -167,6 +219,8 @@ function groupPort(): jest.Mocked<UserGroupApiPort> {
     listMembers: jest.fn(async () => []),
     addMember: jest.fn(async () => ({ ok: true as const })),
     removeMember: jest.fn(async () => ({ ok: true as const })),
+    listPermissions: jest.fn(async () => []),
+    setPermissions: jest.fn(async () => ({ ok: true as const, permissions: [], memberUserIds: [] })),
   };
 }
 

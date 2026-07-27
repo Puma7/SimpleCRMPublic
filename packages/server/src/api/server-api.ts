@@ -15,6 +15,7 @@ import {
 import { handleSmtpRelayRoute, SMTP_RELAY_ROUTE_INVENTORY } from './relay-routes';
 import { handleLockRoute, MAIL_LOCK_ROUTE_INVENTORY } from './lock-routes';
 import { handleMailDelegationRoute } from './mail-delegation-routes';
+import { handleMailAccessExplainRoute } from './mail-access-explain-routes';
 import { handleMailAclRolloutRoute } from './mail-acl-rollout-routes';
 import { handleMailReadRoute, MAIL_ROUTE_INVENTORY } from './mail-routes';
 import { handleMaintenanceRoute } from './maintenance-routes';
@@ -28,7 +29,8 @@ import { handleUserSignatureRoute, USER_SIGNATURE_ROUTE_INVENTORY } from './user
 import { handleWorkflowReadRoute, WORKFLOW_MAIL_ROUTE_INVENTORY } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
 import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
-import { data, error, requireAdmin, requirePrincipal } from './http';
+import { data, error, rejectUnlessCrmRead, requireAdmin, requirePrincipal } from './http';
+import { isCrmApiPath } from './crm-route-inventory';
 
 export type ServerApi = {
   handle(req: ApiRequest): Promise<ApiResponse>;
@@ -70,6 +72,7 @@ export const SERVER_API_ROUTE_REGISTRATIONS: readonly ServerApiRouteRegistration
   nonMailRoutes('customer-routes', handleCustomerRoute),
   nonMailRoutes('user-group-routes', handleUserGroupRoute),
   nonMailRoutes('mail-delegation-routes', handleMailDelegationRoute),
+  nonMailRoutes('mail-access-explain-routes', handleMailAccessExplainRoute),
   nonMailRoutes('mail-acl-rollout-routes', handleMailAclRolloutRoute),
   nonMailRoutes('diagnostics-routes', handleDiagnosticsRoute),
   nonMailRoutes('maintenance-routes', handleMaintenanceRoute),
@@ -146,6 +149,16 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
           status: 200,
           body: getServerOpenApiSpec(),
         };
+      }
+
+      // CRM-Lesezugriff zentral pruefen. Die Schreibpfade pruefen zusaetzlich
+      // crm.write; das oeffentliche Retouren-Portal ist oben schon beantwortet
+      // und faellt ohnehin nicht unter die CRM-Wurzelsegmente.
+      if (isCrmApiPath(req.path)) {
+        const principal = requirePrincipal(req);
+        if ('status' in principal) return principal;
+        const denied = rejectUnlessCrmRead(principal);
+        if (denied) return denied;
       }
 
       for (const registration of SERVER_API_ROUTE_REGISTRATIONS) {

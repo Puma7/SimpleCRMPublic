@@ -88,7 +88,7 @@ describe('ApplyWorkflowMenu server-client mode', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-1', role: 'user' },
       loading: false,
-      hasCapability: (cap: string) => cap === 'workflows.manage',
+      hasCapability: (cap: string) => cap === 'workflows.run',
     });
     resetRendererTransportForTests();
     delete (window as any).electronAPI;
@@ -99,7 +99,7 @@ describe('ApplyWorkflowMenu server-client mode', () => {
     delete (window as any).electronAPI;
   });
 
-  test('hides the menu when workflows.manage is missing in HTTP mode', () => {
+  test('hides the menu when workflows.run is missing in HTTP mode', () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-1', role: 'user' },
       loading: false,
@@ -187,6 +187,95 @@ describe('ApplyWorkflowMenu server-client mode', () => {
     });
     expect(localInvoke).not.toHaveBeenCalled();
     expect(toast.success).toHaveBeenCalledWith('Workflow-Job eingereiht.');
+  });
+
+  test('offers only the dry run for a side-effect graph without admin rights', async () => {
+    // handleWorkflowExecute lehnt den Live-Lauf eines Graphen mit schreibenden
+    // Knoten fuer Nicht-Admins ab — unabhaengig von workflows.run/manage. Der
+    // Knopf waere also ein garantierter 403.
+    const sideEffectGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'tag-1', type: 'action', data: { nodeType: 'email.add_tag' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'tag-1' }],
+    };
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/api/v1/workflows')) {
+        return jsonResponse({
+          data: {
+            items: [{
+              id: 11,
+              sourceSqliteId: 44,
+              name: 'Tagger',
+              triggerName: 'inbound',
+              enabled: true,
+              priority: 5,
+              definition: {},
+              graph: sideEffectGraph,
+            }],
+          },
+        });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<ApplyWorkflowMenu message={message()} />);
+    fireEvent.click(screen.getAllByRole('button')[0]!);
+
+    expect(await screen.findByText('Tagger')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Jetzt/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/Live-Ausführung erfordert Adminrechte/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Dry-Run/ })).toBeInTheDocument();
+  });
+
+  test('an admin keeps the live run for the same graph', async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-1', role: 'admin' },
+      loading: false,
+      hasCapability: () => true,
+    });
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/api/v1/workflows')) {
+        return jsonResponse({
+          data: {
+            items: [{
+              id: 11,
+              sourceSqliteId: 44,
+              name: 'Tagger',
+              triggerName: 'inbound',
+              enabled: true,
+              priority: 5,
+              definition: {},
+              graph: {
+                version: 1,
+                nodes: [
+                  { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+                  { id: 'tag-1', type: 'action', data: { nodeType: 'email.add_tag' } },
+                ],
+                edges: [{ id: 'e1', source: 'trigger-1', target: 'tag-1' }],
+              },
+            }],
+          },
+        });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<ApplyWorkflowMenu message={message()} />);
+    fireEvent.click(screen.getAllByRole('button')[0]!);
+
+    expect(await screen.findByText('Tagger')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Jetzt/ })).toBeInTheDocument();
   });
 });
 

@@ -13,20 +13,41 @@ import {
   isMailAccountDataRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 import type { TeamMember } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
+import { logError } from "../log"
 
 export function TeamPanel() {
   const { bumpAccountsRevision } = useMailWorkspace()
+  const { user } = useAuth()
+  // Die Benutzer-Verknuepfung existiert nur in der Server-Edition: das
+  // SaveTeamMember-IPC-Schema und der Electron-Handler kennen linkedUserId
+  // nicht (zod strippt das Feld), es gaebe also einen Erfolgs-Toast ohne
+  // gespeicherten Wert. Darum ausserhalb des HTTP-Transports ausblenden.
+  const serverClientMode = getRendererTransport().kind === "http"
+  // Die Verknuepfung schreibt assigned_to_user_id workspaceweit um und ist
+  // serverseitig Administratoren vorbehalten (rejectLinkedUserMutationWithoutAdmin
+  // antwortet auf die blosse ANWESENHEIT des Feldes mit 403). Fuer alle anderen
+  // — etwa einen delegierten Kontoverwalter, der nur die Signatur pflegt — darf
+  // das Feld daher weder sichtbar sein noch im Payload landen.
+  const isAdmin = user?.role === "owner" || user?.role === "admin"
+  const canLinkUser = serverClientMode && isAdmin
+  // Das Loeschen wirkt workspaceweit (Rolle weg, Zuweisungen in ALLEN Konten
+  // abgeraeumt) und ist serverseitig deshalb admin-only — der Knopf darf fuer
+  // andere gar nicht erst erscheinen.
+  const canDeleteMember = !serverClientMode || isAdmin
   const [team, setTeam] = useState<TeamMember[]>([])
   const [newId, setNewId] = useState("")
   const [newName, setNewName] = useState("")
+  const [newLinkedUserId, setNewLinkedUserId] = useState("")
   const [newSignature, setNewSignature] = useState(
     "<p>Mit freundlichen Grüßen<br/>Ihr Kundenservice</p>",
   )
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editSignature, setEditSignature] = useState("")
+  const [editLinkedUserId, setEditLinkedUserId] = useState("")
 
   const load = useCallback(async () => {
     setTeam(await invokeRenderer(IPCChannels.Email.ListTeamMembers) as TeamMember[])
@@ -50,6 +71,8 @@ export function TeamPanel() {
     id: string
     displayName: string
     signatureHtml?: string | null
+    /** Omit to leave the existing link unchanged; pass null to clear. */
+    linkedUserId?: string | null
   }) => {
     await invokeRenderer(IPCChannels.Email.SaveTeamMember, {
       id: payload.id,
@@ -58,8 +81,17 @@ export function TeamPanel() {
         typeof payload.signatureHtml === "string"
           ? sanitizeEmailHtml(payload.signatureHtml)
           : payload.signatureHtml,
+      ...(Object.prototype.hasOwnProperty.call(payload, "linkedUserId")
+        ? { linkedUserId: payload.linkedUserId ?? null }
+        : {}),
     })
     await load()
+  }
+
+  const startEditing = (member: TeamMember) => {
+    setEditingId(member.id)
+    setEditSignature(sanitizeEmailHtml(member.signature_html ?? ""))
+    setEditLinkedUserId(member.linked_user_id ?? "")
   }
 
   return (
@@ -69,6 +101,9 @@ export function TeamPanel() {
         <p className="text-sm text-muted-foreground">
           Mitglieder können Nachrichten zugewiesen bekommen. Die Team-Signatur dient als Fallback,
           wenn für ein Postfach keine eigene Signatur hinterlegt ist (unter Konten → Signatur).
+          {canLinkUser
+            ? " Für Zuweisungsfilter (assigned_to_me) eine Workspace-User-UUID verknüpfen."
+            : ""}
         </p>
       </div>
       <div className="space-y-2">
@@ -81,34 +116,55 @@ export function TeamPanel() {
                 <span>
                   <span className="font-mono text-xs text-muted-foreground">{t.id}</span> ·{" "}
                   {t.display_name}
+                  {t.linked_user_id ? (
+                    <span className="ml-2 font-mono text-[10px] text-muted-foreground">
+                      → {t.linked_user_id}
+                    </span>
+                  ) : null}
                 </span>
                 <div className="flex gap-1">
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
-                      setEditingId(t.id)
-                      setEditSignature(sanitizeEmailHtml(t.signature_html ?? ""))
-                    }}
+                    onClick={() => startEditing(t)}
                   >
-                    Signatur
+                    Bearbeiten
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={async () => {
-                      await invokeRenderer(IPCChannels.Email.DeleteTeamMember, t.id)
-                      await load()
-                    }}
-                  >
-                    Entfernen
-                  </Button>
+                  {canDeleteMember ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={async () => {
+                        try {
+                          await invokeRenderer(IPCChannels.Email.DeleteTeamMember, t.id)
+                        } catch (e) {
+                          logError("team-panel: delete member", e)
+                          toast.error(e instanceof Error ? e.message : "Loeschen fehlgeschlagen")
+                          return
+                        }
+                        await load()
+                      }}
+                    >
+                      Entfernen
+                    </Button>
+                  ) : null}
                 </div>
               </div>
               {editingId === t.id ? (
                 <div className="space-y-2 border-t pt-2">
+                  {canLinkUser ? (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Verknüpfte User-UUID</Label>
+                      <Input
+                        className="font-mono text-xs"
+                        placeholder="Workspace-User-UUID (leer = keine Verknüpfung)"
+                        value={editLinkedUserId}
+                        onChange={(e) => setEditLinkedUserId(e.target.value)}
+                      />
+                    </div>
+                  ) : null}
                   <Label className="text-xs">Signatur</Label>
                   <SignatureQuillEditor
                     value={editSignature}
@@ -122,14 +178,24 @@ export function TeamPanel() {
                         id: t.id,
                         displayName: t.display_name,
                         signatureHtml: editSignature,
+                        ...(canLinkUser
+                          ? { linkedUserId: editLinkedUserId.trim() || null }
+                          : {}),
                       }).then(() => {
                         setEditingId(null)
                         bumpAccountsRevision()
-                        toast.success("Signatur gespeichert")
+                        toast.success("Mitglied gespeichert")
+                      }).catch((e) => {
+                        // linkedUserId wird serverseitig validiert (UUID-Form,
+                        // muss auf einen Workspace-User zeigen). Ohne catch
+                        // bliebe ein Tippfehler ein stiller Fehlschlag — und die
+                        // Zuweisungsfilter waeren still wirkungslos.
+                        logError("team-panel: save member", e)
+                        toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen")
                       })
                     }
                   >
-                    Signatur speichern
+                    Speichern
                   </Button>
                 </div>
               ) : null}
@@ -152,6 +218,14 @@ export function TeamPanel() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
+          {canLinkUser ? (
+            <Input
+              className="min-w-[220px] flex-1 font-mono text-xs"
+              placeholder="Verknüpfte User-UUID (optional)"
+              value={newLinkedUserId}
+              onChange={(e) => setNewLinkedUserId(e.target.value)}
+            />
+          ) : null}
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">Signatur</Label>
@@ -162,13 +236,25 @@ export function TeamPanel() {
           variant="secondary"
           onClick={async () => {
             if (!newId.trim() || !newName.trim()) return
-            await saveMember({
-              id: newId.trim(),
-              displayName: newName.trim(),
-              signatureHtml: newSignature,
-            })
+            try {
+              await saveMember({
+                id: newId.trim(),
+                displayName: newName.trim(),
+                signatureHtml: newSignature,
+                ...(canLinkUser
+                  ? { linkedUserId: newLinkedUserId.trim() || null }
+                  : {}),
+              })
+            } catch (e) {
+              // Wie beim Bearbeiten: eine ungueltige User-UUID darf nicht
+              // kommentarlos verpuffen.
+              logError("team-panel: add member", e)
+              toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen")
+              return
+            }
             setNewId("")
             setNewName("")
+            setNewLinkedUserId("")
             bumpAccountsRevision()
             toast.success("Mitglied gespeichert")
           }}

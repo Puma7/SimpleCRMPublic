@@ -44,6 +44,8 @@ import { atomicTaskCalendarMigration } from './0043_atomic_task_calendar';
 import { apiRateLimitCountersMigration } from './0044_api_rate_limit_counters';
 import { apiRateLimitWindowIdxMigration } from './0045_api_rate_limit_window_idx';
 import { emailDraftApprovalFieldsMigration } from './0046_email_draft_approval_fields';
+import { groupRightsAndMailConstraintsMigration } from './0047_group_rights_and_mail_constraints';
+import { emailTeamMemberLinkedUserMigration } from './0048_email_team_member_linked_user';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -94,6 +96,8 @@ export const serverMigrations: readonly SqlMigration[] = [
   apiRateLimitCountersMigration,
   apiRateLimitWindowIdxMigration,
   emailDraftApprovalFieldsMigration,
+  groupRightsAndMailConstraintsMigration,
+  emailTeamMemberLinkedUserMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

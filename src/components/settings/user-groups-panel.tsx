@@ -1,34 +1,109 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { AlertCircle, Trash2, Users } from "lucide-react"
 import { IPCChannels } from "@shared/ipc/channels"
 import { invokeRenderer } from "@/services/transport"
 import { userGroupService, type UserGroup, type UserGroupMember } from "@/services/data/userGroupService"
 import { useTranslation } from "@/lib/i18n"
+import { useAuth } from "@/components/auth/auth-context"
+import { isServerClientMode } from "@/lib/runtime-mode"
+import { logError } from "@/components/email/log"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Checkbox } from "@/components/ui/checkbox"
-import { USER_GROUP_CAPABILITIES } from "@shared/user-capabilities"
+import {
+  GROUP_RIGHTS_TEMPLATES,
+  capabilityLevelForModule,
+  mergeModuleCapabilityLevels,
+  templateCapabilities,
+  type CapabilityModule,
+  type GroupRightsTemplateId,
+} from "@shared/user-capabilities"
 
 type AppUser = { id: string; display_name: string; username: string }
 
+const MODULE_OPTIONS: ReadonlyArray<{
+  module: CapabilityModule
+  label: string
+  levels: ReadonlyArray<{ value: number; label: string }>
+}> = [
+  {
+    module: "crm",
+    label: "CRM",
+    levels: [
+      { value: 0, label: "Keins" },
+      { value: 1, label: "Ansehen" },
+      { value: 2, label: "Bearbeiten" },
+    ],
+  },
+  {
+    module: "workflows",
+    label: "Workflows",
+    levels: [
+      { value: 0, label: "Keins" },
+      { value: 1, label: "Ansehen" },
+      { value: 2, label: "Ausfuehren" },
+      { value: 3, label: "Bearbeiten" },
+      { value: 4, label: "Verwalten" },
+    ],
+  },
+  {
+    module: "settings",
+    label: "Einstellungen",
+    levels: [
+      { value: 0, label: "Keins" },
+      { value: 1, label: "Ansehen" },
+      { value: 2, label: "Verwalten" },
+    ],
+  },
+  {
+    module: "tracking",
+    label: "Tracking",
+    levels: [
+      { value: 0, label: "Keins" },
+      { value: 1, label: "Einsehen" },
+    ],
+  },
+  {
+    module: "users",
+    label: "Benutzer",
+    levels: [
+      { value: 0, label: "Keins" },
+      { value: 1, label: "Verwalten" },
+    ],
+  },
+]
+
+function moduleLevelLabel(
+  option: (typeof MODULE_OPTIONS)[number],
+  level: number,
+): string {
+  return option.levels.find((entry) => entry.value === level)?.label ?? String(level)
+}
+
 export function UserGroupsPanel() {
   const { t } = useTranslation()
+  // Saemtliche Gruppen-Mutationsrouten verlangen requireAdmin. Ein delegierter
+  // settings.view/settings.manage-Nutzer darf den Tab sehen, bekommt die
+  // Aktionen aber nur lesend — sonst enden sie garantiert im 403.
+  const { user } = useAuth()
+  const canMutateGroups = !isServerClientMode() || user?.role === "owner" || user?.role === "admin"
   const [groups, setGroups] = useState<UserGroup[]>([])
   const [users, setUsers] = useState<AppUser[]>([])
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
+  const [createTemplate, setCreateTemplate] = useState<GroupRightsTemplateId | "none">("support")
   const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null)
   const [members, setMembers] = useState<UserGroupMember[]>([])
   const [permissions, setPermissions] = useState<string[]>([])
   const [addUserId, setAddUserId] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const loadGroups = useCallback(async () => {
     setGroups(await userGroupService.list())
@@ -45,17 +120,24 @@ export function UserGroupsPanel() {
   useEffect(() => {
     void (async () => {
       try {
-        const [groupList, userList] = await Promise.all([
-          userGroupService.list(),
-          invokeRenderer(IPCChannels.Auth.ListUsers, undefined) as Promise<AppUser[]>,
-        ])
-        setGroups(groupList)
-        if (Array.isArray(userList)) setUsers(userList)
+        setGroups(await userGroupService.list())
       } catch (e) {
         setError(e instanceof Error ? e.message : t("common.actionFailed"))
+        return
+      }
+      // GETRENNT und nur fuer Mutatoren: /api/v1/auth/users verlangt
+      // users.manage. In einem gemeinsamen Promise.all haette dessen 403 auch
+      // die frei lesbare Gruppenliste verworfen — die angeblich lesbare Ansicht
+      // waere leer mit Fehlermeldung geblieben.
+      if (!canMutateGroups) return
+      try {
+        const userList = await invokeRenderer(IPCChannels.Auth.ListUsers, undefined) as AppUser[]
+        if (Array.isArray(userList)) setUsers(userList)
+      } catch (e) {
+        logError("user-groups-panel: list users", e)
       }
     })()
-  }, [t])
+  }, [canMutateGroups, t])
 
   const run = async (action: () => Promise<void>) => {
     setError(null)
@@ -75,10 +157,28 @@ export function UserGroupsPanel() {
         setError(t("userGroups.nameRequired"))
         return
       }
-      await userGroupService.create(name.trim(), description.trim() || undefined)
+      const created = await userGroupService.create(name.trim(), description.trim() || undefined)
+      if (createTemplate !== "none") {
+        try {
+          await userGroupService.setPermissions(created.id, [...templateCapabilities(createTemplate)])
+        } catch (templateError) {
+          try {
+            await userGroupService.remove(created.id)
+          } catch {
+            // Best-effort rollback; surface the original template failure below.
+          }
+          await loadGroups()
+          throw templateError instanceof Error
+            ? templateError
+            : new Error(t("common.actionFailed"))
+        }
+      }
       setName("")
       setDescription("")
+      setCreateTemplate("support")
       await loadGroups()
+      setSelectedGroupId(created.id)
+      await Promise.all([loadMembers(created.id), loadPermissions(created.id)])
     })
 
   const deleteGroup = (groupId: number) =>
@@ -87,6 +187,7 @@ export function UserGroupsPanel() {
       if (selectedGroupId === groupId) {
         setSelectedGroupId(null)
         setMembers([])
+        setPermissions([])
       }
       await loadGroups()
     })
@@ -95,15 +196,44 @@ export function UserGroupsPanel() {
     run(async () => {
       setSelectedGroupId(groupId)
       setAddUserId("")
+      setShowAdvanced(false)
       await Promise.all([loadMembers(groupId), loadPermissions(groupId)])
     })
 
-  const togglePermission = (permission: string, granted: boolean) =>
+  const applyTemplate = (templateId: GroupRightsTemplateId) =>
     run(async () => {
       if (selectedGroupId === null) return
-      const next = granted
-        ? [...new Set([...permissions, permission])]
-        : permissions.filter((p) => p !== permission)
+      const next = [...templateCapabilities(templateId)]
+      // Vorlagen ERSETZEN alle Rechte der Gruppe (serverseitig delete + insert),
+      // und Capabilities werden pro Request live aufgeloest — ein einziger Klick
+      // wuerde sonst z. B. users.manage/tracking.view sofort und ohne Rueckfrage
+      // fuer alle Mitglieder entfernen. Herabstufungen daher bestaetigen lassen.
+      const downgrades = MODULE_OPTIONS
+        .map((option) => ({
+          option,
+          from: capabilityLevelForModule(permissions, option.module),
+          to: capabilityLevelForModule(next, option.module),
+        }))
+        .filter((entry) => entry.to < entry.from)
+      if (downgrades.length > 0) {
+        const template = GROUP_RIGHTS_TEMPLATES.find((tpl) => tpl.id === templateId)
+        const detail = downgrades
+          .map((entry) => `• ${entry.option.label}: ${moduleLevelLabel(entry.option, entry.from)} → ${moduleLevelLabel(entry.option, entry.to)}`)
+          .join("\n")
+        const confirmed = window.confirm(
+          `Vorlage „${template?.label ?? templateId}" ersetzt ALLE Rechte dieser Gruppe.\n\n`
+          + `Dabei werden Rechte entzogen:\n${detail}\n\n`
+          + "Die Aenderung wirkt sofort fuer alle Mitglieder. Fortfahren?",
+        )
+        if (!confirmed) return
+      }
+      setPermissions(await userGroupService.setPermissions(selectedGroupId, next))
+    })
+
+  const setModuleLevel = (module: CapabilityModule, level: number) =>
+    run(async () => {
+      if (selectedGroupId === null) return
+      const next = mergeModuleCapabilityLevels(permissions, module, level)
       setPermissions(await userGroupService.setPermissions(selectedGroupId, next))
     })
 
@@ -124,14 +254,25 @@ export function UserGroupsPanel() {
 
   const memberIds = new Set(members.map((m) => m.userId))
   const selectableUsers = users.filter((u) => !memberIds.has(u.id))
+  const selectedGroup = useMemo(
+    () => groups.find((g) => g.id === selectedGroupId) ?? null,
+    [groups, selectedGroupId],
+  )
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>{t("userGroups.title")}</CardTitle>
-        <CardDescription>{t("userGroups.description")}</CardDescription>
+        <CardDescription>
+          Gruppen & Rechte: Vorlage waehlen, Mitglieder zuweisen, Postfaecher separat unter Delegation.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!canMutateGroups ? (
+          <p className="text-xs text-muted-foreground">
+            Nur lesbar — Gruppen und Mitgliedschaften ändern dürfen nur Administratoren.
+          </p>
+        ) : null}
         {error ? (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
@@ -139,7 +280,7 @@ export function UserGroupsPanel() {
           </Alert>
         ) : null}
 
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2 sm:grid-cols-3">
           <div>
             <Label htmlFor="group-name">{t("userGroups.name")}</Label>
             <Input id="group-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("userGroups.namePlaceholder")} />
@@ -148,8 +289,26 @@ export function UserGroupsPanel() {
             <Label htmlFor="group-desc">{t("userGroups.descriptionOptional")}</Label>
             <Input id="group-desc" value={description} onChange={(e) => setDescription(e.target.value)} />
           </div>
+          <div>
+            <Label htmlFor="group-template">Vorlage</Label>
+            <Select value={createTemplate} onValueChange={(v) => setCreateTemplate(v as GroupRightsTemplateId | "none")}>
+              <SelectTrigger id="group-template">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Ohne Vorlage</SelectItem>
+                {GROUP_RIGHTS_TEMPLATES.map((template) => (
+                  <SelectItem key={template.id} value={template.id}>{template.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
         </div>
-        <Button type="button" disabled={busy || !name.trim()} onClick={() => void createGroup()}>
+        <Button
+          type="button"
+          disabled={busy || !name.trim() || !canMutateGroups}
+          onClick={() => void createGroup()}
+        >
           {t("userGroups.create")}
         </Button>
 
@@ -166,9 +325,9 @@ export function UserGroupsPanel() {
               </span>
               <span className="flex items-center gap-2">
                 <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => void openMembers(group.id)}>
-                  <Users className="mr-1 h-3.5 w-3.5" /> {t("userGroups.members")}
+                  <Users className="mr-1 h-3.5 w-3.5" /> Rechte
                 </Button>
-                <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void deleteGroup(group.id)}>
+                <Button type="button" variant="ghost" size="sm" disabled={busy || !canMutateGroups} onClick={() => void deleteGroup(group.id)}>
                   <Trash2 className="h-3.5 w-3.5 text-destructive" />
                 </Button>
               </span>
@@ -176,63 +335,102 @@ export function UserGroupsPanel() {
           ))}
         </ul>
 
-        {selectedGroupId !== null ? (
-          <div className="space-y-2 rounded-md border border-border p-3">
+        {selectedGroupId !== null && selectedGroup ? (
+          <div className="space-y-4 rounded-md border border-border p-3">
             <p className="text-sm font-medium">
-              {t("userGroups.membersOf", { name: groups.find((g) => g.id === selectedGroupId)?.name ?? "" })}
+              {selectedGroup.name} — Mitglieder & Modulrechte
             </p>
-            <ul className="space-y-1 text-sm">
-              {members.length === 0 ? <li className="text-muted-foreground">{t("userGroups.noMembers")}</li> : null}
-              {members.map((member) => (
-                <li key={member.userId} className="flex items-center justify-between gap-2">
-                  <span>{member.displayName} ({member.email})</span>
-                  <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void removeMember(member.userId)}>
-                    {t("common.remove")}
+
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Vorlage anwenden</p>
+              <div className="flex flex-wrap gap-2">
+                {GROUP_RIGHTS_TEMPLATES.map((template) => (
+                  <Button
+                    key={template.id}
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={busy || !canMutateGroups}
+                    title={template.description}
+                    onClick={() => void applyTemplate(template.id)}
+                  >
+                    {template.label}
                   </Button>
-                </li>
-              ))}
-            </ul>
-            <div className="flex items-end gap-2">
-              <div className="flex-1">
-                <Label htmlFor="add-member">{t("userGroups.addMember")}</Label>
-                <Select value={addUserId} onValueChange={setAddUserId}>
-                  <SelectTrigger id="add-member">
-                    <SelectValue placeholder={t("userGroups.selectUser")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectableUsers.map((u) => (
-                      <SelectItem key={u.id} value={u.id}>{u.display_name || u.username}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                ))}
               </div>
-              <Button type="button" disabled={busy || !addUserId} onClick={() => void addMember()}>
-                {t("common.add")}
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-sm font-medium">Modulrechte</p>
+              {MODULE_OPTIONS.map((option) => {
+                const level = capabilityLevelForModule(permissions, option.module)
+                return (
+                  <div key={option.module} className="grid gap-1 sm:grid-cols-[8rem_1fr] sm:items-center">
+                    <Label>{option.label}</Label>
+                    <Select
+                      value={String(level)}
+                      onValueChange={(value) => void setModuleLevel(option.module, Number(value))}
+                      disabled={busy || !canMutateGroups}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {option.levels.map((entry) => (
+                          <SelectItem key={entry.value} value={String(entry.value)}>{entry.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )
+              })}
+              <Button type="button" variant="ghost" size="sm" onClick={() => setShowAdvanced((v) => !v)}>
+                {showAdvanced ? "Gespeicherte Keys ausblenden" : "Gespeicherte Keys anzeigen"}
               </Button>
+              {showAdvanced ? (
+                <p className="font-mono text-xs text-muted-foreground">
+                  {permissions.length === 0 ? "(keine)" : permissions.join(", ")}
+                </p>
+              ) : null}
             </div>
 
             <div className="space-y-2 border-t pt-3">
-              <p className="text-sm font-medium">Berechtigungen</p>
-              <p className="text-xs text-muted-foreground">
-                Owner und Admins haben alle Rechte. Diese Freigaben erweitern die Rechte von
-                Mitgliedern mit der Rolle „Benutzer“.
-              </p>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {USER_GROUP_CAPABILITIES.map((capability) => {
-                  const granted = permissions.includes(capability.key)
-                  return (
-                    <label key={capability.key} className="flex items-center gap-2 text-sm">
-                      <Checkbox
-                        checked={granted}
-                        disabled={busy}
-                        onCheckedChange={(value) => void togglePermission(capability.key, value === true)}
-                      />
-                      {capability.label}
-                    </label>
-                  )
-                })}
+              <p className="text-sm font-medium">{t("userGroups.members")}</p>
+              <ul className="space-y-1 text-sm">
+                {members.length === 0 ? <li className="text-muted-foreground">{t("userGroups.noMembers")}</li> : null}
+                {members.map((member) => (
+                  <li key={member.userId} className="flex items-center justify-between gap-2">
+                    <span>{member.displayName} ({member.email})</span>
+                    <Button type="button" variant="ghost" size="sm" disabled={busy || !canMutateGroups} onClick={() => void removeMember(member.userId)}>
+                      {t("common.remove")}
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <Label htmlFor="add-member">{t("userGroups.addMember")}</Label>
+                  <Select value={addUserId} onValueChange={setAddUserId}>
+                    <SelectTrigger id="add-member">
+                      <SelectValue placeholder={t("userGroups.selectUser")} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectableUsers.map((u) => (
+                        <SelectItem key={u.id} value={u.id}>{u.display_name || u.username}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button type="button" disabled={busy || !addUserId || !canMutateGroups} onClick={() => void addMember()}>
+                  {t("common.add")}
+                </Button>
               </div>
             </div>
+
+            <p className="text-xs text-muted-foreground border-t pt-3">
+              Postfaecher und Sichtbarkeitsfilter (Zuweisung / Kategorie / Tag) werden unter
+              E-Mail → Einstellungen → Delegation fuer diese Gruppe gesetzt.
+            </p>
           </div>
         ) : null}
       </CardContent>

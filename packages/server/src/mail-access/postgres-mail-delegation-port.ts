@@ -12,6 +12,14 @@ import type {
   MailDelegationSubject,
   MailDelegationSubjectOption,
 } from '../api/types';
+import type { MailBindingVisibilityConstraints } from './mail-acl-constraints';
+import {
+  DENY_ALL_CATEGORY_ALLOW_ID,
+  DENY_ALL_TAG_ALLOW_VALUE,
+  hasMailBindingConstraints,
+  isConstraintsAtLeastAsRestrictive,
+  mergeAuthorityConstraints,
+} from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
 import {
   withWorkspaceTransaction,
@@ -288,6 +296,7 @@ export function createPostgresMailDelegationPort(
           subject: input.subject,
           resource: input.resource,
           permissions: uniquePermissions(input.permissions),
+          ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
         }),
         sessionOptions,
       );
@@ -304,6 +313,9 @@ export function createPostgresMailDelegationPort(
             subject: rowSubject(existing),
             resource: rowResource(existing),
             permissions: uniquePermissions(input.permissions),
+            constraints: input.constraints === undefined
+              ? undefined
+              : input.constraints,
             existing,
           });
         },
@@ -327,6 +339,23 @@ export function createPostgresMailDelegationPort(
           if (!await canManageResource(trx, input.workspaceId, input.actor, resource, [], true)) {
             return { ok: false as const, code: 'permission_denied' as const };
           }
+          // Gleiche Pruefung wie im PATCH-Loeschpfad (replaceBySubjectResource):
+          // wer nur eingeschraenkt verwalten darf, soll die unbeschraenkte
+          // Delegation eines fremden Teams auch ueber die dedizierte
+          // DELETE-Route nicht widerrufen koennen.
+          if (!input.actor.isOwner && !input.actor.isAdmin) {
+            const manageAuthority = await loadDelegationAuthority(
+              trx,
+              input.workspaceId,
+              input.actor.userId,
+              resource,
+              [MANAGE_PERMISSION],
+            );
+            const existingMap = await loadBindingConstraints(trx, [existing.id]);
+            if (!isConstraintsAllowedByDelegationAuthority(existingMap.get(existing.id) ?? null, manageAuthority)) {
+              return { ok: false as const, code: 'privilege_escalation' as const };
+            }
+          }
           const affectedUserIds = await affectedUsersForSubject(trx, input.workspaceId, rowSubject(existing));
           await trx.deleteFrom('mail_acl_bindings').where('id', '=', input.bindingId).execute();
           // Return the deleted binding's resource as tombstone data so the route can
@@ -348,6 +377,8 @@ export function createPostgresMailDelegationPort(
       subject: MailDelegationSubject;
       resource: MailDelegationResource;
       permissions: readonly MailPermission[];
+      /** undefined = leave existing constraints unchanged on PATCH; null/object = replace */
+      constraints?: MailBindingVisibilityConstraints | null;
       existing?: BindingRow;
     },
   ): Promise<
@@ -369,15 +400,102 @@ export function createPostgresMailDelegationPort(
     // serializes with this write rather than racing it under read-committed (R48-4).
     const manage = await canManageResource(trx, workspaceId, actor, input.resource, [], true);
     if (!manage) return { ok: false as const, code: 'permission_denied' };
+    const existing = input.existing
+      ?? await findBinding(trx, workspaceId, input.subject, input.resource);
+    let constraints = input.constraints;
     if (!actor.isOwner && !actor.isAdmin) {
       const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, input.resource, true);
       if (input.permissions.some((permission) => !held.has(permission))) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
+      // Die eigene VERWALTUNGS-Autoritaet zaehlt mit: wer nur eingeschraenkt
+      // verwalten darf (z. B. manage nur fuer Kategorie X), soll auch nur
+      // innerhalb dieser Filter berechtigen koennen — selbst wenn er die
+      // delegierte Berechtigung selbst unbeschraenkt haelt. isConstraintsAllowedBy
+      // DelegationAuthority verknuepft die Eintraege per every(), die Vererbung
+      // schneidet sie, also genuegt der zusaetzliche Eintrag.
+      // Loeschpfad (leere permissions): Der Zielzustand ist "kein Binding", es
+      // gibt also nichts zu vergleichen — geprueft wird stattdessen das
+      // BESTEHENDE Binding gegen die eigene Verwaltungs-Autoritaet. Ohne das
+      // koennte ein auf Kategorie X eingeschraenkter Manager die unbeschraenkte
+      // Delegation eines fremden Teams auf demselben Konto widerrufen, obwohl er
+      // sie weder vergeben noch bearbeiten duerfte (leere Autoritaet => leeres
+      // every() => alles erlaubt).
+      if (input.permissions.length === 0) {
+        if (existing) {
+          const manageAuthority = await loadDelegationAuthority(
+            trx,
+            workspaceId,
+            actor.userId,
+            input.resource,
+            [MANAGE_PERMISSION],
+          );
+          const existingMap = await loadBindingConstraints(trx, [existing.id]);
+          if (!isConstraintsAllowedByDelegationAuthority(existingMap.get(existing.id) ?? null, manageAuthority)) {
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
+        }
+        const affectedForDelete = await affectedUsersForSubject(trx, workspaceId, input.subject);
+        if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
+        return {
+          ok: true as const,
+          binding: null,
+          ...(existing ? { deletedBindingId: existing.id, resource: input.resource } : {}),
+          affectedUserIds: affectedForDelete,
+          deleted: Boolean(existing),
+        };
+      }
+      const authorityPermissions = input.permissions.includes(MANAGE_PERMISSION)
+        ? input.permissions
+        : [...input.permissions, MANAGE_PERMISSION];
+      // Serialized by the canManageResource(forUpdate: true) lock taken above.
+      const authority = await loadDelegationAuthority(
+        trx,
+        workspaceId,
+        actor.userId,
+        input.resource,
+        authorityPermissions,
+      );
+      if (constraints === undefined) {
+        // Preserve existing filters on permission-only updates; inherit authority
+        // filters only when creating a new binding without explicit constraints.
+        if (existing) {
+          const existingMap = await loadBindingConstraints(trx, [existing.id]);
+          const existingConstraints = existingMap.get(existing.id) ?? null;
+          if (!isConstraintsAllowedByDelegationAuthority(existingConstraints, authority)) {
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
+          // Relative modes on another subject stay forbidden even when merely preserved.
+          if (isRelativeAssignmentRedelegation(actor, input.subject, existingConstraints)) {
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
+        } else {
+          const inherited = inheritConstraintsFromDelegationAuthority(authority);
+          if (inherited === undefined) {
+            // Multi-branch authority cannot be safely collapsed — require explicit filters.
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
+          if (hasMailBindingConstraints(inherited)) {
+            constraints = inherited;
+          }
+        }
+      } else if (!isConstraintsAllowedByDelegationAuthority(constraints, authority)) {
+        return { ok: false as const, code: 'privilege_escalation' };
+      }
+      // Relative assignment modes evaluate against the binding subject, not the
+      // delegating actor — block non-admin re-delegation onto other subjects.
+      if (
+        constraints !== undefined
+        && isRelativeAssignmentRedelegation(actor, input.subject, constraints)
+      ) {
+        return { ok: false as const, code: 'privilege_escalation' };
+      }
     }
 
-    const existing = input.existing
-      ?? await findBinding(trx, workspaceId, input.subject, input.resource);
+    if (constraints !== undefined && await unknownConstraintCategoryExists(trx, workspaceId, constraints)) {
+      return { ok: false as const, code: 'category_not_found' as const };
+    }
+
     const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
     if (input.permissions.length === 0) {
       if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
@@ -445,6 +563,10 @@ export function createPostgresMailDelegationPort(
         permission_key: permission,
       })))
       .execute();
+
+    if (constraints !== undefined) {
+      await replaceBindingConstraints(trx, workspaceId, bindingRow.id, constraints, now);
+    }
 
     return {
       ok: true as const,
@@ -516,6 +638,151 @@ async function canManageResource(
   if (actor.isOwner || actor.isAdmin) return true;
   const held = await heldPermissionsForResource(trx, workspaceId, actor.userId, resource, forUpdate);
   return held.has(MANAGE_PERMISSION) && permissions.every((permission) => held.has(permission));
+}
+
+/**
+ * Per-permission authority for re-delegation. Same-permission bindings are OR'd
+ * at read time, so we keep their constraint branches distinct instead of
+ * field-wise unioning (which would invent cross-products / drop assignment filters).
+ */
+type PermissionAuthority =
+  | { kind: 'unconstrained' }
+  | { kind: 'branches'; branches: readonly MailBindingVisibilityConstraints[] };
+
+type DelegationAuthority = readonly PermissionAuthority[];
+
+/**
+ * Most-restrictive visibility authority for the permissions being delegated.
+ * Derived from bindings that grant each requested permission (not only
+ * mail.delegation.manage), so a constrained content grant cannot be widened via
+ * an unconstrained manage-only grant.
+ *
+ * Takes NO locks of its own, and must not: every caller has already run
+ * canManageResource(..., forUpdate: true), which locks the actor's group
+ * memberships plus ALL of their mail_acl_bindings rows (that query has no
+ * resource filter, so it is a superset of what is read here). A concurrent
+ * narrowing of the actor's own authority cannot slip in between, because every
+ * constraint write goes through replaceBySubjectResource, which updates the
+ * parent mail_acl_bindings row (updated_at) BEFORE rewriting
+ * mail_acl_binding_constraints — and therefore blocks on that same row lock.
+ * Re-locking here would only widen the lock footprint (R48-4).
+ */
+async function loadDelegationAuthority(
+  trx: Trx,
+  workspaceId: string,
+  userId: string,
+  resource: MailDelegationResource,
+  permissions: readonly MailPermission[],
+): Promise<DelegationAuthority> {
+  if (permissions.length === 0) return [];
+  const groupRows = await trx
+    .selectFrom('user_group_members')
+    .select(['group_id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('user_id', '=', userId)
+    .execute() as Array<{ group_id: number }>;
+  const bindingRows = await trx
+    .selectFrom('mail_acl_bindings')
+    .innerJoin('mail_acl_binding_permissions', 'mail_acl_binding_permissions.binding_id', 'mail_acl_bindings.id')
+    .select([
+      'mail_acl_bindings.id',
+      'mail_acl_binding_permissions.permission_key',
+    ])
+    .where('mail_acl_bindings.workspace_id', '=', workspaceId)
+    .where('mail_acl_binding_permissions.permission_key', 'in', [...permissions])
+    .where((eb) => eb.or([
+      eb.and([
+        eb('mail_acl_bindings.subject_type', '=', 'user'),
+        eb('mail_acl_bindings.subject_id', '=', userId),
+      ]),
+      ...(groupRows.length > 0
+        ? [eb.and([
+          eb('mail_acl_bindings.subject_type', '=', 'group'),
+          eb('mail_acl_bindings.subject_id', 'in', groupRows.map((row) => String(row.group_id))),
+        ])]
+        : []),
+    ]))
+    .where((eb) => {
+      if (resource.type === 'account') {
+        return eb.and([
+          eb('mail_acl_bindings.resource_type', '=', 'account'),
+          eb('mail_acl_bindings.account_id', '=', resource.accountId),
+        ]);
+      }
+      return eb.or([
+        eb.and([
+          eb('mail_acl_bindings.resource_type', '=', 'account'),
+          eb('mail_acl_bindings.account_id', '=', resource.accountId),
+        ]),
+        eb.and([
+          eb('mail_acl_bindings.resource_type', '=', 'folder'),
+          eb('mail_acl_bindings.account_id', '=', resource.accountId),
+          eb('mail_acl_bindings.folder_id', '=', resource.folderId),
+        ]),
+      ]);
+    })
+    .execute() as Array<{ id: number | string; permission_key: MailPermission }>;
+
+  const bindingIdsByPermission = new Map<MailPermission, number[]>();
+  for (const row of bindingRows) {
+    const bindingId = dbInteger(row.id, 'authority binding id');
+    const list = bindingIdsByPermission.get(row.permission_key) ?? [];
+    list.push(bindingId);
+    bindingIdsByPermission.set(row.permission_key, list);
+  }
+
+  const allBindingIds = [...new Set(bindingRows.map((row) => dbInteger(row.id, 'authority binding id')))];
+  if (allBindingIds.length === 0) {
+    return permissions.map(() => ({ kind: 'unconstrained' as const }));
+  }
+  const constraintMap = await loadBindingConstraints(trx, allBindingIds);
+
+  return permissions.map((permission) => {
+    const bindingIds = [...new Set(bindingIdsByPermission.get(permission) ?? [])];
+    if (bindingIds.length === 0) return { kind: 'unconstrained' as const };
+    const branches: MailBindingVisibilityConstraints[] = [];
+    for (const bindingId of bindingIds) {
+      const next = constraintMap.get(bindingId) ?? null;
+      if (!hasMailBindingConstraints(next) || !next) {
+        return { kind: 'unconstrained' as const };
+      }
+      branches.push(next);
+    }
+    return branches.length > 0
+      ? { kind: 'branches' as const, branches }
+      : { kind: 'unconstrained' as const };
+  });
+}
+
+/** Candidate must fit at least one branch of every constrained permission. */
+function isConstraintsAllowedByDelegationAuthority(
+  candidate: MailBindingVisibilityConstraints | null | undefined,
+  authority: DelegationAuthority,
+): boolean {
+  return authority.every((permissionAuthority) => {
+    if (permissionAuthority.kind === 'unconstrained') return true;
+    if (!hasMailBindingConstraints(candidate)) return false;
+    return permissionAuthority.branches.some((branch) => (
+      isConstraintsAtLeastAsRestrictive(candidate, branch)
+    ));
+  });
+}
+
+/**
+ * Auto-inherit only when every constrained permission has exactly one branch;
+ * then intersect across permissions. Multi-branch authorities return `undefined`
+ * so callers require explicit constraints (fail closed).
+ */
+function inheritConstraintsFromDelegationAuthority(
+  authority: DelegationAuthority,
+): MailBindingVisibilityConstraints | null | undefined {
+  let merged: MailBindingVisibilityConstraints | null = null;
+  for (const permissionAuthority of authority) {
+    if (permissionAuthority.kind === 'unconstrained') continue;
+    if (permissionAuthority.branches.length !== 1) return undefined;
+    merged = mergeAuthorityConstraints(merged, permissionAuthority.branches[0]!);
+  }
+  return merged;
 }
 
 async function heldPermissionsForResource(
@@ -740,6 +1007,7 @@ async function hydrateBindings(
   const groupLabels = new Map(groups.map((group) => [dbInteger(group.id, 'user group id'), group.name]));
   const accountLabels = new Map(accounts.map((account) => [dbInteger(account.id, 'email account id'), account.display_name]));
   const folderLabels = new Map(folders.map((folder) => [dbInteger(folder.id, 'email folder id'), folder.path]));
+  const constraintMap = await loadBindingConstraints(trx, bindingIds);
 
   return rows.map((row) => ({
     id: row.id,
@@ -752,13 +1020,240 @@ async function hydrateBindings(
     permissions: permissionMap.get(row.id) ?? [],
     profile: null,
     updatedAt: formatTimestamp(row.updated_at),
+    constraints: constraintMap.get(row.id) ?? null,
   }));
+}
+
+async function loadBindingConstraints(
+  trx: Trx,
+  bindingIds: readonly number[],
+): Promise<Map<number, MailBindingVisibilityConstraints | null>> {
+  const map = new Map<number, MailBindingVisibilityConstraints | null>();
+  if (bindingIds.length === 0) return map;
+  let rows: Array<{
+    binding_id: number | string;
+    kind: string;
+    mode: string;
+    assignment_mode: string | null;
+    value_ids: number[] | null;
+    value_texts: string[] | null;
+  }> = [];
+  rows = await trx
+    .selectFrom('mail_acl_binding_constraints')
+    .select(['binding_id', 'kind', 'mode', 'assignment_mode', 'value_ids', 'value_texts'])
+    .where('binding_id', 'in', [...bindingIds])
+    .execute() as typeof rows;
+
+  const builders = new Map<number, {
+    assignmentMode: MailBindingVisibilityConstraints['assignmentMode'];
+    categoryAllowIds: number[];
+    categoryExcludeIds: number[];
+    tagAllowValues: string[];
+    tagExcludeValues: string[];
+  }>();
+  for (const row of rows) {
+    const bindingId = dbInteger(row.binding_id, 'constraint binding id');
+    const current = builders.get(bindingId) ?? {
+      assignmentMode: null,
+      categoryAllowIds: [],
+      categoryExcludeIds: [],
+      tagAllowValues: [],
+      tagExcludeValues: [],
+    };
+    if (row.kind === 'assignment' && row.assignment_mode) {
+      current.assignmentMode = row.assignment_mode as MailBindingVisibilityConstraints['assignmentMode'];
+    } else if (row.kind === 'category') {
+      const ids = Array.isArray(row.value_ids)
+        ? row.value_ids.map(Number).filter((n) => Number.isSafeInteger(n) && (n > 0 || n === DENY_ALL_CATEGORY_ALLOW_ID))
+        : [];
+      if (row.mode === 'allow') current.categoryAllowIds.push(...ids);
+      if (row.mode === 'exclude') current.categoryExcludeIds.push(...ids.filter((n) => n > 0));
+    } else if (row.kind === 'tag') {
+      const texts = Array.isArray(row.value_texts)
+        ? row.value_texts.map(String).filter((value) => value === DENY_ALL_TAG_ALLOW_VALUE || Boolean(value))
+        : [];
+      if (row.mode === 'allow') current.tagAllowValues.push(...texts);
+      if (row.mode === 'exclude') {
+        current.tagExcludeValues.push(...texts.filter((value) => value !== DENY_ALL_TAG_ALLOW_VALUE));
+      }
+    }
+    builders.set(bindingId, current);
+  }
+  for (const bindingId of bindingIds) {
+    const built = builders.get(bindingId);
+    if (!built) {
+      map.set(bindingId, null);
+      continue;
+    }
+    const constraints: MailBindingVisibilityConstraints = {
+      assignmentMode: built.assignmentMode && built.assignmentMode !== 'any' ? built.assignmentMode : null,
+      categoryAllowIds: [...new Set(built.categoryAllowIds)].sort((a, b) => a - b),
+      categoryExcludeIds: [...new Set(built.categoryExcludeIds)].sort((a, b) => a - b),
+      tagAllowValues: [...new Set(built.tagAllowValues)].sort(),
+      tagExcludeValues: [...new Set(built.tagExcludeValues)].sort(),
+    };
+    map.set(bindingId, hasMailBindingConstraints(constraints) ? constraints : null);
+  }
+  return map;
+}
+
+
+/**
+ * Kategorie-Ids aus den Sichtbarkeitsfiltern gegen den Workspace aufloesen.
+ * Eine unbekannte (oder aus einem fremden Workspace stammende) Id wird sonst
+ * unveraendert gespeichert und laeuft ins Leere: der SQL-Scope findet dafuer
+ * nie eine email_message_categories-Zeile, ein Ausschlussfilter liesse also
+ * JEDE Nachricht durch — ein stillschweigend wirkungsloser Filter ist
+ * gefaehrlicher als eine Fehlermeldung. Das Deny-All-Sentinel (-1) ist keine
+ * echte Kategorie und wird uebersprungen.
+ */
+async function unknownConstraintCategoryExists(
+  trx: Trx,
+  workspaceId: string,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+): Promise<boolean> {
+  if (!constraints) return false;
+  const ids = [...new Set([...constraints.categoryAllowIds, ...constraints.categoryExcludeIds])]
+    .filter((id) => id !== DENY_ALL_CATEGORY_ALLOW_ID && id > 0);
+  if (ids.length === 0) return false;
+  // FOR SHARE: mail_acl_binding_constraints.value_ids hat keinen Fremdschluessel
+  // auf email_categories, die Existenzpruefung waere sonst rein zeitpunktbezogen.
+  // Der Loeschpfad (postgres-mail-metadata-read-ports) sperrt denselben Teilbaum
+  // mit FOR UPDATE, bevor er nach referenzierenden Constraints sucht. Damit
+  // serialisieren sich beide Transaktionen: laeuft das DELETE zuerst durch, ist
+  // die Zeile hier verschwunden und wir antworten category_not_found; laeuft
+  // diese Transaktion zuerst, sieht das DELETE den neuen Constraint und scheitert.
+  const rows = await trx
+    .selectFrom('email_categories')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', 'in', ids)
+    .forShare()
+    .execute();
+  const known = new Set(rows.map((row) => Number(row.id)));
+  return ids.some((id) => !known.has(id));
+}
+
+async function replaceBindingConstraints(
+  trx: Trx,
+  workspaceId: string,
+  bindingId: number,
+  constraints: MailBindingVisibilityConstraints | null,
+  now: Date,
+): Promise<void> {
+  await trx.deleteFrom('mail_acl_binding_constraints').where('binding_id', '=', bindingId).execute();
+  if (!constraints || !hasMailBindingConstraints(constraints)) return;
+
+  const rows: Array<{
+    workspace_id: string;
+    binding_id: number;
+    kind: 'assignment' | 'category' | 'tag';
+    mode: 'allow' | 'exclude' | 'filter';
+    assignment_mode: MailBindingVisibilityConstraints['assignmentMode'];
+    value_ids: number[];
+    value_texts: string[];
+    created_at: Date;
+    updated_at: Date;
+  }> = [];
+
+  if (constraints.assignmentMode && constraints.assignmentMode !== 'any') {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'assignment',
+      mode: 'filter',
+      assignment_mode: constraints.assignmentMode,
+      value_ids: [],
+      value_texts: [],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.categoryAllowIds.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'category',
+      mode: 'allow',
+      assignment_mode: null,
+      value_ids: [...constraints.categoryAllowIds],
+      value_texts: [],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.categoryExcludeIds.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'category',
+      mode: 'exclude',
+      assignment_mode: null,
+      value_ids: [...constraints.categoryExcludeIds],
+      value_texts: [],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.tagAllowValues.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'tag',
+      mode: 'allow',
+      assignment_mode: null,
+      value_ids: [],
+      value_texts: [...constraints.tagAllowValues],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (constraints.tagExcludeValues.length > 0) {
+    rows.push({
+      workspace_id: workspaceId,
+      binding_id: bindingId,
+      kind: 'tag',
+      mode: 'exclude',
+      assignment_mode: null,
+      value_ids: [],
+      value_texts: [...constraints.tagExcludeValues],
+      created_at: now,
+      updated_at: now,
+    });
+  }
+  if (rows.length > 0) {
+    await trx.insertInto('mail_acl_binding_constraints').values(rows).execute();
+  }
 }
 
 function actorRole(actor: MailDelegationActor): 'owner' | 'admin' | 'user' {
   if (actor.isOwner) return 'owner';
   if (actor.isAdmin) return 'admin';
   return 'user';
+}
+
+/** True when filters use modes that resolve relative to the evaluating subject. */
+function hasRelativeAssignmentMode(
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+): boolean {
+  const mode = constraints?.assignmentMode;
+  return mode === 'assigned_to_me' || mode === 'assigned_to_my_groups';
+}
+
+/**
+ * Non-admins may keep relative modes only on bindings for themselves. Delegating
+ * `assigned_to_me` / `assigned_to_my_groups` to another user or group silently
+ * widens (or shifts) the meaning of "me".
+ */
+function isRelativeAssignmentRedelegation(
+  actor: MailDelegationActor,
+  subject: MailDelegationSubject,
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+): boolean {
+  if (actor.isOwner || actor.isAdmin) return false;
+  if (!hasRelativeAssignmentMode(constraints)) return false;
+  if (subject.type === 'user' && subject.id === actor.userId) return false;
+  return true;
 }
 
 function subjectId(subject: MailDelegationSubject): string {

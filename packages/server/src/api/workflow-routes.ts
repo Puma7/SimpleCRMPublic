@@ -3,6 +3,7 @@ import {
   definitionToJson,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
   type WorkflowNodeCatalogEntry,
@@ -36,11 +37,15 @@ import {
   error,
   forbidUnlessCapability,
   positiveIntFromPath,
+  rejectUnlessWorkflowEdit,
   rejectUnlessWorkflowManage,
+  rejectUnlessWorkflowRun,
+  rejectUnlessWorkflowView,
   requireAdmin,
   requireCapability,
   requirePrincipal,
 } from './http';
+import { outboundWorkflowGuardError } from './workflow-outbound-guard';
 import { rejectUnlessWorkflowMessageReadable } from '../mail-access/workflow-message-access';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
@@ -246,7 +251,7 @@ async function handleWorkflowNodeCatalogList(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
+  const denied = rejectUnlessWorkflowView(principal);
   if (denied) return denied;
   if (!ports.workflowNodeCatalog) {
     return error(503, 'workflow_node_catalog_unavailable', 'Workflow node catalog API nicht konfiguriert');
@@ -261,7 +266,7 @@ async function handleWorkflowPluginList(req: ApiRequest): Promise<ApiResponse> {
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
+  const denied = rejectUnlessWorkflowView(principal);
   if (denied) return denied;
   return data(200, []);
 }
@@ -270,7 +275,7 @@ async function handleWorkflowGraphCompileRoute(req: ApiRequest): Promise<ApiResp
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  const denied = rejectUnlessWorkflowManage(principal);
+  const denied = rejectUnlessWorkflowEdit(principal);
   if (denied) return denied;
 
   try {
@@ -323,7 +328,7 @@ async function handleListRoute(
   if (resource === 'workflows' && req.method === 'POST') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
-    const denied = rejectUnlessWorkflowManage(principal);
+    const denied = rejectUnlessWorkflowEdit(principal);
     if (denied) return denied;
     return handleCreateWorkflow(req, ports);
   }
@@ -331,9 +336,9 @@ async function handleListRoute(
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
   // Prompt catalog and sanitized AI profile reads are needed by compose/settings
-  // for every authenticated user. Workflow lists stay behind workflows.manage.
+  // for every authenticated user. Workflow lists require at least workflows.view.
   if (resource === 'workflows') {
-    const listDenied = rejectUnlessWorkflowManage(principal);
+    const listDenied = rejectUnlessWorkflowView(principal);
     if (listDenied) return listDenied;
   }
 
@@ -411,7 +416,9 @@ async function handleGetRoute(
   const id = positiveIntFromPath(rawId);
   if (id === null) return error(400, `invalid_${resourceErrorName(resource)}_id`, `${resourceLabel(resource)} id muss eine positive Ganzzahl sein`);
   if (req.method === 'PATCH' || req.method === 'DELETE') {
-    const denied = rejectUnlessWorkflowManage(principal);
+    const denied = resource === 'workflows' && req.method === 'PATCH'
+      ? rejectUnlessWorkflowEdit(principal)
+      : rejectUnlessWorkflowManage(principal);
     if (denied) return denied;
   }
   if (resource === 'aiProfiles' && req.method === 'PATCH') return handleUpdateAiProfile(req, ports, principal, id);
@@ -423,7 +430,7 @@ async function handleGetRoute(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   // Prompt and sanitized profile reads are available to any authenticated user.
   if (resource === 'workflows') {
-    const getDenied = rejectUnlessWorkflowManage(principal);
+    const getDenied = rejectUnlessWorkflowView(principal);
     if (getDenied) return getDenied;
   }
 
@@ -463,7 +470,9 @@ async function handleWorkflowBySourceRoute(
 
   const workflow = await findWorkflowBySourceSqliteId(ports, principal.workspaceId, sourceSqliteId);
   if (req.method === 'PATCH' || req.method === 'DELETE') {
-    const denied = rejectUnlessWorkflowManage(principal);
+    const denied = req.method === 'PATCH'
+      ? rejectUnlessWorkflowEdit(principal)
+      : rejectUnlessWorkflowManage(principal);
     if (denied) return denied;
   }
   if (req.method === 'PATCH') {
@@ -477,7 +486,7 @@ async function handleWorkflowBySourceRoute(
       : error(404, 'workflow_not_found', 'Workflow nicht gefunden');
   }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
-  const getDenied = rejectUnlessWorkflowManage(principal);
+  const getDenied = rejectUnlessWorkflowView(principal);
   if (getDenied) return getDenied;
   return data(200, workflow ? sanitizeWorkflow(workflow) : null);
 }
@@ -527,7 +536,7 @@ async function handleWorkflowExecute(
   const parsed = parseWorkflowExecuteBody(req.body);
   if (!parsed.ok) return parsed.response;
 
-  const workflowDenied = rejectUnlessWorkflowManage(principal);
+  const workflowDenied = rejectUnlessWorkflowRun(principal);
   if (workflowDenied) return workflowDenied;
 
   const messageId = parsed.values.messageId;
@@ -543,7 +552,7 @@ async function handleWorkflowExecute(
   // (mutates mail/CRM state, sends mail, or reaches an external system) could
   // let a non-admin perform mailbox operations they otherwise can't. Until
   // per-node authorization lands, restrict such live runs to admins. Dry-runs
-  // and read-/notify-only graphs stay open to delegated `workflows.manage`
+  // and read-/notify-only graphs stay open to delegated `workflows.run`
   // holders.
   if (!dryRun && !requireAdmin(principal) && workflowGraphHasSideEffectNode(workflow.graph)) {
     return error(
@@ -949,48 +958,55 @@ async function handleDeleteAiPrompt(
   return data(200, { deleted: true, aiPrompt: sanitizeAiPrompt(prompt) });
 }
 
-/**
- * Reject an outbound workflow that, once ENABLED, would silently trap clean
- * mail. Outbound review selects workflows by the stored `trigger_name` and
- * holds every draft before executing them, so a workflow is only safe if — as
- * an enabled outbound workflow — it can actually release the draft:
- *  - a `compiled` execution mode is unsupported by the server runtime (it
- *    returns blocked before parsing the graph) → always traps;
- *  - no graph at all → the run never reaches a release/send node → always traps;
- *  - a graph whose reachable paths don't all release → traps (findOutboundGraphTraps).
- *
- * All inputs are the EFFECTIVE post-mutation values. A non-outbound or disabled
- * workflow can't be selected by review, so it is never rejected.
- */
-function outboundWorkflowGuardError(input: {
-  graph: unknown;
-  triggerName: string | undefined;
-  enabled: boolean | undefined;
-  executionMode: string | null | undefined;
-}): ApiResponse | null {
-  if (input.triggerName !== 'outbound') return null;
+/** Enabled graphs with side-effect nodes require workflows.manage (admins inherit). */
+function rejectUnlessSideEffectWorkflowManage(
+  principal: AuthenticatedPrincipal,
+  input: Readonly<{ graph: unknown; enabled: boolean | undefined }>,
+): ApiResponse | null {
   if (input.enabled === false) return null;
-  if ((input.executionMode ?? 'graph') === 'compiled') {
-    return error(
-      422,
-      'outbound_workflow_traps_mail',
-      'Aktiver Ausgangs-Workflow im „compiled"-Modus wird serverseitig nicht ausgeführt und hält ' +
-        'jede Mail dauerhaft. Bitte auf den Graph-Modus umstellen.',
-    );
-  }
-  if (!input.graph || typeof input.graph !== 'object') {
-    return error(
-      422,
-      'outbound_workflow_traps_mail',
-      'Aktiver Ausgangs-Workflow ohne Graph hält jede Mail dauerhaft. Bitte einen Graph mit ' +
-        'Freigabe-Knoten (email.release_outbound mit autoSend=true) hinterlegen.',
-    );
-  }
-  const issues = findOutboundGraphTraps(input.graph as WorkflowGraphDocument, {
-    effectiveTrigger: 'outbound',
-  });
-  if (issues.length === 0) return null;
-  return error(422, 'outbound_workflow_traps_mail', formatOutboundGraphTraps(issues));
+  if (!input.graph || typeof input.graph !== 'object') return null;
+  if (
+    !workflowGraphHasSideEffectNode(input.graph as WorkflowGraphDocument)
+    // Ein Kettenabbruch schreibt selbst nichts, schaltet aber ALLE nachrangigen
+    // Inbound-Workflows ab (stopFurtherWorkflows bzw. logic.stop_after_spam,
+    // dessen Spam-Flag per logic.set_variable frei setzbar ist). Ein Editor
+    // koennte damit globale Spam-/Compliance-Automation stilllegen — dieselbe
+    // Wirkung wie ein privilegierter Eingriff, also dieselbe Stufe.
+    && !workflowGraphHasChainStopNode(input.graph as WorkflowGraphDocument)
+  ) return null;
+  if (requireCapability(principal, 'workflows.manage')) return null;
+  return error(
+    403,
+    'forbidden',
+    'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
+  );
+}
+
+/**
+ * Ein overrideKey bildet eine VERDRAENGUNGS-Beziehung: bei gleichem Schluessel
+ * gewinnt der konto-spezifische Workflow und der globale wird fuer dieses
+ * Postfach unterdrueckt (resolveScopedInboundWorkflowOverrides in
+ * mail-inbound-workflow-enqueue). Ein Editor koennte damit einen globalen,
+ * privilegierten Spam-/Compliance-Workflow stilllegen, ohne dessen Graphen
+ * anzufassen — das Seiteneffekt-Gate sieht davon nichts, weil es nur den
+ * eigenen Graphen prueft. Ein AKTIVER Workflow mit Override-Schluessel
+ * verlangt deshalb workflows.manage. Bewusst ohne Nachschlagen, ob wirklich
+ * schon ein zweiter Workflow denselben Schluessel fuehrt: das waere ein
+ * Wettlauf (der andere kann gleichzeitig entstehen) und der Schluessel hat
+ * ausserhalb dieser Beziehung ohnehin keine Funktion.
+ */
+function rejectUnlessOverrideKeyManage(
+  principal: AuthenticatedPrincipal,
+  input: Readonly<{ enabled: boolean | undefined; overrideKey: string | null | undefined }>,
+): ApiResponse | null {
+  if (input.enabled === false) return null;
+  if (typeof input.overrideKey !== 'string' || input.overrideKey.trim() === '') return null;
+  if (requireCapability(principal, 'workflows.manage')) return null;
+  return error(
+    403,
+    'forbidden',
+    'Aktive Workflows mit Override-Schluessel erfordern workflows.manage',
+  );
 }
 
 async function handleCreateWorkflow(
@@ -1018,6 +1034,17 @@ async function handleCreateWorkflow(
     executionMode: parsed.values.executionMode,
   });
   if (trap) return trap;
+
+  const sideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
+    graph: parsed.values.graph,
+    enabled: parsed.values.enabled ?? true,
+  });
+  if (sideEffectDenied) return sideEffectDenied;
+  const overrideDenied = rejectUnlessOverrideKeyManage(principal, {
+    enabled: parsed.values.enabled ?? true,
+    overrideKey: parsed.values.overrideKey,
+  });
+  if (overrideDenied) return overrideDenied;
 
   const result = await ports.workflows.create({
     workspaceId: principal.workspaceId,
@@ -1053,22 +1080,104 @@ async function handleUpdateWorkflow(
   // a live outbound workflow, so resolve the fields the patch omits from the
   // stored row and guard the merged result. This catches re-enabling, switching
   // the trigger to outbound, and compiled/no-graph outbound workflows.
-  const patchTouchesOutbound =
+  // cronExpr und scheduleAccountId steuern die AUSFUEHRUNG eines bereits aktiven
+  // Workflows mit — ein Editor koennte sonst den Zeitplan eines privilegierten
+  // Seiteneffekt-Workflows von selten auf minuetlich stellen oder ihn auf ein
+  // anderes Konto richten, ohne workflows.manage zu besitzen: der Guard lief bei
+  // einem reinen Zeitplan-Patch gar nicht erst an.
+  const patchTouchesOutboundField =
     parsed.values.triggerName !== undefined ||
     parsed.values.enabled !== undefined ||
     parsed.values.graph !== undefined ||
-    parsed.values.executionMode !== undefined;
-  if (patchTouchesOutbound) {
+    parsed.values.executionMode !== undefined ||
+    parsed.values.cronExpr !== undefined ||
+    parsed.values.scheduleAccountId !== undefined ||
+    // accountId entscheidet, fuer WELCHE eingehenden Konten ein aktiver
+    // Workflow laeuft (null = alle, siehe mail-inbound-workflow-enqueue) — ein
+    // reines accountId-Patch koennte einen privilegierten Seiteneffekt-Workflow
+    // sonst ohne manage auf weitere Postfaecher ausweiten.
+    parsed.values.accountId !== undefined ||
+    // overrideKey entscheidet, WELCHER Workflow bei gleichem Schluessel laeuft
+    // (siehe rejectUnlessOverrideKeyManage) — ein reines overrideKey-PATCH
+    // muss den Guard also ebenfalls ausloesen.
+    parsed.values.overrideKey !== undefined;
+  // priority bestimmt die tatsaechliche Ausfuehrungsreihenfolge (ORDER BY
+  // priority in mail-inbound-workflow-enqueue) und beim Ausgang zusaetzlich,
+  // WELCHE Workflows das LIMIT MAX_OUTBOUND_WORKFLOWS_PER_SEND ueberhaupt noch
+  // erreichen — ein Editor koennte einen aktiven Seiteneffekt-Workflow sonst
+  // vor einen abbrechenden ziehen oder einen anderen aus der Menge draengen.
+  // Anders als die Felder oben zaehlt hier nur eine TATSAECHLICHE Aenderung:
+  // die UI sendet priority bei jedem Speichern mit.
+  const patchMayTouchPriority = parsed.values.priority !== undefined;
+  // Vorzustand, gegen den unten validiert wurde — er geht als optimistischer
+  // Guard mit in den Write, damit ein paralleler Patch die geprueften Felder
+  // nicht zwischen Pruefung und Schreiben veraendern kann.
+  let expectedState: {
+    enabled?: boolean;
+    graph?: unknown | null;
+    triggerName?: string;
+    executionMode?: string | null;
+    overrideKey?: string | null;
+    priority?: number;
+  } | undefined;
+  if (patchTouchesOutboundField || patchMayTouchPriority) {
     const existing = ports.workflows.get
       ? await ports.workflows.get({ workspaceId: principal.workspaceId, id })
       : null;
-    const trap = outboundWorkflowGuardError({
-      graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
-      triggerName: parsed.values.triggerName ?? existing?.triggerName,
-      enabled: parsed.values.enabled ?? existing?.enabled,
-      executionMode: parsed.values.executionMode ?? existing?.executionMode,
-    });
-    if (trap) return trap;
+    // Ohne gespeicherten Vorzustand laesst sich eine Prioritaetsaenderung nicht
+    // ausschliessen — dann fail closed und den Guard laufen lassen.
+    const priorityChanged = patchMayTouchPriority
+      && (!existing || parsed.values.priority !== existing.priority);
+    // Ein reines Metadaten-Patch (Name/Prioritaet unveraendert) laeuft ohne
+    // Guard weiter — es aendert nichts Ausfuehrungsrelevantes. Die unveraendert
+    // mitgesendete Prioritaet geht aber als optimistische Bedingung mit in den
+    // Write: aendert ein Admin sie zwischen Read und UPDATE, wuerde dieser
+    // Patch sie sonst ohne workflows.manage auf den alten Wert zuruecksetzen.
+    const guardRequired = patchTouchesOutboundField || priorityChanged;
+    if (!guardRequired && patchMayTouchPriority && existing) {
+      expectedState = { priority: existing.priority };
+    }
+    if (guardRequired) {
+      if (existing) {
+        expectedState = {
+          // Nur die Felder absichern, die aus dem gespeicherten Row stammen: was der
+          // Patch selbst setzt, ist ohnehin Teil dieses Writes.
+          ...(parsed.values.enabled === undefined ? { enabled: existing.enabled } : {}),
+          ...(parsed.values.graph === undefined ? { graph: existing.graph ?? null } : {}),
+          ...(parsed.values.triggerName === undefined ? { triggerName: existing.triggerName } : {}),
+          ...(parsed.values.executionMode === undefined
+            ? { executionMode: existing.executionMode ?? null }
+            : {}),
+          // Der Override-Schluessel ist seit dem Manage-Gate ausfuehrungsrelevant:
+          // setzt ihn ein Admin zwischen Vorab-Read und UPDATE, muss dieser
+          // Editor-Write mit 409 scheitern statt den nun manage-pflichtigen
+          // Workflow zu veraendern.
+          ...(parsed.values.overrideKey === undefined
+            ? { overrideKey: existing.overrideKey ?? null }
+            : {}),
+        };
+        if (Object.keys(expectedState).length === 0) expectedState = undefined;
+      }
+      const trap = outboundWorkflowGuardError({
+        graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
+        triggerName: parsed.values.triggerName ?? existing?.triggerName,
+        enabled: parsed.values.enabled ?? existing?.enabled,
+        executionMode: parsed.values.executionMode ?? existing?.executionMode,
+      });
+      if (trap) return trap;
+      const sideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
+        graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,
+        enabled: parsed.values.enabled ?? existing?.enabled,
+      });
+      if (sideEffectDenied) return sideEffectDenied;
+      const overrideDenied = rejectUnlessOverrideKeyManage(principal, {
+        enabled: parsed.values.enabled ?? existing?.enabled,
+        overrideKey: parsed.values.overrideKey !== undefined
+          ? parsed.values.overrideKey
+          : existing?.overrideKey ?? null,
+      });
+      if (overrideDenied) return overrideDenied;
+    }
   }
 
   const result = await ports.workflows.update({
@@ -1076,6 +1185,7 @@ async function handleUpdateWorkflow(
     actorUserId: principal.userId,
     id,
     values: parsed.values,
+    ...(expectedState ? { expected: expectedState } : {}),
   });
   if (!result) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
   if (!result.ok) return workflowMutationError(result.code);
@@ -1107,7 +1217,14 @@ async function handleDeleteWorkflow(
   return data(200, { deleted: true, workflow: sanitizeWorkflow(workflow) });
 }
 
-function workflowMutationError(code: 'schedule_account_not_found'): ApiResponse {
+function workflowMutationError(code: 'schedule_account_not_found' | 'workflow_state_conflict'): ApiResponse {
+  if (code === 'workflow_state_conflict') {
+    return error(
+      409,
+      'workflow_state_conflict',
+      'Workflow wurde zwischenzeitlich geaendert — bitte neu laden und erneut speichern',
+    );
+  }
   return error(404, 'email_account_not_found', 'Email account nicht gefunden');
 }
 

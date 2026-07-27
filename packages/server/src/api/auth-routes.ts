@@ -427,6 +427,24 @@ async function handleDeleteUser(
   if (!ports.auth.deleteUser) return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
   if (id === principal.userId) return error(409, 'cannot_delete_self', 'Sie koennen sich nicht selbst loeschen');
 
+  // Gruppen-Peers VOR der Loeschung ermitteln: user_group_members kaskadiert mit
+  // dem Nutzer weg und email_messages.assigned_to_user_id faellt auf null. Die
+  // uebrigen Gruppenmitglieder verlieren damit sofort ihre
+  // assigned_to_my_groups-Sicht auf dessen Nachrichten — danach laesst sich
+  // niemand mehr aufloesen. Best effort: eine fehlende Aufloesung darf das
+  // Loeschen nicht blockieren.
+  let groupPeerUserIds: readonly string[] = [];
+  try {
+    const resolvePeers = ports.mailAccess?.resolveGroupPeerUserIds;
+    if (resolvePeers) {
+      groupPeerUserIds = await resolvePeers.call(ports.mailAccess, principal.workspaceId, id);
+    }
+  } catch (peerError) {
+    console.warn(
+      `[auth] group peer lookup failed for user ${id}: ${peerError instanceof Error ? peerError.message : String(peerError)}`,
+    );
+  }
+
   const result = await ports.auth.deleteUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -468,6 +486,21 @@ async function handleDeleteUser(
     occurredAt: new Date().toISOString(),
     payload: { targetUserId: id, state: 'changed' },
   });
+  // Und dieselbe Invalidierung fuer die Gruppen-Peers: deren
+  // assigned_to_my_groups-Sicht auf die Nachrichten des geloeschten Nutzers ist
+  // serverseitig weg, ihre offenen Listen zeigen sie sonst weiter an.
+  for (const peerUserId of new Set(groupPeerUserIds)) {
+    if (peerUserId === id) continue;
+    await publishUserAclInvalidationBestEffort(ports, {
+      type: 'email_acl.changed',
+      workspaceId: principal.workspaceId,
+      entityType: 'email_acl',
+      entityId: peerUserId,
+      actorUserId: principal.userId,
+      occurredAt: new Date().toISOString(),
+      payload: { targetUserId: peerUserId, state: 'changed' },
+    });
+  }
   return data(200, { deleted: true, id });
 }
 
