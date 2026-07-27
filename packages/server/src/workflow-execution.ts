@@ -212,6 +212,11 @@ type ServerWorkflowContext = {
   /** Priority-chain fields: must survive AI/HTTP/delay continuations. */
   inboundWorkflowChain?: InboundWorkflowChainContext;
   skipIfMessageSpamOrReview?: boolean;
+  /**
+   * Welcher Trigger-Zweig laeuft gerade? Genau die Einheit, die die
+   * Join-Barriere zaehlt (ein Zaehler pro Trigger-Kante).
+   */
+  branchKey?: string;
 };
 
 type PreparedWorkflowRun =
@@ -1365,8 +1370,9 @@ async function runServerWorkflowGraph(
   const log: string[] = [];
   let result: GraphRunResult = { status: 'ok', blocked: false, deferred: false, blockReason: null, log };
   let deferredBranchCount = 0;
-  for (const edge of triggerEdges) {
+  for (const [branchIndex, edge] of triggerEdges.entries()) {
     const branchContext = cloneServerWorkflowContext(input.context);
+    branchContext.branchKey = edge.id || String(branchIndex);
     const branch = await walkGraph(trx, {
       doc,
       context: branchContext,
@@ -3106,6 +3112,20 @@ async function scheduleAiTransformTextJob(
   };
 }
 
+/**
+ * Identitaet EINER Ausfuehrung eines terminalen Knotens.
+ *
+ * Zwei Trigger-Zweige koennen auf denselben Knoten zusammenlaufen; jeder Zweig
+ * laeuft mit eigenem `seen`-Set und plant den Kindjob erneut ein. Ohne den
+ * Zweigschluessel traegen beide Jobs dieselbe Identitaet: der Graphile-Job-Key
+ * kollidiert (jobKeyMode 'replace' verschluckt einen) und die Einmal-Schranke
+ * verwirft den zweiten Abschluss — die mit zwei Zweigen initialisierte
+ * Join-Barriere faellt dann nie auf null.
+ */
+function terminalNodeExecutionId(context: ServerWorkflowContext, node: WorkflowGraphNode): string {
+  return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;
+}
+
 async function scheduleAiAgentJob(
   trx: WorkspaceTransaction,
   doc: WorkflowGraphDocument,
@@ -3141,7 +3161,7 @@ async function scheduleAiAgentJob(
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
-      terminalNodeId: node.id,
+      terminalNodeId: terminalNodeExecutionId(context, node),
       triggerName: context.trigger,
     }),
     createDraft,
@@ -3233,7 +3253,7 @@ async function scheduleAiDraftReplyJob(
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
-      terminalNodeId: node.id,
+      terminalNodeId: terminalNodeExecutionId(context, node),
       triggerName: context.trigger,
     }),
   };
@@ -3334,7 +3354,7 @@ async function scheduleAiReviewDraftJob(
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
-      terminalNodeId: node.id,
+      terminalNodeId: terminalNodeExecutionId(context, node),
       triggerName: context.trigger,
     }),
     eventStrings: context.strings,
@@ -3428,7 +3448,7 @@ async function scheduleAiPickCannedJob(
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
-      terminalNodeId: node.id,
+      terminalNodeId: terminalNodeExecutionId(context, node),
       triggerName: context.trigger,
     }),
     createDraft,

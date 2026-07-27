@@ -879,7 +879,13 @@ export function createPostgresAiAgentPort(
         )).trim();
         if (!output) throw new Error('KI-Agent-Antwort leer');
 
-        if (input.continuation || input.createDraft) {
+        // `terminalChainPayload` gehoert in die Bedingung: ein terminaler
+        // ai.agent mit createDraft:false hat weder Continuation noch Entwurf,
+        // der Modellaufruf war aber erfolgreich. Ohne diesen Zweig faellt der
+        // Abschluss ans Sicherheitsnetz — das kann Erfolg nicht erkennen und
+        // meldet `applied: false`. Der teure Aufruf fiele bei jeder
+        // Wiederverarbeitung erneut an und die Barriere saehe `ready_error`.
+        if (input.continuation || input.createDraft || input.terminalChainPayload) {
           await withWorkspaceTransaction(
             options.db,
             { workspaceId: input.workspaceId, role: 'system' },
@@ -900,6 +906,13 @@ export function createPostgresAiAgentPort(
                     ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
                     continuation: input.continuation,
                     variables: aiChildSkipVariables('ai.agent', abort),
+                    now: now(),
+                  });
+                } else if (input.terminalChainPayload) {
+                  // Abgebrochen ⇒ nicht angewendet, aber Join und Kette
+                  // muessen trotzdem weiter.
+                  await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                    applied: false,
                     now: now(),
                   });
                 }
@@ -1089,7 +1102,10 @@ export function createPostgresAiPickCannedPort(
         const shouldEnqueueContinuation = !!input.continuation
           && (willCreateDraft || !input.createDraft);
 
-        if (willCreateDraft || shouldEnqueueContinuation) {
+        // Analog zu ai.agent: ohne passenden Baustein (pick 0) oder mit
+        // createDraft:false ist der Job erfolgreich zu Ende gelaufen, nur eben
+        // ohne Entwurf — das darf das Sicherheitsnetz nicht als Fehler werten.
+        if (willCreateDraft || shouldEnqueueContinuation || input.terminalChainPayload) {
           await withWorkspaceTransaction(
             options.db,
             { workspaceId: input.workspaceId, role: 'system' },
@@ -1108,6 +1124,13 @@ export function createPostgresAiPickCannedPort(
                     ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
                     continuation: input.continuation,
                     variables: aiChildSkipVariables('ai.pick_canned', abort),
+                    now: now(),
+                  });
+                } else if (input.terminalChainPayload) {
+                  // Abgebrochen ⇒ nicht angewendet, aber Join und Kette
+                  // muessen trotzdem weiter.
+                  await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                    applied: false,
                     now: now(),
                   });
                 }

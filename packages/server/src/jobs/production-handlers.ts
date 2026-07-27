@@ -446,7 +446,15 @@ export function buildAiDraftReplyJobPlan(
     // Terminaler KI-Knoten (keine Resume-Kante ⇒ keine Continuation): der
     // Kettenkontext steckt dann in payload.context und wird durchgereicht,
     // damit der Kindjob Applied-Marker, Join und Kette selbst abschliesst.
+    //
+    // Die zweite Bedingung ist die Erkennung der Vorgaengerversion, die noch
+    // ohne `terminalWorkflowCompletion` stempelte. Beim Deployment koennen
+    // solche Jobs bereits in der persistenten Queue liegen; ohne den Fallback
+    // legten sie zwar den Entwurf an, schlossen aber weder Join noch
+    // Prioritaetskette ab und alle nachrangigen Workflows blieben stehen.
+    // Entfernbar, sobald keine Jobs von vor diesem Release mehr laufen koennen.
     ...(payload.terminalWorkflowCompletion === true
+      || (payload.continuation === undefined && payload.context !== undefined)
       ? { terminalChainPayload: payload as Record<string, unknown> }
       : {}),
   };

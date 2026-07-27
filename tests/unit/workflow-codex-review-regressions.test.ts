@@ -539,7 +539,26 @@ describe('codex review regression guards', () => {
     // den Workflow spaeter komplett.
     expect(terminal).toContain('positiveInt(payload.workflowId)');
     expect(terminal).toContain("if (!parsed && trimmedString(payload.triggerName) !== 'inbound') return null;");
-    expect(execution.match(/terminalNodeId: node\.id,\n\s+triggerName: context\.trigger,/g)).toHaveLength(4);
+    expect(execution.match(
+      /terminalNodeId: terminalNodeExecutionId\(context, node\),\n\s+triggerName: context\.trigger,/g,
+    )).toHaveLength(4);
+
+    // Zwei Trigger-Zweige koennen auf denselben terminalen Knoten zusammen-
+    // laufen. Ohne Zweigschluessel kollidieren Job-Key UND Einmal-Schranke,
+    // und die mit zwei Zweigen initialisierte Barriere faellt nie auf null.
+    expect(execution).toContain('branchContext.branchKey = edge.id || String(branchIndex);');
+    expect(execution).toContain('return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;');
+
+    // Erfolgreiche No-op-Ausgaenge duerfen nicht als Fehler durchs Netz fallen:
+    // sonst bleibt der Applied-Marker aus und der bezahlte Modellaufruf faellt
+    // bei jeder Wiederverarbeitung erneut an.
+    expect(classification).toContain('input.createDraft || input.terminalChainPayload');
+    expect(classification).toContain('shouldEnqueueContinuation || input.terminalChainPayload');
+
+    // Bereits eingereihte terminale ai.draft_reply-Jobs der Vorgaengerversion
+    // (ohne terminalWorkflowCompletion) muessen weiterhin abschliessen koennen.
+    const handlers = readRepoFile('packages/server/src/jobs/production-handlers.ts');
+    expect(handlers).toContain('|| (payload.continuation === undefined && payload.context !== undefined)');
 
     // Endgueltige Kindjob-Fehler muessen ueber die Join-Barriere sichtbar
     // bleiben, sonst markiert ein spaeter fertiger Geschwisterzweig den
@@ -552,7 +571,7 @@ describe('codex review regression guards', () => {
 
     // Knoten- und Lauf-Identitaet auf allen vier terminalen Payloads, sonst
     // teilen sich zwei terminale Zweige Job-Key und Einmal-Schranke.
-    expect(execution.match(/terminalNodeId: node\.id,/g)).toHaveLength(4);
+    expect(execution.match(/terminalNodeId: terminalNodeExecutionId\(context, node\),/g)).toHaveLength(4);
     expect(graphile).toContain('graphileChildNodeKeyPart');
     // ai.pick_canned hatte ueberhaupt keinen Job-Key.
     expect(graphile).toMatch(/if \(type === 'ai\.pick_canned'\) \{[\s\S]*?graphileChildNodeKeyPart\(payload\)/);
