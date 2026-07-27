@@ -150,13 +150,12 @@ describe('createPostgresMailDelegationPort', () => {
       },
     })).resolves.toMatchObject({ ok: true });
 
-    // Das kumulative Budget wird unter einer Advisory-Sperre AUF DAS SUBJEKT
-    // geprueft. FOR UPDATE auf die gefundenen Bindings genuegte nicht: es nimmt
-    // keine Luecken-Sperre und sperrt bei einem Subjekt ohne Bindings gar
-    // nichts, sodass zwei parallele Creates beide unter dem Budget landen
-    // koennten.
+    // Das kumulative Budget wird unter einer Advisory-Sperre geprueft. FOR
+    // UPDATE auf die gefundenen Bindings genuegte nicht: es nimmt keine
+    // Luecken-Sperre und sperrt bei einem Subjekt ohne Bindings gar nichts,
+    // sodass zwei parallele Creates beide unter dem Budget landen koennten.
     expect(withinManageScope.calls).toContainEqual(
-      ['sql', expect.stringContaining('pg_advisory_xact_lock')],
+      ['sql', expect.stringContaining('pg_advisory_xact_lock'), expect.anything()],
     );
   });
 
@@ -374,15 +373,17 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toMatchObject({ ok: true, deleted: true });
   });
 
-  test('POST and PATCH take the subject lock BEFORE the authority lock', async () => {
-    // Beide Pfade nehmen zwei Sperren: die Advisory-Sperre des Zielsubjekts und
-    // die Zeilensperre auf die eigenen Autoritaets-Grants des Managers
-    // (canManageResource mit forUpdate). replaceBindingById muss die
-    // Subjektsperre schon vor dem sperrenden Re-Read nehmen. Naehme
-    // replaceBySubjectResource sie danach, forderte der POST beide in genau
-    // umgekehrter Reihenfolge an wie der PATCH — derselbe Manager, der
-    // gleichzeitig anlegt und aendert, liefe in einen Deadlock und Postgres
-    // braeche eine der beiden gueltigen Mutationen ab.
+  test('every mutating path takes the workspace ACL lock before any row lock', async () => {
+    // Jede Mutation sperrt zwei Dinge: die Autoritaets-Bindings des Handelnden
+    // (canManageResource mit forUpdate, Subjekt = der Handelnde) und die
+    // Zielzeile (Subjekt = das Ziel). Zwei delegierte Manager A und B, die
+    // gleichzeitig am Binding des jeweils anderen arbeiten, sperren damit ueber
+    // Kreuz — ein Zyklus ueber ZWEI verschiedene Subjekte, den eine Sperre pro
+    // Zielsubjekt nicht ordnen kann. Deshalb ein Schluessel pro Workspace, und
+    // zwar als ERSTE Anweisung, vor jeder Zeilensperre; sonst haelt der eine
+    // Pfad die Zeile und wartet auf die Advisory-Sperre, waehrend der andere es
+    // umgekehrt tut, und Postgres bricht eine der beiden gueltigen Mutationen
+    // ab.
     const existingBinding = {
       id: 901,
       workspace_id: WORKSPACE,
@@ -434,11 +435,26 @@ describe('createPostgresMailDelegationPort', () => {
       permissions: ['mail.metadata.read'],
     });
 
-    // Beide Male: erst die Subjektsperre, dann die Autoritaetszeilen.
-    expect(lockOrder(post)[0]).toBe('sql');
-    expect(lockOrder(post)).toContain('forUpdate');
-    expect(lockOrder(patch)[0]).toBe('sql');
-    expect(lockOrder(patch)).toContain('forUpdate');
+    const remove = createDelegationTransaction(fixtures);
+    await portFor(remove).deleteBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      bindingId: 901,
+    });
+
+    // Jedes Mal: erst die Advisory-Sperre, dann Zeilensperren.
+    for (const trx of [post, patch, remove]) {
+      expect(lockOrder(trx)[0]).toBe('sql');
+      expect(lockOrder(trx)).toContain('forUpdate');
+    }
+
+    // Und der Schluessel haengt AM WORKSPACE, nicht am Zielsubjekt — sonst
+    // ordnet er die Kreuz-Konstellation zweier Manager nicht.
+    const advisory = post.calls
+      .find(([operation, detail]) => operation === 'sql' && String(detail).includes('pg_advisory_xact_lock'));
+    const keys = (advisory?.[2] as readonly unknown[] | undefined ?? []).map(String);
+    expect(keys).toEqual([`mail_acl_mutation:${WORKSPACE}`]);
+    expect(keys.every((key) => !key.includes(AGENT))).toBe(true);
   });
 
   test('deleting a binding is never rejected by the constraint budget', async () => {
@@ -960,8 +976,8 @@ function createDelegationTransaction(fixtures: {
      */
     getExecutor() {
       return {
-        async executeQuery(compiled: { sql: string }) {
-          calls.push(['sql', compiled.sql]);
+        async executeQuery(compiled: { sql: string; parameters?: readonly unknown[] }) {
+          calls.push(['sql', compiled.sql, compiled.parameters ?? []]);
           return { rows: [] };
         },
       };

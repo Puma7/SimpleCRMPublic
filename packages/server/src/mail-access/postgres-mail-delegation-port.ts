@@ -294,12 +294,16 @@ export function createPostgresMailDelegationPort(
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
-        async (trx) => replaceBySubjectResource(trx, input.workspaceId, input.actor, {
-          subject: input.subject,
-          resource: input.resource,
-          permissions: uniquePermissions(input.permissions),
-          ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
-        }),
+        async (trx) => {
+          // Erste Anweisung jeder mutierenden Transaktion, siehe lockAclMutation.
+          await lockAclMutation(trx, input.workspaceId);
+          return replaceBySubjectResource(trx, input.workspaceId, input.actor, {
+            subject: input.subject,
+            resource: input.resource,
+            permissions: uniquePermissions(input.permissions),
+            ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
+          });
+        },
         sessionOptions,
       );
     },
@@ -309,18 +313,13 @@ export function createPostgresMailDelegationPort(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
         async (trx) => {
-          // Zuerst OHNE Sperre lesen, nur um das Subjekt zu erfahren, dann die
-          // Subjektsperre nehmen und erst danach die Zeile sperrend erneut
-          // lesen.
-          //
-          // Sonst laufen POST und PATCH in umgekehrter Reihenfolge in dieselben
-          // zwei Sperren: der PATCH haette die Binding-Zeile und wartete auf die
-          // Advisory-Sperre, der POST haette die Advisory-Sperre und wartete auf
-          // die Zeile — Postgres bricht dann eine der beiden Anfragen als
-          // Deadlock ab, statt sie zu serialisieren.
-          const unlocked = await findBindingById(trx, input.workspaceId, input.bindingId, false);
-          if (!unlocked) return { ok: false as const, code: 'binding_not_found' as const };
-          await lockConstraintBudgetSubject(trx, input.workspaceId, subjectOfRow(unlocked));
+          // Erste Anweisung, VOR jeder Zeilensperre: sonst haelt der PATCH die
+          // Binding-Zeile und wartet auf die Advisory-Sperre, waehrend ein
+          // paralleler POST sie umgekehrt haelt — Postgres bricht dann eine der
+          // beiden gueltigen Anfragen als Deadlock ab, statt sie zu
+          // serialisieren. Der frueher noetige ungesperrte Vorablick auf das
+          // Subjekt entfaellt damit: der Schluessel haengt nur am Workspace.
+          await lockAclMutation(trx, input.workspaceId);
           const existing = await findBindingById(trx, input.workspaceId, input.bindingId);
           if (!existing) return { ok: false as const, code: 'binding_not_found' as const };
           return replaceBySubjectResource(trx, input.workspaceId, input.actor, {
@@ -342,6 +341,10 @@ export function createPostgresMailDelegationPort(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
         async (trx) => {
+          // Auch das Loeschen sperrt die Autoritaets-Bindings des Handelnden und
+          // die Zielzeile — dieselbe Zyklushaelfte wie POST und PATCH, also
+          // dieselbe Sperre zuerst.
+          await lockAclMutation(trx, input.workspaceId);
           const existing = await findBindingById(trx, input.workspaceId, input.bindingId);
           if (!existing) return { ok: false as const, code: 'binding_not_found' as const };
           const resource = rowResource(existing);
@@ -409,26 +412,17 @@ export function createPostgresMailDelegationPort(
     if (!subject.ok) return subject;
     const resource = await validateResource(trx, workspaceId, input.resource);
     if (!resource.ok) return resource;
-    // ERSTE Sperre in JEDEM mutierenden Pfad: die Subjektsperre.
-    //
-    // Sie steht aus zwei Gruenden hier. Erstens vor dem Aufloesen von
-    // `existing`: zwei gleichzeitige POSTs auf dasselbe Subjekt/dieselbe
-    // Ressource koennten sonst beide `existing` als leer sehen. Der Nachzuegler
-    // sieht danach zwar die frisch committete Zeile in den Geschwistern, haette
-    // aber weiterhin replacedBindingId === null — er zaehlte den gespeicherten
-    // Verbrauch UND seinen eigenen und lehnte ab, obwohl der Upsert die alte
-    // Zeile ersetzt. Unter der Sperre ist `existing` konsistent mit dem, was
-    // der Budget-Check gleich zaehlt.
-    //
-    // Zweitens VOR der Autoritaetssperre, und zwar in beiden Pfaden gleich.
-    // replaceBindingById nimmt die Subjektsperre schon vor dem sperrenden
-    // Re-Read. Stuende canManageResource(…, true) hier davor, forderte der POST
-    // Autoritaets- und Subjektsperre in genau umgekehrter Reihenfolge an wie
-    // der PATCH: derselbe Manager, der gleichzeitig anlegt und aendert, liefe
-    // in einen Deadlock statt zu serialisieren, und Postgres braeche eine der
-    // beiden gueltigen Mutationen ab. Da die Sperre pro Subjekt haelt, kann
-    // hinter ihr keine weitere Zyklushaelfte mehr entstehen.
-    await lockConstraintBudgetSubject(trx, workspaceId, input.subject);
+    // Die ACL-Mutationssperre haelt bereits der Aufrufer (replaceBinding /
+    // replaceBindingById) — hier steht sie nur als Sicherung, falls ein neuer
+    // Einstiegspunkt sie vergisst: pg_advisory_xact_lock ist innerhalb
+    // derselben Transaktion wiederholbar. Sie muss VOR dem Aufloesen von
+    // `existing` liegen, sonst koennten zwei gleichzeitige POSTs auf dasselbe
+    // Subjekt/dieselbe Ressource beide `existing` als leer sehen: der
+    // Nachzuegler saehe die frisch committete Zeile zwar in den Geschwistern,
+    // haette aber weiterhin replacedBindingId === null — er zaehlte den
+    // gespeicherten Verbrauch UND seinen eigenen und lehnte ab, obwohl der
+    // Upsert die alte Zeile ersetzt.
+    await lockAclMutation(trx, workspaceId);
     // Lock the actor's authorizing grant rows FOR UPDATE (forUpdate: true) while creating /
     // replacing a delegated binding, so a concurrent revocation of the actor's own authority
     // serializes with this write rather than racing it under read-committed (R48-4).
@@ -938,19 +932,17 @@ async function findBindingById(
   trx: Trx,
   workspaceId: string,
   bindingId: number,
-  lock = true,
 ): Promise<BindingRow | null> {
-  let query = trx
+  // Immer sperrend: die ACL-Mutationssperre des Workspaces liegt zu diesem
+  // Zeitpunkt bereits an, die Zeilensperre kann also keine Reihenfolge mehr
+  // verletzen.
+  const row = await trx
     .selectFrom('mail_acl_bindings')
     .selectAll()
     .where('workspace_id', '=', workspaceId)
-    .where('id', '=', bindingId);
-  // Der ungesperrte Vorablick dient nur dazu, das Subjekt zu erfahren, damit die
-  // Subjektsperre VOR der Zeilensperre genommen werden kann — sonst nehmen POST
-  // und PATCH dieselben zwei Sperren in umgekehrter Reihenfolge und Postgres
-  // bricht eine der beiden Anfragen als Deadlock ab.
-  if (lock) query = query.forUpdate();
-  const row = await query.executeTakeFirst();
+    .where('id', '=', bindingId)
+    .forUpdate()
+    .executeTakeFirst();
   return row ? normalizeBindingRow(row) : null;
 }
 
@@ -1179,28 +1171,38 @@ async function loadBindingConstraints(
  * parallele Bindings nicht beide am halben Budget vorbeikommen: die Bindings
  * des Subjekts werden dafuer gesperrt.
  */
-/** Subjekt einer gespeicherten Binding-Zeile. */
-function subjectOfRow(row: BindingRow): MailDelegationSubject {
-  return row.subject_type === 'group'
-    ? { type: 'group', id: Number(row.subject_id) }
-    : { type: 'user', id: row.subject_id };
-}
-
 /**
- * Transaktionsweite Advisory-Sperre auf das Subjekt.
+ * Transaktionsweite Advisory-Sperre fuer JEDE ACL-Mutation eines Workspaces.
  *
- * FOR UPDATE auf die gefundenen Bindings genuegt nicht: es nimmt keine
- * Praedikats-/Luecken-Sperre, sperrt bei einem Subjekt ohne Bindings also gar
- * nichts, und eine wartende Anweisung sieht ein parallel eingefuegtes Phantom
- * aus ihrem aelteren Snapshot nicht. Die Advisory-Sperre existiert unabhaengig
- * von vorhandenen Zeilen und serialisiert den gesamten Abschnitt pro Subjekt.
+ * Zwei Gruende, in dieser Reihenfolge entstanden:
+ *
+ * 1. Budget. FOR UPDATE auf die gefundenen Bindings genuegt nicht: es nimmt
+ *    keine Praedikats-/Luecken-Sperre, sperrt bei einem Subjekt ohne Bindings
+ *    also gar nichts, und eine wartende Anweisung sieht ein parallel
+ *    eingefuegtes Phantom aus ihrem aelteren Snapshot nicht. Die Advisory-Sperre
+ *    existiert unabhaengig von vorhandenen Zeilen.
+ *
+ * 2. Sperr-Reihenfolge. Der Schluessel war zuerst das ZIELSUBJEKT — das ordnet
+ *    aber nur Mutationen an demselben Subjekt. Jede Mutation sperrt zusaetzlich
+ *    die Autoritaets-Bindings des Handelnden (canManageResource mit forUpdate),
+ *    und deren Subjekt ist der HANDELNDE. Zwei delegierte Manager A und B, die
+ *    gleichzeitig am Binding des jeweils anderen arbeiten, sperren damit ueber
+ *    Kreuz: A haelt die Zeilen von A (als eigene Autoritaet) und will die von B
+ *    (als Ziel), B spiegelbildlich. Verschiedene Subjekte, also verschiedene
+ *    Schluessel — die Subjektsperre konnte den Zyklus nicht aufloesen, und
+ *    Postgres brach eine der beiden gueltigen Mutationen ab.
+ *
+ * Deshalb EIN Schluessel pro Workspace, genommen als erste Anweisung jeder
+ * mutierenden Transaktion: Ziel- und Autoritaetssubjekte sind damit gemeinsam
+ * geordnet, unabhaengig davon, wer an wem arbeitet. Der Preis ist, dass
+ * ACL-Mutationen eines Workspaces serialisieren — es sind seltene, kurze
+ * Verwaltungsvorgaenge, und die Alternative waere, saemtliche beteiligten
+ * Subjekte vorab zu ermitteln und sortiert zu sperren (inklusive der
+ * Gruppenmitgliedschaften des Handelnden), also mehr Sperren und mehr
+ * Reihenfolge-Annahmen fuer denselben Effekt.
  */
-async function lockConstraintBudgetSubject(
-  trx: Trx,
-  workspaceId: string,
-  subject: MailDelegationSubject,
-): Promise<void> {
-  const key = `mail_acl_constraint_budget:${workspaceId}:${subject.type}:${subjectId(subject)}`;
+async function lockAclMutation(trx: Trx, workspaceId: string): Promise<void> {
+  const key = `mail_acl_mutation:${workspaceId}`;
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`.execute(trx);
 }
 

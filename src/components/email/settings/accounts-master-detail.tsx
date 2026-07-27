@@ -34,7 +34,11 @@ type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki" | "erweitert"
  * Signatur einrichten koennen; der Tab gatet die beiden Abschnitte einzeln.
  *
  * „KI" und „Erweitert" haengen an settings.manage und gaten sich in ihren
- * eigenen Panels bereits selbst.
+ * eigenen Panels bereits selbst — mit einer Ausnahme: die kontospezifischen
+ * Antwortvorschlaege verlangen zusaetzlich mail.metadata.read AUF DEM KONTO
+ * (siehe canReadSelectedAccountSettings). Der Abschnitt wird deshalb einzeln
+ * gegated, nicht der ganze Tab: die Wissensablagen daneben haengen an den
+ * Workflow-Capabilities.
  */
 const ACCOUNT_MANAGE_TABS = new Set<AccountTab>(["imap", "smtp", "oauth"])
 
@@ -183,6 +187,17 @@ export function AccountsMasterDetailSettings() {
   // die Editoren bleiben deshalb weg, die Auswahl selbst nicht.
   const canManageSelectedAccount = selected != null
     && hasMailPermissionForAccount("mail.account.manage", selected.id)
+
+  // Sichtbarkeit ist nicht dasselbe wie Zugriff AUF DAS KONTO. Wer nur einen
+  // Ordner oder eine Nachricht darunter delegiert bekommt, sieht das Konto
+  // trotzdem in der Liste — der Lese-Port nimmt solche Elternkonten redigiert
+  // auf. GET /email/settings/reply-suggestion?accountId= prueft dagegen
+  // mail.metadata.read auf der KONTO-Ressource, und die lehnt ein Kindgrant ab.
+  // Ohne diese Abfrage endete der sichtbare KI-Abschnitt fuer ihn deterministisch
+  // im Fehler. Dieselbe Unterscheidung wie in der Selbstauskunft, die in
+  // accountPermissions bewusst nur Konto-Grants fuehrt.
+  const canReadSelectedAccountSettings = selected != null
+    && hasMailPermissionForAccount("mail.metadata.read", selected.id)
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -351,7 +366,15 @@ export function AccountsMasterDetailSettings() {
                       Kontospezifische KI-Antwortvorschläge. Globale Voreinstellungen (Profile,
                       Modelle) unter Einstellungen → KI.
                     </p>
-                    <ReplySuggestionSettingsSection accountId={selectedId} />
+                    {canReadSelectedAccountSettings ? (
+                      <ReplySuggestionSettingsSection accountId={selectedId} />
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        Die kontospezifischen Antwortvorschläge sind für dieses Postfach nicht
+                        einsehbar — die Delegation gilt nur für einzelne Ordner oder Nachrichten
+                        darin.
+                      </p>
+                    )}
                     <AccountKnowledgeSlots accountId={selectedId} />
                   </div>
                 ) : tab === "erweitert" && selectedId != null ? (
