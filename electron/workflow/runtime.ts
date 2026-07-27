@@ -10,6 +10,7 @@ import type { EmailWorkflowRow } from '../email/email-workflow-store';
 import { createWorkflowContext, interpolateTemplate } from './context';
 import { ensureBuiltinWorkflowNodes, getWorkflowNode, LEGACY_ACTION_MAP } from './registry';
 import { inboundNodeRequiresConditionGate } from './inbound-gate';
+import { cancelPendingDelayedJobsForMessageSafe } from './delayed-jobs-store';
 import { insertWorkflowRunStep } from './run-steps';
 import type { GraphRunResult, NodeExecuteResult, WorkflowContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
@@ -443,6 +444,11 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
     if (r.blocked) return r;
     // Spam-chain stop ends the whole inbound priority chain — bail immediately.
     if (r.inboundChainStop) {
+      // Ein früherer Geschwisterzweig kann bereits einen logic.delay-Job
+      // eingeplant haben. Der darf nach dem Spam-Stopp nicht später aufwachen
+      // und Folgeaktionen (Entwurf senden, Weiterleitung) ausführen — sonst
+      // antwortet der Desktop trotz stopFurtherWorkflows auf eine Spam-Mail.
+      cancelPendingDelayedJobsForMessageSafe(input.workflow.id, input.message?.id ?? null);
       return {
         ...r,
         log: merged.log,

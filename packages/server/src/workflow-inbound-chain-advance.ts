@@ -392,8 +392,6 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
 ): Promise<boolean> {
   const parsed = inboundChainFromJobPayload(payload);
   if (!parsed) return false;
-  const nextIndex = parsed.chain.index + 1;
-  if (nextIndex >= parsed.chain.workflowIds.length) return false;
 
   const message = await trx
     .selectFrom('email_messages')
@@ -405,6 +403,11 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
 
   const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
   if (currentWorkflowId == null) return false;
+  // Die Join-Barriere muss auch dann abgebaut werden, wenn es keinen nächsten
+  // Workflow mehr gibt (letzter Kettenplatz). Sonst bliebe die sync_info-Zeile
+  // dauerhaft pending, ein erfolgreicher Geschwisterzweig wartet an der
+  // veralteten Barriere und initInboundDeferredJoin (ON CONFLICT DO NOTHING)
+  // reanimiert denselben Key bei jedem Retry.
   const join = await completeInboundDeferredJoinSibling(trx, {
     workspaceId: parsed.workspaceId,
     messageId: parsed.messageId,
@@ -414,6 +417,9 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
     now,
   });
   if (join !== 'ready') return false;
+
+  const nextIndex = parsed.chain.index + 1;
+  if (nextIndex >= parsed.chain.workflowIds.length) return false;
 
   const claimed = await tryClaimInboundChainHop(trx, {
     workspaceId: parsed.workspaceId,

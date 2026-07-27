@@ -342,4 +342,54 @@ describe('codex review regression guards', () => {
     expect(execution).toContain("variables['customer.email']");
     expect(execution).toContain("selectFrom('customers')");
   });
+
+  test('codex round-12: run-scoped AI job keys, join on last chain slot, AI child abort recheck, desktop delay cancel', () => {
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+    const classification = readRepoFile('packages/server/src/ai-classification.ts');
+    const runtime = readRepoFile('electron/workflow/runtime.ts');
+    const delayedJobs = readRepoFile('electron/workflow/delayed-jobs.ts');
+
+    // Graphile jobKeyMode 'replace' darf einen noch wartenden KI-Job eines
+    // anderen Runs / eines anderen Entwurfs nicht überschreiben.
+    expect(graphile).toMatch(
+      /if \(type === 'ai\.draft_reply'\) \{[\s\S]*?graphileKeyScalar\(payload\.runId\)/,
+    );
+    expect(graphile).toMatch(
+      /if \(type === 'ai\.review_draft'\) \{[\s\S]*?graphileKeyScalar\(payload\.draftId\)/,
+    );
+
+    // Join-Barriere auch am letzten Kettenplatz abbauen (sonst bleibt sync_info
+    // dauerhaft pending und ein erfolgreicher Geschwisterzweig wartet ewig).
+    expect(advance).toMatch(
+      /completeInboundDeferredJoinSibling\([\s\S]*?if \(join !== 'ready'\) return false;\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
+    );
+    // Gleicher Fehler im Graphile-Terminalpfad: kein return vor dem Join.
+    expect(graphile).not.toMatch(
+      /const nextIndex = parsed\.chain\.index \+ 1;\s*\n\s*if \(nextIndex >= parsed\.chain\.workflowIds\.length\) return;/,
+    );
+    expect(graphile).toContain('Letzter Kettenplatz: Barriere ist abgebaut');
+
+    // ai.agent / ai.pick_canned prüfen Spam- und Sibling-Abort-Zustand vor dem
+    // Modellaufruf UND vor der Mutation.
+    expect(classification).toContain('inboundAsyncChildAbortReason');
+    expect(classification).toContain('isInboundSiblingAborted');
+    expect(classification).toContain('messageIsSpamOrReviewForInboundWorkflow');
+    expect(classification).toContain("aiChildSkipVariables('ai.agent'");
+    expect(classification).toContain("aiChildSkipVariables('ai.pick_canned'");
+    expect(classification).toContain('enqueueAiChildSkipContinuation');
+
+    // Desktop: Spam-Stopp eines Geschwisterzweigs bricht bereits eingeplante
+    // logic.delay-Jobs ab; der Prozessor prüft zusätzlich den DB-Zustand.
+    expect(runtime).toContain('cancelPendingDelayedJobsForMessageSafe');
+    expect(delayedJobs).toContain('messageIsSpamOrReviewForInboundWorkflow');
+    expect(delayedJobs).toContain('skip:message_spam_or_review');
+  });
+
+  test('codex round-12: outbound review status is line-anchored and fail-closed', () => {
+    const parse = readRepoFile('packages/core/src/email/outbound-review-parse.ts');
+    expect(parse).toContain('OUTBOUND_STATUS_LINE');
+    // Kein Substring-Match mehr auf der Gesamtantwort.
+    expect(parse).not.toContain("upper.includes('STATUS: OK')");
+  });
 });

@@ -1,3 +1,4 @@
+import { messageIsSpamOrReviewForInboundWorkflow } from '@simplecrm/core';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { WORKFLOW_DELAYED_JOBS_TABLE } from '../database-schema';
 import { getWorkflowById, releaseInboundWorkflowClaim } from '../email/email-workflow-store';
@@ -175,6 +176,16 @@ export async function processDueDelayedJobs(
         continue;
       }
       const message = job.message_id != null ? getEmailMessageById(job.message_id) ?? null : null;
+      const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
+      // Zweite Verteidigungslinie zum Abbruch in runtime.ts: Wurde die Nachricht
+      // zwischenzeitlich (auch app-übergreifend nach einem Neustart) als Spam
+      // bzw. „Spam prüfen“ markiert, darf der verzögerte Zweig nicht mehr
+      // aufwachen und antworten.
+      if (trigger === 'inbound' && message && messageIsSpamOrReviewForInboundWorkflow(message)) {
+        releaseInboundClaimForJob(job);
+        markJob(job.id, 'cancelled', 'skip:message_spam_or_review');
+        continue;
+      }
       let variables: Record<string, string | number | boolean | null> = {};
       let inboundConditionOk = false;
       let eventStrings: Record<string, string> | undefined;
@@ -208,7 +219,6 @@ export async function processDueDelayedJobs(
       if (inboundConditionOk) {
         variables.__inbound_condition_ok = true;
       }
-      const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
       const direction = workflowDirectionForTrigger(trigger);
 
       const result = await executeWorkflowForTrigger({

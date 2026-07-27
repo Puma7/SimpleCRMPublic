@@ -239,30 +239,39 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
   const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
   if (currentWorkflowId == null) return;
   const nextIndex = parsed.chain.index + 1;
-  if (nextIndex >= parsed.chain.workflowIds.length) return;
+  // Kein vorzeitiges return am letzten Kettenplatz: die Deferred-Join-Barriere
+  // muss auch dann abgebaut werden, wenn es keinen Folge-Workflow zu enqueuen
+  // gibt — sonst wartet ein erfolgreicher Geschwisterzweig dauerhaft an ihr.
+  const nextWorkflowId = nextIndex < parsed.chain.workflowIds.length
+    ? parsed.chain.workflowIds[nextIndex]
+    : undefined;
 
-  const nextPayload: JobPayload = parsed.actorUserId
-    ? {
-      workspaceId: parsed.workspaceId,
-      actorUserId: parsed.actorUserId,
-      workflowId: parsed.chain.workflowIds[nextIndex]!,
-      messageId: parsed.messageId,
-      triggerName: 'inbound',
-      context: {
-        inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
-      },
-    }
-    : buildTrustedServiceJobPayload({
-      workspaceId: parsed.workspaceId,
-      workflowId: parsed.chain.workflowIds[nextIndex]!,
-      messageId: parsed.messageId,
-      triggerName: 'inbound',
-      context: {
-        inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
-      },
-    });
+  const nextPayload: JobPayload | null = nextWorkflowId == null
+    ? null
+    : parsed.actorUserId
+      ? {
+        workspaceId: parsed.workspaceId,
+        actorUserId: parsed.actorUserId,
+        workflowId: nextWorkflowId,
+        messageId: parsed.messageId,
+        triggerName: 'inbound',
+        context: {
+          inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
+        },
+      }
+      : buildTrustedServiceJobPayload({
+        workspaceId: parsed.workspaceId,
+        workflowId: nextWorkflowId,
+        messageId: parsed.messageId,
+        triggerName: 'inbound',
+        context: {
+          inboundWorkflowChain: { workflowIds: parsed.chain.workflowIds, index: nextIndex },
+        },
+      });
 
-  const claimKey = inboundChainHopClaimKey(parsed.messageId, parsed.chain, nextIndex);
+  const claimKey = nextPayload === null
+    ? null
+    : inboundChainHopClaimKey(parsed.messageId, parsed.chain, nextIndex);
 
   try {
     // Prefer a single PG client so the hop claim + enqueue share one connection
@@ -289,6 +298,11 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             now: new Date(),
           });
           if (join !== 'ready') {
+            await client.query('COMMIT');
+            return;
+          }
+          if (nextPayload === null || claimKey === null) {
+            // Letzter Kettenplatz: Barriere ist abgebaut, nichts mehr zu enqueuen.
             await client.query('COMMIT');
             return;
           }
@@ -331,7 +345,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
       return;
     }
     // Test helpers without withPgClient: best-effort enqueue (no claim available).
-    if (helpers?.addJob) {
+    if (helpers?.addJob && nextPayload) {
       await helpers.addJob('workflow.execute', nextPayload, {
         maxAttempts: 3,
         queueName: 'workflow',
@@ -448,14 +462,32 @@ export function graphileJobKeyForJob(
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
   }
-  if (type === 'ai.draft_reply' || type === 'ai.review_draft') {
+  if (type === 'ai.draft_reply') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    // runId gehört in den Key: wird derselbe Workflow erneut auf dieselbe
+    // Nachricht angewandt, während der erste KI-Job noch wartet, würde
+    // jobKeyMode 'replace' sonst die erste Fortsetzung verschlucken (der erste
+    // Lauf bliebe dauerhaft deferred). Die Entwurfs-Dedupe ist ebenfalls
+    // run-skopiert (aiDraftReplyDedupeKey).
+    const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${runId ?? 'none'}`;
     }
-    if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
+    if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}:${runId ?? 'none'}`;
+  }
+  if (type === 'ai.review_draft') {
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    // Analog zu ai.draft_reply: der konkrete Entwurf gehört in den Key, sonst
+    // ersetzt eine zweite Gegenprüfung die erste und ein Entwurf bleibt ungeprüft.
+    const draftId = graphileKeyScalar(payload.draftId);
+    if (workspaceKey && workflowId && resumeNodeId) {
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}`;
+    }
+    if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}`;
   }
   if (type === 'ai.transform_text') {
     const messageId = graphileKeyScalar(payload.messageId);

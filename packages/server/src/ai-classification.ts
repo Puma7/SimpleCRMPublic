@@ -1,6 +1,7 @@
 import type { Kysely, Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
+  messageIsSpamOrReviewForInboundWorkflow,
   normalizeAddressJson,
   parseOutboundReviewResponse,
 } from '@simplecrm/core';
@@ -34,7 +35,10 @@ import {
   resumeContextInboundChainFields,
   type InboundChainContinuationFields,
 } from './workflow-inbound-chain-context';
-import { enqueueNextInboundWorkflowAfterTerminalChildFailure } from './workflow-inbound-chain-advance';
+import {
+  enqueueNextInboundWorkflowAfterTerminalChildFailure,
+  isInboundSiblingAborted,
+} from './workflow-inbound-chain-advance';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -791,6 +795,14 @@ export function createPostgresAiAgentPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          // Vor dem bezahlten Modellaufruf: hat ein Geschwisterzweig die Kette
+          // gestoppt oder wurde die Mail inzwischen als Spam markiert?
+          const abort = await inboundAsyncChildAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          });
+          if (abort) return abort;
           const message = input.messageId === undefined
             ? null
             : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
@@ -819,6 +831,13 @@ export function createPostgresAiAgentPort(
         { applySession: options.applyWorkspaceSession },
       );
       if (!context) return;
+      if (typeof context === 'string') {
+        // Der Knoten hat den übergeordneten workflow.execute bereits deferred —
+        // die Fortsetzung muss laufen (sie räumt Join/Kette auf), nur der
+        // Modellaufruf und der Entwurf entfallen.
+        await enqueueAiChildSkipContinuation(options, input, 'ai.agent', context, now());
+        return;
+      }
       if (!context.profile) throw new Error('AI-Profil nicht gefunden');
 
       const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
@@ -849,6 +868,26 @@ export function createPostgresAiAgentPort(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
+            // Zweiter Check direkt vor der Mutation: der Modellaufruf lief
+            // außerhalb der Transaktion, in dieser Zeit kann ein Geschwisterzweig
+            // Spam markiert bzw. die Kette gestoppt haben.
+            const abort = await inboundAsyncChildAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+            });
+            if (abort) {
+              if (input.continuation) {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+                  continuation: input.continuation,
+                  variables: aiChildSkipVariables('ai.agent', abort),
+                  now: now(),
+                });
+              }
+              return;
+            }
             const continuationVariables: JobPayload = {
               'ai.agent.response': output,
               // P1-8 source transparency: which knowledge chunks the answer drew on.
@@ -939,6 +978,12 @@ export function createPostgresAiPickCannedPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          const abort = await inboundAsyncChildAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          });
+          if (abort) return abort;
           const message = input.messageId === undefined
             ? null
             : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
@@ -948,6 +993,10 @@ export function createPostgresAiPickCannedPort(
         },
         { applySession: options.applyWorkspaceSession },
       );
+      if (typeof context === 'string') {
+        await enqueueAiChildSkipContinuation(options, input, 'ai.pick_canned', context, now());
+        return;
+      }
       if (!context.profile) throw new Error('AI-Profil nicht gefunden');
       if (context.canned.length === 0) throw new Error('Keine Textbausteine vorhanden');
 
@@ -1008,6 +1057,24 @@ export function createPostgresAiPickCannedPort(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
+            // Zweiter Check direkt vor der Mutation (siehe ai.agent).
+            const abort = await inboundAsyncChildAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+            });
+            if (abort) {
+              if (input.continuation) {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+                  continuation: input.continuation,
+                  variables: aiChildSkipVariables('ai.pick_canned', abort),
+                  now: now(),
+                });
+              }
+              return;
+            }
             // Narrow for the closure: TypeScript can't carry the willCreateDraft
             // discriminant into the async callback.
             const draftBodyForCreate = draftBody;
@@ -1100,6 +1167,87 @@ async function selectClassificationMessage(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
     .executeTakeFirst() ?? null;
+}
+
+type InboundAsyncChildAbortReason = 'message_spam_or_review' | 'sibling_terminal_abort';
+
+/**
+ * Darf ein bereits eingeplanter asynchroner KI-Kindjob noch laufen?
+ *
+ * `ai.draft_reply` prüft das seit Runde 9 selbst; `ai.agent`/`ai.pick_canned`
+ * fehlte der Check. Ohne ihn sendet ein deferrter Zweig den Mailinhalt noch an
+ * das Modell und legt einen Entwurf an, obwohl ein späterer Geschwisterzweig die
+ * Nachricht inzwischen als Spam markiert und die Inbound-Kette gestoppt hat.
+ * Vor dem externen Aufruf **und** vor der Mutation aufrufen.
+ */
+async function inboundAsyncChildAbortReason(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId?: number;
+    continuation?: AiClassificationContinuation;
+  },
+): Promise<InboundAsyncChildAbortReason | null> {
+  const messageId = input.messageId;
+  const continuation = input.continuation;
+  if (messageId === undefined || !continuation) return null;
+  if (continuation.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
+
+  const live = await trx
+    .selectFrom('email_messages')
+    .select(['is_spam', 'spam_status', 'spam_score_label'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', messageId)
+    .executeTakeFirst();
+  if (live && messageIsSpamOrReviewForInboundWorkflow(live)) return 'message_spam_or_review';
+
+  const aborted = await isInboundSiblingAborted(trx, {
+    workspaceId: input.workspaceId,
+    messageId,
+    workflowId: continuation.workflowId,
+    chain: continuation.inboundWorkflowChain ?? null,
+  });
+  return aborted ? 'sibling_terminal_abort' : null;
+}
+
+function aiChildSkipVariables(
+  nodeType: 'ai.agent' | 'ai.pick_canned',
+  reason: InboundAsyncChildAbortReason,
+): JobPayload {
+  return {
+    [`${nodeType}.status`]: 'skipped',
+    [`${nodeType}.skip_reason`]: reason,
+  };
+}
+
+/** Fortsetzung ohne KI-Ergebnis einreihen, damit Join/Kette nicht hängen bleiben. */
+async function enqueueAiChildSkipContinuation(
+  options: PostgresAiClassificationPortOptions,
+  input: {
+    workspaceId: string;
+    messageId?: number;
+    continuation?: AiClassificationContinuation;
+  },
+  nodeType: 'ai.agent' | 'ai.pick_canned',
+  reason: InboundAsyncChildAbortReason,
+  now: Date,
+): Promise<void> {
+  const continuation = input.continuation;
+  if (!continuation) return;
+  await withWorkspaceTransaction(
+    options.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => {
+      await enqueueContinuation(trx, {
+        workspaceId: input.workspaceId,
+        ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+        continuation,
+        variables: aiChildSkipVariables(nodeType, reason),
+        now,
+      });
+    },
+    { applySession: options.applyWorkspaceSession },
+  );
 }
 
 async function selectAiProfile(

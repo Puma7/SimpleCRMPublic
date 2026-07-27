@@ -2227,6 +2227,39 @@ describe('server edition foundation', () => {
       resumeNodeId: 'tag-1',
       targetVariable: 'ai.summary',
     }, 'workspace-a')).toBe('ai.transform_text:workspace-a:23:11:tag-1:ai.summary');
+    // Codex R12: der Run bzw. der konkrete Entwurf gehört in den Key — sonst
+    // ersetzt (jobKeyMode 'replace') eine erneute Anwendung desselben Workflows
+    // auf dieselbe Nachricht den noch wartenden ersten KI-Job.
+    expect(graphileJobKeyForJob(
+      'ai.draft_reply',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101 },
+      'workspace-a',
+    )).toBe('ai.draft_reply:workspace-a:23:11:tag-1:101');
+    expect(graphileJobKeyForJob(
+      'ai.draft_reply',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 102 },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'ai.draft_reply',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101 },
+      'workspace-a',
+    ));
+    expect(graphileJobKeyForJob('ai.draft_reply', { messageId: 11, runId: 101 }, 'workspace-a'))
+      .toBe('ai.draft_reply:workspace-a:11:101');
+    expect(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77 },
+      'workspace-a',
+    )).toBe('ai.review_draft:workspace-a:23:11:send-1:77');
+    expect(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 78 },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'ai.review_draft',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77 },
+      'workspace-a',
+    ));
     expect(graphileJobKeyForJob('webhook.fire', { dedupeKey: 'customer-7' }, 'workspace-a'))
       .toBe('webhook.fire:workspace-a:customer-7');
     expect(graphileJobKeyForJob('webhook.fire', { url: 'https://hooks.example.com' }, 'workspace-a'))
