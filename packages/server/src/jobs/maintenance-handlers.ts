@@ -14,6 +14,20 @@ import type { JobHandlerRegistry } from './worker';
 export const DEFAULT_LOCK_CLEANUP_LIMIT = 500;
 export const MAX_LOCK_CLEANUP_LIMIT = 5000;
 export const DEFAULT_AUDIT_RETENTION_DAYS = 365;
+/**
+ * Aufbewahrung der Abschlussmarker terminaler Kindjobs.
+ *
+ * `inbound_terminal_child_done:*` ist pro Ausfuehrung eindeutig (Nachricht,
+ * Workflow, Knoten#Zweig, Fan-out-Lauf) und wird von keinem Erfolgs- oder
+ * Abbruchpfad geloescht — er muss den gesamten Graphile-Retry-Fenster
+ * ueberleben, sonst dekrementierte eine spaete erneute Zustellung die
+ * Join-Barriere ein zweites Mal. Danach ist er nur noch Ballast, waechst aber
+ * mit jeder Nachricht, jedem Fan-out-Zweig und jedem Reapply-Lauf in der
+ * haeufig gelesenen sync_info-Tabelle weiter. Sieben Tage liegen um
+ * Groessenordnungen jenseits des Retry-Fensters (max_attempts 3-5 mit
+ * exponentiellem Backoff) und damit sicher.
+ */
+export const DEFAULT_TERMINAL_MARKER_RETENTION_DAYS = 7;
 export const DEFAULT_AUDIT_RETENTION_LIMIT = 1000;
 export const MAX_AUDIT_RETENTION_LIMIT = 10000;
 
@@ -27,8 +41,18 @@ export type MaintenanceJobHandlersOptions = Readonly<{
 export type MaintenanceCleanupPlan = Readonly<{
   workspaceId: string;
   staleBefore: Date;
+  /** Abschlussmarker aelter als das duerfen weg (eigenes Fenster, siehe Konstante). */
+  terminalMarkersBefore: Date;
   limit: number;
 }>;
+
+/**
+ * Prefixe der aufzuraeumenden Marker. Die Unterstriche sind fuer LIKE escaped
+ * (`\_` = literaler Unterstrich), sonst matchte jedes Zeichen an ihrer Stelle.
+ */
+const TERMINAL_MARKER_LIKE_PATTERNS = [
+  'inbound\\_terminal\\_child\\_done:%',
+] as const;
 
 export type AuditRetentionPlan = Readonly<{
   workspaceId: string;
@@ -76,12 +100,33 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
           .limit(plan.limit)
           .execute();
         const messageIds = rows.map((row) => row.message_id);
-        if (messageIds.length === 0) return;
+        if (messageIds.length > 0) {
+          await db
+            .deleteFrom('conversation_locks')
+            .where('workspace_id', '=', plan.workspaceId)
+            .where('message_id', 'in', messageIds)
+            .executeTakeFirst();
+        }
+
+        // Abgelaufene Abschlussmarker mitnehmen — gleiche Schranke (limit),
+        // damit ein erster Lauf auf einer grossen Tabelle nicht ausufert.
+        const staleMarkers = await db
+          .selectFrom('sync_info')
+          .select('key')
+          .where('workspace_id', '=', plan.workspaceId)
+          .where('last_updated', '<', plan.terminalMarkersBefore)
+          .where((eb) => eb.or(
+            TERMINAL_MARKER_LIKE_PATTERNS.map((pattern) => eb('key', 'like', pattern)),
+          ))
+          .orderBy('last_updated', 'asc')
+          .limit(plan.limit)
+          .execute();
+        if (staleMarkers.length === 0) return;
 
         await db
-          .deleteFrom('conversation_locks')
+          .deleteFrom('sync_info')
           .where('workspace_id', '=', plan.workspaceId)
-          .where('message_id', 'in', messageIds)
+          .where('key', 'in', staleMarkers.map((row) => row.key))
           .executeTakeFirst();
       }, { applySession: options.applyWorkspaceSession });
     },
@@ -153,9 +198,17 @@ export function buildLockCleanupPlan(payload: JobPayload, now: Date): Maintenanc
     1,
     24 * 60 * 60,
   );
+  const markerRetentionDays = optionalInteger(
+    payload,
+    'terminalMarkerRetentionDays',
+    DEFAULT_TERMINAL_MARKER_RETENTION_DAYS,
+    1,
+    365,
+  );
   return {
     workspaceId,
     staleBefore: new Date(now.getTime() - staleSeconds * 1000),
+    terminalMarkersBefore: new Date(now.getTime() - markerRetentionDays * 24 * 60 * 60 * 1000),
     limit: optionalInteger(payload, 'limit', DEFAULT_LOCK_CLEANUP_LIMIT, 1, MAX_LOCK_CLEANUP_LIMIT),
   };
 }

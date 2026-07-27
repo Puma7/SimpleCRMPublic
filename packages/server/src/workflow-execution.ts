@@ -51,6 +51,7 @@ import {
   initInboundDeferredJoin,
   isInboundSiblingAborted,
   markInboundSiblingAbort,
+  terminalChildCompletionKeyFor,
   tryClaimInboundChainHop,
 } from './workflow-inbound-chain-advance';
 
@@ -3170,10 +3171,19 @@ async function claimTerminalHttpCompletion(
     .insertInto('sync_info')
     .values({
       workspace_id: input.workspaceId,
-      key: `inbound_terminal_http_done:${input.messageId}:${input.workflowId}:${nodeId}`,
+      // Derselbe Schluessel, den der Graphile-Fehlerpfad ueber
+      // terminalChildCompletionKey beansprucht — Begruendung dort. Der
+      // Fan-out-Lauf wird wie dort aufgeloest (kein Rueckfall auf diesen Lauf,
+      // sonst zeigten Erfolgs- und Fehlerweg auf verschiedene Marker).
+      key: terminalChildCompletionKeyFor({
+        messageId: input.messageId,
+        workflowId: input.workflowId,
+        nodeId,
+        fanOutRunId: inboundChainFieldsFromRecord(input.jobContext).inboundFanOutRunId ?? null,
+      }),
       value: '1',
       last_updated: input.now,
-      source_row: { origin: 'inbound_terminal_http' },
+      source_row: { origin: 'inbound_terminal_child' },
       imported_in_run_id: null,
       updated_at: input.now,
     })

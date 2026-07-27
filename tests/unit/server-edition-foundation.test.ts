@@ -14014,8 +14014,15 @@ describe('server edition foundation', () => {
     }, now)).toEqual({
       workspaceId: WORKSPACE_A_ID,
       staleBefore: new Date('2026-06-03T11:59:00.000Z'),
+      // Eigenes Fenster: die Abschlussmarker muessen das Graphile-Retry-Fenster
+      // ueberleben, danach sind sie nur noch Ballast in sync_info.
+      terminalMarkersBefore: new Date('2026-05-27T12:00:00.000Z'),
       limit: 2,
     });
+    expect(buildLockCleanupPlan({
+      workspaceId: WORKSPACE_A_ID,
+      terminalMarkerRetentionDays: 30,
+    }, now).terminalMarkersBefore).toEqual(new Date('2026-05-04T12:00:00.000Z'));
     expect(buildAuditRetentionPlan({
       workspaceId: WORKSPACE_A_ID,
       retentionDays: 30,
@@ -14443,6 +14450,10 @@ describe('server edition foundation', () => {
     const { db, calls } = makeMaintenanceDb({
       conversation_locks: [{ message_id: 41 }, { message_id: 42 }],
       audit_events: auditRows,
+      sync_info: [
+        { key: 'inbound_terminal_child_done:11:23:draft-1#edge-1:5' },
+        { key: 'inbound_terminal_child_done:11:23:draft-1#edge-2:5' },
+      ],
     });
     const sessionCommands: unknown[] = [];
     const archivedBatches: Array<{
@@ -14508,6 +14519,32 @@ describe('server edition foundation', () => {
         wheres: [
           ['workspace_id', '=', WORKSPACE_A_ID],
           ['message_id', 'in', [41, 42]],
+        ],
+      },
+      {
+        // Abgelaufene Abschlussmarker terminaler Kindjobs: sie werden von keinem
+        // Erfolgs-/Abbruchpfad geloescht (muessen das Graphile-Retry-Fenster
+        // ueberleben) und wuerden sync_info sonst unbegrenzt aufblaehen.
+        kind: 'select',
+        table: 'sync_info',
+        selected: 'key',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['last_updated', '<', new Date('2026-05-27T12:00:00.000Z')],
+          [expect.any(Function), undefined, undefined],
+        ],
+        orderBy: ['last_updated', 'asc'],
+        limit: 2,
+      },
+      {
+        kind: 'delete',
+        table: 'sync_info',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['key', 'in', [
+            'inbound_terminal_child_done:11:23:draft-1#edge-1:5',
+            'inbound_terminal_child_done:11:23:draft-1#edge-2:5',
+          ]],
         ],
       },
       {

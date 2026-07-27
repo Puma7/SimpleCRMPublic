@@ -59,16 +59,22 @@ function claimIsActive(value: string | null | undefined, now: Date): boolean {
   const parsed = parseClaim(value);
   if (!parsed) return false;
   const age = now.getTime() - parsed.claimedAt;
-  if (age < 0) return false;
-  // Eigener Prozess: NICHT nach STALE_CLAIM_MS verfallen lassen. Ein Versand
-  // kann legitim länger dauern — `imapTimeoutsForMessageBytes` erlaubt bis zu
-  // 12 Minuten Socket-Timeout je Sent-Ordner-Kandidat, und es werden mehrere
-  // Kandidaten probiert. Verfiele der Claim mittendrin, könnte eine parallel
-  // endende Gegenprüfung eine bereits versendete Mail wieder als
-  // freigabepflichtig stempeln.
+  // Eigener Prozess ZUERST — vor jeder Uhrzeitprüfung. Das Token ist der
+  // stärkere Lebendigkeitsbeweis: ein Claim mit diesem Token gehört zu einem
+  // hier gerade laufenden `sendComposeDraft`. Wird die Systemzeit während des
+  // Versands zurückgestellt (Zeitsynchronisierung nach einer Vorwärtsabweichung),
+  // wäre das Alter negativ und eine Altersprüfung erklärte den Claim schlagartig
+  // für inaktiv — in diesem Fenster könnten Gegenprüfung oder „Jetzt senden“ den
+  // Entwurf anfassen, obwohl der SMTP-Aufruf noch läuft.
+  // Auch NICHT nach STALE_CLAIM_MS verfallen lassen: ein Versand kann legitim
+  // länger dauern — `imapTimeoutsForMessageBytes` erlaubt bis zu 12 Minuten
+  // Socket-Timeout je Sent-Ordner-Kandidat, und es werden mehrere probiert.
   if (parsed.token && parsed.token === PROCESS_TOKEN) return age < OWN_CLAIM_MAX_MS;
   // Fremder oder tokenloser Claim (anderer Prozess, anderes Fenster, Altbestand):
-  // dessen Lebendigkeit können wir nur über das Alter schätzen.
+  // dessen Lebendigkeit können wir nur über das Alter schätzen. Ein Zeitstempel
+  // aus der Zukunft ist dort nicht deutbar — unverändert als inaktiv behandeln,
+  // sonst bliebe der Entwurf bei einer verstellten Uhr dauerhaft gesperrt.
+  if (age < 0) return false;
   return age < STALE_CLAIM_MS;
 }
 

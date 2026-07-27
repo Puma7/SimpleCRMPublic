@@ -158,12 +158,37 @@ export function terminalChildCompletionKey(payload: Record<string, unknown>): st
   // beide dekrementierten dieselbe (laufskopierte) Join-Barriere, die dann bei
   // einem noch laufenden Geschwister zu frueh oeffnet. Der Zweig steckt bereits
   // in nodeId (terminalNodeId = knoten#zweig).
+  return terminalChildCompletionKeyFor({
+    messageId: target.messageId,
+    workflowId: target.workflowId,
+    nodeId,
+    fanOutRunId: target.fanOutRunId,
+  });
+}
+
+/**
+ * Derselbe Schluessel aus bereits aufgeloesten Teilen.
+ *
+ * Jeder Weg, der den Abschluss EINER terminalen Ausfuehrung beansprucht, muss
+ * exakt diesen Schluessel benutzen — auch der HTTP-Erfolgspfad, der die
+ * Identitaet schon aus seinem Job-Kontext kennt. Zwei getrennte Namensraeume
+ * fuer dieselbe Ausfuehrung hiessen: der Erfolgspfad committet sein Dekrement,
+ * der Worker stirbt vor der Graphile-Bestaetigung, die erneute Zustellung
+ * scheitert endgueltig — und der Fehlerpfad dekrementiert dieselbe Barriere ein
+ * zweites Mal, weil sein Marker noch frei ist.
+ */
+export function terminalChildCompletionKeyFor(input: {
+  messageId: number;
+  workflowId: number;
+  nodeId: string;
+  fanOutRunId: number | null;
+}): string {
   return [
     'inbound_terminal_child_done',
-    target.messageId,
-    target.workflowId,
-    nodeId,
-    target.fanOutRunId ?? 'none',
+    input.messageId,
+    input.workflowId,
+    input.nodeId.trim() || 'terminal',
+    input.fanOutRunId ?? 'none',
   ].join(':');
 }
 

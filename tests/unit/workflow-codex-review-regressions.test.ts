@@ -631,9 +631,11 @@ describe('codex review regression guards', () => {
     expect(execution).toMatch(
       /continuation:terminal_success[\s\S]*?claimTerminalHttpCompletion\([\s\S]*?completeInboundDeferredJoinSibling\([\s\S]*?join === 'ready'[\s\S]*?markInboundWorkflowApplied/,
     );
-    expect(execution).toContain('inbound_terminal_http_done:');
-    // Die Identitaet dafuer reist durch den HTTP-Job hindurch — inklusive runId,
-    // sonst ueberlebt die Schranke den Lauf und ein zweiter Lauf derselben
+    // (Runde 19: der Marker liegt jetzt im gemeinsamen Namensraum des
+    // Fehlerpfads — terminalChildCompletionKeyFor.)
+    expect(execution).toContain('key: terminalChildCompletionKeyFor({');
+    // Die Identitaet dafuer reist durch den HTTP-Job hindurch — inklusive Lauf,
+    // sonst ueberlebt die Schranke den Fan-out und ein zweiter Lauf derselben
     // Nachricht kehrt vor dem Join-Dekrement zurueck (Barriere haengt).
     expect(execution).toContain('terminalNodeId: payload.terminalNodeId as string');
     expect(readRepoFile('packages/server/src/workflow-http-request.ts'))
@@ -845,7 +847,8 @@ describe('codex review regression guards', () => {
 
     // Beide Abschluss-Schluessel (leniant und strikt) MUESSEN uebereinstimmen
     // und beide den Fan-out-Lauf verwenden.
-    expect(advance).toContain("target.fanOutRunId ?? 'none',");
+    expect(advance).toContain('fanOutRunId: target.fanOutRunId,');
+    expect(advance).toContain("input.fanOutRunId ?? 'none',");
     expect(advance).not.toMatch(/const runId = positiveInt\(payload\.runId\);/);
     expect(terminalChild).toContain('runId: resolved.fanOutRunId,');
     // Auch die terminale HTTP-Identitaet.
@@ -861,6 +864,34 @@ describe('codex review regression guards', () => {
     // Fortsetzung, die pro Graphile-Job genau einmal dekrementieren muss.
     expect(readRepoFile('packages/server/src/jobs/graphile-worker.ts'))
       .toContain('if (completionKey) {');
+
+    // Erfolgs- und Fehlerweg eines terminalen HTTP-Abschlusses muessen DENSELBEN
+    // Marker beanspruchen. Zwei Namensraeume hiessen: der Erfolgsweg committet
+    // sein Dekrement, der Worker stirbt vor der Graphile-Bestaetigung, die
+    // erneute Zustellung scheitert endgueltig — und der Fehlerweg baut dieselbe
+    // Barriere ein zweites Mal ab.
+    expect(execution).toContain('key: terminalChildCompletionKeyFor({');
+    expect(execution).not.toContain('inbound_terminal_http_done');
+    expect(advance).toContain('export function terminalChildCompletionKeyFor(input: {');
+
+    // Die Marker werden von keinem Pfad geloescht (sie muessen das
+    // Graphile-Retry-Fenster ueberleben) — also braucht sync_info eine
+    // gebundene Aufbewahrung, sonst waechst sie unbegrenzt mit.
+    const maintenance = readRepoFile('packages/server/src/jobs/maintenance-handlers.ts');
+    expect(maintenance).toContain('export const DEFAULT_TERMINAL_MARKER_RETENTION_DAYS = 7;');
+    expect(maintenance).toContain("'inbound\\\\_terminal\\\\_child\\\\_done:%',");
+    expect(maintenance).toContain(".where('last_updated', '<', plan.terminalMarkersBefore)");
+    // Gleiche Schranke wie beim Lock-Cleanup: ein erster Lauf auf einer grossen
+    // Tabelle darf nicht ausufern.
+    expect(maintenance).toMatch(/staleMarkers[\s\S]*?\.limit\(plan\.limit\)/);
+
+    // Der eigene Claim-Token schlaegt jede Uhrzeitpruefung: eine rueckwaerts
+    // gestellte Systemuhr darf einen laufenden Versand nicht fuer inaktiv
+    // erklaeren (age < 0), sonst faellt der Entwurf mitten im SMTP-Aufruf frei.
+    const claim = readRepoFile('electron/email/email-scheduled-send-claim.ts');
+    expect(claim).toMatch(
+      /if \(parsed\.token && parsed\.token === PROCESS_TOKEN\) return age < OWN_CLAIM_MAX_MS;[\s\S]*?if \(age < 0\) return false;/,
+    );
 
     // Ein geparktes HOLD endet ohne Port — das Urteil im Laufkontext darf
     // daraus kein 'send' machen, sonst liest die Auswertung das Gegenteil der
