@@ -559,6 +559,18 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             })
             .returning(emailTeamMemberSelectColumns)
             .executeTakeFirstOrThrow();
+          // Gleicher Backfill wie im Update-Pfad: existieren bereits Nachrichten
+          // mit der freien Zuweisung (z. B. assigned_to = 'agent-2') und wird das
+          // Mitglied erst danach verknuepft angelegt, blieben assigned_to_me /
+          // assigned_to_my_groups sonst blind fuer genau diese Nachrichten.
+          if (linkedUserId) {
+            await trx
+              .updateTable('email_messages')
+              .set({ assigned_to_user_id: linkedUserId, updated_at: new Date() })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('assigned_to', '=', values.id as string)
+              .execute();
+          }
           return { ok: true, member: mapEmailTeamMemberRow(row) };
         },
         { applySession: options.applyWorkspaceSession },

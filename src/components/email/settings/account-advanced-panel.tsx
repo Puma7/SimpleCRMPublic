@@ -9,6 +9,7 @@ import {
 import { toast } from "sonner"
 import { Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/components/auth/auth-context"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -21,6 +22,9 @@ type Props = {
 }
 
 export function AccountAdvancedPanel({ accountId }: Props) {
+  // PATCH /email/settings/account-mail verlangt settings.manage — ohne die Stufe
+  // waere jeder Save ein garantierter 403 (wie bei Snooze und Antwortvorschlaegen).
+  const { canManageSettings } = useAuth()
   const { accountsRevision } = useMailWorkspace()
   const [settings, setSettings] = useState<AccountMailSettings | null>(null)
   const [loading, setLoading] = useState(true)
@@ -111,6 +115,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
                 <div className="space-y-2">
                   <Label htmlFor="ticket-prefix">Ticket-Präfix</Label>
                   <Input
+                    disabled={!canManageSettings}
                     id="ticket-prefix"
                     value={settings.ticketPrefix}
                     maxLength={12}
@@ -121,6 +126,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
                 <div className="space-y-2">
                   <Label htmlFor="ticket-next-number">Nächste Nummer</Label>
                   <Input
+                    disabled={!canManageSettings}
                     id="ticket-next-number"
                     type="number"
                     min={1}
@@ -133,6 +139,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
                 <div className="space-y-2">
                   <Label htmlFor="ticket-padding">Auffüllung (Stellen)</Label>
                   <Input
+                    disabled={!canManageSettings}
                     id="ticket-padding"
                     type="number"
                     min={1}
@@ -162,6 +169,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
             <CardContent className="space-y-2">
               <Label htmlFor="thread-namespace">Namespace-Kennung</Label>
               <Input
+                disabled={!canManageSettings}
                 id="thread-namespace"
                 value={settings.threadNamespace}
                 maxLength={64}
@@ -171,7 +179,7 @@ export function AccountAdvancedPanel({ accountId }: Props) {
             </CardContent>
           </Card>
 
-          <Button type="button" onClick={() => void save()} disabled={saving}>
+          <Button type="button" onClick={() => void save()} disabled={saving || !canManageSettings}>
             {saving ? (
               <>
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
