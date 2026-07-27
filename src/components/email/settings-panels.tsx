@@ -42,6 +42,7 @@ import { DiagnosticsPanel } from "./settings/diagnostics-panel"
 import { AuthSecurityPanel } from "@/components/settings/auth-security-panel"
 import { UsersPanel } from "@/components/settings/users-panel"
 import { ChangePasswordCard } from "@/components/settings/change-password-card"
+import { AppUsersTab } from "@/components/email/settings-app-users-tab"
 import { UserGroupsPanel } from "@/components/settings/user-groups-panel"
 import { PgpPanel } from "./settings/pgp-panel"
 import { AuditLogPanel } from "./settings/audit-log-panel"
@@ -141,12 +142,7 @@ const TAB_DEFS: TabDef[] = [
     id: "appUsers",
     label: "App-Benutzer",
     icon: Users,
-    render: () => (
-      <div className="space-y-6">
-        <ChangePasswordCard />
-        <UsersPanel />
-      </div>
-    ),
+    render: () => <AppUsersTab />,
     /** Always available for self-service password change without settings.view. */
     personalAccount: true,
   },
