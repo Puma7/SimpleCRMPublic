@@ -18243,6 +18243,23 @@ describe('server edition foundation', () => {
     });
     expect(unauthorized.status).toBe(401);
 
+    // Ohne crm.read ist auch das LESEN gesperrt — sonst waere die CRM-Stufe
+    // „Keins" im Gruppenpanel wirkungslos.
+    const withoutCrmRead = await api.handle({
+      method: 'GET',
+      path: '/api/v1/customers',
+      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+    });
+    expect(withoutCrmRead.status).toBe(403);
+    expect(listCalls).toEqual([]);
+
+    const reader = {
+      userId: 'user-a',
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['crm.read'],
+    };
+
     const list = await api.handle({
       method: 'GET',
       path: '/api/v1/customers',
@@ -18254,7 +18271,7 @@ describe('server edition foundation', () => {
         sortBy: 'fullName',
         sortDirection: 'desc',
       },
-      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+      principal: reader,
     });
     expect(list.status).toBe(200);
     expect((list.body as any).data.items[0].id).toBe(7);
@@ -18271,7 +18288,7 @@ describe('server edition foundation', () => {
     const get = await api.handle({
       method: 'GET',
       path: '/api/v1/customers/7',
-      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+      principal: reader,
     });
     expect(get.status).toBe(200);
     expect((get.body as any).data.email).toBe('customer7@example.com');
@@ -18280,7 +18297,7 @@ describe('server edition foundation', () => {
     const missing = await api.handle({
       method: 'GET',
       path: '/api/v1/customers/8',
-      principal: { userId: 'user-a', workspaceId: WORKSPACE_A_ID, role: 'user' },
+      principal: reader,
     });
     expect(missing.status).toBe(404);
   });

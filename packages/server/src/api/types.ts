@@ -774,7 +774,17 @@ export type UserGroupApiPort = {
     actorUserId: string;
     groupId: number;
     permissions: readonly string[];
-  }): Promise<{ ok: true; permissions: string[] } | { ok: false; code: 'group_not_found' }>;
+  }): Promise<
+    /**
+     * `memberUserIds` stammt aus DERSELBEN Transaktion wie die Rechteschreibung.
+     * Ein nachgelagertes listMembers waere ein zweiter Fehlerpunkt NACH dem
+     * Commit: schlaegt es fehl, bekaeme kein Mitglied `email_acl.changed` und
+     * die Clients blieben mit ihren alten Capability-Gates zurueck, waehrend der
+     * Server die neuen Rechte schon durchsetzt.
+     */
+    | { ok: true; permissions: string[]; memberUserIds: string[] }
+    | { ok: false; code: 'group_not_found' }
+  >;
 };
 
 export type MailDelegationSubject =

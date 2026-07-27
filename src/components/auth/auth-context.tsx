@@ -38,6 +38,8 @@ type AuthState = {
   user: AuthUser | null
   /** Owners/admins hold every capability; other roles gain group-granted ones. */
   hasCapability: (capability: string) => boolean
+  /** Desktop always true; server edition requires crm.read (or admin/owner). */
+  canReadCrm: boolean
   /** Desktop always true; server edition requires crm.write (or admin/owner). */
   canWriteCrm: boolean
   /** Desktop always true; server edition requires settings.view (or admin/owner). */
@@ -255,6 +257,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return capabilities.includes(capability)
   }, [user, capabilities])
 
+  const canReadCrm = useMemo(() => {
+    // Capability model is server-edition only; desktop remains unrestricted.
+    if (getRendererTransport().kind !== "http") return true
+    return hasCapability("crm.read")
+  }, [hasCapability, authenticated, user, capabilities])
+
   const canWriteCrm = useMemo(() => {
     // Capability model is server-edition only; desktop remains unrestricted.
     if (getRendererTransport().kind !== "http") return true
@@ -335,6 +343,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authRequired,
       user,
       hasCapability,
+      canReadCrm,
       canWriteCrm,
       canViewSettings,
       canManageSettings,
@@ -351,6 +360,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       authRequired,
       user,
       hasCapability,
+      canReadCrm,
       canWriteCrm,
       canViewSettings,
       canManageSettings,

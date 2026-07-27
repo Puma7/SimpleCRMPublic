@@ -327,16 +327,17 @@ async function handlePermissionRoute(
     // fehlschlagender Audit-Write die Clients mit ihren alten Capability-Gates
     // zurueck, waehrend der Server die neuen Rechte schon durchsetzt (wie im
     // Delegationspfad).
-    const members = await ports.userGroups!.listMembers({ workspaceId: principal.workspaceId, groupId });
-    if (members) {
-      await publishGroupAclInvalidation(
-        ports,
-        principal,
-        groupId,
-        members.map((member) => member.userId),
-        'changed',
-      );
-    }
+    // Die Mitgliederliste kommt aus der Mutationstransaktion. Ein separates
+    // listMembers waere ein zweiter Fehlerpunkt NACH dem Commit gewesen: haette
+    // es geworfen, waere die Antwort ein 500 gewesen, obwohl die Rechte bereits
+    // gelten — und kein Mitglied haette die Invalidierung erhalten.
+    await publishGroupAclInvalidation(
+      ports,
+      principal,
+      groupId,
+      result.memberUserIds,
+      'changed',
+    );
     try {
       await ports.audit?.record({
         workspaceId: principal.workspaceId,

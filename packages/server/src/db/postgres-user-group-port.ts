@@ -302,7 +302,17 @@ export function createPostgresUserGroupPort(options: PostgresUserGroupPortOption
               .onConflict((oc) => oc.columns(['workspace_id', 'group_id', 'permission']).doNothing())
               .execute();
           }
-          return { ok: true as const, permissions };
+          // Mitglieder in derselben Transaktion lesen: die Route braucht sie fuer
+          // die email_acl.changed-Invalidierung und darf dafuer nach dem Commit
+          // keinen zweiten, eigenstaendig scheiternden Aufruf mehr benoetigen.
+          const memberRows = await trx
+            .selectFrom('user_group_members')
+            .select('user_id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('group_id', '=', input.groupId)
+            .execute();
+          const memberUserIds = [...new Set(memberRows.map((row) => String(row.user_id)))];
+          return { ok: true as const, permissions, memberUserIds };
         },
         readSession,
       );

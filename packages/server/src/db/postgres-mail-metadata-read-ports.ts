@@ -1263,7 +1263,23 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
           // eines NICHT referenzierten Elternknotens reisst referenzierte
           // Unterkategorien mit — die Pruefung muss daher den ganzen Teilbaum
           // erfassen, nicht nur die exakte Id.
-          const referenced = await kyselySql<{ exists: boolean }>`
+          // mail_acl_binding_constraints.value_ids ist eine Array-Spalte ohne
+          // Fremdschluessel — die Pruefung unten ist daher rein zeitpunktbezogen.
+          // Ohne Sperre koennte eine parallele Binding-Mutation genau zwischen
+          // Pruefung und DELETE einen Ausschluss auf diese Kategorie schreiben:
+          // beide Transaktionen committen, der Filter zeigt auf eine geloeschte
+          // Kategorie und laesst alles durch.
+          //
+          // Deshalb wird der gesamte Teilbaum ZUERST exklusiv gesperrt; der
+          // Schreibpfad der Bindings sperrt dieselben Zeilen mit FOR SHARE
+          // (unknownConstraintCategoryExists). Damit gilt in beiden Reihenfolgen
+          // ein sauberes Ergebnis: entweder sieht das DELETE den neuen Constraint
+          // und scheitert, oder die Binding-Mutation sieht die Kategorie nicht
+          // mehr und antwortet mit category_not_found.
+          //
+          // FOR UPDATE ist in einem rekursiven CTE nicht erlaubt, die Ids werden
+          // darum erst materialisiert und dann gesperrt.
+          const doomed = await kyselySql<{ id: string }>`
             WITH RECURSIVE doomed AS (
               SELECT id FROM email_categories
               WHERE workspace_id = ${input.workspaceId}::uuid AND id = ${input.id}::bigint
@@ -1272,11 +1288,24 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
               JOIN doomed ON child.parent_id = doomed.id
               WHERE child.workspace_id = ${input.workspaceId}::uuid
             )
+            SELECT id FROM doomed
+          `.execute(trx);
+          const doomedIds = doomed.rows.map((row) => Number(row.id));
+          if (doomedIds.length === 0) return null;
+          await trx
+            .selectFrom('email_categories')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', 'in', doomedIds)
+            .forUpdate()
+            .execute();
+
+          const referenced = await kyselySql<{ exists: boolean }>`
             SELECT EXISTS (
               SELECT 1 FROM mail_acl_binding_constraints AS constraints
-              JOIN doomed ON doomed.id = ANY(constraints.value_ids)
               WHERE constraints.workspace_id = ${input.workspaceId}::uuid
                 AND constraints.kind = 'category'
+                AND constraints.value_ids && ${doomedIds}::bigint[]
             ) AS exists
           `.execute(trx);
           if (referenced.rows[0]?.exists) {

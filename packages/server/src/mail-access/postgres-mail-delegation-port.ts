@@ -1116,11 +1116,19 @@ async function unknownConstraintCategoryExists(
   const ids = [...new Set([...constraints.categoryAllowIds, ...constraints.categoryExcludeIds])]
     .filter((id) => id !== DENY_ALL_CATEGORY_ALLOW_ID && id > 0);
   if (ids.length === 0) return false;
+  // FOR SHARE: mail_acl_binding_constraints.value_ids hat keinen Fremdschluessel
+  // auf email_categories, die Existenzpruefung waere sonst rein zeitpunktbezogen.
+  // Der Loeschpfad (postgres-mail-metadata-read-ports) sperrt denselben Teilbaum
+  // mit FOR UPDATE, bevor er nach referenzierenden Constraints sucht. Damit
+  // serialisieren sich beide Transaktionen: laeuft das DELETE zuerst durch, ist
+  // die Zeile hier verschwunden und wir antworten category_not_found; laeuft
+  // diese Transaktion zuerst, sieht das DELETE den neuen Constraint und scheitert.
   const rows = await trx
     .selectFrom('email_categories')
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('id', 'in', ids)
+    .forShare()
     .execute();
   const known = new Set(rows.map((row) => Number(row.id)));
   return ids.some((id) => !known.has(id));

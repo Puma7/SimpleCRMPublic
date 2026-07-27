@@ -29,7 +29,8 @@ import { handleUserSignatureRoute, USER_SIGNATURE_ROUTE_INVENTORY } from './user
 import { handleWorkflowReadRoute, WORKFLOW_MAIL_ROUTE_INVENTORY } from './workflow-routes';
 import { getServerOpenApiSpec } from './openapi';
 import type { ApiRequest, ApiResponse, CanonicalApiRoute, ServerApiPorts } from './types';
-import { data, error, requireAdmin, requirePrincipal } from './http';
+import { data, error, rejectUnlessCrmRead, requireAdmin, requirePrincipal } from './http';
+import { isCrmApiPath } from './crm-route-inventory';
 
 export type ServerApi = {
   handle(req: ApiRequest): Promise<ApiResponse>;
@@ -148,6 +149,16 @@ export function createServerApi(ports: ServerApiPorts): ServerApi {
           status: 200,
           body: getServerOpenApiSpec(),
         };
+      }
+
+      // CRM-Lesezugriff zentral pruefen. Die Schreibpfade pruefen zusaetzlich
+      // crm.write; das oeffentliche Retouren-Portal ist oben schon beantwortet
+      // und faellt ohnehin nicht unter die CRM-Wurzelsegmente.
+      if (isCrmApiPath(req.path)) {
+        const principal = requirePrincipal(req);
+        if ('status' in principal) return principal;
+        const denied = rejectUnlessCrmRead(principal);
+        if (denied) return denied;
       }
 
       for (const registration of SERVER_API_ROUTE_REGISTRATIONS) {

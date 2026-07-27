@@ -63,6 +63,21 @@ export function forbidUnlessCapability(
   return error(403, 'forbidden', message);
 }
 
+/**
+ * Unterste Stufe des CRM-Moduls. Wird zentral im Dispatcher fuer alle Pfade
+ * unter einem CRM-Wurzelsegment geprueft (siehe crm-route-inventory.ts);
+ * `crm.write` schliesst sie ein.
+ */
+export function rejectUnlessCrmRead(
+  principal: AuthenticatedPrincipal,
+): ApiResponse<ApiErrorBody> | null {
+  return forbidUnlessCapability(
+    principal,
+    'crm.read',
+    'Adminrechte oder CRM-Leseberechtigung erforderlich',
+  );
+}
+
 export function rejectUnlessCrmWrite(
   principal: AuthenticatedPrincipal,
 ): ApiResponse<ApiErrorBody> | null {

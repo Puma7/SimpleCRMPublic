@@ -5378,6 +5378,105 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('a category delete waits for a concurrent binding write and then fails closed', async () => {
+    // mail_acl_binding_constraints.value_ids ist eine Array-Spalte OHNE
+    // Fremdschluessel. Die Referenzpruefung im Loeschpfad ist damit rein
+    // zeitpunktbezogen: ohne Sperre koennte eine parallele Binding-Mutation
+    // genau zwischen Pruefung und DELETE einen Ausschluss auf diese Kategorie
+    // schreiben. Beide Transaktionen wuerden committen — der Filter zeigte auf
+    // eine geloeschte Kategorie und liesse ab dann JEDE Nachricht durch.
+    //
+    // Der Loeschpfad sperrt den Teilbaum deshalb ZUERST mit FOR UPDATE, der
+    // Binding-Schreibpfad dieselben Zeilen mit FOR SHARE. Dieser Test spielt die
+    // gefaehrliche Reihenfolge nach: der Schreiber haelt die Share-Sperre und
+    // committt erst, nachdem das DELETE bereits laeuft.
+    await ensureMailAclConstraintsSchema();
+    const categoryId = 90601;
+    const requireFromServer = createRequire(join(__dirname, '..', '..', 'packages', 'server', 'package.json'));
+    const { Client } = requireFromServer('pg') as {
+      Client: new (options: Record<string, unknown>) => DatabaseClient & { end(): Promise<void> };
+    };
+    const writer = new Client({
+      host: '127.0.0.1',
+      port: postgresPort,
+      user: MIGRATION_ROLE,
+      password: MIGRATION_ROLE_PASSWORD,
+      database: 'postgres',
+    });
+    const db = createApplicationDb();
+    let bindingId: string | null = null;
+    let writerOpen = false;
+    try {
+      await writer.connect();
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_categories (id, workspace_id, source_sqlite_id, name, sort_order)
+        VALUES (${categoryId}, '${WORKSPACE_A}', 90601, 'Wettlauf', 0)
+      `);
+      const binding = await client.query<{ id: string }>(`
+        INSERT INTO mail_acl_bindings (workspace_id, subject_type, subject_id, resource_type, account_id)
+        VALUES ('${WORKSPACE_A}', 'group', '${GROUP_A_REMOVED}', 'account', ${ACCOUNT_A})
+        RETURNING id::text AS id
+      `);
+      bindingId = binding.rows[0]!.id;
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      // Schreiber: Existenzpruefung mit FOR SHARE (wie unknownConstraintCategoryExists),
+      // dann der Constraint — beides noch OFFEN.
+      await writer.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await writer.query('BEGIN');
+      writerOpen = true;
+      await writer.query(`
+        SELECT id FROM email_categories
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${categoryId}
+        FOR SHARE
+      `);
+      await writer.query(`
+        INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_ids)
+        VALUES ('${WORKSPACE_A}', ${bindingId}, 'category', 'exclude', '{${categoryId}}'::bigint[])
+      `);
+
+      const port = createPostgresEmailCategoryReadPort({ db });
+      let settled = false;
+      const deletion = port.delete!({ workspaceId: WORKSPACE_A, actorUserId: USER_READ, id: categoryId })
+        .then(
+          (value) => { settled = true; return { ok: true as const, value }; },
+          (error: unknown) => { settled = true; return { ok: false as const, error }; },
+        );
+
+      // Ohne die FOR-UPDATE-Sperre waere die Referenzpruefung hier bereits
+      // durchgelaufen (der Constraint ist noch nicht committed).
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      expect(settled).toBe(false);
+
+      await writer.query('COMMIT');
+      writerOpen = false;
+
+      const outcome = await deletion;
+      expect(outcome.ok).toBe(false);
+      expect((outcome as { error: unknown }).error).toBeInstanceOf(EmailCategoryInUseByAclError);
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const survivor = await client.query<{ count: string }>(`
+        SELECT count(*)::text AS count FROM email_categories
+        WHERE workspace_id = '${WORKSPACE_A}' AND id = ${categoryId}
+      `);
+      expect(survivor.rows[0]?.count).toBe('1');
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+    } finally {
+      if (writerOpen) await writer.query('ROLLBACK').catch(() => undefined);
+      await writer.end().catch(() => undefined);
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      if (bindingId) {
+        await client.query(`DELETE FROM mail_acl_binding_constraints WHERE binding_id = ${bindingId}`).catch(() => undefined);
+        await client.query(`DELETE FROM mail_acl_bindings WHERE id = ${bindingId}`).catch(() => undefined);
+      }
+      await client.query(`DELETE FROM email_categories WHERE workspace_id = '${WORKSPACE_A}' AND id = ${categoryId}`).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
   test('caps stored visibility constraint arrays at the database level', async () => {
     // Zweite Verteidigungslinie zur Laengenpruefung der Route: selbst ein
     // direkter Schreibzugriff darf keine unbegrenzten IN-Listen anlegen.

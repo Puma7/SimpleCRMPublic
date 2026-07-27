@@ -183,6 +183,13 @@ describe('createPostgresMailDelegationPort', () => {
         tagExcludeValues: [],
       },
     })).resolves.toMatchObject({ ok: false, code: 'category_not_found' });
+
+    // Die Existenzpruefung sperrt die Kategoriezeilen mit FOR SHARE. Ohne diese
+    // Sperre waere sie rein zeitpunktbezogen: value_ids hat keinen
+    // Fremdschluessel, ein paralleles Loeschen der Kategorie koennte direkt nach
+    // der Pruefung committen und liesse einen ins Leere zeigenden — und damit
+    // wirkungslosen — Ausschlussfilter zurueck.
+    expect(trx.calls).toContainEqual(['forShare', 'email_categories']);
   });
 
   test('a constrained manager cannot delete a binding beyond its own authority', async () => {
@@ -777,6 +784,10 @@ function createDelegationTransaction(fixtures: {
     orderBy: () => builder,
     forUpdate: () => {
       calls.push(['forUpdate', table]);
+      return builder;
+    },
+    forShare: () => {
+      calls.push(['forShare', table]);
       return builder;
     },
     values: () => builder,
