@@ -146,6 +146,43 @@ describe('findOutboundGraphTraps', () => {
     ]);
   });
 
+  it('accepts an unlabelled default edge as the ai.outbound_review ok port', () => {
+    // Altgraph aus der Zeit vor den benannten Ports: die Laufzeit (pickEdge)
+    // lässt `ok` auf die unbeschriftete Kante fallen — der Validator darf ihn
+    // deshalb nicht als dead_end melden (das Speichern würde mit 422 scheitern).
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'rev', type: 'registry', data: { nodeType: 'ai.outbound_review', config: {} } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'rev' },
+        { id: 'e1', source: 'rev', target: 'rel' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([]);
+    expect(findOutboundGraphTrapsShared(graph as never)).toEqual([]);
+  });
+
+  it('still flags ai.review_draft without a send port (runtime fails closed there)', () => {
+    const graph: WorkflowGraphDocument = {
+      version: 1,
+      nodes: [
+        { id: 't1', type: 'trigger', data: { kind: 'outbound' } },
+        { id: 'rev', type: 'registry', data: { nodeType: 'ai.review_draft', config: {} } },
+        { id: 'rel', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+      ],
+      edges: [
+        { id: 'e0', source: 't1', target: 'rev' },
+        { id: 'e1', source: 'rev', target: 'rel' },
+      ],
+    };
+    expect(findOutboundGraphTraps(graph)).toEqual([{ code: 'dead_end', nodeId: 'rev' }]);
+    expect(findOutboundGraphTrapsShared(graph as never)).toEqual([{ code: 'dead_end', nodeId: 'rev' }]);
+  });
+
   it('requires both ports on a logic.threshold branch node', () => {
     const graph: WorkflowGraphDocument = {
       version: 1,

@@ -1,5 +1,6 @@
 import { isTrashMailboxName } from '../email/imap-mailbox-names';
 import type { WorkflowGraphDocument, WorkflowGraphNode } from './graph-types';
+import { edgeIsDefault } from './graph-walk-utils';
 
 function registryType(node: WorkflowGraphNode): string {
   const data = node.data as Record<string, unknown> | undefined;
@@ -649,7 +650,13 @@ export function findOutboundGraphTraps(
     const portBranch = namedPortBranch(node);
     if (portBranch) {
       for (const port of portBranch.ports) {
-        const edge = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+        // `ok` fällt zur Laufzeit auf eine unbeschriftete Default-Kante zurück
+        // (pickEdge, Abwärtskompatibilität für Graphen aus der Zeit vor den
+        // benannten Ports). Der Validator muss dieselbe Kante akzeptieren, sonst
+        // meldet er einen lauffähigen Altgraphen als dead_end — und
+        // outboundWorkflowGuardError lehnt jedes Speichern mit 422 ab.
+        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefault) : undefined);
         const isReleasePort = portBranch.releasePorts.includes(port);
         if (edge) {
           walk(edge.target, next, holdPath || !isReleasePort);

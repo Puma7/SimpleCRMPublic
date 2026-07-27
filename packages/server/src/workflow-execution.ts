@@ -32,6 +32,8 @@ import {
   type WorkflowGraphNode,
   type WorkflowTriggerKind,
   messageIsSpamOrReviewForInboundWorkflow,
+  nodeRequestsChainStop,
+  NODE_CHAIN_STOP_MESSAGE,
   type SpamDecisionMessageInput,
   type SpamEngineSettings,
   type SpamFeatureStatInput,
@@ -1443,7 +1445,7 @@ async function walkGraph(
     }
 
     const started = Date.now();
-    const result = await executeServerNode(
+    const result = withNodeChainStop(node, await executeServerNode(
       trx,
       input.doc,
       input.context,
@@ -1452,7 +1454,7 @@ async function walkGraph(
       input.now,
       input.ports,
       input.dryRun,
-    );
+    ));
     const durationMs = Math.max(0, Date.now() - started);
     if (!input.dryRun) {
       await insertRunStep(trx, input.context, node, {
@@ -2057,7 +2059,10 @@ async function executeServerNode(
     if (!train.ok) return { status: 'error', port: 'error', message: train.message };
     const status = spamStatusConfig(config.status);
     const tag = String(config.tag ?? '').trim();
-    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', true);
+    // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
+    // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
+    // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
     if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
     return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now, {
       stopFurtherWorkflows: stopFurther.value,
@@ -2070,7 +2075,10 @@ async function executeServerNode(
     if (!spam.ok) return { status: 'error', port: 'error', message: spam.message };
     const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
     if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
-    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', true);
+    // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
+    // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
+    // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
     if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
     if (moveImap.value && spam.value) {
       const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
@@ -6439,7 +6447,8 @@ async function setWorkflowSpamStatus(
     status: 'ok',
     port: 'default',
     variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
-    ...(options.stopFurtherWorkflows !== false && (status === 'spam' || status === 'review')
+    // Opt-in (=== true), nicht !== false: ohne gesetztes Feld darf nichts stoppen.
+    ...(options.stopFurtherWorkflows === true && (status === 'spam' || status === 'review')
       ? { stop: true, inboundChainStop: true, message: 'stop_further_workflows:spam_status' }
       : {}),
   };
@@ -7020,6 +7029,29 @@ function inboundNodeRequiresConditionGate(node: WorkflowGraphNode): boolean {
   if (type.startsWith('logic.')) return false;
   const config = nodeConfig(node);
   return config.runOnEveryInbound !== true;
+}
+
+/**
+ * Generischer „Weitere Workflows stoppen"-Schalter (siehe @simplecrm/core
+ * node-chain-stop). Zentral hinter jedem Knoten ausgewertet, damit die Option
+ * an JEDEM Knoten zur Verfügung steht statt nur an den Spam-Knoten — z. B.
+ * „Absender auf Blocklist gesetzt ⇒ Kette beenden", während der Whitelist-/
+ * Weiterleitungszweig ohne den Schalter normal weiterläuft.
+ */
+function withNodeChainStop(node: WorkflowGraphNode, result: NodeResult): NodeResult {
+  if (!nodeRequestsChainStop({
+    nodeType: nodeRuntimeType(node),
+    config: nodeConfig(node),
+    result,
+  })) {
+    return result;
+  }
+  return {
+    ...result,
+    stop: true,
+    inboundChainStop: true,
+    message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
+  };
 }
 
 function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {

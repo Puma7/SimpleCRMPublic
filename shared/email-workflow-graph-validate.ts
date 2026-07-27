@@ -47,6 +47,11 @@ const NAMED_PORT_BRANCH_NODES: Readonly<
   'ai.review_draft': { ports: ['send', 'hold'], releasePorts: ['send'] },
 };
 
+function edgeIsDefaultLabel(edge: { label?: string | null }): boolean {
+  const label = (edge.label ?? '').toLowerCase();
+  return !label || label === 'default' || label === 'standard' || label === 'fallback';
+}
+
 function namedPortBranch(
   node: WorkflowGraphNode,
 ): { ports: readonly string[]; releasePorts: readonly string[] } | null {
@@ -155,7 +160,12 @@ export function findOutboundGraphTraps(
     const portBranch = namedPortBranch(node);
     if (portBranch) {
       for (const port of portBranch.ports) {
-        const edge = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+        // Parität zu pickEdge/pickCompileEdge: `ok` fällt auf eine unbeschriftete
+        // Default-Kante zurück (Altgraphen vor den benannten Ports). Ohne diesen
+        // Fallback meldet der Validator einen lauffähigen Graphen als dead_end
+        // und das Speichern scheitert mit 422.
+        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefaultLabel) : undefined);
         const isReleasePort = portBranch.releasePorts.includes(port);
         if (edge) {
           walk(edge.target, next, holdPath || !isReleasePort);

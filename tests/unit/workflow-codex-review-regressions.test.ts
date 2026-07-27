@@ -125,8 +125,9 @@ describe('codex review regression guards', () => {
     expect(draftNodes).toContain('reviewedFingerprint');
     expect(draftNodes).toContain('Entwurf wurde nach der KI-Prüfung geändert');
     expect(execution).toMatch(/skip:workflow_already_applied[\s\S]*?maybeEnqueueNextInboundWorkflow/);
-    expect(catalog).toContain('stopFurtherWorkflows: true');
-    expect(emailNodes).toContain('stopFurtherWorkflows: true');
+    // Katalog-Default ist bewusst false (Opt-in) — siehe „gatekeeper: …" unten.
+    expect(catalog).toContain('stopFurtherWorkflows: false');
+    expect(emailNodes).toContain('stopFurtherWorkflows: false');
     expect(aiNodes).toContain('getEmailMessageById(ctx.messageId)');
     expect(aiNodes).toContain("ctx.variables['email.is_spam'] === true");
     expect(policy).toContain("job.type === 'ai.draft_reply'");
@@ -384,6 +385,29 @@ describe('codex review regression guards', () => {
     expect(runtime).toContain('cancelPendingDelayedJobsForMessageSafe');
     expect(delayedJobs).toContain('messageIsSpamOrReviewForInboundWorkflow');
     expect(delayedJobs).toContain('skip:message_spam_or_review');
+  });
+
+  test('gatekeeper: chain stop is opt-in everywhere and graphile advance is idempotent', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const emailNodes = readRepoFile('electron/workflow/nodes/email-nodes.ts');
+    const runtime = readRepoFile('electron/workflow/runtime.ts');
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+
+    // Kein stiller Default true mehr — gespeicherte Graphen ohne das Feld
+    // dürfen ihre Folgeknoten und die Inbound-Kette nicht rückwirkend verlieren.
+    expect(execution).not.toContain("'stopFurtherWorkflows', true)");
+    expect(execution).toContain("'stopFurtherWorkflows', false)");
+    expect(execution).toContain('options.stopFurtherWorkflows === true');
+    expect(execution).not.toContain('options.stopFurtherWorkflows !== false');
+    expect(emailNodes).not.toContain('config.stopFurtherWorkflows !== false');
+    expect(emailNodes).toContain('chainStopFlagEnabled(config.stopFurtherWorkflows)');
+
+    // Generischer Schalter zentral hinter JEDEM Knoten, in beiden Runtimes.
+    expect(execution).toContain('withNodeChainStop(node,');
+    expect(runtime).toContain('withNodeChainStop(node, regType, result)');
+
+    // Graphile-Terminalpfad läuft höchstens einmal pro Job.
+    expect(graphile).toContain('inbound_chain_terminal_advance');
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {

@@ -9,6 +9,7 @@ export * from './draft-review-parse';
 export * from './inbound-spam-guard';
 export * from './interpolate';
 export * from './node-catalog';
+export * from './node-chain-stop';
 export * from './sender-filter';
 export * from './templates';
 export * from './trigger-utils';

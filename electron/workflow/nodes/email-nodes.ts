@@ -9,6 +9,7 @@ import {
   setOutboundHold,
   getEmailAccountById,
 } from '../../email/email-store';
+import { chainStopFlagEnabled } from '@simplecrm/core';
 import { evaluateSenderFilter } from '../sender-filter';
 import { primaryReplyRecipient } from '../../../shared/email-reply-addresses';
 import { AUTO_REPLY_NOREPLY_RE, loadAutoReplyEnabled } from '../auto-reply-settings';
@@ -291,7 +292,7 @@ export function registerEmailNodes(register: Reg): void {
     category: 'email',
     canvasType: 'registry',
     description: 'Setzt den lokalen Spam-Status: clean, review oder spam.',
-    defaultConfig: { status: 'review', train: false, tag: '', stopFurtherWorkflows: true },
+    defaultConfig: { status: 'review', train: false, tag: '', stopFurtherWorkflows: false },
     execute: async (ctx, config) => {
       const { messageId } = requireMessage(ctx);
       const raw = String(config.status ?? 'review').toLowerCase();
@@ -308,7 +309,8 @@ export function registerEmailNodes(register: Reg): void {
       return {
         status: 'ok',
         variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
-        ...(config.stopFurtherWorkflows !== false && (status === 'spam' || status === 'review')
+        // Opt-in: gespeicherte Graphen ohne dieses Feld laufen unverändert weiter.
+        ...(chainStopFlagEnabled(config.stopFurtherWorkflows) && (status === 'spam' || status === 'review')
           ? {
             stop: true,
             inboundChainStop: true,
@@ -324,7 +326,7 @@ export function registerEmailNodes(register: Reg): void {
     label: 'Als Spam markieren',
     category: 'email',
     canvasType: 'registry',
-    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false, stopFurtherWorkflows: true },
+    defaultConfig: { spam: true, tag: 'auto-spam', moveImap: false, stopFurtherWorkflows: false },
     execute: async (ctx, config) => {
       const { row, messageId } = requireMessage(ctx);
       const spam = config.spam !== false;
@@ -340,7 +342,8 @@ export function registerEmailNodes(register: Reg): void {
       return {
         status: 'ok',
         variables: { 'email.is_spam': spam, 'spam.status': spam ? 'spam' : 'clean' },
-        ...(config.stopFurtherWorkflows !== false && spam
+        // Opt-in: gespeicherte Graphen ohne dieses Feld laufen unverändert weiter.
+        ...(chainStopFlagEnabled(config.stopFurtherWorkflows) && spam
           ? {
             stop: true,
             inboundChainStop: true,

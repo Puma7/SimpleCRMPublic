@@ -657,8 +657,9 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         type: 'boolean',
         label: 'Weitere Inbound-Workflows stoppen',
         help:
-          'Ein (Standard in Spam-Vorlagen): bei Status spam/review wird der Graph beendet; ' +
-          'nachfolgende Workflows mit niedrigerer Priorität laufen erst, wenn die Mail noch nicht als Spam gilt.',
+          'Aus (Standard): der Graph läuft nach dem Setzen des Status normal weiter. ' +
+          'Ein: bei Status spam/review wird der Graph beendet und nachfolgende Workflows mit ' +
+          'niedrigerer Priorität laufen für diese Mail nicht mehr an. Bei Status clean wird nie gestoppt.',
         advanced: true,
       },
     ],
@@ -723,8 +724,10 @@ export const EMAIL_NODE_SCHEMAS: Record<string, WorkflowNodeSchemaExtension> = {
         type: 'boolean',
         label: 'Weitere Inbound-Workflows stoppen',
         help:
-          'Ein (Standard in Spam-Vorlagen): nach Spam/Review-Markierung wird der aktuelle Graph beendet. ' +
-          'Auf dem Server werden nachfolgende Workflows in der Priority-Kette erst gestartet, wenn die Mail noch nicht als Spam gilt.',
+          'Aus (Standard): der Graph läuft nach der Markierung normal weiter. ' +
+          'Ein: nach der Spam-Markierung wird der aktuelle Graph beendet und nachfolgende Workflows ' +
+          'in der Priority-Kette laufen für diese Mail nicht mehr an. Beim Entfernen der Markierung ' +
+          '(„Als Spam markieren" aus) wird nie gestoppt.',
         advanced: true,
       },
     ],

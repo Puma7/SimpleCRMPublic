@@ -273,6 +273,11 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
     ? null
     : inboundChainHopClaimKey(parsed.messageId, parsed.chain, nextIndex);
 
+  const graphileJobId = helpers?.job?.id;
+  const advanceGuardKey = graphileJobId === undefined || graphileJobId === null
+    ? null
+    : `inbound_chain_terminal_advance:${String(graphileJobId)}`;
+
   try {
     // Prefer a single PG client so the hop claim + enqueue share one connection
     // (sibling terminal failures must not double-enqueue the next workflow).
@@ -289,6 +294,33 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
                     set_config('app.cross_workspace_access', 'off', true)`,
             [parsed.workspaceId],
           );
+          // Idempotenz pro Graphile-Job. Anders als beim Legacy-Queue-Port
+          // (postgres-job-queue-port failJob/failTerminal) läuft die
+          // Kettenfortschaltung hier NICHT in derselben Transaktion, in der
+          // Graphile den Job als failed festschreibt: dieser Block committet
+          // zuerst, das throw danach. Stirbt der Prozess dazwischen, wird der
+          // Job erneut geclaimt und der Block liefe ein zweites Mal — der
+          // Join-Zähler würde doppelt dekrementiert und die Barriere zu früh
+          // öffnen. Der Marker macht das Ganze einmalig. Ohne Job-ID (ältere
+          // Helper/Tests) bleibt das Verhalten wie bisher.
+          if (advanceGuardKey) {
+            const firstRun = asPgResult(await client.query(
+              `INSERT INTO sync_info (
+                 workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
+               ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
+               ON CONFLICT (workspace_id, key) DO NOTHING
+               RETURNING key`,
+              [
+                parsed.workspaceId,
+                advanceGuardKey,
+                JSON.stringify({ origin: 'inbound_chain_terminal_advance' }),
+              ],
+            ));
+            if (!firstRun.rowCount) {
+              await client.query('COMMIT');
+              return;
+            }
+          }
           const join = await completeInboundDeferredJoinSiblingOnPgClient(client, {
             workspaceId: parsed.workspaceId,
             messageId: parsed.messageId,

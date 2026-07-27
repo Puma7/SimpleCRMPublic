@@ -15,6 +15,10 @@ import { insertWorkflowRunStep } from './run-steps';
 import type { GraphRunResult, NodeExecuteResult, WorkflowContext } from './types';
 import type { WorkflowTriggerKind } from '../../shared/workflow-types';
 import { getBuiltinWorkflowNodeCatalogEntry } from '../../packages/core/src/workflow/node-catalog';
+import {
+  NODE_CHAIN_STOP_MESSAGE,
+  nodeRequestsChainStop,
+} from '../../packages/core/src/workflow/node-chain-stop';
 
 /**
  * Zentraler Interpolations-Pre-Pass: Felder, die das Knoten-Schema mit
@@ -85,6 +89,39 @@ function registryTypeOf(node: WorkflowGraphNode): string | undefined {
   if (data.nodeType) return String(data.nodeType);
   const actionType = String(data.actionType ?? '');
   return LEGACY_ACTION_MAP[actionType];
+}
+
+function nodeConfigOf(node: WorkflowGraphNode): Record<string, unknown> {
+  const data = node.data as Record<string, unknown>;
+  return data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+    ? (data.config as Record<string, unknown>)
+    : data;
+}
+
+/**
+ * Generischer „Weitere Workflows stoppen"-Schalter — Parität zur Server-Runtime
+ * (packages/server/src/workflow-execution.ts withNodeChainStop). Opt-in pro
+ * Knoten, damit z. B. der Blocklist-Zweig die Inbound-Kette beendet, der
+ * Whitelist-/Weiterleitungszweig aber normal weiterläuft.
+ */
+function withNodeChainStop(
+  node: WorkflowGraphNode,
+  regType: string | undefined,
+  result: NodeExecuteResult,
+): NodeExecuteResult {
+  if (!nodeRequestsChainStop({
+    nodeType: regType ?? node.type,
+    config: nodeConfigOf(node),
+    result,
+  })) {
+    return result;
+  }
+  return {
+    ...result,
+    stop: true,
+    inboundChainStop: true,
+    message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
+  };
 }
 
 async function executeNode(
@@ -261,6 +298,7 @@ async function walkGraph(
         port: 'error',
       };
     }
+    result = withNodeChainStop(node, regType, result);
     const durationMs = Date.now() - t0;
 
     insertWorkflowRunStep({

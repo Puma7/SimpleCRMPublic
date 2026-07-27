@@ -24,7 +24,7 @@ function edgeIsEach(edge: WorkflowGraphEdge): boolean {
   return label === 'each' || label === 'je' || label === 'loop';
 }
 
-function edgeIsDefault(edge: WorkflowGraphEdge): boolean {
+export function edgeIsDefault(edge: WorkflowGraphEdge): boolean {
   const label = (edge.label ?? '').toLowerCase();
   return !label || label === 'default' || label === 'standard' || label === 'fallback';
 }
