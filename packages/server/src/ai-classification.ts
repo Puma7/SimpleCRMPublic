@@ -872,7 +872,7 @@ export function createPostgresAiAgentPort(
       )).trim();
       if (!output) throw new Error('KI-Agent-Antwort leer');
 
-      if (input.continuation || input.createDraft) {
+      if (input.continuation || input.createDraft || input.terminalChainPayload) {
         await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
@@ -893,6 +893,11 @@ export function createPostgresAiAgentPort(
                   ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
                   continuation: input.continuation,
                   variables: aiChildSkipVariables('ai.agent', abort),
+                  now: now(),
+                });
+              } else if (input.terminalChainPayload) {
+                await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                  applied: false,
                   now: now(),
                 });
               }
@@ -938,7 +943,7 @@ export function createPostgresAiAgentPort(
               // Terminaler Knoten: Applied-Marker setzen, Join abbauen, Kette
               // weiterschalten — der Elternlauf hat auf diesen Job gewartet.
               await completeTerminalInboundChild(trx, input.terminalChainPayload, {
-                applied: true,
+                applied: input.createDraft === true,
                 now: now(),
               });
             }
@@ -1077,7 +1082,7 @@ export function createPostgresAiPickCannedPort(
       const shouldEnqueueContinuation = !!input.continuation
         && (willCreateDraft || !input.createDraft);
 
-      if (willCreateDraft || shouldEnqueueContinuation) {
+      if (willCreateDraft || shouldEnqueueContinuation || input.terminalChainPayload) {
         await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
@@ -1096,6 +1101,11 @@ export function createPostgresAiPickCannedPort(
                   ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
                   continuation: input.continuation,
                   variables: aiChildSkipVariables('ai.pick_canned', abort),
+                  now: now(),
+                });
+              } else if (input.terminalChainPayload) {
+                await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                  applied: false,
                   now: now(),
                 });
               }
@@ -1134,7 +1144,7 @@ export function createPostgresAiPickCannedPort(
             }
             if (!input.continuation && input.terminalChainPayload) {
               await completeTerminalInboundChild(trx, input.terminalChainPayload, {
-                applied: true,
+                applied: willCreateDraft,
                 now: now(),
               });
             }

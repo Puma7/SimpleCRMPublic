@@ -36,6 +36,7 @@ import {
 } from './ai-classification';
 import {
   enqueueNextInboundWorkflowAfterTerminalChildFailure,
+  inboundChainFromJobPayload,
   isInboundSiblingAborted,
 } from './workflow-inbound-chain-advance';
 import type { InboundChainContinuationFields } from './workflow-inbound-chain-context';
@@ -652,10 +653,15 @@ async function inboundDraftJobAbortReason(
     workspaceId: string;
     messageId?: number;
     continuation?: { workflowId: number; triggerName?: string } & InboundChainContinuationFields;
+    /** Terminaler Knoten: Kettenkontext statt Continuation. */
+    terminalChainPayload?: Record<string, unknown>;
   },
 ): Promise<'message_spam_or_review' | 'sibling_terminal_abort' | null> {
   const messageId = input.messageId;
-  if (messageId === undefined) return null;
+  const continuation = input.continuation;
+  const terminal = continuation ? null : inboundChainFromJobPayload(input.terminalChainPayload ?? {});
+  if (messageId === undefined || (!continuation && !terminal)) return null;
+  if (continuation?.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
 
   const live = await trx
     .selectFrom('email_messages')
@@ -665,14 +671,13 @@ async function inboundDraftJobAbortReason(
     .executeTakeFirst();
   if (live && messageIsSpamOrReviewForInboundWorkflow(live)) return 'message_spam_or_review';
 
-  const continuation = input.continuation;
-  if (!continuation) return null;
-  if (continuation.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
+  const workflowId = continuation?.workflowId ?? terminal?.chain.workflowIds[terminal.chain.index];
+  if (workflowId == null) return null;
   const aborted = await isInboundSiblingAborted(trx, {
     workspaceId: input.workspaceId,
     messageId,
-    workflowId: continuation.workflowId,
-    chain: continuation.inboundWorkflowChain ?? null,
+    workflowId,
+    chain: continuation?.inboundWorkflowChain ?? terminal?.chain ?? null,
   });
   return aborted ? 'sibling_terminal_abort' : null;
 }
@@ -766,6 +771,7 @@ async function finishTerminalDraftReplyChain(
   deps: WorkflowAiDraftNodeDeps,
   input: { workspaceId: string; terminalChainPayload?: Record<string, unknown> },
   now: Date,
+  applied = false,
 ): Promise<void> {
   const payload = input.terminalChainPayload;
   if (!payload) return;
@@ -773,7 +779,7 @@ async function finishTerminalDraftReplyChain(
     deps.db,
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => {
-      await completeTerminalInboundChild(trx, payload, { applied: false, now });
+      await completeTerminalInboundChild(trx, payload, { applied, now });
     },
     { applySession: deps.applyWorkspaceSession },
   );
@@ -835,6 +841,7 @@ export function createPostgresAiDraftReplyPort(
             workspaceId: input.workspaceId,
             messageId: input.messageId,
             continuation: input.continuation,
+            terminalChainPayload: input.terminalChainPayload,
           }) !== null) {
             return 'skip';
           }
@@ -960,7 +967,12 @@ export function createPostgresAiDraftReplyPort(
         },
         { applySession: deps.applyWorkspaceSession },
       );
-      if (priorDraft !== null) return;
+      if (priorDraft !== null) {
+        if (!input.continuation && input.terminalChainPayload) {
+          await finishTerminalDraftReplyChain(deps, input, now(), true);
+        }
+        return;
+      }
 
       // OpenAI outside any workspace transaction (Codex P1).
       let aiText: string;
@@ -1000,6 +1012,7 @@ export function createPostgresAiDraftReplyPort(
             workspaceId: input.workspaceId,
             messageId: input.messageId,
             continuation: input.continuation,
+            terminalChainPayload: input.terminalChainPayload,
           });
           if (!liveMessage || messageIsSpamOrReviewForInboundWorkflow(liveMessage) || abortNow !== null) {
             if (input.continuation) {
@@ -1011,6 +1024,11 @@ export function createPostgresAiDraftReplyPort(
                   'ai.draft.status': 'skipped',
                   'ai.draft.skip_reason': 'message_spam_or_review',
                 },
+                now: now(),
+              });
+            } else if (input.terminalChainPayload) {
+              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                applied: false,
                 now: now(),
               });
             }
@@ -1029,6 +1047,12 @@ export function createPostgresAiDraftReplyPort(
           if (prior?.value) {
             const priorDraftId = Number(prior.value);
             if (Number.isInteger(priorDraftId) && priorDraftId > 0) {
+              if (!input.continuation && input.terminalChainPayload) {
+                await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                  applied: true,
+                  now: now(),
+                });
+              }
               return;
             }
           }
@@ -1176,6 +1200,7 @@ export function createPostgresAiReviewDraftPort(
             workspaceId: input.workspaceId,
             messageId: input.messageId,
             continuation: input.continuation,
+            terminalChainPayload: input.terminalChainPayload,
           });
           if (abort) return { abort };
           const draft = await trx
@@ -1332,6 +1357,7 @@ export function createPostgresAiReviewDraftPort(
             workspaceId: input.workspaceId,
             messageId: input.messageId,
             continuation: input.continuation,
+            terminalChainPayload: input.terminalChainPayload,
           }) !== null) {
             port = 'hold';
             approvalReason = 'Quellnachricht/Kette wurde während der Prüfung gestoppt — bitte manuell freigeben';
@@ -1345,7 +1371,15 @@ export function createPostgresAiReviewDraftPort(
           if (!stillLocalDraft) {
             // Draft gone/sent — do not stamp pending; still continue the graph.
             const continuation = input.continuation;
-            if (!continuation) return;
+            if (!continuation) {
+              if (input.terminalChainPayload) {
+                await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                  applied: false,
+                  now: now(),
+                });
+              }
+              return;
+            }
             const namedTarget = input.portResumeTargets?.[port];
             let resumeNodeId = namedTarget;
             if (!resumeNodeId && port === 'send') {
