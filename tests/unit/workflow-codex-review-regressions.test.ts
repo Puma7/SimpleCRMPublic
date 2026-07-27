@@ -605,7 +605,11 @@ describe('codex review regression guards', () => {
     expect(graphile).toMatch(/if \(type === 'ai\.pick_canned'\) \{[\s\S]*?graphileChildNodeKeyPart\(payload\)/);
     // ... aber nur mit Zweig-Identitaet. Ohne sie kein Key, sonst verschluckt
     // 'replace' einen von zwei konvergierenden nicht-terminalen Zweigen.
-    expect(graphile).toContain('const branchIdentified = payload.terminalWorkflowCompletion === true || Boolean(branchKey);');
+    // (Die Regel gilt inzwischen fuer JEDEN deferierten Kindjob — siehe
+    // graphileDeferredBranchSuffix in Runde 17.)
+    expect(graphile).toMatch(
+      /if \(type === 'ai\.pick_canned'\) \{[\s\S]*?const branch = graphileDeferredBranchSuffix\(payload\);/,
+    );
     expect(execution).toContain('...(context.branchKey ? { branchKey: context.branchKey } : {}),');
 
     // Ein geparktes HOLD darf NICHT ueber den SEND-Port weiterlaufen: dort
@@ -676,7 +680,12 @@ describe('codex review regression guards', () => {
     // Join-Barriere. Sonst loescht der fertige Join des einen Laufs den Marker
     // des anderen (beide Loeschungen haengen am Join) und dessen noch laufende
     // Kinder senden doch.
-    expect(advance).toContain('`inbound_sibling_abort:${messageId}:${workflowId}:run:${fanOutRunId}`');
+    // ... und zwar in BEIDEN Zweigen, genau wie inboundDeferredJoinKey. Waere
+    // nur der kettenlose Zweig skopiert, teilten sich zwei Fan-out-Laeufe
+    // derselben Kette weiterhin einen Marker.
+    expect(advance).toContain('`inbound_sibling_abort:${messageId}:${workflowId}${runSuffix}`');
+    expect(advance)
+      .toContain('`inbound_sibling_abort:${messageId}:${chain.workflowIds.join(\',\')}:${chain.index}${runSuffix}`');
     expect(advance.match(/inboundSiblingAbortKey\(input\.messageId, input\.workflowId, input\.chain, input\.fanOutRunId\)/g))
       .toHaveLength(4);
     // Alle Lesepfade reichen ihn mit — sonst prueft ein Kind den falschen Key.
@@ -749,7 +758,7 @@ describe('codex review regression guards', () => {
     // muss auf oberster Ebene stehen, sonst sieht der Job-Key sie nicht.
     expect(execution).toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${context.runId}`;');
     expect(graphile).toMatch(
-      /if \(type === 'workflow\.http_request'\) \{[\s\S]*?terminalNodeId \? `\$\{base\}:\$\{terminalNodeId\}` : base/,
+      /if \(type === 'workflow\.http_request'\) \{[\s\S]*?if \(terminalNodeId\) return `\$\{base\}:\$\{terminalNodeId\}`;/,
     );
 
     // Delay-Stornierung nur im eigenen Fan-out.
@@ -768,6 +777,43 @@ describe('codex review regression guards', () => {
     // Belegter Compose-Lock ist kein Zustellbeweis — HOLD bleibt geparkt.
     expect(scheduled).toContain('sendInFlightElsewhere = true;');
     expect(scheduled).toContain('recoveredHold ?? peekDeferredSendHold(draftId)');
+  });
+
+  test('review-runde 17: die Zweig-Identitaet ueberlebt jede Fortsetzung', () => {
+    const chainContext = readRepoFile('packages/server/src/workflow-inbound-chain-context.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+
+    // Kern des Fundes: terminalNodeExecutionId ist nur mit branchKey eindeutig.
+    // Ging der Zweig beim ersten deferierten Kind verloren, saehen zwei
+    // Fan-out-Zweige hinter demselben terminalen Knoten dieselbe Identitaet —
+    // der zweite Abschluss liefe in den Einmal-Marker und die Join-Barriere
+    // fiele nie auf null. Also reist er wie inboundFanOutRunId ueberall mit.
+    expect(chainContext).toContain('branchKey?: string;');
+    expect(chainContext).toMatch(/inboundChainFieldsFromRecord[\s\S]*?\.\.\.\(branchKey \? \{ branchKey \} : \{\}\)/);
+    expect(chainContext)
+      .toMatch(/resumeContextInboundChainFields[\s\S]*?continuation\.branchKey \? \{ branchKey: continuation\.branchKey \}/);
+    // buildWorkflowContext stellt ihn aus dem jobContext wieder her.
+    expect(execution).toMatch(/\.\.\.inboundChainFieldsFromRecord\(input\.jobContext\),/);
+    expect(execution)
+      .toMatch(/inboundChainFieldsFromContext[\s\S]*?context\.branchKey \? \{ branchKey: context\.branchKey \} : \{\}/);
+
+    // Jeder deferierte Kindjob stempelt ihn auf die Payload-Oberflaeche —
+    // graphileJobKeyForJob sieht die Continuation nicht.
+    // classify, review, transform_text, agent, draft_reply, review_draft,
+    // http_request, forward_copy, dmarc_ingest (pick_canned stempelt inline).
+    expect(execution.match(/stampBranchKey\(payload, context\);/g)).toHaveLength(9);
+    expect(execution).toContain('if (context.branchKey) payload.branchKey = context.branchKey;');
+
+    // Ohne Zweig-Identitaet gibt es KEINEN Key: ein doppelter Job ist Arbeit,
+    // ein von 'replace' verschluckter haengt die Barriere fuer immer.
+    expect(graphile).toContain('function graphileDeferredBranchSuffix(payload: JobPayload): string | null {');
+    expect(graphile).toContain("return payload.terminalWorkflowCompletion === true ? '' : null;");
+    expect(graphile.match(/if \(branch === null\) return undefined;/g)).toHaveLength(10);
+    // Fortsetzungen desselben Workflows auf derselben Nachricht duerfen sich
+    // nicht ersetzen — Resume-Knoten und Zweig stehen nur im context.
+    expect(graphile)
+      .toContain('`${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}:${branchKey}`');
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {

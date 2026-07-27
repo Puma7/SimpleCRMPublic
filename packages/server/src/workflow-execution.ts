@@ -2933,6 +2933,7 @@ async function scheduleAiClassificationJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3032,6 +3033,7 @@ async function scheduleAiReviewJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3102,6 +3104,7 @@ async function scheduleAiTransformTextJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3194,6 +3197,20 @@ function terminalNodeExecutionId(context: ServerWorkflowContext, node: WorkflowG
   return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;
 }
 
+/**
+ * Zweig-Identitaet auf oberster Payload-Ebene eines deferierten Kindjobs.
+ *
+ * `graphileJobKeyForJob` sieht nur die Payload-Oberflaeche, nicht die
+ * Continuation. Ohne diesen Stempel teilten sich zwei auf denselben Knoten
+ * konvergierende Trigger-Zweige Workflow, Nachricht, Lauf UND Resume-Knoten;
+ * jobKeyMode 'replace' verschluckte einen der beiden Kindjobs, waehrend der
+ * Elternlauf die Join-Barriere mit zwei Zweigen initialisiert hat — sie bliebe
+ * dauerhaft bei pending = 1.
+ */
+function stampBranchKey(payload: Record<string, unknown>, context: ServerWorkflowContext): void {
+  if (context.branchKey) payload.branchKey = context.branchKey;
+}
+
 async function scheduleAiAgentJob(
   trx: WorkspaceTransaction,
   doc: WorkflowGraphDocument,
@@ -3249,6 +3266,7 @@ async function scheduleAiAgentJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3340,6 +3358,7 @@ async function scheduleAiDraftReplyJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3447,6 +3466,7 @@ async function scheduleAiReviewDraftJob(
   if (deferAnchor) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = deferAnchor;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3643,6 +3663,7 @@ async function scheduleWorkflowHttpRequestJob(
   if (resumeNodeId || errorResumeNodeId) {
     payload.workflowId = context.workflowId;
     if (resumeNodeId) payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     if (errorResumeNodeId) payload.errorResumeNodeId = errorResumeNodeId;
     // Terminal (nur Fehlerkante): Identitaet auch auf oberster Ebene, sonst
     // sieht graphileJobKeyForJob sie nicht. Warum sie noetig ist: dort.
@@ -3726,6 +3747,7 @@ async function scheduleWorkflowForwardCopyJob(
   };
   if (resumeNodeId) {
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3793,6 +3815,7 @@ async function scheduleWorkflowDmarcIngestJob(
   };
   if (resumeNodeId) {
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -5234,6 +5257,9 @@ function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnTy
     // Der Fan-out-Lauf dagegen MUSS mitreisen — er skopiert die kettenlose
     // Join-Barriere auf genau diese Ausfuehrung.
     inboundFanOutRunId: inboundFanOutRunId(context),
+    // Genauso der Zweig: nur mit ihm bleibt die Knotenausfuehrung auch hinter
+    // deferierten Kindjobs eindeutig (siehe workflow-inbound-chain-context).
+    ...(context.branchKey ? { branchKey: context.branchKey } : {}),
   });
 }
 

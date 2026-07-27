@@ -21,6 +21,18 @@ export type InboundChainContinuationFields = Readonly<{
    * verschiedenen Schluesseln.
    */
   inboundFanOutRunId?: number;
+  /**
+   * Zweig des Trigger-Fan-outs, aus dem diese Fortsetzung stammt.
+   *
+   * Konvergieren zwei Trigger-Zweige auf denselben Knoten, ist dessen
+   * Ausfuehrungsidentitaet erst mit diesem Schluessel eindeutig — sie steckt im
+   * Graphile-Job-Key der Kindjobs und in `terminalNodeId`. Wie der Fan-out-Lauf
+   * muss der Zweig JEDE Fortsetzung ueberleben: ginge er beim ersten
+   * deferierten Kind verloren, saehen zwei Zweige hinter demselben terminalen
+   * Knoten wieder dieselbe Identitaet, der zweite Abschluss liefe in den
+   * Einmal-Marker und die Join-Barriere fiele nie auf null.
+   */
+  branchKey?: string;
 }>;
 
 export function parseInboundWorkflowChain(value: unknown): InboundWorkflowChainContext | null {
@@ -43,10 +55,12 @@ export function inboundChainFieldsFromRecord(value: Record<string, unknown> | nu
   if (!value) return {};
   const chain = parseInboundWorkflowChain(value.inboundWorkflowChain);
   const fanOutRunId = Number(value.inboundFanOutRunId);
+  const branchKey = typeof value.branchKey === 'string' ? value.branchKey.trim() : '';
   return {
     ...(chain ? { inboundWorkflowChain: chain } : {}),
     ...(value.skipIfMessageSpamOrReview === true ? { skipIfMessageSpamOrReview: true } : {}),
     ...(Number.isInteger(fanOutRunId) && fanOutRunId > 0 ? { inboundFanOutRunId: fanOutRunId } : {}),
+    ...(branchKey ? { branchKey } : {}),
   };
 }
 
@@ -64,6 +78,8 @@ export function resumeContextInboundChainFields(
     ...(continuation.inboundFanOutRunId
       ? { inboundFanOutRunId: continuation.inboundFanOutRunId }
       : {}),
+    // Ebenso der Zweig: er unterscheidet konvergierende Fan-out-Pfade.
+    ...(continuation.branchKey ? { branchKey: continuation.branchKey } : {}),
     // Do not re-stamp skipIfMessageSpamOrReview onto resumed workflow.execute —
     // it is a one-shot initial post-process guard only.
   };

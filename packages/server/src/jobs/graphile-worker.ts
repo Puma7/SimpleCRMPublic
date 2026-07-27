@@ -494,6 +494,27 @@ function graphileChildNodeKeyPart(payload: JobPayload): string | undefined {
       : undefined);
 }
 
+/**
+ * Zweig-Diskriminante fuer den Job-Key eines DEFERIERTEN Kindjobs.
+ *
+ * Knoten-Identitaet allein reicht nicht: konvergieren zwei Trigger-Zweige auf
+ * denselben Knoten, teilen sich beide Kindjobs Workflow, Nachricht, Lauf und
+ * Resume-Knoten. jobKeyMode 'replace' verschluckte einen, waehrend der
+ * Elternlauf die Join-Barriere mit zwei Zweigen initialisiert hat — sie fiele
+ * nie auf null und die Inbound-Prioritaetskette stuende dauerhaft.
+ *
+ * `''`   — terminale Knoten, ihre Identitaet steckt schon in `terminalNodeId`.
+ * `null` — keine Zweig-Identitaet vorhanden (nur noch bei Payloads aus der Zeit
+ *          vor diesem Stempel). Der Aufrufer vergibt dann GAR keinen Key: ohne
+ *          Key kann nichts verschluckt werden, ein doppelter Job ist hoechstens
+ *          redundante Arbeit, eine haengende Barriere dagegen endgueltig.
+ */
+function graphileDeferredBranchSuffix(payload: JobPayload): string | null {
+  const branchKey = graphileKeyScalar(payload.branchKey);
+  if (branchKey) return `:${branchKey}`;
+  return payload.terminalWorkflowCompletion === true ? '' : null;
+}
+
 export function graphileJobKeyForJob(
   type: ServerJobType,
   payload: JobPayload,
@@ -526,7 +547,9 @@ export function graphileJobKeyForJob(
     const nodeKey = graphileChildNodeKeyPart(payload);
     const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && nodeKey) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}`;
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}${branch}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
   }
@@ -538,17 +561,10 @@ export function graphileJobKeyForJob(
     const workflowId = graphileKeyScalar(payload.workflowId);
     const nodeKey = graphileChildNodeKeyPart(payload);
     const runId = graphileKeyScalar(payload.runId);
-    // Zweig-Identitaet: terminale Knoten tragen sie bereits in nodeKey, fuer
-    // nicht-terminale liefert sie payload.branchKey. Fehlt sie ganz, gibt es
-    // bewusst KEINEN Key — zwei konvergierende Trigger-Zweige teilten sich sonst
-    // Workflow, Nachricht, runId UND resumeNodeId, 'replace' verschluckte einen
-    // und die mit zwei Zweigen initialisierte Barriere bliebe bei pending = 1.
-    // Ohne Key kann nichts verschluckt werden (Verhalten vor diesem PR).
-    const branchKey = graphileKeyScalar(payload.branchKey);
-    const branchIdentified = payload.terminalWorkflowCompletion === true || Boolean(branchKey);
-    if (workspaceKey && workflowId && nodeKey && branchIdentified) {
-      const base = `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}`;
-      return branchKey ? `${base}:${branchKey}` : base;
+    if (workspaceKey && workflowId && nodeKey) {
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}${branch}`;
     }
   }
   if (type === 'ai.classify') {
@@ -556,7 +572,9 @@ export function graphileJobKeyForJob(
     const workflowId = graphileKeyScalar(payload.workflowId);
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
     if (workspaceKey && messageId && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${resumeNodeId}`;
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${resumeNodeId}${branch}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
   }
@@ -565,7 +583,9 @@ export function graphileJobKeyForJob(
     const workflowId = graphileKeyScalar(payload.workflowId);
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}${branch}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
   }
@@ -580,7 +600,9 @@ export function graphileJobKeyForJob(
     // run-skopiert (aiDraftReplyDedupeKey).
     const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${runId ?? 'none'}`;
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${runId ?? 'none'}${branch}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}:${runId ?? 'none'}`;
   }
@@ -593,7 +615,9 @@ export function graphileJobKeyForJob(
     const draftId = graphileKeyScalar(payload.draftId);
     const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}:${runId ?? 'none'}${branch}`;
     }
     if (workspaceKey && messageId) {
       return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
@@ -605,7 +629,9 @@ export function graphileJobKeyForJob(
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
     const targetVariable = graphileKeyScalar(payload.targetVariable);
     if (workspaceKey && workflowId && resumeNodeId && targetVariable) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${targetVariable}`;
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${targetVariable}${branch}`;
     }
     if (workspaceKey && messageId && targetVariable) return `${type}:${workspaceKey}:${messageId}:${targetVariable}`;
   }
@@ -626,7 +652,11 @@ export function graphileJobKeyForJob(
     const terminalNodeId = graphileKeyScalar(payload.terminalNodeId);
     if (workspaceKey && workflowId && resumeNodeId) {
       const base = `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
-      return terminalNodeId ? `${base}:${terminalNodeId}` : base;
+      // terminalNodeId traegt die Zweig-Identitaet bereits; sonst der Zweig selbst.
+      if (terminalNodeId) return `${base}:${terminalNodeId}`;
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${base}${branch}`;
     }
   }
   if (type === 'workflow.forward_copy') {
@@ -634,14 +664,28 @@ export function graphileJobKeyForJob(
     const messageId = graphileKeyScalar(payload.messageId);
     const to = graphileKeyScalar(payload.to);
     if (workspaceKey && workflowId && messageId && to) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${to}`;
+      // Nur der deferierte Kindjob braucht die Zweig-Identitaet; der Fire-and-
+      // forget-Versand behaelt seinen Dedupe-Key (sonst ginge eine Kopie doppelt
+      // raus, statt nur eine Barriere zu haengen).
+      if (!graphileKeyScalar(payload.resumeNodeId)) {
+        return `${type}:${workspaceKey}:${workflowId}:${messageId}:${to}`;
+      }
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${to}${branch}`;
     }
   }
   if (type === 'workflow.dmarc_ingest') {
     const workflowId = graphileKeyScalar(payload.workflowId);
     const messageId = graphileKeyScalar(payload.messageId);
     if (workspaceKey && workflowId && messageId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId}`;
+      // Wie forward_copy: nur die deferierte Variante braucht den Zweig.
+      if (!graphileKeyScalar(payload.resumeNodeId)) {
+        return `${type}:${workspaceKey}:${workflowId}:${messageId}`;
+      }
+      const branch = graphileDeferredBranchSuffix(payload);
+      if (branch === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId}${branch}`;
     }
   }
   if (type === 'workflow.execute') {
@@ -659,7 +703,26 @@ export function graphileJobKeyForJob(
     if (workspaceKey && workflowId && messageId && terminalNodeId) {
       return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:${terminalNodeId}`;
     }
-    if (workspaceKey && workflowId && messageId) return `${type}:${workspaceKey}:${workflowId}:message:${messageId}`;
+    if (workspaceKey && workflowId && messageId) {
+      // Fortsetzung eines deferierten Kindjobs: Resume-Knoten und Zweig stehen
+      // nur im context. Ohne sie fielen ALLE Fortsetzungen desselben Workflows
+      // auf derselben Nachricht auf einen Key — 'replace' liesse von zwei
+      // deferierten Zweigen nur einen zurueckkommen und die Join-Barriere
+      // bliebe fuer immer bei pending = 1. Der Erstlauf (kein Resume-Knoten)
+      // behaelt bewusst den nachrichtenweiten Key, der Doppellaeufe verhindert.
+      const resumeContext = payload.context as Record<string, unknown> | undefined | null;
+      const resumeNodeId = resumeContext && typeof resumeContext === 'object'
+        ? graphileKeyScalar(resumeContext.resumeNodeId)
+        : undefined;
+      if (!resumeNodeId) return `${type}:${workspaceKey}:${workflowId}:message:${messageId}`;
+      const branchKey = resumeContext && typeof resumeContext === 'object'
+        ? graphileKeyScalar(resumeContext.branchKey)
+        : undefined;
+      // Ohne Zweig-Identitaet (nur Payloads von vor diesem Stempel) lieber gar
+      // kein Key: ein doppelter Lauf ist Arbeit, ein verschluckter haengt.
+      if (!branchKey) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}:${branchKey}`;
+    }
   }
   if (type === 'lock.cleanup' && workspaceKey) {
     return `${type}:${workspaceKey}`;

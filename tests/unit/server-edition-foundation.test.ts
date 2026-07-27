@@ -2215,12 +2215,12 @@ describe('server edition foundation', () => {
       .toBe('mail.send.scheduled:workspace-a:42');
     expect(graphileJobKeyForJob('ai.reply_suggestion', { messageId: 11 }, 'workspace-a'))
       .toBe('ai.reply_suggestion:workspace-a:11');
-    expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1' }, 'workspace-a'))
-      .toBe('ai.agent:workspace-a:23:11:tag-1:none');
+    expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('ai.agent:workspace-a:23:11:tag-1:none:edge-1');
     // runId trennt zwei Laeufe desselben Workflows; ohne ihn verschluckt
     // jobKeyMode 'replace' den ersten Kindjob und sein Elternlauf bleibt deferred.
-    expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 5 }, 'workspace-a'))
-      .toBe('ai.agent:workspace-a:23:11:tag-1:5');
+    expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 5, branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('ai.agent:workspace-a:23:11:tag-1:5:edge-1');
     // Terminaler Knoten: keine resumeNodeId, aber terminalNodeId als
     // Diskriminante — sonst kollidieren zwei terminale Zweige derselben Mail.
     expect(graphileJobKeyForJob(
@@ -2243,74 +2243,96 @@ describe('server edition foundation', () => {
       { messageId: 11, workflowId: 23, resumeNodeId: 'canned-1', runId: 5 },
       'workspace-a',
     )).toBeUndefined();
-    expect(graphileJobKeyForJob('ai.classify', { messageId: 11, workflowId: 23, resumeNodeId: 'switch-1' }, 'workspace-a'))
-      .toBe('ai.classify:workspace-a:23:11:switch-1');
-    expect(graphileJobKeyForJob('ai.review', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1' }, 'workspace-a'))
-      .toBe('ai.review:workspace-a:23:11:tag-1');
+    expect(graphileJobKeyForJob('ai.classify', { messageId: 11, workflowId: 23, resumeNodeId: 'switch-1', branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('ai.classify:workspace-a:23:11:switch-1:edge-1');
+    expect(graphileJobKeyForJob('ai.review', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('ai.review:workspace-a:23:11:tag-1:edge-1');
     expect(graphileJobKeyForJob('ai.transform_text', {
       messageId: 11,
       workflowId: 23,
       resumeNodeId: 'tag-1',
       targetVariable: 'ai.summary',
-    }, 'workspace-a')).toBe('ai.transform_text:workspace-a:23:11:tag-1:ai.summary');
+      branchKey: 'edge-1',
+    }, 'workspace-a')).toBe('ai.transform_text:workspace-a:23:11:tag-1:ai.summary:edge-1');
     // Codex R12: der Run bzw. der konkrete Entwurf gehört in den Key — sonst
     // ersetzt (jobKeyMode 'replace') eine erneute Anwendung desselben Workflows
     // auf dieselbe Nachricht den noch wartenden ersten KI-Job.
     expect(graphileJobKeyForJob(
       'ai.draft_reply',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101, branchKey: 'edge-1' },
       'workspace-a',
-    )).toBe('ai.draft_reply:workspace-a:23:11:tag-1:101');
+    )).toBe('ai.draft_reply:workspace-a:23:11:tag-1:101:edge-1');
     expect(graphileJobKeyForJob(
       'ai.draft_reply',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 102 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 102, branchKey: 'edge-1' },
       'workspace-a',
     )).not.toBe(graphileJobKeyForJob(
       'ai.draft_reply',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 101, branchKey: 'edge-1' },
       'workspace-a',
     ));
     expect(graphileJobKeyForJob('ai.draft_reply', { messageId: 11, runId: 101 }, 'workspace-a'))
       .toBe('ai.draft_reply:workspace-a:11:101');
     expect(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101, branchKey: 'edge-1' },
       'workspace-a',
-    )).toBe('ai.review_draft:workspace-a:23:11:send-1:77:101');
+    )).toBe('ai.review_draft:workspace-a:23:11:send-1:77:101:edge-1');
     // Zwei Laeufe desselben Workflows fuer denselben Entwurf duerfen sich nicht
     // gegenseitig ersetzen (jobKeyMode 'replace').
     expect(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 102 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 102, branchKey: 'edge-1' },
       'workspace-a',
     )).not.toBe(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101, branchKey: 'edge-1' },
       'workspace-a',
     ));
     expect(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 78, runId: 101 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 78, runId: 101, branchKey: 'edge-1' },
       'workspace-a',
     )).not.toBe(graphileJobKeyForJob(
       'ai.review_draft',
-      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101 },
+      { messageId: 11, workflowId: 23, resumeNodeId: 'send-1', draftId: 77, runId: 101, branchKey: 'edge-1' },
       'workspace-a',
     ));
     expect(graphileJobKeyForJob('webhook.fire', { dedupeKey: 'customer-7' }, 'workspace-a'))
       .toBe('webhook.fire:workspace-a:customer-7');
     expect(graphileJobKeyForJob('webhook.fire', { url: 'https://hooks.example.com' }, 'workspace-a'))
       .toBeUndefined();
-    expect(graphileJobKeyForJob('workflow.http_request', { workflowId: 23, messageId: 11, resumeNodeId: 'tag-1' }, 'workspace-a'))
-      .toBe('workflow.http_request:workspace-a:23:11:tag-1');
-    expect(graphileJobKeyForJob('workflow.http_request', { workflowId: 23, messageId: 11, errorResumeNodeId: 'notify-error' }, 'workspace-a'))
-      .toBe('workflow.http_request:workspace-a:23:11:notify-error');
+    expect(graphileJobKeyForJob('workflow.http_request', { workflowId: 23, messageId: 11, resumeNodeId: 'tag-1', branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('workflow.http_request:workspace-a:23:11:tag-1:edge-1');
+    expect(graphileJobKeyForJob('workflow.http_request', { workflowId: 23, messageId: 11, errorResumeNodeId: 'notify-error', branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('workflow.http_request:workspace-a:23:11:notify-error:edge-1');
+    // Fire-and-forget (kein Resume-Knoten) behaelt seinen Dedupe-Key.
     expect(graphileJobKeyForJob('workflow.forward_copy', { workflowId: 23, messageId: 11, to: 'audit@example.com' }, 'workspace-a'))
       .toBe('workflow.forward_copy:workspace-a:23:11:audit@example.com');
+    expect(graphileJobKeyForJob('workflow.forward_copy', { workflowId: 23, messageId: 11, to: 'audit@example.com', resumeNodeId: 'tag-1', branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('workflow.forward_copy:workspace-a:23:11:audit@example.com:edge-1');
     expect(graphileJobKeyForJob('workflow.dmarc_ingest', { workflowId: 23, messageId: 11 }, 'workspace-a'))
       .toBe('workflow.dmarc_ingest:workspace-a:23:11');
+    expect(graphileJobKeyForJob('workflow.dmarc_ingest', { workflowId: 23, messageId: 11, resumeNodeId: 'tag-1', branchKey: 'edge-1' }, 'workspace-a'))
+      .toBe('workflow.dmarc_ingest:workspace-a:23:11:edge-1');
     expect(graphileJobKeyForJob('workflow.execute', { workflowId: 23, messageId: 11 }, 'workspace-a'))
       .toBe('workflow.execute:workspace-a:23:message:11');
+    // Fortsetzung: Resume-Knoten und Zweig stehen nur im context, muessen aber in
+    // den Key — sonst ersetzt die Fortsetzung des einen Zweigs die des anderen.
+    expect(graphileJobKeyForJob(
+      'workflow.execute',
+      { workflowId: 23, messageId: 11, context: { resumeNodeId: 'tag-1', branchKey: 'edge-1' } },
+      'workspace-a',
+    )).toBe('workflow.execute:workspace-a:23:message:11:resume:tag-1:edge-1');
+    expect(graphileJobKeyForJob(
+      'workflow.execute',
+      { workflowId: 23, messageId: 11, context: { resumeNodeId: 'tag-1', branchKey: 'edge-2' } },
+      'workspace-a',
+    )).not.toBe(graphileJobKeyForJob(
+      'workflow.execute',
+      { workflowId: 23, messageId: 11, context: { resumeNodeId: 'tag-1', branchKey: 'edge-1' } },
+      'workspace-a',
+    ));
     expect(graphileJobKeyForJob('workflow.execute', { workflowId: 23, delayedJobId: 87 }, 'workspace-a'))
       .toBe('workflow.execute:workspace-a:delayed:87');
     expect(graphileJobKeyForJob('lock.cleanup', { workspaceId: 'workspace-a' }))

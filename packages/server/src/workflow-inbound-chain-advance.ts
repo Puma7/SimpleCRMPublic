@@ -397,18 +397,17 @@ export function inboundSiblingAbortKey(
   chain: InboundWorkflowChainContext | null,
   fanOutRunId?: number | null,
 ): string {
+  // Exakt derselbe Lauf-Scope wie inboundDeferredJoinKey — mit wie ohne Kette.
+  // Beide Schluessel werden vom selben abgeschlossenen Join geloescht: waere nur
+  // einer laufskopiert, loeschte der fertige Join des einen Laufs den Marker des
+  // anderen und dessen noch laufende Kinder senden doch. Umgekehrt bricht ein
+  // Kettenstopp in Lauf A sonst die Kinder von Lauf B ab. Der laufuebergreifende
+  // Spamzustand wird ohnehin separat an der Nachricht selbst geprueft.
+  const runSuffix = fanOutRunId != null ? `:run:${fanOutRunId}` : '';
   if (chain) {
-    return `inbound_sibling_abort:${messageId}:${chain.workflowIds.join(',')}:${chain.index}`;
+    return `inbound_sibling_abort:${messageId}:${chain.workflowIds.join(',')}:${chain.index}${runSuffix}`;
   }
-  // Wie bei der Join-Barriere: ohne Kette trennt erst der Ursprungslauf zwei
-  // ueberlappende Backfill-/Reapply-Laeufe. Der Marker gehoert zu EINEM
-  // Fan-out, nicht zur Nachricht — der laufuebergreifende Spamzustand wird
-  // ohnehin separat an der Nachricht selbst geprueft. Ohne den Lauf-Scope
-  // loescht der fertige Join des einen Laufs den Marker des anderen und dessen
-  // noch laufende Kinder senden doch.
-  return fanOutRunId != null
-    ? `inbound_sibling_abort:${messageId}:${workflowId}:run:${fanOutRunId}`
-    : `inbound_sibling_abort:${messageId}:${workflowId}`;
+  return `inbound_sibling_abort:${messageId}:${workflowId}${runSuffix}`;
 }
 
 export async function markInboundSiblingAbort(
