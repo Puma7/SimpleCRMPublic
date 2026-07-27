@@ -132,6 +132,14 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
             .deleteFrom('conversation_locks')
             .where('workspace_id', '=', plan.workspaceId)
             .where('message_id', 'in', messageIds)
+            // Stale-Bedingung ERNEUT pruefen. Die Transaktion allein schuetzt
+            // nicht: unter READ COMMITTED kann der Besitzer zwischen SELECT und
+            // DELETE erfolgreich heartbeaten, und ein DELETE nur auf Workspace
+            // und ID entfernte die frisch erneuerte Sperre — zwei Bearbeiter
+            // haetten dieselbe Nachricht offen. Mit dem Praedikat prueft
+            // Postgres die zwischenzeitlich aktualisierte Zeile erneut und
+            // laesst sie stehen.
+            .where('last_heartbeat_at', '<', plan.staleBefore)
             .executeTakeFirst();
         }
 
@@ -153,6 +161,10 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
             .deleteFrom('sync_info')
             .where('workspace_id', '=', plan.workspaceId)
             .where('key', 'in', staleMarkers.map((row) => row.key))
+            // Analog zu den Sperren: das Alter gehoert auch ins DELETE. Marker
+            // werden zwar nur einmal geschrieben (ON CONFLICT DO NOTHING) und
+            // nie erneuert, aber ein Loeschen soll nicht davon abhaengen.
+            .where('last_updated', '<', plan.terminalMarkersBefore)
             .executeTakeFirst();
         }
 

@@ -14605,6 +14605,10 @@ describe('server edition foundation', () => {
         wheres: [
           ['workspace_id', '=', WORKSPACE_A_ID],
           ['message_id', 'in', [41, 42]],
+          // Die Stale-Bedingung MUSS auch im DELETE stehen: unter READ COMMITTED
+          // kann der Besitzer zwischen SELECT und DELETE heartbeaten, und ein
+          // DELETE nur auf Workspace und ID entfernte die frisch erneuerte Sperre.
+          ['last_heartbeat_at', '<', new Date('2026-06-03T11:58:00.000Z')],
         ],
       },
       {
@@ -14631,6 +14635,7 @@ describe('server edition foundation', () => {
             'inbound_terminal_child_done:11:23:draft-1#edge-1:5',
             'inbound_terminal_child_done:11:23:draft-1#edge-2:5',
           ]],
+          ['last_updated', '<', new Date('2026-05-27T12:00:00.000Z')],
         ],
       },
       {
