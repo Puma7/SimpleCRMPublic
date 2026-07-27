@@ -534,11 +534,21 @@ describe('codex review regression guards', () => {
     // Knoten-Identitaet — er teilte sich sonst einen `terminal:none`-Schluessel
     // mit jedem anderen und uebersprunge sein Join-Dekrement.
     expect(advance).toMatch(
-      /export function terminalChildCompletionKey[\s\S]*?if \(payload\.terminalWorkflowCompletion !== true\) return null;[\s\S]*?if \(!nodeId\) return null;/,
+      /export function terminalChildCompletionKey[\s\S]*?if \(payload\.terminalWorkflowCompletion !== true && !legacyTerminal\) return null;[\s\S]*?if \(!rawNodeId && !legacyTerminal\) return null;/,
     );
     // Der Abschluss selbst behaelt seinen lenienten Schluessel (dort steht
     // bereits fest, dass es ein terminaler Kindjob ist).
     expect(terminal).toContain('function terminalChildOnceKey(target: TerminalChildTarget): string');
+    // Legacy-Payloads (keine Continuation, aber Kontext) schliessen mit
+    // `terminal:none` ab — der Fehlerpfad muss dieselbe Identitaet beanspruchen.
+    expect(advance).toContain('const legacyTerminal = payload.continuation === undefined');
+
+    // Der Marker wird VOR run() geprueft: ein bereits abgeschlossener Job darf
+    // den bezahlten Modellaufruf nicht wiederholen (ai.agent/ai.pick_canned
+    // haben keine eigene Entwurfs-Dedupe).
+    expect(terminal).toMatch(
+      /const done = await withWorkspaceTransaction\([\s\S]*?if \(done\) return;[\s\S]{0,20}?await run\(\);/,
+    );
     expect(graphile).toMatch(/if \(completionKey\) \{[\s\S]*?if \(!firstCompletion\.rowCount\)/);
     expect(terminal).toContain('.onConflict((oc) => oc.columns([\'workspace_id\', \'key\']).doNothing())');
 

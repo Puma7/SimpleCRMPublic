@@ -273,26 +273,55 @@ export type TerminalInboundChildDeps = Readonly<{
  * keine Continuation einzureihen, Dedupe-Treffer). Jeden davon einzeln zu
  * bedienen ist nicht haltbar; ein vergessener Pfad haengt die Kette dauerhaft.
  *
- * Darum hier: laeuft der Port normal zu Ende, wird der Abschluss nachgeholt.
+ * Darum hier: der Marker wird VOR der Arbeit geprueft (ein bereits
+ * abgeschlossener Job darf seine Nebenwirkungen nicht wiederholen), und laeuft
+ * der Port normal zu Ende, wird der Abschluss nachgeholt.
  * Hat der Port ihn bereits mit dem korrekten `applied` durchgefuehrt, greift die
  * Einmal-Schranke in {@link completeTerminalInboundChild} und dieser Aufruf ist
  * ein No-op. Wirft der Port, passiert bewusst NICHTS: Graphile wiederholt den
  * Job, und erst der endgueltige Fehlschlag schaltet die Kette weiter.
  */
-export async function runTerminalInboundChild<T>(
+export async function runTerminalInboundChild(
   deps: TerminalInboundChildDeps,
   input: { workspaceId: string; terminalChainPayload?: Record<string, unknown> },
   now: () => Date,
-  run: () => Promise<T>,
-): Promise<T> {
-  const result = await run();
+  run: () => Promise<unknown>,
+): Promise<void> {
   const payload = input.terminalChainPayload;
-  if (!payload) return result;
+  if (!payload) {
+    await run();
+    return;
+  }
+
+  // VOR der Arbeit pruefen, nicht erst danach. Hat dieser Job seinen Entwurf und
+  // seinen Abschluss bereits committet und scheiterte danach nur die
+  // Nachhol-Transaktion unten, stellt Graphile den GANZEN Job erneut zu. Ohne
+  // diese Pruefung liefe der kostenpflichtige Modellaufruf ein zweites Mal, und
+  // ai.agent / ai.pick_canned legten einen zweiten Entwurf an — anders als
+  // ai.draft_reply haben beide keine eigene Entwurfs-Dedupe. Die Einmal-Schranke
+  // im Abschluss verhindert nur das doppelte Join-Dekrement, nicht die
+  // Nebenwirkung.
+  const target = terminalChildTarget(payload);
+  if (target) {
+    const done = await withWorkspaceTransaction(
+      deps.db,
+      { workspaceId: input.workspaceId, role: 'system' },
+      async (trx) => trx
+        .selectFrom('sync_info')
+        .select('key')
+        .where('workspace_id', '=', target.workspaceId)
+        .where('key', '=', terminalChildOnceKey(target))
+        .executeTakeFirst(),
+      { applySession: deps.applyWorkspaceSession },
+    );
+    if (done) return;
+  }
+
+  await run();
   await withWorkspaceTransaction(
     deps.db,
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => completeTerminalInboundChild(trx, payload, { applied: false, now: now() }),
     { applySession: deps.applyWorkspaceSession },
   );
-  return result;
 }
