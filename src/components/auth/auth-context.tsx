@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react"
 import { IPCChannels } from "@shared/ipc/channels"
+import { expandUserGroupCapabilities } from "@shared/user-capabilities"
 import { invokeIpc, hasElectron } from "@/components/email/types"
 import {
   createServerAuthClient,
@@ -251,43 +252,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return capabilitiesUserId === user.id
   }, [authenticated, user, capabilitiesUserId])
 
+  // Genau wie serverseitig in requireCapability defensiv expandieren: die
+  // gespeicherten Grants halten pro Modul nur die HOECHSTE Stufe
+  // (normalizeStoredUserGroupPermissions), und `email_settings.manage` ist ein
+  // akzeptiertes Legacy-Alias. Ein exakter String-Vergleich wuerde einem
+  // crm.write-Inhaber crm.read absprechen — und seit die Navigation danach
+  // gefiltert wird, waere das nicht mehr nur ein 403, sondern eine
+  // verschwundene Oberflaeche. Der aktuelle Produktionspfad liefert die Liste
+  // bereits expandiert; diese Zeile haelt den Client davon unabhaengig.
+  const expandedCapabilities = useMemo(
+    () => expandUserGroupCapabilities(capabilities),
+    [capabilities],
+  )
+
   const hasCapability = useCallback((capability: string): boolean => {
     if (!user) return false
     if (user.role === "owner" || user.role === "admin") return true
-    return capabilities.includes(capability)
-  }, [user, capabilities])
+    return expandedCapabilities.includes(capability)
+  }, [user, expandedCapabilities])
 
   const canReadCrm = useMemo(() => {
     // Capability model is server-edition only; desktop remains unrestricted.
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("crm.read")
-  }, [hasCapability, authenticated, user, capabilities])
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const canWriteCrm = useMemo(() => {
     // Capability model is server-edition only; desktop remains unrestricted.
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("crm.write")
-  }, [hasCapability, authenticated, user, capabilities])
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const canViewSettings = useMemo(() => {
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("settings.view")
-  }, [hasCapability, authenticated, user, capabilities])
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const canManageSettings = useMemo(() => {
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("settings.manage")
-  }, [hasCapability, authenticated, user, capabilities])
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const canManageUsers = useMemo(() => {
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("users.manage")
-  }, [hasCapability, authenticated, user, capabilities])
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const canViewWorkflows = useMemo(() => {
     if (getRendererTransport().kind !== "http") return true
     return hasCapability("workflows.view")
-  }, [hasCapability, authenticated, user, capabilities])
+  }, [hasCapability, authenticated, user, expandedCapabilities])
 
   const login = useCallback(async (username: string, passphrase: string) => {
     const transport = getRendererTransport()

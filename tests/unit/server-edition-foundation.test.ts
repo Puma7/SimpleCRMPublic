@@ -7268,6 +7268,14 @@ describe('server edition foundation', () => {
         spam_status: 'spam',
         assigned_to: null,
       }],
+      // Das Mitglied MUSS existieren: email.assign schreibt sonst eine tote Id
+      // nach assigned_to und laesst die Nachricht fuer eingeschraenkte
+      // Betrachter dauerhaft verwaist zurueck (siehe Test unten).
+      teamMembers: [{
+        id: 'agent-1',
+        workspace_id: WORKSPACE_A_ID,
+        linked_user_id: null,
+      }],
     });
     const port = createPostgresWorkflowExecutionJobPort({
       db,
@@ -7350,6 +7358,82 @@ describe('server edition foundation', () => {
       ['archive-1', 'email.archive', 'ok', 'default'],
       ['assign-1', 'email.assign', 'ok', 'default'],
     ]);
+  });
+
+  test('email.assign refuses a deleted team member instead of orphaning the message', async () => {
+    // Verweist ein gespeicherter email.assign-Knoten auf ein inzwischen
+    // geloeschtes Mitglied (oder bekommt dessen Loeschung die Zeilensperre
+    // zuerst), schrieb der Knoten frueher trotzdem: assigned_to trug eine tote
+    // Id, assigned_to_user_id blieb null. Die Nachricht passte danach auf KEINEN
+    // Zuweisungsfilter mehr — assigned_to_me/assigned_to_my_groups brauchen die
+    // User-Id, unassigned verlangt zusaetzlich ein leeres assigned_to — und war
+    // fuer eingeschraenkte Betrachter dauerhaft unsichtbar.
+    const now = new Date('2026-07-04T10:31:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 27,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 270,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'assign-1',
+              type: 'registry',
+              data: { nodeType: 'email.assign', config: { teamMemberId: 'geloescht-1' } },
+            },
+          ],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'assign-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 14,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 140,
+        subject: 'Bitte bearbeiten',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Bitte bearbeiten',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        seen_local: false,
+        archived: false,
+        done_local: false,
+        is_spam: false,
+        spam_status: null,
+        assigned_to: null,
+      }],
+      teamMembers: [],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 27,
+      messageId: 14,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(rows.steps.map((step) => [step.node_id, step.node_type, step.status, step.port])).toEqual([
+      ['assign-1', 'email.assign', 'error', 'error'],
+    ]);
+    // Entscheidend: die Nachricht bleibt unangetastet und damit weiter
+    // „unassigned" — sichtbar fuer jeden entsprechenden Filter.
+    expect(rows.messages[0]).toMatchObject({ assigned_to: null });
+    expect(rows.messages[0]!.assigned_to_user_id ?? null).toBeNull();
   });
 
   test('postgres workflow execution job port dry-runs mutating nodes without persisted side effects', async () => {

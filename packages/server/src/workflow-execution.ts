@@ -2178,7 +2178,18 @@ async function executeServerNode(
         .where('id', '=', teamMemberId)
         .forUpdate()
         .executeTakeFirst();
-      if (member?.linked_user_id) assignedToUserId = String(member.linked_user_id);
+      // Fehlt die Zeile (geloeschtes Mitglied im gespeicherten Knoten, oder das
+      // Loeschen hat die Sperre zuerst bekommen), darf hier NICHT geschrieben
+      // werden: assigned_to truege eine tote Id und assigned_to_user_id waere
+      // null. Die Nachricht passte danach auf keinen Zuweisungsfilter mehr —
+      // weder assigned_to_me/assigned_to_my_groups (brauchen die User-Id) noch
+      // unassigned (verlangt zusaetzlich ein leeres assigned_to) — und bliebe
+      // fuer eingeschraenkte Betrachter dauerhaft verwaist. Der API-Assign-Pfad
+      // antwortet in derselben Lage mit team_member_not_found.
+      if (!member) {
+        return { status: 'error', port: 'error', message: 'Teammitglied nicht gefunden' };
+      }
+      if (member.linked_user_id) assignedToUserId = String(member.linked_user_id);
     }
     const result = await updateWorkflowMessage(trx, context, {
       assigned_to: teamMemberId,
