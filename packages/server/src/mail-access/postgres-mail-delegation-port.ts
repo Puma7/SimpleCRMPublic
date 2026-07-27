@@ -391,13 +391,13 @@ export function createPostgresMailDelegationPort(
       if (input.permissions.some((permission) => !held.has(permission))) {
         return { ok: false as const, code: 'privilege_escalation' };
       }
+      // Serialized by the canManageResource(forUpdate: true) lock taken above.
       const authority = await loadDelegationAuthority(
         trx,
         workspaceId,
         actor.userId,
         input.resource,
         input.permissions,
-        true,
       );
       if (constraints === undefined) {
         // Preserve existing filters on permission-only updates; inherit authority
@@ -595,6 +595,16 @@ type DelegationAuthority = readonly PermissionAuthority[];
  * Derived from bindings that grant each requested permission (not only
  * mail.delegation.manage), so a constrained content grant cannot be widened via
  * an unconstrained manage-only grant.
+ *
+ * Takes NO locks of its own, and must not: every caller has already run
+ * canManageResource(..., forUpdate: true), which locks the actor's group
+ * memberships plus ALL of their mail_acl_bindings rows (that query has no
+ * resource filter, so it is a superset of what is read here). A concurrent
+ * narrowing of the actor's own authority cannot slip in between, because every
+ * constraint write goes through replaceBySubjectResource, which updates the
+ * parent mail_acl_bindings row (updated_at) BEFORE rewriting
+ * mail_acl_binding_constraints — and therefore blocks on that same row lock.
+ * Re-locking here would only widen the lock footprint (R48-4).
  */
 async function loadDelegationAuthority(
   trx: Trx,
@@ -602,7 +612,6 @@ async function loadDelegationAuthority(
   userId: string,
   resource: MailDelegationResource,
   permissions: readonly MailPermission[],
-  _forUpdate = false,
 ): Promise<DelegationAuthority> {
   if (permissions.length === 0) return [];
   const groupRows = await trx
