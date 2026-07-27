@@ -374,6 +374,73 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toMatchObject({ ok: true, deleted: true });
   });
 
+  test('POST and PATCH take the subject lock BEFORE the authority lock', async () => {
+    // Beide Pfade nehmen zwei Sperren: die Advisory-Sperre des Zielsubjekts und
+    // die Zeilensperre auf die eigenen Autoritaets-Grants des Managers
+    // (canManageResource mit forUpdate). replaceBindingById muss die
+    // Subjektsperre schon vor dem sperrenden Re-Read nehmen. Naehme
+    // replaceBySubjectResource sie danach, forderte der POST beide in genau
+    // umgekehrter Reihenfolge an wie der PATCH — derselbe Manager, der
+    // gleichzeitig anlegt und aendert, liefe in einen Deadlock und Postgres
+    // braeche eine der beiden gueltigen Mutationen ab.
+    const existingBinding = {
+      id: 901,
+      workspace_id: WORKSPACE,
+      subject_type: 'user' as const,
+      subject_id: AGENT,
+      resource_type: 'account' as const,
+      account_id: 101,
+      folder_id: null,
+      message_id: null,
+      updated_at: '2026-07-20T10:00:00.000Z',
+    };
+    // Nicht-Admin: nur dann fragt canManageResource die Autoritaetszeilen
+    // ueberhaupt sperrend ab (Admins kuerzen ab).
+    const fixtures = {
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+      actorPermissions: ['mail.delegation.manage', 'mail.metadata.read'] as const,
+    };
+    const portFor = (trx: ReturnType<typeof createDelegationTransaction>) => createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+    const lockOrder = (trx: ReturnType<typeof createDelegationTransaction>) => trx.calls
+      .filter(([operation, detail]) => (
+        (operation === 'sql' && String(detail).includes('pg_advisory_xact_lock'))
+        || (operation === 'forUpdate' && detail === 'mail_acl_bindings')
+      ))
+      .map(([operation]) => operation);
+
+    const post = createDelegationTransaction(fixtures);
+    await portFor(post).replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read'],
+      constraints: null,
+    });
+
+    const patch = createDelegationTransaction(fixtures);
+    await portFor(patch).replaceBindingById({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      bindingId: 901,
+      permissions: ['mail.metadata.read'],
+    });
+
+    // Beide Male: erst die Subjektsperre, dann die Autoritaetszeilen.
+    expect(lockOrder(post)[0]).toBe('sql');
+    expect(lockOrder(post)).toContain('forUpdate');
+    expect(lockOrder(patch)[0]).toBe('sql');
+    expect(lockOrder(patch)).toContain('forUpdate');
+  });
+
   test('deleting a binding is never rejected by the constraint budget', async () => {
     // Das Budget zaehlt den Verbrauch der GESCHWISTER mit. Liegt der bereits
     // ueber dem Limit — Altbestand aus der Zeit vor der Pruefung oder ein

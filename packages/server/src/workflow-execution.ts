@@ -71,6 +71,7 @@ import {
 } from './workflow-ai-draft-nodes';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type { MailAccessService } from './mail-access/types';
+import { publishMailVisibilityInvalidation } from './mail-access/visibility-invalidation';
 import type { ServerEventPort } from './api/types';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
@@ -370,33 +371,15 @@ async function flushWorkflowVisibilityInvalidation(input: Readonly<{
     return;
   }
 
-  const occurredAt = new Date().toISOString();
-  for (const targetUserId of new Set(targets)) {
-    try {
-      await events.publish({
-        type: 'email_acl.changed',
-        workspaceId: input.workspaceId,
-        entityType: 'email_acl',
-        entityId: targetUserId,
-        // Der Workflow-Worker laeuft ohne menschlichen Akteur; 'system' ist die
-        // im Projekt uebliche Kennzeichnung (siehe email-tracking).
-        actorUserId: input.actorUserId ?? 'system',
-        occurredAt,
-        // `reason` unterscheidet die reine SICHTBARKEITS-Auffrischung von einer
-        // echten ACL-Mutation. Ohne sie behandelt der AuthProvider jedes
-        // selbstadressierte email_acl.changed als moeglichen Rollenwechsel und
-        // erneuert die Sitzung mit force — inklusive Token-Rotation und
-        // Audit-Eintrag. Ein Tagging-Workflow laeuft auf jeder eingehenden
-        // Nachricht; das waere Dauerlast fuer jeden verbundenen Betroffenen,
-        // obwohl sich nur die Sichtbarkeit einzelner Nachrichten geaendert hat.
-        payload: { targetUserId, state: 'changed', reason: 'visibility_filter' },
-      });
-    } catch (error) {
-      console.warn(
-        `[workflow] email_acl.changed publish failed for user ${targetUserId}; run already committed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
+  await publishMailVisibilityInvalidation({
+    workspaceId: input.workspaceId,
+    // Der Workflow-Worker laeuft ohne menschlichen Akteur; 'system' ist die im
+    // Projekt uebliche Kennzeichnung (siehe email-tracking).
+    ...(input.actorUserId ? { actorUserId: input.actorUserId } : {}),
+    targetUserIds: targets,
+    events,
+    logPrefix: '[workflow]',
+  });
 }
 
 export function createPostgresWorkflowExecutionJobPort(

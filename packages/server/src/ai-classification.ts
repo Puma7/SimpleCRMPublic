@@ -9,6 +9,7 @@ import addressparser from 'nodemailer/lib/addressparser';
 
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import type { MailAccessService } from './mail-access/types';
+import { publishMailVisibilityInvalidation } from './mail-access/visibility-invalidation';
 import type { ServerEventPort } from './api/types';
 import type {
   EmailAiProfilesTable,
@@ -1524,26 +1525,12 @@ async function publishTagVisibilityInvalidation(input: Readonly<{
     );
     return;
   }
-  const occurredAt = new Date().toISOString();
-  for (const targetUserId of new Set(targets)) {
-    try {
-      await input.events.publish({
-        type: 'email_acl.changed',
-        workspaceId: input.workspaceId,
-        entityType: 'email_acl',
-        entityId: targetUserId,
-        actorUserId: 'system',
-        occurredAt,
-        // Siehe workflow-execution: reine Sichtbarkeitsauffrischung, KEIN Anlass
-        // fuer Sitzungserneuerung samt Token-Rotation im Client.
-        payload: { targetUserId, state: 'changed', reason: 'visibility_filter' },
-      });
-    } catch (error) {
-      console.warn(
-        `[ai-classification] email_acl.changed publish failed for user ${targetUserId}; write already committed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
+  await publishMailVisibilityInvalidation({
+    workspaceId: input.workspaceId,
+    targetUserIds: targets,
+    events: input.events,
+    logPrefix: '[ai-classification]',
+  });
 }
 
 async function addClassificationTag(

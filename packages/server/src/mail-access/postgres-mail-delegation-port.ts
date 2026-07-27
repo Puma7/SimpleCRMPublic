@@ -409,21 +409,31 @@ export function createPostgresMailDelegationPort(
     if (!subject.ok) return subject;
     const resource = await validateResource(trx, workspaceId, input.resource);
     if (!resource.ok) return resource;
+    // ERSTE Sperre in JEDEM mutierenden Pfad: die Subjektsperre.
+    //
+    // Sie steht aus zwei Gruenden hier. Erstens vor dem Aufloesen von
+    // `existing`: zwei gleichzeitige POSTs auf dasselbe Subjekt/dieselbe
+    // Ressource koennten sonst beide `existing` als leer sehen. Der Nachzuegler
+    // sieht danach zwar die frisch committete Zeile in den Geschwistern, haette
+    // aber weiterhin replacedBindingId === null — er zaehlte den gespeicherten
+    // Verbrauch UND seinen eigenen und lehnte ab, obwohl der Upsert die alte
+    // Zeile ersetzt. Unter der Sperre ist `existing` konsistent mit dem, was
+    // der Budget-Check gleich zaehlt.
+    //
+    // Zweitens VOR der Autoritaetssperre, und zwar in beiden Pfaden gleich.
+    // replaceBindingById nimmt die Subjektsperre schon vor dem sperrenden
+    // Re-Read. Stuende canManageResource(…, true) hier davor, forderte der POST
+    // Autoritaets- und Subjektsperre in genau umgekehrter Reihenfolge an wie
+    // der PATCH: derselbe Manager, der gleichzeitig anlegt und aendert, liefe
+    // in einen Deadlock statt zu serialisieren, und Postgres braeche eine der
+    // beiden gueltigen Mutationen ab. Da die Sperre pro Subjekt haelt, kann
+    // hinter ihr keine weitere Zyklushaelfte mehr entstehen.
+    await lockConstraintBudgetSubject(trx, workspaceId, input.subject);
     // Lock the actor's authorizing grant rows FOR UPDATE (forUpdate: true) while creating /
     // replacing a delegated binding, so a concurrent revocation of the actor's own authority
     // serializes with this write rather than racing it under read-committed (R48-4).
     const manage = await canManageResource(trx, workspaceId, actor, input.resource, [], true);
     if (!manage) return { ok: false as const, code: 'permission_denied' };
-    // Subjektsperre VOR dem Aufloesen von `existing`.
-    //
-    // Zwei gleichzeitige POSTs auf dasselbe Subjekt/dieselbe Ressource koennen
-    // sonst beide `existing` als leer sehen. Der Nachzuegler sieht danach zwar
-    // die frisch committete Zeile in den Geschwistern, haette aber weiterhin
-    // replacedBindingId === null — er zaehlte den gespeicherten Verbrauch UND
-    // seinen eigenen und lehnte ab, obwohl der Upsert die alte Zeile ersetzt.
-    // Unter der Sperre ist `existing` konsistent mit dem, was der Budget-Check
-    // gleich zaehlt.
-    await lockConstraintBudgetSubject(trx, workspaceId, input.subject);
     const existing = input.existing
       ?? await findBinding(trx, workspaceId, input.subject, input.resource);
     let constraints = input.constraints;
