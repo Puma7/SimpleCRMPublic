@@ -1,5 +1,13 @@
 import type { CalendarEvent, CalendarRBCEvent } from '@/types';
 
+/** Default start/end for "Ereignis hinzufügen" — next full hour, capped at 23:00 local today. */
+export function defaultQuickAddEventTimes(now: Date = new Date()): { start: Date; end: Date } {
+  const startHour = Math.min(now.getHours() + 1, 23);
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), startHour, 0, 0);
+  const end = new Date(start.getTime() + 60 * 60 * 1000);
+  return { start, end };
+}
+
 export function toLocalCalendarDate(value: Date): string {
   return [
     String(value.getFullYear()).padStart(4, '0'),

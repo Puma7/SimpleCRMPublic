@@ -1,4 +1,29 @@
-import { fromCalendarTimestamp, toCalendarRbcEvent, toLocalCalendarDate } from '@/app/calendar/date-utils';
+import {
+  defaultQuickAddEventTimes,
+  fromCalendarTimestamp,
+  toCalendarRbcEvent,
+  toLocalCalendarDate,
+} from '@/app/calendar/date-utils';
+
+describe('defaultQuickAddEventTimes', () => {
+  test('uses the next full hour on the same calendar day', () => {
+    const now = new Date(2026, 6, 27, 10, 45, 30);
+    const { start, end } = defaultQuickAddEventTimes(now);
+
+    expect(start).toEqual(new Date(2026, 6, 27, 11, 0, 0));
+    expect(end).toEqual(new Date(2026, 6, 27, 12, 0, 0));
+  });
+
+  test('caps at 23:00 local instead of rolling to the next day after 22:00', () => {
+    const now = new Date(2026, 6, 27, 23, 6, 0);
+    const { start, end } = defaultQuickAddEventTimes(now);
+
+    expect(start).toEqual(new Date(2026, 6, 27, 23, 0, 0));
+    expect(end).toEqual(new Date(2026, 6, 28, 0, 0, 0));
+    expect(start.getDate()).toBe(now.getDate());
+    expect(start.getMonth()).toBe(now.getMonth());
+  });
+});
 
 describe('calendar date conversion', () => {
   test('keeps an all-day UTC date on the same local calendar day west of UTC', () => {
