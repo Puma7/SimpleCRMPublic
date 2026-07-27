@@ -244,7 +244,16 @@ export function isConstraintsAtLeastAsRestrictive(
   const candMode = candidate.assignmentMode && candidate.assignmentMode !== 'any'
     ? candidate.assignmentMode
     : null;
-  if (authMode && candMode !== authMode) return false;
+  // Ein strengerer Zuweisungsfilter ist erlaubt: assigned_to_me ist fuer JEDEN
+  // Betrachter eine echte Teilmenge von assigned_to_my_groups, weil der
+  // Akteurskontext den Nutzer selbst immer in groupMemberUserIds fuehrt
+  // (sql-scope: ids = groupMemberUserIds ?? [actorId]). Die Delegation
+  // verkleinert den sichtbaren Bereich also, statt ihn zu erweitern. Alle
+  // anderen Modus-Kombinationen bleiben ungleich => abgelehnt; die Regel, dass
+  // relative Modi nur an den Akteur selbst re-delegiert werden duerfen, greift
+  // davor unveraendert (isRelativeAssignmentRedelegation).
+  const candModeIsStricter = authMode === 'assigned_to_my_groups' && candMode === 'assigned_to_me';
+  if (authMode && candMode !== authMode && !candModeIsStricter) return false;
 
   if (authority.categoryAllowIds.length > 0) {
     if (candidate.categoryAllowIds.length === 0) return false;

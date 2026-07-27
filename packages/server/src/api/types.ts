@@ -4308,10 +4308,7 @@ export type WorkflowDelayedJobMutationInput = {
 
 export type WorkflowDelayedJobMutationPortResult =
   | { ok: true; job: WorkflowDelayedJobRecord }
-  | {
-    ok: false;
-    code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable' | 'workflow_state_conflict';
-  };
+  | { ok: false; code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable' };
 
 export type WorkflowDelayedJobApiPort = {
   list(input: {
@@ -4342,14 +4339,6 @@ export type WorkflowDelayedJobApiPort = {
     id: number;
     values: WorkflowDelayedJobMutationInput;
     mailScope?: MailSqlScope;
-    /**
-     * Der Graph des Workflows, gegen den die Route ihr Umleitungs-Gate
-     * geprueft hat. Der Port vergleicht ihn in DERSELBEN Transaktion (mit
-     * Zeilensperre) erneut — sonst erweitert ein Admin den Graphen zwischen
-     * Pruefung und Write um schreibende Knoten und die umgeleitete
-     * Fortsetzung laeuft unter seiner Autoritaet hinein.
-     */
-    expectedWorkflow?: { id: number; graph: unknown | null };
   }): Promise<WorkflowDelayedJobMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;

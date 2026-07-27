@@ -35897,7 +35897,9 @@ describe('server edition foundation', () => {
         context: { secret: 'updated-delayed-context-secret' },
         status: 'cancelled',
       },
-      principal,
+      // context zaehlt als Umleitung und ist damit admin-only; der uebrige
+      // Patch (Reschedule/Abbruch) bliebe auch fuer workflows.manage offen.
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
     });
     expect(updated.status).toBe(200);
     expect((updated.body as any).data.status).toBe('cancelled');
@@ -35911,9 +35913,6 @@ describe('server edition foundation', () => {
         context: { secret: 'updated-delayed-context-secret' },
         status: 'cancelled',
       },
-      // context-Aenderung ist eine Umleitung: der gepruefte Workflow-Graph geht
-      // als optimistische Bedingung mit in den Write.
-      expectedWorkflow: { id: 23, graph: expect.anything() },
     }]);
 
     const deleted = await api.handle({
@@ -35953,58 +35952,6 @@ describe('server edition foundation', () => {
     expect(JSON.stringify(events)).not.toContain('updated-delayed-context-secret');
   });
 
-  test('a delayed-job redirect carries the checked workflow graph as an optimistic condition', async () => {
-    // Sonst erweitert ein Admin den Graphen zwischen Pruefung und UPDATE um
-    // schreibende Knoten und die umgeleitete Fortsetzung laeuft unter seiner
-    // Autoritaet hinein.
-    const updateCalls: any[] = [];
-    const readOnlyGraph = {
-      version: 1,
-      nodes: [{ id: 'branch-1', type: 'registry', data: { nodeType: 'logic.set_variable' } }],
-      edges: [],
-    };
-    const existingJob: WorkflowDelayedJobRecord = {
-      ...makeWorkflowDelayedJobRecord(87, true),
-      workflowId: 23,
-      messageId: 11,
-      resumeNodeId: 'wait-1',
-      executeAt: '2026-06-03T12:00:00.000Z',
-      status: 'pending',
-    };
-    const api = createServerApi(makeServerApiPorts({
-      workflows: {
-        async list() { return { items: [], nextCursor: null }; },
-        async get(input) {
-          return input.id === 23 ? { ...makeWorkflowRecord(23), graph: readOnlyGraph } : null;
-        },
-      },
-      workflowDelayedJobs: {
-        async list() { return { items: [], nextCursor: null }; },
-        async get() { return existingJob; },
-        async update(input) {
-          updateCalls.push(input);
-          return { ok: true as const, job: existingJob };
-        },
-      },
-    }));
-
-    const redirected = await api.handle({
-      method: 'PATCH',
-      path: '/api/v1/workflow-delayed-jobs/87',
-      body: { resumeNodeId: 'branch-1' },
-      principal: {
-        userId: USER_A_ID,
-        workspaceId: WORKSPACE_A_ID,
-        role: 'user' as const,
-        capabilities: ['workflows.manage'],
-      },
-    });
-
-    expect(redirected.status).toBe(200);
-    expect(updateCalls).toHaveLength(1);
-    expect(updateCalls[0].expectedWorkflow).toEqual({ id: 23, graph: readOnlyGraph });
-  });
-
   test('non-admin cannot redirect a side-effecting delayed job resume node into a writing node', async () => {
     const updateCalls: unknown[] = [];
     const existingJob: WorkflowDelayedJobRecord = {
@@ -36035,8 +35982,8 @@ describe('server edition foundation', () => {
     const manager = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
     const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
-    // Non-admin manager redirecting a side-effecting job's resume node → 403, update
-    // port never reached (execution would otherwise run the node as the admin).
+    // Manager (workflows.manage, kein Admin) darf gar nicht umleiten — der
+    // Update-Port wird nicht erreicht.
     const denied = await makeApi(sideEffectGraph).handle({
       method: 'PATCH',
       path: '/api/v1/workflow-delayed-jobs/87',
@@ -36064,7 +36011,10 @@ describe('server edition foundation', () => {
     });
     expect(adminRedirect.status).toBe(200);
 
-    // No over-restriction: a manager may still redirect a read-only-graph job.
+    // Auch bei einem nebenwirkungsfreien Graphen bleibt das Umleiten
+    // Administratoren vorbehalten: der optimistische Vergleich haette nur bis
+    // zum Commit geschuetzt, waehrend die Fortsetzung erst spaeter — und unter
+    // dem urspruenglichen Akteur — in den DANN gespeicherten Graphen laeuft.
     updateCalls.length = 0;
     const readOnlyRedirect = await makeApi(readOnlyGraph).handle({
       method: 'PATCH',
@@ -36072,8 +36022,8 @@ describe('server edition foundation', () => {
       body: { resumeNodeId: 'branch-1' },
       principal: manager,
     });
-    expect(readOnlyRedirect.status).toBe(200);
-    expect(updateCalls).toHaveLength(1);
+    expect(readOnlyRedirect.status).toBe(403);
+    expect(updateCalls).toEqual([]);
   });
 
   test('server workflow delayed job mutation routes reject unsafe payloads and missing references', async () => {

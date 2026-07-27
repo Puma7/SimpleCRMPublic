@@ -1091,42 +1091,30 @@ async function handleDelayedJobUpdate(
   });
   if (!parsed.ok) return parsed.response;
 
-  // Redirecting a delayed job (resumeNodeId/context) does not re-enqueue the backing
-  // workflow.execute — that job keeps the initiating admin's actorUserId, so at
-  // resume the async side-effect gate (which only denies non-admin ACTORS) is
-  // bypassed and the chosen node runs under the admin's authority. A non-admin
-  // workflows.manage holder could thus jump an admin-originated run to a writing node
-  // the live-execution route (workflow-routes.ts) forbids them from running. Mirror
-  // that route's admin gate for redirect edits on a side-effecting workflow. Reschedule
-  // (executeAt) and cancel (status) edits stay open to workflows.manage.
-  let expectedWorkflow: { id: number; graph: unknown | null } | undefined;
+  // Das Umleiten eines verzoegerten Jobs (resumeNodeId/context) reiht den
+  // dahinterliegenden workflow.execute NICHT neu ein: der behaelt den
+  // actorUserId des urspruenglich Einreihenden (typischerweise ein Admin), und
+  // der gewaehlte Knoten laeuft beim Resume unter DESSEN Autoritaet.
+  //
+  // Frueher stand hier ein Graph-Check plus optimistischer Vergleich: erlaubt,
+  // solange der Graph nebenwirkungsfrei ist. Das schuetzt aber nur bis zum
+  // Commit — zwischen Umleitung und tatsaechlicher Ausfuehrung kann derselbe
+  // Workflow um schreibende Knoten erweitert werden, und die Fortsetzung laeuft
+  // trotzdem unter dem alten Akteur. Statt den gebilligten Graphen am Job zu
+  // versionieren (Schema-Aenderung fuer einen exotischen Bedienpfad), bleibt
+  // das Umleiten Administratoren vorbehalten: nur wer die Autoritaet ohnehin
+  // besitzt, unter der die Fortsetzung laeuft, darf ihren Einstiegspunkt
+  // waehlen. Reschedule (executeAt) und Abbrechen (status) bleiben fuer
+  // workflows.manage offen.
   if (
     (parsed.values.resumeNodeId !== undefined || parsed.values.context !== undefined)
     && !requireAdmin(principal)
   ) {
-    if (!ports.workflows) return unavailable('workflows_unavailable', 'Workflow API nicht konfiguriert');
-    const existing = await ports.workflowDelayedJobs.get({
-      workspaceId: principal.workspaceId,
-      id,
-      includeContext: false,
-    });
-    if (!existing) return error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
-    if (existing.workflowId !== null) {
-      const workflow = await ports.workflows.get({ workspaceId: principal.workspaceId, id: existing.workflowId });
-      if (
-        workflow
-        && (workflowGraphHasSideEffectNode(workflow.graph) || workflowGraphHasChainStopNode(workflow.graph))
-      ) {
-        return error(403, 'forbidden', 'Umleiten von Workflows mit schreibenden Knoten erfordert Adminrechte');
-      }
-      if (workflow) {
-        // Der gepruefte Graph geht als optimistische Bedingung mit in den
-        // Write: erweitert ein Admin ihn zwischen Pruefung und UPDATE um
-        // schreibende Knoten, liefe die umgeleitete Fortsetzung unter seiner
-        // Autoritaet hinein — das muss ein 409 sein.
-        expectedWorkflow = { id: workflow.id, graph: workflow.graph ?? null };
-      }
-    }
+    return error(
+      403,
+      'forbidden',
+      'Umleiten eines verzoegerten Jobs erfordert Adminrechte',
+    );
   }
 
   const result = await ports.workflowDelayedJobs.update({
@@ -1134,7 +1122,6 @@ async function handleDelayedJobUpdate(
     actorUserId: principal.userId,
     id,
     values: parsed.values,
-    ...(expectedWorkflow ? { expectedWorkflow } : {}),
   });
   if (!result) return error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
   if (!result.ok) return delayedJobMutationError(result.code);
@@ -1175,16 +1162,9 @@ async function handleDelayedJobDelete(
 }
 
 function delayedJobMutationError(
-  code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable' | 'workflow_state_conflict',
+  code: 'workflow_not_found' | 'message_not_found' | 'job_not_cancellable',
 ): ApiResponse {
   if (code === 'workflow_not_found') return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
-  if (code === 'workflow_state_conflict') {
-    return error(
-      409,
-      'workflow_state_conflict',
-      'Workflow wurde zwischenzeitlich geaendert — bitte neu laden und erneut versuchen',
-    );
-  }
   if (code === 'job_not_cancellable') {
     return error(409, 'workflow_delayed_job_not_cancellable', 'Delayed Job laeuft bereits oder ist abgeschlossen');
   }
