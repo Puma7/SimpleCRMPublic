@@ -271,6 +271,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // gehen die fachlichen Refresh-Handler etwas an, nicht die Sitzung.
         const targetUserId = (event.payload as { targetUserId?: unknown } | undefined)?.targetUserId
         if (typeof targetUserId === "string" && targetUserId !== user.id) return
+        // Reine SICHTBARKEITS-Auffrischung: ein Workflow oder die
+        // KI-Klassifizierung hat einen Tag bzw. eine Kategorie geschrieben, die
+        // in einem Sichtbarkeitsfilter vorkommt. Weder Rolle noch Rechte haben
+        // sich geaendert — die Sitzung zu erneuern (mit Token-Rotation und
+        // Audit-Eintrag) und beide Rechtelisten neu zu laden waere bei
+        // laufender Mailverarbeitung Dauerlast. Die Nachrichtenliste haengt an
+        // ihrem eigenen Filter und aktualisiert sich weiterhin.
+        const reason = (event.payload as { reason?: unknown } | undefined)?.reason
+        if (reason === "visibility_filter") return
         if (debounceTimer) clearTimeout(debounceTimer)
         debounceTimer = setTimeout(() => {
           // Der Server veroeffentlicht ein selbstadressiertes email_acl.changed
@@ -374,9 +383,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [mailPermissionContext],
   )
 
+  // Anders als hasMailPermission bewusst NICHT „waehrend des Ladens erlaubt".
+  // Dieses Flag gatet ausschliesslich MUTIERENDE Aktionen (Konto anlegen). Waere
+  // der Knopf waehrend des Ladens sichtbar, koennte ein eingeschraenkter Nutzer
+  // ihn treffen; das Formular bliebe danach offen, weil `creating` gesetzt ist,
+  // und das Absenden liefe sicher ins 403. Ein kurz verzoegerter Knopf ist der
+  // bessere Fehler.
   const mailAccessUnrestricted = useMemo(() => {
     if (!mailPermissionContext.serverClientMode) return true
-    if (!mailPermissionContext.ready) return true
+    if (!mailPermissionContext.ready) return false
     return mailPermissionContext.report.unrestricted
   }, [mailPermissionContext])
 

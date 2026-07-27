@@ -32329,14 +32329,27 @@ describe('server edition foundation', () => {
     expect(emptyPatch.status).toBe(400);
     expect((emptyPatch.body as any).error.code).toBe('validation_error');
 
-    const invalidReplyAccount = await writableApi.handle({
+    // Die Route ist vom Mail-Gate ausgenommen (workspace_global_settings), damit
+    // ein Einstellungsverwalter ohne Postfach sie ueberhaupt laden kann. Damit
+    // greift zuerst das settings.view-Gate des Handlers — dieser Principal haelt
+    // nur crm.write/workflows.manage.
+    const replySuggestionWithoutSettingsView = await writableApi.handle({
       method: 'GET',
       path: '/api/v1/email/settings/reply-suggestion',
       query: { accountId: 'nope' },
       principal,
     });
-    expect(invalidReplyAccount.status).toBe(404);
-    expect((invalidReplyAccount.body as any).error.code).toBe('mail_resource_not_found');
+    expect(replySuggestionWithoutSettingsView.status).toBe(403);
+
+    // Mit settings.view faellt die ungueltige accountId in die Validierung.
+    const invalidReplyAccount = await writableApi.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/reply-suggestion',
+      query: { accountId: 'nope' },
+      principal: adminPrincipal,
+    });
+    expect(invalidReplyAccount.status).toBe(400);
+    expect((invalidReplyAccount.body as any).error.code).toBe('invalid_account_id');
 
     const invalidSnooze = await writableApi.handle({
       method: 'PATCH',

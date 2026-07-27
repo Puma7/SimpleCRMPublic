@@ -23,6 +23,14 @@ import { AccountsShippingHint } from "./accounts-shipping-hint"
 
 type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki" | "erweitert"
 
+/**
+ * Tabs, deren Speicherpfade mail.account.manage AUF DEM KONTO verlangen
+ * (PATCH /email/accounts/:id, SMTP-Zuordnung, OAuth-Verknuepfung,
+ * Konto-Signaturen). „KI" und „Erweitert" haengen dagegen an settings.manage
+ * und gaten sich in ihren eigenen Panels bereits selbst.
+ */
+const ACCOUNT_MANAGE_TABS = new Set<AccountTab>(["imap", "smtp", "oauth", "signature"])
+
 const TABS: { id: AccountTab; label: string }[] = [
   { id: "imap", label: "IMAP / POP3" },
   { id: "smtp", label: "SMTP" },
@@ -71,6 +79,13 @@ export function AccountsMasterDetailSettings() {
   //   fuer Delegierte oeffnen will, muss zuerst die Server-Policy aendern.
   const { hasMailPermissionForAccount, mailAccessUnrestricted } = useAuth()
   const canCreateAccount = mailAccessUnrestricted
+
+  // Faellt das Recht weg (Bericht trifft spaet ein, oder eine ACL-Aenderung
+  // entzieht es), darf kein offenes Anlege-Formular stehenbleiben — sein
+  // Absenden liefe garantiert ins 403.
+  useEffect(() => {
+    if (!canCreateAccount && creating) setCreating(false)
+  }, [canCreateAccount, creating])
 
   const load = useCallback(async () => {
     try {
@@ -155,6 +170,12 @@ export function AccountsMasterDetailSettings() {
   }
 
   const selected = accounts.find((a) => a.id === selectedId) ?? editAccount
+  // PATCH /email/accounts/:id, die SMTP-Zuordnung, die OAuth-Verknuepfung und
+  // die Konto-Signaturen verlangen alle mail.account.manage AUF DIESEM KONTO.
+  // Wer das Konto nur sehen darf, bekaeme beim Speichern garantiert ein 403 —
+  // die Editoren bleiben deshalb weg, die Auswahl selbst nicht.
+  const canManageSelectedAccount = selected != null
+    && hasMailPermissionForAccount("mail.account.manage", selected.id)
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -234,7 +255,7 @@ export function AccountsMasterDetailSettings() {
                   </p>
                 ) : null}
               </div>
-              {!creating && selected && hasMailPermissionForAccount("mail.account.manage", selected.id) ? (
+              {!creating && selected && canManageSelectedAccount ? (
                 <Button
                   type="button"
                   size="sm"
@@ -280,6 +301,11 @@ export function AccountsMasterDetailSettings() {
                       }}
                     />
                   </div>
+                ) : !canManageSelectedAccount && ACCOUNT_MANAGE_TABS.has(tab) ? (
+                  <p className="max-w-xl text-sm text-muted-foreground">
+                    Für dieses Postfach fehlt die Berechtigung zur Kontoverwaltung.
+                    Wenden Sie sich an eine Administratorin oder einen Administrator.
+                  </p>
                 ) : tab === "imap" ? (
                   <AccountForm
                     key={`edit-${editAccount?.id ?? "none"}`}

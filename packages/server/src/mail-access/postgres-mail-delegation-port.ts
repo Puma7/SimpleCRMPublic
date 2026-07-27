@@ -402,6 +402,16 @@ export function createPostgresMailDelegationPort(
     // serializes with this write rather than racing it under read-committed (R48-4).
     const manage = await canManageResource(trx, workspaceId, actor, input.resource, [], true);
     if (!manage) return { ok: false as const, code: 'permission_denied' };
+    // Subjektsperre VOR dem Aufloesen von `existing`.
+    //
+    // Zwei gleichzeitige POSTs auf dasselbe Subjekt/dieselbe Ressource koennen
+    // sonst beide `existing` als leer sehen. Der Nachzuegler sieht danach zwar
+    // die frisch committete Zeile in den Geschwistern, haette aber weiterhin
+    // replacedBindingId === null — er zaehlte den gespeicherten Verbrauch UND
+    // seinen eigenen und lehnte ab, obwohl der Upsert die alte Zeile ersetzt.
+    // Unter der Sperre ist `existing` konsistent mit dem, was der Budget-Check
+    // gleich zaehlt.
+    await lockConstraintBudgetSubject(trx, workspaceId, input.subject);
     const existing = input.existing
       ?? await findBinding(trx, workspaceId, input.subject, input.resource);
     let constraints = input.constraints;
@@ -1128,6 +1138,24 @@ async function loadBindingConstraints(
  * parallele Bindings nicht beide am halben Budget vorbeikommen: die Bindings
  * des Subjekts werden dafuer gesperrt.
  */
+/**
+ * Transaktionsweite Advisory-Sperre auf das Subjekt.
+ *
+ * FOR UPDATE auf die gefundenen Bindings genuegt nicht: es nimmt keine
+ * Praedikats-/Luecken-Sperre, sperrt bei einem Subjekt ohne Bindings also gar
+ * nichts, und eine wartende Anweisung sieht ein parallel eingefuegtes Phantom
+ * aus ihrem aelteren Snapshot nicht. Die Advisory-Sperre existiert unabhaengig
+ * von vorhandenen Zeilen und serialisiert den gesamten Abschnitt pro Subjekt.
+ */
+async function lockConstraintBudgetSubject(
+  trx: Trx,
+  workspaceId: string,
+  subject: MailDelegationSubject,
+): Promise<void> {
+  const key = `mail_acl_constraint_budget:${workspaceId}:${subject.type}:${subjectId(subject)}`;
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`.execute(trx);
+}
+
 async function constraintBudgetExceeded(
   trx: Trx,
   workspaceId: string,
@@ -1136,16 +1164,9 @@ async function constraintBudgetExceeded(
   next: MailBindingVisibilityConstraints | null,
 ): Promise<{ used: number; limit: number } | null> {
   const nextCount = mailBindingConstraintEntryCount(next);
-  // Transaktionsweite Advisory-Sperre auf das SUBJEKT, nicht FOR UPDATE auf die
-  // gefundenen Bindings: FOR UPDATE nimmt keine Praedikats-/Luecken-Sperre. Hat
-  // das Subjekt noch keine Bindings, sperrt es gar nichts, und selbst beim
-  // Warten auf bestehende Zeilen sieht die wartende Anweisung ein parallel
-  // eingefuegtes Phantom aus ihrem aelteren Snapshot nicht. Zwei Anfragen
-  // koennten so beide eine Summe unter dem Budget sehen, beide committen und es
-  // zusammen ueberschreiten. Die Advisory-Sperre existiert unabhaengig von
-  // vorhandenen Zeilen und serialisiert genau diesen Abschnitt pro Subjekt.
-  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`mail_acl_constraint_budget:${workspaceId}:${subject.type}:${subjectId(subject)}`}, 0))`
-    .execute(trx);
+  // Die Subjektsperre haelt bereits replaceBySubjectResource — sie muss VOR dem
+  // Aufloesen des bestehenden Bindings genommen werden, damit `existing` und die
+  // hier gezaehlten Geschwister denselben Zustand beschreiben.
   const siblings = await trx
     .selectFrom('mail_acl_bindings')
     .select('id')

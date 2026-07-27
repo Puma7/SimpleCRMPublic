@@ -382,7 +382,14 @@ async function flushWorkflowVisibilityInvalidation(input: Readonly<{
         // im Projekt uebliche Kennzeichnung (siehe email-tracking).
         actorUserId: input.actorUserId ?? 'system',
         occurredAt,
-        payload: { targetUserId, state: 'changed' },
+        // `reason` unterscheidet die reine SICHTBARKEITS-Auffrischung von einer
+        // echten ACL-Mutation. Ohne sie behandelt der AuthProvider jedes
+        // selbstadressierte email_acl.changed als moeglichen Rollenwechsel und
+        // erneuert die Sitzung mit force — inklusive Token-Rotation und
+        // Audit-Eintrag. Ein Tagging-Workflow laeuft auf jeder eingehenden
+        // Nachricht; das waere Dauerlast fuer jeden verbundenen Betroffenen,
+        // obwohl sich nur die Sichtbarkeit einzelner Nachrichten geaendert hat.
+        payload: { targetUserId, state: 'changed', reason: 'visibility_filter' },
       });
     } catch (error) {
       console.warn(

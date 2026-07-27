@@ -1534,7 +1534,9 @@ async function publishTagVisibilityInvalidation(input: Readonly<{
         entityId: targetUserId,
         actorUserId: 'system',
         occurredAt,
-        payload: { targetUserId, state: 'changed' },
+        // Siehe workflow-execution: reine Sichtbarkeitsauffrischung, KEIN Anlass
+        // fuer Sitzungserneuerung samt Token-Rotation im Client.
+        payload: { targetUserId, state: 'changed', reason: 'visibility_filter' },
       });
     } catch (error) {
       console.warn(

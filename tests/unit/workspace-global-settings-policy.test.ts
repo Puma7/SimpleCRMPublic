@@ -101,18 +101,40 @@ describe('workspace-global mail settings policy', () => {
     expect(setCalls).toEqual([]);
   });
 
-  test('the matching reads stay behind the mail gate', async () => {
-    // Bewusst nicht mit ausgenommen: die GETs liefern Postfach-nahe Daten und
-    // haengen weiter an mail.metadata.read.
+  test('the matching reads are exempt too — writing without reading is useless', async () => {
+    // Erste Fassung nahm nur die PATCHes aus. Das genuegt nicht: der Editor
+    // laedt vor dem Speichern, ein am Mail-Gate abgewiesener GET macht das
+    // Schreibrecht also wertlos. Bei `misc` kommt hinzu, dass der Client das
+    // maskierte Webhook-Secret beim Speichern zuruecksendet — ohne geladenen
+    // Wert kippt auch das Schreiben.
     const api = makeApi();
     const misc = await api.handle({
       method: 'GET',
       path: '/api/v1/email/settings/misc',
       principal: settingsManager,
     });
-    // Der Enforcer antwortet auf eine verweigerte Mail-Ressource bewusst mit
-    // 404 statt 403, um die Existenz nicht zu verraten.
-    expect({ status: misc.status, code: (misc.body as { error?: { code?: string } }).error?.code })
+    expect(misc.status).toBe(200);
+    expect((misc.body as { data: { maxAttachmentMb: string } }).data.maxAttachmentMb).toBe('25');
+
+    const snooze = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/snooze',
+      principal: settingsManager,
+    });
+    expect(snooze.status).toBe(200);
+  });
+
+  test('a per-account reply-suggestion READ needs the account right as well', async () => {
+    // Symmetrisch zum Schreiben: ohne accountId workspace-global, mit accountId
+    // postfachbezogen.
+    const api = makeApi();
+    const res = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/reply-suggestion',
+      query: { accountId: '7' },
+      principal: settingsManager,
+    });
+    expect({ status: res.status, code: (res.body as { error?: { code?: string } }).error?.code })
       .toEqual({ status: 404, code: 'mail_resource_not_found' });
   });
 

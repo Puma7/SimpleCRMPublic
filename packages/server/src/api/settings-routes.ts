@@ -603,6 +603,12 @@ async function handleReplySuggestionSettings(
     }
     const accountId = parseOptionalPositiveInt(req.query?.accountId);
     if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+    // Wie beim PATCH: mit accountId ist die Abfrage postfachbezogen, ohne sie
+    // workspace-global. Die Ausnahme vom Mail-Gate kann das nicht trennen.
+    if (accountId !== undefined) {
+      const accountDenied = await rejectUnlessAccountManage(req, ports, principal, accountId);
+      if (accountDenied) return accountDenied;
+    }
     const keys = replySuggestionReadKeys(accountId);
     const loaded = await loadSyncInfo(req, ports, keys);
     if ('status' in loaded) return loaded;

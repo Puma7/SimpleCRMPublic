@@ -296,7 +296,13 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   assign('/api/v1/email/relays/:relayId/submissions', { GET: workspaceSecurity });
 
   assign('/api/v1/email/settings/misc', {
-    GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
+    // Auch der LESEpfad ist ausgenommen. Ein Einstellungsverwalter ohne
+    // Postfach koennte den Wert sonst schreiben, aber nicht laden — der Editor
+    // laedt vor dem Speichern, und bei `misc` fuehrt der fehlgeschlagene Load
+    // zusaetzlich zu einem leeren maskierten Secret, das das Speichern kippt.
+    // Die Handler bleiben die Autorisierung: GET maskiert das Webhook-Secret
+    // fuer Nicht-Admins, PATCH verlangt settings.manage.
+    GET: exemptPolicy('workspace_global_settings'),
     PATCH: exemptPolicy('workspace_global_settings'),
   });
   assign('/api/v1/email/settings/security', { GET: workspaceSecurity, PATCH: workspaceSecurity });
@@ -306,11 +312,16 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
     PATCH: permissionPolicy('mail.account.manage', accountBody()),
   });
   assign('/api/v1/email/settings/snooze', {
-    GET: permissionPolicy('mail.metadata.read', { kind: 'workspace_global' }),
+    // Der Snooze-GET war schon vorher fuer jeden authentifizierten Principal
+    // gedacht (das „Spaeter erinnern"-Menue im Posteingang) — der Handler
+    // verzichtet dort ausdruecklich auf ein Capability-Gate.
+    GET: exemptPolicy('workspace_global_settings'),
     PATCH: exemptPolicy('workspace_global_settings'),
   });
   assign('/api/v1/email/settings/reply-suggestion', {
-    GET: permissionPolicy('mail.metadata.read', optionalAccount('query')),
+    // GET verlangt im Handler settings.view; die accountId-Variante prueft
+    // zusaetzlich mail.account.manage auf dem Zielkonto (wie PATCH).
+    GET: exemptPolicy('workspace_global_settings'),
     PATCH: exemptPolicy('workspace_global_settings'),
   });
 
