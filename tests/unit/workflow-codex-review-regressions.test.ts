@@ -538,8 +538,10 @@ describe('codex review regression guards', () => {
     // ids zurueck — aber nur fuer Inbound. Ein manueller Lauf darf keinen
     // Inbound-Marker setzen, sonst ueberspringt die echte Inbound-Verarbeitung
     // den Workflow spaeter komplett.
-    expect(terminal).toContain('positiveInt(payload.workflowId)');
-    expect(terminal).toContain("if (!parsed && trimmedString(payload.triggerName) !== 'inbound') return null;");
+    // Die Aufloesung liegt zentral in terminalInboundChildContext (siehe unten):
+    // derselbe Fallback traegt Applied-Marker, Join-Abbau und Abbruchpruefung.
+    expect(terminal).toContain('terminalInboundChildContext(payload)');
+    expect(advance).toContain('positiveInt(payload.workflowId)');
     expect(execution.match(
       /terminalNodeId: terminalNodeExecutionId\(context, node\),\n\s+triggerName: context\.trigger,/g,
     )).toHaveLength(4);
@@ -578,7 +580,7 @@ describe('codex review regression guards', () => {
     expect(graphile).toMatch(/if \(type === 'ai\.pick_canned'\) \{[\s\S]*?graphileChildNodeKeyPart\(payload\)/);
 
     // Sibling-Abbruch haengt auch im Entwurfspfad nicht mehr an der Continuation.
-    expect(draftNodes).toContain('terminal?.chain.workflowIds[terminal.chain.index]');
+    expect(draftNodes).toContain('continuation?.workflowId ?? terminal?.workflowId');
     expect(
       (draftNodes.match(/terminalChainPayload: input\.terminalChainPayload,/g) ?? []),
     ).toHaveLength(4);
@@ -603,9 +605,24 @@ describe('codex review regression guards', () => {
     // Kettenloser Inbound-Fan-out (Backfill/Reapply) legt eine Barriere mit
     // chain: null an — der Kindjob muss sie ueber die direkt gestempelten ids
     // abbauen, sonst haengt sie und der erste Erfolg markiert vorschnell.
-    expect(advance).toContain('terminalChildIdsFromPayload(payload)');
-    expect(advance).toContain("if (payload.terminalWorkflowCompletion !== true) return null;");
-    expect(advance).toMatch(/chain: parsed\?\.chain \?\? null,/);
+    expect(advance).toContain('export function terminalInboundChildContext(');
+    expect(advance).toContain('if (payload.terminalWorkflowCompletion !== true) return null;');
+    expect(advance).toContain("payload.triggerName.trim() !== 'inbound'");
+    // Derselbe Resolver traegt die Live-Abbruchpruefung: ohne ihn schickte ein
+    // kettenloser terminaler ai.agent sogar Spam-Mails ans Modell.
+    expect(classification).toContain('terminalInboundChildContext(input.terminalChainPayload ?? {})');
+    expect(draftNodes).toContain('terminalInboundChildContext(input.terminalChainPayload ?? {})');
+    // Auch der Graphile-Terminalpfad baut kettenlose Barrieren ab.
+    expect(graphile).toContain('terminalInboundChildContext(payload as Record<string, unknown>)');
+
+    // Die kettenlose Barriere ist auf den Ursprungslauf skopiert — zwei
+    // ueberlappende Backfills teilten sich sonst einen Zaehler.
+    expect(advance).toContain('`inbound_deferred_join:${messageId}:${workflowId}:run:${fanOutRunId}`');
+    expect(execution).toContain('inboundFanOutRunId: inboundFanOutRunId(context)');
+    expect(execution.match(/fanOutRunId: jobContextFanOutRunId\(jobContext, run\.id\),/g)).toHaveLength(6);
+    // Der Fan-out-Lauf muss JEDE Fortsetzung ueberleben.
+    expect(readRepoFile('packages/server/src/workflow-inbound-chain-context.ts'))
+      .toMatch(/resumeContextInboundChainFields[\s\S]*?inboundFanOutRunId: continuation\.inboundFanOutRunId/);
 
     // Desktop: der Sweep raeumt nur beim echten Prozessstart ab.
     // startEmailBackgroundServices laeuft auch im laufenden Prozess erneut

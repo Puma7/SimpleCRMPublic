@@ -36,8 +36,8 @@ import {
 } from './ai-classification';
 import {
   enqueueNextInboundWorkflowAfterTerminalChildFailure,
-  inboundChainFromJobPayload,
   isInboundSiblingAborted,
+  terminalInboundChildContext,
 } from './workflow-inbound-chain-advance';
 import type { InboundChainContinuationFields } from './workflow-inbound-chain-context';
 import {
@@ -680,10 +680,10 @@ async function inboundDraftJobAbortReason(
   const continuation = input.continuation;
   const terminal = continuation
     ? null
-    : inboundChainFromJobPayload(input.terminalChainPayload ?? {});
+    : terminalInboundChildContext(input.terminalChainPayload ?? {});
   if (!continuation && !terminal) return null;
   if (continuation?.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
-  const workflowId = continuation?.workflowId ?? terminal?.chain.workflowIds[terminal.chain.index];
+  const workflowId = continuation?.workflowId ?? terminal?.workflowId;
   if (workflowId == null) return null;
   const aborted = await isInboundSiblingAborted(trx, {
     workspaceId: input.workspaceId,

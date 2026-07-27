@@ -58,25 +58,60 @@ export function inboundChainFromJobPayload(payload: Record<string, unknown>): {
   return { chain, workspaceId, messageId, ...(actorUserId ? { actorUserId } : {}) };
 }
 
-/**
- * Direkt gestempelte ids eines TERMINALEN Kindjobs — der Ersatz fuer den
- * Kettenkontext, wenn der Lauf gar keine Kette hat.
- *
- * Bewusst nur fuer explizit als terminal markierte Payloads: `failJob` ruft den
- * Kettenabschluss fuer JEDEN endgueltig gescheiterten Job auf, und ein
- * beliebiger Job mit `workflowId` duerfte keine fremde Join-Barriere anfassen.
- */
-function terminalChildIdsFromPayload(payload: Record<string, unknown>): {
+export type TerminalInboundChildContext = {
   workspaceId: string;
   messageId: number;
   workflowId: number;
-} | null {
+  chain: InboundWorkflowChainContext | null;
+  /** Ursprungslauf des Fan-outs — Schluessel der kettenlosen Join-Barriere. */
+  fanOutRunId: number | null;
+};
+
+/**
+ * Wen betrifft dieser TERMINALE Kindjob?
+ *
+ * Bevorzugt den Inbound-Kettenkontext und faellt auf die direkt gestempelten
+ * ids zurueck, wenn der Lauf gar keine Kette hat (Inbound-Backfill,
+ * forceWorkflowReapply). Ohne den Fallback verlieren gleich zwei Dinge ihren
+ * Bezugspunkt: der Abbau der Join-Barriere UND die Live-Abbruchpruefung — ein
+ * terminaler `ai.agent` schickte dann sogar Spam-Mails ans Modell und legte
+ * nach einem Geschwister-Abbruch noch Entwuerfe an.
+ *
+ * Der Fallback gilt bewusst nur fuer explizit terminale INBOUND-Payloads:
+ * `failJob` ruft den Kettenabschluss fuer JEDEN endgueltig gescheiterten Job
+ * auf, und ein beliebiger Job mit `workflowId` duerfte weder eine fremde
+ * Barriere anfassen noch einen Inbound-Marker setzen. Manuelle und
+ * compose-initiierte Laeufe bleiben damit ebenfalls aussen vor.
+ */
+export function terminalInboundChildContext(
+  payload: Record<string, unknown>,
+): TerminalInboundChildContext | null {
+  const parsed = inboundChainFromJobPayload(payload);
+  if (parsed) {
+    const workflowId = parsed.chain.workflowIds[parsed.chain.index];
+    if (workflowId == null) return null;
+    return {
+      workspaceId: parsed.workspaceId,
+      messageId: parsed.messageId,
+      workflowId,
+      chain: parsed.chain,
+      fanOutRunId: fanOutRunIdFromPayload(payload),
+    };
+  }
   if (payload.terminalWorkflowCompletion !== true) return null;
+  if (typeof payload.triggerName !== 'string' || payload.triggerName.trim() !== 'inbound') return null;
   const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId.trim() : '';
   const messageId = positiveInt(payload.messageId);
   const workflowId = positiveInt(payload.workflowId);
   if (!workspaceId || messageId == null || workflowId == null) return null;
-  return { workspaceId, messageId, workflowId };
+  return { workspaceId, messageId, workflowId, chain: null, fanOutRunId: fanOutRunIdFromPayload(payload) };
+}
+
+/** Der Fan-out-Lauf reist im Continuation- bzw. Kontextteil der Payload mit. */
+function fanOutRunIdFromPayload(payload: Record<string, unknown>): number | null {
+  const continuation = objectRecord(payload.continuation);
+  const context = objectRecord(payload.context);
+  return positiveInt(continuation?.inboundFanOutRunId) ?? positiveInt(context?.inboundFanOutRunId);
 }
 
 /** Stable claim key for one hop from chain.index → nextIndex. */
@@ -96,11 +131,18 @@ export function inboundDeferredJoinKey(
   messageId: number,
   workflowId: number,
   chain: InboundWorkflowChainContext | null,
+  fanOutRunId?: number | null,
 ): string {
   if (chain) {
     return `inbound_deferred_join:${messageId}:${chain.workflowIds.join(',')}:${chain.index}`;
   }
-  return `inbound_deferred_join:${messageId}:${workflowId}`;
+  // Ohne Kette identifizieren Nachricht + Workflow den Fan-out NICHT eindeutig:
+  // zwei ueberlappende Backfill-/Reapply-Laeufe teilten sich sonst denselben
+  // Zaehler, und ein Kind aus Lauf B koennte die Barriere von Lauf A auf null
+  // setzen, waehrend dessen Zweige noch laufen. Der Ursprungslauf trennt sie.
+  return fanOutRunId != null
+    ? `inbound_deferred_join:${messageId}:${workflowId}:run:${fanOutRunId}`
+    : `inbound_deferred_join:${messageId}:${workflowId}`;
 }
 
 /**
@@ -166,10 +208,12 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
     chain: InboundWorkflowChainContext | null;
     chainStop: boolean;
     error?: boolean;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     now: Date;
   },
 ): Promise<InboundDeferredJoinState> {
-  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   const locked = asPgQueryResult(await client.query(
     `SELECT value
        FROM sync_info
@@ -269,6 +313,8 @@ export async function initInboundDeferredJoin(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     pendingCount: number;
     /** When true, join completions must not advance the priority chain. */
     chainStop?: boolean;
@@ -281,7 +327,7 @@ export async function initInboundDeferredJoin(
   // pendingCount 1 with chainStop still needs a barrier so the single deferred
   // sibling completes into 'stop' instead of advancing.
   const pending = Math.max(1, input.pendingCount);
-  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   await trx
     .insertInto('sync_info')
     .values({
@@ -397,10 +443,12 @@ export async function completeInboundDeferredJoinSibling(
     chain: InboundWorkflowChainContext | null;
     chainStop: boolean;
     error?: boolean;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     now: Date;
   },
 ): Promise<InboundDeferredJoinState> {
-  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   const row = await trx
     .selectFrom('sync_info')
     .select(['value'])
@@ -467,28 +515,21 @@ export async function advanceInboundChainAfterTerminalChild(
   input: { error?: boolean; now: Date },
 ): Promise<{ state: InboundDeferredJoinState | null; advanced: boolean }> {
   const now = input.now;
-  const parsed = inboundChainFromJobPayload(payload);
-  // Ein kettenloser Inbound-Lauf (Backfill, forceWorkflowReapply) hat keine
-  // `inboundWorkflowChain`, faechert aber genauso auf: der Elternlauf legt bei
-  // mehreren deferierten Zweigen eine Join-Barriere mit `chain: null` an. Ohne
-  // diesen Fallback landete jeder Kindjob sofort bei `state: null`, die
-  // Barriere wuerde nie dekrementiert — und der Aufrufer laese `null` als
-  // „keine Barriere", sodass schon der erste erfolgreiche Zweig den
-  // Applied-Marker setzt, obwohl ein spaeterer noch scheitern kann.
-  const fallback = terminalChildIdsFromPayload(payload);
-  const workspaceId = parsed?.workspaceId ?? fallback?.workspaceId;
-  const messageId = parsed?.messageId ?? fallback?.messageId;
-  const currentWorkflowId = (parsed ? parsed.chain.workflowIds[parsed.chain.index] : null)
-    ?? fallback?.workflowId;
-  if (!workspaceId || messageId == null || currentWorkflowId == null) {
-    return { state: null, advanced: false };
-  }
+  // Ein kettenloser Inbound-Lauf (Backfill, forceWorkflowReapply) faechert
+  // genauso auf: der Elternlauf legt bei mehreren deferierten Zweigen eine
+  // Join-Barriere mit `chain: null` an. Ohne den ID-Fallback landete jeder
+  // Kindjob sofort bei `state: null`, die Barriere wuerde nie dekrementiert —
+  // und der Aufrufer laese `null` als „keine Barriere", sodass schon der erste
+  // erfolgreiche Zweig markiert, obwohl ein spaeterer noch scheitern kann.
+  const target = terminalInboundChildContext(payload);
+  if (!target) return { state: null, advanced: false };
+  const parsed = target.chain ? inboundChainFromJobPayload(payload) : null;
 
   const message = await trx
     .selectFrom('email_messages')
     .select(['id'])
-    .where('workspace_id', '=', workspaceId)
-    .where('id', '=', messageId)
+    .where('workspace_id', '=', target.workspaceId)
+    .where('id', '=', target.messageId)
     .executeTakeFirst();
   if (!message) return { state: null, advanced: false };
 
@@ -498,11 +539,12 @@ export async function advanceInboundChainAfterTerminalChild(
   // veralteten Barriere und initInboundDeferredJoin (ON CONFLICT DO NOTHING)
   // reanimiert denselben Key bei jedem Retry.
   const join = await completeInboundDeferredJoinSibling(trx, {
-    workspaceId,
-    messageId,
-    workflowId: currentWorkflowId,
-    chain: parsed?.chain ?? null,
+    workspaceId: target.workspaceId,
+    messageId: target.messageId,
+    workflowId: target.workflowId,
+    chain: target.chain,
     chainStop: false,
+    fanOutRunId: target.fanOutRunId,
     ...(input.error === true ? { error: true } : {}),
     now,
   });

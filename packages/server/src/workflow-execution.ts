@@ -217,6 +217,8 @@ type ServerWorkflowContext = {
    * Join-Barriere zaehlt (ein Zaehler pro Trigger-Kante).
    */
   branchKey?: string;
+  /** Lauf, der den Trigger-Fan-out gestartet hat (Schluessel der Join-Barriere). */
+  inboundFanOutRunId?: number;
 };
 
 type PreparedWorkflowRun =
@@ -523,6 +525,7 @@ export function createPostgresWorkflowExecutionJobPort(
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
                 chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                 chainStop: false,
                 now,
               });
@@ -588,6 +591,7 @@ export function createPostgresWorkflowExecutionJobPort(
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
                 chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                 chainStop: true,
                 now,
               });
@@ -629,6 +633,7 @@ export function createPostgresWorkflowExecutionJobPort(
                   messageId: Number(message.id),
                   workflowId: Number(workflow.id),
                   chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                  fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                   chainStop: true,
                   now,
                 });
@@ -682,6 +687,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
               chainStop: true,
               now,
             });
@@ -726,6 +732,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain,
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
               pendingCount: result.deferredBranchCount ?? 1,
               chainStop: siblingTerminal,
               // Ein synchron mit Fehler beendeter Geschwisterzweig muss über
@@ -769,6 +776,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
               chainStop: result.inboundChainStop === true,
               error: result.status === 'error' || result.status === 'blocked',
               now,
@@ -5188,6 +5196,27 @@ function workflowDelayContext(
   };
 }
 
+/**
+ * Fan-out-Lauf aus dem Job-Kontext, sonst dieser Lauf (erste Ausfuehrung).
+ * Eltern (Barriere anlegen) und Kinder (Barriere abbauen) muessen denselben
+ * Wert benutzen, sonst zeigen sie auf verschiedene sync_info-Zeilen.
+ */
+function jobContextFanOutRunId(jobContext: Record<string, unknown>, runId: number): number {
+  return inboundChainFieldsFromRecord(jobContext).inboundFanOutRunId ?? runId;
+}
+
+/**
+ * Lauf, der den aktuellen Trigger-Fan-out gestartet hat.
+ *
+ * In der ersten Ausfuehrung ist das der eigene Lauf; in jeder Fortsetzung der
+ * mitgereichte Ursprungslauf. Eltern (Barriere anlegen) und Kinder (Barriere
+ * abbauen) muessen denselben Wert benutzen, sonst zeigen sie auf verschiedene
+ * sync_info-Zeilen.
+ */
+function inboundFanOutRunId(context: ServerWorkflowContext): number {
+  return context.inboundFanOutRunId ?? context.runId;
+}
+
 function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnType<typeof inboundChainFieldsFromRecord> {
   // Continuations (AI/HTTP/delay) must keep the priority chain, but must NOT
   // re-stamp skipIfMessageSpamOrReview — that guard is one-shot for the initial
@@ -5197,6 +5226,9 @@ function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnTy
     ...(context.inboundWorkflowChain
       ? { inboundWorkflowChain: context.inboundWorkflowChain }
       : {}),
+    // Der Fan-out-Lauf dagegen MUSS mitreisen — er skopiert die kettenlose
+    // Join-Barriere auf genau diese Ausfuehrung.
+    inboundFanOutRunId: inboundFanOutRunId(context),
   });
 }
 

@@ -43,7 +43,7 @@ import {
 } from './db/workspace-context';
 import {
   advanceInboundChainAfterTerminalChild,
-  inboundChainFromJobPayload,
+  terminalInboundChildContext,
 } from './workflow-inbound-chain-advance';
 
 const SERVER_CREATED_SOURCE_ID_OFFSET = 1_000_000_000_000n;
@@ -161,19 +161,12 @@ type TerminalChildTarget = {
  * ueberspringen.
  */
 function terminalChildTarget(payload: Record<string, unknown>): TerminalChildTarget | null {
-  const parsed = inboundChainFromJobPayload(payload);
-  const workspaceId = parsed?.workspaceId ?? trimmedString(payload.workspaceId);
-  if (!workspaceId) return null;
-  if (!parsed && trimmedString(payload.triggerName) !== 'inbound') return null;
-  const messageId = parsed?.messageId ?? positiveInt(payload.messageId);
-  if (messageId == null) return null;
-  const workflowId = (parsed ? parsed.chain.workflowIds[parsed.chain.index] : null)
-    ?? positiveInt(payload.workflowId);
-  if (workflowId == null) return null;
+  const resolved = terminalInboundChildContext(payload);
+  if (!resolved) return null;
   return {
-    workspaceId,
-    messageId,
-    workflowId,
+    workspaceId: resolved.workspaceId,
+    messageId: resolved.messageId,
+    workflowId: resolved.workflowId,
     // Zwei terminale Knoten desselben Laufs schliessen unabhaengig voneinander
     // ab und brauchen darum getrennte Einmal-Schluessel.
     nodeId: trimmedString(payload.terminalNodeId) || 'terminal',

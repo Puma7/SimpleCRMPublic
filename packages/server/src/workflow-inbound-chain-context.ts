@@ -8,6 +8,19 @@ export type InboundWorkflowChainContext = Readonly<{
 export type InboundChainContinuationFields = Readonly<{
   inboundWorkflowChain?: InboundWorkflowChainContext;
   skipIfMessageSpamOrReview?: boolean;
+  /**
+   * Lauf, der diesen Trigger-Fan-out gestartet hat.
+   *
+   * Ohne Kette ist der Schluessel der Join-Barriere nur Nachricht + Workflow.
+   * Zwei ueberlappende Backfill-/Reapply-Laeufe teilten sich dann denselben
+   * Zaehler: ein Kind aus Lauf B koennte die Barriere von Lauf A auf null
+   * setzen, den Applied-Marker schreiben und Folgearbeit freigeben, waehrend
+   * Zweige beider Laeufe noch laufen. Continuations tragen keine eigene runId
+   * (jede erzeugt einen neuen Lauf), deshalb reist die des Ursprungslaufs hier
+   * mit — und zwar durch JEDE Fortsetzung, sonst rechnen Eltern und Kinder mit
+   * verschiedenen Schluesseln.
+   */
+  inboundFanOutRunId?: number;
 }>;
 
 export function parseInboundWorkflowChain(value: unknown): InboundWorkflowChainContext | null {
@@ -29,9 +42,11 @@ export function parseInboundWorkflowChain(value: unknown): InboundWorkflowChainC
 export function inboundChainFieldsFromRecord(value: Record<string, unknown> | null | undefined): InboundChainContinuationFields {
   if (!value) return {};
   const chain = parseInboundWorkflowChain(value.inboundWorkflowChain);
+  const fanOutRunId = Number(value.inboundFanOutRunId);
   return {
     ...(chain ? { inboundWorkflowChain: chain } : {}),
     ...(value.skipIfMessageSpamOrReview === true ? { skipIfMessageSpamOrReview: true } : {}),
+    ...(Number.isInteger(fanOutRunId) && fanOutRunId > 0 ? { inboundFanOutRunId: fanOutRunId } : {}),
   };
 }
 
@@ -43,6 +58,11 @@ export function resumeContextInboundChainFields(
   return {
     ...(continuation.inboundWorkflowChain
       ? { inboundWorkflowChain: continuation.inboundWorkflowChain }
+      : {}),
+    // Anders als skipIfMessageSpamOrReview MUSS der Fan-out-Lauf jede
+    // Fortsetzung ueberleben: er ist der Schluessel der Join-Barriere.
+    ...(continuation.inboundFanOutRunId
+      ? { inboundFanOutRunId: continuation.inboundFanOutRunId }
       : {}),
     // Do not re-stamp skipIfMessageSpamOrReview onto resumed workflow.execute —
     // it is a one-shot initial post-process guard only.

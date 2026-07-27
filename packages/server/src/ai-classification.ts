@@ -37,8 +37,8 @@ import {
 } from './workflow-inbound-chain-context';
 import {
   enqueueNextInboundWorkflowAfterTerminalChildFailure,
-  inboundChainFromJobPayload,
   isInboundSiblingAborted,
+  terminalInboundChildContext,
 } from './workflow-inbound-chain-advance';
 import {
   completeTerminalInboundChild,
@@ -1260,7 +1260,7 @@ async function inboundAsyncChildAbortReason(
 ): Promise<InboundAsyncChildAbortReason | null> {
   const messageId = input.messageId;
   const continuation = input.continuation;
-  const terminal = continuation ? null : inboundChainFromJobPayload(input.terminalChainPayload ?? {});
+  const terminal = continuation ? null : terminalInboundChildContext(input.terminalChainPayload ?? {});
   // Ohne Continuation UND ohne terminalen Kettenkontext ist der Job
   // compose-initiiert (manuelle KI-Aktion) — der darf nicht am Spamstatus
   // scheitern, sonst waeren manuelle Aktionen auf „Spam pruefen"-Mails gesperrt.
@@ -1275,7 +1275,7 @@ async function inboundAsyncChildAbortReason(
     .executeTakeFirst();
   if (live && messageIsSpamOrReviewForInboundWorkflow(live)) return 'message_spam_or_review';
 
-  const workflowId = continuation?.workflowId ?? terminal?.chain.workflowIds[terminal.chain.index];
+  const workflowId = continuation?.workflowId ?? terminal?.workflowId;
   if (workflowId == null) return null;
   const aborted = await isInboundSiblingAborted(trx, {
     workspaceId: input.workspaceId,

@@ -233,20 +233,25 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
     completeInboundDeferredJoinSiblingOnPgClient,
     inboundChainFromJobPayload,
     inboundChainHopClaimKey,
+    terminalInboundChildContext,
   } = await import('../workflow-inbound-chain-advance.js');
+  // Auch ohne Kette (Inbound-Backfill/Reapply) muss die Join-Barriere abgebaut
+  // werden — sonst haengt sie nach einem endgueltig gescheiterten Kindjob.
+  // Weiterzuschalten gibt es dort nichts, deshalb bleibt `parsed` die Grundlage
+  // fuer den Folge-Workflow.
+  const target = terminalInboundChildContext(payload as Record<string, unknown>);
+  if (!target) return;
   const parsed = inboundChainFromJobPayload(payload as Record<string, unknown>);
-  if (!parsed) return;
-  const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
-  if (currentWorkflowId == null) return;
-  const nextIndex = parsed.chain.index + 1;
+  const currentWorkflowId = target.workflowId;
+  const nextIndex = parsed ? parsed.chain.index + 1 : 0;
   // Kein vorzeitiges return am letzten Kettenplatz: die Deferred-Join-Barriere
   // muss auch dann abgebaut werden, wenn es keinen Folge-Workflow zu enqueuen
   // gibt — sonst wartet ein erfolgreicher Geschwisterzweig dauerhaft an ihr.
-  const nextWorkflowId = nextIndex < parsed.chain.workflowIds.length
+  const nextWorkflowId = parsed && nextIndex < parsed.chain.workflowIds.length
     ? parsed.chain.workflowIds[nextIndex]
     : undefined;
 
-  const nextPayload: JobPayload | null = nextWorkflowId == null
+  const nextPayload: JobPayload | null = nextWorkflowId == null || parsed === null
     ? null
     : parsed.actorUserId
       ? {
@@ -269,7 +274,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
         },
       });
 
-  const claimKey = nextPayload === null
+  const claimKey = nextPayload === null || parsed === null
     ? null
     : inboundChainHopClaimKey(parsed.messageId, parsed.chain, nextIndex);
 
@@ -292,7 +297,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
                     set_config('app.user_id', '', true),
                     set_config('app.role', 'system', true),
                     set_config('app.cross_workspace_access', 'off', true)`,
-            [parsed.workspaceId],
+            [target.workspaceId],
           );
           // Idempotenz pro Graphile-Job. Anders als beim Legacy-Queue-Port
           // (postgres-job-queue-port failJob/failTerminal) läuft die
@@ -311,7 +316,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
                ON CONFLICT (workspace_id, key) DO NOTHING
                RETURNING key`,
               [
-                parsed.workspaceId,
+                target.workspaceId,
                 advanceGuardKey,
                 JSON.stringify({ origin: 'inbound_chain_terminal_advance' }),
               ],
@@ -322,10 +327,11 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             }
           }
           const join = await completeInboundDeferredJoinSiblingOnPgClient(client, {
-            workspaceId: parsed.workspaceId,
-            messageId: parsed.messageId,
+            workspaceId: target.workspaceId,
+            messageId: target.messageId,
             workflowId: currentWorkflowId,
-            chain: parsed.chain,
+            chain: target.chain,
+            fanOutRunId: target.fanOutRunId,
             chainStop: false,
             // Endgueltiger Fehlschlag: ueber die Barriere sichtbar halten, sonst
             // markiert ein spaeter fertiger Geschwisterzweig den unvollstaendig
@@ -351,7 +357,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
              ON CONFLICT (workspace_id, key) DO NOTHING
              RETURNING key`,
             [
-              parsed.workspaceId,
+              target.workspaceId,
               claimKey,
               JSON.stringify({ origin: 'inbound_chain_hop' }),
             ],
