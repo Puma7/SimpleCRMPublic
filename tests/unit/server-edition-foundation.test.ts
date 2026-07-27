@@ -34938,6 +34938,68 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('restoring a chain-stopping version needs workflows.manage too', async () => {
+    // Sonst laedt ein Editor die beim Anlegen verbotene Konstruktion einfach
+    // ueber eine gespeicherte Version in denselben aktiven Workflow.
+    const updateCalls: unknown[] = [];
+    const workflow = { ...makeWorkflowRecord(23), sourceSqliteId: -23, enabled: true, triggerName: 'inbound' };
+    const chainStopVersion = {
+      ...makeWorkflowVersionRecord(82),
+      sourceSqliteId: -82,
+      workflowId: 23,
+      workflowSourceSqliteId: -23,
+      graph: {
+        version: 1,
+        nodes: [
+          { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+          { id: 'var-1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.is_spam', value: true } } },
+          { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop_after_spam' } },
+        ],
+        edges: [],
+      },
+      definition: { steps: [] },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [workflow], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? workflow : null; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow };
+        },
+      },
+      workflowVersions: {
+        async list() { return { items: [chainStopVersion], nextCursor: null }; },
+        async get() { return chainStopVersion; },
+        async create() { throw new Error('nicht verwendet'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const denied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal: editor,
+    });
+    expect(denied.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    const allowed = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
+    });
+    expect(allowed.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+  });
+
   test('server workflow run by-source routes resolve legacy ids for history reads', async () => {
     const workflowListCalls: unknown[] = [];
     const runListCalls: unknown[] = [];

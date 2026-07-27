@@ -26,7 +26,7 @@ import type {
   WorkflowVersionMutationInput,
   WorkflowVersionRecord,
 } from './types';
-import { workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import { workflowGraphHasChainStopNode, workflowGraphHasSideEffectNode } from '@simplecrm/core';
 import { outboundWorkflowGuardError } from './workflow-outbound-guard';
 import {
   data,
@@ -431,13 +431,18 @@ async function handleWorkflowVersionSourceRestore(
     existingWorkflow.enabled !== false
     && restoredGraph
     && typeof restoredGraph === 'object'
-    && workflowGraphHasSideEffectNode(restoredGraph)
+    // Dieselben ZWEI Kriterien wie beim Anlegen/Aktualisieren: schreibende
+    // Knoten und Kettenabbruch (stopFurtherWorkflows / logic.stop_after_spam,
+    // dessen Spam-Flag per logic.set_variable frei setzbar ist). Sonst laedt
+    // ein Editor die verbotene Konstruktion einfach ueber eine gespeicherte
+    // Version in denselben aktiven Workflow.
+    && (workflowGraphHasSideEffectNode(restoredGraph) || workflowGraphHasChainStopNode(restoredGraph))
     && !requireCapability(principal, 'workflows.manage')
   ) {
     return error(
       403,
       'forbidden',
-      'Aktive Workflows mit Seiteneffekten erfordern workflows.manage',
+      'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
     );
   }
 
@@ -1085,7 +1090,10 @@ async function handleDelayedJobUpdate(
     if (!existing) return error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
     if (existing.workflowId !== null) {
       const workflow = await ports.workflows.get({ workspaceId: principal.workspaceId, id: existing.workflowId });
-      if (workflow && workflowGraphHasSideEffectNode(workflow.graph)) {
+      if (
+        workflow
+        && (workflowGraphHasSideEffectNode(workflow.graph) || workflowGraphHasChainStopNode(workflow.graph))
+      ) {
         return error(403, 'forbidden', 'Umleiten von Workflows mit schreibenden Knoten erfordert Adminrechte');
       }
     }
