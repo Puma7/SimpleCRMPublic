@@ -7360,6 +7360,176 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('workflow tag and category writes invalidate the affected visibility filters once', async () => {
+    // Schreibt ein Workflow Tags oder Kategorien, kippt das die Sichtbarkeit fuer
+    // jeden, dessen Binding genau diese Werte als Filter fuehrt: ein
+    // Ausschlussfilter sperrt eine bereits geladene Nachricht, ein Allow-Filter
+    // laesst sie neu erscheinen. Ohne Invalidierung merkt der Client das erst
+    // beim naechsten Reload.
+    //
+    // Gebuendelt, weil ein Tagging-Workflow auf JEDER eingehenden Nachricht
+    // laeuft: ein Lookup ueber alle gesammelten Werte, danach hoechstens ein
+    // Ereignis pro betroffenem Nutzer.
+    const now = new Date('2026-07-04T10:32:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 28,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 280,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            { id: 'tag-1', type: 'action', data: { actionType: 'tag', tag: 'vip' } },
+            // Derselbe Tag ein zweites Mal — darf die Invalidierung nicht verdoppeln.
+            { id: 'tag-2', type: 'action', data: { actionType: 'tag', tag: 'vip' } },
+            { id: 'tag-3', type: 'action', data: { actionType: 'tag', tag: 'eskalation' } },
+          ],
+          edges: [
+            { id: 'e1', source: 'trigger-1', target: 'tag-1' },
+            { id: 'e2', source: 'tag-1', target: 'tag-2' },
+            { id: 'e3', source: 'tag-2', target: 'tag-3' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 15,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 150,
+        subject: 'Bitte bearbeiten',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Bitte bearbeiten',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        seen_local: false,
+        archived: false,
+        done_local: false,
+        is_spam: false,
+        spam_status: null,
+        assigned_to: null,
+      }],
+    });
+
+    const lookups: unknown[] = [];
+    const published: Array<{ type: string; payload: { targetUserId?: string } }> = [];
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      mailAccess: {
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          lookups.push(input);
+          // Derselbe Nutzer ueber mehrere Werte — er darf nur EIN Ereignis bekommen.
+          return ['user-filter-a', 'user-filter-b', 'user-filter-a'];
+        },
+      } as never,
+      events: {
+        async publish(event: { type: string; payload: { targetUserId?: string } }) {
+          published.push(event);
+        },
+      } as never,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 28,
+      messageId: 15,
+      triggerName: 'manual',
+      actorUserId: 'user-actor',
+      context: {},
+    });
+
+    expect(rows.steps.map((step) => step.status)).toEqual(['ok', 'ok', 'ok']);
+    // GENAU ein Lookup fuer den ganzen Lauf, mit deduplizierten Tags.
+    expect(lookups).toHaveLength(1);
+    expect((lookups[0] as { tags: string[] }).tags.slice().sort()).toEqual(['eskalation', 'vip']);
+    // Und ein Ereignis je betroffenem Nutzer, nicht je Wert.
+    expect(published.map((event) => event.payload.targetUserId).sort())
+      .toEqual(['user-filter-a', 'user-filter-b']);
+    expect(published.every((event) => event.type === 'email_acl.changed')).toBe(true);
+  });
+
+  test('a workflow that writes no tags or categories publishes nothing', async () => {
+    const now = new Date('2026-07-04T10:33:00.000Z');
+    const { db } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            { id: 'seen-1', type: 'registry', data: { nodeType: 'email.mark_seen', config: {} } },
+          ],
+          edges: [{ id: 'e1', source: 'trigger-1', target: 'seen-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 16,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 160,
+        subject: 'Ohne Metadaten',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Ohne Metadaten',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        seen_local: false,
+        archived: false,
+        done_local: false,
+        is_spam: false,
+        spam_status: null,
+        assigned_to: null,
+      }],
+    });
+
+    const lookups: unknown[] = [];
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      workflowImapActions: {
+        async move() { throw new Error('move should not be called'); },
+        async delete() { throw new Error('delete should not be called'); },
+        async setSeen() { return { ok: true as const, sourceFolderPath: 'INBOX' }; },
+      },
+      mailAccess: {
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          lookups.push(input);
+          return [];
+        },
+      } as never,
+      events: { async publish() {} } as never,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 29,
+      messageId: 16,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    // Kein geschriebener Wert heisst: gar kein Lookup, nicht bloss kein Ereignis.
+    expect(lookups).toEqual([]);
+  });
+
   test('email.assign refuses a deleted team member instead of orphaning the message', async () => {
     // Verweist ein gespeicherter email.assign-Knoten auf ein inzwischen
     // geloeschtes Mitglied (oder bekommt dessen Loeschung die Zeilensperre
@@ -43204,6 +43374,7 @@ class FakeWorkflowExecutionUpdate {
 
 class FakeWorkflowExecutionDelete {
   private readonly wheres: Array<readonly [string, string, unknown]> = [];
+  private returned: string | null = null;
 
   constructor(private readonly rows: Array<Record<string, unknown>>) {}
 
@@ -43212,7 +43383,17 @@ class FakeWorkflowExecutionDelete {
     return this;
   }
 
-  async execute(): Promise<{ numDeletedRows: bigint }[]> {
+  /**
+   * Der Kategorie-Schreibpfad liest die ENTFERNTEN Zeilen zurueck, um deren
+   * Kategorien fuer die Sichtbarkeits-Invalidierung zu erfassen.
+   */
+  returning(column: string) {
+    this.returned = column;
+    return this;
+  }
+
+  async execute(): Promise<Array<Record<string, unknown>> | { numDeletedRows: bigint }[]> {
+    const removed: Array<Record<string, unknown>> = [];
     let deleted = 0;
     for (let index = this.rows.length - 1; index >= 0; index -= 1) {
       const row = this.rows[index];
@@ -43223,9 +43404,14 @@ class FakeWorkflowExecutionDelete {
         throw new Error(`unexpected workflow execution delete operator: ${operator}`);
       });
       if (match) {
+        removed.push(row!);
         this.rows.splice(index, 1);
         deleted += 1;
       }
+    }
+    if (this.returned) {
+      const column = this.returned;
+      return removed.map((row) => ({ [column]: row[column] ?? null }));
     }
     return [{ numDeletedRows: BigInt(deleted) }];
   }

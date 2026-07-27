@@ -497,11 +497,26 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       secrets: options.secrets,
     })
     : undefined;
+  // Vorgezogen, weil der Workflow-Worker beides braucht: nach einer Tag-/
+  // Kategorie-Schreibung muss er aufloesen koennen, WEN der Wert betrifft, und
+  // die Invalidierung zustellen. Weiter unten werden dieselben Instanzen als
+  // ports.mailAccess bzw. ports.events zurueckgegeben — kein zweiter Zustand.
+  const events = options.events ?? createPostgresServerEventPort({ db: options.db });
+  const mailAccessPort = createPostgresMailAccessPort({ db: options.db });
+  const mailAclRolloutState = createPostgresMailAclRolloutStatePort({ db: options.db });
+  const mailAccess = new MailAccessRolloutService({
+    state: mailAclRolloutState,
+    legacy: createPostgresMailAclRolloutLegacyPort({ db: options.db }),
+    newAcl: mailAccessPort,
+    onTelemetryDiagnostic: options.mailAclRolloutDiagnostic ?? reportMailAclRolloutDiagnostic,
+  });
   const workflowExecution = createPostgresWorkflowExecutionJobPort({
     db: options.db,
     mssql: createPostgresMssqlSettingsPort({ db: options.db, secrets: options.secrets }),
     workflowImapActions,
     secrets: options.secrets,
+    mailAccess,
+    events,
   });
   const workflowDryRun = resolveWorkflowDryRun(workflowExecution);
   const emailOutboundValidation = createPostgresEmailOutboundValidationPort({
@@ -543,7 +558,6 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
     })
     : undefined;
   const audit = createPostgresAuditPort({ db: options.db });
-  const events = options.events ?? createPostgresServerEventPort({ db: options.db });
   const emailTracking = options.publicBaseUrl?.trim() && options.masterKey
     ? createPostgresEmailTrackingService({
       db: options.db,
@@ -554,15 +568,8 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       emailTrackingIpIntelligence: options.emailTrackingIpIntelligence,
     })
     : undefined;
-  const mailAccessPort = createPostgresMailAccessPort({ db: options.db });
-  const mailAclRolloutState = createPostgresMailAclRolloutStatePort({ db: options.db });
   return {
-    mailAccess: new MailAccessRolloutService({
-      state: mailAclRolloutState,
-      legacy: createPostgresMailAclRolloutLegacyPort({ db: options.db }),
-      newAcl: mailAccessPort,
-      onTelemetryDiagnostic: options.mailAclRolloutDiagnostic ?? reportMailAclRolloutDiagnostic,
-    }),
+    mailAccess,
     mailAclRollout: mailAclRolloutState,
     mailDelegation: createPostgresMailDelegationPort({ db: options.db }),
     mailResourceLookup: createPostgresMailResourceLookupPort({ db: options.db }),
@@ -981,6 +988,10 @@ function buildServerJobHandlers(input: {
             mssql: createPostgresMssqlSettingsPort({ db, secrets }),
             workflowImapActions: createPostgresWorkflowImapActionPort({ db, secrets }),
             secrets,
+            // Auch der Job-Worker invalidiert nach Tag-/Kategorie-Schreibungen.
+            // Beides stammt aus denselben ports wie im API-Pfad.
+            ...(ports.mailAccess ? { mailAccess: ports.mailAccess } : {}),
+            ...(ports.events ? { events: ports.events } : {}),
           }),
           workflowForwardCopy: createPostgresWorkflowForwardCopyPort({
             db,
@@ -1000,7 +1011,14 @@ function buildServerJobHandlers(input: {
         ...(db ? {
           aiAgent: createPostgresAiAgentPort({ db, secrets }),
           aiPickCanned: createPostgresAiPickCannedPort({ db, secrets }),
-          aiClassification: createPostgresAiClassificationPort({ db, secrets }),
+          aiClassification: createPostgresAiClassificationPort({
+            db,
+            secrets,
+            // Die Klassifizierung schreibt ki:<label>-Tags — dieselbe
+            // Sichtbarkeitsfrage wie im Workflow-Worker.
+            ...(ports.mailAccess ? { mailAccess: ports.mailAccess } : {}),
+            ...(ports.events ? { events: ports.events } : {}),
+          }),
           aiReview: createPostgresAiReviewPort({ db, secrets }),
           aiTransformText: createPostgresAiTransformTextPort({ db, secrets }),
           ...(secrets ? {

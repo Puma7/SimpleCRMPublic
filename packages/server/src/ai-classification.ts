@@ -8,6 +8,8 @@ import {
 import addressparser from 'nodemailer/lib/addressparser';
 
 import type { PostgresSecretPort } from './db/postgres-secret-port';
+import type { MailAccessService } from './mail-access/types';
+import type { ServerEventPort } from './api/types';
 import type {
   EmailAiProfilesTable,
   EmailAiPromptsTable,
@@ -180,6 +182,13 @@ export type PostgresAiClassificationPortOptions = Readonly<{
   fetchImpl?: typeof fetch;
   now?: () => Date;
   chatCompletion?: (input: ChatCompletionInput) => Promise<string>;
+  /**
+   * Wie im Workflow-Worker: die KI-Klassifizierung schreibt `ki:<label>`-Tags,
+   * die die Sichtbarkeit fuer jeden kippen koennen, dessen Binding genau diesen
+   * Tag filtert. Fehlt einer der beiden Ports, unterbleibt die Invalidierung.
+   */
+  mailAccess?: Pick<MailAccessService, 'resolveConstraintSubjectUserIds'>;
+  events?: Pick<ServerEventPort, 'publish'>;
 }>;
 
 type EmailMessageRow = Selectable<EmailMessagesTable>;
@@ -297,17 +306,25 @@ export function createPostgresAiClassificationPort(
       const { label, confidence } = parseClassificationOutput(output);
       if (!label) throw new Error('KI-Klassifizierung leer');
 
+      const writtenTags = new Set<string>();
       await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          await addClassificationTag(trx, input.workspaceId, context.message, label, now());
+          await addClassificationTag(trx, input.workspaceId, context.message, label, now(), writtenTags);
           if (input.continuation) {
             await enqueueClassificationContinuation(trx, input, label, confidence, now());
           }
         },
         { applySession: options.applyWorkspaceSession },
       );
+      // Erst NACH dem Commit — ein Publish davor waere bei einem Rollback falsch.
+      await publishTagVisibilityInvalidation({
+        workspaceId: input.workspaceId,
+        tags: writtenTags,
+        mailAccess: options.mailAccess,
+        events: options.events,
+      });
     },
   };
 }
@@ -1480,14 +1497,62 @@ function normalizeClassificationLabel(output: string): string {
   return output.trim().split(/\s+/)[0]?.trim() ?? '';
 }
 
+/**
+ * Sichtbarkeits-Invalidierung fuer geschriebene Tags — gebuendelt und nach dem
+ * Commit. Ein Lookup ueber alle Tags des Laufs, danach hoechstens ein Ereignis
+ * pro betroffenem Nutzer. Best effort: der Lauf ist committed, ein
+ * fehlgeschlagenes Publish darf ihn nicht nachtraeglich scheitern lassen.
+ */
+async function publishTagVisibilityInvalidation(input: Readonly<{
+  workspaceId: string;
+  tags: ReadonlySet<string>;
+  mailAccess?: Pick<MailAccessService, 'resolveConstraintSubjectUserIds'>;
+  events?: Pick<ServerEventPort, 'publish'>;
+}>): Promise<void> {
+  if (input.tags.size === 0) return;
+  const resolve = input.mailAccess?.resolveConstraintSubjectUserIds;
+  if (!resolve || !input.events) return;
+  let targets: readonly string[] = [];
+  try {
+    targets = await resolve.call(input.mailAccess, {
+      workspaceId: input.workspaceId,
+      tags: [...input.tags],
+    });
+  } catch (error) {
+    console.warn(
+      `[ai-classification] visibility filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  const occurredAt = new Date().toISOString();
+  for (const targetUserId of new Set(targets)) {
+    try {
+      await input.events.publish({
+        type: 'email_acl.changed',
+        workspaceId: input.workspaceId,
+        entityType: 'email_acl',
+        entityId: targetUserId,
+        actorUserId: 'system',
+        occurredAt,
+        payload: { targetUserId, state: 'changed' },
+      });
+    } catch (error) {
+      console.warn(
+        `[ai-classification] email_acl.changed publish failed for user ${targetUserId}; write already committed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
 async function addClassificationTag(
   trx: WorkspaceTransaction,
   workspaceId: string,
   message: ClassificationMessageRow,
   label: string,
   now: Date,
+  writtenTags?: Set<string>,
 ): Promise<void> {
-  await addMessageTag(trx, workspaceId, message, `ki:${label}`, now);
+  await addMessageTag(trx, workspaceId, message, `ki:${label}`, now, writtenTags);
 }
 
 async function addMessageTag(
@@ -1496,6 +1561,7 @@ async function addMessageTag(
   message: ClassificationMessageRow,
   tag: string,
   now: Date,
+  writtenTags?: Set<string>,
 ): Promise<void> {
   const messageSourceSqliteId = Number(message.source_sqlite_id);
   const existing = await trx
@@ -1506,6 +1572,7 @@ async function addMessageTag(
     .where('tag', '=', tag)
     .executeTakeFirst();
   if (existing) return;
+  writtenTags?.add(tag);
 
   await trx
     .insertInto('email_message_tags')

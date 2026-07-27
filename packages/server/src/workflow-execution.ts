@@ -70,6 +70,8 @@ import {
   type WorkflowAiDraftNodeDeps,
 } from './workflow-ai-draft-nodes';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
+import type { MailAccessService } from './mail-access/types';
+import type { ServerEventPort } from './api/types';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
 import type {
@@ -280,10 +282,30 @@ type DeferredWorkflowImapEffect =
     now: Date;
   };
 
+/**
+ * Sammelbecken fuer Sichtbarkeits-Invalidierungen.
+ *
+ * Schreibt ein Workflow Tags oder Kategorien, kann das die Sichtbarkeit einer
+ * Nachricht fuer jeden kippen, dessen Binding genau diese Werte als Filter
+ * fuehrt — bei einem Ausschlussfilter wird eine bereits geladene Nachricht
+ * gesperrt, bei einem Allow-Filter erscheint sie neu. Ohne Invalidierung merkt
+ * der Client das erst beim naechsten Reload.
+ *
+ * Gesammelt wird INNERHALB der Transaktion, veroeffentlicht wird danach: ein
+ * Publish vor dem Commit waere bei einem Rollback schlicht falsch. Sets statt
+ * Listen, damit ein Workflow, der denselben Tag mehrfach setzt, am Ende
+ * trotzdem nur eine Invalidierung ausloest.
+ */
+type WorkflowVisibilityInvalidation = {
+  tags: Set<string>;
+  categoryIds: Set<number>;
+};
+
 type ServerWorkflowRuntimePorts = Readonly<{
   mssql?: Pick<MssqlSettingsPort, 'executeReadOnlyQuery'>;
   workflowImapActions?: ServerWorkflowImapActionPort;
   deferredImapEffects?: DeferredWorkflowImapEffect[];
+  visibilityInvalidation?: WorkflowVisibilityInvalidation;
   aiReviewPreview?: AiReviewPreviewRunner;
   aiDraft?: WorkflowAiDraftNodeDeps;
 }>;
@@ -300,7 +322,75 @@ export type PostgresWorkflowExecutionJobPortOptions = Readonly<{
   workflowImapActions?: ServerWorkflowImapActionPort;
   secrets?: PostgresSecretPort;
   aiReviewPreview?: AiReviewPreviewRunner;
+  /**
+   * Beide zusammen ergeben die Sichtbarkeits-Invalidierung nach Tag-/
+   * Kategorie-Schreibungen: `mailAccess` loest auf, WEN ein Wert betrifft,
+   * `events` stellt die Invalidierung zu. Fehlt einer von beiden, unterbleibt
+   * sie stillschweigend — der Worker laeuft auch ohne Event-Backend.
+   */
+  mailAccess?: Pick<MailAccessService, 'resolveConstraintSubjectUserIds'>;
+  events?: Pick<ServerEventPort, 'publish'>;
 }>;
+
+/**
+ * Sichtbarkeits-Invalidierung NACH dem Commit — gebuendelt.
+ *
+ * Ein Tagging-Workflow laeuft auf jeder eingehenden Nachricht. Pro geschriebenem
+ * Wert ein eigenes Ereignis zu senden waere teurer als der Zustand, den es
+ * heilt: jedes email_acl.changed laesst den Client seine Rechte neu laden und
+ * seine Liste neu ziehen. Deshalb genau EIN Lookup ueber alle gesammelten
+ * Tags/Kategorien und danach hoechstens EIN Ereignis pro betroffenem Nutzer.
+ *
+ * Best effort: der Lauf ist committed: ein fehlgeschlagenes Publish darf ihn
+ * nicht nachtraeglich scheitern lassen.
+ */
+async function flushWorkflowVisibilityInvalidation(input: Readonly<{
+  workspaceId: string;
+  actorUserId?: string;
+  collected: WorkflowVisibilityInvalidation;
+  mailAccess?: Pick<MailAccessService, 'resolveConstraintSubjectUserIds'>;
+  events?: Pick<ServerEventPort, 'publish'>;
+}>): Promise<void> {
+  const { collected, mailAccess, events } = input;
+  if (collected.tags.size === 0 && collected.categoryIds.size === 0) return;
+  const resolve = mailAccess?.resolveConstraintSubjectUserIds;
+  if (!resolve || !events) return;
+
+  let targets: readonly string[] = [];
+  try {
+    targets = await resolve.call(mailAccess, {
+      workspaceId: input.workspaceId,
+      ...(collected.categoryIds.size > 0 ? { categoryIds: [...collected.categoryIds] } : {}),
+      ...(collected.tags.size > 0 ? { tags: [...collected.tags] } : {}),
+    });
+  } catch (error) {
+    console.warn(
+      `[workflow] visibility filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+
+  const occurredAt = new Date().toISOString();
+  for (const targetUserId of new Set(targets)) {
+    try {
+      await events.publish({
+        type: 'email_acl.changed',
+        workspaceId: input.workspaceId,
+        entityType: 'email_acl',
+        entityId: targetUserId,
+        // Der Workflow-Worker laeuft ohne menschlichen Akteur; 'system' ist die
+        // im Projekt uebliche Kennzeichnung (siehe email-tracking).
+        actorUserId: input.actorUserId ?? 'system',
+        occurredAt,
+        payload: { targetUserId, state: 'changed' },
+      });
+    } catch (error) {
+      console.warn(
+        `[workflow] email_acl.changed publish failed for user ${targetUserId}; run already committed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
 
 export function createPostgresWorkflowExecutionJobPort(
   options: PostgresWorkflowExecutionJobPortOptions,
@@ -331,6 +421,10 @@ export function createPostgresWorkflowExecutionJobPort(
   return {
     async execute(input) {
       const deferredImapEffects: DeferredWorkflowImapEffect[] = [];
+      const visibilityInvalidation: WorkflowVisibilityInvalidation = {
+        tags: new Set<string>(),
+        categoryIds: new Set<number>(),
+      };
       await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -666,6 +760,7 @@ export function createPostgresWorkflowExecutionJobPort(
             ports: {
               ...runtimePorts,
               deferredImapEffects,
+              visibilityInvalidation,
             },
           });
           await finishRun(trx, input.workspaceId, run.id, {
@@ -784,6 +879,13 @@ export function createPostgresWorkflowExecutionJobPort(
         db: options.db,
         workflowImapActions: options.workflowImapActions,
         applyWorkspaceSession: options.applyWorkspaceSession,
+      });
+      await flushWorkflowVisibilityInvalidation({
+        workspaceId: input.workspaceId,
+        actorUserId: input.actorUserId,
+        collected: visibilityInvalidation,
+        mailAccess: options.mailAccess,
+        events: options.events,
       });
     },
 
@@ -2023,7 +2125,7 @@ async function executeServerNode(
   if (type === 'email.tag' || type === 'tag') {
     const tag = String(config.tag ?? node.data.tag ?? '').trim();
     if (!tag) return { status: 'skipped', port: 'default', message: 'leerer Tag' };
-    const result = await addWorkflowMessageTag(trx, context, tag, now);
+    const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
     return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
   }
   if (type === 'email.set_category' || type === 'set_category') {
@@ -2033,12 +2135,12 @@ async function executeServerNode(
     const categorySourceSqliteId = optionalPositiveIntegerConfig(config.categorySourceSqliteId, 'categorySourceSqliteId');
     if (!categorySourceSqliteId.ok) return { status: 'error', port: 'error', message: categorySourceSqliteId.message };
     if (categorySourceSqliteId.value !== undefined) {
-      const byId = await setWorkflowMessageCategoryById(trx, context, categorySourceSqliteId.value, now);
+      const byId = await setWorkflowMessageCategoryById(trx, context, categorySourceSqliteId.value, now, ports);
       if (byId) return byId;
     }
     const path = String(config.path ?? '').trim();
     if (!path) return { status: 'skipped', port: 'default' };
-    return await setWorkflowMessageCategoryPath(trx, context, path, now);
+    return await setWorkflowMessageCategoryPath(trx, context, path, now, ports);
   }
   if (type === 'email.auto_reply') {
     return await evaluateWorkflowAutoReply(trx, context, config);
@@ -2048,7 +2150,7 @@ async function executeServerNode(
       return { status: 'skipped', port: 'default', message: 'keine Anhaenge' };
     }
     const tag = String(config.tag ?? node.data.tag ?? 'attachment').trim() || 'attachment';
-    const result = await addWorkflowMessageTag(trx, context, tag, now);
+    const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
     return result ?? { status: 'ok', port: 'default', variables: { 'email.last_tag': tag } };
   }
   if (type === 'email.create_draft') {
@@ -2065,7 +2167,7 @@ async function executeServerNode(
       : level === 'niedrig' || level === 'low'
         ? 'priority:niedrig'
         : 'priority:normal';
-    const result = await addWorkflowMessageTag(trx, context, tag, now);
+    const result = await addWorkflowMessageTag(trx, context, tag, now, ports);
     return result ?? {
       status: 'ok',
       port: 'default',
@@ -2122,6 +2224,7 @@ async function executeServerNode(
     if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
     return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now, {
       stopFurtherWorkflows: stopFurther.value,
+      ports,
     });
   }
   if (type === 'email.mark_spam') {
@@ -2143,6 +2246,7 @@ async function executeServerNode(
     const tag = String(config.tag ?? 'auto-spam').trim();
     return await setWorkflowSpamStatus(trx, context, spam.value ? 'spam' : 'clean', tag, train.value, now, {
       stopFurtherWorkflows: stopFurther.value,
+      ports,
     });
   }
   if (type === 'email.move_imap') {
@@ -6201,6 +6305,7 @@ async function addWorkflowMessageTag(
   context: ServerWorkflowContext,
   tag: string,
   now: Date,
+  ports?: ServerWorkflowRuntimePorts,
 ): Promise<NodeResult | null> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
@@ -6221,6 +6326,10 @@ async function addWorkflowMessageTag(
     .where('tag', '=', normalized)
     .executeTakeFirst();
   if (existing) return null;
+
+  // Ein neuer Tag kann die Sichtbarkeit fuer jeden kippen, dessen Binding genau
+  // diesen Tag als Filter fuehrt. Nach dem Commit invalidiert execute() sie.
+  ports?.visibilityInvalidation?.tags.add(normalized);
 
   await trx
     .insertInto('email_message_tags')
@@ -6252,11 +6361,26 @@ type WorkflowEmailCategoryReference = {
   name: string;
 };
 
+/** Entfernte und neu gesetzte Kategorie in den Invalidierungs-Sammler legen. */
+function recordCategoryInvalidation(
+  ports: ServerWorkflowRuntimePorts | undefined,
+  removed: ReadonlyArray<{ category_id: number | null }>,
+  next: number | null,
+): void {
+  const target = ports?.visibilityInvalidation;
+  if (!target) return;
+  for (const row of removed) {
+    if (row.category_id != null) target.categoryIds.add(Number(row.category_id));
+  }
+  if (next != null) target.categoryIds.add(Number(next));
+}
+
 async function setWorkflowMessageCategoryPath(
   trx: WorkspaceTransaction,
   context: ServerWorkflowContext,
   path: string,
   now: Date,
+  ports?: ServerWorkflowRuntimePorts,
 ): Promise<NodeResult> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
@@ -6286,11 +6410,16 @@ async function setWorkflowMessageCategoryPath(
   }
   if (!parent) return { status: 'skipped', port: 'default' };
 
-  await trx
+  // Die Zuordnung wird ERSETZT — invalidiert werden muessen daher die entfernten
+  // Kategorien genauso wie die neue: ein Allow-Filter auf der alten verliert die
+  // Nachricht, ein Ausschlussfilter auf der neuen gewinnt sie.
+  const removed = await trx
     .deleteFrom('email_message_categories')
     .where('workspace_id', '=', context.workspaceId)
     .where('message_source_sqlite_id', '=', messageSourceSqliteId)
+    .returning('category_id')
     .execute();
+  recordCategoryInvalidation(ports, removed, parent.id);
 
   await trx
     .insertInto('email_message_categories')
@@ -6332,6 +6461,7 @@ async function setWorkflowMessageCategoryById(
   context: ServerWorkflowContext,
   categorySourceSqliteId: number,
   now: Date,
+  ports?: ServerWorkflowRuntimePorts,
 ): Promise<NodeResult | null> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
@@ -6345,11 +6475,13 @@ async function setWorkflowMessageCategoryById(
     return { status: 'error', port: 'error', message: 'Nachricht nicht gefunden' };
   }
 
-  await trx
+  const removed = await trx
     .deleteFrom('email_message_categories')
     .where('workspace_id', '=', context.workspaceId)
     .where('message_source_sqlite_id', '=', messageSourceSqliteId)
+    .returning('category_id')
     .execute();
+  recordCategoryInvalidation(ports, removed, category.id);
 
   await trx
     .insertInto('email_message_categories')
@@ -6497,7 +6629,7 @@ async function setWorkflowSpamStatus(
   tag: string,
   train: boolean,
   now: Date,
-  options: { stopFurtherWorkflows?: boolean } = {},
+  options: { stopFurtherWorkflows?: boolean; ports?: ServerWorkflowRuntimePorts } = {},
 ): Promise<NodeResult> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
@@ -6538,7 +6670,7 @@ async function setWorkflowSpamStatus(
   if (result) return result;
 
   if (tag) {
-    const tagResult = await addWorkflowMessageTag(trx, context, tag, now);
+    const tagResult = await addWorkflowMessageTag(trx, context, tag, now, options.ports);
     if (tagResult) return tagResult;
   }
 
