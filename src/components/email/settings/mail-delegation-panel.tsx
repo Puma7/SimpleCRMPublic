@@ -396,13 +396,17 @@ export function MailDelegationPanel() {
         resource,
         profile,
         permissions: [...permissions].sort(),
-        constraints: {
-          assignmentMode: assignmentMode === "any" ? null : assignmentMode,
-          categoryAllowIds: categoryAllow.ids,
-          categoryExcludeIds: categoryExclude.ids,
-          tagAllowValues,
-          tagExcludeValues,
-        },
+        // Nur senden, wenn der Nutzer die Filter tatsächlich angefasst hat — sonst
+        // greift serverseitig das Auto-Inherit aus der eigenen Autorität.
+        ...(showFilters ? {
+          constraints: {
+            assignmentMode: assignmentMode === "any" ? null : assignmentMode,
+            categoryAllowIds: categoryAllow.ids,
+            categoryExcludeIds: categoryExclude.ids,
+            tagAllowValues,
+            tagExcludeValues,
+          },
+        } : {}),
       }) as { success?: boolean; error?: string }
       if (result.success === false) throw new Error(result.error ?? "save_failed")
       if (mountedRef.current) await load()
