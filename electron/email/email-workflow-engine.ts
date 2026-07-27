@@ -15,6 +15,10 @@ import {
   releaseInboundWorkflowClaim,
   insertWorkflowRun,
 } from './email-workflow-store';
+import {
+  messageIsSpamOrReviewForInboundWorkflow,
+  workflowGraphHasExplicitChainStopConfig,
+} from '@simplecrm/core';
 import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
 import {
   attachmentContextFromJson,
@@ -370,6 +374,17 @@ export async function runInboundWorkflowsForMessage(
       if (r.inboundChainStop) {
         return;
       }
+      // Bestandsgraphen ohne explizites stopFurtherWorkflows hatten bis #169 einen
+      // harten Stopp der Inbound-Priority-Kette bei spam/review. Nur Graphen, die
+      // das Feld bewusst gesetzt haben, nutzen die neue Opt-in-Semantik.
+      const afterWorkflowRow = getEmailMessageById(messageId);
+      if (
+        afterWorkflowRow
+        && messageIsSpamOrReviewForInboundWorkflow(afterWorkflowRow)
+        && !workflowGraphHasExplicitChainStopConfig(wf.graph_json)
+      ) {
+        return;
+      }
     } catch (e) {
       releaseInboundWorkflowClaim(messageId, wf.id);
       insertWorkflowRun({
@@ -385,13 +400,12 @@ export async function runInboundWorkflowsForMessage(
   if (inboundWorkflowDeferred) return;
 
   const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
-  if (
-    postWorkflowRow.is_spam === 1 ||
-    postWorkflowRow.spam_status === 'spam' ||
-    postWorkflowRow.spam_status === 'review' ||
-    postWorkflowRow.spam_score_label === 'spam' ||
-    postWorkflowRow.spam_score_label === 'review'
-  ) {
+  // Dieselbe Pruefung wie in der Kette oben — bewusst ueber den gemeinsamen
+  // Helfer statt als zweite, handgeschriebene Kopie: die inline-Variante war
+  // strenger (kein Lowercasing, kein `is_spam === true`) und konnte damit
+  // abweichend entscheiden, ob nach Spam noch Antwortvorschlag und
+  // Abwesenheitsantwort laufen.
+  if (messageIsSpamOrReviewForInboundWorkflow(postWorkflowRow)) {
     return;
   }
 
