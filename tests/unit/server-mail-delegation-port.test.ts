@@ -820,6 +820,11 @@ function createDelegationTransaction(fixtures: {
   };
   return {
     calls,
+    getExecutor: () => ({
+      transformQuery: (node: unknown) => node,
+      compileQuery: () => ({ sql: '', parameters: [] as readonly unknown[] }),
+      executeQuery: async () => ({ rows: [] }),
+    }),
     selectFrom(table: string) {
       calls.push(['selectFrom', table]);
       return createBuilder(table, 'select');

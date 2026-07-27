@@ -293,6 +293,10 @@ export async function enforceMailHttpPolicy(
     );
     const scopedMutation = isScopedWorkflowDelayedJobMutation(req.method, entry.route.path);
 
+    if (resources.kind === 'settings_global') {
+      return { ok: true };
+    }
+
     if (resources.kind === 'account_visible') {
       // GET /accounts/:accountId. Owner/admin, and a caller whose route scope is 'all', see the
       // full record (portsWithMailAccessContext skips the wrapper). A restricted delegate is
@@ -368,10 +372,6 @@ export async function enforceMailHttpPolicy(
         || (
           entry.policy.resource.kind === 'optional_message_lookup'
           && entry.policy.resource.whenAbsent === 'non_mail'
-        )
-        || (
-          entry.policy.resource.kind === 'optional_account'
-          && entry.policy.resource.whenAbsent === 'settings_global'
         );
       if (!allowedEmpty) return denied();
       await assertSupplementalHttpPermissions(
@@ -769,6 +769,7 @@ async function resolveHttpResources(
   ports: ServerApiPorts,
 ): Promise<
   | Readonly<{ kind: 'scope' }>
+  | Readonly<{ kind: 'settings_global' }>
   | Readonly<{ kind: 'account_visible'; accountId: string }>
   | Readonly<{ kind: 'resources'; resources: readonly MailResource[]; mode: 'all' | 'any' }>
 > {
@@ -797,7 +798,7 @@ async function resolveHttpResources(
     // An absent OR explicitly null accountId is a workspace-global write.
     if (raw === undefined || raw === null) {
       if (resolution.whenAbsent === 'settings_global') {
-        return { kind: 'resources', resources: [], mode: 'all' };
+        return { kind: 'settings_global' };
       }
       return { kind: 'scope' };
     }
