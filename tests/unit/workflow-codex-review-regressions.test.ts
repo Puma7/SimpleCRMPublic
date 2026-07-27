@@ -382,7 +382,7 @@ describe('codex review regression guards', () => {
     // Join-Barriere auch am letzten Kettenplatz abbauen (sonst bleibt sync_info
     // dauerhaft pending und ein erfolgreicher Geschwisterzweig wartet ewig).
     expect(advance).toMatch(
-      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return false;\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
+      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return \{ state: join, advanced: false \};[\s\S]{0,400}?const nextIndex = parsed\.chain\.index \+ 1;/,
     );
     // Gleicher Fehler im Graphile-Terminalpfad: kein return vor dem Join.
     expect(graphile).not.toMatch(
@@ -458,6 +458,447 @@ describe('codex review regression guards', () => {
 
     // Gegenlese: mehrdeutige Statuszeilen ergeben hold.
     expect(parse).toContain('statusMatches.length > 1');
+  });
+
+  test('folgearbeit: terminale KI-Knoten und Desktop-Versand-Claim', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const terminal = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
+    const classification = readRepoFile('packages/server/src/ai-classification.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const claim = readRepoFile('electron/email/email-scheduled-send-claim.ts');
+    const scheduled = readRepoFile('electron/email/email-scheduled-send.ts');
+    const approval = readRepoFile('electron/email/email-draft-approval.ts');
+    const desktopActions = readRepoFile('electron/workflow/draft-approval-actions.ts');
+
+    // Alle vier KI-Knoten stempeln Kettenkontext auch ohne Resume-Kante …
+    expect(execution.match(/terminalWorkflowCompletion: true/g)).toHaveLength(4);
+    // … und lassen den Elternlauf auf den Kindjob warten (alle vier Knoten).
+    for (const queued of [
+      'queued_ai_agent',
+      'queued_ai_draft_reply',
+      'queued_ai_review_draft',
+      'queued_ai_pick_canned',
+    ]) {
+      expect(execution).toMatch(
+        new RegExp(`stop: true,\\s*\\n\\s*deferred: true,\\s*\\n\\s*message: \`${queued}`),
+      );
+    }
+
+    // Gemeinsamer Abschluss: Applied-Marker nur bei Erfolg.
+    expect(terminal).toContain('markInboundWorkflowAppliedByIds');
+    expect(terminal).toContain('applied: boolean');
+    expect(classification).toContain('completeTerminalInboundChild');
+    expect(draftNodes).toContain('completeTerminalInboundChild');
+
+    // Abbruchpruefung haengt nicht mehr allein an der Continuation, bleibt aber
+    // fuer compose-initiierte Jobs (weder Continuation noch Kettenkontext) aus.
+    expect(classification).toContain('(!continuation && !terminal)');
+
+    // Desktop-Versand-Claim serialisiert Gegenpruefung und Versand.
+    expect(claim).toContain('scheduledSendClaimedAtKey');
+    expect(scheduled).toContain('claimScheduledSend(draftId)');
+    expect(scheduled).toContain('releaseScheduledSendClaim(draftId)');
+    expect(approval).toContain('scheduledSendIsClaimed(messageId)');
+    expect(desktopActions).toContain('scheduledSendIsClaimed(draftId)');
+  });
+
+  test('review-runde 16: die Abschluss-Invariante terminaler KI-Kindjobs traegt', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const terminal = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
+    const classification = readRepoFile('packages/server/src/ai-classification.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const claim = readRepoFile('electron/email/email-scheduled-send-claim.ts');
+    const scheduled = readRepoFile('electron/email/email-scheduled-send.ts');
+    const aiNodes = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+
+    // Sicherheitsnetz statt Pfad-fuer-Pfad: alle vier Kindjob-Ports laufen
+    // durch runTerminalInboundChild, sonst haengt ein vergessener frueher
+    // `return` (z. B. ai.agent mit createDraft:false) die Kette dauerhaft.
+    expect(
+      (classification.match(/runTerminalInboundChild\(options, input, now, async \(\) => \{/g) ?? []),
+    ).toHaveLength(2);
+    expect(
+      (draftNodes.match(/runTerminalInboundChild\(deps, input, now, async \(\) => \{/g) ?? []),
+    ).toHaveLength(2);
+
+    // Einmal-Schranke: ein Job-Retry darf die Join-Barriere nicht ein zweites
+    // Mal herunterzaehlen (pending faellt sonst zu frueh auf 0).
+    expect(advance).toContain('inbound_terminal_child_done');
+    // Der Graphile-Fehlerpfad beansprucht DIESELBE Ausfuehrungsidentitaet:
+    // sonst dekrementiert er die Barriere ein zweites Mal, wenn der Kindjob
+    // seinen Erfolg schon committet hatte und der Worker vor dem Ack starb.
+    expect(graphile).toContain('terminalChildCompletionKey(payload as Record<string, unknown>)');
+    // ... aber NUR fuer echte terminale Kindjobs. Ein nicht-terminaler
+    // deferierter Kindjob (workflow.forward_copy) traegt die Kette, aber keine
+    // Knoten-Identitaet — er teilte sich sonst einen `terminal:none`-Schluessel
+    // mit jedem anderen und uebersprunge sein Join-Dekrement.
+    expect(advance).toMatch(
+      /export function terminalChildCompletionKey[\s\S]*?if \(payload\.terminalWorkflowCompletion !== true && !legacyTerminal\) return null;[\s\S]*?if \(!rawNodeId && !legacyTerminal\) return null;/,
+    );
+    // Der Abschluss selbst behaelt seinen lenienten Schluessel (dort steht
+    // bereits fest, dass es ein terminaler Kindjob ist).
+    expect(terminal).toContain('function terminalChildOnceKey(target: TerminalChildTarget): string');
+    // Legacy-Payloads (keine Continuation, aber Kontext) schliessen mit
+    // `terminal:none` ab — der Fehlerpfad muss dieselbe Identitaet beanspruchen.
+    expect(advance).toContain('const legacyTerminal = payload.continuation === undefined');
+
+    // Der Marker wird VOR run() geprueft: ein bereits abgeschlossener Job darf
+    // den bezahlten Modellaufruf nicht wiederholen (ai.agent/ai.pick_canned
+    // haben keine eigene Entwurfs-Dedupe).
+    expect(terminal).toMatch(
+      /const done = await withWorkspaceTransaction\([\s\S]*?if \(done\) return;[\s\S]{0,20}?await run\(\);/,
+    );
+    expect(graphile).toMatch(/if \(completionKey\) \{[\s\S]*?if \(!firstCompletion\.rowCount\)/);
+    expect(terminal).toContain('.onConflict((oc) => oc.columns([\'workspace_id\', \'key\']).doNothing())');
+
+    // Reihenfolge: erst Join, dann Applied-Marker — und der Marker faellt bei
+    // JEDEM Zustand ausser 'ready' aus. 'stop' gehoert ausdruecklich dazu: dort
+    // setzt auch der synchrone Abschluss keinen Marker.
+    expect(terminal).toMatch(
+      /advanceInboundChainAfterTerminalChild\([\s\S]*?state !== null && state !== 'ready'\) return;[\s\S]*?markInboundWorkflowAppliedByIds/,
+    );
+
+    // Kettenloser Backfill: Applied-Marker faellt auf die direkt gestempelten
+    // ids zurueck — aber nur fuer Inbound. Ein manueller Lauf darf keinen
+    // Inbound-Marker setzen, sonst ueberspringt die echte Inbound-Verarbeitung
+    // den Workflow spaeter komplett.
+    // Die Aufloesung liegt zentral in terminalInboundChildContext (siehe unten):
+    // derselbe Fallback traegt Applied-Marker, Join-Abbau und Abbruchpruefung.
+    expect(terminal).toContain('terminalInboundChildContext(payload)');
+    expect(advance).toContain('positiveInt(payload.workflowId)');
+    expect(execution.match(
+      /terminalNodeId: terminalNodeExecutionId\(context, node\),\n\s+triggerName: context\.trigger,/g,
+    )).toHaveLength(4);
+
+    // Zwei Trigger-Zweige koennen auf denselben terminalen Knoten zusammen-
+    // laufen. Ohne Zweigschluessel kollidieren Job-Key UND Einmal-Schranke,
+    // und die mit zwei Zweigen initialisierte Barriere faellt nie auf null.
+    expect(execution).toContain('branchContext.branchKey = edge.id || String(branchIndex);');
+    expect(execution).toContain('return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;');
+
+    // Erfolgreiche No-op-Ausgaenge duerfen nicht als Fehler durchs Netz fallen:
+    // sonst bleibt der Applied-Marker aus und der bezahlte Modellaufruf faellt
+    // bei jeder Wiederverarbeitung erneut an.
+    expect(classification).toContain('input.createDraft || input.terminalChainPayload');
+    expect(classification).toContain('shouldEnqueueContinuation || input.terminalChainPayload');
+
+    // Bereits eingereihte terminale ai.draft_reply-Jobs der Vorgaengerversion
+    // (ohne terminalWorkflowCompletion) muessen weiterhin abschliessen koennen.
+    const handlers = readRepoFile('packages/server/src/jobs/production-handlers.ts');
+    expect(handlers).toContain('|| (payload.continuation === undefined && payload.context !== undefined)');
+
+    // Endgueltige Kindjob-Fehler muessen ueber die Join-Barriere sichtbar
+    // bleiben, sonst markiert ein spaeter fertiger Geschwisterzweig den
+    // unvollstaendigen Workflow als angewendet.
+    const queuePort = readRepoFile('packages/server/src/db/postgres-job-queue-port.ts');
+    expect(queuePort.match(/\{ error: true \},/g)).toHaveLength(2);
+    expect(graphile).toMatch(
+      /completeInboundDeferredJoinSiblingOnPgClient\([\s\S]*?error: true,/,
+    );
+
+    // Knoten- und Lauf-Identitaet auf allen vier terminalen Payloads, sonst
+    // teilen sich zwei terminale Zweige Job-Key und Einmal-Schranke.
+    expect(execution.match(/terminalNodeId: terminalNodeExecutionId\(context, node\),/g)).toHaveLength(4);
+    expect(graphile).toContain('graphileChildNodeKeyPart');
+    // ai.pick_canned hatte ueberhaupt keinen Job-Key.
+    expect(graphile).toMatch(/if \(type === 'ai\.pick_canned'\) \{[\s\S]*?graphileChildNodeKeyPart\(payload\)/);
+    // ... aber nur mit Zweig-Identitaet. Ohne sie kein Key, sonst verschluckt
+    // 'replace' einen von zwei konvergierenden nicht-terminalen Zweigen.
+    // (Die Regel gilt inzwischen fuer JEDEN deferierten Kindjob — siehe
+    // graphileDeferredBranchSuffix in Runde 17.)
+    expect(graphile).toMatch(
+      /if \(type === 'ai\.pick_canned'\) \{[\s\S]*?const identity = graphileDeferredIdentitySuffix\(payload\);/,
+    );
+    expect(execution).toContain('...(context.branchKey ? { branchKey: context.branchKey } : {}),');
+
+    // Ein geparktes HOLD darf NICHT ueber den SEND-Port weiterlaufen: dort
+    // haengt email.send_draft, das den Entwurf erneut einplant.
+    expect(aiNodes).toContain("message: 'review_hold_parked:send_in_flight'");
+    expect(aiNodes).not.toContain("message: 'review_hold_skipped:send_in_flight'");
+    expect(aiNodes).toMatch(/deferHoldDuringSend\(draftId, reason\);[\s\S]*?stop: true,/);
+
+    // Sibling-Abbruch haengt auch im Entwurfspfad nicht mehr an der Continuation.
+    expect(draftNodes).toContain('continuation?.workflowId ?? terminal?.workflowId');
+    expect(
+      (draftNodes.match(/terminalChainPayload: input\.terminalChainPayload,/g) ?? []),
+    ).toHaveLength(4);
+
+    // Gleiche Reihenfolge im HTTP-Terminalpfad: ein Knoten mit Fehler-, aber
+    // ohne Erfolgskante deferiert ebenfalls und zaehlt in der Join-Barriere —
+    // und braucht darum dieselbe Einmal-Schranke wie der KI-Kindjob, sonst
+    // zaehlt eine erneute Zustellung die Barriere ein zweites Mal herunter.
+    expect(execution).toMatch(
+      /continuation:terminal_success[\s\S]*?claimTerminalHttpCompletion\([\s\S]*?completeInboundDeferredJoinSibling\([\s\S]*?join === 'ready'[\s\S]*?markInboundWorkflowApplied/,
+    );
+    // (Runde 19: der Marker liegt jetzt im gemeinsamen Namensraum des
+    // Fehlerpfads — terminalChildCompletionKeyFor.)
+    expect(execution).toContain('key: terminalChildCompletionKeyFor({');
+    // Die Identitaet dafuer reist durch den HTTP-Job hindurch — inklusive Lauf,
+    // sonst ueberlebt die Schranke den Fan-out und ein zweiter Lauf derselben
+    // Nachricht kehrt vor dem Join-Dekrement zurueck (Barriere haengt).
+    expect(execution).toContain('terminalNodeId: payload.terminalNodeId as string');
+    expect(readRepoFile('packages/server/src/workflow-http-request.ts'))
+      .toContain('terminalNodeId: continuation.terminalNodeId');
+    expect(readRepoFile('packages/server/src/jobs/production-handlers.ts'))
+      .toContain("optionalString(continuationPayload, 'terminalNodeId', 200)");
+
+    // Kettenloser Inbound-Fan-out (Backfill/Reapply) legt eine Barriere mit
+    // chain: null an — der Kindjob muss sie ueber die direkt gestempelten ids
+    // abbauen, sonst haengt sie und der erste Erfolg markiert vorschnell.
+    expect(advance).toContain('export function terminalInboundChildContext(');
+    expect(advance).toContain('if (payload.terminalWorkflowCompletion !== true) return null;');
+    expect(advance).toContain("payload.triggerName.trim() !== 'inbound'");
+    // Derselbe Resolver traegt die Live-Abbruchpruefung: ohne ihn schickte ein
+    // kettenloser terminaler ai.agent sogar Spam-Mails ans Modell.
+    expect(classification).toContain('terminalInboundChildContext(input.terminalChainPayload ?? {})');
+    expect(draftNodes).toContain('terminalInboundChildContext(input.terminalChainPayload ?? {})');
+    // Auch der Graphile-Terminalpfad baut kettenlose Barrieren ab.
+    expect(graphile).toContain('terminalInboundChildContext(payload as Record<string, unknown>)');
+
+    // Die kettenlose Barriere ist auf den Ursprungslauf skopiert — zwei
+    // ueberlappende Backfills teilten sich sonst einen Zaehler.
+    // Der Fan-out-Lauf trennt ueberlappende Ausfuehrungen MIT wie OHNE Kette:
+    // ein verketteter workflow.execute, der nach dem Commit erneut zugestellt
+    // wird, erzeugt sonst einen zweiten Satz Kindjobs auf derselben Barriere.
+    expect(advance).toContain("const runSuffix = fanOutRunId != null ? `:run:${fanOutRunId}` : '';");
+    expect(advance).toContain('${chain.index}${runSuffix}');
+    expect(advance).toContain('`inbound_deferred_join:${messageId}:${workflowId}${runSuffix}`');
+
+    // Terminaler HTTP-Abschluss: die Identitaet muss auch im
+    // workflow.execute-Key sichtbar sein, sonst verschluckt 'replace' einen der
+    // beiden Abschlussjobs zweier Fan-out-Zweige.
+    expect(graphile).toContain('`${type}:${workspaceKey}:${workflowId}:message:${messageId}:${terminalNodeId}`');
+    expect(readRepoFile('packages/server/src/workflow-http-request.ts'))
+      .toMatch(/\.\.\.\(!resumeNodeId && continuation\.terminalNodeId\s*\n\s*\? \{ terminalNodeId: continuation\.terminalNodeId \}/);
+    expect(execution).toContain('inboundFanOutRunId: inboundFanOutRunId(context)');
+    // 6x Join-Abbau/-Init, 2x Sibling-Abort setzen, 1x Sibling-Abort lesen.
+    expect(execution.match(/fanOutRunId: jobContextFanOutRunId\(jobContext, run\.id\),/g)).toHaveLength(9);
+    // Der Fan-out-Lauf muss JEDE Fortsetzung ueberleben.
+    expect(readRepoFile('packages/server/src/workflow-inbound-chain-context.ts'))
+      .toMatch(/resumeContextInboundChainFields[\s\S]*?inboundFanOutRunId: continuation\.inboundFanOutRunId/);
+
+    // Der Sibling-Abort-Marker MUSS denselben Lauf-Scope haben wie die
+    // Join-Barriere. Sonst loescht der fertige Join des einen Laufs den Marker
+    // des anderen (beide Loeschungen haengen am Join) und dessen noch laufende
+    // Kinder senden doch.
+    // ... und zwar in BEIDEN Zweigen, genau wie inboundDeferredJoinKey. Waere
+    // nur der kettenlose Zweig skopiert, teilten sich zwei Fan-out-Laeufe
+    // derselben Kette weiterhin einen Marker.
+    expect(advance).toContain('`inbound_sibling_abort:${messageId}:${workflowId}${runSuffix}`');
+    expect(advance)
+      .toContain('`inbound_sibling_abort:${messageId}:${chain.workflowIds.join(\',\')}:${chain.index}${runSuffix}`');
+    expect(advance.match(/inboundSiblingAbortKey\(input\.messageId, input\.workflowId, input\.chain, input\.fanOutRunId\)/g))
+      .toHaveLength(4);
+    // Alle Lesepfade reichen ihn mit — sonst prueft ein Kind den falschen Key.
+    for (const [file, expr] of [
+      ['packages/server/src/ai-classification.ts', 'fanOutRunId: continuation?.inboundFanOutRunId ?? terminal?.fanOutRunId'],
+      ['packages/server/src/workflow-ai-draft-nodes.ts', 'fanOutRunId: continuation?.inboundFanOutRunId ?? terminal?.fanOutRunId'],
+      ['packages/server/src/workflow-http-request.ts', 'fanOutRunId: input.continuation!.inboundFanOutRunId'],
+      ['packages/server/src/workflow-forward-copy.ts', 'fanOutRunId: input.continuation.inboundFanOutRunId'],
+    ] as const) {
+      expect(readRepoFile(file)).toContain(expr);
+    }
+
+    // Desktop: der Sweep raeumt nur beim echten Prozessstart ab.
+    // startEmailBackgroundServices laeuft auch im laufenden Prozess erneut
+    // (Reparatur, Restore) — dort gehoert ein Claim noch zu einem aktiven
+    // SMTP-Aufruf und darf nicht geloescht werden.
+    expect(claim).toContain('if (bootSweepDone) return 0;');
+    // Ein Claim des EIGENEN Prozesses darf nicht nach fester Zeit verfallen:
+    // ein IMAP-APPEND kann laenger dauern als STALE_CLAIM_MS (bis zu 12 Minuten
+    // Socket-Timeout je Sent-Ordner-Kandidat, mehrere Kandidaten).
+    expect(claim).toContain('if (parsed.token && parsed.token === PROCESS_TOKEN) return age < OWN_CLAIM_MAX_MS;');
+    expect(claim).toContain('`${now.toISOString()}|${PROCESS_TOKEN}`');
+    // Der Einmal-Guard wird erst NACH dem Sweep verbraucht: scheitert die
+    // DB-Operation, muss ein spaeterer Dienste-Start noch aufraeumen duerfen.
+    expect(claim).toMatch(/\.run\(row\.key\);\n\s*\}\n[\s\S]{0,500}?bootSweepDone = true;/);
+
+    // Terminale Gegenpruefung: Abbruch/Modellfehler duerfen NICHT als
+    // angewendet gelten (port ist 'send' | 'hold' und taugt nicht als Signal).
+    expect(draftNodes).toContain('applied: verdictRendered,');
+    expect(draftNodes).not.toContain("applied: port === 'send' || port === 'hold',");
+
+    // Desktop: Boot-Sweep raeumt JEDEN Claim ab — nach einem Neustart kann
+    // keiner mehr zu einem laufenden SMTP-Aufruf gehoeren.
+    expect(claim).toMatch(/releaseStaleScheduledSendClaims\(\): number \{[\s\S]*?return rows\.length;/);
+    expect(claim).not.toContain('if (activeClaimAge(row.value, now) !== null) continue;');
+
+    // Desktop: ein waehrend des Versands verworfenes HOLD wird geparkt und bei
+    // gescheitertem Versand nachgeholt. Der Parkplatz wird dabei erst geraeumt,
+    // NACHDEM das Urteil auf dem Entwurf steht — ein Absturz dazwischen liesse
+    // sonst weder HOLD noch Pending-Zustand zurueck.
+    expect(aiNodes).toContain('deferHoldDuringSend(draftId, reason)');
+    // TOCTOU: erwirbt der Versand den Claim zwischen Pruefung und Stempel,
+    // liefert setDraftApprovalPending false — das Urteil muss trotzdem geparkt
+    // werden, sonst geht der Entwurf beim naechsten Tick ohne HOLD raus.
+    expect(aiNodes).toMatch(
+      /if \(!setDraftApprovalPending\(draftId, reason\)\) \{[\s\S]*?deferHoldDuringSend\(draftId, reason\);/,
+    );
+    expect(scheduled).toContain('peekDeferredSendHold(draftId)');
+    // Nach dem Claim gegen den Live-Zustand pruefen: der Batch-Schnappschuss
+    // kann veraltet sein, wenn die Gegenlese-KI einen spaeteren Entwurf der
+    // Liste waehrend eines frueheren SMTP-Aufrufs zurueckgehalten hat.
+    expect(scheduled).toContain('if (!scheduledSendIsStillDue(draftId)) continue;');
+    // Persistenter SMTP-Commit zaehlt als Zustellung: sonst landet ein HOLD auf
+    // einer bereits versendeten Mail und nimmt dem Commit-Recovery den Anker.
+    expect(scheduled).toContain('getComposeDraftRecoveryState(draftId).smtpCommitted');
+
+    // Dedupe-Treffer im terminalen ai.draft_reply ist ein Erfolg — sonst faengt
+    // ihn das Sicherheitsnetz als applied:false ab und der Marker bleibt aus.
+    expect(draftNodes).toMatch(/if \(priorDraft !== null\) \{[\s\S]*?applied: true,/);
+
+    // Terminaler Review: waehrend der Pruefung VERSENDET zaehlt als angewendet,
+    // geloescht/verschoben nicht — sonst erzeugt eine Wiederverarbeitung eine
+    // zweite Antwort auf eine bereits beantwortete Mail.
+    // Der Server-Compose-Pfad setzt beim Finalisieren nur folder_kind='sent'
+    // und laesst die negative lokale uid stehen — beides zaehlt als Zustellung.
+    expect(draftNodes).toContain("live && (Number(live.uid) >= 0 || live.folder_kind === 'sent')");
+    expect(draftNodes).toContain('applied: sentDuringReview,');
+
+    // Terminale HTTP-Knoten teilen sich errorResumeNodeId — die Identitaet
+    // muss auf oberster Ebene stehen, sonst sieht der Job-Key sie nicht.
+    expect(execution).toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${inboundFanOutRunId(context)}`;');
+    expect(graphile).toMatch(
+      /if \(type === 'workflow\.http_request'\) \{[\s\S]*?if \(terminalNodeId\) return `\$\{base\}:\$\{terminalNodeId\}`;/,
+    );
+
+    // Delay-Stornierung nur im eigenen Fan-out.
+    expect(advance).toContain("eb(sql`context_json->>'inboundFanOutRunId'`, '=', String(input.fanOutRunId))");
+    expect(execution).toContain('fanOutRunId: input.fanOutRunId,');
+    // Liste und Nachpruefung teilen dieselbe Faelligkeitsbedingung.
+    expect(readRepoFile('electron/email/email-message-features.ts'))
+      .toContain('DUE_SCHEDULED_SEND_WHERE');
+    expect(scheduled).not.toContain('takeDeferredSendHold');
+    expect(scheduled).toMatch(
+      /if \(setDraftApprovalPending\(draftId, deferredHold\)\) \{\s*\n\s*clearDeferredSendHold\(draftId\);/,
+    );
+    // Ein Absturz zwischen Parken und Anwenden darf das HOLD nicht verlieren:
+    // der naechste Versuch liest es VOR dem Senden und wendet es an.
+    expect(scheduled).toMatch(/recoveredHold = peekDeferredSendHold\(draftId\);\s*\n\s*if \(recoveredHold\) continue;/);
+    // Belegter Compose-Lock ist kein Zustellbeweis — HOLD bleibt geparkt.
+    expect(scheduled).toContain('sendInFlightElsewhere = true;');
+    expect(scheduled).toContain('recoveredHold ?? peekDeferredSendHold(draftId)');
+  });
+
+  test('review-runde 17: die Zweig-Identitaet ueberlebt jede Fortsetzung', () => {
+    const chainContext = readRepoFile('packages/server/src/workflow-inbound-chain-context.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+
+    // Kern des Fundes: terminalNodeExecutionId ist nur mit branchKey eindeutig.
+    // Ging der Zweig beim ersten deferierten Kind verloren, saehen zwei
+    // Fan-out-Zweige hinter demselben terminalen Knoten dieselbe Identitaet —
+    // der zweite Abschluss liefe in den Einmal-Marker und die Join-Barriere
+    // fiele nie auf null. Also reist er wie inboundFanOutRunId ueberall mit.
+    expect(chainContext).toContain('branchKey?: string;');
+    expect(chainContext).toMatch(/inboundChainFieldsFromRecord[\s\S]*?\.\.\.\(branchKey \? \{ branchKey \} : \{\}\)/);
+    expect(chainContext)
+      .toMatch(/resumeContextInboundChainFields[\s\S]*?continuation\.branchKey \? \{ branchKey: continuation\.branchKey \}/);
+    // buildWorkflowContext stellt ihn aus dem jobContext wieder her.
+    expect(execution).toMatch(/\.\.\.inboundChainFieldsFromRecord\(input\.jobContext\),/);
+    expect(execution)
+      .toMatch(/inboundChainFieldsFromContext[\s\S]*?context\.branchKey \? \{ branchKey: context\.branchKey \} : \{\}/);
+
+    // Jeder deferierte Kindjob stempelt ihn auf die Payload-Oberflaeche —
+    // graphileJobKeyForJob sieht die Continuation nicht.
+    // classify, review, transform_text, agent, draft_reply, review_draft,
+    // http_request, forward_copy, dmarc_ingest (pick_canned stempelt inline).
+    expect(execution.match(/stampBranchKey\(payload, context\);/g)).toHaveLength(9);
+    expect(execution).toContain('if (context.branchKey) payload.branchKey = context.branchKey;');
+
+    // Ohne Zweig-Identitaet gibt es KEINEN Key: ein doppelter Job ist Arbeit,
+    // ein von 'replace' verschluckter haengt die Barriere fuer immer.
+    // (In Runde 18 um den Fan-out-Lauf erweitert: graphileDeferredIdentitySuffix.)
+    expect(graphile).toContain('const branchKey = graphileKeyScalar(payload.branchKey);');
+    expect(graphile).toContain('return branchKey ? `:fanout:${fanOutRunId}:${branchKey}` : null;');
+    // Fortsetzungen desselben Workflows auf derselben Nachricht duerfen sich
+    // nicht ersetzen — Resume-Knoten und Zweig stehen nur im context.
+    expect(graphile)
+      .toContain('`${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}${identity}`');
+  });
+
+  test('review-runde 18: Identitaeten haengen am Fan-out-Lauf, nie an der runId', () => {
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+    const terminalChild = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const desktopAi = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+
+    // payload.runId ist pro ZUSTELLUNG neu: eine nach ihrem Commit erneut
+    // zugestellte Fortsetzung laeuft unter neuer runId, meint aber dieselbe
+    // Ausfuehrung. Alles, was eine Ausfuehrung identifiziert, muss deshalb am
+    // Fan-out-Lauf haengen — sonst entkommt der doppelte Kindjob dem 'replace'
+    // (Modellaufruf und Entwurf doppelt) und baut die Barriere zweimal ab.
+    expect(graphile).toContain('function graphileDeferredIdentitySuffix(payload: JobPayload): string | null {');
+    expect(graphile).toContain('if (!fanOutRunId) return null;');
+    expect(graphile.match(/if \(identity === null\) return undefined;/g)).toHaveLength(11);
+    // Der Lauf steht je nach Jobart oben, in der Continuation oder im Kontext.
+    expect(graphile).toMatch(
+      /graphileFanOutRunId[\s\S]*?nested\(payload\.continuation\)\s*\n\s*\?\? nested\(payload\.context\)/,
+    );
+    // Kein deferierter Kindjob-Key traegt noch die Zustellungs-runId.
+    for (const key of [
+      '`${type}:${workspaceKey}:${workflowId}:${messageId ?? \'none\'}:${nodeKey}${identity}`',
+      '`${type}:${workspaceKey}:${workflowId}:${messageId ?? \'none\'}:${resumeNodeId}${identity}`',
+    ]) {
+      expect(graphile).toContain(key);
+    }
+
+    // Beide Abschluss-Schluessel (leniant und strikt) MUESSEN uebereinstimmen
+    // und beide den Fan-out-Lauf verwenden.
+    expect(advance).toContain('fanOutRunId: target.fanOutRunId,');
+    expect(advance).toContain("input.fanOutRunId ?? 'none',");
+    expect(advance).not.toMatch(/const runId = positiveInt\(payload\.runId\);/);
+    expect(terminalChild).toContain('runId: resolved.fanOutRunId,');
+    // Auch die terminale HTTP-Identitaet.
+    expect(execution)
+      .toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${inboundFanOutRunId(context)}`;');
+
+    // Eine workflow.execute-Fortsetzung traegt oben weder continuation noch
+    // resumeNodeId (beides steckt in payload.context) und galte sonst als
+    // Legacy-Terminaljob: zwei Fortsetzungen desselben Fan-outs teilten sich
+    // `terminal:none`, die zweite kehrte vor ihrem Join-Dekrement zurueck.
+    expect(advance).toContain('&& legacyContext.resumeNodeId === undefined;');
+    // Ohne Schluessel greift der jobeigene Guard — genau richtig fuer eine
+    // Fortsetzung, die pro Graphile-Job genau einmal dekrementieren muss.
+    expect(readRepoFile('packages/server/src/jobs/graphile-worker.ts'))
+      .toContain('if (completionKey) {');
+
+    // Erfolgs- und Fehlerweg eines terminalen HTTP-Abschlusses muessen DENSELBEN
+    // Marker beanspruchen. Zwei Namensraeume hiessen: der Erfolgsweg committet
+    // sein Dekrement, der Worker stirbt vor der Graphile-Bestaetigung, die
+    // erneute Zustellung scheitert endgueltig — und der Fehlerweg baut dieselbe
+    // Barriere ein zweites Mal ab.
+    expect(execution).toContain('key: terminalChildCompletionKeyFor({');
+    expect(execution).not.toContain('inbound_terminal_http_done');
+    expect(advance).toContain('export function terminalChildCompletionKeyFor(input: {');
+
+    // Die Marker werden von keinem Pfad geloescht (sie muessen das
+    // Graphile-Retry-Fenster ueberleben) — also braucht sync_info eine
+    // gebundene Aufbewahrung, sonst waechst sie unbegrenzt mit.
+    const maintenance = readRepoFile('packages/server/src/jobs/maintenance-handlers.ts');
+    expect(maintenance).toContain('export const DEFAULT_TERMINAL_MARKER_RETENTION_DAYS = 7;');
+    expect(maintenance).toContain("'inbound\\\\_terminal\\\\_child\\\\_done:%',");
+    expect(maintenance).toContain(".where('last_updated', '<', plan.terminalMarkersBefore)");
+    // Gleiche Schranke wie beim Lock-Cleanup: ein erster Lauf auf einer grossen
+    // Tabelle darf nicht ausufern.
+    expect(maintenance).toMatch(/staleMarkers[\s\S]*?\.limit\(plan\.limit\)/);
+
+    // Der eigene Claim-Token schlaegt jede Uhrzeitpruefung: eine rueckwaerts
+    // gestellte Systemuhr darf einen laufenden Versand nicht fuer inaktiv
+    // erklaeren (age < 0), sonst faellt der Entwurf mitten im SMTP-Aufruf frei.
+    const claim = readRepoFile('electron/email/email-scheduled-send-claim.ts');
+    expect(claim).toMatch(
+      /if \(parsed\.token && parsed\.token === PROCESS_TOKEN\) return age < OWN_CLAIM_MAX_MS;[\s\S]*?if \(age < 0\) return false;/,
+    );
+
+    // Ein geparktes HOLD endet ohne Port — das Urteil im Laufkontext darf
+    // daraus kein 'send' machen, sonst liest die Auswertung das Gegenteil der
+    // tatsaechlichen Entscheidung.
+    expect(desktopAi).toContain('message: `review_error_hold_parked:${msg}`');
+    expect(desktopAi).not.toContain("'ai.review.verdict': held.port === 'hold' ? 'hold' : 'send',");
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {

@@ -1,8 +1,19 @@
 import { getEmailMessageById } from './email-store';
-import { sendComposeDraft } from './email-compose-send';
-import { listDueScheduledDraftIds, setDraftScheduledSendAt } from './email-message-features';
+import { getComposeDraftRecoveryState, sendComposeDraft } from './email-compose-send';
+import {
+  listDueScheduledDraftIds,
+  scheduledSendIsStillDue,
+  setDraftScheduledSendAt,
+} from './email-message-features';
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
+import {
+  claimScheduledSend,
+  clearDeferredSendHold,
+  peekDeferredSendHold,
+  releaseScheduledSendClaim,
+} from './email-scheduled-send-claim';
+import { setDraftApprovalPending } from './email-draft-approval';
 import {
   clearScheduledSendDraftMeta,
   markScheduledSendDraftFailed,
@@ -17,9 +28,41 @@ export async function processDueScheduledSends(
   const ids = listDueScheduledDraftIds();
   let sent = 0;
   for (const draftId of ids) {
+    // Claim VOR dem Lesen/Senden: solange er steht, darf die Gegenlese-KI den
+    // Entwurf nicht auf „Wartet auf Freigabe" stempeln und scheduled_send_at
+    // nicht löschen — der SMTP-Aufruf laeuft ausserhalb jeder Transaktion.
+    if (!claimScheduledSend(draftId)) continue;
+    // Ging diese Mail tatsaechlich raus? Entscheidet unten, ob ein waehrend des
+    // Versands geparktes HOLD der Gegenlese-KI nachgeholt werden muss.
+    let delivered = false;
+    // Ein paralleler Versand haelt den Compose-Lock. Das ist KEIN Zustellbeweis:
+    // scheitert er, muss das geparkte HOLD liegen bleiben und beim naechsten
+    // faelligen Durchlauf greifen.
+    let sendInFlightElsewhere = false;
+    // HOLD aus einem abgestuerzten Vorlauf. Es kann hier nicht sofort angewendet
+    // werden — setDraftApprovalPending verweigert den Stempel, solange unser
+    // eigener Claim steht. Also merken und im finally nach der Freigabe setzen.
+    let recoveredHold: string | null = null;
     try {
+      // Erst NACH dem Claim gegen den Live-Zustand pruefen: `ids` ist ein
+      // Schnappschuss vom Schleifenanfang, und waehrend des SMTP-Aufrufs fuer
+      // einen frueheren Entwurf kann die Gegenlese-KI diesen hier zurueckgehalten
+      // haben (setDraftApprovalPending loescht scheduled_send_at). Ihr Claim-Schutz
+      // griff dabei nicht, weil unser Claim zu dem Zeitpunkt noch nicht stand.
+      if (!scheduledSendIsStillDue(draftId)) continue;
       const draft = getEmailMessageById(draftId);
-      if (!draft || draft.uid >= 0) continue;
+      if (!draft || draft.uid >= 0) {
+        // uid >= 0: bereits verschickt — ein nachtraegliches HOLD waere sinnlos.
+        delivered = Boolean(draft && draft.uid >= 0);
+        continue;
+      }
+      // Absturz-Recovery: hat ein frueherer Durchlauf ein HOLD geparkt, ohne es
+      // anwenden zu koennen (App weg zwischen Parken und finally), dann gilt es
+      // jetzt — und dieser Entwurf geht nicht raus. Ohne diese Pruefung raeumt
+      // der Boot-Sweep nur den Claim ab und der naechste Tick versendet genau
+      // den Entwurf, den die Gegenlese-KI zurueckhalten wollte.
+      recoveredHold = peekDeferredSendHold(draftId);
+      if (recoveredHold) continue;
       const to = recipientFieldFromJson(draft.to_json);
       if (!to.trim()) {
         logger.warn(`[email] scheduled send ${draftId}: no recipient`);
@@ -42,12 +85,17 @@ export async function processDueScheduledSends(
         inReplyToMessageId: replyParent ?? undefined,
       });
       if (r.ok) {
+        delivered = true;
         setDraftScheduledSendAt(draftId, null);
         clearScheduledSendDraftMeta(draftId);
         sent += 1;
       } else {
         const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
         if (errMsg.includes('Versand') && errMsg.includes('bereits')) {
+          // Compose-Sendelock belegt: ein anderer Pfad sendet gerade. Ob er
+          // Erfolg hat, wissen wir nicht — deshalb weder als zugestellt werten
+          // noch das geparkte HOLD verbrauchen.
+          sendInFlightElsewhere = true;
           continue;
         }
         const fails = recordScheduledSendAttemptFailure(draftId, errMsg);
@@ -67,6 +115,39 @@ export async function processDueScheduledSends(
       if (fails >= MAX_SCHEDULED_SEND_FAILURES) {
         setDraftScheduledSendAt(draftId, null);
         markScheduledSendDraftFailed(draftId, errMsg);
+      }
+    } finally {
+      // Erst den Claim freigeben: setDraftApprovalPending verweigert den Stempel,
+      // solange er steht (es koennte ein laufender Versand sein).
+      releaseScheduledSendClaim(draftId);
+      // SMTP kann durch sein, obwohl sendComposeDraft danach beim Finalisieren
+      // warf: email_compose_smtp_ok steht dann persistent. Die Mail IST raus —
+      // ein HOLD darauf loeschte scheduled_send_at, naehme dem Commit-Recovery
+      // den Anker und zeigte eine versendete Mail als freigabepflichtigen Entwurf.
+      if (!delivered && getComposeDraftRecoveryState(draftId).smtpCommitted) {
+        delivered = true;
+      }
+      // Bei belegtem Compose-Lock bleibt das HOLD bewusst geparkt: der parallele
+      // Versand kann noch scheitern, dann greift es beim naechsten Durchlauf.
+      const deferredHold = sendInFlightElsewhere
+        ? null
+        : recoveredHold ?? peekDeferredSendHold(draftId);
+      if (deferredHold && delivered) {
+        // Zugestellt ⇒ das HOLD ist gegenstandslos.
+        clearDeferredSendHold(draftId);
+      } else if (deferredHold) {
+        // Die Gegenlese-KI wollte diesen Entwurf zurueckhalten, kam aber
+        // waehrend des Versands nicht durch — und der Versand ist gescheitert.
+        // Ohne das Nachholen ginge der ungeprueft gebliebene Entwurf beim
+        // naechsten faelligen Durchlauf trotzdem raus.
+        //
+        // Reihenfolge: erst anwenden, dann den Parkplatz raeumen. Andersherum
+        // waere nach einem Absturz dazwischen weder das HOLD noch der
+        // Pending-Zustand da und der Entwurf ginge doch noch raus.
+        if (setDraftApprovalPending(draftId, deferredHold)) {
+          clearDeferredSendHold(draftId);
+          logger.warn(`[email] scheduled send ${draftId}: HOLD der Gegenlese-KI nachgeholt`);
+        }
       }
     }
   }

@@ -363,6 +363,9 @@ export function buildAiAgentJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -383,6 +386,9 @@ export function buildAiPickCannedJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -439,8 +445,16 @@ export function buildAiDraftReplyJobPlan(
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
     // Terminaler KI-Knoten (keine Resume-Kante ⇒ keine Continuation): der
     // Kettenkontext steckt dann in payload.context und wird durchgereicht,
-    // damit der Kindjob die Kette selbst weiterschalten kann.
-    ...(payload.continuation === undefined && payload.context !== undefined
+    // damit der Kindjob Applied-Marker, Join und Kette selbst abschliesst.
+    //
+    // Die zweite Bedingung ist die Erkennung der Vorgaengerversion, die noch
+    // ohne `terminalWorkflowCompletion` stempelte. Beim Deployment koennen
+    // solche Jobs bereits in der persistenten Queue liegen; ohne den Fallback
+    // legten sie zwar den Entwurf an, schlossen aber weder Join noch
+    // Prioritaetskette ab und alle nachrangigen Workflows blieben stehen.
+    // Entfernbar, sobald keine Jobs von vor diesem Release mehr laufen koennen.
+    ...(payload.terminalWorkflowCompletion === true
+      || (payload.continuation === undefined && payload.context !== undefined)
       ? { terminalChainPayload: payload as Record<string, unknown> }
       : {}),
   };
@@ -471,6 +485,9 @@ export function buildAiReviewDraftJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    ...(payload.terminalWorkflowCompletion === true
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -816,6 +833,7 @@ function optionalWorkflowHttpContinuation(
       ...resumeNodeId,
       ...errorResumeNodeId,
       ...optionalBooleanProperty(continuationPayload, 'completeOnSuccess'),
+      ...optionalString(continuationPayload, 'terminalNodeId', 200),
       ...(value.eventStrings === undefined ? {} : { eventStrings: optionalContext(continuationPayload, 'eventStrings') }),
       ...(value.eventVariables === undefined ? {} : { eventVariables: optionalContext(continuationPayload, 'eventVariables') }),
       ...inboundChainFieldsFromRecord(continuationPayload as Record<string, unknown>),

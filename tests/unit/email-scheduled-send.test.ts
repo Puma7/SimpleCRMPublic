@@ -3,10 +3,17 @@ const mockSetSyncInfo = jest.fn();
 const mockSendComposeDraft = jest.fn();
 const mockSetDraftScheduledSendAt = jest.fn();
 const mockListDue = jest.fn();
+const mockStillDue = jest.fn();
 
 jest.mock('../../electron/sqlite-service', () => ({
   getSyncInfo: (...args: unknown[]) => mockGetSyncInfo(...args),
   setSyncInfo: (...args: unknown[]) => mockSetSyncInfo(...args),
+}));
+
+const mockRecoveryState = jest.fn();
+const mockSetDraftApprovalPending = jest.fn();
+jest.mock('../../electron/email/email-draft-approval', () => ({
+  setDraftApprovalPending: (...args: unknown[]) => mockSetDraftApprovalPending(...args),
 }));
 
 jest.mock('../../electron/email/email-store', () => ({
@@ -25,11 +32,13 @@ jest.mock('../../electron/email/email-store', () => ({
 
 jest.mock('../../electron/email/email-compose-send', () => ({
   sendComposeDraft: (...args: unknown[]) => mockSendComposeDraft(...args),
+  getComposeDraftRecoveryState: (...args: unknown[]) => mockRecoveryState(...args),
 }));
 
 jest.mock('../../electron/email/email-message-features', () => ({
   listDueScheduledDraftIds: () => mockListDue(),
   setDraftScheduledSendAt: (...args: unknown[]) => mockSetDraftScheduledSendAt(...args),
+  scheduledSendIsStillDue: (...args: unknown[]) => mockStillDue(...args),
 }));
 
 import { processDueScheduledSends } from '../../electron/email/email-scheduled-send';
@@ -37,15 +46,28 @@ import { processDueScheduledSends } from '../../electron/email/email-scheduled-s
 describe('email-scheduled-send', () => {
   const logger = { warn: jest.fn(), debug: jest.fn() };
 
+  /**
+   * sync_info ist ein geteilter Schluesselraum — der Mock muss nach Schluessel
+   * antworten. Ein pauschaler Rueckgabewert liesse jeden Lauf so aussehen, als
+   * laege ein geparktes HOLD der Gegenlese-KI vor.
+   */
+  function syncInfo(values: Record<string, string>): void {
+    mockGetSyncInfo.mockImplementation((key: string) => values[key] ?? '');
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
+    mockStillDue.mockReturnValue(true);
+    mockRecoveryState.mockReturnValue({ smtpCommitted: false, needsResendFinalize: false });
+    // Die echte Funktion liefert true, wenn der Stempel gesetzt wurde.
+    mockSetDraftApprovalPending.mockReturnValue(true);
     mockListDue.mockReturnValue([99]);
-    mockGetSyncInfo.mockReturnValue('0');
+    syncInfo({ 'scheduled_send_failures:99': '0' });
   });
 
   test('clears schedule after repeated throws', async () => {
     mockSendComposeDraft.mockRejectedValue(new Error('db locked'));
-    mockGetSyncInfo.mockReturnValue('4');
+    syncInfo({ 'scheduled_send_failures:99': '4' });
 
     await processDueScheduledSends(logger);
 
@@ -55,11 +77,133 @@ describe('email-scheduled-send', () => {
 
   test('does not clear schedule on first throw', async () => {
     mockSendComposeDraft.mockRejectedValue(new Error('transient'));
-    mockGetSyncInfo.mockReturnValue('0');
+    syncInfo({ 'scheduled_send_failures:99': '0' });
 
     await processDueScheduledSends(logger);
 
     expect(mockSetDraftScheduledSendAt).not.toHaveBeenCalled();
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_failures:99', '1');
+  });
+
+  test('geparktes HOLD wird nach gescheitertem Versand nachgeholt', async () => {
+    // Die Gegenlese-KI kam waehrend des laufenden SMTP-Aufrufs zu spaet und hat
+    // ihr HOLD geparkt. Geht die Mail dann doch nicht raus, muss der Entwurf auf
+    // „Wartet auf Freigabe" — sonst versendet ihn der naechste faellige Lauf
+    // ungeprueft.
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'Gegenlese-KI empfiehlt menschliche Pruefung';
+      return { ok: false, error: 'SMTP 550' };
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).toHaveBeenCalledWith(
+      99,
+      'Gegenlese-KI empfiehlt menschliche Pruefung',
+    );
+    // Der Parkplatz wird erst danach verbraucht.
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('HOLD bleibt geparkt, wenn der Stempel nicht gesetzt werden konnte', async () => {
+    // Fail-safe: setDraftApprovalPending verweigert (z. B. weil doch noch ein
+    // Claim steht). Wuerde der Parkplatz trotzdem geraeumt, waere das Urteil
+    // weg und der weiterhin faellige Entwurf ginge beim naechsten Tick raus.
+    mockSetDraftApprovalPending.mockReturnValue(false);
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'bitte pruefen';
+      return { ok: false, error: 'SMTP 550' };
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).toHaveBeenCalledWith(99, 'bitte pruefen');
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('erfolgreicher Versand verbraucht das geparkte HOLD ohne es anzuwenden', async () => {
+    // Das HOLD entsteht WAEHREND des Versands — genau der Fall, fuer den der
+    // Parkplatz da ist. Ein vorher liegendes HOLD verhindert den Versand (Test
+    // darunter), deshalb wird es hier erst im SMTP-Aufruf gesetzt.
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'zu spaet';
+      return { ok: true };
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('HOLD aus abgestuerztem Vorlauf verhindert den Versand', async () => {
+    // App weg zwischen Parken und Anwenden: Claim, HOLD und Versandzeitpunkt
+    // ueberleben. Der Boot-Sweep raeumt nur den Claim ab — ohne diese Pruefung
+    // ginge genau der Entwurf raus, den die Gegenlese-KI halten wollte.
+    syncInfo({
+      'scheduled_send_failures:99': '0',
+      'scheduled_send_deferred_hold:99': 'Gegenlese-KI: bitte pruefen',
+    });
+
+    const sent = await processDueScheduledSends(logger);
+
+    expect(sent).toBe(0);
+    expect(mockSendComposeDraft).not.toHaveBeenCalled();
+    expect(mockSetDraftApprovalPending).toHaveBeenCalledWith(99, 'Gegenlese-KI: bitte pruefen');
+  });
+
+  test('belegter Compose-Lock verbraucht das geparkte HOLD nicht', async () => {
+    // „Versand laeuft bereits" beweist keine Zustellung. Scheitert der parallele
+    // Versand, muss das HOLD beim naechsten faelligen Durchlauf noch da sein.
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'zu spaet';
+      return { ok: false, error: 'Versand laeuft bereits fuer diesen Entwurf.' };
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('Entwurf, der waehrend des Batches zurueckgehalten wurde, geht nicht raus', async () => {
+    // `ids` ist ein Schnappschuss: waehrend des SMTP-Aufrufs fuer einen
+    // frueheren Entwurf hat die Gegenlese-KI diesen hier gestempelt und
+    // scheduled_send_at geloescht. Unser Claim stand da noch nicht, sie kam
+    // also durch — ohne Live-Nachpruefung ginge er trotzdem raus.
+    mockStillDue.mockReturnValue(false);
+
+    const sent = await processDueScheduledSends(logger);
+
+    expect(sent).toBe(0);
+    expect(mockSendComposeDraft).not.toHaveBeenCalled();
+    // Der Claim wird trotzdem sauber freigegeben.
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_claimed_at:99', '');
+  });
+
+  test('persistenter SMTP-Commit verhindert das HOLD auf bereits versendeter Mail', async () => {
+    // SMTP war durch, sendComposeDraft warf danach beim Finalisieren. Der
+    // Entwurf ist raus — ein HOLD darauf loeschte scheduled_send_at und naehme
+    // dem Commit-Recovery den Anker.
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockRecoveryState.mockReturnValue({ smtpCommitted: true, needsResendFinalize: true });
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'zu spaet';
+      throw new Error('finalize failed');
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
   });
 });

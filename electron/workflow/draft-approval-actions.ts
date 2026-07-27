@@ -4,6 +4,7 @@
  * IPC-Handlern (electron/ipc/workflow.ts) aufgerufen; als eigenes Modul,
  * damit die Guards testbar sind.
  */
+import { scheduledSendIsClaimed } from '../email/email-scheduled-send-claim';
 import {
   clearDraftApproval,
   clearDraftAutoSubmitted,
@@ -32,6 +33,12 @@ export function approveDraftSend(draftId: number): DraftApprovalActionResult {
       error: 'Entwurf wartet nicht (mehr) auf Freigabe — bitte Ansicht aktualisieren.',
     };
   }
+  if (scheduledSendIsClaimed(draftId)) {
+    return {
+      success: false,
+      error: 'Entwurf wird gerade versendet — bitte Ansicht aktualisieren.',
+    };
+  }
 
   // Erst einplanen, dann Freigabe-Zustand löschen: schlägt das Einplanen
   // fehl, bleiben Banner und KI-Begründung erhalten (nichts wurde gesendet).
@@ -54,6 +61,15 @@ export function approveDraftSend(draftId: number): DraftApprovalActionResult {
 
 /** "Als Entwurf behalten": Mensch übernimmt — kein Auto-Versand. */
 export function dismissDraftApproval(draftId: number): DraftApprovalActionResult {
+  // Parität zur Server-Edition: waehrend eines laufenden Versands wuerde das
+  // Loeschen der Marker den SMTP-Aufruf nicht stoppen, dem Nutzer aber Erfolg
+  // melden.
+  if (scheduledSendIsClaimed(draftId)) {
+    return {
+      success: false,
+      error: 'Entwurf wird gerade versendet — bitte Ansicht aktualisieren.',
+    };
+  }
   clearDraftApproval(draftId);
   // Ein späterer manueller Versand ist keine automatische Antwort mehr.
   clearDraftAutoSubmitted(draftId);

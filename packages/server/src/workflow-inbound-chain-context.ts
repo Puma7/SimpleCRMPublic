@@ -8,6 +8,31 @@ export type InboundWorkflowChainContext = Readonly<{
 export type InboundChainContinuationFields = Readonly<{
   inboundWorkflowChain?: InboundWorkflowChainContext;
   skipIfMessageSpamOrReview?: boolean;
+  /**
+   * Lauf, der diesen Trigger-Fan-out gestartet hat.
+   *
+   * Ohne Kette ist der Schluessel der Join-Barriere nur Nachricht + Workflow.
+   * Zwei ueberlappende Backfill-/Reapply-Laeufe teilten sich dann denselben
+   * Zaehler: ein Kind aus Lauf B koennte die Barriere von Lauf A auf null
+   * setzen, den Applied-Marker schreiben und Folgearbeit freigeben, waehrend
+   * Zweige beider Laeufe noch laufen. Continuations tragen keine eigene runId
+   * (jede erzeugt einen neuen Lauf), deshalb reist die des Ursprungslaufs hier
+   * mit — und zwar durch JEDE Fortsetzung, sonst rechnen Eltern und Kinder mit
+   * verschiedenen Schluesseln.
+   */
+  inboundFanOutRunId?: number;
+  /**
+   * Zweig des Trigger-Fan-outs, aus dem diese Fortsetzung stammt.
+   *
+   * Konvergieren zwei Trigger-Zweige auf denselben Knoten, ist dessen
+   * Ausfuehrungsidentitaet erst mit diesem Schluessel eindeutig — sie steckt im
+   * Graphile-Job-Key der Kindjobs und in `terminalNodeId`. Wie der Fan-out-Lauf
+   * muss der Zweig JEDE Fortsetzung ueberleben: ginge er beim ersten
+   * deferierten Kind verloren, saehen zwei Zweige hinter demselben terminalen
+   * Knoten wieder dieselbe Identitaet, der zweite Abschluss liefe in den
+   * Einmal-Marker und die Join-Barriere fiele nie auf null.
+   */
+  branchKey?: string;
 }>;
 
 export function parseInboundWorkflowChain(value: unknown): InboundWorkflowChainContext | null {
@@ -29,9 +54,13 @@ export function parseInboundWorkflowChain(value: unknown): InboundWorkflowChainC
 export function inboundChainFieldsFromRecord(value: Record<string, unknown> | null | undefined): InboundChainContinuationFields {
   if (!value) return {};
   const chain = parseInboundWorkflowChain(value.inboundWorkflowChain);
+  const fanOutRunId = Number(value.inboundFanOutRunId);
+  const branchKey = typeof value.branchKey === 'string' ? value.branchKey.trim() : '';
   return {
     ...(chain ? { inboundWorkflowChain: chain } : {}),
     ...(value.skipIfMessageSpamOrReview === true ? { skipIfMessageSpamOrReview: true } : {}),
+    ...(Number.isInteger(fanOutRunId) && fanOutRunId > 0 ? { inboundFanOutRunId: fanOutRunId } : {}),
+    ...(branchKey ? { branchKey } : {}),
   };
 }
 
@@ -44,6 +73,13 @@ export function resumeContextInboundChainFields(
     ...(continuation.inboundWorkflowChain
       ? { inboundWorkflowChain: continuation.inboundWorkflowChain }
       : {}),
+    // Anders als skipIfMessageSpamOrReview MUSS der Fan-out-Lauf jede
+    // Fortsetzung ueberleben: er ist der Schluessel der Join-Barriere.
+    ...(continuation.inboundFanOutRunId
+      ? { inboundFanOutRunId: continuation.inboundFanOutRunId }
+      : {}),
+    // Ebenso der Zweig: er unterscheidet konvergierende Fan-out-Pfade.
+    ...(continuation.branchKey ? { branchKey: continuation.branchKey } : {}),
     // Do not re-stamp skipIfMessageSpamOrReview onto resumed workflow.execute —
     // it is a one-shot initial post-process guard only.
   };

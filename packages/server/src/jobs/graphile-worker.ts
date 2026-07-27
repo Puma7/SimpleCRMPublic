@@ -233,20 +233,26 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
     completeInboundDeferredJoinSiblingOnPgClient,
     inboundChainFromJobPayload,
     inboundChainHopClaimKey,
+    terminalChildCompletionKey,
+    terminalInboundChildContext,
   } = await import('../workflow-inbound-chain-advance.js');
+  // Auch ohne Kette (Inbound-Backfill/Reapply) muss die Join-Barriere abgebaut
+  // werden — sonst haengt sie nach einem endgueltig gescheiterten Kindjob.
+  // Weiterzuschalten gibt es dort nichts, deshalb bleibt `parsed` die Grundlage
+  // fuer den Folge-Workflow.
+  const target = terminalInboundChildContext(payload as Record<string, unknown>);
+  if (!target) return;
   const parsed = inboundChainFromJobPayload(payload as Record<string, unknown>);
-  if (!parsed) return;
-  const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
-  if (currentWorkflowId == null) return;
-  const nextIndex = parsed.chain.index + 1;
+  const currentWorkflowId = target.workflowId;
+  const nextIndex = parsed ? parsed.chain.index + 1 : 0;
   // Kein vorzeitiges return am letzten Kettenplatz: die Deferred-Join-Barriere
   // muss auch dann abgebaut werden, wenn es keinen Folge-Workflow zu enqueuen
   // gibt — sonst wartet ein erfolgreicher Geschwisterzweig dauerhaft an ihr.
-  const nextWorkflowId = nextIndex < parsed.chain.workflowIds.length
+  const nextWorkflowId = parsed && nextIndex < parsed.chain.workflowIds.length
     ? parsed.chain.workflowIds[nextIndex]
     : undefined;
 
-  const nextPayload: JobPayload | null = nextWorkflowId == null
+  const nextPayload: JobPayload | null = nextWorkflowId == null || parsed === null
     ? null
     : parsed.actorUserId
       ? {
@@ -269,7 +275,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
         },
       });
 
-  const claimKey = nextPayload === null
+  const claimKey = nextPayload === null || parsed === null
     ? null
     : inboundChainHopClaimKey(parsed.messageId, parsed.chain, nextIndex);
 
@@ -292,7 +298,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
                     set_config('app.user_id', '', true),
                     set_config('app.role', 'system', true),
                     set_config('app.cross_workspace_access', 'off', true)`,
-            [parsed.workspaceId],
+            [target.workspaceId],
           );
           // Idempotenz pro Graphile-Job. Anders als beim Legacy-Queue-Port
           // (postgres-job-queue-port failJob/failTerminal) läuft die
@@ -303,6 +309,30 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
           // Join-Zähler würde doppelt dekrementiert und die Barriere zu früh
           // öffnen. Der Marker macht das Ganze einmalig. Ohne Job-ID (ältere
           // Helper/Tests) bleibt das Verhalten wie bisher.
+          // Dieselbe Ausfuehrungsidentitaet wie der Erfolgsabschluss des
+          // Kindjobs: hat der seinen Abschluss bereits committet und der Worker
+          // starb vor der Graphile-Bestaetigung, darf der spaetere endgueltige
+          // Fehlschlag die Join-Barriere NICHT ein zweites Mal dekrementieren.
+          // Die Schranke pro Graphile-Job allein deckt das nicht ab.
+          const completionKey = terminalChildCompletionKey(payload as Record<string, unknown>);
+          if (completionKey) {
+            const firstCompletion = asPgResult(await client.query(
+              `INSERT INTO sync_info (
+                 workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
+               ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
+               ON CONFLICT (workspace_id, key) DO NOTHING
+               RETURNING key`,
+              [
+                target.workspaceId,
+                completionKey,
+                JSON.stringify({ origin: 'inbound_terminal_child' }),
+              ],
+            ));
+            if (!firstCompletion.rowCount) {
+              await client.query('COMMIT');
+              return;
+            }
+          }
           if (advanceGuardKey) {
             const firstRun = asPgResult(await client.query(
               `INSERT INTO sync_info (
@@ -311,7 +341,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
                ON CONFLICT (workspace_id, key) DO NOTHING
                RETURNING key`,
               [
-                parsed.workspaceId,
+                target.workspaceId,
                 advanceGuardKey,
                 JSON.stringify({ origin: 'inbound_chain_terminal_advance' }),
               ],
@@ -322,11 +352,16 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             }
           }
           const join = await completeInboundDeferredJoinSiblingOnPgClient(client, {
-            workspaceId: parsed.workspaceId,
-            messageId: parsed.messageId,
+            workspaceId: target.workspaceId,
+            messageId: target.messageId,
             workflowId: currentWorkflowId,
-            chain: parsed.chain,
+            chain: target.chain,
+            fanOutRunId: target.fanOutRunId,
             chainStop: false,
+            // Endgueltiger Fehlschlag: ueber die Barriere sichtbar halten, sonst
+            // markiert ein spaeter fertiger Geschwisterzweig den unvollstaendig
+            // gelaufenen Workflow als angewendet.
+            error: true,
             now: new Date(),
           });
           // 'ready_error' zaehlt hier ebenfalls als fortschaltbar: der Job ist
@@ -347,7 +382,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
              ON CONFLICT (workspace_id, key) DO NOTHING
              RETURNING key`,
             [
-              parsed.workspaceId,
+              target.workspaceId,
               claimKey,
               JSON.stringify({ origin: 'inbound_chain_hop' }),
             ],
@@ -443,6 +478,70 @@ export function graphileQueueNameForJob(type: ServerJobType, payload: JobPayload
   return undefined;
 }
 
+/**
+ * Knoten-Diskriminante fuer den Job-Key eines KI-Kindjobs.
+ *
+ * Ein TERMINALER Knoten hat keine `resumeNodeId`. Ohne eigene Diskriminante
+ * fielen zwei terminale Zweige derselben Nachricht auf denselben Key und
+ * jobKeyMode 'replace' verschluckte einen davon — der Elternlauf bliebe
+ * dauerhaft deferred, weil nur der ueberlebende Kindjob den Kettenabschluss
+ * ausfuehrt.
+ */
+function graphileChildNodeKeyPart(payload: JobPayload): string | undefined {
+  return graphileKeyScalar(payload.resumeNodeId)
+    ?? (payload.terminalWorkflowCompletion === true
+      ? graphileKeyScalar(payload.terminalNodeId)
+      : undefined);
+}
+
+/**
+ * Ausfuehrungs-Identitaet fuer den Job-Key eines DEFERIERTEN Kindjobs:
+ * Fan-out-Lauf + Zweig.
+ *
+ * Beide Haelften sind noetig und beide muessen STABIL ueber Zustellungen sein:
+ *
+ * - Der Zweig trennt konvergierende Trigger-Pfade. Ohne ihn teilten sich zwei
+ *   Zweige am selben Knoten Workflow, Nachricht und Resume-Knoten; jobKeyMode
+ *   'replace' verschluckte einen, waehrend der Elternlauf die Join-Barriere mit
+ *   zwei Zweigen initialisiert hat — sie fiele nie auf null.
+ * - Der Fan-out-Lauf trennt UEBERLAPPENDE Ausfuehrungen (zwei Backfills, oder
+ *   ein verketteter workflow.execute, der nach seinem Commit erneut zugestellt
+ *   wird). Deren Join-Barrieren sind laufskopiert; ohne denselben Scope im
+ *   Job-Key ersetzte das Kind des einen Laufs das des anderen und nur eine der
+ *   beiden Barrieren wuerde je abgebaut.
+ *
+ * Bewusst NICHT `payload.runId`: die ist pro Zustellung neu. Eine erneut
+ * zugestellte Fortsetzung erzeugt einen neuen Lauf, aber dieselbe Arbeit — mit
+ * runId im Key entkaeme der doppelte Kindjob dem 'replace' und wiederholte
+ * Modellaufruf und Entwurf. Der Fan-out-Lauf ueberlebt jede Fortsetzung und
+ * bildet genau eine Ausfuehrung ab.
+ *
+ * `null` — Identitaet unvollstaendig (nur noch bei Payloads aus der Zeit vor
+ * diesen Stempeln). Der Aufrufer vergibt dann GAR keinen Key: ohne Key kann
+ * nichts verschluckt werden, ein doppelter Job ist hoechstens redundante
+ * Arbeit, eine haengende Barriere dagegen endgueltig.
+ */
+function graphileDeferredIdentitySuffix(payload: JobPayload): string | null {
+  const fanOutRunId = graphileFanOutRunId(payload);
+  if (!fanOutRunId) return null;
+  // Terminale Knoten tragen den Zweig bereits in terminalNodeId.
+  if (payload.terminalWorkflowCompletion === true) return `:fanout:${fanOutRunId}`;
+  const branchKey = graphileKeyScalar(payload.branchKey);
+  return branchKey ? `:fanout:${fanOutRunId}:${branchKey}` : null;
+}
+
+/** Der Fan-out-Lauf steht je nach Jobart oben, in der Continuation oder im Kontext. */
+function graphileFanOutRunId(payload: JobPayload): string | undefined {
+  const nested = (value: unknown): string | undefined => (
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? graphileKeyScalar((value as Record<string, unknown>).inboundFanOutRunId)
+      : undefined
+  );
+  return graphileKeyScalar(payload.inboundFanOutRunId)
+    ?? nested(payload.continuation)
+    ?? nested(payload.context);
+}
+
 export function graphileJobKeyForJob(
   type: ServerJobType,
   payload: JobPayload,
@@ -472,18 +571,35 @@ export function graphileJobKeyForJob(
   if (type === 'ai.agent') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
-    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
-    if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+    const nodeKey = graphileChildNodeKeyPart(payload);
+    if (workspaceKey && workflowId && nodeKey) {
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}${identity}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
+  }
+  if (type === 'ai.pick_canned') {
+    // Nur Workflow-Kindjobs bekommen einen Key. Compose-initiierte Aufrufe
+    // bleiben bewusst ohne, sonst verschluckt jobKeyMode 'replace' die zweite
+    // manuelle Bausteinauswahl auf derselben Nachricht.
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const nodeKey = graphileChildNodeKeyPart(payload);
+    if (workspaceKey && workflowId && nodeKey) {
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}${identity}`;
+    }
   }
   if (type === 'ai.classify') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
     if (workspaceKey && messageId && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${resumeNodeId}`;
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${resumeNodeId}${identity}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
   }
@@ -492,35 +608,40 @@ export function graphileJobKeyForJob(
     const workflowId = graphileKeyScalar(payload.workflowId);
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}${identity}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
   }
   if (type === 'ai.draft_reply') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
-    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
-    // runId gehört in den Key: wird derselbe Workflow erneut auf dieselbe
-    // Nachricht angewandt, während der erste KI-Job noch wartet, würde
-    // jobKeyMode 'replace' sonst die erste Fortsetzung verschlucken (der erste
-    // Lauf bliebe dauerhaft deferred). Die Entwurfs-Dedupe ist ebenfalls
-    // run-skopiert (aiDraftReplyDedupeKey).
+    const resumeNodeId = graphileChildNodeKeyPart(payload);
+    // Der Workflow-Kindjob trennt zwei Anwendungen desselben Workflows auf
+    // dieselbe Nachricht ueber den Fan-out-Lauf in graphileDeferredIdentitySuffix
+    // (stabil ueber Zustellungen, anders als runId). Nur der compose-initiierte
+    // Rueckfallpfad unten hat keinen und nimmt weiter die runId.
     const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${runId ?? 'none'}`;
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}${identity}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}:${runId ?? 'none'}`;
   }
   if (type === 'ai.review_draft') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
-    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    const resumeNodeId = graphileChildNodeKeyPart(payload);
     // Analog zu ai.draft_reply: der konkrete Entwurf gehört in den Key, sonst
     // ersetzt eine zweite Gegenprüfung die erste und ein Entwurf bleibt ungeprüft.
     const draftId = graphileKeyScalar(payload.draftId);
     const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}${identity}`;
     }
     if (workspaceKey && messageId) {
       return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
@@ -532,7 +653,9 @@ export function graphileJobKeyForJob(
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
     const targetVariable = graphileKeyScalar(payload.targetVariable);
     if (workspaceKey && workflowId && resumeNodeId && targetVariable) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${targetVariable}`;
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${targetVariable}${identity}`;
     }
     if (workspaceKey && messageId && targetVariable) return `${type}:${workspaceKey}:${messageId}:${targetVariable}`;
   }
@@ -545,8 +668,19 @@ export function graphileJobKeyForJob(
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId)
       ?? graphileKeyScalar(payload.errorResumeNodeId);
     const messageId = graphileKeyScalar(payload.messageId);
+    // Terminale HTTP-Knoten (nur Fehlerkante) teilen sich errorResumeNodeId.
+    // Ohne die Knoten-/Lauf-Identitaet fielen zwei konvergierende Zweige oder
+    // zwei parallele Knoten an derselben Fehlerkante auf denselben Key;
+    // jobKeyMode 'replace' verschluckte einen, die mit zwei Zweigen
+    // initialisierte Join-Barriere faellt dann nie auf null.
+    const terminalNodeId = graphileKeyScalar(payload.terminalNodeId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+      const base = `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+      // terminalNodeId traegt die Zweig-Identitaet bereits; sonst der Zweig selbst.
+      if (terminalNodeId) return `${base}:${terminalNodeId}`;
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${base}${identity}`;
     }
   }
   if (type === 'workflow.forward_copy') {
@@ -554,14 +688,28 @@ export function graphileJobKeyForJob(
     const messageId = graphileKeyScalar(payload.messageId);
     const to = graphileKeyScalar(payload.to);
     if (workspaceKey && workflowId && messageId && to) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${to}`;
+      // Nur der deferierte Kindjob braucht die Zweig-Identitaet; der Fire-and-
+      // forget-Versand behaelt seinen Dedupe-Key (sonst ginge eine Kopie doppelt
+      // raus, statt nur eine Barriere zu haengen).
+      if (!graphileKeyScalar(payload.resumeNodeId)) {
+        return `${type}:${workspaceKey}:${workflowId}:${messageId}:${to}`;
+      }
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId}:${to}${identity}`;
     }
   }
   if (type === 'workflow.dmarc_ingest') {
     const workflowId = graphileKeyScalar(payload.workflowId);
     const messageId = graphileKeyScalar(payload.messageId);
     if (workspaceKey && workflowId && messageId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId}`;
+      // Wie forward_copy: nur die deferierte Variante braucht den Zweig.
+      if (!graphileKeyScalar(payload.resumeNodeId)) {
+        return `${type}:${workspaceKey}:${workflowId}:${messageId}`;
+      }
+      const identity = graphileDeferredIdentitySuffix(payload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId}${identity}`;
     }
   }
   if (type === 'workflow.execute') {
@@ -569,9 +717,35 @@ export function graphileJobKeyForJob(
     const delayedJobId = graphileKeyScalar(payload.delayedJobId);
     const runId = graphileKeyScalar(payload.runId);
     const messageId = graphileKeyScalar(payload.messageId);
+    // Terminaler HTTP-Abschluss: die Knoten-/Lauf-Identitaet trennt zwei
+    // Fan-out-Zweige, die beide ueber eine reine Fehlerkante zurueckkommen.
+    // Ohne sie verschluckt 'replace' einen der beiden Abschlussjobs und die
+    // mit zwei Zweigen initialisierte Join-Barriere faellt nie auf null.
+    const terminalNodeId = graphileKeyScalar(payload.terminalNodeId);
     if (workspaceKey && workflowId && delayedJobId) return `${type}:${workspaceKey}:delayed:${delayedJobId}`;
     if (workspaceKey && workflowId && runId) return `${type}:${workspaceKey}:run:${runId}`;
-    if (workspaceKey && workflowId && messageId) return `${type}:${workspaceKey}:${workflowId}:message:${messageId}`;
+    if (workspaceKey && workflowId && messageId && terminalNodeId) {
+      return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:${terminalNodeId}`;
+    }
+    if (workspaceKey && workflowId && messageId) {
+      // Fortsetzung eines deferierten Kindjobs: Resume-Knoten und Zweig stehen
+      // nur im context. Ohne sie fielen ALLE Fortsetzungen desselben Workflows
+      // auf derselben Nachricht auf einen Key — 'replace' liesse von zwei
+      // deferierten Zweigen nur einen zurueckkommen und die Join-Barriere
+      // bliebe fuer immer bei pending = 1. Der Erstlauf (kein Resume-Knoten)
+      // behaelt bewusst den nachrichtenweiten Key, der Doppellaeufe verhindert.
+      const resumeContext = payload.context as Record<string, unknown> | undefined | null;
+      const resumeNodeId = resumeContext && typeof resumeContext === 'object'
+        ? graphileKeyScalar(resumeContext.resumeNodeId)
+        : undefined;
+      if (!resumeNodeId) return `${type}:${workspaceKey}:${workflowId}:message:${messageId}`;
+      // Dieselbe Ausfuehrungs-Identitaet wie bei den Kindjobs: Fan-out-Lauf und
+      // Zweig. Ohne sie (nur Payloads von vor diesen Stempeln) lieber gar kein
+      // Key — ein doppelter Lauf ist Arbeit, ein verschluckter haengt.
+      const identity = graphileDeferredIdentitySuffix(payload.context as JobPayload);
+      if (identity === null) return undefined;
+      return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}${identity}`;
+    }
   }
   if (type === 'lock.cleanup' && workspaceKey) {
     return `${type}:${workspaceKey}`;

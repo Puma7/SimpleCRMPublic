@@ -53,6 +53,7 @@ import {
   interpolateSignatureTemplate,
 } from '../../../shared/signature-template';
 import { setDraftApprovalPending } from '../../email/email-draft-approval';
+import { deferHoldDuringSend, scheduledSendIsClaimed } from '../../email/email-scheduled-send-claim';
 import { parseDraftReviewResponse } from '../draft-review-parse';
 import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
@@ -146,6 +147,61 @@ function signatureHtmlToText(html: string): string {
     .replace(/&amp;/g, '&')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * HOLD stempeln — ausser der Entwurf wird gerade versendet. In dem Fall kann der
+ * Zustand nicht gesetzt werden (die Mail geht gerade raus), das Urteil wird
+ * geparkt und der Zweig endet ohne Folgeaktionen.
+ */
+function holdResultOrSendInFlight(
+  draftId: number,
+  reason: string,
+  variables?: Record<string, string | number | boolean | null>,
+): NodeExecuteResult {
+  // Fail-closed: NUR ein tatsaechlich aktiver Versand-Claim darf das HOLD
+  // verhindern. Die Entscheidung bewusst nicht am Rueckgabewert von
+  // setDraftApprovalPending festmachen — ein falsy Wert (nicht gesetzt, anderer
+  // Fehlerfall) wuerde den Zweig sonst auf 'send' kippen, also ausgerechnet auf
+  // dem Geldpfad nach aussen oeffnen.
+  if (scheduledSendIsClaimed(draftId)) {
+    // Der Versand laeuft bereits: „Wartet auf Freigabe" waere jetzt gelogen.
+    // Das HOLD wird geparkt und greift, falls dieser Versand scheitert.
+    deferHoldDuringSend(draftId, reason);
+    // Und der Zweig ENDET hier. Ihn als 'send' zu routen waere schlimmer als
+    // ungenau: am SEND-Ausgang haengt in der Zwei-Stufen-Vorlage
+    // email.send_draft, das den Entwurf erneut vorbereitet, den Auto-Reply-Slot
+    // belegt und ihn wieder einplant — und benutzerdefinierte SEND-Zweige
+    // beliebige weitere Erfolgsaktionen. Das spaetere Nachholen des HOLDs macht
+    // davon nichts rueckgaengig. Solange der Versand nicht nachweislich
+    // erfolgreich ist, darf kein Erfolgspfad laufen.
+    return {
+      status: 'ok',
+      stop: true,
+      message: 'review_hold_parked:send_in_flight',
+      variables: {
+        'ai.review.verdict': 'hold',
+        'ai.review.answered': false,
+        'ai.review.reason': 'Versand lief bereits — HOLD greift, falls er scheitert',
+      },
+    };
+  }
+  if (!setDraftApprovalPending(draftId, reason)) {
+    // TOCTOU: der Scheduled-Send hat den Claim zwischen der Pruefung oben und
+    // diesem Aufruf erworben, der Stempel ging also nicht durch. Das Urteil
+    // trotzdem parken — scheitert der inzwischen gestartete Versand, bliebe der
+    // Entwurf sonst faellig und ginge beim naechsten Tick ohne das KI-HOLD raus.
+    deferHoldDuringSend(draftId, reason);
+  }
+  return {
+    status: 'ok',
+    port: 'hold',
+    variables: variables ?? {
+      'ai.review.verdict': 'hold',
+      'ai.review.answered': false,
+      'ai.review.reason': reason,
+    },
+  };
 }
 
 export function registerAiNodes(register: Reg): void {
@@ -877,31 +933,31 @@ export function registerAiNodes(register: Reg): void {
             : null;
           if (liveFp !== reviewedFingerprint) {
             const reason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
-            setDraftApprovalPending(draftId, reason);
-            return {
-              status: 'ok',
-              port: 'hold',
-              variables: {
-                'ai.review.verdict': 'hold',
-                'ai.review.answered': false,
-                'ai.review.reason': reason,
-              },
-            };
+            return holdResultOrSendInFlight(draftId, reason);
           }
           return { status: 'ok', port: 'send', variables };
         }
-        setDraftApprovalPending(
+        return holdResultOrSendInFlight(
           draftId,
           parsed.reason || 'Gegenlese-KI empfiehlt menschliche Prüfung',
+          variables,
         );
-        return { status: 'ok', port: 'hold', variables };
       } catch (e) {
         // KI-Fehler: fail-safe Richtung Mensch — Entwurf wartet auf Freigabe.
         const msg = e instanceof Error ? e.message : String(e);
-        setDraftApprovalPending(draftId, `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`);
+        const held = holdResultOrSendInFlight(
+          draftId,
+          `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`,
+        );
+        // Ein geparktes HOLD endet ohne Port (stop) und traegt sein Urteil
+        // bereits selbst. Es hier zu ueberschreiben kehrte die tatsaechlich
+        // getroffene Entscheidung um: der Lauf haelt den Entwurf zurueck,
+        // Auswertung und Diagnose lesen aber eine Freigabe.
+        if (held.port !== 'hold') {
+          return { ...held, message: `review_error_hold_parked:${msg}` };
+        }
         return {
-          status: 'ok',
-          port: 'hold',
+          ...held,
           message: `review_error:${msg}`,
           variables: {
             'ai.review.verdict': 'hold',

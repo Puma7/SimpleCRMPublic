@@ -1,6 +1,8 @@
 const mockGetMessage = jest.fn();
 const mockSendCompose = jest.fn();
+const mockRecoveryState = jest.fn();
 const mockListDue = jest.fn();
+const mockStillDue = jest.fn();
 const mockSetScheduled = jest.fn();
 const mockGetSyncInfo = jest.fn();
 const mockSetSyncInfo = jest.fn();
@@ -10,14 +12,21 @@ jest.mock('../../electron/email/email-store', () => ({
 }));
 jest.mock('../../electron/email/email-compose-send', () => ({
   sendComposeDraft: (...args: unknown[]) => mockSendCompose(...args),
+  getComposeDraftRecoveryState: (...args: unknown[]) => mockRecoveryState(...args),
 }));
 jest.mock('../../electron/email/email-message-features', () => ({
   listDueScheduledDraftIds: (...args: unknown[]) => mockListDue(...args),
   setDraftScheduledSendAt: (...args: unknown[]) => mockSetScheduled(...args),
+  scheduledSendIsStillDue: (...args: unknown[]) => mockStillDue(...args),
 }));
 jest.mock('../../electron/sqlite-service', () => ({
   getSyncInfo: (...args: unknown[]) => mockGetSyncInfo(...args),
   setSyncInfo: (...args: unknown[]) => mockSetSyncInfo(...args),
+}));
+
+const mockSetDraftApprovalPending = jest.fn();
+jest.mock('../../electron/email/email-draft-approval', () => ({
+  setDraftApprovalPending: (...args: unknown[]) => mockSetDraftApprovalPending(...args),
 }));
 
 import { processDueScheduledSends } from '../../electron/email/email-scheduled-send';
@@ -27,6 +36,8 @@ describe('email-scheduled-send', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockStillDue.mockReturnValue(true);
+    mockRecoveryState.mockReturnValue({ smtpCommitted: false, needsResendFinalize: false });
     mockGetSyncInfo.mockReturnValue(null);
     mockSendCompose.mockResolvedValue({ ok: true });
   });
@@ -79,7 +90,11 @@ describe('email-scheduled-send', () => {
       bcc_json: null,
     });
     mockSendCompose.mockResolvedValue({ ok: false, error: 'smtp fail' });
-    mockGetSyncInfo.mockReturnValue('4');
+    // sync_info ist ein geteilter Schluesselraum: nur der Fehlerzaehler
+    // antwortet, sonst saehe der Lauf ein geparktes HOLD, das es nicht gibt.
+    mockGetSyncInfo.mockImplementation((key: string) => (
+      key === 'scheduled_send_failures:12' ? '4' : null
+    ));
     await processDueScheduledSends(logger);
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_failures:12', '5');
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_status:12', 'failed');

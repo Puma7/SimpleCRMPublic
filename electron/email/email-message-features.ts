@@ -28,18 +28,41 @@ export function setDraftScheduledSendAt(messageId: number, atIso: string | null)
     .run(atIso, messageId);
 }
 
+/** Faelligkeitsbedingung — geteilt, damit Liste und Nachpruefung nicht driften. */
+const DUE_SCHEDULED_SEND_WHERE = `uid < 0 AND folder_kind = 'draft' AND scheduled_send_at IS NOT NULL
+         AND scheduled_send_at <= ? AND outbound_hold = 0`;
+
 export function listDueScheduledDraftIds(limit = 30): number[] {
   const now = new Date().toISOString();
   const rows = getDb()
     .prepare(
       `SELECT id FROM ${EMAIL_MESSAGES_TABLE}
-       WHERE uid < 0 AND folder_kind = 'draft' AND scheduled_send_at IS NOT NULL
-         AND scheduled_send_at <= ? AND outbound_hold = 0
+       WHERE ${DUE_SCHEDULED_SEND_WHERE}
        ORDER BY scheduled_send_at ASC
        LIMIT ?`,
     )
     .all(now, limit) as { id: number }[];
   return rows.map((r) => r.id);
+}
+
+/**
+ * Ist dieser Entwurf JETZT noch fällig?
+ *
+ * `listDueScheduledDraftIds` liefert einen Schnappschuss. Wartet die Sendeschleife
+ * anschließend am SMTP-Aufruf für einen früheren Entwurf, kann die Gegenlese-KI
+ * einen späteren aus derselben Liste auf „Wartet auf Freigabe" stempeln und
+ * dessen `scheduled_send_at` löschen — zu diesem Zeitpunkt stand unser Claim für
+ * ihn noch nicht, sie kommt also durch. Ohne diese Nachprüfung ginge genau der
+ * zurückgehaltene Entwurf trotzdem raus.
+ */
+export function scheduledSendIsStillDue(draftId: number): boolean {
+  const row = getDb()
+    .prepare(
+      `SELECT 1 AS ok FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE ${DUE_SCHEDULED_SEND_WHERE} AND id = ?`,
+    )
+    .get(new Date().toISOString(), draftId) as { ok: number } | undefined;
+  return row !== undefined;
 }
 
 export async function exportMessageAsEml(messageId: number): Promise<{ ok: true; path: string } | { ok: false; error: string }> {

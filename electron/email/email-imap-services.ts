@@ -150,12 +150,19 @@ export async function startEmailBackgroundServices(logger: Pick<typeof console, 
     const { recoverStaleReplySuggestions } = await import('./email-reply-ai.js');
     const { clearStaleComposeSendingLocks } = await import('./email-compose-send.js');
     const { recoverStaleDelayedJobs } = await import('../workflow/delayed-jobs.js');
+    const { releaseStaleScheduledSendClaims } = await import('./email-scheduled-send-claim.js');
     const { sweepStaleInlineImageTempFiles } = await import('./email-inline-images.js');
     const { ensureVacationDedupTable } = await import('./email-vacation.js');
     ensureVacationDedupTable();
     recoverStaleReplySuggestions();
     clearStaleComposeSendingLocks();
     recoverStaleDelayedJobs();
+    // Ein Absturz mitten im SMTP-Aufruf liesse den Versand-Claim sonst dauerhaft
+    // stehen — der Entwurf waere weder freigebbar noch zurueckstellbar.
+    const staleClaims = releaseStaleScheduledSendClaims();
+    if (staleClaims > 0) {
+      logger.debug(`[email] released ${staleClaims} stale scheduled-send claim(s)`);
+    }
     sweepStaleInlineImageTempFiles(undefined, logger);
     const { sweepStaleSyncInfoKeys } = await import('../sync-info-maintenance.js');
     const swept = sweepStaleSyncInfoKeys();

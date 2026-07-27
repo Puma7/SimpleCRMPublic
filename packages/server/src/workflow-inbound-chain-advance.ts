@@ -11,6 +11,8 @@
  * (also sync_info) delays mark-applied / chain advance until every sibling
  * has finished — otherwise a lower-priority workflow can start mid-run.
  */
+import { sql } from 'kysely';
+
 import type { WorkspaceTransaction } from './db/workspace-context';
 import { buildTrustedServiceJobPayload } from './jobs/policy';
 import {
@@ -58,6 +60,145 @@ export function inboundChainFromJobPayload(payload: Record<string, unknown>): {
   return { chain, workspaceId, messageId, ...(actorUserId ? { actorUserId } : {}) };
 }
 
+export type TerminalInboundChildContext = {
+  workspaceId: string;
+  messageId: number;
+  workflowId: number;
+  chain: InboundWorkflowChainContext | null;
+  /** Ursprungslauf des Fan-outs — Schluessel der kettenlosen Join-Barriere. */
+  fanOutRunId: number | null;
+};
+
+/**
+ * Wen betrifft dieser TERMINALE Kindjob?
+ *
+ * Bevorzugt den Inbound-Kettenkontext und faellt auf die direkt gestempelten
+ * ids zurueck, wenn der Lauf gar keine Kette hat (Inbound-Backfill,
+ * forceWorkflowReapply). Ohne den Fallback verlieren gleich zwei Dinge ihren
+ * Bezugspunkt: der Abbau der Join-Barriere UND die Live-Abbruchpruefung — ein
+ * terminaler `ai.agent` schickte dann sogar Spam-Mails ans Modell und legte
+ * nach einem Geschwister-Abbruch noch Entwuerfe an.
+ *
+ * Der Fallback gilt bewusst nur fuer explizit terminale INBOUND-Payloads:
+ * `failJob` ruft den Kettenabschluss fuer JEDEN endgueltig gescheiterten Job
+ * auf, und ein beliebiger Job mit `workflowId` duerfte weder eine fremde
+ * Barriere anfassen noch einen Inbound-Marker setzen. Manuelle und
+ * compose-initiierte Laeufe bleiben damit ebenfalls aussen vor.
+ */
+export function terminalInboundChildContext(
+  payload: Record<string, unknown>,
+): TerminalInboundChildContext | null {
+  const parsed = inboundChainFromJobPayload(payload);
+  if (parsed) {
+    const workflowId = parsed.chain.workflowIds[parsed.chain.index];
+    if (workflowId == null) return null;
+    return {
+      workspaceId: parsed.workspaceId,
+      messageId: parsed.messageId,
+      workflowId,
+      chain: parsed.chain,
+      fanOutRunId: fanOutRunIdFromPayload(payload),
+    };
+  }
+  if (payload.terminalWorkflowCompletion !== true) return null;
+  if (typeof payload.triggerName !== 'string' || payload.triggerName.trim() !== 'inbound') return null;
+  const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId.trim() : '';
+  const messageId = positiveInt(payload.messageId);
+  const workflowId = positiveInt(payload.workflowId);
+  if (!workspaceId || messageId == null || workflowId == null) return null;
+  return { workspaceId, messageId, workflowId, chain: null, fanOutRunId: fanOutRunIdFromPayload(payload) };
+}
+
+/**
+ * Einmal-Schluessel fuer den Abschluss EINER terminalen Kindjob-Ausfuehrung.
+ *
+ * Bewusst hier statt in workflow-inbound-terminal-child: der Graphile-Pfad fuer
+ * endgueltige Fehlschlaege muss dieselbe Identitaet beanspruchen. Sonst haette
+ * er nur seine eigene Schranke (pro Graphile-Job) und dekrementierte die
+ * Join-Barriere ein zweites Mal, wenn der Kindjob seinen Erfolg bereits
+ * committet hatte, der Worker aber vor der Bestaetigung starb.
+ */
+export function terminalChildCompletionKey(payload: Record<string, unknown>): string | null {
+  // NUR echte terminale Kindjobs. Ein nicht-terminaler deferierter Kindjob
+  // (etwa workflow.forward_copy) traegt zwar die Kette, aber keine der beiden
+  // Markierungen unten — er bekaeme sonst denselben `terminal:none`-Schluessel
+  // wie jeder andere, und nach dem ersten endgueltigen Fehlschlag uebersprunge
+  // der zweite sein Join-Dekrement: die Barriere bliebe bei pending = 1 stehen.
+  //
+  // Zwei Formen gelten als terminal:
+  //  1. `terminalWorkflowCompletion` mit konkreter `terminalNodeId` (aktuell),
+  //  2. die Erkennung der Vorgaengerversion — keine Continuation, aber Kontext
+  //     (siehe buildAiDraftReplyJobPlan). Solche Payloads schliessen mit dem
+  //     lenianten `terminal:none` ab; ohne diesen Zweig beanspruchte der
+  //     Fehlerpfad eine ANDERE Identitaet und dekrementierte die Barriere ein
+  //     zweites Mal. Ein nicht-terminaler Job faellt nicht darunter: er hat
+  //     immer eine Continuation.
+  //     Eine workflow.execute-FORTSETZUNG faellt ebenfalls nicht darunter,
+  //     obwohl ihr oben beides fehlt: enqueueContinuation legt ihren
+  //     Resume-Knoten unter payload.context ab (siehe ai-classification). Ohne
+  //     diese Bedingung galte jede Fortsetzung als Legacy-Terminaljob, zwei
+  //     Fortsetzungen desselben Fan-outs teilten sich `terminal:none` und die
+  //     zweite kehrte im Graphile-Fehlerpfad vor ihrem Join-Dekrement zurueck.
+  const legacyContext = objectRecord(payload.context);
+  const legacyTerminal = payload.continuation === undefined
+    && payload.resumeNodeId === undefined
+    && legacyContext !== null
+    && legacyContext.resumeNodeId === undefined;
+  if (payload.terminalWorkflowCompletion !== true && !legacyTerminal) return null;
+  const rawNodeId = typeof payload.terminalNodeId === 'string' ? payload.terminalNodeId.trim() : '';
+  if (!rawNodeId && !legacyTerminal) return null;
+  const nodeId = rawNodeId || 'terminal';
+  const target = terminalInboundChildContext(payload);
+  if (!target) return null;
+  // Der Fan-out-Lauf, NICHT payload.runId: letztere ist pro Zustellung neu.
+  // Wird eine Fortsetzung nach ihrem Commit erneut zugestellt, laeuft sie unter
+  // einer neuen runId, reiht denselben terminalen Kindjob nochmals ein und
+  // behaelt Fan-out-Lauf und Zweig. Mit runId im Schluessel galte der doppelte
+  // Job als neue Ausfuehrung: Modellaufruf und Entwurf wiederholten sich und
+  // beide dekrementierten dieselbe (laufskopierte) Join-Barriere, die dann bei
+  // einem noch laufenden Geschwister zu frueh oeffnet. Der Zweig steckt bereits
+  // in nodeId (terminalNodeId = knoten#zweig).
+  return terminalChildCompletionKeyFor({
+    messageId: target.messageId,
+    workflowId: target.workflowId,
+    nodeId,
+    fanOutRunId: target.fanOutRunId,
+  });
+}
+
+/**
+ * Derselbe Schluessel aus bereits aufgeloesten Teilen.
+ *
+ * Jeder Weg, der den Abschluss EINER terminalen Ausfuehrung beansprucht, muss
+ * exakt diesen Schluessel benutzen — auch der HTTP-Erfolgspfad, der die
+ * Identitaet schon aus seinem Job-Kontext kennt. Zwei getrennte Namensraeume
+ * fuer dieselbe Ausfuehrung hiessen: der Erfolgspfad committet sein Dekrement,
+ * der Worker stirbt vor der Graphile-Bestaetigung, die erneute Zustellung
+ * scheitert endgueltig — und der Fehlerpfad dekrementiert dieselbe Barriere ein
+ * zweites Mal, weil sein Marker noch frei ist.
+ */
+export function terminalChildCompletionKeyFor(input: {
+  messageId: number;
+  workflowId: number;
+  nodeId: string;
+  fanOutRunId: number | null;
+}): string {
+  return [
+    'inbound_terminal_child_done',
+    input.messageId,
+    input.workflowId,
+    input.nodeId.trim() || 'terminal',
+    input.fanOutRunId ?? 'none',
+  ].join(':');
+}
+
+/** Der Fan-out-Lauf reist im Continuation- bzw. Kontextteil der Payload mit. */
+function fanOutRunIdFromPayload(payload: Record<string, unknown>): number | null {
+  const continuation = objectRecord(payload.continuation);
+  const context = objectRecord(payload.context);
+  return positiveInt(continuation?.inboundFanOutRunId) ?? positiveInt(context?.inboundFanOutRunId);
+}
+
 /** Stable claim key for one hop from chain.index → nextIndex. */
 export function inboundChainHopClaimKey(
   messageId: number,
@@ -75,11 +216,20 @@ export function inboundDeferredJoinKey(
   messageId: number,
   workflowId: number,
   chain: InboundWorkflowChainContext | null,
+  fanOutRunId?: number | null,
 ): string {
+  // Der Fan-out-Lauf trennt UEBERLAPPENDE Ausfuehrungen — mit wie ohne Kette.
+  // Ohne ihn teilen sich zwei Laeufe denselben Zaehler: zwei Backfills derselben
+  // Nachricht, oder ein verketteter workflow.execute, der nach dem Commit seines
+  // deferierten Laufs erneut zugestellt wird und einen zweiten Satz Kindjobs
+  // erzeugt. Die erneute Initialisierung hebt den Zaehler wegen
+  // ON CONFLICT DO NOTHING nicht an, also koennten Abschluesse aus beiden Laeufen
+  // ihn gemeinsam vorzeitig auf null setzen.
+  const runSuffix = fanOutRunId != null ? `:run:${fanOutRunId}` : '';
   if (chain) {
-    return `inbound_deferred_join:${messageId}:${chain.workflowIds.join(',')}:${chain.index}`;
+    return `inbound_deferred_join:${messageId}:${chain.workflowIds.join(',')}:${chain.index}${runSuffix}`;
   }
-  return `inbound_deferred_join:${messageId}:${workflowId}`;
+  return `inbound_deferred_join:${messageId}:${workflowId}${runSuffix}`;
 }
 
 /**
@@ -145,10 +295,12 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
     chain: InboundWorkflowChainContext | null;
     chainStop: boolean;
     error?: boolean;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     now: Date;
   },
 ): Promise<InboundDeferredJoinState> {
-  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   const locked = asPgQueryResult(await client.query(
     `SELECT value
        FROM sync_info
@@ -201,7 +353,7 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
     `DELETE FROM sync_info
       WHERE workspace_id = $1
         AND key = $2`,
-    [input.workspaceId, inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain)],
+    [input.workspaceId, inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId)],
   );
   if (chainStop) return 'stop';
   return error ? 'ready_error' : 'ready';
@@ -248,6 +400,8 @@ export async function initInboundDeferredJoin(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     pendingCount: number;
     /** When true, join completions must not advance the priority chain. */
     chainStop?: boolean;
@@ -260,7 +414,7 @@ export async function initInboundDeferredJoin(
   // pendingCount 1 with chainStop still needs a barrier so the single deferred
   // sibling completes into 'stop' instead of advancing.
   const pending = Math.max(1, input.pendingCount);
-  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   await trx
     .insertInto('sync_info')
     .values({
@@ -281,11 +435,19 @@ export function inboundSiblingAbortKey(
   messageId: number,
   workflowId: number,
   chain: InboundWorkflowChainContext | null,
+  fanOutRunId?: number | null,
 ): string {
+  // Exakt derselbe Lauf-Scope wie inboundDeferredJoinKey — mit wie ohne Kette.
+  // Beide Schluessel werden vom selben abgeschlossenen Join geloescht: waere nur
+  // einer laufskopiert, loeschte der fertige Join des einen Laufs den Marker des
+  // anderen und dessen noch laufende Kinder senden doch. Umgekehrt bricht ein
+  // Kettenstopp in Lauf A sonst die Kinder von Lauf B ab. Der laufuebergreifende
+  // Spamzustand wird ohnehin separat an der Nachricht selbst geprueft.
+  const runSuffix = fanOutRunId != null ? `:run:${fanOutRunId}` : '';
   if (chain) {
-    return `inbound_sibling_abort:${messageId}:${chain.workflowIds.join(',')}:${chain.index}`;
+    return `inbound_sibling_abort:${messageId}:${chain.workflowIds.join(',')}:${chain.index}${runSuffix}`;
   }
-  return `inbound_sibling_abort:${messageId}:${workflowId}`;
+  return `inbound_sibling_abort:${messageId}:${workflowId}${runSuffix}`;
 }
 
 export async function markInboundSiblingAbort(
@@ -295,11 +457,13 @@ export async function markInboundSiblingAbort(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     reason: string;
     now: Date;
   },
 ): Promise<void> {
-  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   await trx
     .insertInto('sync_info')
     .values({
@@ -326,9 +490,11 @@ export async function isInboundSiblingAborted(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
   },
 ): Promise<boolean> {
-  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   const row = await trx
     .selectFrom('sync_info')
     .select(['value'])
@@ -345,6 +511,13 @@ export async function cancelPendingWorkflowDelayedJobsForMessage(
     workspaceId: string;
     messageId: number;
     workflowId: number;
+    /**
+     * Nur Delay-Jobs DIESES Fan-outs stornieren. Ohne den Filter beendet ein
+     * Kettenstopp aus Lauf A auch die logic.delay-Jobs eines ueberlappenden
+     * Laufs B — deren Continuations gelten dann als abgebrochen und B verliert
+     * regulaere Arbeit, obwohl der Abort-Marker laufskopiert ist.
+     */
+    fanOutRunId?: number | null;
     now: Date;
   },
 ): Promise<void> {
@@ -358,6 +531,12 @@ export async function cancelPendingWorkflowDelayedJobsForMessage(
     .where('message_id', '=', input.messageId)
     .where('workflow_id', '=', input.workflowId)
     .where('status', 'in', ['pending', 'running'])
+    .$if(input.fanOutRunId != null, (qb) => qb.where((eb) => eb.or([
+      // Zeilen ohne Markierung stammen aus der Zeit vor dem Lauf-Scope und
+      // werden wie bisher storniert — nur fremde Laeufe bleiben verschont.
+      eb(sql`context_json->>'inboundFanOutRunId'`, 'is', null),
+      eb(sql`context_json->>'inboundFanOutRunId'`, '=', String(input.fanOutRunId)),
+    ])))
     .execute();
 }
 
@@ -376,10 +555,12 @@ export async function completeInboundDeferredJoinSibling(
     chain: InboundWorkflowChainContext | null;
     chainStop: boolean;
     error?: boolean;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     now: Date;
   },
 ): Promise<InboundDeferredJoinState> {
-  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   const row = await trx
     .selectFrom('sync_info')
     .select(['value'])
@@ -425,48 +606,67 @@ export async function completeInboundDeferredJoinSibling(
   await trx
     .deleteFrom('sync_info')
     .where('workspace_id', '=', input.workspaceId)
-    .where('key', '=', inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain))
+    .where('key', '=', inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId))
     .execute();
   if (chainStop) return 'stop';
   return error ? 'ready_error' : 'ready';
 }
 
-/** Insert the next priority inbound workflow.execute after a terminal child failure. */
-export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
+/**
+ * Kettenabschluss eines terminalen Kindjobs: Join-Barriere abbauen und — wenn
+ * sie das erlaubt — den naechsten Prioritaets-Workflow einreihen.
+ *
+ * Gibt den Join-Zustand mit zurueck, weil er entscheidet, ob der Aufrufer den
+ * Applied-Marker setzen darf: `ready_error` heisst „alle Geschwister durch, aber
+ * mindestens eines ist ausgefallen" — dann gilt der Lauf nicht als angewendet.
+ * `state: null` ⇒ kein Kettenkontext (oder Nachricht geloescht), nichts zu tun.
+ */
+export async function advanceInboundChainAfterTerminalChild(
   trx: WorkspaceTransaction,
   payload: Record<string, unknown>,
-  now: Date,
-): Promise<boolean> {
-  const parsed = inboundChainFromJobPayload(payload);
-  if (!parsed) return false;
+  input: { error?: boolean; now: Date },
+): Promise<{ state: InboundDeferredJoinState | null; advanced: boolean }> {
+  const now = input.now;
+  // Ein kettenloser Inbound-Lauf (Backfill, forceWorkflowReapply) faechert
+  // genauso auf: der Elternlauf legt bei mehreren deferierten Zweigen eine
+  // Join-Barriere mit `chain: null` an. Ohne den ID-Fallback landete jeder
+  // Kindjob sofort bei `state: null`, die Barriere wuerde nie dekrementiert —
+  // und der Aufrufer laese `null` als „keine Barriere", sodass schon der erste
+  // erfolgreiche Zweig markiert, obwohl ein spaeterer noch scheitern kann.
+  const target = terminalInboundChildContext(payload);
+  if (!target) return { state: null, advanced: false };
+  const parsed = target.chain ? inboundChainFromJobPayload(payload) : null;
 
   const message = await trx
     .selectFrom('email_messages')
     .select(['id'])
-    .where('workspace_id', '=', parsed.workspaceId)
-    .where('id', '=', parsed.messageId)
+    .where('workspace_id', '=', target.workspaceId)
+    .where('id', '=', target.messageId)
     .executeTakeFirst();
-  if (!message) return false;
+  if (!message) return { state: null, advanced: false };
 
-  const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
-  if (currentWorkflowId == null) return false;
   // Die Join-Barriere muss auch dann abgebaut werden, wenn es keinen nächsten
   // Workflow mehr gibt (letzter Kettenplatz). Sonst bliebe die sync_info-Zeile
   // dauerhaft pending, ein erfolgreicher Geschwisterzweig wartet an der
   // veralteten Barriere und initInboundDeferredJoin (ON CONFLICT DO NOTHING)
   // reanimiert denselben Key bei jedem Retry.
   const join = await completeInboundDeferredJoinSibling(trx, {
-    workspaceId: parsed.workspaceId,
-    messageId: parsed.messageId,
-    workflowId: currentWorkflowId,
-    chain: parsed.chain,
+    workspaceId: target.workspaceId,
+    messageId: target.messageId,
+    workflowId: target.workflowId,
+    chain: target.chain,
     chainStop: false,
+    fanOutRunId: target.fanOutRunId,
+    ...(input.error === true ? { error: true } : {}),
     now,
   });
-  if (!inboundJoinAllowsAdvance(join)) return false;
+  if (!inboundJoinAllowsAdvance(join)) return { state: join, advanced: false };
+  // Ohne Kette gibt es keine Prioritaetsstufe, die weitergeschaltet werden
+  // koennte — die Barriere ist aber abgebaut und der Zustand aussagekraeftig.
+  if (!parsed) return { state: join, advanced: false };
 
   const nextIndex = parsed.chain.index + 1;
-  if (nextIndex >= parsed.chain.workflowIds.length) return false;
+  if (nextIndex >= parsed.chain.workflowIds.length) return { state: join, advanced: false };
 
   const claimed = await tryClaimInboundChainHop(trx, {
     workspaceId: parsed.workspaceId,
@@ -475,7 +675,7 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
     nextIndex,
     now,
   });
-  if (!claimed) return false;
+  if (!claimed) return { state: join, advanced: false };
 
   const jobPayload = parsed.actorUserId
     ? {
@@ -509,5 +709,27 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
       updated_at: now,
     })
     .execute();
-  return true;
+  return { state: join, advanced: true };
+}
+
+/**
+ * Insert the next priority inbound workflow.execute after a terminal child failure.
+ *
+ * `error: true` NUR fuer echte endgueltige Fehlschlaege setzen (Job endgueltig
+ * gescheitert). Ohne das Flag merkt die Join-Barriere den Ausfall nicht: ein
+ * spaeter abschliessender Geschwisterzweig bekaeme `ready` statt `ready_error`
+ * und markierte den unvollstaendig gelaufenen Workflow als angewendet. Ein
+ * erfolgreicher Abschluss ohne Ausgangskante darf das Flag deshalb nicht setzen.
+ */
+export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
+  trx: WorkspaceTransaction,
+  payload: Record<string, unknown>,
+  now: Date,
+  options: { error?: boolean } = {},
+): Promise<boolean> {
+  const { advanced } = await advanceInboundChainAfterTerminalChild(trx, payload, {
+    ...(options.error === true ? { error: true } : {}),
+    now,
+  });
+  return advanced;
 }

@@ -31,6 +31,8 @@ export type WorkflowHttpRequestContinuation = Readonly<{
   resumeNodeId?: string;
   errorResumeNodeId?: string;
   completeOnSuccess?: boolean;
+  /** Identitaet dieser Knotenausfuehrung — Einmal-Schranke des terminalen Abschlusses. */
+  terminalNodeId?: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
 } & InboundChainContinuationFields>;
@@ -93,6 +95,7 @@ export function createPostgresWorkflowHttpRequestPort(
             messageId: input.messageId!,
             workflowId: input.continuation!.workflowId,
             chain: input.continuation!.inboundWorkflowChain ?? null,
+            fanOutRunId: input.continuation!.inboundFanOutRunId,
           }),
           { applySession: options.applyWorkspaceSession },
         );
@@ -221,6 +224,14 @@ async function enqueueWorkflowHttpContinuation(
   const payload = workflowContinuationPayload({
     workspaceId: input.workspaceId,
     workflowId: continuation.workflowId,
+    // Auch auf oberster Ebene: graphileJobKeyForJob sieht nur die Payload, nicht
+    // deren `context`. Ohne das fielen zwei terminale Abschlussjobs (zwei
+    // Fan-out-Zweige an nur-Fehlerkanten-HTTP-Knoten) auf denselben
+    // workflow.execute-Key und 'replace' verschluckte einen — die Barriere
+    // wuerde nur einmal dekrementiert und die Prioritaetskette bliebe stehen.
+    ...(!resumeNodeId && continuation.terminalNodeId
+      ? { terminalNodeId: continuation.terminalNodeId }
+      : {}),
     ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
     ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
     ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),
@@ -229,7 +240,12 @@ async function enqueueWorkflowHttpContinuation(
     context: {
       ...(resumeNodeId
         ? { resumeNodeId }
-        : { workflowTerminalSuccess: true }),
+        : {
+          workflowTerminalSuccess: true,
+          // Ohne diese Identitaet koennte eine erneute Zustellung desselben
+          // Fortsetzungsjobs die Join-Barriere ein zweites Mal herunterzaehlen.
+          ...(continuation.terminalNodeId ? { terminalNodeId: continuation.terminalNodeId } : {}),
+        }),
       eventStrings: continuation.eventStrings ?? {},
       eventVariables: {
         ...(continuation.eventVariables ?? {}),

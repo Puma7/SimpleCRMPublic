@@ -9,11 +9,19 @@
  * Bearbeiten löscht den Zustand.
  */
 import { getDb } from '../sqlite-service';
+import { scheduledSendIsClaimed } from './email-scheduled-send-claim';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 
 export type DraftApprovalState = 'pending' | null;
 
-export function setDraftApprovalPending(messageId: number, reason: string): void {
+/**
+ * @returns false, wenn der Entwurf gerade versendet wird — dann bleibt der
+ * Zustand unveraendert. Ein Pending-Stempel koennte den laufenden SMTP-Aufruf
+ * ohnehin nicht stoppen, wuerde dem Nutzer aber „Wartet auf Freigabe" zeigen,
+ * waehrend die Mail rausgeht.
+ */
+export function setDraftApprovalPending(messageId: number, reason: string): boolean {
+  if (scheduledSendIsClaimed(messageId)) return false;
   getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE}
@@ -23,6 +31,7 @@ export function setDraftApprovalPending(messageId: number, reason: string): void
        WHERE id = ?`,
     )
     .run(reason.slice(0, 500), messageId);
+  return true;
 }
 
 export function clearDraftApproval(messageId: number): void {

@@ -51,6 +51,7 @@ import {
   initInboundDeferredJoin,
   isInboundSiblingAborted,
   markInboundSiblingAbort,
+  terminalChildCompletionKeyFor,
   tryClaimInboundChainHop,
 } from './workflow-inbound-chain-advance';
 
@@ -213,6 +214,13 @@ type ServerWorkflowContext = {
   /** Priority-chain fields: must survive AI/HTTP/delay continuations. */
   inboundWorkflowChain?: InboundWorkflowChainContext;
   skipIfMessageSpamOrReview?: boolean;
+  /**
+   * Welcher Trigger-Zweig laeuft gerade? Genau die Einheit, die die
+   * Join-Barriere zaehlt (ein Zaehler pro Trigger-Kante).
+   */
+  branchKey?: string;
+  /** Lauf, der den Trigger-Fan-out gestartet hat (Schluessel der Join-Barriere). */
+  inboundFanOutRunId?: number;
 };
 
 type PreparedWorkflowRun =
@@ -491,14 +499,50 @@ export function createPostgresWorkflowExecutionJobPort(
               now,
             });
             if (trigger === 'inbound' && message) {
-              await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
-              await maybeEnqueueNextInboundWorkflow(trx, {
+              // Ein HTTP-Knoten mit Fehlerkante, aber ohne Erfolgskante meldet
+              // sich hier als „fertig" — er hat den Elternlauf aber wie jeder
+              // andere Zweig deferiert und zaehlt in der Join-Barriere. Ohne
+              // dieses Dekrement bliebe die Barriere fuer immer pending, und
+              // der Marker faende ihn angewendet, obwohl ein Geschwisterzweig
+              // noch laeuft oder gescheitert ist. Gleiche Reihenfolge wie im
+              // regulaeren Abschluss weiter unten: erst Join, dann Marker.
+              //
+              // Einmal-Schranke wie beim terminalen KI-Kindjob: wird dieser
+              // Fortsetzungsjob nach dem Commit, aber vor der Bestaetigung
+              // erneut zugestellt, zaehlte er die Barriere sonst ein zweites
+              // Mal herunter. Beim ersten Durchlauf mit `wait` gibt es noch
+              // keinen Applied-Marker, der den Retry abfangen koennte — der
+              // zweite Lauf bekaeme verfrueht `ready`, markierte angewendet
+              // und startete die naechste Prioritaetsstufe mitten im Fan-out.
+              const claimed = await claimTerminalHttpCompletion(trx, {
                 workspaceId: input.workspaceId,
                 messageId: Number(message.id),
-                actorUserId: input.actorUserId,
+                workflowId: Number(workflow.id),
                 jobContext,
                 now,
               });
+              if (!claimed) return;
+              const join = await completeInboundDeferredJoinSibling(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
+                chainStop: false,
+                now,
+              });
+              if (inboundJoinAllowsAdvance(join)) {
+                if (join === 'ready') {
+                  await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+                }
+                await maybeEnqueueNextInboundWorkflow(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: Number(message.id),
+                  actorUserId: input.actorUserId,
+                  jobContext,
+                  now,
+                });
+              }
             }
             return;
           }
@@ -549,6 +593,7 @@ export function createPostgresWorkflowExecutionJobPort(
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
                 chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                 chainStop: true,
                 now,
               });
@@ -590,6 +635,7 @@ export function createPostgresWorkflowExecutionJobPort(
                   messageId: Number(message.id),
                   workflowId: Number(workflow.id),
                   chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                  fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                   chainStop: true,
                   now,
                 });
@@ -631,6 +677,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
             })
           ) {
             await finishRun(trx, input.workspaceId, run.id, {
@@ -643,6 +690,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
               chainStop: true,
               now,
             });
@@ -687,6 +735,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain,
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
               pendingCount: result.deferredBranchCount ?? 1,
               chainStop: siblingTerminal,
               // Ein synchron mit Fehler beendeter Geschwisterzweig muss über
@@ -702,6 +751,7 @@ export function createPostgresWorkflowExecutionJobPort(
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
                 chain,
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                 reason: result.inboundChainStop
                   ? 'sibling_inbound_chain_stop'
                   : 'sibling_blocked',
@@ -730,6 +780,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
               chainStop: result.inboundChainStop === true,
               error: result.status === 'error' || result.status === 'blocked',
               now,
@@ -744,6 +795,7 @@ export function createPostgresWorkflowExecutionJobPort(
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
                 chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                 reason: 'sibling_inbound_chain_stop',
                 now,
               });
@@ -1347,8 +1399,9 @@ async function runServerWorkflowGraph(
   const log: string[] = [];
   let result: GraphRunResult = { status: 'ok', blocked: false, deferred: false, blockReason: null, log };
   let deferredBranchCount = 0;
-  for (const edge of triggerEdges) {
+  for (const [branchIndex, edge] of triggerEdges.entries()) {
     const branchContext = cloneServerWorkflowContext(input.context);
+    branchContext.branchKey = edge.id || String(branchIndex);
     const branch = await walkGraph(trx, {
       doc,
       context: branchContext,
@@ -2004,6 +2057,7 @@ async function executeServerNode(
         messageId: context.messageId,
         workflowId: context.workflowId,
         chain: context.inboundWorkflowChain ?? null,
+        fanOutRunId: inboundFanOutRunId(context),
       })
     ) {
       return {
@@ -2914,6 +2968,7 @@ async function scheduleAiClassificationJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3013,6 +3068,7 @@ async function scheduleAiReviewJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3083,6 +3139,7 @@ async function scheduleAiTransformTextJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3121,6 +3178,83 @@ async function scheduleAiTransformTextJob(
   };
 }
 
+/**
+ * Einmal-Schranke fuer den terminalen HTTP-Abschluss (`workflowTerminalSuccess`).
+ *
+ * Ohne `terminalNodeId` in der Fortsetzung — etwa aus einem Job der
+ * Vorgaengerversion — gibt es keine stabile Identitaet ueber eine erneute
+ * Zustellung hinweg; dann wird bewusst NICHT geblockt, sonst bliebe die
+ * Barriere haengen. Der seltene Doppelabbau ist das kleinere Uebel als ein
+ * garantierter Stillstand.
+ */
+async function claimTerminalHttpCompletion(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    jobContext: Record<string, unknown>;
+    now: Date;
+  },
+): Promise<boolean> {
+  const nodeId = typeof input.jobContext.terminalNodeId === 'string'
+    ? input.jobContext.terminalNodeId.trim()
+    : '';
+  if (!nodeId) return true;
+  const claimed = await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: input.workspaceId,
+      // Derselbe Schluessel, den der Graphile-Fehlerpfad ueber
+      // terminalChildCompletionKey beansprucht — Begruendung dort. Der
+      // Fan-out-Lauf wird wie dort aufgeloest (kein Rueckfall auf diesen Lauf,
+      // sonst zeigten Erfolgs- und Fehlerweg auf verschiedene Marker).
+      key: terminalChildCompletionKeyFor({
+        messageId: input.messageId,
+        workflowId: input.workflowId,
+        nodeId,
+        fanOutRunId: inboundChainFieldsFromRecord(input.jobContext).inboundFanOutRunId ?? null,
+      }),
+      value: '1',
+      last_updated: input.now,
+      source_row: { origin: 'inbound_terminal_child' },
+      imported_in_run_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())
+    .returning('key')
+    .executeTakeFirst();
+  return Boolean(claimed);
+}
+
+/**
+ * Identitaet EINER Ausfuehrung eines terminalen Knotens.
+ *
+ * Zwei Trigger-Zweige koennen auf denselben Knoten zusammenlaufen; jeder Zweig
+ * laeuft mit eigenem `seen`-Set und plant den Kindjob erneut ein. Ohne den
+ * Zweigschluessel traegen beide Jobs dieselbe Identitaet: der Graphile-Job-Key
+ * kollidiert (jobKeyMode 'replace' verschluckt einen) und die Einmal-Schranke
+ * verwirft den zweiten Abschluss — die mit zwei Zweigen initialisierte
+ * Join-Barriere faellt dann nie auf null.
+ */
+function terminalNodeExecutionId(context: ServerWorkflowContext, node: WorkflowGraphNode): string {
+  return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;
+}
+
+/**
+ * Zweig-Identitaet auf oberster Payload-Ebene eines deferierten Kindjobs.
+ *
+ * `graphileJobKeyForJob` sieht nur die Payload-Oberflaeche, nicht die
+ * Continuation. Ohne diesen Stempel teilten sich zwei auf denselben Knoten
+ * konvergierende Trigger-Zweige Workflow, Nachricht, Lauf UND Resume-Knoten;
+ * jobKeyMode 'replace' verschluckte einen der beiden Kindjobs, waehrend der
+ * Elternlauf die Join-Barriere mit zwei Zweigen initialisiert hat — sie bliebe
+ * dauerhaft bei pending = 1.
+ */
+function stampBranchKey(payload: Record<string, unknown>, context: ServerWorkflowContext): void {
+  if (context.branchKey) payload.branchKey = context.branchKey;
+}
+
 async function scheduleAiAgentJob(
   trx: WorkspaceTransaction,
   doc: WorkflowGraphDocument,
@@ -3144,8 +3278,21 @@ async function scheduleAiAgentJob(
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    // runId wie bei ai.draft_reply: sonst teilen sich zwei Laeufe desselben
+    // Workflows einen Job-Key und 'replace' verschluckt den ersten Kindjob.
+    runId: context.runId,
     systemPrompt: systemPrompt.value,
     ...workflowJobProvenance(context),
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
+    ...(resumeNodeId ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+      terminalNodeId: terminalNodeExecutionId(context, node),
+      triggerName: context.trigger,
+    }),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -3163,6 +3310,7 @@ async function scheduleAiAgentJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3190,8 +3338,8 @@ async function scheduleAiAgentJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    stop: true,
+    deferred: true,
     message: `queued_ai_agent:${jobId}`,
     variables: {
       'ai.agent.status': 'pending',
@@ -3228,10 +3376,16 @@ async function scheduleAiDraftReplyJob(
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
-    // Kettenkontext auch ohne Resume-Kante: ein terminaler KI-Knoten hat keine
-    // Continuation, muss die Kette nach getaner Arbeit aber trotzdem
-    // weiterschalten (inboundChainFromJobPayload liest payload.context).
-    context: { ...inboundChainFieldsFromContext(context) },
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
+    ...(resumeNodeId ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+      terminalNodeId: terminalNodeExecutionId(context, node),
+      triggerName: context.trigger,
+    }),
   };
   if (profileId.value !== undefined) payload.profileId = profileId.value;
   if (knowledgeBaseId.value !== undefined) payload.knowledgeBaseId = knowledgeBaseId.value;
@@ -3248,6 +3402,7 @@ async function scheduleAiDraftReplyJob(
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3323,6 +3478,16 @@ async function scheduleAiReviewDraftJob(
     // Continuation — der erste Elternlauf bliebe fuer immer deferred.
     runId: context.runId,
     ...workflowJobProvenance(context),
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
+    ...(deferAnchor ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+      terminalNodeId: terminalNodeExecutionId(context, node),
+      triggerName: context.trigger,
+    }),
     eventStrings: context.strings,
     eventVariables: context.variables,
     portResumeTargets: Object.fromEntries(
@@ -3345,6 +3510,7 @@ async function scheduleAiReviewDraftJob(
   if (deferAnchor) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = deferAnchor;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3374,8 +3540,8 @@ async function scheduleAiReviewDraftJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(deferAnchor),
-    deferred: Boolean(deferAnchor),
+    stop: true,
+    deferred: true,
     message: `queued_ai_review_draft:${jobId}`,
     variables: {
       'ai.review.status': 'pending',
@@ -3403,7 +3569,23 @@ async function scheduleAiPickCannedJob(
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    // runId wie bei ai.draft_reply: sonst teilen sich zwei Laeufe desselben
+    // Workflows einen Job-Key und 'replace' verschluckt den ersten Kindjob.
+    runId: context.runId,
+    // Zweig-Identitaet fuer den Job-Key: zwei konvergierende Trigger-Zweige
+    // teilen sich sonst alles (Workflow, Nachricht, runId, resumeNodeId).
+    ...(context.branchKey ? { branchKey: context.branchKey } : {}),
     ...workflowJobProvenance(context),
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
+    ...(resumeNodeId ? {} : {
+      workflowId: context.workflowId,
+      context: { ...inboundChainFieldsFromContext(context) },
+      terminalWorkflowCompletion: true,
+      terminalNodeId: terminalNodeExecutionId(context, node),
+      triggerName: context.trigger,
+    }),
     createDraft,
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -3440,8 +3622,8 @@ async function scheduleAiPickCannedJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    stop: true,
+    deferred: true,
     message: `queued_ai_pick_canned:${jobId}`,
     variables: {
       'ai.canned.status': 'pending',
@@ -3525,13 +3707,26 @@ async function scheduleWorkflowHttpRequestJob(
   if (resumeNodeId || errorResumeNodeId) {
     payload.workflowId = context.workflowId;
     if (resumeNodeId) payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     if (errorResumeNodeId) payload.errorResumeNodeId = errorResumeNodeId;
+    // Terminal (nur Fehlerkante): Identitaet auch auf oberster Ebene, sonst
+    // sieht graphileJobKeyForJob sie nicht. Warum sie noetig ist: dort.
+    // Fan-out-Lauf statt context.runId (die ist pro Zustellung neu) — warum:
+    // terminalChildCompletionKey in workflow-inbound-chain-advance.
+    if (!resumeNodeId && errorResumeNodeId) {
+      payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${inboundFanOutRunId(context)}`;
+    }
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
       ...(resumeNodeId ? { resumeNodeId } : {}),
       ...(errorResumeNodeId ? { errorResumeNodeId } : {}),
-      ...(!resumeNodeId && errorResumeNodeId ? { completeOnSuccess: true } : {}),
+      // Enthaelt die runId: die Fortsetzung traegt keine eigene, und die
+      // Einmal-Schranke des terminalen Abschlusses darf den Lauf nicht
+      // ueberleben (sonst haengt die Barriere eines zweiten Laufs).
+      ...(!resumeNodeId && errorResumeNodeId
+        ? { completeOnSuccess: true, terminalNodeId: payload.terminalNodeId as string }
+        : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
@@ -3598,6 +3793,7 @@ async function scheduleWorkflowForwardCopyJob(
   };
   if (resumeNodeId) {
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -3665,6 +3861,7 @@ async function scheduleWorkflowDmarcIngestJob(
   };
   if (resumeNodeId) {
     payload.resumeNodeId = resumeNodeId;
+    stampBranchKey(payload, context);
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
@@ -5073,6 +5270,27 @@ function workflowDelayContext(
   };
 }
 
+/**
+ * Fan-out-Lauf aus dem Job-Kontext, sonst dieser Lauf (erste Ausfuehrung).
+ * Eltern (Barriere anlegen) und Kinder (Barriere abbauen) muessen denselben
+ * Wert benutzen, sonst zeigen sie auf verschiedene sync_info-Zeilen.
+ */
+function jobContextFanOutRunId(jobContext: Record<string, unknown>, runId: number): number {
+  return inboundChainFieldsFromRecord(jobContext).inboundFanOutRunId ?? runId;
+}
+
+/**
+ * Lauf, der den aktuellen Trigger-Fan-out gestartet hat.
+ *
+ * In der ersten Ausfuehrung ist das der eigene Lauf; in jeder Fortsetzung der
+ * mitgereichte Ursprungslauf. Eltern (Barriere anlegen) und Kinder (Barriere
+ * abbauen) muessen denselben Wert benutzen, sonst zeigen sie auf verschiedene
+ * sync_info-Zeilen.
+ */
+function inboundFanOutRunId(context: ServerWorkflowContext): number {
+  return context.inboundFanOutRunId ?? context.runId;
+}
+
 function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnType<typeof inboundChainFieldsFromRecord> {
   // Continuations (AI/HTTP/delay) must keep the priority chain, but must NOT
   // re-stamp skipIfMessageSpamOrReview — that guard is one-shot for the initial
@@ -5082,6 +5300,12 @@ function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnTy
     ...(context.inboundWorkflowChain
       ? { inboundWorkflowChain: context.inboundWorkflowChain }
       : {}),
+    // Der Fan-out-Lauf dagegen MUSS mitreisen — er skopiert die kettenlose
+    // Join-Barriere auf genau diese Ausfuehrung.
+    inboundFanOutRunId: inboundFanOutRunId(context),
+    // Genauso der Zweig: nur mit ihm bleibt die Knotenausfuehrung auch hinter
+    // deferierten Kindjobs eindeutig (siehe workflow-inbound-chain-context).
+    ...(context.branchKey ? { branchKey: context.branchKey } : {}),
   });
 }
 
@@ -7169,6 +7393,8 @@ async function abortRemainingInboundSiblings(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     reason: string;
     now: Date;
   },
@@ -7178,6 +7404,7 @@ async function abortRemainingInboundSiblings(
     messageId: input.messageId,
     workflowId: input.workflowId,
     chain: input.chain,
+    fanOutRunId: input.fanOutRunId,
     reason: input.reason,
     now: input.now,
   });
@@ -7185,6 +7412,7 @@ async function abortRemainingInboundSiblings(
     workspaceId: input.workspaceId,
     messageId: input.messageId,
     workflowId: input.workflowId,
+    fanOutRunId: input.fanOutRunId,
     now: input.now,
   });
 }
