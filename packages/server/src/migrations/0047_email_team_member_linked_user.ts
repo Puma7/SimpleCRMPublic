@@ -13,6 +13,12 @@ export const emailTeamMemberLinkedUserMigration: SqlMigration = {
     `CREATE INDEX IF NOT EXISTS email_team_members_linked_user_idx
       ON email_team_members (workspace_id, linked_user_id)
       WHERE linked_user_id IS NOT NULL`,
+    // Transaction-local system context: the migrator runs as the app role, and
+    // email_team_members has FORCE ROW LEVEL SECURITY (0007). Without this the
+    // backfill matches zero rows in every workspace and silently no-ops while
+    // the migration is recorded as applied. Mirrors 0033/0038/0039/0042/0046.
+    `SELECT set_config('app.role', 'system', true),
+       set_config('app.cross_workspace_access', 'on', true);`,
     `UPDATE email_team_members AS member
      SET linked_user_id = users.id
      FROM users

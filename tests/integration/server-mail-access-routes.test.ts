@@ -5042,6 +5042,136 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('remaps legacy capability grants under FORCE RLS as the non-superuser migrator', async () => {
+    // Ohne transaktionslokalen System-Kontext matchen UPDATE/DELETE unter
+    // FORCE ROW LEVEL SECURITY null Zeilen — die Migration gilt trotzdem als
+    // angewendet. Der Test pinnt beides: die Reihenfolge im Migrations-SQL und
+    // das tatsaechliche Ergebnis gegen echte Bestandsdaten.
+    const migration = serverMigrations.find((candidate) => candidate.id === '0046_group_rights_and_mail_constraints');
+    expect(migration).toBeDefined();
+    const systemContextIndex = migration!.upSql.findIndex((statement) => (
+      statement.includes("set_config('app.role', 'system', true)")
+      && statement.includes("set_config('app.cross_workspace_access', 'on', true)")
+    ));
+    const remapIndex = migration!.upSql.findIndex((statement) => statement.includes("SET permission = 'settings.manage'"));
+    const dropLegacyIndex = migration!.upSql.findIndex((statement) => (
+      statement.includes("DELETE FROM user_group_permissions WHERE permission = 'email_settings.manage'")
+    ));
+    expect(systemContextIndex).toBeGreaterThan(-1);
+    expect(remapIndex).toBeGreaterThan(systemContextIndex);
+    expect(dropLegacyIndex).toBeGreaterThan(systemContextIndex);
+
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    await client.query(`
+      INSERT INTO user_group_permissions (workspace_id, group_id, permission) VALUES
+        ('${WORKSPACE_A}', ${GROUP_A}, 'email_settings.manage'),
+        ('${WORKSPACE_B}', ${GROUP_B}, 'email_settings.manage'),
+        ('${WORKSPACE_B}', ${GROUP_B}, 'settings.manage')
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+    // 1) Ohne den Kontext-Prolog bleibt der Rename wirkungslos (der Bug).
+    await client.query('BEGIN');
+    try {
+      const blocked = await client.query(migration!.upSql[remapIndex]!);
+      expect(blocked.rowCount).toBe(0);
+    } finally {
+      await client.query('ROLLBACK');
+    }
+
+    // 2) Mit dem Prolog — also die Migration wie der Migrator sie ausfuehrt.
+    await applyStatementsInTransaction(migration!.upSql);
+
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    const remapped = await client.query<{ group_id: string; permission: string }>(`
+      SELECT group_id::text AS group_id, permission
+      FROM user_group_permissions
+      WHERE group_id IN (${GROUP_A}, ${GROUP_B})
+      ORDER BY group_id, permission
+    `);
+    expect(remapped.rows).toEqual([
+      { group_id: String(GROUP_A), permission: 'settings.manage' },
+      { group_id: String(GROUP_B), permission: 'settings.manage' },
+    ]);
+
+    await client.query(`DELETE FROM user_group_permissions WHERE group_id IN (${GROUP_A}, ${GROUP_B})`);
+    await client.query('RESET app.role; RESET app.cross_workspace_access');
+  });
+
+  test('backfills the team member user link under FORCE RLS as the non-superuser migrator', async () => {
+    // Gleiche Klasse wie 0046: email_team_members hat FORCE RLS (0007), ohne
+    // System-Kontext liefe der Backfill leer und assigned_to_me bliebe blind.
+    const migration = serverMigrations.find((candidate) => candidate.id === '0047_email_team_member_linked_user');
+    expect(migration).toBeDefined();
+    const systemContextIndex = migration!.upSql.findIndex((statement) => (
+      statement.includes("set_config('app.role', 'system', true)")
+      && statement.includes("set_config('app.cross_workspace_access', 'on', true)")
+    ));
+    const backfillIndex = migration!.upSql.findIndex((statement) => statement.includes('SET linked_user_id = users.id'));
+    expect(systemContextIndex).toBeGreaterThan(-1);
+    expect(backfillIndex).toBeGreaterThan(systemContextIndex);
+
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    await client.query(`
+      INSERT INTO email_team_members (workspace_id, id, display_name)
+      VALUES ('${WORKSPACE_A}', '${USER_READ}', 'Read User')
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+    await applyStatementsInTransaction(migration!.upSql.slice(0, backfillIndex));
+    await client.query('BEGIN');
+    try {
+      const blocked = await client.query(migration!.upSql[backfillIndex]!);
+      expect(blocked.rowCount).toBe(0);
+    } finally {
+      await client.query('ROLLBACK');
+    }
+
+    await applyStatementsInTransaction(migration!.upSql);
+
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    const linked = await client.query<{ id: string; linked_user_id: string | null }>(`
+      SELECT id, linked_user_id::text AS linked_user_id
+      FROM email_team_members
+      WHERE workspace_id = '${WORKSPACE_A}' AND id = '${USER_READ}'
+    `);
+    expect(linked.rows).toEqual([{ id: USER_READ, linked_user_id: USER_READ }]);
+
+    await client.query(`DELETE FROM email_team_members WHERE workspace_id = '${WORKSPACE_A}' AND id = '${USER_READ}'`);
+    await applyStatements(migration!.downSql);
+    await client.query('RESET app.role; RESET app.cross_workspace_access');
+  });
+
+  test('caps stored visibility constraint arrays at the database level', async () => {
+    // Zweite Verteidigungslinie zur Laengenpruefung der Route: selbst ein
+    // direkter Schreibzugriff darf keine unbegrenzten IN-Listen anlegen.
+    await ensureMailAclConstraintsSchema();
+    await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+    const binding = await client.query<{ id: string }>(`
+      INSERT INTO mail_acl_bindings (workspace_id, subject_type, subject_id, resource_type, account_id)
+      VALUES ('${WORKSPACE_A}', 'group', '${GROUP_A_REMOVED}', 'account', ${ACCOUNT_A})
+      ON CONFLICT DO NOTHING
+      RETURNING id::text AS id
+    `);
+    expect(binding.rows).toHaveLength(1);
+    const bindingId = binding.rows[0]!.id;
+    const oversized = `{${Array.from({ length: 501 }, (_, index) => index + 1).join(',')}}`;
+    await expect(client.query(`
+      INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_ids)
+      VALUES ('${WORKSPACE_A}', ${bindingId}, 'category', 'allow', '${oversized}'::bigint[])
+    `)).rejects.toMatchObject({ code: '23514' });
+    await client.query(`
+      INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_ids)
+      VALUES ('${WORKSPACE_A}', ${bindingId}, 'category', 'allow', '{1,2,3}'::bigint[])
+    `);
+
+    await client.query(`DELETE FROM mail_acl_binding_constraints WHERE binding_id = ${bindingId}`);
+    await client.query(`DELETE FROM mail_acl_bindings WHERE id = ${bindingId}`);
+    await client.query('RESET app.role; RESET app.cross_workspace_access');
+  });
+
   test('down removes only ACL objects and preserves the legacy table', async () => {
     const mailAclMigration = serverMigrations.find((candidate) => candidate.id === '0038_mail_acl');
     const rolloutMigration = serverMigrations.find((candidate) => candidate.id === '0039_mail_acl_rollout');
