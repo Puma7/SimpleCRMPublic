@@ -10,7 +10,24 @@ import {
   createPostgresAiReviewDraftPort,
 } from '../../packages/server/src/workflow-ai-draft-nodes';
 import { inboundSiblingAbortKey } from '../../packages/server/src/workflow-inbound-chain-advance';
-import * as terminalChild from '../../packages/server/src/workflow-inbound-terminal-child';
+import { completeTerminalInboundChild } from '../../packages/server/src/workflow-inbound-terminal-child';
+import { runWorkflowTrackedChatCompletion } from '../../packages/server/src/workflow-ai-chat';
+
+jest.mock('../../packages/server/src/workflow-inbound-terminal-child', () => ({
+  ...jest.requireActual('../../packages/server/src/workflow-inbound-terminal-child'),
+  completeTerminalInboundChild: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../packages/server/src/workflow-ai-chat', () => ({
+  runWorkflowTrackedChatCompletion: jest.fn(),
+}));
+
+const completeTerminalInboundChildMock = completeTerminalInboundChild as jest.MockedFunction<
+  typeof completeTerminalInboundChild
+>;
+const runWorkflowTrackedChatCompletionMock = runWorkflowTrackedChatCompletion as jest.MockedFunction<
+  typeof runWorkflowTrackedChatCompletion
+>;
 
 const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -20,6 +37,7 @@ type FakeRows = {
   accounts: Array<Record<string, unknown>>;
   folders: Array<Record<string, unknown>>;
   knowledgeChunks: Array<Record<string, unknown>>;
+  knowledgeBases: Array<Record<string, unknown>>;
   cannedResponses: Array<Record<string, unknown>>;
   syncInfo: Array<Record<string, unknown>>;
 };
@@ -31,6 +49,7 @@ function makeDb(input: Partial<FakeRows>): { db: Kysely<ServerDatabase>; rows: F
     accounts: input.accounts ?? [],
     folders: input.folders ?? [],
     knowledgeChunks: input.knowledgeChunks ?? [],
+    knowledgeBases: input.knowledgeBases ?? [],
     cannedResponses: input.cannedResponses ?? [],
     syncInfo: input.syncInfo ?? [],
   };
@@ -46,6 +65,8 @@ function makeDb(input: Partial<FakeRows>): { db: Kysely<ServerDatabase>; rows: F
         return rows.folders;
       case 'workflow_knowledge_chunks':
         return rows.knowledgeChunks;
+      case 'workflow_knowledge_bases':
+        return rows.knowledgeBases;
       case 'email_canned_responses':
         return rows.cannedResponses;
       case 'sync_info':
@@ -270,21 +291,14 @@ function baseDeps(db: Kysely<ServerDatabase>, now: Date) {
     secrets: { async readSecret() { return Buffer.from('sk-test'); } } as any,
     now: () => now,
     applyWorkspaceSession: async () => undefined,
-    async chatCompletion() {
-      return 'KI-Antwort';
-    },
   };
 }
 
 describe('terminal KI node completion', () => {
-  let completeSpy: jest.SpiedFunction<typeof terminalChild.completeTerminalInboundChild>;
-
   beforeEach(() => {
-    completeSpy = jest.spyOn(terminalChild, 'completeTerminalInboundChild').mockResolvedValue(undefined);
-  });
-
-  afterEach(() => {
-    completeSpy.mockRestore();
+    completeTerminalInboundChildMock.mockClear();
+    runWorkflowTrackedChatCompletionMock.mockReset();
+    runWorkflowTrackedChatCompletionMock.mockResolvedValue('KI-Antwort');
   });
 
   test('runAgent terminal + createDraft:false schliesst die Kette ab (applied:false)', async () => {
@@ -302,7 +316,12 @@ describe('terminal KI node completion', () => {
         content: 'Retoure innerhalb von 30 Tagen moeglich.',
       }],
     });
-    const port = createPostgresAiAgentPort(baseDeps(db, now));
+    const port = createPostgresAiAgentPort({
+      ...baseDeps(db, now),
+      async chatCompletion() {
+        return 'KI-Antwort';
+      },
+    });
 
     await port.runAgent({
       workspaceId: WORKSPACE_ID,
@@ -314,8 +333,8 @@ describe('terminal KI node completion', () => {
       terminalChainPayload: terminalPayload(14),
     });
 
-    expect(completeSpy).toHaveBeenCalledTimes(1);
-    expect(completeSpy).toHaveBeenCalledWith(
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledTimes(1);
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledWith(
       expect.anything(),
       terminalPayload(14),
       expect.objectContaining({ applied: false }),
@@ -348,8 +367,8 @@ describe('terminal KI node completion', () => {
       terminalChainPayload: terminalPayload(60),
     });
 
-    expect(completeSpy).toHaveBeenCalledTimes(1);
-    expect(completeSpy).toHaveBeenCalledWith(
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledTimes(1);
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledWith(
       expect.anything(),
       terminalPayload(60),
       expect.objectContaining({ applied: false }),
@@ -363,6 +382,7 @@ describe('terminal KI node completion', () => {
       profiles: [baseProfile(now)],
       accounts: [{ id: 7, workspace_id: WORKSPACE_ID, source_sqlite_id: 7 }],
       folders: [{ id: 70, workspace_id: WORKSPACE_ID, source_sqlite_id: 700, account_id: 7, path: 'INBOX' }],
+      knowledgeBases: [{ id: 5, workspace_id: WORKSPACE_ID, account_id: 7, context: 'inbound' }],
       syncInfo: [{
         workspace_id: WORKSPACE_ID,
         key: 'workflow_ai_draft_reply:14',
@@ -370,20 +390,22 @@ describe('terminal KI node completion', () => {
       }],
     });
     const chat = jest.fn();
-    const port = createPostgresAiDraftReplyPort({
-      ...baseDeps(db, now),
-      chatCompletion: chat,
+    runWorkflowTrackedChatCompletionMock.mockImplementation(async () => {
+      chat();
+      return 'KI-Antwort';
     });
+    const port = createPostgresAiDraftReplyPort(baseDeps(db, now));
 
     await port.draftReply({
       workspaceId: WORKSPACE_ID,
       messageId: 14,
+      knowledgeBaseId: 5,
       terminalChainPayload: terminalPayload(14),
     });
 
     expect(chat).not.toHaveBeenCalled();
-    expect(completeSpy).toHaveBeenCalledTimes(1);
-    expect(completeSpy).toHaveBeenCalledWith(
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledTimes(1);
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledWith(
       expect.anything(),
       terminalPayload(14),
       expect.objectContaining({ applied: true }),
@@ -392,7 +414,7 @@ describe('terminal KI node completion', () => {
 
   test('reviewDraft terminal + Entwurf bereits gesendet schliesst die Kette ab (applied:false)', async () => {
     const now = new Date('2026-06-03T13:00:00.000Z');
-    const { db } = makeDb({
+    const { db, rows } = makeDb({
       messages: [
         baseMessage(),
         {
@@ -405,11 +427,19 @@ describe('terminal KI node completion', () => {
           cc_json: null,
           bcc_json: null,
           draft_attachment_paths_json: null,
-          folder_kind: 'sent',
-          uid: 42,
+          folder_kind: 'draft',
+          uid: -1,
         },
       ],
       profiles: [baseProfile(now)],
+    });
+    runWorkflowTrackedChatCompletionMock.mockImplementation(async () => {
+      const draft = rows.messages.find((row) => Number(row.id) === 88);
+      if (draft) {
+        draft.folder_kind = 'sent';
+        draft.uid = 42;
+      }
+      return 'STATUS: SEND\nANSWERED: yes\nREASON: ok';
     });
     const port = createPostgresAiReviewDraftPort(baseDeps(db, now));
 
@@ -417,11 +447,12 @@ describe('terminal KI node completion', () => {
       workspaceId: WORKSPACE_ID,
       messageId: 14,
       draftId: 88,
+      profileId: 21,
       terminalChainPayload: terminalPayload(14),
     });
 
-    expect(completeSpy).toHaveBeenCalledTimes(1);
-    expect(completeSpy).toHaveBeenCalledWith(
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledTimes(1);
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledWith(
       expect.anything(),
       terminalPayload(14),
       expect.objectContaining({ applied: false }),
@@ -436,6 +467,7 @@ describe('terminal KI node completion', () => {
       profiles: [baseProfile(now)],
       accounts: [{ id: 7, workspace_id: WORKSPACE_ID, source_sqlite_id: 7 }],
       folders: [{ id: 70, workspace_id: WORKSPACE_ID, source_sqlite_id: 700, account_id: 7, path: 'INBOX' }],
+      knowledgeBases: [{ id: 5, workspace_id: WORKSPACE_ID, account_id: 7, context: 'inbound' }],
       syncInfo: [{
         workspace_id: WORKSPACE_ID,
         key: inboundSiblingAbortKey(14, 26, chain),
@@ -443,20 +475,22 @@ describe('terminal KI node completion', () => {
       }],
     });
     const chat = jest.fn();
-    const port = createPostgresAiDraftReplyPort({
-      ...baseDeps(db, now),
-      chatCompletion: chat,
+    runWorkflowTrackedChatCompletionMock.mockImplementation(async () => {
+      chat();
+      return 'KI-Antwort';
     });
+    const port = createPostgresAiDraftReplyPort(baseDeps(db, now));
 
     await port.draftReply({
       workspaceId: WORKSPACE_ID,
       messageId: 14,
+      knowledgeBaseId: 5,
       terminalChainPayload: terminalPayload(14),
     });
 
     expect(chat).not.toHaveBeenCalled();
-    expect(completeSpy).toHaveBeenCalledTimes(1);
-    expect(completeSpy).toHaveBeenCalledWith(
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledTimes(1);
+    expect(completeTerminalInboundChildMock).toHaveBeenCalledWith(
       expect.anything(),
       terminalPayload(14),
       expect.objectContaining({ applied: false }),
