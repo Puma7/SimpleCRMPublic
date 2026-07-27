@@ -26,6 +26,12 @@ export function canEnforceAssignmentFilter(
   const mode = constraints?.assignmentMode;
   if (!mode || mode === 'any') return true;
   if (!actor) return false;
+  // Die positiven Modi vergleichen mit einer Nutzer-Id — dafuer braucht es die
+  // Spalte assigned_to_user_id. Der freie Text taugt dafuer NICHT (siehe unten),
+  // ohne die Spalte laesst sich der Filter also nicht ehrlich erfuellen.
+  if (mode === 'assigned_to_me' || mode === 'assigned_to_my_groups') {
+    return Boolean(columns.assignedToUserId);
+  }
   return Boolean(columns.assignedToUserId || columns.assignedTo);
 }
 
@@ -118,23 +124,18 @@ function visibilityPredicate(
         parts.push(sql<boolean>`(${sql.ref(assignedCol)} is null or ${sql.ref(assignedCol)} = '')`);
       }
     } else if (mode === 'assigned_to_me') {
-      if (assignedUserCol && assignedCol) {
-        // Prefer assigned_to_user_id (linked workspace UUID). Free-text assigned_to
-        // (e.g. agent-2) is only a fallback when no user link is stored.
-        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, nullif(${sql.ref(assignedCol)}, '')) = ${actorId})`);
-      } else if (assignedUserCol) {
+      // AUSSCHLIESSLICH assigned_to_user_id: der frueher genutzte Rueckfall auf
+      // den freien assigned_to-Text wertet eine UUID-foermige Mitglieds-Id als
+      // Nutzerverknuepfung — und haette damit einem Mitglied, dessen
+      // Verknuepfung ein Admin bewusst entfernt hat, weiterhin Zugriff gegeben.
+      // Historische Zuweisungen backfillt Migration 0048.
+      if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text = ${actorId}`);
-      } else if (assignedCol) {
-        parts.push(sql<boolean>`${sql.ref(assignedCol)} = ${actorId}`);
       }
     } else if (mode === 'assigned_to_my_groups') {
       const ids = actor!.groupMemberUserIds.length > 0 ? actor!.groupMemberUserIds : [actorId];
-      if (assignedUserCol && assignedCol) {
-        parts.push(sql<boolean>`(coalesce(${sql.ref(assignedUserCol)}::text, nullif(${sql.ref(assignedCol)}, '')) in (${sql.join(ids)}))`);
-      } else if (assignedUserCol) {
+      if (assignedUserCol) {
         parts.push(sql<boolean>`${sql.ref(assignedUserCol)}::text in (${sql.join(ids)})`);
-      } else if (assignedCol) {
-        parts.push(sql<boolean>`${sql.ref(assignedCol)} in (${sql.join(ids)})`);
       }
     }
   }

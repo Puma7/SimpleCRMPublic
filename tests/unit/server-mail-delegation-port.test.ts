@@ -199,6 +199,50 @@ describe('createPostgresMailDelegationPort', () => {
     })).resolves.toMatchObject({ ok: false, code: 'privilege_escalation' });
   });
 
+  test('the dedicated DELETE route enforces the same manage authority', async () => {
+    // Sonst weicht ein eingeschraenkter Manager der PATCH-Pruefung einfach ueber
+    // DELETE /email/access/bindings/:id aus.
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: {
+        id: 901,
+        workspace_id: WORKSPACE,
+        subject_type: 'user',
+        subject_id: AGENT,
+        resource_type: 'account',
+        account_id: 101,
+        folder_id: null,
+        message_id: null,
+        updated_at: new Date('2026-07-19T12:00:00.000Z'),
+      },
+      affectedUsers: [{ id: AGENT }],
+      actorPermissionBindings: [
+        { bindingId: 501, permission: 'mail.delegation.manage' as const },
+      ],
+      actorAuthorityConstraints: [{
+        binding_id: 501,
+        kind: 'category',
+        mode: 'allow',
+        assignment_mode: null,
+        value_ids: [5],
+        value_texts: null,
+      }],
+    });
+    const port = createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    await expect(port.deleteBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      bindingId: 901,
+    })).resolves.toMatchObject({ ok: false, code: 'privilege_escalation' });
+  });
+
   test('a constrained manager may delete a binding inside its authority', async () => {
     // Kein Ueberschiessen: dasselbe Filterprofil wie die eigene Autoritaet.
     const constraintRows = [{

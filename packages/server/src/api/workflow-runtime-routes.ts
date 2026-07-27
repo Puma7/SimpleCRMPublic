@@ -445,6 +445,23 @@ async function handleWorkflowVersionSourceRestore(
       'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
     );
   }
+  // Ein aktiver Workflow mit Override-Schluessel verdraengt den gleichnamigen
+  // globalen Workflow (resolveScopedInboundWorkflowOverrides) — beim Anlegen und
+  // Aktualisieren ist er deshalb manage-pflichtig. Ohne dieselbe Pruefung hier
+  // koennte ein Editor seinen Graphen per Restore zu einem No-op machen und die
+  // verdraengte Automation damit wirkungslos stellen.
+  if (
+    existingWorkflow.enabled !== false
+    && typeof existingWorkflow.overrideKey === 'string'
+    && existingWorkflow.overrideKey.trim() !== ''
+    && !requireCapability(principal, 'workflows.manage')
+  ) {
+    return error(
+      403,
+      'forbidden',
+      'Aktive Workflows mit Override-Schluessel erfordern workflows.manage',
+    );
+  }
 
   // Restore schreibt einen fremden Graphen in einen ggf. AKTIVEN Workflow — es
   // muss deshalb dieselbe Outbound-Falle pruefen wie Anlegen/Aktualisieren.

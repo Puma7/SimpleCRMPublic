@@ -339,6 +339,23 @@ export function createPostgresMailDelegationPort(
           if (!await canManageResource(trx, input.workspaceId, input.actor, resource, [], true)) {
             return { ok: false as const, code: 'permission_denied' as const };
           }
+          // Gleiche Pruefung wie im PATCH-Loeschpfad (replaceBySubjectResource):
+          // wer nur eingeschraenkt verwalten darf, soll die unbeschraenkte
+          // Delegation eines fremden Teams auch ueber die dedizierte
+          // DELETE-Route nicht widerrufen koennen.
+          if (!input.actor.isOwner && !input.actor.isAdmin) {
+            const manageAuthority = await loadDelegationAuthority(
+              trx,
+              input.workspaceId,
+              input.actor.userId,
+              resource,
+              [MANAGE_PERMISSION],
+            );
+            const existingMap = await loadBindingConstraints(trx, [existing.id]);
+            if (!isConstraintsAllowedByDelegationAuthority(existingMap.get(existing.id) ?? null, manageAuthority)) {
+              return { ok: false as const, code: 'privilege_escalation' as const };
+            }
+          }
           const affectedUserIds = await affectedUsersForSubject(trx, input.workspaceId, rowSubject(existing));
           await trx.deleteFrom('mail_acl_bindings').where('id', '=', input.bindingId).execute();
           // Return the deleted binding's resource as tombstone data so the route can

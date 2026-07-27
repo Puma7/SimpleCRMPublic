@@ -336,15 +336,19 @@ export function messageMatchesConstraints(
   if (!constraints) return true;
   const mode = constraints.assignmentMode;
   if (mode && mode !== 'any') {
-    // Prefer linked workspace user UUID; free-text assigned_to is fallback only.
-    const assignee = facts.assignedToUserId
-      ?? (facts.assignedTo && facts.assignedTo.length > 0 ? facts.assignedTo : null);
+    // Die positiven Modi vergleichen NUR die explizite Nutzerverknuepfung (der
+    // freie assigned_to-Text kann eine UUID-foermige Mitglieds-Id sein, deren
+    // Verknuepfung bewusst entfernt wurde). "Nicht zugewiesen" bleibt dagegen an
+    // BEIDEN Feldern: ein Mitglied ohne Nutzerverknuepfung ist trotzdem ein
+    // Bearbeiter.
+    const assignedUserId = facts.assignedToUserId ?? null;
+    const isAssigned = Boolean(assignedUserId || (facts.assignedTo && facts.assignedTo.length > 0));
     if (mode === 'unassigned') {
-      if (assignee) return false;
+      if (isAssigned) return false;
     } else if (mode === 'assigned_to_me') {
-      if (assignee !== actor.userId) return false;
+      if (assignedUserId !== actor.userId) return false;
     } else if (mode === 'assigned_to_my_groups') {
-      if (!assignee || !actor.groupMemberUserIds.includes(assignee)) return false;
+      if (!assignedUserId || !actor.groupMemberUserIds.includes(assignedUserId)) return false;
     }
   }
   if (constraints.categoryAllowIds.length > 0) {
@@ -373,13 +377,16 @@ export function explainConstraintMismatch(
   if (!constraints) return null;
   const mode = constraints.assignmentMode;
   if (mode && mode !== 'any') {
-    const assignee = facts.assignedToUserId
-      ?? (facts.assignedTo && facts.assignedTo.length > 0 ? facts.assignedTo : null);
-    if (mode === 'unassigned' && assignee) return 'Nachricht ist zugewiesen (Filter: unzugewiesen)';
-    if (mode === 'assigned_to_me' && assignee !== actor.userId) {
+    const assignedUserId = facts.assignedToUserId ?? null;
+    const isAssigned = Boolean(assignedUserId || (facts.assignedTo && facts.assignedTo.length > 0));
+    if (mode === 'unassigned' && isAssigned) return 'Nachricht ist zugewiesen (Filter: unzugewiesen)';
+    if (mode === 'assigned_to_me' && assignedUserId !== actor.userId) {
       return 'Nachricht ist nicht dem Nutzer zugewiesen';
     }
-    if (mode === 'assigned_to_my_groups' && (!assignee || !actor.groupMemberUserIds.includes(assignee))) {
+    if (
+      mode === 'assigned_to_my_groups'
+      && (!assignedUserId || !actor.groupMemberUserIds.includes(assignedUserId))
+    ) {
       return 'Nachricht ist keinem Mitglied der Nutzergruppen zugewiesen';
     }
   }
