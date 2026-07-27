@@ -5,7 +5,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
-      Maschinelle Uebersetzung im Browser abschalten.
+      Erste Verteidigungslinie gegen maschinelle Browser-Uebersetzung (ab dem
+      ersten Byte, noch vor React). translate="no" am <html> plus dieses Meta-
+      Tag schalten die Uebersetzung aus; das lang-Spiegeln in I18nProvider ist
+      die zweite Linie gegen Chrome-Heuristiken.
 
       Chrome & Co. ersetzen beim Uebersetzen Textknoten in-place durch
       <font>-Elemente. React kennt danach seine eigenen Kinder nicht mehr und
