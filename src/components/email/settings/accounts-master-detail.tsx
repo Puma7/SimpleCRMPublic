@@ -199,6 +199,14 @@ export function AccountsMasterDetailSettings() {
   const canReadSelectedAccountSettings = selected != null
     && hasMailPermissionForAccount("mail.metadata.read", selected.id)
 
+  // Die PERSOENLICHE Signatur ist Selbstbedienung — aber fuer Verfassende:
+  // GET /email/user-signatures und der Upsert je Konto verlangen beide
+  // mail.draft.create, der Upsert ausdruecklich auf DIESEM Konto (accountPath).
+  // Wer das Postfach nur lesen darf, sah den Abschnitt trotzdem und scheiterte
+  // schon beim ersten Abruf.
+  const canDraftFromSelectedAccount = selected != null
+    && hasMailPermissionForAccount("mail.draft.create", selected.id)
+
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
       <div className="flex w-[280px] shrink-0 flex-col border-r bg-muted/20">
@@ -353,11 +361,21 @@ export function AccountsMasterDetailSettings() {
                     ) : null}
                     {/* Per-user signatures are a server-edition feature — the
                         ListUserSignatures/SaveUserSignature channels have no
-                        local Electron handler. */}
-                    {serverClientMode ? (
+                        local Electron handler.
+                        Und sie sind Selbstbedienung fuer WERFASSENDE: GET
+                        /email/user-signatures und der Upsert je Konto verlangen
+                        mail.draft.create. Wer das Postfach nur lesen darf,
+                        scheiterte hier schon beim Laden. */}
+                    {serverClientMode && canDraftFromSelectedAccount ? (
                       <div className="border-t pt-5">
                         <UserSignaturesSection embeddedAccountId={selectedId} />
                       </div>
+                    ) : null}
+                    {serverClientMode && !canDraftFromSelectedAccount && !canManageSelectedAccount ? (
+                      <p className="text-sm text-muted-foreground">
+                        Für dieses Postfach dürfen Sie keine Signaturen pflegen — dafür wird
+                        die Berechtigung zum Verfassen benötigt.
+                      </p>
                     ) : null}
                   </div>
                 ) : tab === "ki" && selectedId != null ? (

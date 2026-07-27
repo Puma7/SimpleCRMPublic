@@ -1,53 +1,33 @@
-import { reconcileVisibleMessages } from '@/components/email/hooks/reconcile-visible-messages';
+import {
+  aclReconcileLimit,
+  MAX_ACL_RECONCILE_ROWS,
+} from '@/components/email/hooks/reconcile-visible-messages';
 
 /**
- * Der stille Refresh ist normalerweise ERHALTEND — nach einer ACL-Aenderung
- * waere das ein Sicherheitsloch: schreibt ein Workflow einer geladenen
- * Nachricht einen Ausschluss-Tag, faellt sie aus der gescopten Serverliste,
- * und der erhaltende Pfad haengt sie postwendend wieder an.
+ * Der Abgleich nach einer ACL-Aenderung muss den GESAMTEN geladenen Bereich
+ * pruefen. Nur die erste Seite abzufragen und den Rest als „ungeprueft" stehen
+ * zu lassen waere genau das Loch, das er schliessen soll — die entzogene (und
+ * womoeglich gerade geoeffnete) Nachricht kann tiefer liegen.
  */
-describe('reconcileVisibleMessages', () => {
-  const rows = (...ids: number[]) => ids.map((id) => ({ id, subject: `m${id}` }));
-
-  test('drops what the server no longer returns', () => {
-    const result = reconcileVisibleMessages(rows(1, 2, 3), rows(1, 3), 100);
-    expect(result.messages.map((m) => m.id)).toEqual([1, 3]);
-    expect(result.survivingIds.has(2)).toBe(false);
+describe('aclReconcileLimit', () => {
+  test('asks for at least one page', () => {
+    expect(aclReconcileLimit(0, 100)).toBe(100);
+    expect(aclReconcileLimit(42, 100)).toBe(100);
   });
 
-  test('takes the server order and the server payload', () => {
-    const previous = [{ id: 1, subject: 'alt' }, { id: 2, subject: 'alt' }];
-    const server = [{ id: 2, subject: 'neu' }, { id: 1, subject: 'neu' }];
-    const result = reconcileVisibleMessages(previous, server, 100);
-    expect(result.messages).toEqual([{ id: 2, subject: 'neu' }, { id: 1, subject: 'neu' }]);
+  test('asks for the whole loaded range once it exceeds a page', () => {
+    expect(aclReconcileLimit(250, 100)).toBe(250);
   });
 
-  test('adds rows that became visible', () => {
-    const result = reconcileVisibleMessages(rows(1), rows(1, 9), 100);
-    expect(result.messages.map((m) => m.id)).toEqual([1, 9]);
+  test('caps the query — beyond the cap rows are dropped, not trusted', () => {
+    // Ohne Deckel loeste eine sehr tief geblaetterte Liste bei jeder getaggten
+    // Nachricht eine sehr grosse Abfrage aus. Der Rest faellt fail-closed weg.
+    expect(aclReconcileLimit(50_000, 100)).toBe(MAX_ACL_RECONCILE_ROWS);
   });
 
-  test('keeps rows BELOW the fetched window — the server never judged them', () => {
-    // Der stille Refresh holt immer nur die erste Seite. Wer weiter geblaettert
-    // hat, darf seine tieferen Seiten nicht bei jeder getaggten Nachricht
-    // verlieren; eine VOLLE erste Seite sagt ueber sie nichts aus.
-    const previous = rows(...Array.from({ length: 5 }, (_, index) => index + 1));
-    const server = rows(1, 3);
-    const result = reconcileVisibleMessages(previous, server, 2);
-    // 2 fehlt und lag INNERHALB des Fensters (Index 1 < 2) — entzogen.
-    // 4 und 5 lagen darunter — unbeurteilt, bleiben.
-    expect(result.messages.map((m) => m.id)).toEqual([1, 3, 4, 5]);
-  });
-
-  test('a short server page IS the complete set — everything missing goes', () => {
-    const previous = rows(1, 2, 3, 4, 5);
-    const result = reconcileVisibleMessages(previous, rows(1, 4), 100);
-    expect(result.messages.map((m) => m.id)).toEqual([1, 4]);
-  });
-
-  test('an empty server list clears everything', () => {
-    const result = reconcileVisibleMessages(rows(1, 2), [], 100);
-    expect(result.messages).toEqual([]);
-    expect(result.survivingIds.size).toBe(0);
+  test('tolerates nonsense counts', () => {
+    expect(aclReconcileLimit(Number.NaN, 100)).toBe(100);
+    expect(aclReconcileLimit(-5, 100)).toBe(100);
+    expect(aclReconcileLimit(250.7, 100)).toBe(250);
   });
 });

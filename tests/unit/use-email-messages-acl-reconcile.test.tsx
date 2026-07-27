@@ -108,6 +108,44 @@ describe('useEmailMessages — ACL reconcile', () => {
     expect(mockWorkspace.setSelectedMessage).not.toHaveBeenCalledWith(null);
   });
 
+  test('a row BEYOND the first page is checked too — and its selection cleared', async () => {
+    // Der Kern des Befunds: liegt die geoeffnete Nachricht hinter dem ersten
+    // PAGE_SIZE-Fenster, half ein Abgleich der ersten Seite gar nichts. Der
+    // Abgleich fragt deshalb den GESAMTEN geladenen Bereich neu ab.
+    const many = Array.from({ length: 150 }, (_, index) => ({ id: index + 1 }));
+    const { result, rerender } = renderHook(() => useEmailMessages());
+    await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
+    await act(async () => {
+      listDeferreds.get(1)!(many as unknown[]);
+    });
+    listDeferreds.delete(1);
+    act(() => {
+      mockWorkspace.selectedMessage = { id: 130 };
+    });
+    rerender();
+    (mockWorkspace.setSelectedMessage as jest.Mock).mockClear();
+    mockInvokeRenderer.mockClear();
+
+    await act(async () => {
+      void result.current.refreshList({ preserveSelection: true, dropMissing: true });
+    });
+    await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
+
+    // Die Abfrage deckt alle 150 geladenen Zeilen ab, nicht nur die ersten 100.
+    const listCall = mockInvokeRenderer.mock.calls
+      .find(([channel]) => channel === IPCChannels.Email.ListMessagesByView);
+    expect((listCall?.[1] as { limit: number }).limit).toBe(150);
+
+    // 130 ist entzogen.
+    await act(async () => {
+      listDeferreds.get(1)!(many.filter((m) => m.id !== 130) as unknown[]);
+    });
+
+    await waitFor(() => expect(result.current.messages).toHaveLength(149));
+    expect(result.current.messages.some((m) => m.id === 130)).toBe(false);
+    expect(mockWorkspace.setSelectedMessage).toHaveBeenCalledWith(null);
+  });
+
   test('a still-visible selection is kept across the reconcile', async () => {
     const { result, rerender } = renderHook(() => useEmailMessages());
     await loadInitial(rerender);

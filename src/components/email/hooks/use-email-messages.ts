@@ -10,7 +10,7 @@ import type { MailAccountScope } from "../account-scope"
 import type { EmailMessage, MailView } from "../types"
 import { logError } from "../log"
 import { pickAdjacentMessageId } from "../select-adjacent-message"
-import { reconcileVisibleMessages } from "./reconcile-visible-messages"
+import { aclReconcileLimit } from "./reconcile-visible-messages"
 import { useMailWorkspace } from "../workspace-context"
 import { invokeRenderer } from "@/services/transport"
 
@@ -214,6 +214,12 @@ export function useEmailMessages() {
       if (!append && !silent) selectionRequestRef.current += 1
       const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
+      // Der ACL-Abgleich prueft den GESAMTEN geladenen Bereich, nicht nur die
+      // erste Seite: eine entzogene Nachricht — auch die gerade geoeffnete —
+      // kann tiefer liegen, und was der Server nicht beurteilt hat, koennte der
+      // Abgleich nur raten.
+      const reconcile = opts?.dropMissing === true && !append
+      const limit = reconcile ? aclReconcileLimit(messagesRef.current.length, PAGE_SIZE) : PAGE_SIZE
       if (append) setLoadingMore(true)
       else if (!silent) setLoadingMessages(true)
       try {
@@ -235,7 +241,7 @@ export function useEmailMessages() {
           const res = await invokeRenderer(IPCChannels.Email.SearchMessages, {
             accountId: accountScope,
             query: query.trim(),
-            limit: PAGE_SIZE,
+            limit,
             offset,
             view,
             categoryId: view === "inbox" ? catId : null,
@@ -271,7 +277,7 @@ export function useEmailMessages() {
           list = await invokeRenderer(IPCChannels.Email.ListMessagesByView, {
             accountId: accountScope,
             view,
-            limit: PAGE_SIZE,
+            limit,
             offset,
             categoryId: view === "inbox" ? catId : null,
             sort,
@@ -279,15 +285,8 @@ export function useEmailMessages() {
             doneFilter,
           }) as EmailMessage[]
           if (generation !== loadGenerationRef.current) return
-          setHasMore(list.length >= PAGE_SIZE)
+          setHasMore(list.length >= limit)
         }
-        // Der Abgleich braucht den Zustand VOR dem Schreiben — und dieselbe
-        // Entscheidung fuer Liste und Auswahl, damit die Auswahl nicht auf einer
-        // Zeile stehenbleibt, die gerade aus der Liste gefallen ist.
-        const reconciled = opts?.dropMissing && silent && keepId != null && !append
-          ? reconcileVisibleMessages(messagesRef.current, list, PAGE_SIZE)
-          : null
-
         if (append) {
           setMessages((prev) => {
             const ids = new Set(prev.map((m) => m.id))
@@ -295,8 +294,10 @@ export function useEmailMessages() {
           })
           offsetRef.current = offset + list.length
         } else if (silent && keepId != null) {
-          if (reconciled) {
-            setMessages(reconciled.messages)
+          if (reconcile) {
+            // Die Antwort deckt den geladenen Bereich ab und gilt als Ganzes.
+            setMessages(list)
+            offsetRef.current = list.length
           } else {
             setMessages((prev) => {
               const byId = new Map(list.map((m) => [m.id, m]))
@@ -311,8 +312,8 @@ export function useEmailMessages() {
               const notInServer = merged.filter((m) => !listIdOrder.has(m.id))
               return [...inServer, ...notInServer]
             })
+            offsetRef.current = Math.max(offsetRef.current, list.length)
           }
-          offsetRef.current = Math.max(offsetRef.current, list.length)
         } else {
           setMessages(list)
           offsetRef.current = list.length
@@ -330,10 +331,8 @@ export function useEmailMessages() {
           // zuerst zu befragen liesse die Auswahl auf einer gerade entzogenen
           // Nachricht stehen — und der Detail-Refresh protokolliert die
           // abgelehnte Anfrage bloss und laesst den alten Inhalt sichtbar.
-          const still = reconciled
-            ? (reconciled.survivingIds.has(keepId)
-              ? list.find((m) => m.id === keepId) ?? messagesRef.current.find((m) => m.id === keepId)
-              : undefined)
+          const still = reconcile
+            ? list.find((m) => m.id === keepId)
             : messagesRef.current.find((m) => m.id === keepId) ??
               list.find((m) => m.id === keepId)
           if (still) {

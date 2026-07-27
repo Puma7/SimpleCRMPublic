@@ -62,7 +62,7 @@ jest.mock('@/components/email/settings/accounts-shipping-hint', () => ({ Account
 
 import { AccountsMasterDetailSettings } from '@/components/email/settings/accounts-master-detail';
 
-describe('AccountsMasterDetailSettings — KI tab', () => {
+describe('AccountsMasterDetailSettings — per-account gates', () => {
   beforeEach(() => {
     permissions.account.clear();
     mockInvoke.mockReset();
@@ -97,5 +97,31 @@ describe('AccountsMasterDetailSettings — KI tab', () => {
 
     expect(screen.getByText('reply-suggestion-section')).toBeTruthy();
     expect(screen.queryByText(/nicht\s+einsehbar/)).toBeNull();
+  });
+
+  const openSignatureTab = async () => {
+    render(<AccountsMasterDetailSettings />);
+    await waitFor(() => expect(screen.getAllByText('support@example.test').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByRole('button', { name: 'Signatur' }));
+  };
+
+  test('personal signatures need mail.draft.create, not mere visibility', async () => {
+    // GET /email/user-signatures und der Upsert je Konto verlangen beide
+    // mail.draft.create — wer das Postfach nur lesen darf, scheiterte hier
+    // schon beim ersten Abruf.
+    permissions.account.set('mail.metadata.read:7', true);
+    await openSignatureTab();
+
+    expect(screen.queryByText('user-signatures')).toBeNull();
+    expect(screen.getByText(/Berechtigung zum Verfassen/)).toBeTruthy();
+  });
+
+  test('a delegate who may compose gets the personal signature section', async () => {
+    permissions.account.set('mail.draft.create:7', true);
+    await openSignatureTab();
+
+    expect(screen.getByText('user-signatures')).toBeTruthy();
+    // Die GETEILTEN Kontosignaturen bleiben der Kontoverwaltung vorbehalten.
+    expect(screen.queryByText('account-signatures')).toBeNull();
   });
 });
