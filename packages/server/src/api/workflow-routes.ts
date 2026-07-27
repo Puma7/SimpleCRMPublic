@@ -3,6 +3,7 @@ import {
   definitionToJson,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
   type WorkflowNodeCatalogEntry,
@@ -964,12 +965,20 @@ function rejectUnlessSideEffectWorkflowManage(
 ): ApiResponse | null {
   if (input.enabled === false) return null;
   if (!input.graph || typeof input.graph !== 'object') return null;
-  if (!workflowGraphHasSideEffectNode(input.graph as WorkflowGraphDocument)) return null;
+  if (
+    !workflowGraphHasSideEffectNode(input.graph as WorkflowGraphDocument)
+    // Ein Kettenabbruch schreibt selbst nichts, schaltet aber ALLE nachrangigen
+    // Inbound-Workflows ab (stopFurtherWorkflows bzw. logic.stop_after_spam,
+    // dessen Spam-Flag per logic.set_variable frei setzbar ist). Ein Editor
+    // koennte damit globale Spam-/Compliance-Automation stilllegen — dieselbe
+    // Wirkung wie ein privilegierter Eingriff, also dieselbe Stufe.
+    && !workflowGraphHasChainStopNode(input.graph as WorkflowGraphDocument)
+  ) return null;
   if (requireCapability(principal, 'workflows.manage')) return null;
   return error(
     403,
     'forbidden',
-    'Aktive Workflows mit Seiteneffekten erfordern workflows.manage',
+    'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
   );
 }
 

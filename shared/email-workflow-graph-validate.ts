@@ -307,3 +307,52 @@ export function workflowGraphHasSideEffectNode(graph: unknown): boolean {
   }
   return false;
 }
+
+/** Spiegel von packages/core/src/workflow/node-chain-stop.ts. */
+const NODE_CHAIN_STOP_CONFIG_KEY = 'stopFurtherWorkflows';
+
+function chainStopFlagEnabled(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1';
+  }
+  return false;
+}
+
+/**
+ * Kann dieser Graph die gesamte Inbound-Priority-Kette abbrechen?
+ *
+ * Zwei Wege fuehren dorthin (workflow-execution): jeder Knoten mit
+ * `stopFurtherWorkflows: true` (nodeRequestsChainStop) und `logic.stop_after_spam`,
+ * das bei Spam `inboundChainStop` setzt — wobei `email.is_spam` vorher per
+ * `logic.set_variable` frei gesetzt werden kann. Ein solcher Workflow schaltet
+ * alle nachrangigen Inbound-Workflows ab (z. B. globale Spam- oder
+ * Compliance-Automation), ohne einen einzigen schreibenden Knoten zu enthalten.
+ * Die Berechtigungsschicht behandelt ihn deshalb wie einen Seiteneffekt-
+ * Workflow — in der Seiteneffekt-Allowlist bleiben die Knoten dagegen bewusst
+ * ausgenommen, denn sie schreiben selbst nichts.
+ */
+export function workflowGraphHasChainStopNode(graph: unknown): boolean {
+  let candidate: unknown = graph;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return false;
+    }
+  }
+  if (!candidate || typeof candidate !== 'object') return false;
+  const nodes = (candidate as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return false;
+  for (const raw of nodes) {
+    if (!raw || typeof raw !== 'object') continue;
+    const node = raw as WorkflowGraphNode;
+    const data = (node.data ?? {}) as Record<string, unknown>;
+    const config = (data.config ?? {}) as Record<string, unknown>;
+    if (chainStopFlagEnabled(config[NODE_CHAIN_STOP_CONFIG_KEY])) return true;
+    if (chainStopFlagEnabled(data[NODE_CHAIN_STOP_CONFIG_KEY])) return true;
+    if (sideEffectRuntimeType(node) === 'logic.stop_after_spam') return true;
+  }
+  return false;
+}

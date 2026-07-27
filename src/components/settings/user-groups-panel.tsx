@@ -8,6 +8,7 @@ import { userGroupService, type UserGroup, type UserGroupMember } from "@/servic
 import { useTranslation } from "@/lib/i18n"
 import { useAuth } from "@/components/auth/auth-context"
 import { isServerClientMode } from "@/lib/runtime-mode"
+import { logError } from "@/components/email/log"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -119,17 +120,24 @@ export function UserGroupsPanel() {
   useEffect(() => {
     void (async () => {
       try {
-        const [groupList, userList] = await Promise.all([
-          userGroupService.list(),
-          invokeRenderer(IPCChannels.Auth.ListUsers, undefined) as Promise<AppUser[]>,
-        ])
-        setGroups(groupList)
-        if (Array.isArray(userList)) setUsers(userList)
+        setGroups(await userGroupService.list())
       } catch (e) {
         setError(e instanceof Error ? e.message : t("common.actionFailed"))
+        return
+      }
+      // GETRENNT und nur fuer Mutatoren: /api/v1/auth/users verlangt
+      // users.manage. In einem gemeinsamen Promise.all haette dessen 403 auch
+      // die frei lesbare Gruppenliste verworfen — die angeblich lesbare Ansicht
+      // waere leer mit Fehlermeldung geblieben.
+      if (!canMutateGroups) return
+      try {
+        const userList = await invokeRenderer(IPCChannels.Auth.ListUsers, undefined) as AppUser[]
+        if (Array.isArray(userList)) setUsers(userList)
+      } catch (e) {
+        logError("user-groups-panel: list users", e)
       }
     })()
-  }, [t])
+  }, [canMutateGroups, t])
 
   const run = async (action: () => Promise<void>) => {
     setError(null)

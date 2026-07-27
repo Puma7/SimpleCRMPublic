@@ -75,6 +75,25 @@ describe('UserGroupsPanel', () => {
     expect(screen.getByText(/Nur lesbar/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Vertrieb' } });
     expect(screen.getByRole('button', { name: 'Gruppe anlegen' })).toBeDisabled();
+    // /api/v1/auth/users verlangt users.manage — die Liste wird fuer Nur-Leser
+    // gar nicht erst geholt, sonst haette ihr 403 die Gruppenansicht mitgerissen.
+    expect(mockInvoke).not.toHaveBeenCalledWith('auth:list-users', undefined);
+  });
+
+  test('a failing user list does not swallow the group list', async () => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'user-groups:list') {
+        return [{ id: 1, name: 'Support', description: null, memberCount: 2, updatedAt: null }];
+      }
+      if (channel === 'auth:list-users') throw new Error('forbidden');
+      return undefined;
+    });
+
+    render(<UserGroupsPanel />);
+
+    expect(await screen.findByText(/Support/)).toBeInTheDocument();
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith('auth:list-users', undefined));
+    expect(screen.queryByText(/forbidden/)).not.toBeInTheDocument();
   });
 
   describe('applying a rights template to an existing group', () => {

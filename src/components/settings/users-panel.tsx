@@ -57,6 +57,12 @@ export function UsersPanel() {
   const [pnValue, setPnValue] = useState("")
   const serverClientMode = getRendererTransport().kind === "http"
   const { user: currentUser, refresh } = useAuth()
+  // Einladungen sind serverseitig ausdruecklich admin-only
+  // (handleCreateInvitation), die 2FA-Endpunkte lassen Admin ODER den Nutzer
+  // selbst zu. Ein delegierter users.manage-Halter darf also Benutzer anlegen
+  // und bearbeiten, aber weder einladen noch fremde 2FA umstellen — solche
+  // Knoepfe waeren garantierte 403er und bleiben deshalb aus.
+  const isAdmin = currentUser?.role === "owner" || currentUser?.role === "admin"
 
   const strength = useMemo(() => evaluatePassword(password), [password])
 
@@ -367,7 +373,12 @@ export function UsersPanel() {
                 </div>
               ) : null}
               {serverClientMode ? (
-                <UserSecurityActions user={u} disabled={busy} onChanged={() => void load()} />
+                <UserSecurityActions
+                  user={u}
+                  disabled={busy}
+                  canManageMfa={isAdmin || currentUser?.id === u.id}
+                  onChanged={() => void load()}
+                />
               ) : null}
             </li>
           ))}
@@ -461,7 +472,7 @@ export function UsersPanel() {
         >
           Benutzer anlegen
         </Button>
-        {serverClientMode ? (
+        {serverClientMode && isAdmin ? (
           <div className="space-y-2">
             <Button type="button" variant="outline" disabled={busy || !username.trim()} onClick={() => void createInvite()}>
               Einladungslink erstellen
@@ -490,6 +501,8 @@ type PasswordStrength = {
 function UserSecurityActions(props: {
   user: UserRow
   disabled?: boolean
+  /** Admin oder der Nutzer selbst — nur dann lassen die 2FA-Endpunkte zu. */
+  canManageMfa?: boolean
   onChanged: () => void
 }) {
   const [error, setError] = useState<string | null>(null)
@@ -654,7 +667,7 @@ function UserSecurityActions(props: {
             PIN aendern
           </Button>
         ) : null}
-        {!props.user.mfa_enabled ? (
+        {props.canManageMfa === false ? null : !props.user.mfa_enabled ? (
           <>
             <Button
               type="button"

@@ -12,6 +12,7 @@ import {
 import {
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
 } from "@shared/email-workflow-graph-validate"
 import {
@@ -466,11 +467,16 @@ export function WorkflowShell() {
         },
         {
           canManageWorkflows,
-          hasSideEffects: workflowGraphHasSideEffectNode(graphDoc),
+          // Ein Kettenabbruch schaltet alle nachrangigen Inbound-Workflows ab
+          // und verlangt serverseitig dieselbe Stufe wie ein Seiteneffekt.
+          hasSideEffects:
+            workflowGraphHasSideEffectNode(graphDoc) || workflowGraphHasChainStopNode(graphDoc),
         },
       )
       if (gate.blocked) {
-        toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
+        toast.error(
+          "Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage",
+        )
         setSaving(false)
         return
       }
@@ -784,8 +790,10 @@ export function WorkflowShell() {
                   onCheckedChange={(on) => {
                     if (on && !canManageWorkflows) {
                       const graph = useWorkflowEditorStore.getState().toGraphDocument()
-                      if (workflowGraphHasSideEffectNode(graph)) {
-                        toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
+                      if (workflowGraphHasSideEffectNode(graph) || workflowGraphHasChainStopNode(graph)) {
+                        toast.error(
+                          "Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage",
+                        )
                         return
                       }
                     }

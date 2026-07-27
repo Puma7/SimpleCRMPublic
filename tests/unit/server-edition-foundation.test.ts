@@ -29263,6 +29263,110 @@ describe('server edition foundation', () => {
       ].sort());
   });
 
+  test('an active chain-stopping workflow requires workflows.manage', async () => {
+    // logic.set_variable (email.is_spam=true) + logic.stop_after_spam setzt
+    // inboundChainStop und ueberspringt damit ALLE nachrangigen Inbound-
+    // Workflows — ein Editor koennte so globale Spam-/Compliance-Automation
+    // abschalten, ohne einen einzigen schreibenden Knoten zu verwenden.
+    const createCalls: unknown[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [], nextCursor: null }; },
+        async get() { return null; },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, workflow: { ...makeWorkflowRecord(31), ...input.values } };
+        },
+        async update() { throw new Error('darf nicht erreicht werden'); },
+      },
+    }));
+    const chainStopGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'var-1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.is_spam', value: true } } },
+        { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop_after_spam' } },
+      ],
+      edges: [
+        { id: 'e1', source: 'trigger-1', target: 'var-1' },
+        { id: 'e2', source: 'var-1', target: 'stop-1' },
+      ],
+    };
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const denied = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Kette kappen',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        graph: chainStopGraph,
+      },
+      principal: editor,
+    });
+    expect(denied.status).toBe(403);
+    expect(createCalls).toEqual([]);
+
+    // Deaktiviert bleibt es erlaubt …
+    const disabled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Kette kappen (inaktiv)',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: false,
+        graph: chainStopGraph,
+      },
+      principal: editor,
+    });
+    expect(disabled.status).toBe(201);
+
+    // … und ein Graph ohne Kettenabbruch ebenfalls.
+    const harmless = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Harmlos',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        graph: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop' } },
+          ],
+          edges: [{ id: 'e1', source: 'trigger-1', target: 'stop-1' }],
+        },
+      },
+      principal: editor,
+    });
+    expect(harmless.status).toBe(201);
+
+    // Mit workflows.manage geht der Kettenabbruch durch.
+    const managed = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Kette kappen',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        graph: chainStopGraph,
+      },
+      principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
+    });
+    expect(managed.status).toBe(201);
+  });
+
   test('an active workflow with an override key requires workflows.manage', async () => {
     // Bei gleichem overrideKey verdraengt der konto-spezifische Workflow den
     // globalen (resolveScopedInboundWorkflowOverrides) — ein Editor koennte so

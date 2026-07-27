@@ -1,11 +1,13 @@
 import {
   LOGIC_INMEMORY_NODE_TYPES as CORE_LOGIC_INMEMORY_NODE_TYPES,
   READ_ONLY_WORKFLOW_NODE_TYPES as CORE_READ_ONLY_WORKFLOW_NODE_TYPES,
+  workflowGraphHasChainStopNode as coreWorkflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode as coreWorkflowGraphHasSideEffectNode,
 } from '../../packages/core/src/workflow/graph-validate';
 import {
   LOGIC_INMEMORY_NODE_TYPES as SHARED_LOGIC_INMEMORY_NODE_TYPES,
   READ_ONLY_WORKFLOW_NODE_TYPES as SHARED_READ_ONLY_WORKFLOW_NODE_TYPES,
+  workflowGraphHasChainStopNode as sharedWorkflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode as sharedWorkflowGraphHasSideEffectNode,
 } from '../../shared/email-workflow-graph-validate';
 
@@ -47,6 +49,66 @@ describe('side-effect allowlist mirror', () => {
   test('logic.stop_after_spam is exempt in both — several shipped templates use it', () => {
     expect(SHARED_LOGIC_INMEMORY_NODE_TYPES.has('logic.stop_after_spam')).toBe(true);
     expect(CORE_LOGIC_INMEMORY_NODE_TYPES.has('logic.stop_after_spam')).toBe(true);
+  });
+
+  test('chain-stop detection matches in both implementations', () => {
+    // Der Kettenabbruch ist KEIN Seiteneffekt (die Knoten schreiben nichts),
+    // schaltet aber alle nachrangigen Inbound-Workflows ab — er wird deshalb
+    // separat erkannt und in der Berechtigungsschicht gleich behandelt.
+    const cases: Array<{ label: string; doc: unknown; expected: boolean }> = [
+      {
+        label: 'logic.stop_after_spam',
+        doc: {
+          version: 1,
+          nodes: [
+            { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'v1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.is_spam', value: true } } },
+            { id: 's1', type: 'registry', data: { nodeType: 'logic.stop_after_spam' } },
+          ],
+          edges: [],
+        },
+        expected: true,
+      },
+      {
+        label: 'stopFurtherWorkflows am Knoten',
+        doc: {
+          version: 1,
+          nodes: [
+            { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'n1', type: 'registry', data: { nodeType: 'logic.stop', config: { stopFurtherWorkflows: true } } },
+          ],
+          edges: [],
+        },
+        expected: true,
+      },
+      {
+        label: 'stopFurtherWorkflows als String "true" (JSON-Altbestand)',
+        doc: {
+          version: 1,
+          nodes: [{ id: 'n1', type: 'registry', data: { nodeType: 'logic.stop', config: { stopFurtherWorkflows: 'true' } } }],
+          edges: [],
+        },
+        expected: true,
+      },
+      {
+        label: 'harmloser Graph',
+        doc: {
+          version: 1,
+          nodes: [
+            { id: 't1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'n1', type: 'registry', data: { nodeType: 'logic.stop' } },
+          ],
+          edges: [],
+        },
+        expected: false,
+      },
+    ];
+    for (const testCase of cases) {
+      expect({ label: testCase.label, chainStop: sharedWorkflowGraphHasChainStopNode(testCase.doc) })
+        .toEqual({ label: testCase.label, chainStop: testCase.expected });
+      expect({ label: testCase.label, chainStop: coreWorkflowGraphHasChainStopNode(testCase.doc) })
+        .toEqual({ label: testCase.label, chainStop: testCase.expected });
+    }
   });
 
   test('a genuine side-effect node still trips both', () => {
