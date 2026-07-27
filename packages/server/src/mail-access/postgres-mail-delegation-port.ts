@@ -1128,6 +1128,15 @@ async function loadBindingConstraints(
  * parallele Bindings nicht beide am halben Budget vorbeikommen: die Bindings
  * des Subjekts werden dafuer gesperrt.
  */
+const MAIL_BINDING_CONSTRAINT_BUDGET_LOCK_PREFIX = 'mail_acl.constraint_budget';
+
+function mailBindingConstraintBudgetLockKey(
+  workspaceId: string,
+  subject: MailDelegationSubject,
+): string {
+  return `${MAIL_BINDING_CONSTRAINT_BUDGET_LOCK_PREFIX}:${workspaceId}:${subject.type}:${subjectId(subject)}`;
+}
+
 async function constraintBudgetExceeded(
   trx: Trx,
   workspaceId: string,
@@ -1135,6 +1144,15 @@ async function constraintBudgetExceeded(
   replacedBindingId: number | null,
   next: MailBindingVisibilityConstraints | null,
 ): Promise<{ used: number; limit: number } | null> {
+  // FOR UPDATE sperrt nur vorhandene Geschwister-Rows; bei einem neuen Subjekt
+  // ohne Bindings sperrt die Query nichts. Die subjektgebundene Advisory-Lock
+  // serialisiert deshalb jeden Budget-Check unabhaengig von der Zeilenanzahl.
+  await sql`
+    SELECT pg_advisory_xact_lock(
+      hashtextextended(${mailBindingConstraintBudgetLockKey(workspaceId, subject)}, 0)
+    )
+  `.execute(trx);
+
   const nextCount = mailBindingConstraintEntryCount(next);
   const siblings = await trx
     .selectFrom('mail_acl_bindings')

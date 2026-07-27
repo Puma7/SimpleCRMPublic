@@ -30,7 +30,9 @@ export type MailResourceResolution =
     accountId: PolicyValueSelector;
     // workspace_global → the nonempty-scope gate; owner_admin → owner/admin only
     // (used for accountless deletion tombstones that have no account to resolve).
-    whenAbsent: 'workspace_global' | 'owner_admin';
+    // settings_global → workspace-weite Einstellung ohne accountId; der Handler
+    // prueft settings.manage, die Mail-ACL bleibt aus.
+    whenAbsent: 'workspace_global' | 'owner_admin' | 'settings_global';
     // How to authorize a PRESENT accountId. Default 'account' → a plain account resource
     // (owner/admin or a direct account grant). 'account_parent_aware' ALSO admits a
     // folder/message delegate who reaches the account only through a child grant, matching
@@ -175,10 +177,13 @@ const accountPathParentAware = (): MailResourceResolution => (
 );
 const accountBody = (): MailResourceResolution => ({ kind: 'account', accountId: bodyValue('accountId') });
 const accountQuery = (): MailResourceResolution => ({ kind: 'account', accountId: queryValue('accountId') });
-const optionalAccount = (source: 'query' | 'body'): MailResourceResolution => ({
+const optionalAccount = (
+  source: 'query' | 'body',
+  whenAbsent: 'workspace_global' | 'settings_global' = 'workspace_global',
+): MailResourceResolution => ({
   kind: 'optional_account',
   accountId: source === 'query' ? queryValue('accountId') : bodyValue('accountId'),
-  whenAbsent: 'workspace_global',
+  whenAbsent,
 });
 const folderPath = (): MailResourceResolution => ({ kind: 'folder_lookup', folderId: pathValue('id') });
 const messagePath = (): MailResourceResolution => ({ kind: 'message_lookup', messageId: pathValue('messageId') });
@@ -311,7 +316,9 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
   });
   assign('/api/v1/email/settings/reply-suggestion', {
     GET: permissionPolicy('mail.metadata.read', optionalAccount('query')),
-    PATCH: exemptPolicy('workspace_global_settings'),
+    // Ohne accountId: reine Workspace-Konfiguration (settings.manage). Mit
+    // accountId: kontoscharf wie vor der workspace_global_settings-Ausnahme.
+    PATCH: permissionPolicy('mail.account.manage', optionalAccount('body', 'settings_global')),
   });
 
   assign('/api/v1/email/accounts', {

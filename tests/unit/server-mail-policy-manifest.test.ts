@@ -318,7 +318,6 @@ describe('server mail policy manifest', () => {
       // Postfachfreigabe und verengt fuer niemanden. Wer hier eine Zeile
       // ergaenzt, muss dieselbe Pruefung im Handler nachweisen.
       'workspace_global_settings: PATCH /api/v1/email/settings/misc',
-      'workspace_global_settings: PATCH /api/v1/email/settings/reply-suggestion',
       'workspace_global_settings: PATCH /api/v1/email/settings/snooze',
     ].sort());
   });
@@ -365,6 +364,7 @@ describe('server mail policy manifest', () => {
       ['PATCH', '/api/v1/email/settings/account-mail', 'mail.account.manage', account('body')],
       ['GET', '/api/v1/email/settings/snooze', 'mail.metadata.read', { kind: 'workspace_global' }],
       ['GET', '/api/v1/email/settings/reply-suggestion', 'mail.metadata.read', optionalAccount('query')],
+      ['PATCH', '/api/v1/email/settings/reply-suggestion', 'mail.account.manage', optionalAccount('body', 'settings_global')],
       ['POST', '/api/v1/email/compose/send', 'mail.send', messageBody('draftMessageId')],
       ['GET', '/api/v1/email/attachments/7', 'mail.attachment.read', attachmentPath()],
       ['GET', '/api/v1/email/attachments/7/content', 'mail.attachment.read', attachmentPath()],
@@ -401,13 +401,13 @@ describe('server mail policy manifest', () => {
       ['DELETE', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
     ] as const;
 
-    // Die drei workspace-globalen Einstellungs-PATCHes stehen bewusst NICHT in
-    // der Matrix: sie sind vom Mail-Gate ausgenommen und haengen am
-    // settings.manage-Gate des Handlers. Ihre GETs bleiben oben in der Matrix.
+    // Die zwei workspace-globalen Einstellungs-PATCHes (misc, snooze) stehen
+    // bewusst NICHT in der Matrix: sie sind vom Mail-Gate ausgenommen und haengen
+    // am settings.manage-Gate des Handlers. reply-suggestion PATCH ist hybrid:
+    // ohne accountId settings_global, mit accountId mail.account.manage.
     for (const path of [
       '/api/v1/email/settings/misc',
       '/api/v1/email/settings/snooze',
-      '/api/v1/email/settings/reply-suggestion',
     ]) {
       expect({ path, policy: assertMailRoutePolicy('PATCH', path).policy }).toEqual({
         path,
@@ -604,11 +604,14 @@ function accountParentAware(source: 'path' | 'query' | 'body') {
   return { kind: 'account_parent_aware', accountId: { source, field: 'accountId' } } as const;
 }
 
-function optionalAccount(source: 'query' | 'body') {
+function optionalAccount(
+  source: 'query' | 'body',
+  whenAbsent: 'workspace_global' | 'settings_global' = 'workspace_global',
+) {
   return {
     kind: 'optional_account',
     accountId: { source, field: 'accountId' },
-    whenAbsent: 'workspace_global',
+    whenAbsent,
   } as const;
 }
 

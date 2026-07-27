@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { MailPermission } from '../../packages/core/src/email/mail-permissions';
 import {
   createPostgresMailDelegationPort,
@@ -836,3 +838,19 @@ function createDelegationTransaction(fixtures: {
     },
   };
 }
+
+describe('postgres mail delegation constraint budget locking', () => {
+  test('serializes cumulative constraint budget checks per subject with an advisory lock', () => {
+    const source = readFileSync(
+      join(process.cwd(), 'packages', 'server', 'src', 'mail-access', 'postgres-mail-delegation-port.ts'),
+      'utf8',
+    );
+    const lockIndex = source.indexOf('mailBindingConstraintBudgetLockKey(workspaceId, subject)');
+    const siblingsIndex = source.indexOf(".selectFrom('mail_acl_bindings')", lockIndex);
+
+    expect(source).toContain("const MAIL_BINDING_CONSTRAINT_BUDGET_LOCK_PREFIX = 'mail_acl.constraint_budget'");
+    expect(source).toContain('SELECT pg_advisory_xact_lock(');
+    expect(lockIndex).toBeGreaterThanOrEqual(0);
+    expect(siblingsIndex).toBeGreaterThan(lockIndex);
+  });
+});

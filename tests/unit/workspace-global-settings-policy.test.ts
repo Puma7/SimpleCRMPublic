@@ -5,17 +5,15 @@ import { MailAccessDeniedError } from '../../packages/server/src/mail-access/ser
 const WORKSPACE = '11111111-1111-4111-8111-111111111111';
 
 /**
- * Workspace-globale Mail-EINSTELLUNGEN sind Konfiguration, keine Postfachdaten.
- * Ihre Schreibpfade an eine Mail-Delegation zu binden vermengte zwei
- * unabhaengige Berechtigungssysteme: ein reiner Einstellungsverwalter
+ * Workspace-globale Mail-EINSTELLUNGEN (misc, snooze) sind Konfiguration, keine
+ * Postfachdaten. Ihre Schreibpfade an eine Mail-Delegation zu binden vermengte
+ * zwei unabhaengige Berechtigungssysteme: ein reiner Einstellungsverwalter
  * (settings.manage, aber kein einziges freigegebenes Postfach) konnte weder das
- * Anhanglimit noch die Snooze-Zeiten noch die Antwortvorschlaege aendern — die
- * Mail-Policy lehnte schon vor dem Handler ab.
+ * Anhanglimit noch die Snooze-Zeiten aendern — die Mail-Policy lehnte schon vor
+ * dem Handler ab.
  *
- * Die drei PATCHes sind deshalb vom Mail-Gate ausgenommen. Das WEITET nur: alle
- * drei Handler rufen rejectUnlessSettingsManage, bevor sie irgendetwas
- * schreiben, ein Mail-Delegierter ohne diese Stufe kam also ohnehin nicht durch.
- * Die zugehoerigen GETs bleiben am Mail-Gate.
+ * reply-suggestion PATCH ist hybrid: ohne accountId workspace-weit (nur
+ * settings.manage), mit accountId kontoscharf (mail.account.manage).
  */
 describe('workspace-global mail settings policy', () => {
   const settingsManager = {
@@ -78,10 +76,14 @@ describe('workspace-global mail settings policy', () => {
       nextWeekMinute: 30,
     }],
     ['/api/v1/email/settings/misc', { maxAttachmentMb: '30' }],
-    ['/api/v1/email/settings/reply-suggestion', { autoEnabled: false }],
   ] as const;
 
-  test('a settings manager without any mailbox may write all three', async () => {
+  const replySuggestionWorkspaceWrite = [
+    '/api/v1/email/settings/reply-suggestion',
+    { autoEnabled: false },
+  ] as const;
+
+  test('a settings manager without any mailbox may write misc and snooze', async () => {
     const api = makeApi();
     for (const [path, body] of writePaths) {
       const res = await api.handle({ method: 'PATCH', path, body, principal: settingsManager });
@@ -90,7 +92,31 @@ describe('workspace-global mail settings policy', () => {
     expect(setCalls).toHaveLength(writePaths.length);
   });
 
-  test('settings.view alone is still not enough to write', async () => {
+  test('a settings manager without any mailbox may write workspace-wide reply-suggestion settings', async () => {
+    const api = makeApi();
+    const [path, body] = replySuggestionWorkspaceWrite;
+    const res = await api.handle({ method: 'PATCH', path, body, principal: settingsManager });
+    expect(res.status).toBe(200);
+    expect(setCalls).toHaveLength(1);
+  });
+
+  test('reply-suggestion PATCH with accountId requires mail.account.manage on that account', async () => {
+    const api = makeApi();
+    const [path] = replySuggestionWorkspaceWrite;
+    const res = await api.handle({
+      method: 'PATCH',
+      path,
+      body: { accountId: 5, autoEnabled: false },
+      principal: settingsManager,
+    });
+    // Der Enforcer antwortet auf eine verweigerte Mail-Ressource bewusst mit
+    // 404 statt 403, um die Existenz nicht zu verraten.
+    expect({ status: res.status, code: (res.body as { error?: { code?: string } }).error?.code })
+      .toEqual({ status: 404, code: 'mail_resource_not_found' });
+    expect(setCalls).toEqual([]);
+  });
+
+  test('settings.view alone is still not enough to write misc, snooze or reply-suggestion', async () => {
     // Die Ausnahme betrifft NUR das Mail-Gate. Das Capability-Gate im Handler
     // bleibt die eigentliche Autorisierung.
     const api = makeApi();
@@ -98,6 +124,14 @@ describe('workspace-global mail settings policy', () => {
       const res = await api.handle({ method: 'PATCH', path, body, principal: settingsReader });
       expect({ path, status: res.status }).toEqual({ path, status: 403 });
     }
+    const [replyPath, replyBody] = replySuggestionWorkspaceWrite;
+    const replyDenied = await api.handle({
+      method: 'PATCH',
+      path: replyPath,
+      body: replyBody,
+      principal: settingsReader,
+    });
+    expect(replyDenied.status).toBe(403);
     expect(setCalls).toEqual([]);
   });
 

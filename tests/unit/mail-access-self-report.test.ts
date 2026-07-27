@@ -123,6 +123,27 @@ describe('MailAccessService.resolveSelfPermissions', () => {
     expect(asked).toEqual([...MAIL_PERMISSIONS]);
   });
 
+  test('folder-scoped mail.account.manage does not imply account management', async () => {
+    const service = new MailAccessService({
+      async resolveGrants({ permission }: { permission: string }) {
+        if (permission === 'mail.account.manage') {
+          return [{
+            bindingId: 4,
+            resourceType: 'folder',
+            accountId: 3,
+            folderId: 9,
+            messageId: null,
+            constraints: null,
+          }];
+        }
+        return [];
+      },
+    });
+
+    expect(await service.resolveSelfPermissions({ workspaceId: WORKSPACE, userId: 'user-a' }))
+      .toEqual({ permissions: [], accountPermissions: {} });
+  });
+
   test('a user without any binding reports nothing', async () => {
     const service = new MailAccessService({ async resolveGrants() { return []; } });
     expect(await service.resolveSelfPermissions({ workspaceId: WORKSPACE, userId: 'user-a' }))

@@ -231,12 +231,18 @@ export class MailAccessService implements MailAccessServiceContract {
         { workspaceId: input.workspaceId },
       );
       if (grants.length === 0) continue;
-      permissions.push(permission);
+      let attributed = false;
       for (const grant of grants) {
+        // mail.account.manage auf Ordner-/Nachrichten-Scope erlaubt kein Konto
+        // loeschen (Route verlangt accountPath). Nicht in die Selbstauskunft
+        // aufnehmen, sonst blendet der Renderer den Loeschen-Button ein.
+        if (permission === 'mail.account.manage' && grant.resourceType !== 'account') continue;
+        attributed = true;
         const existing = byAccount.get(grant.accountId) ?? new Set<MailPermission>();
         existing.add(permission);
         byAccount.set(grant.accountId, existing);
       }
+      if (attributed) permissions.push(permission);
     }
     const accountPermissions: Record<number, MailPermission[]> = {};
     for (const [accountId, held] of [...byAccount.entries()].sort((a, b) => a[0] - b[0])) {

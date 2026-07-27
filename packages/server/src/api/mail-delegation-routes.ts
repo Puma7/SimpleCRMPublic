@@ -182,7 +182,7 @@ async function handlePatch(
     permissions: parsed.permissions,
     ...(parsed.constraintsProvided ? { constraints: parsed.constraints ?? null } : {}),
   });
-  if (!result.ok) return mutationError(result.code);
+  if (!result.ok) return mutationError(result.code, result);
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {
     bindingId,
     subject: result.binding?.subject,

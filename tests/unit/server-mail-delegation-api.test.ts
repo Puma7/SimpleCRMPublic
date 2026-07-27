@@ -288,11 +288,36 @@ describe('server mail delegation API', () => {
       principal: owner,
       body: { permissions: ['mail.metadata.read'] },
     });
+    mailDelegation.replaceBindingById.mockResolvedValueOnce({
+      ok: false,
+      code: 'constraint_budget_exceeded',
+      used: 2001,
+      limit: 2000,
+    } as never);
+    const budgetExceeded = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/access/bindings/901',
+      principal: owner,
+      body: {
+        permissions: ['mail.metadata.read'],
+        constraints: { categoryAllowIds: [1] },
+      },
+    });
 
     expect(invalidResourceType).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
     expect(invalidSubjectCursor).toMatchObject({ status: 400, body: { error: { code: 'invalid_cursor' } } });
     expect(denied).toMatchObject({ status: 403, body: { error: { code: 'mail_delegation_denied' } } });
     expect(conflict).toMatchObject({ status: 409, body: { error: { code: 'mail_delegation_conflict' } } });
+    expect(budgetExceeded).toMatchObject({
+      status: 400,
+      body: {
+        error: {
+          code: 'mail_delegation_constraint_budget_exceeded',
+          message: 'Sichtbarkeitsfilter dieses Subjekts umfassen zusammen 2001 Eintraege, erlaubt sind 2000',
+          details: { used: 2001, limit: 2000 },
+        },
+      },
+    });
   });
 
   test('rejects oversized visibility constraint lists before calling the port', async () => {

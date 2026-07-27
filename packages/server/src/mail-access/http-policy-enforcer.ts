@@ -368,6 +368,10 @@ export async function enforceMailHttpPolicy(
         || (
           entry.policy.resource.kind === 'optional_message_lookup'
           && entry.policy.resource.whenAbsent === 'non_mail'
+        )
+        || (
+          entry.policy.resource.kind === 'optional_account'
+          && entry.policy.resource.whenAbsent === 'settings_global'
         );
       if (!allowedEmpty) return denied();
       await assertSupplementalHttpPermissions(
@@ -791,7 +795,12 @@ async function resolveHttpResources(
   if (resolution.kind === 'optional_account') {
     const raw = selectorValue(req, canonicalPath, resolution.accountId);
     // An absent OR explicitly null accountId is a workspace-global write.
-    if (raw === undefined || raw === null) return { kind: 'scope' };
+    if (raw === undefined || raw === null) {
+      if (resolution.whenAbsent === 'settings_global') {
+        return { kind: 'resources', resources: [], mode: 'all' };
+      }
+      return { kind: 'scope' };
+    }
     // 'account_parent_aware' is an event-only delivery widening (canned-response events);
     // no HTTP route sets it, so fail closed rather than admit a child grant on the account.
     if (resolution.whenPresent === 'account_parent_aware') throw new MailAccessDeniedError();
