@@ -1136,13 +1136,22 @@ async function constraintBudgetExceeded(
   next: MailBindingVisibilityConstraints | null,
 ): Promise<{ used: number; limit: number } | null> {
   const nextCount = mailBindingConstraintEntryCount(next);
+  // Transaktionsweite Advisory-Sperre auf das SUBJEKT, nicht FOR UPDATE auf die
+  // gefundenen Bindings: FOR UPDATE nimmt keine Praedikats-/Luecken-Sperre. Hat
+  // das Subjekt noch keine Bindings, sperrt es gar nichts, und selbst beim
+  // Warten auf bestehende Zeilen sieht die wartende Anweisung ein parallel
+  // eingefuegtes Phantom aus ihrem aelteren Snapshot nicht. Zwei Anfragen
+  // koennten so beide eine Summe unter dem Budget sehen, beide committen und es
+  // zusammen ueberschreiten. Die Advisory-Sperre existiert unabhaengig von
+  // vorhandenen Zeilen und serialisiert genau diesen Abschnitt pro Subjekt.
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${`mail_acl_constraint_budget:${workspaceId}:${subject.type}:${subjectId(subject)}`}, 0))`
+    .execute(trx);
   const siblings = await trx
     .selectFrom('mail_acl_bindings')
     .select('id')
     .where('workspace_id', '=', workspaceId)
     .where('subject_type', '=', subject.type)
     .where('subject_id', '=', subjectId(subject))
-    .forUpdate()
     .execute();
   const otherIds = siblings
     .map((row) => Number(row.id))

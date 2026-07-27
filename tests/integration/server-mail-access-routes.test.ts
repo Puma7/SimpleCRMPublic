@@ -4260,6 +4260,106 @@ describe('server mailbox ACL migration', () => {
       }
     });
 
+    test('serializes the budget check across parallel creates for the same subject', async () => {
+      // FOR UPDATE auf die gefundenen Bindings genuegt hier NICHT: es nimmt keine
+      // Praedikats-/Luecken-Sperre, sperrt bei einem Subjekt ohne Bindings also
+      // gar nichts, und eine wartende Anweisung sieht ein parallel eingefuegtes
+      // Phantom aus ihrem aelteren Snapshot nicht. Beide Anfragen saehen eine
+      // Summe unter dem Budget und ueberschritten es zusammen. Die
+      // Advisory-Sperre auf das Subjekt serialisiert den Abschnitt.
+      await ensureMailAclConstraintsSchema();
+      const subjectId = '30000000-0000-4000-8000-000000000010';
+      const db = createApplicationDb({ maxConnections: 4 });
+      const port = createPostgresMailDelegationPort({ db });
+      const actor = { userId: DELEGATION_OWNER, isOwner: true, isAdmin: false };
+      const subject = { type: 'user' as const, id: subjectId };
+      // Jede Liste bleibt unter dem DB-Check (500 pro Array).
+      const constraints = (prefix: string, allow: number, exclude: number) => ({
+        assignmentMode: null,
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: Array.from({ length: allow }, (_, index) => `${prefix}-a-${index}`),
+        tagExcludeValues: Array.from({ length: exclude }, (_, index) => `${prefix}-x-${index}`),
+      });
+      const cleanup = async () => {
+        await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+        for (const table of ['mail_acl_binding_constraints', 'mail_acl_binding_permissions']) {
+          await client.query(`
+            DELETE FROM ${table} WHERE binding_id IN (
+              SELECT id FROM mail_acl_bindings
+              WHERE workspace_id = '${DELEGATION_WORKSPACE}' AND subject_id = '${subjectId}'
+            )
+          `).catch(() => undefined);
+        }
+        await client.query(`DELETE FROM mail_acl_bindings WHERE workspace_id = '${DELEGATION_WORKSPACE}' AND subject_id = '${subjectId}'`).catch(() => undefined);
+        await client.query(`DELETE FROM users WHERE id = '${subjectId}'`).catch(() => undefined);
+        await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      };
+
+      try {
+        await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+        await client.query(`
+          INSERT INTO users (id, workspace_id, email, display_name, password_hash, role, disabled_at)
+          VALUES ('${subjectId}', '${DELEGATION_WORKSPACE}', 'budget-race@example.test', 'Budget Race', 'hash', 'user', NULL)
+          ON CONFLICT (id) DO NOTHING
+        `);
+        await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+        // Grundlast: ein Binding mit 1000 Eintraegen.
+        const seeded = await port.replaceBinding({
+          workspaceId: DELEGATION_WORKSPACE,
+          actor,
+          subject,
+          resource: { type: 'account' as const, accountId: DELEGATION_ACCOUNT },
+          permissions: ['mail.metadata.read'],
+          constraints: constraints('seed', 500, 500),
+        });
+        expect(seeded.ok).toBe(true);
+
+        // Zwei gleichzeitige Creates mit je 600: einzeln passt jedes (1600),
+        // zusammen waeren es 2200 und damit ueber dem Budget.
+        const results = await Promise.all([
+          port.replaceBinding({
+            workspaceId: DELEGATION_WORKSPACE,
+            actor,
+            subject,
+            resource: { type: 'account' as const, accountId: DELEGATION_UNMANAGED_ACCOUNT },
+            permissions: ['mail.metadata.read'],
+            constraints: constraints('r0', 500, 100),
+          }),
+          port.replaceBinding({
+            workspaceId: DELEGATION_WORKSPACE,
+            actor,
+            subject,
+            resource: { type: 'folder' as const, accountId: DELEGATION_ACCOUNT, folderId: DELEGATION_FOLDER },
+            permissions: ['mail.metadata.read'],
+            constraints: constraints('r1', 500, 100),
+          }),
+        ]);
+
+        // Genau eine kommt durch, die andere prallt am Budget ab.
+        expect(results.filter((result) => result.ok)).toHaveLength(1);
+        const rejected = results.find((result) => !result.ok);
+        expect(rejected).toMatchObject({ ok: false, code: 'constraint_budget_exceeded' });
+
+        // Und der gespeicherte Gesamtverbrauch bleibt unter dem Budget.
+        await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+        const total = await client.query<{ total: string }>(`
+          SELECT coalesce(sum(
+            coalesce(array_length(c.value_ids, 1), 0) + coalesce(array_length(c.value_texts, 1), 0)
+          ), 0)::text AS total
+          FROM mail_acl_binding_constraints c
+          JOIN mail_acl_bindings b ON b.id = c.binding_id
+          WHERE b.workspace_id = '${DELEGATION_WORKSPACE}' AND b.subject_id = '${subjectId}'
+        `);
+        expect(Number(total.rows[0]?.total ?? 0)).toBeLessThanOrEqual(2000);
+        await client.query('RESET app.role; RESET app.cross_workspace_access');
+      } finally {
+        await cleanup();
+        await db.destroy();
+      }
+    });
+
     test('resolves parallel patch and delete as serialized success or binding_not_found without throwing', async () => {
       const db = createApplicationDb({ maxConnections: 4 });
       const port = createPostgresMailDelegationPort({ db });

@@ -874,18 +874,27 @@ export function createPostgresWorkflowExecutionJobPort(
         },
         { applySession: options.applyWorkspaceSession },
       );
-      await flushDeferredWorkflowImapEffects({
-        effects: deferredImapEffects,
-        db: options.db,
-        workflowImapActions: options.workflowImapActions,
-        applyWorkspaceSession: options.applyWorkspaceSession,
-      });
+      // ZUERST invalidieren, DANN die IMAP-Effekte.
+      //
+      // Die Metadaten sind bereits committed. Wirft der IMAP-Flush (setSeen,
+      // move, delete oder die nachgelagerte Lokalzustands-Transaktion), waere
+      // die Invalidierung sonst verloren — und bei einem Worker-Retry wird ein
+      // bereits geschriebener Tag als „existiert schon" erkannt und gar nicht
+      // mehr eingesammelt. Ein Nutzer, dessen Ausschlussfilter die Nachricht
+      // entziehen muesste, behielte sie dann bis zu einem unabhaengigen Reload.
+      // Die Invalidierung selbst ist best effort und wirft nie.
       await flushWorkflowVisibilityInvalidation({
         workspaceId: input.workspaceId,
         actorUserId: input.actorUserId,
         collected: visibilityInvalidation,
         mailAccess: options.mailAccess,
         events: options.events,
+      });
+      await flushDeferredWorkflowImapEffects({
+        effects: deferredImapEffects,
+        db: options.db,
+        workflowImapActions: options.workflowImapActions,
+        applyWorkspaceSession: options.applyWorkspaceSession,
       });
     },
 

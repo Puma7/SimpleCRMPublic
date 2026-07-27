@@ -226,13 +226,27 @@ export class MailAccessService implements MailAccessServiceContract {
     const permissions: MailPermission[] = [];
     const byAccount = new Map<number, Set<MailPermission>>();
     for (const permission of MAIL_PERMISSIONS) {
-      const grants = await this.port.resolveGrants(
-        { workspaceId: input.workspaceId, userId: input.userId, permission },
-        { workspaceId: input.workspaceId },
-      );
+      // OHNE evaluationContext: der Postgres-Port verlangt dort einen
+      // symbolgebundenen Transaktions-Kontext (requirePostgresMailAclRolloutTransaction)
+      // und wirft bei einem blossen { workspaceId }. Ohne das Argument oeffnet
+      // er seine normale Workspace-Transaktion — genau richtig fuer eine
+      // Auskunft, die ausserhalb einer geteilten Auswertung laeuft.
+      const grants = await this.port.resolveGrants({
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        permission,
+      });
       if (grants.length === 0) continue;
       permissions.push(permission);
       for (const grant of grants) {
+        // NUR Konto-Grants. Ein Grant auf einen Ordner UNTERHALB des Kontos
+        // autorisiert keine Konto-Ressource (grantAllowsResource lehnt ihn ab),
+        // wuerde hier aber unter derselben Konto-Id landen — der Renderer boete
+        // dann „Konto loeschen" an und kassierte genau das 403, das die Auskunft
+        // verhindern soll. Ordner- und Nachrichten-Grants bleiben in
+        // `permissions` sichtbar: fuer „das Bedienelement ueberhaupt anbieten"
+        // ist das die richtige Frage.
+        if (grant.resourceType !== 'account') continue;
         const existing = byAccount.get(grant.accountId) ?? new Set<MailPermission>();
         existing.add(permission);
         byAccount.set(grant.accountId, existing);

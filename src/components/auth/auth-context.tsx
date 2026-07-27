@@ -75,6 +75,14 @@ type AuthState = {
   hasMailPermissionForAccount: (permission: string, accountId: number | string | null | undefined) => boolean
   /** false, solange der Mail-Rechte-Bericht der Server-Edition noch laedt. */
   mailPermissionsReady: boolean
+  /**
+   * Haelt der Nutzer JEDE Mail-Berechtigung auf JEDER Ressource (Owner/Admin)?
+   * Noetig fuer Aktionen, die serverseitig am mail_scope haengen statt an einer
+   * Ressource: eine eingeschraenkte Delegation scheitert dort auch mit dem
+   * passenden Recht, weil der Pfad nicht in RESTRICTED_SCOPE_WRITE_PATHS steht.
+   * Im Desktop und waehrend des Ladens true.
+   */
+  mailAccessUnrestricted: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
   logout: () => Promise<void>
   refresh: (options?: { force?: boolean }) => Promise<void>
@@ -366,6 +374,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [mailPermissionContext],
   )
 
+  const mailAccessUnrestricted = useMemo(() => {
+    if (!mailPermissionContext.serverClientMode) return true
+    if (!mailPermissionContext.ready) return true
+    return mailPermissionContext.report.unrestricted
+  }, [mailPermissionContext])
+
   const hasMailPermissionForAccountFn = useCallback(
     (permission: string, accountId: number | string | null | undefined) =>
       hasMailPermissionForAccount(mailPermissionContext, permission, accountId),
@@ -436,6 +450,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasMailPermission: hasMailPermissionFn,
       hasMailPermissionForAccount: hasMailPermissionForAccountFn,
       mailPermissionsReady,
+      mailAccessUnrestricted,
       login,
       logout,
       refresh,
@@ -456,6 +471,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasMailPermissionFn,
       hasMailPermissionForAccountFn,
       mailPermissionsReady,
+      mailAccessUnrestricted,
       login,
       logout,
       refresh,

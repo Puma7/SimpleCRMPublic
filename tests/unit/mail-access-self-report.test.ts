@@ -117,8 +117,15 @@ describe('MailAccessService.resolveSelfPermissions', () => {
     expect(result.permissions).toEqual(['mail.account.manage', 'mail.metadata.read']);
     // Nach Konto-Id sortiert, damit die Antwort stabil ist.
     expect(Object.keys(result.accountPermissions)).toEqual(['3', '7']);
-    expect(result.accountPermissions[3]).toEqual(['mail.account.manage', 'mail.metadata.read']);
+    // Konto 3 traegt NUR mail.account.manage: der metadata-Grant dort ist ein
+    // ORDNER-Grant und autorisiert keine Konto-Ressource (grantAllowsResource).
+    // Wuerde er hier landen, boete der Renderer „Konto loeschen" an und
+    // kassierte genau das 403, das die Auskunft verhindern soll.
+    expect(result.accountPermissions[3]).toEqual(['mail.account.manage']);
     expect(result.accountPermissions[7]).toEqual(['mail.metadata.read']);
+    // In der Anywhere-Liste bleibt der Ordner-Grant sichtbar — fuer „das
+    // Bedienelement ueberhaupt anbieten" ist das die richtige Frage.
+    expect(result.permissions).toContain('mail.metadata.read');
     // Jede bekannte Berechtigung wird genau einmal abgefragt.
     expect(asked).toEqual([...MAIL_PERMISSIONS]);
   });

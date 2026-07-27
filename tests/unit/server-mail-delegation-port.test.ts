@@ -149,6 +149,15 @@ describe('createPostgresMailDelegationPort', () => {
         tagExcludeValues: [],
       },
     })).resolves.toMatchObject({ ok: true });
+
+    // Das kumulative Budget wird unter einer Advisory-Sperre AUF DAS SUBJEKT
+    // geprueft. FOR UPDATE auf die gefundenen Bindings genuegte nicht: es nimmt
+    // keine Luecken-Sperre und sperrt bei einem Subjekt ohne Bindings gar
+    // nichts, sodass zwei parallele Creates beide unter dem Budget landen
+    // koennten.
+    expect(withinManageScope.calls).toContainEqual(
+      ['sql', expect.stringContaining('pg_advisory_xact_lock')],
+    );
   });
 
   test('rejects a visibility filter that names an unknown category', async () => {
@@ -818,6 +827,19 @@ function createDelegationTransaction(fixtures: {
   };
   return {
     calls,
+    /**
+     * Roh-SQL laeuft ueber diesen Executor. Gebraucht wird er fuer die
+     * Advisory-Sperre der Budget-Pruefung — sie darf im Fake nichts tun, muss
+     * aber sichtbar sein, damit ein Test sie zusichern kann.
+     */
+    getExecutor() {
+      return {
+        async executeQuery(compiled: { sql: string }) {
+          calls.push(['sql', compiled.sql]);
+          return { rows: [] };
+        },
+      };
+    },
     selectFrom(table: string) {
       calls.push(['selectFrom', table]);
       return createBuilder(table, 'select');

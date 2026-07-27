@@ -57,12 +57,20 @@ export function AccountsMasterDetailSettings() {
   const [editAccount, setEditAccount] = useState<EmailAccount | null>(null)
   const [tab, setTab] = useState<AccountTab>("imap")
   const [creating, setCreating] = useState(false)
-  // Konto anlegen, bearbeiten und loeschen haengen serverseitig an
-  // mail.account.manage — einer Mail-ACL-Berechtigung, NICHT an settings.manage.
-  // Ohne sie waeren die Knoepfe garantierte 403er. „Anlegen" fragt nach dem
-  // Recht irgendwo, „loeschen" nach dem Recht auf genau diesem Konto.
-  const { hasMailPermission, hasMailPermissionForAccount } = useAuth()
-  const canCreateAccount = hasMailPermission("mail.account.manage")
+  // Konto anlegen und loeschen haengen serverseitig an mail.account.manage —
+  // einer Mail-ACL-Berechtigung, NICHT an settings.manage. Ohne sie waeren die
+  // Knoepfe garantierte 403er.
+  //
+  // Die beiden Faelle sind aber NICHT gleich:
+  // - DELETE /email/accounts/:id ist ressourcen-gescopt (accountPath), ein
+  //   Delegierter mit dem Recht AUF DIESEM KONTO darf es also wirklich.
+  // - POST /email/accounts haengt am mailScope und steht NICHT in
+  //   RESTRICTED_SCOPE_WRITE_PATHS. Eine eingeschraenkte Delegation scheitert
+  //   dort auch mit mail.account.manage — Anlegen ist faktisch Owner/Admin.
+  //   Deshalb `mailAccessUnrestricted` statt der blossen Berechtigung; wer das
+  //   fuer Delegierte oeffnen will, muss zuerst die Server-Policy aendern.
+  const { hasMailPermissionForAccount, mailAccessUnrestricted } = useAuth()
+  const canCreateAccount = mailAccessUnrestricted
 
   const load = useCallback(async () => {
     try {
