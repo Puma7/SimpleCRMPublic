@@ -407,13 +407,20 @@ export function MailDelegationPanel() {
         resource,
         profile,
         permissions: [...permissions].sort(),
-        constraints: {
-          assignmentMode: assignmentMode === "any" ? null : assignmentMode,
-          categoryAllowIds: categoryAllow.ids,
-          categoryExcludeIds: categoryExclude.ids,
-          tagAllowValues,
-          tagExcludeValues,
-        },
+        // Nur senden, wenn der Nutzer die Filter geoeffnet hat: serverseitig gilt
+        // `'constraints' in body` als EXPLIZIT gesetzt. Ein immer mitgeschicktes
+        // leeres Objekt uebersprang damit das Auto-Inherit aus der eigenen
+        // Autoritaet — ein nicht-Admin-Team-Lead mit eigenen Sichtbarkeitsfiltern
+        // bekam so 403 privilege_escalation (uebernommen aus #173).
+        ...(showFilters ? {
+          constraints: {
+            assignmentMode: assignmentMode === "any" ? null : assignmentMode,
+            categoryAllowIds: categoryAllow.ids,
+            categoryExcludeIds: categoryExclude.ids,
+            tagAllowValues,
+            tagExcludeValues,
+          },
+        } : {}),
       }) as { success?: boolean; error?: string }
       if (result.success === false) throw new Error(result.error ?? "save_failed")
       if (mountedRef.current) await load()
