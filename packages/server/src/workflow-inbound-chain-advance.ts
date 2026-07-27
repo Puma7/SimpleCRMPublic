@@ -142,13 +142,20 @@ export function terminalChildCompletionKey(payload: Record<string, unknown>): st
   const nodeId = rawNodeId || 'terminal';
   const target = terminalInboundChildContext(payload);
   if (!target) return null;
-  const runId = positiveInt(payload.runId);
+  // Der Fan-out-Lauf, NICHT payload.runId: letztere ist pro Zustellung neu.
+  // Wird eine Fortsetzung nach ihrem Commit erneut zugestellt, laeuft sie unter
+  // einer neuen runId, reiht denselben terminalen Kindjob nochmals ein und
+  // behaelt Fan-out-Lauf und Zweig. Mit runId im Schluessel galte der doppelte
+  // Job als neue Ausfuehrung: Modellaufruf und Entwurf wiederholten sich und
+  // beide dekrementierten dieselbe (laufskopierte) Join-Barriere, die dann bei
+  // einem noch laufenden Geschwister zu frueh oeffnet. Der Zweig steckt bereits
+  // in nodeId (terminalNodeId = knoten#zweig).
   return [
     'inbound_terminal_child_done',
     target.messageId,
     target.workflowId,
     nodeId,
-    runId ?? 'none',
+    target.fanOutRunId ?? 'none',
   ].join(':');
 }
 

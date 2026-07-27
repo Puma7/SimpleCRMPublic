@@ -3667,8 +3667,10 @@ async function scheduleWorkflowHttpRequestJob(
     if (errorResumeNodeId) payload.errorResumeNodeId = errorResumeNodeId;
     // Terminal (nur Fehlerkante): Identitaet auch auf oberster Ebene, sonst
     // sieht graphileJobKeyForJob sie nicht. Warum sie noetig ist: dort.
+    // Fan-out-Lauf statt context.runId (die ist pro Zustellung neu) — warum:
+    // terminalChildCompletionKey in workflow-inbound-chain-advance.
     if (!resumeNodeId && errorResumeNodeId) {
-      payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${context.runId}`;
+      payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${inboundFanOutRunId(context)}`;
     }
     payload.continuation = {
       workflowId: context.workflowId,

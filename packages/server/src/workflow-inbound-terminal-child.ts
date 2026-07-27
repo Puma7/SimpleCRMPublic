@@ -170,7 +170,10 @@ function terminalChildTarget(payload: Record<string, unknown>): TerminalChildTar
     // Zwei terminale Knoten desselben Laufs schliessen unabhaengig voneinander
     // ab und brauchen darum getrennte Einmal-Schluessel.
     nodeId: trimmedString(payload.terminalNodeId) || 'terminal',
-    runId: positiveInt(payload.runId),
+    // Der Fan-out-Lauf ist ueber Zustellungen stabil, payload.runId nicht —
+    // Begruendung bei terminalChildCompletionKey, mit dem dieser Schluessel
+    // uebereinstimmen MUSS.
+    runId: resolved.fanOutRunId,
   };
 }
 

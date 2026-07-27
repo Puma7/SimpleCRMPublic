@@ -949,15 +949,20 @@ export function registerAiNodes(register: Reg): void {
           draftId,
           `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`,
         );
+        // Ein geparktes HOLD endet ohne Port (stop) und traegt sein Urteil
+        // bereits selbst. Es hier zu ueberschreiben kehrte die tatsaechlich
+        // getroffene Entscheidung um: der Lauf haelt den Entwurf zurueck,
+        // Auswertung und Diagnose lesen aber eine Freigabe.
+        if (held.port !== 'hold') {
+          return { ...held, message: `review_error_hold_parked:${msg}` };
+        }
         return {
           ...held,
-          message: held.port === 'hold' ? `review_error:${msg}` : held.message,
+          message: `review_error:${msg}`,
           variables: {
-            'ai.review.verdict': held.port === 'hold' ? 'hold' : 'send',
+            'ai.review.verdict': 'hold',
             'ai.review.answered': false,
-            'ai.review.reason': held.port === 'hold'
-              ? 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen'
-              : 'Versand lief bereits — Gegenprüfung kam zu spät',
+            'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
           },
         };
       }

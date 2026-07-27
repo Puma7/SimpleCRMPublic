@@ -608,7 +608,7 @@ describe('codex review regression guards', () => {
     // (Die Regel gilt inzwischen fuer JEDEN deferierten Kindjob — siehe
     // graphileDeferredBranchSuffix in Runde 17.)
     expect(graphile).toMatch(
-      /if \(type === 'ai\.pick_canned'\) \{[\s\S]*?const branch = graphileDeferredBranchSuffix\(payload\);/,
+      /if \(type === 'ai\.pick_canned'\) \{[\s\S]*?const identity = graphileDeferredIdentitySuffix\(payload\);/,
     );
     expect(execution).toContain('...(context.branchKey ? { branchKey: context.branchKey } : {}),');
 
@@ -756,7 +756,7 @@ describe('codex review regression guards', () => {
 
     // Terminale HTTP-Knoten teilen sich errorResumeNodeId — die Identitaet
     // muss auf oberster Ebene stehen, sonst sieht der Job-Key sie nicht.
-    expect(execution).toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${context.runId}`;');
+    expect(execution).toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${inboundFanOutRunId(context)}`;');
     expect(graphile).toMatch(
       /if \(type === 'workflow\.http_request'\) \{[\s\S]*?if \(terminalNodeId\) return `\$\{base\}:\$\{terminalNodeId\}`;/,
     );
@@ -807,13 +807,56 @@ describe('codex review regression guards', () => {
 
     // Ohne Zweig-Identitaet gibt es KEINEN Key: ein doppelter Job ist Arbeit,
     // ein von 'replace' verschluckter haengt die Barriere fuer immer.
-    expect(graphile).toContain('function graphileDeferredBranchSuffix(payload: JobPayload): string | null {');
-    expect(graphile).toContain("return payload.terminalWorkflowCompletion === true ? '' : null;");
-    expect(graphile.match(/if \(branch === null\) return undefined;/g)).toHaveLength(10);
+    // (In Runde 18 um den Fan-out-Lauf erweitert: graphileDeferredIdentitySuffix.)
+    expect(graphile).toContain('const branchKey = graphileKeyScalar(payload.branchKey);');
+    expect(graphile).toContain('return branchKey ? `:fanout:${fanOutRunId}:${branchKey}` : null;');
     // Fortsetzungen desselben Workflows auf derselben Nachricht duerfen sich
     // nicht ersetzen — Resume-Knoten und Zweig stehen nur im context.
     expect(graphile)
-      .toContain('`${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}:${branchKey}`');
+      .toContain('`${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}${identity}`');
+  });
+
+  test('review-runde 18: Identitaeten haengen am Fan-out-Lauf, nie an der runId', () => {
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
+    const terminalChild = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const desktopAi = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+
+    // payload.runId ist pro ZUSTELLUNG neu: eine nach ihrem Commit erneut
+    // zugestellte Fortsetzung laeuft unter neuer runId, meint aber dieselbe
+    // Ausfuehrung. Alles, was eine Ausfuehrung identifiziert, muss deshalb am
+    // Fan-out-Lauf haengen — sonst entkommt der doppelte Kindjob dem 'replace'
+    // (Modellaufruf und Entwurf doppelt) und baut die Barriere zweimal ab.
+    expect(graphile).toContain('function graphileDeferredIdentitySuffix(payload: JobPayload): string | null {');
+    expect(graphile).toContain('if (!fanOutRunId) return null;');
+    expect(graphile.match(/if \(identity === null\) return undefined;/g)).toHaveLength(11);
+    // Der Lauf steht je nach Jobart oben, in der Continuation oder im Kontext.
+    expect(graphile).toMatch(
+      /graphileFanOutRunId[\s\S]*?nested\(payload\.continuation\)\s*\n\s*\?\? nested\(payload\.context\)/,
+    );
+    // Kein deferierter Kindjob-Key traegt noch die Zustellungs-runId.
+    for (const key of [
+      '`${type}:${workspaceKey}:${workflowId}:${messageId ?? \'none\'}:${nodeKey}${identity}`',
+      '`${type}:${workspaceKey}:${workflowId}:${messageId ?? \'none\'}:${resumeNodeId}${identity}`',
+    ]) {
+      expect(graphile).toContain(key);
+    }
+
+    // Beide Abschluss-Schluessel (leniant und strikt) MUESSEN uebereinstimmen
+    // und beide den Fan-out-Lauf verwenden.
+    expect(advance).toContain("target.fanOutRunId ?? 'none',");
+    expect(advance).not.toMatch(/const runId = positiveInt\(payload\.runId\);/);
+    expect(terminalChild).toContain('runId: resolved.fanOutRunId,');
+    // Auch die terminale HTTP-Identitaet.
+    expect(execution)
+      .toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${inboundFanOutRunId(context)}`;');
+
+    // Ein geparktes HOLD endet ohne Port — das Urteil im Laufkontext darf
+    // daraus kein 'send' machen, sonst liest die Auswertung das Gegenteil der
+    // tatsaechlichen Entscheidung.
+    expect(desktopAi).toContain('message: `review_error_hold_parked:${msg}`');
+    expect(desktopAi).not.toContain("'ai.review.verdict': held.port === 'hold' ? 'hold' : 'send',");
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {
