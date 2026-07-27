@@ -133,9 +133,17 @@ export function terminalChildCompletionKey(payload: Record<string, unknown>): st
   //     Fehlerpfad eine ANDERE Identitaet und dekrementierte die Barriere ein
   //     zweites Mal. Ein nicht-terminaler Job faellt nicht darunter: er hat
   //     immer eine Continuation.
+  //     Eine workflow.execute-FORTSETZUNG faellt ebenfalls nicht darunter,
+  //     obwohl ihr oben beides fehlt: enqueueContinuation legt ihren
+  //     Resume-Knoten unter payload.context ab (siehe ai-classification). Ohne
+  //     diese Bedingung galte jede Fortsetzung als Legacy-Terminaljob, zwei
+  //     Fortsetzungen desselben Fan-outs teilten sich `terminal:none` und die
+  //     zweite kehrte im Graphile-Fehlerpfad vor ihrem Join-Dekrement zurueck.
+  const legacyContext = objectRecord(payload.context);
   const legacyTerminal = payload.continuation === undefined
     && payload.resumeNodeId === undefined
-    && payload.context !== undefined;
+    && legacyContext !== null
+    && legacyContext.resumeNodeId === undefined;
   if (payload.terminalWorkflowCompletion !== true && !legacyTerminal) return null;
   const rawNodeId = typeof payload.terminalNodeId === 'string' ? payload.terminalNodeId.trim() : '';
   if (!rawNodeId && !legacyTerminal) return null;

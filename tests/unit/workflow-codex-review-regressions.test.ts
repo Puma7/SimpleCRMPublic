@@ -852,6 +852,16 @@ describe('codex review regression guards', () => {
     expect(execution)
       .toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${inboundFanOutRunId(context)}`;');
 
+    // Eine workflow.execute-Fortsetzung traegt oben weder continuation noch
+    // resumeNodeId (beides steckt in payload.context) und galte sonst als
+    // Legacy-Terminaljob: zwei Fortsetzungen desselben Fan-outs teilten sich
+    // `terminal:none`, die zweite kehrte vor ihrem Join-Dekrement zurueck.
+    expect(advance).toContain('&& legacyContext.resumeNodeId === undefined;');
+    // Ohne Schluessel greift der jobeigene Guard — genau richtig fuer eine
+    // Fortsetzung, die pro Graphile-Job genau einmal dekrementieren muss.
+    expect(readRepoFile('packages/server/src/jobs/graphile-worker.ts'))
+      .toContain('if (completionKey) {');
+
     // Ein geparktes HOLD endet ohne Port — das Urteil im Laufkontext darf
     // daraus kein 'send' machen, sonst liest die Auswertung das Gegenteil der
     // tatsaechlichen Entscheidung.
