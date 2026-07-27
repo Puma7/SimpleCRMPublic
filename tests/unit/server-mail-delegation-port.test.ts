@@ -144,10 +144,10 @@ describe('createPostgresMailDelegationPort', () => {
       actorPermissions: ['mail.delegation.manage', 'mail.metadata.read'],
       actorAuthorityConstraints: [{
         binding_id: 501,
-        kind: 'assignment',
-        mode: 'filter',
-        assignment_mode: 'assigned_to_me',
-        value_ids: null,
+        kind: 'category',
+        mode: 'allow',
+        assignment_mode: null,
+        value_ids: [7],
         value_texts: null,
       }],
     });
@@ -162,7 +162,7 @@ describe('createPostgresMailDelegationPort', () => {
       subject: { type: 'user', id: AGENT },
       resource: { type: 'account', accountId: 101 },
       permissions: ['mail.metadata.read'],
-      // constraints omitted → inherit assigned_to_me from actor authority
+      // constraints omitted → inherit category allow [7] from actor authority
     })).resolves.toMatchObject({ ok: true, affectedUserIds: [AGENT] });
   });
 
