@@ -1,4 +1,3 @@
-import { messageIsSpamOrReviewForInboundWorkflow } from '@simplecrm/core';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { WORKFLOW_DELAYED_JOBS_TABLE } from '../database-schema';
 import { getWorkflowById, releaseInboundWorkflowClaim } from '../email/email-workflow-store';
@@ -177,15 +176,14 @@ export async function processDueDelayedJobs(
       }
       const message = job.message_id != null ? getEmailMessageById(job.message_id) ?? null : null;
       const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
-      // Zweite Verteidigungslinie zum Abbruch in runtime.ts: Wurde die Nachricht
-      // zwischenzeitlich (auch app-übergreifend nach einem Neustart) als Spam
-      // bzw. „Spam prüfen“ markiert, darf der verzögerte Zweig nicht mehr
-      // aufwachen und antworten.
-      if (trigger === 'inbound' && message && messageIsSpamOrReviewForInboundWorkflow(message)) {
-        releaseInboundClaimForJob(job);
-        markJob(job.id, 'cancelled', 'skip:message_spam_or_review');
-        continue;
-      }
+      // Bewusst KEIN pauschaler Spam-Check mehr: ein Graph darf die Mail mit
+      // stopFurtherWorkflows:false als Spam markieren und trotzdem
+      // weiterlaufen wollen — ein Abbruch allein wegen des gespeicherten
+      // Spamstatus würde genau diese Konfiguration stillschweigend aushebeln.
+      // Der tatsächliche Kettenabbruch wird persistent abgebildet: runtime.ts
+      // setzt betroffene Jobs bei inboundChainStop auf 'cancelled', und
+      // listDueDelayedJobs liefert nur noch 'pending' — ein abgebrochener
+      // Zweig wacht damit auch nach einem Neustart nicht mehr auf.
       let variables: Record<string, string | number | boolean | null> = {};
       let inboundConditionOk = false;
       let eventStrings: Record<string, string> | undefined;

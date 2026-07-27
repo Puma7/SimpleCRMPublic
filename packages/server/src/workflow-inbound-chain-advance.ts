@@ -82,16 +82,39 @@ export function inboundDeferredJoinKey(
   return `inbound_deferred_join:${messageId}:${workflowId}`;
 }
 
-function encodeDeferredJoinValue(pending: number, chainStop: boolean): string {
-  return `${pending}|${chainStop ? 1 : 0}`;
+/**
+ * Join-Wert: `pending|chainStop|error`.
+ *
+ * Das dritte Feld transportiert einen akkumulierten Fehler über die Barriere:
+ * endet ein Trigger-Zweig synchron mit `error`, während ein anderer deferiert,
+ * darf der später abschließende Kindjob den Workflow NICHT als angewendet
+ * markieren — ohne deferiertes Geschwister täte er das ebenfalls nicht.
+ * Alte Zeilen ohne drittes Feld werden als `error=false` gelesen.
+ */
+function encodeDeferredJoinValue(pending: number, chainStop: boolean, error: boolean): string {
+  return `${pending}|${chainStop ? 1 : 0}|${error ? 1 : 0}`;
 }
 
-function parseDeferredJoinValue(raw: string | null | undefined): { pending: number; chainStop: boolean } | null {
+function parseDeferredJoinValue(
+  raw: string | null | undefined,
+): { pending: number; chainStop: boolean; error: boolean } | null {
   if (!raw) return null;
-  const [pendingRaw, stopRaw] = raw.split('|');
+  const [pendingRaw, stopRaw, errorRaw] = raw.split('|');
   const pending = Number(pendingRaw);
   if (!Number.isInteger(pending) || pending < 0) return null;
-  return { pending, chainStop: stopRaw === '1' };
+  return { pending, chainStop: stopRaw === '1', error: errorRaw === '1' };
+}
+
+/**
+ * `ready_error` = alle Geschwister fertig, aber mindestens eines endete mit
+ * Fehler: die Kette darf weiterschalten, der Workflow gilt aber nicht als
+ * angewendet.
+ */
+export type InboundDeferredJoinState = 'wait' | 'stop' | 'ready' | 'ready_error';
+
+/** Darf nach diesem Join-Zustand weitergeschaltet werden? */
+export function inboundJoinAllowsAdvance(state: InboundDeferredJoinState): boolean {
+  return state === 'ready' || state === 'ready_error';
 }
 
 export type InboundChainPgClient = Readonly<{
@@ -121,9 +144,10 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
     chainStop: boolean;
+    error?: boolean;
     now: Date;
   },
-): Promise<'wait' | 'stop' | 'ready'> {
+): Promise<InboundDeferredJoinState> {
   const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
   const locked = asPgQueryResult(await client.query(
     `SELECT value
@@ -149,6 +173,7 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
 
   const pending = Math.max(0, parsed.pending - 1);
   const chainStop = parsed.chainStop || input.chainStop;
+  const error = parsed.error || input.error === true;
   if (pending > 0) {
     await client.query(
       `UPDATE sync_info
@@ -157,7 +182,7 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
               updated_at = $4
         WHERE workspace_id = $1
           AND key = $2`,
-      [input.workspaceId, key, encodeDeferredJoinValue(pending, chainStop), input.now],
+      [input.workspaceId, key, encodeDeferredJoinValue(pending, chainStop, error), input.now],
     );
     return 'wait';
   }
@@ -168,7 +193,18 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
         AND key = $2`,
     [input.workspaceId, key],
   );
-  return chainStop ? 'stop' : 'ready';
+  // Letztes Geschwister ist durch: den Abort-Marker dieser Fan-out-Runde
+  // mitlöschen, sonst überlebt er die Ausführung und ein späterer Backfill /
+  // forceWorkflowReapply derselben Nachricht wird an ihm faelschlich
+  // abgebrochen (der Schluessel enthaelt keine Ausfuehrungs-ID).
+  await client.query(
+    `DELETE FROM sync_info
+      WHERE workspace_id = $1
+        AND key = $2`,
+    [input.workspaceId, inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain)],
+  );
+  if (chainStop) return 'stop';
+  return error ? 'ready_error' : 'ready';
 }
 
 /**
@@ -215,10 +251,12 @@ export async function initInboundDeferredJoin(
     pendingCount: number;
     /** When true, join completions must not advance the priority chain. */
     chainStop?: boolean;
+    /** Ein synchroner Geschwisterzweig endete bereits mit Fehler. */
+    error?: boolean;
     now: Date;
   },
 ): Promise<void> {
-  if (input.pendingCount <= 1 && input.chainStop !== true) return;
+  if (input.pendingCount <= 1 && input.chainStop !== true && input.error !== true) return;
   // pendingCount 1 with chainStop still needs a barrier so the single deferred
   // sibling completes into 'stop' instead of advancing.
   const pending = Math.max(1, input.pendingCount);
@@ -228,7 +266,7 @@ export async function initInboundDeferredJoin(
     .values({
       workspace_id: input.workspaceId,
       key,
-      value: encodeDeferredJoinValue(pending, input.chainStop === true),
+      value: encodeDeferredJoinValue(pending, input.chainStop === true, input.error === true),
       last_updated: input.now,
       source_row: { origin: 'inbound_deferred_join' },
       imported_in_run_id: null,
@@ -337,9 +375,10 @@ export async function completeInboundDeferredJoinSibling(
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
     chainStop: boolean;
+    error?: boolean;
     now: Date;
   },
-): Promise<'wait' | 'stop' | 'ready'> {
+): Promise<InboundDeferredJoinState> {
   const key = inboundDeferredJoinKey(input.messageId, input.workflowId, input.chain);
   const row = await trx
     .selectFrom('sync_info')
@@ -362,11 +401,12 @@ export async function completeInboundDeferredJoinSibling(
 
   const pending = Math.max(0, parsed.pending - 1);
   const chainStop = parsed.chainStop || input.chainStop;
+  const error = parsed.error || input.error === true;
   if (pending > 0) {
     await trx
       .updateTable('sync_info')
       .set({
-        value: encodeDeferredJoinValue(pending, chainStop),
+        value: encodeDeferredJoinValue(pending, chainStop, error),
         last_updated: input.now,
         updated_at: input.now,
       })
@@ -381,7 +421,14 @@ export async function completeInboundDeferredJoinSibling(
     .where('workspace_id', '=', input.workspaceId)
     .where('key', '=', key)
     .execute();
-  return chainStop ? 'stop' : 'ready';
+  // Siehe pgClient-Variante: Abort-Marker dieser Fan-out-Runde mitloeschen.
+  await trx
+    .deleteFrom('sync_info')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('key', '=', inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain))
+    .execute();
+  if (chainStop) return 'stop';
+  return error ? 'ready_error' : 'ready';
 }
 
 /** Insert the next priority inbound workflow.execute after a terminal child failure. */
@@ -416,7 +463,7 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
     chainStop: false,
     now,
   });
-  if (join !== 'ready') return false;
+  if (!inboundJoinAllowsAdvance(join)) return false;
 
   const nextIndex = parsed.chain.index + 1;
   if (nextIndex >= parsed.chain.workflowIds.length) return false;

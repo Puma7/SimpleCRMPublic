@@ -329,7 +329,9 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             chainStop: false,
             now: new Date(),
           });
-          if (join !== 'ready') {
+          // 'ready_error' zaehlt hier ebenfalls als fortschaltbar: der Job ist
+          // endgueltig gescheitert, die Kette darf nicht stehen bleiben.
+          if (join !== 'ready' && join !== 'ready_error') {
             await client.query('COMMIT');
             return;
           }

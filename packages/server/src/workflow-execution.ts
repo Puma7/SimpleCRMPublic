@@ -47,6 +47,7 @@ import {
 import {
   cancelPendingWorkflowDelayedJobsForMessage,
   completeInboundDeferredJoinSibling,
+  inboundJoinAllowsAdvance,
   initInboundDeferredJoin,
   isInboundSiblingAborted,
   markInboundSiblingAbort,
@@ -660,6 +661,11 @@ export function createPostgresWorkflowExecutionJobPort(
               chain,
               pendingCount: result.deferredBranchCount ?? 1,
               chainStop: siblingTerminal,
+              // Ein synchron mit Fehler beendeter Geschwisterzweig muss über
+              // die Barriere sichtbar bleiben — sonst markiert der später
+              // abschliessende Kindjob den Workflow als angewendet, obwohl
+              // derselbe Fehler ohne deferiertes Geschwister das verhindert haette.
+              error: result.status === 'error',
               now,
             });
             if (siblingTerminal) {
@@ -684,7 +690,18 @@ export function createPostgresWorkflowExecutionJobPort(
             trigger === 'inbound'
             && message
             && !result.deferred
-            && (result.status === 'ok' || result.status === 'error' || result.inboundChainStop === true)
+            // 'blocked' gehört dazu: ein Workflow im compiled-Modus, ohne
+            // Trigger oder mit nicht unterstütztem Knoten liefert synchron
+            // blocked. Fiele er hier heraus, würde die serialisierte Kette nie
+            // weitergeschaltet und ein einziger veralteter Workflow legte alle
+            // nachrangigen dauerhaft still. Wie ein Fehler behandeln: nicht als
+            // angewendet markieren, aber weiterschalten.
+            && (
+              result.status === 'ok'
+              || result.status === 'error'
+              || result.status === 'blocked'
+              || result.inboundChainStop === true
+            )
           ) {
             const join = await completeInboundDeferredJoinSibling(trx, {
               workspaceId: input.workspaceId,
@@ -692,14 +709,17 @@ export function createPostgresWorkflowExecutionJobPort(
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
               chainStop: result.inboundChainStop === true,
+              error: result.status === 'error' || result.status === 'blocked',
               now,
             });
             if (
-              join === 'ready'
+              inboundJoinAllowsAdvance(join)
               && !result.inboundChainStop
-              && (result.status === 'ok' || result.status === 'error')
+              && (result.status === 'ok' || result.status === 'error' || result.status === 'blocked')
             ) {
-              if (result.status === 'ok') {
+              // 'ready_error': ein Geschwisterzweig dieser Fan-out-Runde ist
+              // gescheitert — weiterschalten ja, als angewendet markieren nein.
+              if (result.status === 'ok' && join === 'ready') {
                 await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
               }
               await maybeEnqueueNextInboundWorkflow(trx, {

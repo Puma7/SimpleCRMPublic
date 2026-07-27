@@ -53,7 +53,13 @@ export function nodeRequestsChainStop(input: {
 }): boolean {
   const { result } = input;
   if (result.status !== 'ok') return false;
-  if (result.stop === true || result.blocked === true || result.deferred === true) return false;
+  // `stop: true` schließt NICHT aus: logic.stop beendet von sich aus nur den
+  // aktuellen Graphen. Der Editor bietet den Schalter auch dort an und
+  // verspricht das Ende der nachfolgenden Inbound-Workflows — also muss ein
+  // bereits stoppendes Ergebnis zusätzlich inboundChainStop bekommen.
+  // Deferred/blocked bleiben ausgeschlossen: der Zweig läuft später weiter
+  // bzw. der Block-Ausgang hat Vorrang.
+  if (result.blocked === true || result.deferred === true) return false;
   if (SELF_HANDLED_CHAIN_STOP_NODE_TYPES.has(input.nodeType)) return false;
   return chainStopFlagEnabled(input.config[NODE_CHAIN_STOP_CONFIG_KEY]);
 }

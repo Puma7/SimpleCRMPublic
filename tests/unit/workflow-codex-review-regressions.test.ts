@@ -324,7 +324,7 @@ describe('codex review regression guards', () => {
     expect(advance).toContain('completeInboundDeferredJoinSiblingOnPgClient');
     expect(graphile).toContain('completeInboundDeferredJoinSiblingOnPgClient');
     expect(graphile).toMatch(
-      /completeInboundDeferredJoinSiblingOnPgClient[\s\S]*?if \(join !== 'ready'\)/,
+      /completeInboundDeferredJoinSiblingOnPgClient[\s\S]*?if \(join !== 'ready' && join !== 'ready_error'\)/,
     );
   });
 
@@ -381,7 +381,7 @@ describe('codex review regression guards', () => {
     // Join-Barriere auch am letzten Kettenplatz abbauen (sonst bleibt sync_info
     // dauerhaft pending und ein erfolgreicher Geschwisterzweig wartet ewig).
     expect(advance).toMatch(
-      /completeInboundDeferredJoinSibling\([\s\S]*?if \(join !== 'ready'\) return false;\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
+      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return false;\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
     );
     // Gleicher Fehler im Graphile-Terminalpfad: kein return vor dem Join.
     expect(graphile).not.toMatch(
@@ -399,10 +399,12 @@ describe('codex review regression guards', () => {
     expect(classification).toContain('enqueueAiChildSkipContinuation');
 
     // Desktop: Spam-Stopp eines Geschwisterzweigs bricht bereits eingeplante
-    // logic.delay-Jobs ab; der Prozessor prüft zusätzlich den DB-Zustand.
+    // logic.delay-Jobs ab. Der Prozessor darf dagegen NICHT pauschal am
+    // gespeicherten Spamstatus abbrechen — das würde stopFurtherWorkflows:false
+    // aushebeln; der Abbruch ist über status='cancelled' persistiert.
     expect(runtime).toContain('cancelPendingDelayedJobsForMessageSafe');
-    expect(delayedJobs).toContain('messageIsSpamOrReviewForInboundWorkflow');
-    expect(delayedJobs).toContain('skip:message_spam_or_review');
+    expect(delayedJobs).not.toContain('messageIsSpamOrReviewForInboundWorkflow');
+    expect(delayedJobs).toContain("status = 'pending' AND execute_at <= ?");
   });
 
   test('gatekeeper: chain stop is opt-in everywhere and graphile advance is idempotent', () => {
