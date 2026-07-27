@@ -10,6 +10,7 @@ import type { MailAccountScope } from "../account-scope"
 import type { EmailMessage, MailView } from "../types"
 import { logError } from "../log"
 import { pickAdjacentMessageId } from "../select-adjacent-message"
+import { reconcileVisibleMessages } from "./reconcile-visible-messages"
 import { useMailWorkspace } from "../workspace-context"
 import { invokeRenderer } from "@/services/transport"
 
@@ -28,6 +29,12 @@ type LoadMessagesOpts = {
   silent?: boolean
   selectMessageId?: number | null
   advanceFromRemovedId?: number
+  /**
+   * Abgleich statt Erhalt: was der Server nicht mehr liefert, verschwindet —
+   * samt Auswahl. Fuer ACL-Aenderungen, die Sichtbarkeit ENTZIEHEN koennen.
+   * Siehe reconcile-visible-messages.
+   */
+  dropMissing?: boolean
 }
 
 export type BulkListAction =
@@ -274,6 +281,13 @@ export function useEmailMessages() {
           if (generation !== loadGenerationRef.current) return
           setHasMore(list.length >= PAGE_SIZE)
         }
+        // Der Abgleich braucht den Zustand VOR dem Schreiben — und dieselbe
+        // Entscheidung fuer Liste und Auswahl, damit die Auswahl nicht auf einer
+        // Zeile stehenbleibt, die gerade aus der Liste gefallen ist.
+        const reconciled = opts?.dropMissing && silent && keepId != null && !append
+          ? reconcileVisibleMessages(messagesRef.current, list, PAGE_SIZE)
+          : null
+
         if (append) {
           setMessages((prev) => {
             const ids = new Set(prev.map((m) => m.id))
@@ -281,19 +295,23 @@ export function useEmailMessages() {
           })
           offsetRef.current = offset + list.length
         } else if (silent && keepId != null) {
-          setMessages((prev) => {
-            const byId = new Map(list.map((m) => [m.id, m]))
-            const merged = prev.map((m) => byId.get(m.id) ?? m)
-            for (const m of list) {
-              if (!prev.some((p) => p.id === m.id)) merged.push(m)
-            }
-            const listIdOrder = new Map(list.map((m, i) => [m.id, i]))
-            const inServer = merged
-              .filter((m) => listIdOrder.has(m.id))
-              .sort((a, b) => listIdOrder.get(a.id)! - listIdOrder.get(b.id)!)
-            const notInServer = merged.filter((m) => !listIdOrder.has(m.id))
-            return [...inServer, ...notInServer]
-          })
+          if (reconciled) {
+            setMessages(reconciled.messages)
+          } else {
+            setMessages((prev) => {
+              const byId = new Map(list.map((m) => [m.id, m]))
+              const merged = prev.map((m) => byId.get(m.id) ?? m)
+              for (const m of list) {
+                if (!prev.some((p) => p.id === m.id)) merged.push(m)
+              }
+              const listIdOrder = new Map(list.map((m, i) => [m.id, i]))
+              const inServer = merged
+                .filter((m) => listIdOrder.has(m.id))
+                .sort((a, b) => listIdOrder.get(a.id)! - listIdOrder.get(b.id)!)
+              const notInServer = merged.filter((m) => !listIdOrder.has(m.id))
+              return [...inServer, ...notInServer]
+            })
+          }
           offsetRef.current = Math.max(offsetRef.current, list.length)
         } else {
           setMessages(list)
@@ -308,9 +326,16 @@ export function useEmailMessages() {
           }
           await selectMessageById(targetId, true)
         } else if (keepId != null && !append) {
-          const still =
-            messagesRef.current.find((m) => m.id === keepId) ??
-            list.find((m) => m.id === keepId)
+          // Beim Abgleich zaehlt NUR, was ihn ueberlebt hat: die alte Liste
+          // zuerst zu befragen liesse die Auswahl auf einer gerade entzogenen
+          // Nachricht stehen — und der Detail-Refresh protokolliert die
+          // abgelehnte Anfrage bloss und laesst den alten Inhalt sichtbar.
+          const still = reconciled
+            ? (reconciled.survivingIds.has(keepId)
+              ? list.find((m) => m.id === keepId) ?? messagesRef.current.find((m) => m.id === keepId)
+              : undefined)
+            : messagesRef.current.find((m) => m.id === keepId) ??
+              list.find((m) => m.id === keepId)
           if (still) {
             setSelectedMessage((prev) =>
               prev?.id === keepId ? { ...prev, ...still } : still,
@@ -405,6 +430,7 @@ export function useEmailMessages() {
       selectMessageId?: number | null
       advanceFromRemovedId?: number
       silent?: boolean
+      dropMissing?: boolean
     }) => {
       if (!opts?.silent) offsetRef.current = 0
       if (selectedAccountId == null) return

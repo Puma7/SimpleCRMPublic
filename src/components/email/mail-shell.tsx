@@ -26,22 +26,16 @@ import { useConversationLocks } from "./use-conversation-locks"
 import type { ConversationLockReason, EmailMessage, MailView } from "./types"
 import {
   getRendererTransport,
-  isMailAccountDataRefreshEvent,
-  isMailComposeAuxDataRefreshEvent,
-  isMailListRefreshEvent,
-  isMailMetadataRefreshEvent,
-  isMailRemoteContentPolicyRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import {
+  mailEventRefreshRequestFor,
+  mergeMailEventRefreshRequests,
+  NO_MAIL_EVENT_REFRESH,
+  type MailEventRefreshRequest,
+} from "./mail-event-refresh"
 
 const MAIL_PANE_IDS = ["sidebar", "message-list", "viewer", "metadata"] as const
-type MailEventRefreshRequest = {
-  accounts: boolean
-  composeAux: boolean
-  list: boolean
-  metadata: boolean
-  remotePolicy: boolean
-}
 
 /** Minimum gap between actual IMAP polls when the refresh button is clicked. */
 const IMAP_SYNC_MIN_GAP_MS = 15_000
@@ -115,6 +109,7 @@ function MailShellInner() {
       preserveSelection?: boolean
       selectMessageId?: number | null
       advanceFromRemovedId?: number
+      dropMissing?: boolean
     }) => {
       await refreshListBase(opts)
       invalidateMailMetrics()
@@ -214,13 +209,7 @@ function MailShellInner() {
   const { cannedList, aiPrompts, reloadCanned, reloadPrompts } = useMailAuxData()
   const serverClientMode = getRendererTransport().kind === "http"
   const mailEventRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const mailEventRefreshRequestRef = useRef<MailEventRefreshRequest>({
-    accounts: false,
-    composeAux: false,
-    list: false,
-    metadata: false,
-    remotePolicy: false,
-  })
+  const mailEventRefreshRequestRef = useRef<MailEventRefreshRequest>(NO_MAIL_EVENT_REFRESH)
   const [remoteContentPolicyRefreshKey, setRemoteContentPolicyRefreshKey] = useState(0)
   const mailEventHandlersRef = useRef({
     refreshList,
@@ -259,26 +248,17 @@ function MailShellInner() {
     if (!serverClientMode) return
 
     const scheduleRefresh = (request: Partial<MailEventRefreshRequest>) => {
-      mailEventRefreshRequestRef.current = {
-        accounts: mailEventRefreshRequestRef.current.accounts || request.accounts === true,
-        composeAux: mailEventRefreshRequestRef.current.composeAux || request.composeAux === true,
-        list: mailEventRefreshRequestRef.current.list || request.list === true,
-        metadata: mailEventRefreshRequestRef.current.metadata || request.metadata === true,
-        remotePolicy: mailEventRefreshRequestRef.current.remotePolicy || request.remotePolicy === true,
-      }
+      mailEventRefreshRequestRef.current = mergeMailEventRefreshRequests(
+        mailEventRefreshRequestRef.current,
+        request,
+      )
       if (mailEventRefreshTimerRef.current !== null) {
         clearTimeout(mailEventRefreshTimerRef.current)
       }
       mailEventRefreshTimerRef.current = setTimeout(() => {
         mailEventRefreshTimerRef.current = null
         const refreshRequest = mailEventRefreshRequestRef.current
-        mailEventRefreshRequestRef.current = {
-          accounts: false,
-          composeAux: false,
-          list: false,
-          metadata: false,
-          remotePolicy: false,
-        }
+        mailEventRefreshRequestRef.current = NO_MAIL_EVENT_REFRESH
         const handlers = mailEventHandlersRef.current
 
         if (refreshRequest.accounts) {
@@ -289,7 +269,10 @@ function MailShellInner() {
           void handlers.reloadPrompts()
         }
         if (refreshRequest.list) {
-          void handlers.refreshList({ preserveSelection: true })
+          void handlers.refreshList({
+            preserveSelection: true,
+            dropMissing: refreshRequest.listReconcile,
+          })
         }
         if (refreshRequest.metadata) {
           void handlers.refreshCurrentMessage()
@@ -304,27 +287,8 @@ function MailShellInner() {
 
     const subscription = subscribeServerEvents({
       onEvent(event) {
-        const refreshListFromEvent = isMailListRefreshEvent(event)
-        const refreshMetadataFromEvent = isMailMetadataRefreshEvent(event)
-        const refreshAccountsFromEvent = isMailAccountDataRefreshEvent(event)
-        const refreshComposeAuxFromEvent = isMailComposeAuxDataRefreshEvent(event)
-        const refreshRemotePolicyFromEvent = isMailRemoteContentPolicyRefreshEvent(event)
-        if (
-          !refreshListFromEvent
-          && !refreshMetadataFromEvent
-          && !refreshAccountsFromEvent
-          && !refreshComposeAuxFromEvent
-          && !refreshRemotePolicyFromEvent
-        ) {
-          return
-        }
-        scheduleRefresh({
-          accounts: refreshAccountsFromEvent,
-          composeAux: refreshComposeAuxFromEvent,
-          list: refreshListFromEvent,
-          metadata: refreshMetadataFromEvent,
-          remotePolicy: refreshRemotePolicyFromEvent,
-        })
+        const request = mailEventRefreshRequestFor(event)
+        if (request) scheduleRefresh(request)
       },
     })
 
@@ -333,13 +297,7 @@ function MailShellInner() {
         clearTimeout(mailEventRefreshTimerRef.current)
         mailEventRefreshTimerRef.current = null
       }
-      mailEventRefreshRequestRef.current = {
-        accounts: false,
-        composeAux: false,
-        list: false,
-        metadata: false,
-        remotePolicy: false,
-      }
+      mailEventRefreshRequestRef.current = NO_MAIL_EVENT_REFRESH
       subscription.unsubscribe()
     }
   }, [serverClientMode])
