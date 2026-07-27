@@ -252,7 +252,15 @@ export function MailSecurityPanel() {
         </div>
         <div className="grid gap-2">
           <Label className="text-xs">Controller-URL</Label>
-          <Input value={s.rspamdUrl} disabled={!canEdit} onChange={(e) => patch({ rspamdUrl: e.target.value })} />
+          {/* SSRF-Grenze: der Server erlaubt eine AENDERUNG dieser URL nur
+              Administratoren und lehnt sonst das ganze PATCH ab — inklusive der
+              uebrigen Felder. Fuer delegierte settings.manage-Halter daher
+              gesperrt statt scheinbar editierbar. */}
+          <Input
+            value={s.rspamdUrl}
+            disabled={!canEdit || !isAdmin}
+            onChange={(e) => patch({ rspamdUrl: e.target.value })}
+          />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div className="grid gap-2">

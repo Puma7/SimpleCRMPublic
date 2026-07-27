@@ -10,6 +10,18 @@ import { ilikeContainsPattern } from './sql-ilike';
 
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
+
+/**
+ * Eine Kategorie, die in einem Mail-ACL-Constraint als Ausschluss referenziert
+ * ist, darf nicht geloescht werden — der Cascade auf email_message_categories
+ * wuerde den Filter still aushebeln. Die Route mappt das auf 409.
+ */
+export class EmailCategoryInUseByAclError extends Error {
+  constructor() {
+    super('email category is referenced by a mail ACL constraint');
+    this.name = 'EmailCategoryInUseByAclError';
+  }
+}
 import type { MailSqlScope } from '../mail-access/types';
 
 import type {
@@ -1187,6 +1199,23 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
           role: 'user',
         },
         async (trx) => {
+          // email_message_categories.category_id haengt an ON DELETE CASCADE:
+          // Wird eine Kategorie geloescht, die in einem ACL-Constraint als
+          // AUSSCHLUSS steht, wird dessen `not exists` fuer alle zuvor
+          // verborgenen Nachrichten wahr — ein mail.triage-Halter koennte sich
+          // so seinen eigenen Sichtbarkeitsfilter wegloeschen. Solche
+          // Kategorien sind darum nicht loeschbar (fail closed).
+          const referenced = await kyselySql<{ exists: boolean }>`
+            SELECT EXISTS (
+              SELECT 1 FROM mail_acl_binding_constraints
+              WHERE workspace_id = ${input.workspaceId}::uuid
+                AND kind = 'category'
+                AND ${input.id}::bigint = ANY(value_ids)
+            ) AS exists
+          `.execute(trx);
+          if (referenced.rows[0]?.exists) {
+            throw new EmailCategoryInUseByAclError();
+          }
           const row = await trx
             .deleteFrom('email_categories')
             .where('workspace_id', '=', input.workspaceId)

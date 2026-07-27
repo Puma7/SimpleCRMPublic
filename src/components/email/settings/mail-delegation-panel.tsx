@@ -374,10 +374,17 @@ export function MailDelegationPanel() {
     setSaving(true)
     setError(null)
     try {
+      // Lokale Formularpruefung VOR dem try/catch-Pfad des Requests: der
+      // gemeinsame Catch kennt nur RendererTransportError, wuerde die konkrete
+      // Meldung durch "Delegation konnte nicht gespeichert werden" ersetzen und
+      // per clearAuthorizedState alle gerade eingegebenen Filter verwerfen —
+      // obwohl noch gar kein Request rausgegangen ist.
       const categoryAllow = parseIdCsvStrict(categoryAllowText)
       const categoryExclude = parseIdCsvStrict(categoryExcludeText)
       if (!categoryAllow.ok || !categoryExclude.ok) {
-        throw new Error("Kategorie-IDs müssen positive Ganzzahlen sein (Komma-getrennt).")
+        setError("Kategorie-IDs müssen positive Ganzzahlen sein (Komma-getrennt).")
+        setSaving(false)
+        return
       }
       const tagAllowValues = parseTagCsv(tagAllowText)
       const tagExcludeValues = parseTagCsv(tagExcludeText)
@@ -387,7 +394,11 @@ export function MailDelegationPanel() {
         tagAllowValues,
         tagExcludeValues,
       })
-      if (listLimitError) throw new Error(listLimitError)
+      if (listLimitError) {
+        setError(listLimitError)
+        setSaving(false)
+        return
+      }
       const result = await invokeRenderer(IPCChannels.Email.SaveMailDelegationBinding, {
         ...(editingId === null ? {} : { id: editingId }),
         subject: subject.type === "user"

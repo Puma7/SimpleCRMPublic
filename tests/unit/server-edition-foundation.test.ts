@@ -28781,12 +28781,48 @@ describe('server edition foundation', () => {
       method: 'PATCH',
       path: '/api/v1/email/team-members/agent-2',
       body: { linkedUserId: USER_A_ID },
-      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+      // Die Verknuepfung ist workspace-global (Backfill ueber alle Konten) und
+      // darum Administratoren vorbehalten.
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
     });
 
     expect(res.status).toBe(200);
     expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId).sort())
       .toEqual([USER_A_ID, previousUser].sort());
+  });
+
+  test('non-admins cannot change the workspace-wide user link', async () => {
+    // Der Backfill schreibt assigned_to_user_id ueber ALLE Konten des Workspace
+    // um; ein account-gebundener mail.account.manage-Halter koennte sich sonst
+    // fremde Nachrichten zuschreiben.
+    const api = createServerApi(makeServerApiPorts({
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async update() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const denied = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/team-members/agent-2',
+      body: { linkedUserId: USER_A_ID },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+    });
+
+    expect(denied.status).toBe(403);
   });
 
   test('team member upsert reports an unknown linked user as a client error', async () => {
@@ -28816,7 +28852,7 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/email/team-members/agent-9/upsert',
       body: { displayName: 'Agent Neun', linkedUserId: '99999999-9999-4999-8999-999999999999' },
-      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
     });
 
     expect(unknown.status).toBe(404);
@@ -28857,12 +28893,7 @@ describe('server edition foundation', () => {
         },
       },
     }));
-    const principal = {
-      userId: USER_A_ID,
-      workspaceId: WORKSPACE_A_ID,
-      role: 'user' as const,
-      capabilities: ['crm.write'],
-    };
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
 
     const linked = await api.handle({
       method: 'POST',

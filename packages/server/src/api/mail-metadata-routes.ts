@@ -40,6 +40,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './http';
 
@@ -848,11 +849,26 @@ async function handleDeleteEmailCategory(
     return error(503, 'email_categories_unavailable', 'Email category API nicht konfiguriert');
   }
 
-  const category = await ports.emailCategories.delete({
-    workspaceId: principal.workspaceId,
-    actorUserId: principal.userId,
-    id,
-  });
+  let category;
+  try {
+    category = await ports.emailCategories.delete({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      id,
+    });
+  } catch (deleteError) {
+    // Die Kategorie steht als Ausschluss in einem Mail-ACL-Constraint: der
+    // Cascade auf email_message_categories wuerde den Filter still aushebeln
+    // und zuvor verborgene Nachrichten sichtbar machen.
+    if (deleteError instanceof Error && deleteError.name === 'EmailCategoryInUseByAclError') {
+      return error(
+        409,
+        'email_category_in_use_by_acl',
+        'Kategorie wird in einem Sichtbarkeitsfilter verwendet und kann nicht geloescht werden',
+      );
+    }
+    throw deleteError;
+  }
   if (!category) return error(404, 'email_category_not_found', 'Email category nicht gefunden');
 
   await auditEmailCategory(ports, principal, 'email_category.deleted', category, { parentId: category.parentId });
@@ -1151,6 +1167,12 @@ async function handleCreateEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const linkedUserDenied = rejectLinkedUserMutationWithoutAdmin(
+    principal,
+    parsed.values.linkedUserId,
+    Object.prototype.hasOwnProperty.call(parsed.values, 'linkedUserId'),
+  );
+  if (linkedUserDenied) return linkedUserDenied;
   const unknownLinkedUser = await rejectUnknownLinkedUser(
     ports,
     principal.workspaceId,
@@ -1177,6 +1199,24 @@ async function handleCreateEmailTeamMember(
  * eine gewoehnliche Exception und aus einem Eingabefehler wird ein HTTP 500 —
  * bei einem Feld, in das Admins UUIDs von Hand eintragen, ein Regelfall.
  */
+/**
+ * Der linkedUserId-Backfill schreibt assigned_to_user_id fuer ALLE Nachrichten
+ * dieses Teammitglieds im Workspace um — auch in Konten, fuer die ein
+ * account-gebundener mail.account.manage-Halter nicht autorisiert ist. In
+ * Kombination mit einem assigned_to_me-Grant koennte er sich damit fremde
+ * Nachrichten zuschreiben. Die Verknuepfung bleibt daher globalen Verwaltern
+ * vorbehalten; alle anderen Felder des Teammitglieds sind unberuehrt.
+ */
+function rejectLinkedUserMutationWithoutAdmin(
+  principal: AuthenticatedPrincipal,
+  linkedUserId: string | null | undefined,
+  provided: boolean,
+): ApiResponse | null {
+  if (!provided) return null;
+  if (requireAdmin(principal)) return null;
+  return error(403, 'forbidden', 'Die Benutzer-Verknuepfung darf nur von Administratoren geaendert werden');
+}
+
 async function rejectUnknownLinkedUser(
   ports: ServerApiPorts,
   workspaceId: string,
@@ -1218,6 +1258,12 @@ async function handleUpsertEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const linkedUserDenied = rejectLinkedUserMutationWithoutAdmin(
+    principal,
+    parsed.values.linkedUserId,
+    Object.prototype.hasOwnProperty.call(parsed.values, 'linkedUserId'),
+  );
+  if (linkedUserDenied) return linkedUserDenied;
   const unknownLinkedUser = await rejectUnknownLinkedUser(
     ports,
     principal.workspaceId,
@@ -1336,6 +1382,12 @@ async function handleUpdateEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const linkedUserDenied = rejectLinkedUserMutationWithoutAdmin(
+    principal,
+    parsed.values.linkedUserId,
+    Object.prototype.hasOwnProperty.call(parsed.values, 'linkedUserId'),
+  );
+  if (linkedUserDenied) return linkedUserDenied;
   const unknownLinkedUser = await rejectUnknownLinkedUser(
     ports,
     principal.workspaceId,

@@ -1050,7 +1050,12 @@ async function handleUpdateWorkflow(
     parsed.values.graph !== undefined ||
     parsed.values.executionMode !== undefined ||
     parsed.values.cronExpr !== undefined ||
-    parsed.values.scheduleAccountId !== undefined;
+    parsed.values.scheduleAccountId !== undefined ||
+    // accountId entscheidet, fuer WELCHE eingehenden Konten ein aktiver
+    // Workflow laeuft (null = alle, siehe mail-inbound-workflow-enqueue) — ein
+    // reines accountId-Patch koennte einen privilegierten Seiteneffekt-Workflow
+    // sonst ohne manage auf weitere Postfaecher ausweiten.
+    parsed.values.accountId !== undefined;
   // Vorzustand, gegen den unten validiert wurde — er geht als optimistischer
   // Guard mit in den Write, damit ein paralleler Patch die geprueften Felder
   // nicht zwischen Pruefung und Schreiben veraendern kann.
