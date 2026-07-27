@@ -20,7 +20,7 @@ jest.mock('sonner', () => ({
   },
 }));
 
-jest.mock('../signature-quill-editor', () => ({
+jest.mock('@/components/email/signature-quill-editor', () => ({
   SignatureQuillEditor: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => (
     <textarea aria-label="Signatur" value={value} onChange={(event) => onChange(event.target.value)} />
   ),
@@ -47,7 +47,7 @@ describe('TeamPanel', () => {
 
   test('shows a toast when saving an invalid linked user id fails', async () => {
     render(<TeamPanel />);
-    await screen.findByText('Agent 1');
+    await screen.findByText(/Agent 1/);
 
     mockInvoke.mockImplementation(async (channel: string) => {
       if (channel === 'email:list-team-members') {
