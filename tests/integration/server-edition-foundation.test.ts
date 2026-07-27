@@ -971,6 +971,17 @@ describe('server edition repository boundaries', () => {
             return makeWorkflowVersionRecord(82);
           },
         },
+        auth: {
+          ...makeServerApiPorts().auth,
+          // Wie in der Produktion (postgres-auth-port): das Bearer-Token traegt
+          // KEINE Capabilities, sie werden beim Aufloesen des Principals aus den
+          // Gruppenmitgliedschaften nachgeladen. `user-a` haelt hier crm.read,
+          // damit die CRM-Lesepfade unter dem zentralen Gate erreichbar bleiben.
+          async resolveAccessTokenPrincipal({ principal }) {
+            if (principal.role !== 'user') return principal;
+            return { ...principal, capabilities: ['crm.read'] };
+          },
+        },
       },
       accessTokenSigner: signer,
     });
@@ -1108,6 +1119,7 @@ describe('server edition repository boundaries', () => {
           userId: 'user-a',
           workspaceId: 'workspace-a',
           role: 'user',
+          capabilities: ['crm.read'],
         },
         limit: 50,
         eventType: 'call',
