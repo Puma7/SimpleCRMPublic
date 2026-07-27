@@ -16,7 +16,9 @@ type Props = {
   onOpenChange: Dispatch<SetStateAction<boolean>>
   /** Kompilierte Regel-Definition (beim Speichern aus dem Graph erzeugt). */
   jsonValue: string
-  onJsonChange: (value: string) => void
+  onJsonChange?: (value: string) => void
+  /** workflows.view darf lesen, aber nicht editieren. */
+  readOnly?: boolean
   /** Roh-Graph aus dem Editor (nur Lesen). */
   graphJson?: string
 }
@@ -26,8 +28,10 @@ export function JsonDevDrawer({
   onOpenChange,
   jsonValue,
   onJsonChange,
+  readOnly = false,
   graphJson = "",
 }: Props) {
+  const editable = !readOnly && typeof onJsonChange === "function"
   const [tab, setTab] = useState<"graph" | "compiled">("graph")
   const formattedGraph = useMemo(() => {
     if (!graphJson.trim()) return "{\n  \"nodes\": [],\n  \"edges\": []\n}"
@@ -37,6 +41,7 @@ export function JsonDevDrawer({
       return graphJson
     }
   }, [graphJson])
+
 
   return (
     <Drawer open={open} onOpenChange={onOpenChange}>
@@ -49,6 +54,8 @@ export function JsonDevDrawer({
           </DrawerDescription>
         </DrawerHeader>
         <div className="px-4 pb-6">
+          {/* Tabs aus main; die kompilierte Definition bleibt fuer reine
+              workflows.view-Nutzer schreibgeschuetzt (readOnly aus #166). */}
           <Tabs value={tab} onValueChange={(v) => setTab(v as "graph" | "compiled")}>
             <TabsList className="mb-3">
               <TabsTrigger value="graph">Graph (JSON)</TabsTrigger>
@@ -64,7 +71,10 @@ export function JsonDevDrawer({
             <TabsContent value="compiled">
               <Textarea
                 value={jsonValue}
-                onChange={(e) => onJsonChange(e.target.value)}
+                onChange={(e) => {
+                  if (editable) onJsonChange!(e.target.value)
+                }}
+                readOnly={!editable}
                 className="min-h-[280px] font-mono text-xs"
               />
             </TabsContent>

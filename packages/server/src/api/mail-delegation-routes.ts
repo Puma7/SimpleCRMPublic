@@ -16,6 +16,8 @@ import type {
   MailDelegationSubject,
   ServerApiPorts,
 } from './types';
+import type { MailBindingVisibilityConstraints } from '../mail-access/types';
+import { DENY_ALL_TAG_ALLOW_VALUE, MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH, MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH } from '../mail-access/mail-acl-constraints';
 import { data, error, positiveIntFromPath, requirePrincipal } from './http';
 
 const BINDINGS_PATH = '/api/v1/email/access/bindings';
@@ -144,6 +146,7 @@ async function handleCreate(
     subject: parsed.subject,
     resource: parsed.resource,
     permissions: parsed.permissions,
+    ...(parsed.constraintsProvided ? { constraints: parsed.constraints ?? null } : {}),
   });
   if (!result.ok) return mutationError(result.code);
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {
@@ -176,6 +179,7 @@ async function handlePatch(
     actor: actor(principal),
     bindingId,
     permissions: parsed.permissions,
+    ...(parsed.constraintsProvided ? { constraints: parsed.constraints ?? null } : {}),
   });
   if (!result.ok) return mutationError(result.code);
   await auditAndPublish(ports, principal, 'email_acl.binding_replaced', result.binding, {
@@ -223,7 +227,14 @@ async function handleDelete(
 }
 
 type ParsedMutation =
-  | { ok: true; subject: MailDelegationSubject; resource: MailDelegationResource; permissions: readonly MailPermission[] }
+  | {
+    ok: true;
+    subject: MailDelegationSubject;
+    resource: MailDelegationResource;
+    permissions: readonly MailPermission[];
+    constraints?: MailBindingVisibilityConstraints | null;
+    constraintsProvided: boolean;
+  }
   | { ok: false; response: ApiResponse<ApiErrorBody> };
 
 function parseMutationBody(
@@ -233,18 +244,138 @@ function parseMutationBody(
   if (!isRecord(body)) return invalid('Payload muss ein JSON-Objekt sein');
   const permissions = parsePermissions(body);
   if (!permissions.ok) return permissions;
+  const constraintsParsed = parseConstraints(body);
+  if (!constraintsParsed.ok) return constraintsParsed;
 
   const subject = parseSubject(body.subject);
   if (!subject.ok) {
     if (options.requireSubjectResource) return subject;
-    return { ok: true, subject: { type: 'user', id: '' }, resource: { type: 'account', accountId: 1 }, permissions: permissions.permissions };
+    return {
+      ok: true,
+      subject: { type: 'user', id: '' },
+      resource: { type: 'account', accountId: 1 },
+      permissions: permissions.permissions,
+      constraintsProvided: constraintsParsed.provided,
+      ...(constraintsParsed.provided ? { constraints: constraintsParsed.constraints } : {}),
+    };
   }
   const resource = parseBodyResource(body.resource);
   if (!resource.ok) {
     if (options.requireSubjectResource) return resource;
-    return { ok: true, subject: subject.subject, resource: { type: 'account', accountId: 1 }, permissions: permissions.permissions };
+    return {
+      ok: true,
+      subject: subject.subject,
+      resource: { type: 'account', accountId: 1 },
+      permissions: permissions.permissions,
+      constraintsProvided: constraintsParsed.provided,
+      ...(constraintsParsed.provided ? { constraints: constraintsParsed.constraints } : {}),
+    };
   }
-  return { ok: true, subject: subject.subject, resource: resource.resource, permissions: permissions.permissions };
+  return {
+    ok: true,
+    subject: subject.subject,
+    resource: resource.resource,
+    permissions: permissions.permissions,
+    constraintsProvided: constraintsParsed.provided,
+    ...(constraintsParsed.provided ? { constraints: constraintsParsed.constraints } : {}),
+  };
+}
+
+function parseConstraints(body: Record<string, unknown>):
+  | { ok: true; provided: false }
+  | { ok: true; provided: true; constraints: MailBindingVisibilityConstraints | null }
+  | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  if (!('constraints' in body)) return { ok: true, provided: false };
+  if (body.constraints === null) return { ok: true, provided: true, constraints: null };
+  if (!isRecord(body.constraints)) return invalid('constraints muss ein Objekt oder null sein');
+  const raw = body.constraints;
+  const allowedConstraintKeys = new Set([
+    'assignmentMode',
+    'categoryAllowIds',
+    'categoryExcludeIds',
+    'tagAllowValues',
+    'tagExcludeValues',
+  ]);
+  const unknownKeys = Object.keys(raw).filter((key) => !allowedConstraintKeys.has(key));
+  if (unknownKeys.length > 0) {
+    return invalid(`Unbekannte Constraint-Felder: ${unknownKeys.sort().join(', ')}`);
+  }
+  const assignmentMode = raw.assignmentMode;
+  if (
+    assignmentMode !== undefined
+    && assignmentMode !== null
+    && assignmentMode !== 'any'
+    && assignmentMode !== 'assigned_to_me'
+    && assignmentMode !== 'assigned_to_my_groups'
+    && assignmentMode !== 'unassigned'
+  ) {
+    return invalid('assignmentMode ist ungueltig');
+  }
+  const categoryAllowIds = parseIdList(raw.categoryAllowIds, 'categoryAllowIds');
+  if (!categoryAllowIds.ok) return categoryAllowIds;
+  const categoryExcludeIds = parseIdList(raw.categoryExcludeIds, 'categoryExcludeIds');
+  if (!categoryExcludeIds.ok) return categoryExcludeIds;
+  const tagAllowValues = parseTextList(raw.tagAllowValues, 'tagAllowValues');
+  if (!tagAllowValues.ok) return tagAllowValues;
+  const tagExcludeValues = parseTextList(raw.tagExcludeValues, 'tagExcludeValues');
+  if (!tagExcludeValues.ok) return tagExcludeValues;
+  return {
+    ok: true,
+    provided: true,
+    constraints: {
+      assignmentMode:
+        assignmentMode === undefined || assignmentMode === null || assignmentMode === 'any'
+          ? null
+          : assignmentMode,
+      categoryAllowIds: categoryAllowIds.values,
+      categoryExcludeIds: categoryExcludeIds.values,
+      tagAllowValues: tagAllowValues.values,
+      tagExcludeValues: tagExcludeValues.values,
+    },
+  };
+}
+
+/*
+ * Groessenlimits: MAX_MAIL_BINDING_CONSTRAINT_* aus mail-acl-constraints (auch
+ * clientseitig genutzt). Constraint-Listen werden pro Binding gespeichert und
+ * bei JEDER gescopten Mail-Query des Betroffenen erneut in eine SQL-`in (...)`
+ * Liste eingebettet (sql-scope, visibilityPredicate). Ohne Cap liesse das
+ * 40-MB-Body-Limit Millionen Eintraege zu — ein einziges Binding wuerde dann
+ * das Bind-Parameter-Budget sprengen bzw. jedes Mail-Listing ausbremsen.
+ */
+function parseIdList(value: unknown, label: string):
+  | { ok: true; values: number[] }
+  | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  if (value === undefined) return { ok: true, values: [] };
+  if (!Array.isArray(value) || value.some((entry) => !isPositiveInteger(entry))) {
+    return invalid(`${label} muss ein Array positiver Ganzzahlen sein`);
+  }
+  if (value.length > MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH) {
+    return invalid(`${label} darf maximal ${MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH} Eintraege enthalten`);
+  }
+  return { ok: true, values: [...new Set(value as number[])].sort((a, b) => a - b) };
+}
+
+function parseTextList(value: unknown, label: string):
+  | { ok: true; values: string[] }
+  | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  if (value === undefined) return { ok: true, values: [] };
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    return invalid(`${label} muss ein Array von Zeichenketten sein`);
+  }
+  if (value.length > MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH) {
+    return invalid(`${label} darf maximal ${MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH} Eintraege enthalten`);
+  }
+  // Nach dem Trimmen messen: gespeichert wird der getrimmte Wert.
+  if ((value as string[]).some((entry) => entry.trim().length > MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH)) {
+    return invalid(`${label}: einzelne Tags duerfen maximal ${MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH} Zeichen lang sein`);
+  }
+  const values = [...new Set((value as string[]).map((entry) => entry.trim()).filter(Boolean))].sort();
+  // Reserved deny-all sentinel must never be accepted as a real user tag.
+  if (values.includes(DENY_ALL_TAG_ALLOW_VALUE)) {
+    return invalid(`${label} enthält einen reservierten Wert`);
+  }
+  return { ok: true, values };
 }
 
 function parsePermissions(body: Record<string, unknown>):
@@ -479,6 +610,7 @@ async function auditAndPublish(
           ...(resource.type === 'folder' ? { folderId: resource.folderId } : {}),
         } : {}),
         permissionNames: [...details.permissions].sort(),
+        ...(binding && 'constraints' in binding ? { constraints: binding.constraints ?? null } : {}),
       },
     });
   } catch (error) {
@@ -504,6 +636,9 @@ function mutationError(code: MailDelegationMutationCode | 'permission_denied' | 
   if (code === 'binding_not_found') return error(404, 'mail_delegation_binding_not_found', 'Delegation nicht gefunden');
   if (code === 'binding_conflict') return error(409, 'mail_delegation_conflict', 'Delegation wurde gleichzeitig geaendert');
   if (code === 'subject_not_found') return error(404, 'mail_delegation_subject_not_found', 'Subjekt nicht gefunden');
+  if (code === 'category_not_found') {
+    return error(404, 'mail_delegation_category_not_found', 'Sichtbarkeitsfilter verweist auf eine unbekannte Kategorie');
+  }
   if (code === 'resource_not_found') return error(404, 'mail_delegation_resource_not_found', 'Ressource nicht gefunden');
   return error(403, 'mail_delegation_owner_admin_subject_forbidden', 'Owner/Admins werden nicht als ACL-Subjekt gespeichert');
 }

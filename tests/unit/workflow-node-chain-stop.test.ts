@@ -56,12 +56,28 @@ describe('generischer Ketten-Stopp am Knoten', () => {
     ['skipped', { status: 'skipped' }],
     ['blocked', { status: 'ok', blocked: true }],
     ['deferred', { status: 'ok', deferred: true }],
-    ['bereits stoppend', { status: 'ok', stop: true }],
   ])('greift nicht bei Ergebnis: %s', (_label, result) => {
     expect(nodeRequestsChainStop({
       nodeType: 'email.tag',
       config: { [NODE_CHAIN_STOP_CONFIG_KEY]: true },
       result: result as { status: string },
+    })).toBe(false);
+  });
+
+  test('greift auch auf logic.stop — der Editor verspricht dort das Kettenende', () => {
+    // logic.stop liefert bereits stop:true (nur dieser Graph endet). Der
+    // Schalter wird im Editor auch dort angeboten, muss also zusätzlich die
+    // nachfolgenden Inbound-Workflows beenden.
+    expect(nodeRequestsChainStop({
+      nodeType: 'logic.stop',
+      config: { [NODE_CHAIN_STOP_CONFIG_KEY]: true },
+      result: { status: 'ok', stop: true },
+    })).toBe(true);
+    // Ohne Schalter bleibt es beim reinen Graph-Ende.
+    expect(nodeRequestsChainStop({
+      nodeType: 'logic.stop',
+      config: {},
+      result: { status: 'ok', stop: true },
     })).toBe(false);
   });
 

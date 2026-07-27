@@ -100,6 +100,8 @@ src/.DS_Store
 !docs/BACKUP_AND_RESTORE.md
 !docs/THREAT_MODEL.md
 !docs/LOGIN_SECURITY.md
+!docs/GROUP_RIGHTS_MATRIX.md
+!docs/GROUP_RIGHTS_ADMIN.md
 !docs/LEARNINGS_AUTH.md
 !docs/design/gdpr-erasure-spike.md
 !docs/SPIKE_JTL_CONTEXT_INJECTION.md

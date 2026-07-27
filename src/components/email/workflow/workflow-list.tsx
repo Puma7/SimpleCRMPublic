@@ -21,19 +21,31 @@ type Props = {
   onSelect: (id: number) => void
   onCreate: () => void
   onDelete?: (id: number) => void
+  /** When false, hide create/delete actions (workflows.view only). */
+  canEdit?: boolean
 }
 
-export function WorkflowList({ rows, selectedId, loading, onSelect, onCreate, onDelete }: Props) {
+export function WorkflowList({
+  rows,
+  selectedId,
+  loading,
+  onSelect,
+  onCreate,
+  onDelete,
+  canEdit = true,
+}: Props) {
   return (
     <aside className="flex h-full min-h-0 flex-col border-r bg-muted/20">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b px-3 py-3">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           Workflows
         </h3>
-        <Button type="button" size="sm" onClick={onCreate} className="h-7 gap-1.5">
-          <Plus className="h-3.5 w-3.5" />
-          Neu
-        </Button>
+        {canEdit ? (
+          <Button type="button" size="sm" onClick={onCreate} className="h-7 gap-1.5">
+            <Plus className="h-3.5 w-3.5" />
+            Neu
+          </Button>
+        ) : null}
       </div>
       <ScrollArea className="flex-1">
         {loading ? (
@@ -63,7 +75,7 @@ export function WorkflowList({ rows, selectedId, loading, onSelect, onCreate, on
                     </div>
                   </div>
                 </button>
-                {onDelete ? (
+                {canEdit && onDelete ? (
                   <button
                     type="button"
                     onClick={() => onDelete(w.id)}

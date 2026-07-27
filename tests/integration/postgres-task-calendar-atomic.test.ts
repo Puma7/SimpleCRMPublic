@@ -153,6 +153,14 @@ describe('PostgreSQL atomic task/calendar operations', () => {
     await migrationClient.end();
 
     pool = new Pool(connection);
+    // Beim Stoppen der eingebetteten Instanz kann eine noch offene Verbindung ein
+    // FATAL 57P01 ("terminating connection due to administrator command") melden.
+    // pg-pool reicht so einen Idle-Fehler nur dann als unhandled error weiter,
+    // wenn KEIN error-Listener haengt — daraus wurde in CI ein "Test suite failed
+    // to run", obwohl alle Tests gruen waren. Die ACL-Suite haengt denselben
+    // Listener bereits an.
+    pool.on('error', () => {});
+    pool.on('connect', (client) => client.on('error', () => {}));
     db = new Kysely<ServerDatabase>({ dialect: new PostgresDialect({ pool }) });
   });
 

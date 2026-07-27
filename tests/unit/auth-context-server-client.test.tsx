@@ -197,6 +197,47 @@ describe('AuthProvider server-client mode', () => {
     expect(screen.getByTestId('auth-user')).toHaveTextContent('none');
     expect(localInvoke).not.toHaveBeenCalled();
   });
+  test('capabilities are never reported ready with an empty list for a fresh user session', async () => {
+    // Sonst sieht ein Gate im ersten Render "fertig geladen, keine Rechte" und
+    // leitet um, bevor die Liste ueberhaupt angefragt wurde.
+    let resolveCapabilities: ((value: unknown) => void) | null = null;
+    const capabilitiesPromise = new Promise((resolve) => {
+      resolveCapabilities = resolve;
+    });
+    saveServerAuthSession(buildServerAuthSession({
+      user: serverUser({ role: 'user', displayName: 'Delegierter' }),
+      tokens: { accessToken: 'access-stored', expiresInSeconds: 900 },
+    }), 'csrf-stored', undefined, undefined, 'https://crm.example.com');
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/api/v1/auth/capabilities')) {
+        await capabilitiesPromise;
+        return jsonResponse({ data: { role: 'user', capabilities: ['settings.view'] } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }));
+
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>,
+    );
+
+    expect(await screen.findByTestId('auth-status')).toHaveTextContent('authenticated');
+    // Solange die Liste laeuft: NICHT ready — und damit kein falsches "kein Recht".
+    expect(screen.getByTestId('caps-ready')).toHaveTextContent('pending');
+
+    await act(async () => {
+      resolveCapabilities?.(null);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('caps-ready')).toHaveTextContent('ready'));
+    expect(screen.getByTestId('caps-settings')).toHaveTextContent('yes');
+  });
 });
 
 function Probe() {
@@ -206,6 +247,8 @@ function Probe() {
       <div data-testid="auth-status">
         {auth.loading ? 'loading' : auth.authenticated ? 'authenticated' : 'anonymous'}
       </div>
+      <div data-testid="caps-ready">{auth.capabilitiesReady ? 'ready' : 'pending'}</div>
+      <div data-testid="caps-settings">{auth.canViewSettings ? 'yes' : 'no'}</div>
       <div data-testid="auth-required">{auth.authRequired ? 'required' : 'public'}</div>
       <div data-testid="auth-user">{auth.user?.displayName ?? 'none'}</div>
       <button type="button" onClick={() => void auth.login('owner@example.com', 'passphrase')}>

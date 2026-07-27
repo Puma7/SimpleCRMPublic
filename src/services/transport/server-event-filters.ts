@@ -272,6 +272,13 @@ export function isJtlReferenceRefreshEvent(event: ServerEvent, resource?: string
 }
 
 export function isMailListRefreshEvent(event: ServerEvent): boolean {
+  // Eine ACL-Aenderung entzieht Sichtbarkeit: geladene, jetzt gesperrte Zeilen
+  // muessen aus der Liste verschwinden. Ohne diesen Zweig loest email_acl.changed
+  // nur einen KONTEN-Refresh aus (isMailAccountDataRefreshEvent) und die Liste
+  // behaelt die verbotenen Nachrichten bis zum naechsten zufaelligen Refresh —
+  // genau das erwartet auth-routes beim Herabstufen/Deaktivieren ("clears loaded
+  // mail immediately"). Der erneute Abruf ist fail-closed: der Server scoped neu.
+  if (isMailAclRefreshEvent(event)) return true
   if (event.entityType === "email_message") {
     return MAIL_MESSAGE_REFRESH_EVENT_TYPES.has(event.type)
   }

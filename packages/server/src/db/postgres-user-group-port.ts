@@ -10,7 +10,7 @@ import type {
   UserGroupRemoveMemberResult,
 } from '../api/types';
 import type { ServerDatabase, UserGroupsTable } from './schema';
-import { isUserGroupCapability } from '../api/capabilities';
+import { isUserGroupCapability, normalizeStoredUserGroupPermissions } from '../api/capabilities';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -270,8 +270,10 @@ export function createPostgresUserGroupPort(options: PostgresUserGroupPortOption
     },
 
     async setPermissions(input) {
-      // Grant-only: unknown keys are dropped, and the set fully replaces the row set.
-      const permissions = [...new Set(input.permissions.filter(isUserGroupCapability))].sort();
+      // Grant-only: unknown keys are dropped; legacy aliases normalized; highest per module stored.
+      const permissions = normalizeStoredUserGroupPermissions(
+        input.permissions.filter(isUserGroupCapability),
+      );
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actorUserId, role: 'user' },
@@ -300,7 +302,17 @@ export function createPostgresUserGroupPort(options: PostgresUserGroupPortOption
               .onConflict((oc) => oc.columns(['workspace_id', 'group_id', 'permission']).doNothing())
               .execute();
           }
-          return { ok: true as const, permissions };
+          // Mitglieder in derselben Transaktion lesen: die Route braucht sie fuer
+          // die email_acl.changed-Invalidierung und darf dafuer nach dem Commit
+          // keinen zweiten, eigenstaendig scheiternden Aufruf mehr benoetigen.
+          const memberRows = await trx
+            .selectFrom('user_group_members')
+            .select('user_id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('group_id', '=', input.groupId)
+            .execute();
+          const memberUserIds = [...new Set(memberRows.map((row) => String(row.user_id)))];
+          return { ok: true as const, permissions, memberUserIds };
         },
         readSession,
       );

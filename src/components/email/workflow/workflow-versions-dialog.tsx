@@ -30,6 +30,12 @@ type Props = {
   open: boolean
   onOpenChange: (open: boolean) => void
   onRestored: () => void
+  /**
+   * Snapshot und Wiederherstellen verlangen serverseitig workflows.edit; eine
+   * reine workflows.view-Stufe darf die Liste sehen, aber nichts ausloesen —
+   * sonst enden beide Aktionen in abgelehnten Requests.
+   */
+  canEdit?: boolean
 }
 
 export function WorkflowVersionsDialog({
@@ -37,6 +43,7 @@ export function WorkflowVersionsDialog({
   open,
   onOpenChange,
   onRestored,
+  canEdit = true,
 }: Props) {
   const [rows, setRows] = useState<VersionRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -101,8 +108,19 @@ export function WorkflowVersionsDialog({
         <DialogHeader>
           <DialogTitle>Workflow-Versionen</DialogTitle>
         </DialogHeader>
-        <div className="flex justify-end">
-          <Button type="button" size="sm" variant="outline" onClick={() => void snapshot()}>
+        <div className="flex items-center justify-between gap-2">
+          {canEdit ? <span /> : (
+            <span className="text-xs text-muted-foreground">
+              Nur lesbar — zum Speichern und Laden wird „Workflows bearbeiten" benötigt.
+            </span>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={!canEdit}
+            onClick={() => void snapshot()}
+          >
             Snapshot jetzt
           </Button>
         </div>
@@ -128,6 +146,7 @@ export function WorkflowVersionsDialog({
                     type="button"
                     size="sm"
                     variant="secondary"
+                    disabled={!canEdit}
                     onClick={() => void restore(v.id)}
                   >
                     Laden

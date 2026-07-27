@@ -22,6 +22,7 @@ import type {
   MailAclRolloutReadiness,
   MailAclRolloutCounterResetResult,
   MailAclRolloutTransitionResult,
+  MailBindingVisibilityConstraints,
   MailResourceLookupPort,
   MailSqlScope,
 } from '../mail-access/types';
@@ -773,7 +774,17 @@ export type UserGroupApiPort = {
     actorUserId: string;
     groupId: number;
     permissions: readonly string[];
-  }): Promise<{ ok: true; permissions: string[] } | { ok: false; code: 'group_not_found' }>;
+  }): Promise<
+    /**
+     * `memberUserIds` stammt aus DERSELBEN Transaktion wie die Rechteschreibung.
+     * Ein nachgelagertes listMembers waere ein zweiter Fehlerpunkt NACH dem
+     * Commit: schlaegt es fehl, bekaeme kein Mitglied `email_acl.changed` und
+     * die Clients blieben mit ihren alten Capability-Gates zurueck, waehrend der
+     * Server die neuen Rechte schon durchsetzt.
+     */
+    | { ok: true; permissions: string[]; memberUserIds: string[] }
+    | { ok: false; code: 'group_not_found' }
+  >;
 };
 
 export type MailDelegationSubject =
@@ -799,6 +810,7 @@ export type MailDelegationBinding = {
   permissions: readonly MailPermission[];
   profile: string | null;
   updatedAt: string;
+  constraints?: MailBindingVisibilityConstraints | null;
 };
 
 export type MailDelegationActor = {
@@ -814,6 +826,7 @@ export type MailDelegationMutationCode =
   | 'privilege_escalation'
   | 'resource_not_found'
   | 'subject_not_found'
+  | 'category_not_found'
   | 'owner_admin_subject_forbidden';
 
 export type MailDelegationApiPort = {
@@ -855,6 +868,7 @@ export type MailDelegationApiPort = {
     subject: MailDelegationSubject;
     resource: MailDelegationResource;
     permissions: readonly MailPermission[];
+    constraints?: MailBindingVisibilityConstraints | null;
   }): Promise<
     | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted?: boolean }
     | { ok: false; code: MailDelegationMutationCode }
@@ -864,6 +878,7 @@ export type MailDelegationApiPort = {
     actor: MailDelegationActor;
     bindingId: number;
     permissions: readonly MailPermission[];
+    constraints?: MailBindingVisibilityConstraints | null;
   }): Promise<
     | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted: boolean }
     | { ok: false; code: MailDelegationMutationCode }
@@ -2466,6 +2481,16 @@ export type EmailMessageMetadataMutationResult =
   | { ok: true; message: EmailMessageRecord }
   | { ok: false; reason: 'not_found' | 'customer_not_found' | 'team_member_not_found' };
 
+/**
+ * Wie EmailMessageMetadataMutationResult, aber mit der ERSETZTEN
+ * Nutzerzuordnung: eine Zuweisung aendert assigned_to_user_id und damit sofort
+ * assigned_to_me / assigned_to_my_groups / unassigned. Die Route braucht den
+ * Vorwert, um auch dem bisherigen Bearbeiter die Sicht zu invalidieren.
+ */
+export type EmailMessageAssignMutationResult =
+  | { ok: true; message: EmailMessageRecord; previousAssignedToUserId?: string | null }
+  | { ok: false; reason: 'not_found' | 'customer_not_found' | 'team_member_not_found' };
+
 export type EmailMessageCustomerBackfillResult = {
   count: number;
 };
@@ -2732,7 +2757,7 @@ export type EmailMessageApiPort = {
     teamMemberId: string | null;
     // See linkCustomer: redacts the returned row's content for metadata-only callers.
     mailContentScope?: MailSqlScope;
-  }): Promise<EmailMessageMetadataMutationResult>;
+  }): Promise<EmailMessageAssignMutationResult>;
   setSpamStatus?(input: {
     workspaceId: string;
     actorUserId: string;
@@ -2911,6 +2936,7 @@ export type EmailTeamMemberRecord = {
   role: string;
   signatureHtml: string | null;
   sortOrder: number;
+  linkedUserId: string | null;
   createdAt: string | null;
   updatedAt: string;
 };
@@ -2923,11 +2949,23 @@ export type EmailTeamMemberMutationInput = {
   role?: string;
   signatureHtml?: string | null;
   sortOrder?: number;
+  linkedUserId?: string | null;
 };
 
 export type EmailTeamMemberMutationPortResult =
   | { ok: true; member: EmailTeamMemberRecord }
   | { ok: false; code: 'team_member_conflict' };
+
+/**
+ * Der Datensatz nach dem Update — optional ergaenzt um die ERSETZTE
+ * Verknuepfung. Ein separater Vorher-Read waere nicht atomar: zwei parallele
+ * Link-Aenderungen X→Y und X→Z lesen beide X, die zweite entzieht Y den Scope,
+ * publiziert die Invalidierung aber nur fuer X und Z. Ports, die den alten Wert
+ * aus derselben Transaktion zurueckgeben koennen, sollten das tun.
+ */
+export type EmailTeamMemberUpdateResult = EmailTeamMemberRecord & {
+  previousLinkedUserId?: string | null;
+};
 
 export type EmailTeamMemberApiPort = EmailStringRecordApiPort<EmailTeamMemberRecord, {
   search?: string;
@@ -2943,7 +2981,7 @@ export type EmailTeamMemberApiPort = EmailStringRecordApiPort<EmailTeamMemberRec
     actorUserId: string;
     id: string;
     values: EmailTeamMemberMutationInput;
-  }): Promise<EmailTeamMemberRecord | null>;
+  }): Promise<EmailTeamMemberUpdateResult | null>;
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
@@ -3864,7 +3902,7 @@ export type WorkflowMutationInput = {
 
 export type WorkflowMutationPortResult =
   | { ok: true; workflow: WorkflowRecord }
-  | { ok: false; code: 'schedule_account_not_found' };
+  | { ok: false; code: 'schedule_account_not_found' | 'workflow_state_conflict' };
 
 export type WorkflowApiPort = {
   list(input: {
@@ -3890,6 +3928,27 @@ export type WorkflowApiPort = {
     actorUserId: string;
     id: number;
     values: WorkflowMutationInput;
+    /**
+     * Optimistic guard for the side-effect / outbound gates: the route validates the
+     * MERGED state (patch + stored row) outside this transaction, so a concurrent
+     * patch could change the fields it relied on between check and write. Pass the
+     * values that were read; the update then applies only while they still hold.
+     */
+    expected?: {
+      enabled?: boolean;
+      graph?: unknown | null;
+      triggerName?: string;
+      executionMode?: string | null;
+      /** Der Override-Schluessel entscheidet mit ueber die Ausfuehrung und ist
+       *  manage-pflichtig — er gehoert deshalb in denselben optimistischen
+       *  Vergleich wie Graph und enabled. */
+      overrideKey?: string | null;
+      /** Nur bei einem unveraendert mitgesendeten Wert gesetzt: dann wurde
+       *  gegen den gelesenen Stand entschieden, dass sich die Prioritaet NICHT
+       *  aendert — aendert ein Admin sie zwischenzeitlich, muss der Write
+       *  scheitern statt sie stillschweigend zurueckzusetzen. */
+      priority?: number;
+    };
   }): Promise<WorkflowMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;

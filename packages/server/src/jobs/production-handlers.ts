@@ -437,6 +437,12 @@ export function buildAiDraftReplyJobPlan(
     ...(payload.eventStrings === undefined ? {} : { eventStrings: optionalContext(payload, 'eventStrings') }),
     ...(payload.eventVariables === undefined ? {} : { eventVariables: optionalContext(payload, 'eventVariables') }),
     ...optionalClassificationContinuation(payload, optionalString(payload, 'actorUserId').actorUserId, isTrustedServiceJobPayload(payload)),
+    // Terminaler KI-Knoten (keine Resume-Kante ⇒ keine Continuation): der
+    // Kettenkontext steckt dann in payload.context und wird durchgereicht,
+    // damit der Kindjob die Kette selbst weiterschalten kann.
+    ...(payload.continuation === undefined && payload.context !== undefined
+      ? { terminalChainPayload: payload as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -448,6 +454,7 @@ export function buildAiReviewDraftJobPlan(
     workspaceId: matchingWorkspaceId(payload, jobWorkspaceId),
     ...optionalPositiveInteger(payload, 'messageId'),
     ...optionalPositiveInteger(payload, 'draftId'),
+    ...optionalPositiveInteger(payload, 'runId'),
     ...optionalString(payload, 'actorUserId'),
     ...optionalPositiveInteger(payload, 'profileId'),
     ...optionalString(payload, 'draftIdVariable', 120),

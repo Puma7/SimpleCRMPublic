@@ -325,7 +325,7 @@ describe('codex review regression guards', () => {
     expect(advance).toContain('completeInboundDeferredJoinSiblingOnPgClient');
     expect(graphile).toContain('completeInboundDeferredJoinSiblingOnPgClient');
     expect(graphile).toMatch(
-      /completeInboundDeferredJoinSiblingOnPgClient[\s\S]*?if \(join !== 'ready'\)/,
+      /completeInboundDeferredJoinSiblingOnPgClient[\s\S]*?if \(join !== 'ready' && join !== 'ready_error'\)/,
     );
   });
 
@@ -382,7 +382,7 @@ describe('codex review regression guards', () => {
     // Join-Barriere auch am letzten Kettenplatz abbauen (sonst bleibt sync_info
     // dauerhaft pending und ein erfolgreicher Geschwisterzweig wartet ewig).
     expect(advance).toMatch(
-      /completeInboundDeferredJoinSibling\([\s\S]*?if \(join !== 'ready'\) return false;\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
+      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return false;\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
     );
     // Gleicher Fehler im Graphile-Terminalpfad: kein return vor dem Join.
     expect(graphile).not.toMatch(
@@ -400,10 +400,12 @@ describe('codex review regression guards', () => {
     expect(classification).toContain('enqueueAiChildSkipContinuation');
 
     // Desktop: Spam-Stopp eines Geschwisterzweigs bricht bereits eingeplante
-    // logic.delay-Jobs ab; der Prozessor prüft zusätzlich den DB-Zustand.
+    // logic.delay-Jobs ab. Der Prozessor darf dagegen NICHT pauschal am
+    // gespeicherten Spamstatus abbrechen — das würde stopFurtherWorkflows:false
+    // aushebeln; der Abbruch ist über status='cancelled' persistiert.
     expect(runtime).toContain('cancelPendingDelayedJobsForMessageSafe');
-    expect(delayedJobs).toContain('messageIsSpamOrReviewForInboundWorkflow');
-    expect(delayedJobs).toContain('skip:message_spam_or_review');
+    expect(delayedJobs).not.toContain('messageIsSpamOrReviewForInboundWorkflow');
+    expect(delayedJobs).toContain("status = 'pending' AND execute_at <= ?");
   });
 
   test('gatekeeper: chain stop is opt-in everywhere and graphile advance is idempotent', () => {
@@ -427,6 +429,35 @@ describe('codex review regression guards', () => {
 
     // Graphile-Terminalpfad läuft höchstens einmal pro Job.
     expect(graphile).toContain('inbound_chain_terminal_advance');
+  });
+
+  test('codex round-13: sibling abort before every external side effect', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const forward = readRepoFile('packages/server/src/workflow-forward-copy.ts');
+    const http = readRepoFile('packages/server/src/workflow-http-request.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const parse = readRepoFile('packages/core/src/workflow/draft-review-parse.ts');
+
+    // Kettenstopp aus einer Continuation muss die Geschwister ebenso abbrechen
+    // wie der urspruengliche Fan-out.
+    expect(execution).toContain('abortRemainingInboundSiblings');
+    expect(execution).toMatch(
+      /result\.inboundChainStop === true\) \{\s*\n\s*await abortRemainingInboundSiblings/,
+    );
+
+    // Worker mit externer Nebenwirkung pruefen den Marker vor der Aktion.
+    expect(forward).toContain('isInboundSiblingAborted');
+    expect(http).toContain('isInboundSiblingAborted');
+
+    // Terminaler KI-Knoten deferiert und schliesst die Kette selbst ab.
+    expect(execution).toContain('stop: true,\n    deferred: true,');
+    expect(draftNodes).toContain('terminalChainPayload');
+
+    // HOLD darf einen bereits geclaimten Versand nicht als pending ausweisen.
+    expect(draftNodes).toContain('scheduledSendClaimedAtKey(draftId)');
+
+    // Gegenlese: mehrdeutige Statuszeilen ergeben hold.
+    expect(parse).toContain('statusMatches.length > 1');
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {

@@ -10,6 +10,18 @@ import { ilikeContainsPattern } from './sql-ilike';
 
 import { sql as kyselySql, type Kysely, type RawBuilder, type Selectable, type Updateable } from 'kysely';
 import { effectiveMailScope, mailScopePredicate } from '../mail-access/sql-scope';
+
+/**
+ * Eine Kategorie, die in einem Mail-ACL-Constraint als Ausschluss referenziert
+ * ist, darf nicht geloescht werden — der Cascade auf email_message_categories
+ * wuerde den Filter still aushebeln. Die Route mappt das auf 409.
+ */
+export class EmailCategoryInUseByAclError extends Error {
+  constructor() {
+    super('email category is referenced by a mail ACL constraint');
+    this.name = 'EmailCategoryInUseByAclError';
+  }
+}
 import type { MailSqlScope } from '../mail-access/types';
 
 import type {
@@ -67,6 +79,7 @@ import type {
   EmailTeamMemberMutationInput,
   EmailTeamMemberMutationPortResult,
   EmailTeamMemberRecord,
+  EmailTeamMemberUpdateResult,
   EmailThreadAliasApiPort,
   EmailThreadAliasListResult,
   EmailThreadMergePortResult,
@@ -178,6 +191,7 @@ const emailTeamMemberSelectColumns = [
   'role',
   'signature_html',
   'sort_order',
+  'linked_user_id',
   'created_at',
   'updated_at',
 ] as const;
@@ -509,6 +523,33 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .executeTakeFirst();
           if (existing) return { ok: false, code: 'team_member_conflict' };
 
+          // Ausgelassen != ausdruecklich null: wer ein UUID-foermiges Mitglied
+          // bewusst OHNE Nutzerverknuepfung anlegt (linkedUserId: null), darf
+          // nicht ueber die Namensgleichheit doch wieder verknuepft werden —
+          // sonst gewaehrt assigned_to_me Zugriff entgegen der sichtbaren
+          // Einstellung.
+          const linkedUserOmitted = !Object.prototype.hasOwnProperty.call(values, 'linkedUserId')
+            || values.linkedUserId === undefined;
+          let linkedUserId = values.linkedUserId ?? null;
+          if (linkedUserId === null && linkedUserOmitted && isUuidString(values.id as string)) {
+            const coincidingUser = await trx
+              .selectFrom('users')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', values.id as string)
+              .executeTakeFirst();
+            linkedUserId = coincidingUser ? String(coincidingUser.id) : null;
+          } else if (linkedUserId !== null) {
+            const linkedUser = await trx
+              .selectFrom('users')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', linkedUserId)
+              .executeTakeFirst();
+            if (!linkedUser) throw new Error('email team member linkedUserId must reference a workspace user');
+            linkedUserId = String(linkedUser.id);
+          }
+
           const now = new Date();
           const row = await trx
             .insertInto('email_team_members')
@@ -519,18 +560,31 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
               role: values.role ?? 'agent',
               signature_html: values.signatureHtml ?? null,
               sort_order: values.sortOrder ?? 0,
+              linked_user_id: linkedUserId,
               source_row: serverApiSourceRow(),
               created_at: now,
               updated_at: now,
             })
             .returning(emailTeamMemberSelectColumns)
             .executeTakeFirstOrThrow();
+          // Gleicher Backfill wie im Update-Pfad: existieren bereits Nachrichten
+          // mit der freien Zuweisung (z. B. assigned_to = 'agent-2') und wird das
+          // Mitglied erst danach verknuepft angelegt, blieben assigned_to_me /
+          // assigned_to_my_groups sonst blind fuer genau diese Nachrichten.
+          if (linkedUserId) {
+            await trx
+              .updateTable('email_messages')
+              .set({ assigned_to_user_id: linkedUserId, updated_at: new Date() })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('assigned_to', '=', values.id as string)
+              .execute();
+          }
           return { ok: true, member: mapEmailTeamMemberRow(row) };
         },
         { applySession: options.applyWorkspaceSession },
       );
     },
-    async update(input): Promise<EmailTeamMemberRecord | null> {
+    async update(input): Promise<EmailTeamMemberUpdateResult | null> {
       const values = normalizeEmailTeamMemberMutation(input.values, {
         requireId: false,
         requireDisplayName: false,
@@ -543,6 +597,29 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           role: 'user',
         },
         async (trx) => {
+          // Die ERSETZTE Verknuepfung unter Zeilensperre in DERSELBEN Transaktion
+          // lesen: ein Vorher-Read der Route waere nicht atomar — zwei parallele
+          // Aenderungen X→Y und X→Z lesen beide X, die zweite entzieht Y den
+          // Scope, invalidiert aber nur X und Z, und Y behaelt gesperrte
+          // Nachrichten geladen.
+          const previous = values.linkedUserId === undefined
+            ? null
+            : await trx
+              .selectFrom('email_team_members')
+              .select('linked_user_id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.id)
+              .forUpdate()
+              .executeTakeFirst();
+          if (values.linkedUserId) {
+            const linkedUser = await trx
+              .selectFrom('users')
+              .select('id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', values.linkedUserId)
+              .executeTakeFirst();
+            if (!linkedUser) throw new Error('email team member linkedUserId must reference a workspace user');
+          }
           const row = await trx
             .updateTable('email_team_members')
             .set({
@@ -553,7 +630,26 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .where('id', '=', input.id)
             .returning(emailTeamMemberSelectColumns)
             .executeTakeFirst();
-          return row ? mapEmailTeamMemberRow(row) : null;
+          if (!row) return null;
+          // Keep assigned_to_user_id in sync for messages already assigned to this
+          // free-text team member (e.g. agent-2) so assigned_to_me filters work.
+          if (values.linkedUserId !== undefined) {
+            await trx
+              .updateTable('email_messages')
+              .set({
+                assigned_to_user_id: values.linkedUserId,
+                updated_at: new Date(),
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('assigned_to', '=', input.id)
+              .execute();
+          }
+          return {
+            ...mapEmailTeamMemberRow(row),
+            ...(values.linkedUserId === undefined
+              ? {}
+              : { previousLinkedUserId: previous?.linked_user_id ? String(previous.linked_user_id) : null }),
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -573,7 +669,22 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
             .where('id', '=', input.id)
             .returning(emailTeamMemberSelectColumns)
             .executeTakeFirst();
-          return row ? mapEmailTeamMemberRow(row) : null;
+          if (!row) return null;
+          // Parität zur Desktop-Edition (email-assigned-to-integrity.ts:
+          // Trigger email_team_members_clear_assigned_ad): mit dem Mitglied
+          // verschwindet auch dessen Zuweisung. Ohne das Aufraeumen bliebe
+          // assigned_to als toter Freitext stehen UND — sicherheitsrelevant —
+          // assigned_to_user_id gesetzt, sodass der frueher verknuepfte Nutzer
+          // und seine Gruppen-Peers ueber assigned_to_me /
+          // assigned_to_my_groups weiterhin Zugriff auf die Nachrichten haetten.
+          // Atomar in derselben Transaktion wie das DELETE.
+          await trx
+            .updateTable('email_messages')
+            .set({ assigned_to: null, assigned_to_user_id: null, updated_at: new Date() })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('assigned_to', '=', input.id)
+            .execute();
+          return mapEmailTeamMemberRow(row);
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -598,6 +709,8 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
             accountId: 'm.account_id',
             folderId: 'm.folder_id',
             messageId: 'm.id',
+            assignedToUserId: 'm.assigned_to_user_id',
+            assignedTo: 'm.assigned_to',
           });
           if (scopePredicate) {
             query = query
@@ -684,6 +797,8 @@ export function createPostgresEmailThreadReadPort(options: PostgresMailMetadataR
             accountId: 'm.account_id',
             folderId: 'm.folder_id',
             messageId: 'm.id',
+            assignedToUserId: 'm.assigned_to_user_id',
+            assignedTo: 'm.assigned_to',
           });
           if (scopePredicate) {
             query = query
@@ -775,6 +890,8 @@ function threadMessageExistsPredicate(
     accountId: 'm.account_id',
     folderId: 'm.folder_id',
     messageId: 'm.id',
+    assignedToUserId: 'm.assigned_to_user_id',
+    assignedTo: 'm.assigned_to',
   }) ?? kyselySql<boolean>`true`;
   return kyselySql<boolean>`exists (
     select 1
@@ -797,6 +914,8 @@ function metadataMessageScopePredicate(
     accountId: `${messageAlias}.account_id`,
     folderId: `${messageAlias}.folder_id`,
     messageId: `${messageAlias}.id`,
+    assignedToUserId: `${messageAlias}.assigned_to_user_id`,
+    assignedTo: `${messageAlias}.assigned_to`,
   });
   if (!scopePredicate) return undefined;
   return kyselySql<boolean>`exists (
@@ -1134,6 +1253,64 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
           role: 'user',
         },
         async (trx) => {
+          // email_message_categories.category_id haengt an ON DELETE CASCADE:
+          // Wird eine Kategorie geloescht, die in einem ACL-Constraint als
+          // AUSSCHLUSS steht, wird dessen `not exists` fuer alle zuvor
+          // verborgenen Nachrichten wahr — ein mail.triage-Halter koennte sich
+          // so seinen eigenen Sichtbarkeitsfilter wegloeschen. Solche
+          // Kategorien sind darum nicht loeschbar (fail closed).
+          // email_categories.parent_id kaskadiert ebenfalls (0007): das Loeschen
+          // eines NICHT referenzierten Elternknotens reisst referenzierte
+          // Unterkategorien mit — die Pruefung muss daher den ganzen Teilbaum
+          // erfassen, nicht nur die exakte Id.
+          // mail_acl_binding_constraints.value_ids ist eine Array-Spalte ohne
+          // Fremdschluessel — die Pruefung unten ist daher rein zeitpunktbezogen.
+          // Ohne Sperre koennte eine parallele Binding-Mutation genau zwischen
+          // Pruefung und DELETE einen Ausschluss auf diese Kategorie schreiben:
+          // beide Transaktionen committen, der Filter zeigt auf eine geloeschte
+          // Kategorie und laesst alles durch.
+          //
+          // Deshalb wird der gesamte Teilbaum ZUERST exklusiv gesperrt; der
+          // Schreibpfad der Bindings sperrt dieselben Zeilen mit FOR SHARE
+          // (unknownConstraintCategoryExists). Damit gilt in beiden Reihenfolgen
+          // ein sauberes Ergebnis: entweder sieht das DELETE den neuen Constraint
+          // und scheitert, oder die Binding-Mutation sieht die Kategorie nicht
+          // mehr und antwortet mit category_not_found.
+          //
+          // FOR UPDATE ist in einem rekursiven CTE nicht erlaubt, die Ids werden
+          // darum erst materialisiert und dann gesperrt.
+          const doomed = await kyselySql<{ id: string }>`
+            WITH RECURSIVE doomed AS (
+              SELECT id FROM email_categories
+              WHERE workspace_id = ${input.workspaceId}::uuid AND id = ${input.id}::bigint
+              UNION ALL
+              SELECT child.id FROM email_categories AS child
+              JOIN doomed ON child.parent_id = doomed.id
+              WHERE child.workspace_id = ${input.workspaceId}::uuid
+            )
+            SELECT id FROM doomed
+          `.execute(trx);
+          const doomedIds = doomed.rows.map((row) => Number(row.id));
+          if (doomedIds.length === 0) return null;
+          await trx
+            .selectFrom('email_categories')
+            .select('id')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', 'in', doomedIds)
+            .forUpdate()
+            .execute();
+
+          const referenced = await kyselySql<{ exists: boolean }>`
+            SELECT EXISTS (
+              SELECT 1 FROM mail_acl_binding_constraints AS constraints
+              WHERE constraints.workspace_id = ${input.workspaceId}::uuid
+                AND constraints.kind = 'category'
+                AND constraints.value_ids && ${doomedIds}::bigint[]
+            ) AS exists
+          `.execute(trx);
+          if (referenced.rows[0]?.exists) {
+            throw new EmailCategoryInUseByAclError();
+          }
           const row = await trx
             .deleteFrom('email_categories')
             .where('workspace_id', '=', input.workspaceId)
@@ -1216,6 +1393,8 @@ export function createPostgresEmailMessageCategoryReadPort(options: PostgresMail
             accountId: 'm.account_id',
             folderId: 'm.folder_id',
             messageId: 'm.id',
+            assignedToUserId: 'm.assigned_to_user_id',
+            assignedTo: 'm.assigned_to',
           });
           if (scopePredicate) query = query.where(scopePredicate);
           if (input.accountId !== undefined) query = query.where('m.account_id', '=', input.accountId);
@@ -2202,6 +2381,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             accountId: 'alias_scope_message.account_id',
             folderId: 'alias_scope_message.folder_id',
             messageId: 'alias_scope_message.id',
+            assignedToUserId: 'alias_scope_message.assigned_to_user_id',
+            assignedTo: 'alias_scope_message.assigned_to',
           });
           if (accountScopePredicate || messageScopePredicate) {
             const msgPred = messageScopePredicate ?? kyselySql<boolean>`false`;
@@ -2282,6 +2463,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
             accountId: 'email_messages.account_id',
             folderId: 'email_messages.folder_id',
             messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
           });
           if (scopePredicate) {
             // The join above already requires a scope-visible message in the ALIAS thread,
@@ -2296,6 +2479,8 @@ export function createPostgresEmailThreadAliasReadPort(options: PostgresMailMeta
               accountId: 'canonical_scope_message.account_id',
               folderId: 'canonical_scope_message.folder_id',
               messageId: 'canonical_scope_message.id',
+              assignedToUserId: 'canonical_scope_message.assigned_to_user_id',
+              assignedTo: 'canonical_scope_message.assigned_to',
             }) ?? kyselySql<boolean>`false`;
             const aliasAccountPred = mailScopePredicate(input.mailScope, {
               accountId: 'email_thread_aliases.account_id',
@@ -2639,6 +2824,13 @@ function normalizeEmailTeamMemberMutation(
   if (normalized.sortOrder !== undefined && (!Number.isSafeInteger(normalized.sortOrder) || normalized.sortOrder < 0)) {
     throw new Error('email team member sortOrder must be a non-negative integer');
   }
+  if (normalized.linkedUserId !== undefined && normalized.linkedUserId !== null) {
+    normalized.linkedUserId = normalized.linkedUserId.trim();
+    if (!normalized.linkedUserId) normalized.linkedUserId = null;
+    else if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized.linkedUserId)) {
+      throw new Error('email team member linkedUserId must be a UUID');
+    }
+  }
   return normalized;
 }
 
@@ -2650,6 +2842,7 @@ function mutationToEmailTeamMemberPatch(
     ...(values.role === undefined ? {} : { role: values.role }),
     ...(values.signatureHtml === undefined ? {} : { signature_html: values.signatureHtml }),
     ...(values.sortOrder === undefined ? {} : { sort_order: values.sortOrder }),
+    ...(values.linkedUserId === undefined ? {} : { linked_user_id: values.linkedUserId }),
   };
 }
 
@@ -3954,6 +4147,7 @@ function mapEmailTeamMemberRow(row: Pick<EmailTeamMemberRow, typeof emailTeamMem
     role: row.role,
     signatureHtml: row.signature_html,
     sortOrder: row.sort_order,
+    linkedUserId: row.linked_user_id ?? null,
     createdAt: timestampToIsoOrNull(row.created_at),
     updatedAt: timestampToIso(row.updated_at),
   };
@@ -4176,4 +4370,8 @@ function timestampToIsoOrNull(value: Date | string | null): string | null {
 
 function timestampToIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
+}
+
+function isUuidString(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }

@@ -47,6 +47,7 @@ import {
 import {
   cancelPendingWorkflowDelayedJobsForMessage,
   completeInboundDeferredJoinSibling,
+  inboundJoinAllowsAdvance,
   initInboundDeferredJoin,
   isInboundSiblingAborted,
   markInboundSiblingAbort,
@@ -175,6 +176,7 @@ type WorkflowStepStatus = 'ok' | 'error' | 'skipped';
 type WorkflowMessagePatch = {
   archived?: boolean;
   assigned_to?: string | null;
+  assigned_to_user_id?: string | null;
   done_local?: boolean;
   folder_kind?: string;
   is_spam?: boolean;
@@ -539,6 +541,18 @@ export function createPostgresWorkflowExecutionJobPort(
               log: [delayedJob.status === 'cancelled' ? 'skip:delayed_job_cancelled' : 'skip:delayed_job_done'],
               now,
             });
+            // Storniertes Delay-Geschwister: siehe unten — die Join-Barriere
+            // zaehlt es weiterhin als pending und bliebe sonst fuer immer offen.
+            if (trigger === 'inbound' && message) {
+              await completeInboundDeferredJoinSibling(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                chainStop: true,
+                now,
+              });
+            }
             return;
           }
           if (delayedJob && !resumeNodeId) {
@@ -565,6 +579,21 @@ export function createPostgresWorkflowExecutionJobPort(
                 log: ['skip:delayed_job_cancelled'],
                 now,
               });
+              // Der Delay-Zweig wurde als Geschwister eines Kettenstopps
+              // storniert, zaehlt in der Join-Barriere aber weiterhin als
+              // pending. Ohne diesen Abschluss erreichte der Zaehler nie null —
+              // die Barriere und der Sibling-Abort-Marker blieben fuer immer
+              // liegen und vergifteten jede spaetere Wiederholung.
+              if (trigger === 'inbound' && message) {
+                await completeInboundDeferredJoinSibling(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: Number(message.id),
+                  workflowId: Number(workflow.id),
+                  chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                  chainStop: true,
+                  now,
+                });
+              }
               return;
             }
           }
@@ -660,10 +689,15 @@ export function createPostgresWorkflowExecutionJobPort(
               chain,
               pendingCount: result.deferredBranchCount ?? 1,
               chainStop: siblingTerminal,
+              // Ein synchron mit Fehler beendeter Geschwisterzweig muss über
+              // die Barriere sichtbar bleiben — sonst markiert der später
+              // abschliessende Kindjob den Workflow als angewendet, obwohl
+              // derselbe Fehler ohne deferiertes Geschwister das verhindert haette.
+              error: result.status === 'error',
               now,
             });
             if (siblingTerminal) {
-              await markInboundSiblingAbort(trx, {
+              await abortRemainingInboundSiblings(trx, {
                 workspaceId: input.workspaceId,
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
@@ -673,18 +707,23 @@ export function createPostgresWorkflowExecutionJobPort(
                   : 'sibling_blocked',
                 now,
               });
-              await cancelPendingWorkflowDelayedJobsForMessage(trx, {
-                workspaceId: input.workspaceId,
-                messageId: Number(message.id),
-                workflowId: Number(workflow.id),
-                now,
-              });
             }
           } else if (
             trigger === 'inbound'
             && message
             && !result.deferred
-            && (result.status === 'ok' || result.status === 'error' || result.inboundChainStop === true)
+            // 'blocked' gehört dazu: ein Workflow im compiled-Modus, ohne
+            // Trigger oder mit nicht unterstütztem Knoten liefert synchron
+            // blocked. Fiele er hier heraus, würde die serialisierte Kette nie
+            // weitergeschaltet und ein einziger veralteter Workflow legte alle
+            // nachrangigen dauerhaft still. Wie ein Fehler behandeln: nicht als
+            // angewendet markieren, aber weiterschalten.
+            && (
+              result.status === 'ok'
+              || result.status === 'error'
+              || result.status === 'blocked'
+              || result.inboundChainStop === true
+            )
           ) {
             const join = await completeInboundDeferredJoinSibling(trx, {
               workspaceId: input.workspaceId,
@@ -692,14 +731,31 @@ export function createPostgresWorkflowExecutionJobPort(
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
               chainStop: result.inboundChainStop === true,
+              error: result.status === 'error' || result.status === 'blocked',
               now,
             });
+            // Der Kettenstopp kann auch erst in einer Continuation entstehen
+            // (wiederaufgenommener Zweig). Dann muessen die uebrigen deferierten
+            // Geschwister genauso abgebrochen werden wie beim urspruenglichen
+            // Fan-out — sonst laufen sie weiter und koennen noch senden.
+            if (result.inboundChainStop === true) {
+              await abortRemainingInboundSiblings(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                reason: 'sibling_inbound_chain_stop',
+                now,
+              });
+            }
             if (
-              join === 'ready'
+              inboundJoinAllowsAdvance(join)
               && !result.inboundChainStop
-              && (result.status === 'ok' || result.status === 'error')
+              && (result.status === 'ok' || result.status === 'error' || result.status === 'blocked')
             ) {
-              if (result.status === 'ok') {
+              // 'ready_error': ein Geschwisterzweig dieser Fan-out-Runde ist
+              // gescheitert — weiterschalten ja, als angewendet markieren nein.
+              if (result.status === 'ok' && join === 'ready') {
                 await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
               }
               await maybeEnqueueNextInboundWorkflow(trx, {
@@ -2103,8 +2159,41 @@ async function executeServerNode(
     if (teamMemberId !== null && !teamMemberId) {
       return { status: 'error', port: 'error', message: 'teamMemberId leer' };
     }
+    // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
+    // stale UUID after workflow reassignment (mirrors the mail assign API).
+    // AUSSCHLIESSLICH email_team_members.linked_user_id: der frueher genutzte
+    // Fallback ueber die Id-Namensgleichheit haette eine bewusst entfernte
+    // Verknuepfung bei der naechsten Workflow-Zuweisung wiederhergestellt und
+    // dem Nutzer (plus seinen Gruppen-Peers) erneut assigned_to_me-Sicht
+    // gegeben — entgegen der gespeicherten Einstellung.
+    let assignedToUserId: string | null = null;
+    if (teamMemberId !== null) {
+      // Zeilensperre wie im API-Assign-Pfad: eine parallele Link-Aenderung des
+      // Admins darf hier keinen veralteten Nutzer in assigned_to_user_id
+      // schreiben.
+      const member = await trx
+        .selectFrom('email_team_members')
+        .select(['id', 'linked_user_id'])
+        .where('workspace_id', '=', context.workspaceId)
+        .where('id', '=', teamMemberId)
+        .forUpdate()
+        .executeTakeFirst();
+      // Fehlt die Zeile (geloeschtes Mitglied im gespeicherten Knoten, oder das
+      // Loeschen hat die Sperre zuerst bekommen), darf hier NICHT geschrieben
+      // werden: assigned_to truege eine tote Id und assigned_to_user_id waere
+      // null. Die Nachricht passte danach auf keinen Zuweisungsfilter mehr —
+      // weder assigned_to_me/assigned_to_my_groups (brauchen die User-Id) noch
+      // unassigned (verlangt zusaetzlich ein leeres assigned_to) — und bliebe
+      // fuer eingeschraenkte Betrachter dauerhaft verwaist. Der API-Assign-Pfad
+      // antwortet in derselben Lage mit team_member_not_found.
+      if (!member) {
+        return { status: 'error', port: 'error', message: 'Teammitglied nicht gefunden' };
+      }
+      if (member.linked_user_id) assignedToUserId = String(member.linked_user_id);
+    }
     const result = await updateWorkflowMessage(trx, context, {
       assigned_to: teamMemberId,
+      assigned_to_user_id: assignedToUserId,
       updated_at: now,
     });
     return result ?? { status: 'ok', port: 'default', variables: { 'email.assigned_to': teamMemberId } };
@@ -3139,6 +3228,10 @@ async function scheduleAiDraftReplyJob(
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
+    // Kettenkontext auch ohne Resume-Kante: ein terminaler KI-Knoten hat keine
+    // Continuation, muss die Kette nach getaner Arbeit aber trotzdem
+    // weiterschalten (inboundChainFromJobPayload liest payload.context).
+    context: { ...inboundChainFieldsFromContext(context) },
   };
   if (profileId.value !== undefined) payload.profileId = profileId.value;
   if (knowledgeBaseId.value !== undefined) payload.knowledgeBaseId = knowledgeBaseId.value;
@@ -3182,8 +3275,13 @@ async function scheduleAiDraftReplyJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    // Auch ohne Resume-Kante deferred: der KI-Kindjob laeuft asynchron. Ohne
+    // das Flag markierte der Elternlauf den Workflow sofort als angewendet und
+    // startete die naechste Prioritaetsstufe, obwohl noch kein Entwurf
+    // existiert — und ein endgueltig gescheiterter Kindjob liesse den
+    // Applied-Marker stehen, sodass die Wiederverarbeitung ihn nicht nachholt.
+    stop: true,
+    deferred: true,
     message: `queued_ai_draft_reply:${jobId}`,
     variables: {
       'ai.draft.status': 'pending',
@@ -3219,6 +3317,11 @@ async function scheduleAiReviewDraftJob(
 
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    // runId wie bei ai.draft_reply: sonst erzeugen zwei Laeufe desselben
+    // Workflows fuer dieselbe Mail denselben Graphile-Job-Key und
+    // jobKeyMode 'replace' verschluckt die erste Gegenpruefung samt ihrer
+    // Continuation — der erste Elternlauf bliebe fuer immer deferred.
+    runId: context.runId,
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -7052,6 +7155,38 @@ function withNodeChainStop(node: WorkflowGraphNode, result: NodeResult): NodeRes
     inboundChainStop: true,
     message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
   };
+}
+
+/**
+ * Ein Zweig hat die Inbound-Kette beendet: verbleibende deferierte Geschwister
+ * (KI-Kindjobs, HTTP, Weiterleitung, logic.delay) duerfen keine Nebenwirkungen
+ * mehr ausloesen. Marker setzen UND bereits eingeplante Delay-Jobs stornieren.
+ */
+async function abortRemainingInboundSiblings(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    chain: InboundWorkflowChainContext | null;
+    reason: string;
+    now: Date;
+  },
+): Promise<void> {
+  await markInboundSiblingAbort(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    workflowId: input.workflowId,
+    chain: input.chain,
+    reason: input.reason,
+    now: input.now,
+  });
+  await cancelPendingWorkflowDelayedJobsForMessage(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    workflowId: input.workflowId,
+    now: input.now,
+  });
 }
 
 function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {

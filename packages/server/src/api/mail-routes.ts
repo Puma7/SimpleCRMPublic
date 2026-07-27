@@ -694,6 +694,28 @@ async function callerCanTrainAllMessages(
   });
   if (scope.kind === 'all') return true;
   if (scope.kind === 'none') return false;
+  // Constrained scopes cannot be approximated by flat account/folder/message IDs.
+  if (scope.clauses && scope.clauses.length > 0) {
+    for (const messageId of messageIds) {
+      const resources = await ports.mailResourceLookup.resolve({
+        workspaceId: principal.workspaceId,
+        target: { kind: 'message', id: messageId },
+      });
+      const messageResource = resources.find((resource) => resource.type === 'message');
+      if (!messageResource || messageResource.type !== 'message') return false;
+      try {
+        await ports.mailAccess.assertPermission({
+          workspaceId: principal.workspaceId,
+          actor,
+          permission: 'mail.content.read',
+          resource: messageResource,
+        });
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
   const accountIds = new Set(scope.accountIds);
   const folderIds = new Set(scope.folderIds);
   const scopedMessageIds = new Set(scope.messageIds);
@@ -2375,7 +2397,74 @@ async function handleMessageAssign(
     teamMemberId: parsed.teamMemberId,
   });
   if (!result.ok) return emailMessageMetadataMutationError(result.reason);
+  await publishAssignmentAclInvalidation(ports, principal.workspaceId, principal.userId, [
+    result.previousAssignedToUserId,
+    result.message.assignedToUserId,
+  ]);
   return data(200, sanitizeEmailMessage(result.message, false));
+}
+
+/**
+ * Eine Zuweisung schreibt assigned_to_user_id und kippt damit sofort
+ * assigned_to_me, assigned_to_my_groups und unassigned. Der bisherige und der
+ * neue Bearbeiter (inkl. ihrer Gruppen-Peers) sowie alle Nutzer mit einem
+ * Zuweisungsfilter muessen ihre Liste deshalb neu laden — sonst behalten sie
+ * eine jetzt gesperrte Nachricht geladen bzw. sehen eine neu freigegebene
+ * nicht. Best effort: die Mutation ist committed, ein Event-Fehler darf daraus
+ * keinen 500 machen.
+ */
+async function publishAssignmentAclInvalidation(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  actorUserId: string,
+  directUserIds: ReadonlyArray<string | null | undefined>,
+): Promise<void> {
+  const targets = new Set<string>();
+  const direct = directUserIds.filter((id): id is string => Boolean(id));
+  for (const userId of direct) {
+    targets.add(userId);
+    try {
+      const resolvePeers = ports.mailAccess?.resolveGroupPeerUserIds;
+      if (resolvePeers) {
+        for (const peer of await resolvePeers.call(ports.mailAccess, workspaceId, userId)) targets.add(peer);
+      }
+    } catch (error) {
+      console.warn(
+        `[mail] group peer lookup failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  try {
+    const resolveConstrained = ports.mailAccess?.resolveConstraintSubjectUserIds;
+    if (resolveConstrained) {
+      const constrained = await resolveConstrained.call(ports.mailAccess, {
+        workspaceId,
+        includeAssignmentModes: true,
+      });
+      for (const userId of constrained) targets.add(userId);
+    }
+  } catch (error) {
+    console.warn(
+      `[mail] assignment filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const targetUserId of targets) {
+    try {
+      await ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId,
+        entityType: 'email_acl',
+        entityId: targetUserId,
+        actorUserId,
+        occurredAt: new Date().toISOString(),
+        payload: { targetUserId, state: 'changed' },
+      });
+    } catch (error) {
+      console.warn(
+        `[mail] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 }
 
 async function handleMessageSetArchived(

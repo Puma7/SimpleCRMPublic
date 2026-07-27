@@ -13,6 +13,15 @@ export type OutboundReviewParse = {
  */
 const OUTBOUND_STATUS_LINE = /^\s*(?:[-*>]\s*)?(?:\*\*|__)?\s*STATUS\s*(?:\*\*|__)?\s*[:=]\s*(.*)$/i;
 
+/** Markdown-Reste und Schlusszeichen entfernen, damit „**OK**." exakt matcht. */
+function normalizedStatusValue(raw: string): string {
+  return raw
+    .replace(/[*_`]/g, '')
+    .replace(/[.,;:!]+\s*$/, '')
+    .trim()
+    .toUpperCase();
+}
+
 const AMBIGUOUS_STATUS_REASON =
   'Ausgehende Prüfung ohne eindeutigen STATUS — Versand vorsorglich blockiert';
 
@@ -32,10 +41,12 @@ export function parseOutboundReviewResponse(raw: string): OutboundReviewParse {
   }
 
   if (statusValues.length === 1) {
-    const value = statusValues[0]!;
-    const saysOk = /\bOK\b/.test(value);
-    const saysBlock = /\bBLOCK\b/.test(value);
-    if (saysOk && !saysBlock) return { ok: true, reason: null, code: null };
+    // Nur der exakte Status gibt frei. Ein blosses \bOK\b wuerde auch
+    // „STATUS: NOT OK" oder „STATUS: ERROR, NOT OK" als Freigabe lesen —
+    // das dokumentierte Format kennt ausschliesslich OK bzw. BLOCK.
+    if (normalizedStatusValue(statusValues[0]!) === 'OK') {
+      return { ok: true, reason: null, code: null };
+    }
   } else if (statusValues.length === 0) {
     // Minimalantwort ohne Label ("OK" als komplette Antwort bzw. erste Zeile).
     const firstLine = text.split(/\r?\n/, 1)[0]?.trim().toUpperCase() ?? '';
@@ -46,7 +57,9 @@ export function parseOutboundReviewResponse(raw: string): OutboundReviewParse {
 
   const upper = text.toUpperCase();
   const ambiguous = statusValues.length > 1
-    || (statusValues.length === 1 && /\bOK\b/.test(statusValues[0]!) && /\bBLOCK\b/.test(statusValues[0]!));
+    || (statusValues.length === 1
+      && normalizedStatusValue(statusValues[0]!) !== 'OK'
+      && normalizedStatusValue(statusValues[0]!) !== 'BLOCK');
   const reasonMatch = /REASON:\s*(.+)/i.exec(text);
   const codeMatch = /CODE:\s*(\w+)/i.exec(text);
   const reason =

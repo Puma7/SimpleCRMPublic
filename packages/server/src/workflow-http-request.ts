@@ -16,6 +16,7 @@ import {
   resumeContextInboundChainFields,
   type InboundChainContinuationFields,
 } from './workflow-inbound-chain-context';
+import { isInboundSiblingAborted } from './workflow-inbound-chain-advance';
 
 export type WorkflowHttpMethod = 'GET' | 'POST';
 
@@ -78,6 +79,48 @@ export function createPostgresWorkflowHttpRequestPort(
 
   return {
     async request(input): Promise<void> {
+      // Vor dem Netzwerkaufruf: hat ein Geschwisterzweig die Inbound-Kette
+      // beendet? Ein POST waere sonst eine externe, moeglicherweise
+      // irreversible Aktion trotz ausdruecklich gestopptem Workflow — nur die
+      // nachgelagerte Fortsetzung wuerde uebersprungen.
+      const aborted = input.continuation === undefined || input.messageId === undefined
+        ? false
+        : await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => isInboundSiblingAborted(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId!,
+            workflowId: input.continuation!.workflowId,
+            chain: input.continuation!.inboundWorkflowChain ?? null,
+          }),
+          { applySession: options.applyWorkspaceSession },
+        );
+      if (aborted) {
+        // Deferred-Barriere ohne Request abbauen: die Fortsetzung laeuft in den
+        // skip:sibling_terminal_abort-Guard und schliesst Join/Kette ab.
+        const skipResume = input.continuation?.resumeNodeId
+          ?? input.continuation?.errorResumeNodeId;
+        if (input.continuation && skipResume) {
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => enqueueWorkflowHttpContinuation(
+              trx,
+              input,
+              skipResume,
+              0,
+              '',
+              now(),
+              false,
+              'skip:sibling_terminal_abort',
+            ),
+            { applySession: options.applyWorkspaceSession },
+          );
+        }
+        return;
+      }
+
       const allowlist = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },

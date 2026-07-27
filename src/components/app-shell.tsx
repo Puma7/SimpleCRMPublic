@@ -15,12 +15,23 @@ import {
 } from "@/components/theme/command-palette"
 import { cn } from "@/lib/utils"
 import { isElectron } from "@/lib/electron-utils"
-import { AuthProvider } from "@/components/auth/auth-context"
+import { AuthProvider, useAuth } from "@/components/auth/auth-context"
 import { AuthGate } from "@/components/auth/auth-gate"
+import { CrmAccessNotice } from "@/components/crm-access-notice"
+import { isCrmRouteBlocked } from "@/components/crm-route-access"
+import { isServerClientMode } from "@/lib/runtime-mode"
 
 function AppMain() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const { canReadCrm, capabilitiesReady } = useAuth()
   const isEmailModule = pathname.startsWith("/email")
+  // Einziger Engpass fuer alle CRM-Seiten: ohne crm.read antwortet der Server
+  // auf jeden CRM-Pfad mit 403, die Seite wuerde nur Fehler rendern.
+  const crmBlocked = isCrmRouteBlocked(pathname, {
+    serverClientMode: isServerClientMode(),
+    capabilitiesReady,
+    canReadCrm,
+  })
 
   return (
     <main
@@ -30,7 +41,7 @@ function AppMain() {
       )}
     >
       <ErrorBoundary>
-        <Outlet />
+        {crmBlocked ? <CrmAccessNotice /> : <Outlet />}
       </ErrorBoundary>
     </main>
   )

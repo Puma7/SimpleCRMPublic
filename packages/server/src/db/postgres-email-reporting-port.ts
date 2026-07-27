@@ -109,6 +109,8 @@ async function selectReportingAccounts(
     accountId: 'report_message.account_id',
     folderId: 'report_message.folder_id',
     messageId: 'report_message.id',
+    assignedToUserId: 'report_message.assigned_to_user_id',
+    assignedTo: 'report_message.assigned_to',
   });
   if (accountScope || messageScope) {
     query = query.where(kyselySql<boolean>`(
@@ -164,6 +166,8 @@ async function selectReportingTotals(
     accountId: 'email_messages.account_id',
     folderId: 'email_messages.folder_id',
     messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
   });
   if (scopePredicate) query = query.where(scopePredicate);
   if (accountId !== undefined) query = query.where('account_id', '=', accountId);
@@ -206,6 +210,8 @@ async function selectReportingPerAccount(
     accountId: 'email_messages.account_id',
     folderId: 'email_messages.folder_id',
     messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
   });
   if (scopePredicate) query = query.where(scopePredicate);
   if (accountId !== undefined) query = query.where('account_id', '=', accountId);
@@ -241,6 +247,8 @@ async function selectReportingWorkflowRuns24h(
     accountId: 'report_message.account_id',
     folderId: 'report_message.folder_id',
     messageId: 'report_message.id',
+    assignedToUserId: 'report_message.assigned_to_user_id',
+    assignedTo: 'report_message.assigned_to',
   });
   if (scopePredicate) {
     query = query.where(kyselySql<boolean>`exists (

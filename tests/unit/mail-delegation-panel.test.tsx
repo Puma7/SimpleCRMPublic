@@ -52,6 +52,45 @@ describe('MailDelegationPanel', () => {
         permissions: expect.arrayContaining(['mail.metadata.read', 'mail.triage', 'mail.send']),
       }),
     ));
+    const savePayload = mockInvoke.mock.calls.find(([channel]) => channel === 'email:save-mail-delegation-binding')?.[1];
+    expect(savePayload).not.toHaveProperty('constraints');
+  });
+
+  // Serverseitig gilt `'constraints' in body` als EXPLIZIT gesetzt und ueberspringt
+  // damit das Auto-Inherit aus der eigenen Autoritaet — ein immer mitgeschicktes
+  // leeres Objekt liess gefilterte nicht-Admin-Team-Leads im 403 landen (#173).
+  test('omits constraints on create until visibility filters are opened', async () => {
+    render(<MailDelegationPanel />);
+    expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+    await waitFor(() => {
+      const savePayload = mockInvoke.mock.calls.find(([channel]) => channel === 'email:save-mail-delegation-binding')?.[1];
+      expect(savePayload).not.toHaveProperty('constraints');
+    });
+  });
+
+  test('includes constraints after the user opens and edits visibility filters', async () => {
+    render(<MailDelegationPanel />);
+    expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Erweitert: Sichtbarkeitsfilter' }));
+    fireEvent.change(screen.getByLabelText('Kategorien erlauben (IDs, Komma)'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Berechtigung speichern' }));
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      'email:save-mail-delegation-binding',
+      expect.objectContaining({
+        constraints: {
+          assignmentMode: null,
+          categoryAllowIds: [5],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }),
+    ));
   });
 
   test('loads every bounded resource, subject, and binding page', async () => {

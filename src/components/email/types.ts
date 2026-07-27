@@ -51,6 +51,7 @@ export type TeamMember = {
   display_name: string
   role: string
   signature_html?: string | null
+  linked_user_id?: string | null
 }
 
 export type ConversationLockReason = "reply" | "forward" | "edit"

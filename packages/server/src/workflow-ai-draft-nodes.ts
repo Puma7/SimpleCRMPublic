@@ -6,8 +6,10 @@ import { sql as kyselySql } from 'kysely';
 import {
   addressesFromRecipientJson,
   messageIsSpamOrReviewForInboundWorkflow,
+  extractDraftBodyForOutboundBlock,
   outboundDraftFingerprint,
   parseDraftReviewResponse,
+  scheduledSendClaimedAtKey,
 } from '@simplecrm/core';
 
 import type { PostgresSecretPort } from './db/postgres-secret-port';
@@ -32,7 +34,11 @@ import {
   enqueueContinuation,
   type AiClassificationContinuation,
 } from './ai-classification';
-import { enqueueNextInboundWorkflowAfterTerminalChildFailure } from './workflow-inbound-chain-advance';
+import {
+  enqueueNextInboundWorkflowAfterTerminalChildFailure,
+  isInboundSiblingAborted,
+} from './workflow-inbound-chain-advance';
+import type { InboundChainContinuationFields } from './workflow-inbound-chain-context';
 import type { JobPayload } from './jobs/types';
 
 /** Match ai-classification agent/classify caps so draft_reply cannot blow the model context. */
@@ -389,6 +395,32 @@ export async function setDraftApprovalPending(
   const now = new Date();
   // Only stamp pending while the row is still a local draft — a concurrent send
   // or delete must not leave approval_state on a sent/missing message.
+  //
+  // Zusaetzlich: hat der Scheduled-Send-Worker den Entwurf bereits geclaimt,
+  // ist scheduled_send_at schon NULL, waehrend SMTP ausserhalb der Transaktion
+  // weiterlaeuft. Ein Pending-Stempel koennte den Versand dann nicht mehr
+  // stoppen, die Oberflaeche meldete aber „Wartet auf Freigabe", obwohl die
+  // Mail rausgeht. In dem Fall den Stempel auslassen — der Versand gewinnt.
+  // Zuerst die Entwurfszeile sperren: der Scheduled-Send-Worker claimt per
+  // `SELECT … FOR UPDATE SKIP LOCKED` auf email_messages und schreibt den
+  // sync_info-Claim in DERSELBEN Transaktion. Ohne diese Sperre koennte der
+  // Lookup unten den noch nicht committeten Claim uebersehen, waehrend das
+  // Update danach auf den Worker wartet und trotzdem pending stempelt.
+  await trx
+    .selectFrom('email_messages')
+    .select(['id'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', draftId)
+    .forUpdate()
+    .executeTakeFirst();
+  const activeClaim = await trx
+    .selectFrom('sync_info')
+    .select(['key'])
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', scheduledSendClaimedAtKey(draftId))
+    .executeTakeFirst();
+  if (activeClaim) return;
+
   await trx
     .updateTable('email_messages')
     .set({
@@ -603,6 +635,47 @@ function aiDraftReplyDedupeKey(input: {
     : `workflow_ai_draft_reply:${input.messageId}${runPart}`;
 }
 
+/**
+ * Darf ein bereits eingeplanter Entwurfs-Kindjob noch laufen?
+ *
+ * Zwei unabhängige Gründe für Nein:
+ * - die Quellnachricht gilt inzwischen als Spam/Review (auch manuell gesetzt,
+ *   dann existiert KEIN Sibling-Abort-Marker), oder
+ * - ein Geschwisterzweig hat die Inbound-Kette beendet — seit dem generischen
+ *   stopFurtherWorkflows-Schalter kann das auch ein völlig sauberer
+ *   Nicht-Spam-Zweig auslösen, weshalb der Spam-Check allein nicht reicht.
+ */
+async function inboundDraftJobAbortReason(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId?: number;
+    continuation?: { workflowId: number; triggerName?: string } & InboundChainContinuationFields;
+  },
+): Promise<'message_spam_or_review' | 'sibling_terminal_abort' | null> {
+  const messageId = input.messageId;
+  if (messageId === undefined) return null;
+
+  const live = await trx
+    .selectFrom('email_messages')
+    .select(['is_spam', 'spam_status', 'spam_score_label'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', messageId)
+    .executeTakeFirst();
+  if (live && messageIsSpamOrReviewForInboundWorkflow(live)) return 'message_spam_or_review';
+
+  const continuation = input.continuation;
+  if (!continuation) return null;
+  if (continuation.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
+  const aborted = await isInboundSiblingAborted(trx, {
+    workspaceId: input.workspaceId,
+    messageId,
+    workflowId: continuation.workflowId,
+    chain: continuation.inboundWorkflowChain ?? null,
+  });
+  return aborted ? 'sibling_terminal_abort' : null;
+}
+
 // ---------------------------------------------------------------------------
 // Async job ports — OpenAI runs outside any long-lived workflow.execute TX
 // (same pattern as ai.agent / ai.review).
@@ -614,6 +687,12 @@ export type AiDraftReplyJobPlan = Readonly<{
   actorUserId?: string;
   /** Workflow run id — scopes draft idempotency so backfill/reapply can mint a new draft. */
   runId?: number;
+  /**
+   * Roh-Payload eines TERMINALEN KI-Knotens (keine Resume-Kante, also keine
+   * Continuation). Traegt den Inbound-Kettenkontext, damit der Kindjob nach
+   * getaner Arbeit Join-Barriere und Prioritaetskette selbst abschliesst.
+   */
+  terminalChainPayload?: Record<string, unknown>;
   profileId?: number;
   knowledgeBaseId?: number;
   systemPrompt?: string;
@@ -634,6 +713,8 @@ export type AiReviewDraftJobPlan = Readonly<{
   messageId?: number;
   /** Concrete draft id (preferred for ACL); falls back to eventVariables[draftIdVariable]. */
   draftId?: number;
+  /** Workflow run id — scopes den Graphile-Job-Key auf den konkreten Lauf. */
+  runId?: number;
   actorUserId?: string;
   profileId?: number;
   draftIdVariable?: string;
@@ -671,6 +752,24 @@ function jobVariables(value: unknown): Record<string, string | number | boolean 
     }
   }
   return out;
+}
+
+/** Terminaler ai.draft_reply: Join-Barriere abbauen und Kette weiterschalten. */
+async function finishTerminalDraftReplyChain(
+  deps: WorkflowAiDraftNodeDeps,
+  input: { workspaceId: string; terminalChainPayload?: Record<string, unknown> },
+  now: Date,
+): Promise<void> {
+  const payload = input.terminalChainPayload;
+  if (!payload) return;
+  await withWorkspaceTransaction(
+    deps.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => {
+      await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, payload, now);
+    },
+    { applySession: deps.applyWorkspaceSession },
+  );
 }
 
 export function createPostgresAiDraftReplyPort(
@@ -723,6 +822,15 @@ export function createPostgresAiDraftReplyPort(
             .executeTakeFirst();
           if (!message) throw new Error('Nachricht nicht gefunden');
           if (messageIsSpamOrReviewForInboundWorkflow(message)) return 'skip';
+          // Nicht nur Spam: ein sauberer Geschwisterzweig kann die Kette über
+          // den generischen stopFurtherWorkflows-Schalter beendet haben.
+          if (await inboundDraftJobAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          }) !== null) {
+            return 'skip';
+          }
           if (message.account_id === null) throw new Error('Nachricht ohne Konto');
           // Validate recipient before the paid model call — retries would otherwise
           // burn tokens when Reply-To/From cannot yield an address.
@@ -800,6 +908,10 @@ export function createPostgresAiDraftReplyPort(
       if (prep === 'skip') {
         // Node already deferred the parent workflow.execute — must continue the
         // graph even when we skip the LLM call for spam/review.
+        if (!input.continuation && input.terminalChainPayload) {
+          await finishTerminalDraftReplyChain(deps, input, now());
+          return;
+        }
         if (input.continuation) {
           await withWorkspaceTransaction(
             deps.db,
@@ -877,7 +989,12 @@ export function createPostgresAiDraftReplyPort(
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .executeTakeFirst();
-          if (!liveMessage || messageIsSpamOrReviewForInboundWorkflow(liveMessage)) {
+          const abortNow = await inboundDraftJobAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          });
+          if (!liveMessage || messageIsSpamOrReviewForInboundWorkflow(liveMessage) || abortNow !== null) {
             if (input.continuation) {
               await enqueueContinuation(trx, {
                 workspaceId: input.workspaceId,
@@ -1002,6 +1119,15 @@ export function createPostgresAiDraftReplyPort(
               },
               now: stampedAt,
             });
+          } else if (input.terminalChainPayload) {
+            // Terminaler Knoten (keine Resume-Kante): der Elternlauf wartet auf
+            // diesen Kindjob, also Join-Barriere abbauen und Kette hier
+            // weiterschalten.
+            await enqueueNextInboundWorkflowAfterTerminalChildFailure(
+              trx,
+              input.terminalChainPayload,
+              stampedAt,
+            );
           }
         },
         { applySession: deps.applyWorkspaceSession },
@@ -1030,11 +1156,23 @@ export function createPostgresAiReviewDraftPort(
         user: string;
         reviewedFingerprint: string;
       };
+      /** Quellmail inzwischen Spam / Kette abgebrochen ⇒ nie automatisch senden. */
+      type PrepAbort = { abort: 'message_spam_or_review' | 'sibling_terminal_abort' };
 
       const prep = await withWorkspaceTransaction(
         deps.db,
         { workspaceId: input.workspaceId, role: 'system' },
-        async (trx): Promise<Prep> => {
+        async (trx): Promise<Prep | PrepAbort> => {
+          // Vor dem Modellaufruf: wurde die Quellnachricht seit dem Einreihen
+          // (auch manuell) als Spam markiert oder die Kette gestoppt? Ohne
+          // diesen Check ginge der Inhalt weiterhin ans Modell und ein SEND
+          // könnte die Fortsetzung bis email.send_draft durchreichen.
+          const abort = await inboundDraftJobAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          });
+          if (abort) return { abort };
           const draft = await trx
             .selectFrom('email_messages')
             .select([
@@ -1093,7 +1231,14 @@ export function createPostgresAiReviewDraftPort(
             '--- Antwort-Entwurf ---',
             `Betreff: ${draft.subject ?? ''}`,
             '',
-            (draft.body_text ?? '').slice(0, 6000),
+            // Compose-Entwuerfe speichern den Text oft NUR in body_html. Ohne
+            // die Textdarstellung saehe die Gegenlese-KI einen leeren Entwurf
+            // und koennte SEND liefern, waehrend email.send_draft anschliessend
+            // ungepruefte HTML-Inhalte verschickt.
+            extractDraftBodyForOutboundBlock({
+              body_text: draft.body_text,
+              body_html: draft.body_html,
+            }).plain.slice(0, 6000),
           ].join('\n');
 
           return {
@@ -1112,8 +1257,19 @@ export function createPostgresAiReviewDraftPort(
         'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
       };
       let approvalReason = 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen';
+      const reviewedFingerprint = 'abort' in prep ? null : prep.reviewedFingerprint;
 
-      try {
+      if ('abort' in prep) {
+        approvalReason = prep.abort === 'message_spam_or_review'
+          ? 'Quellnachricht ist als Spam/Prüfen markiert — keine automatische Freigabe'
+          : 'Inbound-Kette wurde gestoppt — keine automatische Freigabe';
+        port = 'hold';
+        continuationVariables = {
+          'ai.review.verdict': 'hold',
+          'ai.review.answered': false,
+          'ai.review.reason': approvalReason,
+        };
+      } else try {
         const out = await runWorkflowTrackedChatCompletion(deps, {
           workspaceId: input.workspaceId,
           messageId: input.messageId ?? null,
@@ -1164,6 +1320,22 @@ export function createPostgresAiReviewDraftPort(
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', draftId)
             .executeTakeFirst();
+          // Zweiter Abort-Check direkt vor der Freigabe: der Modellaufruf lief
+          // ausserhalb der Transaktion, in dieser Zeit kann die Quellmail als
+          // Spam markiert oder die Kette gestoppt worden sein.
+          if (port === 'send' && await inboundDraftJobAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          }) !== null) {
+            port = 'hold';
+            approvalReason = 'Quellnachricht/Kette wurde während der Prüfung gestoppt — bitte manuell freigeben';
+            continuationVariables = {
+              'ai.review.verdict': 'hold',
+              'ai.review.answered': false,
+              'ai.review.reason': approvalReason,
+            };
+          }
           const stillLocalDraft = Boolean(live && live.folder_kind === 'draft' && Number(live.uid) < 0);
           if (!stillLocalDraft) {
             // Draft gone/sent — do not stamp pending; still continue the graph.
@@ -1202,7 +1374,7 @@ export function createPostgresAiReviewDraftPort(
           }
           if (port === 'send') {
             const liveFp = fingerprintReviewedDraft(live!);
-            if (liveFp !== prep.reviewedFingerprint) {
+            if (reviewedFingerprint === null || liveFp !== reviewedFingerprint) {
               port = 'hold';
               approvalReason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
               continuationVariables = {

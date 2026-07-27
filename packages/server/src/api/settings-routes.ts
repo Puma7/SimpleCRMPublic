@@ -16,6 +16,7 @@ import {
   error,
   requireAdmin,
   requireCapability,
+  rejectUnlessSettingsManage,
   requirePrincipal,
 } from './http';
 
@@ -325,10 +326,26 @@ async function handleEmailMiscSettings(
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const settingsDenied = rejectUnlessSettingsManage(principal);
+  if (settingsDenied) return settingsDenied;
   const parsed = parseEmailMiscSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
+  // Der Client laedt das Secret maskiert und schickt es beim Speichern immer mit.
+  // Ein delegierter settings.manage-Halter koennte sonst nie das Anhanglimit
+  // aendern. Wie beim Rspamd-URL-Vergleich zaehlt daher nur eine echte
+  // AENDERUNG als Adminvorgang: ein unveraendert zurueckgeschickter Maskenwert
+  // wird verworfen statt abgelehnt.
   if ('email_webhook_secret' in parsed.values && !requireAdmin(principal)) {
-    return error(403, 'forbidden', 'Adminrechte erforderlich');
+    const current = await loadSyncInfo(req, ports, ['email_webhook_secret']);
+    if ('status' in current) return current;
+    const storedMasked = maskSyncInfoSecret(current.values.get('email_webhook_secret'));
+    if (parsed.values.email_webhook_secret !== storedMasked) {
+      return error(403, 'forbidden', 'Adminrechte erforderlich');
+    }
+    delete parsed.values.email_webhook_secret;
+    if (Object.keys(parsed.values).length === 0) {
+      return error(400, 'validation_error', 'Email misc settings update braucht mindestens ein Feld');
+    }
   }
   const saved = await saveSyncInfo(req, ports, parsed.values, 'email_settings.misc.updated', 'email.settings.misc');
   if ('status' in saved) return saved;
@@ -341,9 +358,11 @@ async function handleMailSecuritySettings(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  if (!requireCapability(principal, 'email_settings.manage')) return error(403, 'forbidden', 'Adminrechte oder E-Mail-Einstellungs-Berechtigung erforderlich');
 
   if (req.method === 'GET') {
+    if (!requireCapability(principal, 'settings.view')) {
+      return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Ansicht erforderlich');
+    }
     const loaded = await loadSyncInfo(req, ports, MAIL_SECURITY_KEYS);
     if ('status' in loaded) return loaded;
     const values = loaded.values;
@@ -378,6 +397,9 @@ async function handleMailSecuritySettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  if (!requireCapability(principal, 'settings.manage')) {
+    return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Berechtigung erforderlich');
+  }
   const parsed = parseMailSecuritySettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   // rspamdUrl is an SSRF boundary: checkMessageWithRspamd POSTs stored raw
@@ -460,6 +482,8 @@ async function handleAccountMailSettings(
   }
 
   if (req.method === 'PATCH') {
+    const settingsDenied = rejectUnlessSettingsManage(principal);
+    if (settingsDenied) return settingsDenied;
     const parsed = parseAccountMailSettingsPayload(req.body);
     if (!parsed.ok) return parsed.response;
     const account = await resolveEmailAccountByPublicId(ports.emailAccounts, principal.workspaceId, parsed.values.accountId);
@@ -534,12 +558,21 @@ async function handleSnoozeSettings(
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
   if (req.method === 'GET') {
+    // Bewusst OHNE settings.view: die Snooze-Zeiten steuern das
+    // „Spaeter erinnern"-Menue im Posteingang (snooze-popover), das jeder
+    // Nutzer ohne Einstellungsrechte oeffnet. Ein Gate hier wuerde Snooze fuer
+    // regulaere Nutzer brechen; geschrieben wird weiterhin nur mit
+    // settings.manage.
     const loaded = await loadSyncInfo(req, ports, [SNOOZE_SETTINGS_KEY]);
     if ('status' in loaded) return loaded;
     return data(200, parseSnoozeSettingsJson(loaded.values.get(SNOOZE_SETTINGS_KEY)));
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const settingsDenied = rejectUnlessSettingsManage(principal);
+  if (settingsDenied) return settingsDenied;
   const parsed = parseSnoozeSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const saved = await saveSyncInfo(
@@ -558,6 +591,14 @@ async function handleReplySuggestionSettings(
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
   if (req.method === 'GET') {
+    // Anders als Snooze wird diese Konfiguration ausschliesslich in der
+    // Einstellungs-UI gelesen — daher wie mail-security auf settings.view
+    // gaten, statt sie jedem authentifizierten Principal offenzulegen.
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    if (!requireCapability(principal, 'settings.view')) {
+      return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Ansicht erforderlich');
+    }
     const accountId = parseOptionalPositiveInt(req.query?.accountId);
     if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
     const keys = replySuggestionReadKeys(accountId);
@@ -567,6 +608,10 @@ async function handleReplySuggestionSettings(
   }
 
   if (req.method !== 'PATCH') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const settingsDenied = rejectUnlessSettingsManage(principal);
+  if (settingsDenied) return settingsDenied;
   const parsed = parseReplySuggestionSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
   const loaded = await loadSyncInfo(req, ports, replySuggestionReadKeys(parsed.accountId));

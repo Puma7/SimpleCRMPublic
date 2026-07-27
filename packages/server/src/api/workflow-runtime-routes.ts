@@ -26,11 +26,14 @@ import type {
   WorkflowVersionMutationInput,
   WorkflowVersionRecord,
 } from './types';
-import { workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import { workflowGraphHasChainStopNode, workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import { outboundWorkflowGuardError } from './workflow-outbound-guard';
 import {
   data,
   error,
   positiveIntFromPath,
+  rejectUnlessWorkflowEdit,
+  rejectUnlessWorkflowView,
   requireAdmin,
   requireCapability,
   requirePrincipal,
@@ -51,6 +54,18 @@ function rejectUnlessWorkflowRuntimeMutation(req: ApiRequest): ApiResponse | nul
   if (req.method !== 'POST' && req.method !== 'PATCH' && req.method !== 'DELETE') return null;
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Version snapshots, version creates, and restore are part of the editor save path.
+  const isEditorWrite = (
+    (req.method === 'POST' && (
+      /^\/api\/v1\/workflows\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
+      || /^\/api\/v1\/workflows\/by-source\/[^/]+\/versions(?:\/snapshot)?$/.test(req.path)
+    ))
+    || (req.method === 'POST' && /^\/api\/v1\/workflow-versions\/by-source\/[^/]+\/restore$/.test(req.path))
+  );
+  if (isEditorWrite) {
+    const denied = rejectUnlessWorkflowEdit(principal);
+    return denied;
+  }
   if (!requireCapability(principal, 'workflows.manage')) {
     return error(403, 'forbidden', 'Workflow-Verwaltung erfordert workflows.manage');
   }
@@ -85,6 +100,13 @@ export async function handleWorkflowRuntimeReadRoute(
 
   const mutationDenied = rejectUnlessWorkflowRuntimeMutation(req);
   if (mutationDenied) return mutationDenied;
+
+  if (req.method === 'GET') {
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    const viewDenied = rejectUnlessWorkflowView(principal);
+    if (viewDenied) return viewDenied;
+  }
 
   const workflowSourceVersionSnapshotMatch = /^\/api\/v1\/workflows\/by-source\/([^/]+)\/versions\/snapshot$/.exec(req.path);
   if (workflowSourceVersionSnapshotMatch) {
@@ -398,17 +420,94 @@ async function handleWorkflowVersionSourceRestore(
     return error(400, 'workflow_id_mismatch', 'workflowId passt nicht zur Version');
   }
 
+  // Restore is an editor write, but enabling side-effect graphs still needs manage
+  // (same gate as create/update on the workflow CRUD routes).
+  const existingWorkflow = ports.workflows.get
+    ? await ports.workflows.get({ workspaceId: principal.workspaceId, id: version.workflowId })
+    : null;
+  if (!existingWorkflow) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
+  const restoredGraph = version.graph ?? {};
+  if (
+    existingWorkflow.enabled !== false
+    && restoredGraph
+    && typeof restoredGraph === 'object'
+    // Dieselben ZWEI Kriterien wie beim Anlegen/Aktualisieren: schreibende
+    // Knoten und Kettenabbruch (stopFurtherWorkflows / logic.stop_after_spam,
+    // dessen Spam-Flag per logic.set_variable frei setzbar ist). Sonst laedt
+    // ein Editor die verbotene Konstruktion einfach ueber eine gespeicherte
+    // Version in denselben aktiven Workflow.
+    && (workflowGraphHasSideEffectNode(restoredGraph) || workflowGraphHasChainStopNode(restoredGraph))
+    && !requireCapability(principal, 'workflows.manage')
+  ) {
+    return error(
+      403,
+      'forbidden',
+      'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
+    );
+  }
+  // Ein aktiver Workflow mit Override-Schluessel verdraengt den gleichnamigen
+  // globalen Workflow (resolveScopedInboundWorkflowOverrides) — beim Anlegen und
+  // Aktualisieren ist er deshalb manage-pflichtig. Ohne dieselbe Pruefung hier
+  // koennte ein Editor seinen Graphen per Restore zu einem No-op machen und die
+  // verdraengte Automation damit wirkungslos stellen.
+  if (
+    existingWorkflow.enabled !== false
+    && typeof existingWorkflow.overrideKey === 'string'
+    && existingWorkflow.overrideKey.trim() !== ''
+    && !requireCapability(principal, 'workflows.manage')
+  ) {
+    return error(
+      403,
+      'forbidden',
+      'Aktive Workflows mit Override-Schluessel erfordern workflows.manage',
+    );
+  }
+
+  // Restore schreibt einen fremden Graphen in einen ggf. AKTIVEN Workflow — es
+  // muss deshalb dieselbe Outbound-Falle pruefen wie Anlegen/Aktualisieren.
+  // Sonst laedt ein Editor eine Version ohne erreichbaren Freigabe-Knoten (oder
+  // ganz ohne Graph) in einen aktiven Ausgangs-Workflow und der haelt jede Mail
+  // dauerhaft fest.
+  const restoreTrap = outboundWorkflowGuardError({
+    graph: restoredGraph,
+    triggerName: existingWorkflow.triggerName,
+    enabled: existingWorkflow.enabled,
+    executionMode: existingWorkflow.executionMode,
+  });
+  if (restoreTrap) return restoreTrap;
+
   const result = await ports.workflows.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id: version.workflowId,
     values: {
-      graph: version.graph ?? {},
+      graph: restoredGraph,
       definition: version.definition ?? {},
+    },
+    // Gleicher optimistischer Schutz wie im PATCH-Pfad: die Gates oben wurden
+    // gegen den gelesenen Row geprueft, der Write darf nur greifen, solange er gilt.
+    expected: {
+      enabled: existingWorkflow.enabled,
+      triggerName: existingWorkflow.triggerName,
+      executionMode: existingWorkflow.executionMode ?? null,
+      // Auch der Override-Schluessel: setzt ihn ein Admin zwischen dem Read
+      // oben und diesem Write, waere der Workflow inzwischen manage-pflichtig
+      // — dann muss der Restore mit 409 scheitern statt den verdraengenden
+      // Graphen doch zu ersetzen.
+      overrideKey: existingWorkflow.overrideKey ?? null,
     },
   });
   if (!result) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
-  if (!result.ok) return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+  if (!result.ok) {
+    if (result.code === 'workflow_state_conflict') {
+      return error(
+        409,
+        'workflow_state_conflict',
+        'Workflow wurde zwischenzeitlich geaendert — bitte neu laden und erneut wiederherstellen',
+      );
+    }
+    return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+  }
 
   const workflow = result.workflow;
   await auditWorkflowRestore(ports, principal, workflow, version);
@@ -992,31 +1091,30 @@ async function handleDelayedJobUpdate(
   });
   if (!parsed.ok) return parsed.response;
 
-  // Redirecting a delayed job (resumeNodeId/context) does not re-enqueue the backing
-  // workflow.execute — that job keeps the initiating admin's actorUserId, so at
-  // resume the async side-effect gate (which only denies non-admin ACTORS) is
-  // bypassed and the chosen node runs under the admin's authority. A non-admin
-  // workflows.manage holder could thus jump an admin-originated run to a writing node
-  // the live-execution route (workflow-routes.ts) forbids them from running. Mirror
-  // that route's admin gate for redirect edits on a side-effecting workflow. Reschedule
-  // (executeAt) and cancel (status) edits stay open to workflows.manage.
+  // Das Umleiten eines verzoegerten Jobs (resumeNodeId/context) reiht den
+  // dahinterliegenden workflow.execute NICHT neu ein: der behaelt den
+  // actorUserId des urspruenglich Einreihenden (typischerweise ein Admin), und
+  // der gewaehlte Knoten laeuft beim Resume unter DESSEN Autoritaet.
+  //
+  // Frueher stand hier ein Graph-Check plus optimistischer Vergleich: erlaubt,
+  // solange der Graph nebenwirkungsfrei ist. Das schuetzt aber nur bis zum
+  // Commit — zwischen Umleitung und tatsaechlicher Ausfuehrung kann derselbe
+  // Workflow um schreibende Knoten erweitert werden, und die Fortsetzung laeuft
+  // trotzdem unter dem alten Akteur. Statt den gebilligten Graphen am Job zu
+  // versionieren (Schema-Aenderung fuer einen exotischen Bedienpfad), bleibt
+  // das Umleiten Administratoren vorbehalten: nur wer die Autoritaet ohnehin
+  // besitzt, unter der die Fortsetzung laeuft, darf ihren Einstiegspunkt
+  // waehlen. Reschedule (executeAt) und Abbrechen (status) bleiben fuer
+  // workflows.manage offen.
   if (
     (parsed.values.resumeNodeId !== undefined || parsed.values.context !== undefined)
     && !requireAdmin(principal)
   ) {
-    if (!ports.workflows) return unavailable('workflows_unavailable', 'Workflow API nicht konfiguriert');
-    const existing = await ports.workflowDelayedJobs.get({
-      workspaceId: principal.workspaceId,
-      id,
-      includeContext: false,
-    });
-    if (!existing) return error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
-    if (existing.workflowId !== null) {
-      const workflow = await ports.workflows.get({ workspaceId: principal.workspaceId, id: existing.workflowId });
-      if (workflow && workflowGraphHasSideEffectNode(workflow.graph)) {
-        return error(403, 'forbidden', 'Umleiten von Workflows mit schreibenden Knoten erfordert Adminrechte');
-      }
-    }
+    return error(
+      403,
+      'forbidden',
+      'Umleiten eines verzoegerten Jobs erfordert Adminrechte',
+    );
   }
 
   const result = await ports.workflowDelayedJobs.update({

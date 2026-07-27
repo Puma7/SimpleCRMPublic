@@ -18,6 +18,7 @@ import {
   type SnoozeSettings,
 } from "@shared/snooze-settings"
 import { invokeRenderer } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 
 const WEEKDAYS = [
   { value: "1", label: "Montag" },
@@ -43,6 +44,10 @@ function parseTimeInput(value: string): { hour: number; minute: number } | null 
 }
 
 export function SnoozeSettingsSection() {
+  // Server-Edition: PATCH /api/v1/email/settings/snooze verlangt settings.manage.
+  // Ein reiner settings.view-Nutzer bekaeme sonst editierbare Felder samt
+  // Speichern-Button, der garantiert im 403 endet. Desktop bleibt unbeschraenkt.
+  const { canManageSettings } = useAuth()
   const [settings, setSettings] = useState<SnoozeSettings>(DEFAULT_SNOOZE_SETTINGS)
   const [saving, setSaving] = useState(false)
 
@@ -110,6 +115,7 @@ export function SnoozeSettingsSection() {
             type="time"
             value={timeInputValue(settings.eveningHour, settings.eveningMinute)}
             onChange={(e) => setEvening(e.target.value)}
+            disabled={!canManageSettings}
           />
         </div>
         <div className="space-y-2">
@@ -119,6 +125,7 @@ export function SnoozeSettingsSection() {
             type="time"
             value={timeInputValue(settings.morningHour, settings.morningMinute)}
             onChange={(e) => setMorning(e.target.value)}
+            disabled={!canManageSettings}
           />
         </div>
       </div>
@@ -131,6 +138,7 @@ export function SnoozeSettingsSection() {
             onValueChange={(v) =>
               setSettings((s) => ({ ...s, nextWeekWeekday: Number(v) }))
             }
+            disabled={!canManageSettings}
           >
             <SelectTrigger>
               <SelectValue />
@@ -151,13 +159,20 @@ export function SnoozeSettingsSection() {
             type="time"
             value={timeInputValue(settings.nextWeekHour, settings.nextWeekMinute)}
             onChange={(e) => setNextWeek(e.target.value)}
+            disabled={!canManageSettings}
           />
         </div>
       </div>
 
-      <Button type="button" size="sm" disabled={saving} onClick={() => void save()}>
-        {saving ? "Speichern…" : "Snooze-Zeiten speichern"}
-      </Button>
+      {canManageSettings ? (
+        <Button type="button" size="sm" disabled={saving} onClick={() => void save()}>
+          {saving ? "Speichern…" : "Snooze-Zeiten speichern"}
+        </Button>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Nur lesbar — zum Ändern wird die Berechtigung „Einstellungen verwalten“ benötigt.
+        </p>
+      )}
     </section>
   )
 }

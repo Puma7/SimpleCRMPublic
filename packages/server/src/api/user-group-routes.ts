@@ -254,7 +254,18 @@ async function handleMemberRoute(
       userId,
     });
     if (!result.ok) return memberMutationError(result.code);
-    await publishGroupAclInvalidation(ports, principal, groupId, [userId], 'changed');
+    // assigned_to_my_groups bezieht ALLE Mitglieder der Gruppe in die
+    // Sichtbarkeitsentscheidung ein (resolveActorContext) — eine Mitgliedschaft
+    // veraendert also auch den Scope der uebrigen Mitglieder. Deshalb an die
+    // ganze Gruppe (Zustand NACH der Mutation) ausfaechern, nicht nur an den
+    // hinzugefuegten Nutzer.
+    await publishGroupAclInvalidation(
+      ports,
+      principal,
+      groupId,
+      await groupMemberIdsIncluding(ports, principal.workspaceId, groupId, [userId]),
+      'changed',
+    );
     return data(201, { added: true });
   }
 
@@ -268,7 +279,16 @@ async function handleMemberRoute(
       userId,
     });
     if (!result.ok) return memberMutationError(result.code);
-    await publishGroupAclInvalidation(ports, principal, groupId, [userId], 'changed');
+    // Wie beim Hinzufuegen: die verbliebenen Mitglieder verlieren die Sicht auf
+    // die Nachrichten des Entfernten. Der Entfernte selbst ist nicht mehr in der
+    // Liste und wird darum explizit ergaenzt.
+    await publishGroupAclInvalidation(
+      ports,
+      principal,
+      groupId,
+      await groupMemberIdsIncluding(ports, principal.workspaceId, groupId, [userId]),
+      'changed',
+    );
     return data(200, { removed: true });
   }
 
@@ -302,14 +322,38 @@ async function handlePermissionRoute(
       permissions: raw as string[],
     });
     if (!result.ok) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
-    await ports.audit?.record({
-      workspaceId: principal.workspaceId,
-      actorUserId: principal.userId,
-      action: 'user_group.permissions_updated',
-      entityType: 'user_group',
-      entityId: String(groupId),
-      metadata: { permissions: result.permissions },
-    });
+    // Die Rechtezeilen sind bereits committed: erst die Invalidierung an die
+    // Mitglieder schicken, dann auditieren. Andersherum liesse ein temporaer
+    // fehlschlagender Audit-Write die Clients mit ihren alten Capability-Gates
+    // zurueck, waehrend der Server die neuen Rechte schon durchsetzt (wie im
+    // Delegationspfad).
+    // Die Mitgliederliste kommt aus der Mutationstransaktion. Ein separates
+    // listMembers waere ein zweiter Fehlerpunkt NACH dem Commit gewesen: haette
+    // es geworfen, waere die Antwort ein 500 gewesen, obwohl die Rechte bereits
+    // gelten — und kein Mitglied haette die Invalidierung erhalten.
+    await publishGroupAclInvalidation(
+      ports,
+      principal,
+      groupId,
+      result.memberUserIds,
+      'changed',
+    );
+    try {
+      await ports.audit?.record({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        action: 'user_group.permissions_updated',
+        entityType: 'user_group',
+        entityId: String(groupId),
+        metadata: { permissions: result.permissions },
+      });
+    } catch (auditError) {
+      // Best effort: die Mutation ist committed und die Clients sind informiert —
+      // ein 500 waere hier irrefuehrend.
+      console.warn(
+        `[user-group] audit record failed for user_group.permissions_updated (group ${groupId}); mutation already committed: ${auditError instanceof Error ? auditError.message : String(auditError)}`,
+      );
+    }
     return data(200, { permissions: result.permissions });
   }
 
@@ -320,6 +364,27 @@ function mutationError(code: 'duplicate_name' | 'not_found' | 'invalid_name'): A
   if (code === 'duplicate_name') return error(409, 'user_group_duplicate_name', 'Eine Gruppe mit diesem Namen existiert bereits');
   if (code === 'not_found') return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
   return error(400, 'validation_error', 'name darf nicht leer sein');
+}
+
+/** Mitglieder der Gruppe (Zustand nach der Mutation) plus explizit genannte Nutzer. */
+async function groupMemberIdsIncluding(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  groupId: number,
+  extraUserIds: readonly string[],
+): Promise<string[]> {
+  let memberIds: string[] = [];
+  try {
+    const members = await ports.userGroups?.listMembers({ workspaceId, groupId });
+    memberIds = (members ?? []).map((member) => member.userId);
+  } catch (error) {
+    // Best effort: die Mitgliedschaft ist committed, die Invalidierung darf den
+    // Request nicht scheitern lassen. Mindestens der genannte Nutzer wird informiert.
+    console.warn(
+      `[user-group] member lookup for ACL invalidation failed (group ${groupId}): ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return [...new Set([...memberIds, ...extraUserIds])];
 }
 
 function memberMutationError(code: 'group_not_found' | 'user_not_found'): ApiResponse {

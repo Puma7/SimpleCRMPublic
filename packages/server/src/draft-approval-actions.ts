@@ -3,6 +3,7 @@ import {
   addressesFromRecipientJson,
   extractDraftBodyForOutboundBlock,
   normalizeEmailAddress,
+  scheduledSendClaimedAtKey,
 } from '@simplecrm/core';
 
 import type { WorkspaceTransaction } from './db/workspace-context';
@@ -202,6 +203,23 @@ export async function dismissDraftApprovalInTransaction(
     return {
       success: false,
       error: 'Entwurf ist bereits zum Versand eingeplant — bitte Ansicht aktualisieren.',
+    };
+  }
+  // Waehrend eines laufenden Versands ist scheduled_send_at bereits wieder NULL
+  // (der Worker leert es beim Claim), der Claim liegt aber in sync_info und SMTP
+  // laeuft ausserhalb dieser Transaktion. Ein Loeschen der Freigabemarker wuerde
+  // den Versand nicht stoppen, dem Nutzer aber Erfolg melden. Die Draft-Zeile ist
+  // oben bereits per forUpdate gesperrt, der Lookup daher serialisiert.
+  const activeSendClaim = await trx
+    .selectFrom('sync_info')
+    .select(['key'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('key', '=', scheduledSendClaimedAtKey(input.draftId))
+    .executeTakeFirst();
+  if (activeSendClaim) {
+    return {
+      success: false,
+      error: 'Entwurf wird gerade versendet — bitte Ansicht aktualisieren.',
     };
   }
 

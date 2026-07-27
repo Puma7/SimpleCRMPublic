@@ -42,15 +42,15 @@ const USER_ACTOR = Object.freeze({
 });
 
 function accountGrant(accountId: number): MailAccessGrant {
-  return { resourceType: 'account', accountId, folderId: null, messageId: null };
+  return { bindingId: accountId, resourceType: 'account', accountId, folderId: null, messageId: null, constraints: null };
 }
 
 function folderGrant(accountId: number, folderId: number): MailAccessGrant {
-  return { resourceType: 'folder', accountId, folderId, messageId: null };
+  return { bindingId: folderId, resourceType: 'folder', accountId, folderId, messageId: null, constraints: null };
 }
 
 function messageGrant(accountId: number, folderId: number, messageId: number): MailAccessGrant {
-  return { resourceType: 'message', accountId, folderId, messageId };
+  return { bindingId: messageId, resourceType: 'message', accountId, folderId, messageId, constraints: null };
 }
 
 function messageResource(
@@ -256,7 +256,46 @@ describe('MailAccessRolloutService', () => {
     })).resolves.toBeUndefined();
 
     expect(fixture.legacy.calls).toEqual([{ permission: 'mail.content.read', accountId: ACCOUNT_A }]);
-    expect(fixture.newPort.calls).toEqual([{ permission: 'mail.content.read' }]);
+    expect(fixture.newPort.calls).toEqual([
+      { permission: 'mail.content.read' },
+      { permission: 'mail.content.read' },
+    ]);
+    expect(fixture.increments).toEqual([{
+      workspaceId: WORKSPACE_A,
+      evaluated: 1n,
+      legacyAllowNewDeny: 1n,
+      legacyDenyNewAllow: 0n,
+    }]);
+  });
+
+  test('shadow counts constrained account grants as narrower than legacy full accounts', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      newGrants: [{
+        bindingId: 1,
+        resourceType: 'account',
+        accountId: ACCOUNT_A,
+        folderId: null,
+        messageId: null,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+      legacyReadAccounts: [ACCOUNT_A],
+    });
+
+    // Constrained grants are enforced even in shadow (filters are not inert).
+    await expect(fixture.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.content.read',
+      resource: messageResource(),
+    })).rejects.toBeInstanceOf(MailAccessDeniedError);
+
     expect(fixture.increments).toEqual([{
       workspaceId: WORKSPACE_A,
       evaluated: 1n,
@@ -383,6 +422,165 @@ describe('MailAccessRolloutService', () => {
       legacyAllowNewDeny: 1n,
       legacyDenyNewAllow: 1n,
     }]);
+  });
+
+  test('shadow still enforces constrained visibility filters on assertPermission', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 1,
+        resourceType: 'account',
+        accountId: ACCOUNT_A,
+        folderId: null,
+        messageId: null,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+    });
+    fixture.newPort.resolveMessageVisibilityFacts = async () => ({
+      assignedToUserId: 'someone-else',
+      assignedTo: null,
+      categoryIds: [],
+      tags: [],
+    });
+
+    await expect(fixture.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.content.read',
+      resource: messageResource(),
+    })).rejects.toBeInstanceOf(MailAccessDeniedError);
+
+    expect(fixture.increments).toEqual([{
+      workspaceId: WORKSPACE_A,
+      evaluated: 1n,
+      legacyAllowNewDeny: 1n,
+      legacyDenyNewAllow: 0n,
+    }]);
+  });
+
+  test('shadow resolveScope attaches constraint clauses for constrained new grants', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 1,
+        resourceType: 'account',
+        accountId: ACCOUNT_A,
+        folderId: null,
+        messageId: null,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+    });
+    fixture.newPort.resolveScopeActorContext = async () => ({
+      userId: USER_A,
+      groupMemberUserIds: [USER_A],
+    });
+
+    const scope = await fixture.service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+    });
+    expect(scope.kind).toBe('restricted');
+    if (scope.kind !== 'restricted') return;
+    expect(scope.accountIds).toEqual([ACCOUNT_A]);
+    expect(scope.clauses).toHaveLength(1);
+    expect(scope.clauses?.[0]?.constraints?.assignmentMode).toBe('assigned_to_me');
+    expect(scope.actor?.userId).toBe(USER_A);
+  });
+
+  test('shadow resolveScope keeps legacy remainder beside constrained folder grants', async () => {
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 1,
+        resourceType: 'folder',
+        accountId: ACCOUNT_A,
+        folderId: FOLDER_A,
+        messageId: null,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+    });
+    fixture.newPort.resolveScopeActorContext = async () => ({
+      userId: USER_A,
+      groupMemberUserIds: [USER_A],
+    });
+
+    const scope = await fixture.service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+    });
+    expect(scope.kind).toBe('restricted');
+    if (scope.kind !== 'restricted') return;
+    expect(scope.clauses).toHaveLength(2);
+    expect(scope.clauses?.some((clause) => clause.folderIds.includes(FOLDER_A))).toBe(true);
+    expect(scope.clauses?.some((clause) => (
+      clause.accountIds.includes(ACCOUNT_A)
+      && (clause.excludeFolderIds?.includes(FOLDER_A) ?? false)
+      && !clause.constraints
+    ))).toBe(true);
+  });
+
+  test('shadow resolveScope excludes only the message for constrained message grants', async () => {
+    const messageId = 9001;
+    const fixture = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 2,
+        resourceType: 'message',
+        accountId: ACCOUNT_A,
+        folderId: FOLDER_A,
+        messageId,
+        constraints: {
+          assignmentMode: 'assigned_to_me',
+          categoryAllowIds: [],
+          categoryExcludeIds: [],
+          tagAllowValues: [],
+          tagExcludeValues: [],
+        },
+      }],
+    });
+    fixture.newPort.resolveScopeActorContext = async () => ({
+      userId: USER_A,
+      groupMemberUserIds: [USER_A],
+    });
+
+    const scope = await fixture.service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+    });
+    expect(scope.kind).toBe('restricted');
+    if (scope.kind !== 'restricted') return;
+    const remainder = scope.clauses?.find((clause) => (
+      clause.accountIds.includes(ACCOUNT_A)
+      && !clause.constraints
+      && (clause.excludeMessageIds?.includes(messageId) ?? false)
+    ));
+    expect(remainder).toBeDefined();
+    expect(remainder?.excludeFolderIds ?? []).not.toContain(FOLDER_A);
   });
 
   test('enforce mode uses only the new ACL and never calls the legacy port', async () => {

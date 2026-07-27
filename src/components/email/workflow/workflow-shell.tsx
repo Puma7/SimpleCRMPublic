@@ -12,6 +12,8 @@ import {
 import {
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  workflowGraphHasChainStopNode,
+  workflowGraphHasSideEffectNode,
 } from "@shared/email-workflow-graph-validate"
 import {
   exportWorkflowBundle,
@@ -34,6 +36,7 @@ import {
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
+import { useAuth } from "@/components/auth/auth-context"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -79,6 +82,7 @@ import { WorkflowReferenceDialog } from "./workflow-reference-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
+import { decideWorkflowSaveGate, type WorkflowSaveBaseline } from "./workflow-save-gate"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 import { validateWorkflowGraphConfigs } from "@shared/workflow-config-validate"
@@ -142,6 +146,11 @@ function triggerFromGraph(doc: WorkflowGraphDocument): string {
 export function WorkflowShell() {
   const electronReady = useHasElectron()
   const serverClientMode = getRendererTransport().kind === "http"
+  const { hasCapability, canViewWorkflows, capabilitiesReady } = useAuth()
+  // Desktop edition has full local control; server edition respects capabilities.
+  const canEditWorkflows = !serverClientMode || hasCapability("workflows.edit")
+  const canManageWorkflows = !serverClientMode || hasCapability("workflows.manage")
+  const canRunWorkflows = !serverClientMode || hasCapability("workflows.run")
   const workflowFileTransferAvailable = electronReady || serverClientMode
   const workflowBackfillAvailable = electronReady || serverClientMode
   const workflowDryRunAvailable = electronReady || serverClientMode
@@ -171,6 +180,13 @@ export function WorkflowShell() {
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  /**
+   * Baseline for omitting unchanged execution-relevant fields on editor-only
+   * saves. Enthaelt ALLE Felder, die der Server als ausfuehrungsrelevant
+   * behandelt (Graph, enabled, Zeitplan, Zeitplan-Konto, Prioritaet) — sonst
+   * laesst ein unveraendert mitgesendeter Zeitplan das manage-Gate anschlagen.
+   */
+  const saveBaselineRef = useRef<WorkflowSaveBaseline | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [triggerFilter, setTriggerFilter] = useState<
     "all" | "inbound" | "outbound" | "other"
@@ -226,9 +242,28 @@ export function WorkflowShell() {
     }
   }, [accountScope])
 
+  // Wird workflows.view waehrend der Sitzung entzogen (Gruppenrecht geaendert →
+  // email_acl.changed → neue Capability-Liste), reicht es nicht, Navigation und
+  // Aktionen auszublenden: die bereits geladenen Zeilen und der offene Graph
+  // blieben sonst vollstaendig sichtbar. Deshalb hier alles verwerfen und gar
+  // nicht erst neu laden.
+  const workflowsVisible = !serverClientMode || !capabilitiesReady || canViewWorkflows
+
   useEffect(() => {
+    if (serverClientMode && capabilitiesReady && !canViewWorkflows) {
+      setRows([])
+      setAccounts([])
+      setSelectedId(null)
+      setSelectedNodeId(null)
+      setSelectedEdgeId(null)
+      setEditJson("")
+      useWorkflowEditorStore.getState().resetFromGraph(null)
+      saveBaselineRef.current = null
+      setLoading(false)
+      return
+    }
     void load()
-  }, [load])
+  }, [canViewWorkflows, capabilitiesReady, load, serverClientMode])
 
   useEffect(() => {
     const subscription = subscribeServerEvents({
@@ -269,14 +304,39 @@ export function WorkflowShell() {
       ? enrichRegistryGraphDocument(doc, labelByType)
       : doc
     useWorkflowEditorStore.getState().resetFromGraph(enriched)
+    // Baseline in DERSELBEN kanonischen Form wie beim Speichern ablegen:
+    // resetFromGraph ergaenzt fehlende Layout-Positionen und toGraphDocument
+    // rundet sie + verwirft Zusatzfelder. Das rohe Dokument als Baseline wuerde
+    // bei aelteren/importierten Graphen ein graphChanged ohne Nutzeraenderung
+    // melden — und damit workflows.edit ohne workflows.manage selbst reine
+    // Namens-/Prioritaets-/Cron-Aenderungen am manage-Gate scheitern lassen.
+    saveBaselineRef.current = {
+      enabled: w.enabled === 1,
+      graphJson: JSON.stringify(useWorkflowEditorStore.getState().toGraphDocument()),
+      // Exakt die Normalisierung, die handleSave beim Senden anwendet.
+      cronExpr: (w.cron_expr ?? "").trim() || null,
+      scheduleAccountId: w.schedule_account_id ?? null,
+      priority: w.priority,
+    }
   }
 
   useEffect(() => {
     if (!catalogLoaded || labelByType.size === 0) return
-    const nodes = useWorkflowEditorStore.getState().nodes
+    const store = useWorkflowEditorStore.getState()
+    const nodes = store.nodes
     const next = enrichRegistryFlowNodes(nodes, labelByType)
-    if (next !== nodes) {
-      useWorkflowEditorStore.getState().setNodes(next)
+    if (next === nodes) return
+    const beforeJson = JSON.stringify(store.toGraphDocument())
+    store.setNodes(next)
+    // Katalog-Labels nachtraeglich anzureichern ist KEINE Nutzeraenderung:
+    // solange der Graph noch exakt der Baseline entspricht, die Baseline
+    // mitziehen, sonst gilt der Workflow faelschlich als geaendert.
+    const baseline = saveBaselineRef.current
+    if (baseline && baseline.graphJson === beforeJson) {
+      saveBaselineRef.current = {
+        ...baseline,
+        graphJson: JSON.stringify(useWorkflowEditorStore.getState().toGraphDocument()),
+      }
     }
   }, [catalogLoaded, labelByType])
 
@@ -408,18 +468,60 @@ export function WorkflowShell() {
           return
         }
       }
+      const graphJson = JSON.stringify(graphDoc)
+      const cronValue = cronTrim || null
+      const scheduleAccountValue = editScheduleAccountId === "" ? null : editScheduleAccountId
+      const priorityValue = parseInt(editPriority, 10) || 100
+      // Zeitplan und Zeitplan-Konto sind serverseitig ausfuehrungsrelevant
+      // (patchTouchesOutbound): unveraendert mitgesendet wuerden sie das
+      // manage-Gate ausloesen und eine reine Namensaenderung mit 403 abweisen.
+      const gate = decideWorkflowSaveGate(
+        saveBaselineRef.current,
+        {
+          enabled: editEnabled,
+          graphJson,
+          cronExpr: cronValue,
+          scheduleAccountId: scheduleAccountValue,
+          priority: priorityValue,
+        },
+        {
+          canManageWorkflows,
+          // Ein Kettenabbruch schaltet alle nachrangigen Inbound-Workflows ab
+          // und verlangt serverseitig dieselbe Stufe wie ein Seiteneffekt.
+          hasSideEffects:
+            workflowGraphHasSideEffectNode(graphDoc) || workflowGraphHasChainStopNode(graphDoc),
+        },
+      )
+      if (gate.blocked) {
+        toast.error(
+          "Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage",
+        )
+        setSaving(false)
+        return
+      }
       await invokeRenderer(IPCChannels.Email.UpdateWorkflow, {
         id: selectedId,
         name: editName.trim(),
-        trigger: trig,
-        priority: parseInt(editPriority, 10) || 100,
+        priority: priorityValue,
         definitionJson,
-        graphJson: JSON.stringify(graphDoc),
-        cronExpr: cronTrim || null,
-        scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
-        enabled: editEnabled,
+        ...(gate.omitExecutionFields
+          ? {}
+          : {
+              trigger: trig,
+              graphJson,
+              enabled: editEnabled,
+              cronExpr: cronValue,
+              scheduleAccountId: scheduleAccountValue,
+            }),
       })
       setEditJson(definitionJson)
+      saveBaselineRef.current = {
+        enabled: editEnabled,
+        graphJson,
+        cronExpr: cronValue,
+        scheduleAccountId: scheduleAccountValue,
+        priority: priorityValue,
+      }
       toast.success("Gespeichert.")
       await load()
     } catch (e) {
@@ -580,6 +682,19 @@ export function WorkflowShell() {
     }
   }
 
+  if (!workflowsVisible) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 bg-background p-8 text-center">
+        <Workflow className="h-6 w-6 text-muted-foreground" />
+        <h1 className="text-lg font-semibold tracking-tight">Workflows</h1>
+        <p className="max-w-md text-sm text-muted-foreground">
+          Für diesen Bereich fehlt die Berechtigung „Workflows ansehen“. Wenden Sie sich an eine
+          Administratorin oder einen Administrator.
+        </p>
+      </div>
+    )
+  }
+
   return (
     <TooltipProvider delayDuration={150}>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
@@ -601,7 +716,7 @@ export function WorkflowShell() {
               type="button"
               size="sm"
               variant="outline"
-              disabled={!workflowFileTransferAvailable}
+              disabled={!canEditWorkflows || !workflowFileTransferAvailable}
               onClick={() => void handleImportFile()}
               className="gap-2"
             >
@@ -623,7 +738,7 @@ export function WorkflowShell() {
               type="button"
               size="sm"
               variant="outline"
-              disabled={selectedId == null}
+              disabled={!canManageWorkflows || selectedId == null}
               onClick={() => setTemplatesOpen(true)}
             >
               Vorlagen
@@ -673,6 +788,8 @@ export function WorkflowShell() {
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
                   className="h-8"
+                  disabled={!canEditWorkflows}
+                  readOnly={!canEditWorkflows}
                 />
               </div>
               <div className="w-[88px] space-y-1">
@@ -683,6 +800,8 @@ export function WorkflowShell() {
                   value={editPriority}
                   onChange={(e) => setEditPriority(e.target.value)}
                   className="h-8"
+                  disabled={!canEditWorkflows}
+                  readOnly={!canEditWorkflows}
                 />
               </div>
               <div className="flex min-w-[200px] flex-col justify-end gap-1 pb-0.5">
@@ -691,11 +810,29 @@ export function WorkflowShell() {
                 </span>
                 <p className="text-sm font-medium leading-tight">{triggerKindDisplay}</p>
                 <p className="text-[10px] text-muted-foreground">
-                  Im Graph am Trigger-Knoten bearbeiten
+                  {canEditWorkflows
+                    ? "Im Graph am Trigger-Knoten bearbeiten"
+                    : "Nur Ansicht — Bearbeitung erfordert workflows.edit"}
                 </p>
               </div>
               <div className="flex items-center gap-2 self-center pb-1">
-                <Switch id="wf-en" checked={editEnabled} onCheckedChange={setEditEnabled} />
+                <Switch
+                  id="wf-en"
+                  checked={editEnabled}
+                  onCheckedChange={(on) => {
+                    if (on && !canManageWorkflows) {
+                      const graph = useWorkflowEditorStore.getState().toGraphDocument()
+                      if (workflowGraphHasSideEffectNode(graph) || workflowGraphHasChainStopNode(graph)) {
+                        toast.error(
+                          "Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage",
+                        )
+                        return
+                      }
+                    }
+                    setEditEnabled(on)
+                  }}
+                  disabled={!canEditWorkflows}
+                />
                 <Label htmlFor="wf-en" className="cursor-pointer text-xs font-normal">
                   Aktiv
                 </Label>
@@ -707,6 +844,7 @@ export function WorkflowShell() {
                   variant="outline"
                   className="gap-2"
                   title="Knoten automatisch anordnen (von oben nach unten)"
+                  disabled={!canEditWorkflows}
                   onClick={() => {
                     useWorkflowEditorStore.getState().applyAutoLayout()
                     toast.success("Layout angewendet — bitte speichern, um Positionen zu behalten.")
@@ -719,7 +857,7 @@ export function WorkflowShell() {
                   type="button"
                   size="sm"
                   onClick={() => void handleSave()}
-                  disabled={saving}
+                  disabled={!canEditWorkflows || saving}
                   className="gap-2"
                 >
                   {saving ? (
@@ -734,6 +872,7 @@ export function WorkflowShell() {
                   size="sm"
                   variant="outline"
                   onClick={() => void handleDelete()}
+                  disabled={!canManageWorkflows}
                   aria-label="Workflow löschen"
                 >
                   <Trash2 className="h-4 w-4" />
@@ -764,6 +903,8 @@ export function WorkflowShell() {
                       onChange={(e) => setEditCron(e.target.value)}
                       placeholder="*/15 * * * *"
                       className="h-8 font-mono text-xs"
+                      disabled={!canEditWorkflows}
+                      readOnly={!canEditWorkflows}
                     />
                   </div>
                   <div className="min-w-[180px] space-y-1">
@@ -775,6 +916,7 @@ export function WorkflowShell() {
                       value={
                         editScheduleAccountId === "" ? "" : String(editScheduleAccountId)
                       }
+                      disabled={!canEditWorkflows}
                       onChange={(e) =>
                         setEditScheduleAccountId(
                           e.target.value ? parseInt(e.target.value, 10) : "",
@@ -810,7 +952,7 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="secondary"
-                        disabled={!workflowDryRunAvailable || !idValid}
+                        disabled={!canRunWorkflows || !workflowDryRunAvailable || !idValid}
                         onClick={async () => {
                           if (!Number.isFinite(parsedId) || selectedId == null) return
                           const r = await invokeRenderer(
@@ -852,7 +994,7 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="default"
-                        disabled={selectedId == null || !msgOk || executingNow}
+                        disabled={!canRunWorkflows || selectedId == null || !msgOk || executingNow}
                         onClick={async () => {
                           if (selectedId == null || executingNow) return
                           setExecutingNow(true)
@@ -885,6 +1027,16 @@ export function WorkflowShell() {
                                 `Ausgeführt (${r.status ?? "ok"}): ${(r.log ?? []).slice(-2).join(", ")}`,
                               )
                             }
+                          } catch (e) {
+                            // Der Server lehnt echte Laeufe mit Seiteneffekt-Knoten
+                            // fuer Nicht-Admins ab; ohne catch endet das als
+                            // unbehandelte Rejection ohne jede Rueckmeldung.
+                            logError("workflow-shell: execute now", e)
+                            toast.error(
+                              e instanceof Error
+                                ? e.message
+                                : "Ausführung abgelehnt — für diesen Graph ist nur ein Testlauf möglich.",
+                            )
                           } finally {
                             setExecutingNow(false)
                           }
@@ -898,7 +1050,7 @@ export function WorkflowShell() {
                     type="button"
                     size="sm"
                     variant="outline"
-                    disabled={!workflowBackfillAvailable || backfilling}
+                    disabled={!canManageWorkflows || !workflowBackfillAvailable || backfilling}
                     onClick={() => void handleBackfill()}
                     className="gap-2"
                   >
@@ -975,7 +1127,8 @@ export function WorkflowShell() {
                   loading={loading}
                   onSelect={selectRowById}
                   onCreate={() => void handleCreate()}
-                  onDelete={(id) => void handleDeleteId(id)}
+                  onDelete={canManageWorkflows ? (id) => void handleDeleteId(id) : undefined}
+                  canEdit={canEditWorkflows}
                 />
               </div>
             </ResizablePanel>
@@ -990,10 +1143,13 @@ export function WorkflowShell() {
                   </div>
                 ) : (
                   <>
-                    <div className="absolute left-3 top-3 z-10">
-                      <NodePalette />
-                    </div>
+                    {canEditWorkflows ? (
+                      <div className="absolute left-3 top-3 z-10">
+                        <NodePalette />
+                      </div>
+                    ) : null}
                     <WorkflowCanvas
+                      readOnly={!canEditWorkflows}
                       onSelectionChange={(selection) => {
                         setSelectedNodeId(selection.nodeId)
                         setSelectedEdgeId(selection.edgeId)
@@ -1011,7 +1167,12 @@ export function WorkflowShell() {
             >
               {selectedId != null ? (
                 <div className="flex h-full min-h-0 flex-col">
-                  <div className="flex min-h-0 flex-[3] flex-col overflow-hidden">
+                  <div
+                    className={cn(
+                      "flex min-h-0 flex-[3] flex-col overflow-hidden",
+                      !canEditWorkflows && "pointer-events-none opacity-90",
+                    )}
+                  >
                     <NodePropertiesPanel
                       selectedNodeId={selectedNodeId}
                       selectedEdgeId={selectedEdgeId}
@@ -1041,6 +1202,7 @@ export function WorkflowShell() {
           onOpenChange={setJsonDrawerOpen}
           jsonValue={editJson}
           onJsonChange={setEditJson}
+          readOnly={!canEditWorkflows}
           graphJson={graphJsonPreview}
         />
         <WorkflowReferenceDialog open={referenceOpen} onOpenChange={setReferenceOpen} />
@@ -1048,6 +1210,7 @@ export function WorkflowShell() {
           open={templatesOpen}
           onOpenChange={setTemplatesOpen}
           onPick={(t: WorkflowTemplateDto) => {
+            if (!canManageWorkflows) return
             // Eine Vorlage ERSETZT den aktuellen Canvas — nie ohne Rückfrage
             // über bestehende Arbeit bügeln (mehr als nur der Trigger-Knoten).
             const currentNodes = useWorkflowEditorStore.getState().nodes
@@ -1066,6 +1229,7 @@ export function WorkflowShell() {
         />
         <WorkflowVersionsDialog
           workflowId={selectedId}
+          canEdit={canEditWorkflows}
           open={versionsOpen}
           onOpenChange={setVersionsOpen}
           onRestored={() => {

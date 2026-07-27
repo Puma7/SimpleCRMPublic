@@ -329,7 +329,9 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             chainStop: false,
             now: new Date(),
           });
-          if (join !== 'ready') {
+          // 'ready_error' zaehlt hier ebenfalls als fortschaltbar: der Job ist
+          // endgueltig gescheitert, die Kette darf nicht stehen bleiben.
+          if (join !== 'ready' && join !== 'ready_error') {
             await client.query('COMMIT');
             return;
           }
@@ -516,10 +518,13 @@ export function graphileJobKeyForJob(
     // Analog zu ai.draft_reply: der konkrete Entwurf gehört in den Key, sonst
     // ersetzt eine zweite Gegenprüfung die erste und ein Entwurf bleibt ungeprüft.
     const draftId = graphileKeyScalar(payload.draftId);
+    const runId = graphileKeyScalar(payload.runId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}`;
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
     }
-    if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}`;
+    if (workspaceKey && messageId) {
+      return `${type}:${workspaceKey}:${messageId}:${draftId ?? 'none'}:${runId ?? 'none'}`;
+    }
   }
   if (type === 'ai.transform_text') {
     const messageId = graphileKeyScalar(payload.messageId);

@@ -40,6 +40,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  requireAdmin,
   requirePrincipal,
 } from './http';
 
@@ -672,6 +673,7 @@ async function handleCreateEmailMessageTag(
   const tag = result.tag;
   await auditEmailMessageTag(ports, principal, 'email_message_tag.created', tag, { messageId: tag.messageId, tag: tag.tag });
   await publishEmailMessageTag(ports, principal.workspaceId, 'email_message_tag.created', tag, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, { tags: [tag.tag] });
   return data(201, sanitizeEmailMessageTag(tag));
 }
 
@@ -697,6 +699,7 @@ async function handleDeleteEmailMessageTag(
 
   await auditEmailMessageTag(ports, principal, 'email_message_tag.deleted', tag, { messageId: tag.messageId, tag: tag.tag });
   await publishEmailMessageTag(ports, principal.workspaceId, 'email_message_tag.deleted', tag, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, { tags: [tag.tag] });
   return data(200, { deleted: true, tag: sanitizeEmailMessageTag(tag) });
 }
 
@@ -733,6 +736,7 @@ async function handleDeleteEmailMessageTagForMessage(
 
   await auditEmailMessageTag(ports, principal, 'email_message_tag.deleted', deleted, { messageId: deleted.messageId, tag: deleted.tag });
   await publishEmailMessageTag(ports, principal.workspaceId, 'email_message_tag.deleted', deleted, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, { tags: [deleted.tag] });
   return data(200, { deleted: true, tag: sanitizeEmailMessageTag(deleted) });
 }
 
@@ -848,11 +852,26 @@ async function handleDeleteEmailCategory(
     return error(503, 'email_categories_unavailable', 'Email category API nicht konfiguriert');
   }
 
-  const category = await ports.emailCategories.delete({
-    workspaceId: principal.workspaceId,
-    actorUserId: principal.userId,
-    id,
-  });
+  let category;
+  try {
+    category = await ports.emailCategories.delete({
+      workspaceId: principal.workspaceId,
+      actorUserId: principal.userId,
+      id,
+    });
+  } catch (deleteError) {
+    // Die Kategorie steht als Ausschluss in einem Mail-ACL-Constraint: der
+    // Cascade auf email_message_categories wuerde den Filter still aushebeln
+    // und zuvor verborgene Nachrichten sichtbar machen.
+    if (deleteError instanceof Error && deleteError.name === 'EmailCategoryInUseByAclError') {
+      return error(
+        409,
+        'email_category_in_use_by_acl',
+        'Kategorie wird in einem Sichtbarkeitsfilter verwendet und kann nicht geloescht werden',
+      );
+    }
+    throw deleteError;
+  }
   if (!category) return error(404, 'email_category_not_found', 'Email category nicht gefunden');
 
   await auditEmailCategory(ports, principal, 'email_category.deleted', category, { parentId: category.parentId });
@@ -896,6 +915,9 @@ async function handleCreateEmailMessageCategory(
     categoryId: category.categoryId,
   });
   await publishEmailMessageCategory(ports, principal.workspaceId, 'email_message_category.created', category, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, {
+    categoryIds: category.categoryId === null ? [] : [category.categoryId],
+  });
   return data(201, sanitizeEmailMessageCategory(category));
 }
 
@@ -924,6 +946,9 @@ async function handleDeleteEmailMessageCategory(
     categoryId: category.categoryId,
   });
   await publishEmailMessageCategory(ports, principal.workspaceId, 'email_message_category.deleted', category, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, {
+    categoryIds: category.categoryId === null ? [] : [category.categoryId],
+  });
   return data(200, { deleted: true, messageCategory: sanitizeEmailMessageCategory(category) });
 }
 
@@ -1133,6 +1158,73 @@ async function handleDeleteEmailRemoteContentAllowlist(
   return data(200, { deleted: true, remoteContentAllowlist: sanitizeEmailRemoteContentAllowlist(entry) });
 }
 
+/**
+ * Die automatische Verknuepfung ueber die Id-Namensgleichheit im Port ist ein
+ * IMPLIZITES linkedUserId: sie loest denselben workspaceweiten Backfill von
+ * assigned_to_user_id aus wie das explizite Feld, das
+ * rejectLinkedUserMutationWithoutAdmin Nicht-Admins verwehrt. Die Team-Member-
+ * Routen stehen aber auch einem konto-gebundenen mail.account.manage-Halter
+ * offen — der koennte seine eigene Nutzer-UUID als Team-Id anlegen, den
+ * Admin-Guard so umgehen und sich freie Zuweisungen aus fremden Konten ueber
+ * assigned_to_me sichtbar machen. Fuer Nicht-Admins daher ausdruecklich ohne
+ * Verknuepfung anlegen.
+ */
+function creationValuesWithoutImplicitLink<T extends { linkedUserId?: string | null }>(
+  principal: AuthenticatedPrincipal,
+  values: T,
+): T {
+  if (requireAdmin(principal)) return values;
+  return { ...values, linkedUserId: null };
+}
+
+/**
+ * Eine Kategorie-/Tag-Aenderung kann die Sichtbarkeit einer Nachricht fuer
+ * Nutzer mit entsprechendem Sichtbarkeitsfilter kippen (sql-scope:
+ * categoryAllow/Exclude, tagAllow/Exclude). Die reinen
+ * email_message_tag/category-Ereignisse helfen dabei nicht: sie werden ueber
+ * den AKTUELLEN Nachrichten-Lookup autorisiert, erreichen den gerade
+ * ausgeschlossenen Nutzer also nicht mehr. Darum zusaetzlich eine gezielte
+ * email_acl.changed-Invalidierung an alle Nutzer, deren Filter genau diese
+ * Kategorie/diesen Tag nennen. Bewusst grob (kein Vorher/Nachher-Diff pro
+ * Nachricht): Ueber-Invalidierung kostet einen Refresh, eine verpasste laesst
+ * eine gesperrte Nachricht offen. Best effort — die Mutation ist committed.
+ */
+async function publishVisibilityFilterInvalidation(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  actorUserId: string,
+  affected: Readonly<{ categoryIds?: readonly number[]; tags?: readonly string[] }>,
+): Promise<void> {
+  let targets: readonly string[] = [];
+  try {
+    const resolve = ports.mailAccess?.resolveConstraintSubjectUserIds;
+    if (!resolve) return;
+    targets = await resolve.call(ports.mailAccess, { workspaceId, ...affected });
+  } catch (error) {
+    console.warn(
+      `[mail-metadata] visibility filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  for (const targetUserId of new Set(targets)) {
+    try {
+      await ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId,
+        entityType: 'email_acl',
+        entityId: targetUserId,
+        actorUserId,
+        occurredAt: new Date().toISOString(),
+        payload: { targetUserId, state: 'changed' },
+      });
+    } catch (error) {
+      console.warn(
+        `[mail-metadata] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+}
+
 async function handleCreateEmailTeamMember(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1151,17 +1243,78 @@ async function handleCreateEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const linkedUserDenied = rejectLinkedUserMutationWithoutAdmin(
+    principal,
+    parsed.values.linkedUserId,
+    Object.prototype.hasOwnProperty.call(parsed.values, 'linkedUserId'),
+  );
+  if (linkedUserDenied) return linkedUserDenied;
+  const unknownLinkedUser = await rejectUnknownLinkedUser(
+    ports,
+    principal.workspaceId,
+    parsed.values.linkedUserId,
+  );
+  if (unknownLinkedUser) return unknownLinkedUser;
+
   const result = await ports.emailTeamMembers.create({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    values: parsed.values,
+    values: creationValuesWithoutImplicitLink(principal, parsed.values),
   });
   if (!result.ok) return error(409, 'email_team_member_conflict', 'Email team member existiert bereits');
 
   const member = result.member;
   await auditEmailTeamMember(ports, principal, 'email_team_member.created', member, { role: member.role });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.created', member, principal.userId);
+  // Das Anlegen backfillt assigned_to_user_id fuer bereits vorhandene freie
+  // Zuweisungen dieses Mitglieds — der verknuepfte Nutzer und seine Gruppen-Peers
+  // sehen diese Nachrichten ab sofort und muessen ihre Liste neu laden.
+  await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [member.linkedUserId]);
   return data(201, sanitizeEmailTeamMember(member));
+}
+
+/**
+ * Ein manuell eingegebenes linkedUserId ist syntaktisch geprueft, kann aber auf
+ * einen nicht existierenden Nutzer zeigen. Ohne diese Aufloesung wirft der Port
+ * eine gewoehnliche Exception und aus einem Eingabefehler wird ein HTTP 500 —
+ * bei einem Feld, in das Admins UUIDs von Hand eintragen, ein Regelfall.
+ */
+/**
+ * Der linkedUserId-Backfill schreibt assigned_to_user_id fuer ALLE Nachrichten
+ * dieses Teammitglieds im Workspace um — auch in Konten, fuer die ein
+ * account-gebundener mail.account.manage-Halter nicht autorisiert ist. In
+ * Kombination mit einem assigned_to_me-Grant koennte er sich damit fremde
+ * Nachrichten zuschreiben. Die Verknuepfung bleibt daher globalen Verwaltern
+ * vorbehalten; alle anderen Felder des Teammitglieds sind unberuehrt.
+ */
+function rejectLinkedUserMutationWithoutAdmin(
+  principal: AuthenticatedPrincipal,
+  linkedUserId: string | null | undefined,
+  provided: boolean,
+): ApiResponse | null {
+  if (!provided) return null;
+  if (requireAdmin(principal)) return null;
+  return error(403, 'forbidden', 'Die Benutzer-Verknuepfung darf nur von Administratoren geaendert werden');
+}
+
+async function rejectUnknownLinkedUser(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  linkedUserId: string | null | undefined,
+): Promise<ApiResponse | null> {
+  if (!linkedUserId) return null;
+  const auth = ports.auth;
+  if (auth?.getUser) {
+    const user = await auth.getUser({ workspaceId, userId: linkedUserId });
+    if (user) return null;
+  } else if (auth?.listUsers) {
+    const users = await auth.listUsers({ workspaceId });
+    if (users.some((user) => user.id === linkedUserId)) return null;
+  } else {
+    // Ohne Auth-Port keine Aufloesung moeglich — der Port validiert weiterhin.
+    return null;
+  }
+  return error(404, 'linked_user_not_found', 'linkedUserId verweist auf keinen Benutzer dieses Workspace');
 }
 
 async function handleUpsertEmailTeamMember(
@@ -1185,20 +1338,40 @@ async function handleUpsertEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const linkedUserDenied = rejectLinkedUserMutationWithoutAdmin(
+    principal,
+    parsed.values.linkedUserId,
+    Object.prototype.hasOwnProperty.call(parsed.values, 'linkedUserId'),
+  );
+  if (linkedUserDenied) return linkedUserDenied;
+  const unknownLinkedUser = await rejectUnknownLinkedUser(
+    ports,
+    principal.workspaceId,
+    parsed.values.linkedUserId,
+  );
+  if (unknownLinkedUser) return unknownLinkedUser;
+
   const created = await ports.emailTeamMembers.create({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    values: {
+    values: creationValuesWithoutImplicitLink(principal, {
       id,
       ...parsed.values,
-    },
+    }),
   });
   if (created.ok) {
     const member = created.member;
     await auditEmailTeamMember(ports, principal, 'email_team_member.created', member, { role: member.role });
     await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.created', member, principal.userId);
+    // Wie im POST-Pfad: der Create-Backfill macht Bestandszuweisungen fuer den
+    // verknuepften Nutzer sichtbar.
+    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [member.linkedUserId]);
     return data(201, sanitizeEmailTeamMember(member));
   }
+
+  const previousLinkedUserId = parsed.values.linkedUserId !== undefined && ports.emailTeamMembers.get
+    ? (await ports.emailTeamMembers.get({ workspaceId: principal.workspaceId, id }))?.linkedUserId ?? null
+    : null;
 
   const updated = await ports.emailTeamMembers.update({
     workspaceId: principal.workspaceId,
@@ -1210,7 +1383,88 @@ async function handleUpsertEmailTeamMember(
 
   await auditEmailTeamMember(ports, principal, 'email_team_member.updated', updated, { fields: Object.keys(parsed.values).sort() });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.updated', updated, principal.userId);
+  if (parsed.values.linkedUserId !== undefined) {
+    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
+      // Der vom Port aus derselben gesperrten Transaktion gemeldete Vorwert
+      // gewinnt; der Vorher-Read ist nur der Fallback fuer Ports ohne ihn.
+      updated.previousLinkedUserId !== undefined ? updated.previousLinkedUserId : previousLinkedUserId,
+      updated.linkedUserId,
+    ]);
+  }
   return data(200, sanitizeEmailTeamMember(updated));
+}
+
+/**
+ * Ein geaenderter/geloeschter linkedUserId schreibt email_messages.assigned_to_user_id
+ * fuer alle Nachrichten dieses Mitglieds um und entzieht damit Nutzern mit
+ * assigned_to_me / assigned_to_my_groups sofort die Sichtbarkeit. Das reine
+ * email_team_member.updated behandelt die Shell nur als Konto-Refresh, nicht als
+ * Listen-/ACL-Refresh — die betroffenen Nutzer saehen sonst gesperrte Nachrichten
+ * bis zum naechsten zufaelligen Refresh weiter. Best effort: die Mutation ist
+ * committed, ein Event-Fehler darf daraus keinen 500 machen.
+ */
+async function publishLinkedUserAclInvalidation(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  actorUserId: string,
+  affectedUserIds: ReadonlyArray<string | null | undefined>,
+  options: { includeAssignmentFilterUsers?: boolean } = {},
+): Promise<void> {
+  const direct = [...new Set(affectedUserIds.filter((id): id is string => Boolean(id)))];
+  // Auch die Gruppen-Peers: assigned_to_my_groups bezieht alle Nutzer mit
+  // gemeinsamer Gruppe ein, deren Sicht auf die umgehaengten Nachrichten
+  // aendert sich also mit. Best effort — die Mutation ist committed.
+  const peers: string[] = [];
+  for (const userId of direct) {
+    try {
+      const resolvePeers = ports.mailAccess?.resolveGroupPeerUserIds;
+      if (resolvePeers) {
+        peers.push(...await resolvePeers.call(ports.mailAccess, workspaceId, userId));
+      }
+    } catch (error) {
+      console.warn(
+        `[email-team-member] group peer lookup failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  // Zusaetzlich alle Nutzer mit einem Zuweisungsfilter: wechselt eine Nachricht
+  // in den Zustand "nicht zugewiesen", wird sie fuer assignmentMode:'unassigned'
+  // sofort sichtbar — das betrifft Nutzer, die mit dem geloeschten Mitglied gar
+  // nichts zu tun hatten (und greift auch, wenn es nie verknuepft war).
+  const assignmentFiltered: string[] = [];
+  if (options.includeAssignmentFilterUsers) {
+    try {
+      const resolveConstrained = ports.mailAccess?.resolveConstraintSubjectUserIds;
+      if (resolveConstrained) {
+        assignmentFiltered.push(...await resolveConstrained.call(ports.mailAccess, {
+          workspaceId,
+          includeAssignmentModes: true,
+        }));
+      }
+    } catch (error) {
+      console.warn(
+        `[email-team-member] assignment filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const targets = [...new Set([...direct, ...peers, ...assignmentFiltered])];
+  for (const targetUserId of targets) {
+    try {
+      await ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId,
+        entityType: 'email_acl',
+        entityId: targetUserId,
+        actorUserId,
+        occurredAt: new Date().toISOString(),
+        payload: { targetUserId, state: 'changed' },
+      });
+    } catch (error) {
+      console.warn(
+        `[email-team-member] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 }
 
 async function handleUpdateEmailTeamMember(
@@ -1234,6 +1488,25 @@ async function handleUpdateEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const linkedUserDenied = rejectLinkedUserMutationWithoutAdmin(
+    principal,
+    parsed.values.linkedUserId,
+    Object.prototype.hasOwnProperty.call(parsed.values, 'linkedUserId'),
+  );
+  if (linkedUserDenied) return linkedUserDenied;
+  const unknownLinkedUser = await rejectUnknownLinkedUser(
+    ports,
+    principal.workspaceId,
+    parsed.values.linkedUserId,
+  );
+  if (unknownLinkedUser) return unknownLinkedUser;
+
+  // Vorherige Verknuepfung merken: aendert sie sich, verlieren beide Seiten
+  // (alter und neuer Nutzer) Sichtbarkeit bzw. bekommen sie neu.
+  const previousLinkedUserId = parsed.values.linkedUserId !== undefined && ports.emailTeamMembers.get
+    ? (await ports.emailTeamMembers.get({ workspaceId: principal.workspaceId, id }))?.linkedUserId ?? null
+    : null;
+
   const member = await ports.emailTeamMembers.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1244,6 +1517,13 @@ async function handleUpdateEmailTeamMember(
 
   await auditEmailTeamMember(ports, principal, 'email_team_member.updated', member, { fields: Object.keys(parsed.values).sort() });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.updated', member, principal.userId);
+  if (parsed.values.linkedUserId !== undefined) {
+    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
+      // Siehe handleUpsertEmailTeamMember: der atomar gelesene Vorwert gewinnt.
+      member.previousLinkedUserId !== undefined ? member.previousLinkedUserId : previousLinkedUserId,
+      member.linkedUserId,
+    ]);
+  }
   return data(200, sanitizeEmailTeamMember(member));
 }
 
@@ -1259,6 +1539,17 @@ async function handleDeleteEmailTeamMember(
   if (!ports.emailTeamMembers?.delete) {
     return error(503, 'email_team_members_unavailable', 'Email team member API nicht konfiguriert');
   }
+  // Das Loeschen wirkt workspaceweit: die Rolle verschwindet fuer ALLE Konten und
+  // der Cleanup unten raeumt assigned_to/assigned_to_user_id in jedem Konto ab —
+  // auch in solchen, fuer die ein konto-gebundener mail.account.manage-Halter
+  // nicht autorisiert ist (die Route steht laut Policy-Manifest auch einem
+  // eingeschraenkten Scope offen). Dort wuerden Nachrichten in den Zustand
+  // "nicht zugewiesen" wechseln und fuer entsprechend gefilterte Nutzer sichtbar.
+  // Dieselbe Linie wie bei der Benutzer-Verknuepfung: workspaceweite Wirkung
+  // bleibt Administratoren vorbehalten. Anlegen und Bearbeiten sind unberuehrt.
+  if (!requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Teammitglieder duerfen nur von Administratoren geloescht werden');
+  }
 
   const member = await ports.emailTeamMembers.delete({
     workspaceId: principal.workspaceId,
@@ -1269,6 +1560,19 @@ async function handleDeleteEmailTeamMember(
 
   await auditEmailTeamMember(ports, principal, 'email_team_member.deleted', member, { role: member.role });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.deleted', member, principal.userId);
+  // Der Delete-Pfad raeumt assigned_to/assigned_to_user_id der Nachrichten mit
+  // auf: der zuvor verknuepfte Nutzer und seine Gruppen-Peers verlieren sofort
+  // Sichtbarkeit — und alle Nutzer mit Zuweisungsfilter GEWINNEN sie, weil die
+  // Nachrichten jetzt als "nicht zugewiesen" gelten. Letzteres unabhaengig
+  // davon, ob das Mitglied je verknuepft war; email_team_member.deleted allein
+  // loest bei der Shell keinen Listen-Refresh aus.
+  await publishLinkedUserAclInvalidation(
+    ports,
+    principal.workspaceId,
+    principal.userId,
+    [member.linkedUserId],
+    { includeAssignmentFilterUsers: true },
+  );
   return data(200, { deleted: true, teamMember: sanitizeEmailTeamMember(member) });
 }
 
@@ -2958,6 +3262,8 @@ function parseEmailRemoteContentAllowlistMutationBody(
   return { ok: true, values };
 }
 
+const TEAM_MEMBER_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function parseEmailTeamMemberMutationBody(
   body: unknown,
   options: {
@@ -2977,8 +3283,8 @@ function parseEmailTeamMemberMutationBody(
   const values: EmailTeamMemberMutationInput = {};
   const errors: Array<{ field: string; message: string }> = [];
   const allowedFields = new Set(options.allowId
-    ? ['id', 'displayName', 'role', 'signatureHtml', 'sortOrder']
-    : ['displayName', 'role', 'signatureHtml', 'sortOrder']);
+    ? ['id', 'displayName', 'role', 'signatureHtml', 'sortOrder', 'linkedUserId']
+    : ['displayName', 'role', 'signatureHtml', 'sortOrder', 'linkedUserId']);
 
   for (const key of Object.keys(body)) {
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
@@ -3016,6 +3322,19 @@ function parseEmailTeamMemberMutationBody(
     const sortOrder = normalizeIntegerBody(body.sortOrder, 'sortOrder', 0);
     if (sortOrder.ok) values.sortOrder = sortOrder.value;
     else errors.push({ field: 'sortOrder', message: sortOrder.message });
+  }
+  // Link to a workspace user so assigned_to_me / assigned_to_my_groups can resolve
+  // free-text assignees (e.g. agent-2). null clears the link. The UUID form is
+  // checked here so a typo is a 400 instead of a thrown port error; the port still
+  // verifies that the user actually exists in this workspace.
+  if (Object.prototype.hasOwnProperty.call(body, 'linkedUserId')) {
+    if (body.linkedUserId === null) {
+      values.linkedUserId = null;
+    } else if (typeof body.linkedUserId === 'string' && TEAM_MEMBER_UUID_PATTERN.test(body.linkedUserId.trim())) {
+      values.linkedUserId = body.linkedUserId.trim();
+    } else {
+      errors.push({ field: 'linkedUserId', message: 'linkedUserId muss eine Workspace-User-UUID oder null sein' });
+    }
   }
 
   if (errors.length > 0) {
@@ -3585,6 +3904,7 @@ function sanitizeEmailTeamMember(member: EmailTeamMemberRecord): EmailTeamMember
     role: member.role,
     signatureHtml: member.signatureHtml,
     sortOrder: member.sortOrder,
+    linkedUserId: member.linkedUserId ?? null,
     createdAt: member.createdAt,
     updatedAt: member.updatedAt,
   };

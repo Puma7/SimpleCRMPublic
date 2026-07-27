@@ -18,7 +18,7 @@ import type {
   AuthUserRecord,
   TokenPair,
 } from '../api';
-import { isForbiddenUserMutation } from '../api/capabilities';
+import { expandUserGroupCapabilities, isForbiddenUserMutation } from '../api/capabilities';
 import type { AuthInvitationRow, ServerDatabase, UserRow } from './schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './workspace-context';
 
@@ -768,7 +768,9 @@ async function resolveAccessTokenPrincipal(
       .where('user_group_members.user_id', '=', existing.user_id)
       .execute();
     const granted = [...new Set(permissionRows.map((row) => String(row.permission)))];
-    if (granted.length > 0) capabilities = granted;
+    if (granted.length > 0) {
+      capabilities = expandUserGroupCapabilities(granted);
+    }
   }
 
   return {
