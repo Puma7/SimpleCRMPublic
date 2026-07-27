@@ -35,6 +35,11 @@ export const FALLBACK_PORTS: Record<string, WorkflowNodePortSchema[]> = {
     { id: "send", label: "Senden", kind: "branch" },
     { id: "hold", label: "Prüfen", kind: "branch" },
   ],
+  "ai.outbound_review": [
+    { id: "ok", label: "OK", kind: "success" },
+    { id: "block", label: "Blockiert", kind: "branch" },
+    { id: "error", label: "KI-Fehler", kind: "failure" },
+  ],
 }
 
 /** Deklarierte Schema-Ports, sonst die Canvas-Fallback-Ports (vor Katalog-Fetch). */

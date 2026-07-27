@@ -1,9 +1,9 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-23 (Electron E2E CI gate)
-**Integration branch:** `codex/electron-e2e-ci`
+**Last updated:** 2026-07-26 (Workflow-Semantik Wellen 1–4 + Multinutzer-Server-Audit)
+**Integration branch:** `cursor/workflow-system-improvements-07bc`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
-**Current audit:** [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md) (Multinutzer-Server); vorheriges Mail/UX-Audit: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
+**Current audit:** [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) (Workflow-Wellen); Multinutzer-Server: [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md); Mail/UX: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
 ---
 

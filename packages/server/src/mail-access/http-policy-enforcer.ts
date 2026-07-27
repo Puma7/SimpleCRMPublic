@@ -1038,6 +1038,7 @@ async function assertSupplementalHttpPermissions(
   if (
     canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send'
     || canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send/retry'
+    || canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'
   ) {
     // Scheduling (PATCH sendAt), cancelling (PATCH sendAt:null), and retrying durably
     // ARM the EXISTING stored draft; the worker then transmits its stored body +
@@ -1055,6 +1056,82 @@ async function assertSupplementalHttpPermissions(
         permission: 'mail.draft.edit',
         resource,
       });
+    }
+    // approve-draft-send clears pending approval and arms scheduled send. The job
+    // then marks the reply parent done by default (compose_mark_parent_done unset
+    // ⇒ true), which requires mail.triage at job time. Check that now so we do not
+    // mutate approval state only to fail the subsequent send.
+    if (
+      canonicalPath === '/api/v1/email/messages/:messageId/approve-draft-send'
+      && ports.mailResourceLookup?.resolveScheduledDraftReplyParent
+    ) {
+      const draftId = optionalPositiveInt(
+        selectorValue(req, canonicalPath, { source: 'path', field: 'messageId' }),
+      );
+      if (draftId !== undefined) {
+        const info = await ports.mailResourceLookup.resolveScheduledDraftReplyParent({
+          workspaceId,
+          draftId,
+        });
+        if (info && info.replyParentMessageId !== null && info.markParentDone) {
+          const parent = await ports.mailResourceLookup.resolve({
+            workspaceId,
+            target: { kind: 'message', id: info.replyParentMessageId },
+          });
+          if (parent.length !== 1) throw new MailAccessDeniedError();
+          await ports.mailAccess!.assertPermission({
+            workspaceId,
+            actor,
+            permission: 'mail.content.read',
+            resource: parent[0]!,
+          });
+          await ports.mailAccess!.assertPermission({
+            workspaceId,
+            actor,
+            permission: 'mail.triage',
+            resource: parent[0]!,
+          });
+        }
+        // Mirror assertScheduledSendDraftAndAttachmentAccess: non-local attachment
+        // paths must be readable before we clear pending approval / arm send.
+        if (ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths) {
+          const paths = await ports.mailResourceLookup.resolveScheduledDraftAttachmentPaths({
+            workspaceId,
+            draftId,
+          });
+          const draftLocalPrefix = `${workspaceId}/compose-drafts/${draftId}/`;
+          for (const path of paths ?? []) {
+            if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+            const owners = await ports.mailResourceLookup.resolve({
+              workspaceId,
+              target: { kind: 'attachment_path', path },
+            });
+            if (owners.length === 0) throw new MailAccessDeniedError();
+            for (const resource of owners) {
+              await ports.mailAccess!.assertPermission({
+                workspaceId,
+                actor,
+                permission: 'mail.attachment.read',
+                resource,
+              });
+            }
+            const filenames = (await ports.mailResourceLookup.resolveAttachmentPathFilenames?.({
+              workspaceId,
+              path,
+            })) ?? [];
+            if (filenames.some(isPotentiallyDangerousAttachment)) {
+              for (const resource of owners) {
+                await ports.mailAccess!.assertPermission({
+                  workspaceId,
+                  actor,
+                  permission: 'mail.attachment.suspicious_download',
+                  resource,
+                });
+              }
+            }
+          }
+        }
+      }
     }
   }
 

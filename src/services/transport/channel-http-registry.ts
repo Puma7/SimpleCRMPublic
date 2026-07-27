@@ -371,6 +371,8 @@ type EmailMessageRecord = {
   bodyText?: string | null
   bodyHtml?: string | null
   updatedAt?: string | null
+  approvalState?: string | null
+  approvalReason?: string | null
 }
 
 type EmailThreadRecord = {
@@ -2653,6 +2655,22 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/email/messages/${positiveId(messageId, "email message id")}/scheduled-send/retry`,
     transform: () => ({ success: true }),
   })],
+  [IPCChannels.Email.ApproveDraftSend, ([payload]) => {
+    const input = objectPayload(payload, "draft approval payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/messages/${positiveId(input.draftId, "email message id")}/approve-draft-send`,
+      transform: () => ({ success: true }),
+    }
+  }],
+  [IPCChannels.Email.DismissDraftApproval, ([payload]) => {
+    const input = objectPayload(payload, "draft approval payload")
+    return {
+      method: "POST",
+      path: `/api/v1/email/messages/${positiveId(input.draftId, "email message id")}/dismiss-draft-approval`,
+      transform: () => ({ success: true }),
+    }
+  }],
   [IPCChannels.Email.SnoozeMessage, ([payload]) => {
     const input = objectPayload(payload, "email snooze payload")
     return {
@@ -5598,6 +5616,8 @@ function mapEmailMessageRecord(record: EmailMessageRecord) {
     snoozed_until: record.snoozedUntil ?? null,
     draft_attachment_paths_json: record.draftAttachmentPathsJson ?? null,
     reply_parent_message_id: record.replyParentMessageId ?? null,
+    approval_state: record.approvalState ?? null,
+    approval_reason: record.approvalReason ?? null,
     updated_at: record.updatedAt ?? undefined,
     remote_content_policy: record.remoteContentPolicy ?? undefined,
     read_receipt_requested: record.readReceiptRequested ? 1 : 0,

@@ -5,7 +5,7 @@ import type { SqlMigration } from './types';
  * so assigned_to_me / assigned_to_my_groups can resolve via assigned_to_user_id.
  */
 export const emailTeamMemberLinkedUserMigration: SqlMigration = {
-  id: '0047_email_team_member_linked_user',
+  id: '0048_email_team_member_linked_user',
   description: 'Add linked_user_id on email_team_members for assignment filters',
   upSql: [
     `ALTER TABLE email_team_members

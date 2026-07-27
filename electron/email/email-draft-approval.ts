@@ -17,7 +17,9 @@ export function setDraftApprovalPending(messageId: number, reason: string): void
   getDb()
     .prepare(
       `UPDATE ${EMAIL_MESSAGES_TABLE}
-       SET approval_state = 'pending', approval_reason = ?
+       SET approval_state = 'pending',
+           approval_reason = ?,
+           scheduled_send_at = NULL
        WHERE id = ?`,
     )
     .run(reason.slice(0, 500), messageId);

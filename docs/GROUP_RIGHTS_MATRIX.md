@@ -55,4 +55,4 @@ Postfächer und Sichtbarkeitsfilter (Zuweisung/Kategorie/Tag) werden **nicht** i
 
 - Basis: Account/Folder/Message + Profil (viewer…manager) — unverändert.
 - Optional pro Binding: Zuweisungsmodus, Kategorie-Allow/Exclude, Tag-Allow/Exclude.
-- Siehe Migration `0046_group_rights_and_mail_constraints` und Admin-UI „Gruppen & Rechte“.
+- Siehe Migration `0047_group_rights_and_mail_constraints` und Admin-UI „Gruppen & Rechte“.

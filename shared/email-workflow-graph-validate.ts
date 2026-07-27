@@ -40,6 +40,24 @@ function isYesNoBranchNode(node: WorkflowGraphNode): boolean {
   return node.type === 'condition' || registryType(node) === 'logic.threshold';
 }
 
+const NAMED_PORT_BRANCH_NODES: Readonly<
+  Record<string, { ports: readonly string[]; releasePorts: readonly string[] }>
+> = {
+  'ai.outbound_review': { ports: ['ok', 'block', 'error'], releasePorts: ['ok'] },
+  'ai.review_draft': { ports: ['send', 'hold'], releasePorts: ['send'] },
+};
+
+function edgeIsDefaultLabel(edge: { label?: string | null }): boolean {
+  const label = (edge.label ?? '').toLowerCase();
+  return !label || label === 'default' || label === 'standard' || label === 'fallback';
+}
+
+function namedPortBranch(
+  node: WorkflowGraphNode,
+): { ports: readonly string[]; releasePorts: readonly string[] } | null {
+  return NAMED_PORT_BRANCH_NODES[registryType(node)] ?? null;
+}
+
 function triggerKind(doc: WorkflowGraphDocument): string | null {
   const trigger = doc.nodes.find((node) => node.type === 'trigger');
   if (!trigger) return null;
@@ -110,7 +128,7 @@ export function findOutboundGraphTraps(
     }
   };
 
-  const walk = (nodeId: string, pathVisited: Set<string>): void => {
+  const walk = (nodeId: string, pathVisited: Set<string>, holdPath = false): void => {
     const node = byId.get(nodeId);
     if (!node) {
       add({ code: 'dead_end', nodeId });
@@ -120,7 +138,11 @@ export function findOutboundGraphTraps(
       add({ code: 'dead_end', nodeId });
       return;
     }
-    if (isReleaseNode(node)) return;
+    if (isReleaseNode(node)) {
+      // Release on a hold/block/error path would send mail after a fail verdict.
+      if (holdPath) add({ code: 'dead_end', nodeId });
+      return;
+    }
     if (isHoldNode(node)) return;
     const next = new Set(pathVisited).add(nodeId);
     const outs = outgoing(nodeId);
@@ -128,26 +150,45 @@ export function findOutboundGraphTraps(
     if (isYesNoBranchNode(node)) {
       const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
       const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
-      if (yesEdge) walk(yesEdge.target, next);
+      if (yesEdge) walk(yesEdge.target, next, holdPath);
       else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
-      if (noEdge) walk(noEdge.target, next);
+      if (noEdge) walk(noEdge.target, next, holdPath);
       else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
       return;
     }
 
+    const portBranch = namedPortBranch(node);
+    if (portBranch) {
+      for (const port of portBranch.ports) {
+        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+        // Parität zu pickEdge/pickCompileEdge: `ok` fällt auf eine unbeschriftete
+        // Default-Kante zurück (Altgraphen vor den benannten Ports). Ohne diesen
+        // Fallback meldet der Validator einen lauffähigen Graphen als dead_end
+        // und das Speichern scheitert mit 422.
+        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefaultLabel) : undefined);
+        const isReleasePort = portBranch.releasePorts.includes(port);
+        if (edge) {
+          walk(edge.target, next, holdPath || !isReleasePort);
+        } else if (isReleasePort) {
+          add({ code: 'dead_end', nodeId });
+        }
+      }
+      return;
+    }
+
     if (outs.length === 0) {
-      add({ code: 'dead_end', nodeId });
+      if (!holdPath) add({ code: 'dead_end', nodeId });
       return;
     }
     const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
     if (defaultEdge) {
-      walk(defaultEdge.target, next);
+      walk(defaultEdge.target, next, holdPath);
       return;
     }
     // Every outgoing edge is labeled and none is a default/unlabeled edge, so
     // pickEdge(..., 'default') returns undefined: the runtime stops here and the
     // draft is never released — a dead end.
-    add({ code: 'dead_end', nodeId });
+    if (!holdPath) add({ code: 'dead_end', nodeId });
   };
 
   for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));

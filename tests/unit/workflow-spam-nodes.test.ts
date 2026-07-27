@@ -99,4 +99,58 @@ describe('workflow spam routing nodes', () => {
     const r = await def.execute(ctx as never, { status: 'review' });
     expect(r.variables).toMatchObject({ 'email.is_spam': false, 'spam.status': 'review' });
   });
+
+  describe('stopFurtherWorkflows ist Opt-in', () => {
+    const ctx = {
+      variables: {},
+      strings: {},
+      dryRun: true,
+      messageId: 1,
+      message: { id: 1 },
+      direction: 'inbound' as const,
+      trigger: 'inbound' as const,
+      workflowId: 1,
+      runId: 1,
+      ai: {},
+    };
+
+    test('set_spam_status ohne das Feld stoppt die Kette nicht', async () => {
+      const def = getWorkflowNode('email.set_spam_status')!;
+      const r = await def.execute(ctx as never, { status: 'spam' });
+      expect(r.stop).toBeUndefined();
+      expect(r.inboundChainStop).toBeUndefined();
+    });
+
+    test('set_spam_status mit dem Feld stoppt bei spam und review', async () => {
+      const def = getWorkflowNode('email.set_spam_status')!;
+      for (const status of ['spam', 'review']) {
+        const r = await def.execute(ctx as never, { status, stopFurtherWorkflows: true });
+        expect(r.stop).toBe(true);
+        expect(r.inboundChainStop).toBe(true);
+      }
+    });
+
+    test('set_spam_status stoppt nie bei clean', async () => {
+      const def = getWorkflowNode('email.set_spam_status')!;
+      const r = await def.execute(ctx as never, { status: 'clean', stopFurtherWorkflows: true });
+      expect(r.stop).toBeUndefined();
+    });
+
+    test('mark_spam ohne das Feld stoppt nicht, mit Feld schon', async () => {
+      const def = getWorkflowNode('email.mark_spam')!;
+      const withRow = { ...ctx, message: { id: 1, account_id: 1 } };
+      const off = await def.execute(withRow as never, { spam: true });
+      expect(off.stop).toBeUndefined();
+      const on = await def.execute(withRow as never, { spam: true, stopFurtherWorkflows: true });
+      expect(on.stop).toBe(true);
+      expect(on.inboundChainStop).toBe(true);
+    });
+
+    test('mark_spam stoppt nicht, wenn die Markierung entfernt wird', async () => {
+      const def = getWorkflowNode('email.mark_spam')!;
+      const withRow = { ...ctx, message: { id: 1, account_id: 1 } };
+      const r = await def.execute(withRow as never, { spam: false, stopFurtherWorkflows: true });
+      expect(r.stop).toBeUndefined();
+    });
+  });
 });

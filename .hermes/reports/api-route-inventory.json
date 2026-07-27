@@ -1,0 +1,2122 @@
+[
+  {
+    "method": "DELETE",
+    "path": "/api/v1/:resource/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/profiles/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/ai/prompts/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/auth/users/([/]+)",
+    "source": "auth-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/auth/users/([/]+)/mfa",
+    "source": "auth-security-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/automation/api-keys/([/]+)",
+    "source": "automation-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/calendar-entries/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/customers/([/]+)",
+    "source": "customer-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/customers/([/]+)/custom-field-values/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/deal-products/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/deals/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/deals/([/]+)/products/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/deals/([/]+)/products/by-product/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/access/bindings/([/]+)",
+    "source": "mail-delegation-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/account-signatures/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/accounts/:accountId",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/accounts/:accountId/sync-lock",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/canned-responses/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/categories/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/internal-notes/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/message-categories/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/messages/:messageId/local-draft",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/messages/:messageId/scheduled-send-failure",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/messages/:messageId/tags",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/messages/:messageId/tracking",
+    "source": "email-tracking-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/messages/bulk/local-drafts",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/notices/imap-auth",
+    "source": "notice-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/notices/uid-validity",
+    "source": "notice-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/relays/:relayId",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/relays/:relayId/accounts/:accountId",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/remote-content-allowlist/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/tags/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/team-members/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/thread-aliases/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/email/thread-edges/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/jtl/:resource/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/locks/:messageId",
+    "source": "lock-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/pgp/identities/:id",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/pgp/identities/by-source/:sourceId",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/pgp/peer-keys/:id",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/pgp/peer-keys/by-source/:sourceId",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/products/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/spam/decisions/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/spam/list-entries/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/tasks/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/user-groups/([/]+)",
+    "source": "user-group-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/user-groups/([/]+)/members/([/]+)",
+    "source": "user-group-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/workflow-delayed-jobs/:id",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/workflow-knowledge-bases/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/workflow-knowledge-chunks/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/workflow-versions/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "DELETE",
+    "path": "/api/v1/workflows/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/:resource",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/:resource/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/profiles",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/profiles/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/prompts",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/ai/prompts/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/audit-chain/verify",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/audit-log",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/capabilities",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/csrf",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/invitations/([/]+)",
+    "source": "auth-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/login-config",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/security-settings",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/setup-state",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/auth/users",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/automation/api-keys",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/automation/api-keys/([/]+)",
+    "source": "automation-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/customers",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/customers/([/]+)",
+    "source": "customer-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dashboard/recent-customers",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dashboard/stats",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/dashboard/upcoming-tasks",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/deals",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/deals/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/deals/([/]+)/products",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/deals/([/]+)/tasks",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/diagnostics/server-logs",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/access/bindings",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/access/resources",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/access/subjects",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/account-signatures",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/account-signatures/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/accounts",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/accounts/:accountId",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/accounts/:accountId/inbox-archive-recovery",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/acl-rollout/readiness",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/attachments/:attachmentId",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/attachments/:attachmentId/content",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/canned-responses",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/canned-responses/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/categories",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/categories/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/category-counts",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/diagnostics",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/dmarc/stats",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/folder-counts",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/folders",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/folders/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/gdpr-export",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/internal-notes",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/internal-notes/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/message-categories",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/message-categories/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/attachments",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/categories",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/compose-draft-recovery-state",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/internal-notes",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/raw-headers",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/read-receipt-state",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/reply-suggestion",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/scheduled-send-state",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/security",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/tags",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/tracking",
+    "source": "email-tracking-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight",
+    "source": "email-tracking-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/:messageId/workflow-runs",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/messages/conversation",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/notices/imap-auth",
+    "source": "notice-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/notices/uid-validity",
+    "source": "notice-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/oauth/:provider/app",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/read-receipts",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/read-receipts/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/relays",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/relays",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/relays/:relayId/submissions",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/remote-content-allowlist",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/remote-content-allowlist/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/reporting",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/settings/account-mail",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/settings/misc",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/settings/reply-suggestion",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/settings/security",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/settings/snooze",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/tags",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/tags/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/team-members",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/team-members/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/thread-alias-warnings",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/thread-aliases",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/thread-aliases/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/thread-edges",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/thread-edges/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/threads",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/threads/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/threads/:threadId/messages",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/tracking/settings",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/email/user-signatures",
+    "source": "user-signature-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/follow-up/items",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/follow-up/queue-counts",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/jtl/:resource",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/jtl/:resource/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/jtl/sync/status",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/locks",
+    "source": "lock-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/locks/:messageId",
+    "source": "lock-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/maintenance/doctor",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/maintenance/reset/preview",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/maintenance/status",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/mssql/settings",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pgp/identities",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pgp/identities/:id",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pgp/identities/by-source/:sourceId",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pgp/peer-keys",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pgp/peer-keys/:id",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pgp/peer-keys/by-source/:sourceId",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/pgp/recipient-key-status",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/portal/returns/:token/:returnNo",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/products",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/products/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/return-reasons",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/returns",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/returns/([/]+)",
+    "source": "returns-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/returns/analytics",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/returns/jtl-order-lookup",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/returns/portal-settings",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/decisions",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/decisions/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/feature-stats",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/feature-stats/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/learning-events",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/learning-events/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/list-entries",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/spam/list-entries/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/sync-info/:key",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/tasks",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/tasks/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/user-groups",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/user-groups/([/]+)/members",
+    "source": "user-group-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/user-groups/([/]+)/permissions",
+    "source": "user-group-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-delayed-jobs",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-delayed-jobs/:id",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-forward-dedup",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-forward-dedup/:id",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-knowledge-bases",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-knowledge-bases/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-knowledge-chunks",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-knowledge-chunks/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-message-applied",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-message-applied/:id",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-run-steps",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-run-steps/:id",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-runs",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-runs/:id",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-runs/:id/steps",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-runs/by-source/:sourceId",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-runs/by-source/:sourceId/steps",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-versions",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow-versions/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow/node-catalog",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow/plugins",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow/settings/automation",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflow/templates",
+    "source": "various"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows/([/]+)/versions",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows/:id/runs",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows/by-source/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows/by-source/([/]+)/versions",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/api/v1/workflows/by-source/:sourceId/runs",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/health",
+    "source": "server-api.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/health/ready",
+    "source": "server-api.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/openapi.json",
+    "source": "server-api.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/t/c/:token",
+    "source": "email-tracking-routes.ts"
+  },
+  {
+    "method": "GET",
+    "path": "/t/o/:token.gif",
+    "source": "email-tracking-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/:resource/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/ai/profiles/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/ai/prompts/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/ai/prompts/reorder",
+    "source": "various"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/auth/security-settings",
+    "source": "various"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/auth/users/([/]+)",
+    "source": "auth-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/calendar-entries/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/customers/([/]+)",
+    "source": "customer-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/deal-products/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/deals/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/deals/([/]+)/products/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/deals/([/]+)/products/by-product/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/access/bindings/([/]+)",
+    "source": "mail-delegation-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/account-signatures/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/accounts/:accountId",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/canned-responses/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/categories/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/categories/reorder",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/internal-notes/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/archive",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/assignment",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/compose-draft",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/customer-link",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/done",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/move",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/remote-content-policy",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/restore",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/scheduled-send",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/scheduled-send/retry",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/seen",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/snooze",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/soft-delete",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/:messageId/spam-status",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/bulk/archive",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/bulk/done",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/bulk/soft-delete",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/messages/bulk/spam-status",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/oauth/:provider/app",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/relays/:relayId",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/remote-content-allowlist/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/settings/account-mail",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/settings/misc",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/settings/reply-suggestion",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/settings/security",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/settings/snooze",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/team-members/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/thread-aliases/:id",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/email/tracking/settings",
+    "source": "various"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/follow-up/tasks/([/]+)/snooze",
+    "source": "follow-up-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/jtl/:resource/([/]+)",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/locks/:messageId/heartbeat",
+    "source": "lock-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/mssql/password",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/mssql/settings",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/pgp/identities/:id",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/pgp/identities/by-source/:sourceId",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/pgp/peer-keys/:id",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/pgp/peer-keys/by-source/:sourceId",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/products/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/returns/([/]+)",
+    "source": "returns-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/returns/portal-settings",
+    "source": "various"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/spam/decisions/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/spam/list-entries/:id",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/sync-info/:key",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/tasks/([/]+)",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/user-groups/([/]+)",
+    "source": "user-group-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/user-groups/([/]+)/permissions",
+    "source": "user-group-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/workflow-delayed-jobs/:id",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/workflow-knowledge-bases/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/workflow-knowledge-chunks/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/workflow-versions/([/]+)",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/workflow/settings/automation",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "PATCH",
+    "path": "/api/v1/workflows/([/]+)",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/:resource",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/profiles",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/prompts",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/ai/transform-text",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/captcha-verify",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/change-password",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/initial-setup",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/invitations",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/invitations/([/]+)/accept",
+    "source": "auth-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/login",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/logout",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/mfa/verify",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/refresh",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/users",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/users/([/]+)/mfa/email",
+    "source": "auth-security-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/users/([/]+)/mfa/totp/confirm",
+    "source": "auth-security-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/auth/users/([/]+)/mfa/totp/setup",
+    "source": "auth-security-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/automation/api-keys",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/calendar-entries",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/customers",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/deals",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/deals/([/]+)/products",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/deals/([/]+)/stage",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/diagnostics/server-logs/clear",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/diagnostics/server-logs/self-test",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/access/bindings",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/account-signatures",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/account-signatures/by-account/:accountId/upsert",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/accounts",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/accounts/:accountId/inbox-archive-recovery",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/accounts/:accountId/sync",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/accounts/:accountId/vacation-test",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/accounts/test-imap",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/accounts/test-pop3",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/accounts/test-smtp",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/acl-rollout/enforce",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/acl-rollout/reset-counters",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/canned-responses",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/categories",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/compose-drafts",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/compose/send",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/compose/validate-outbound",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/internal-notes",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/message-categories",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/actions",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/categories",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/compose-attachments",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/internal-notes",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/post-process/retry",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/read-receipt-response",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/remote-content-policy/consume",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/reply-draft",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/reply-suggestion/ensure",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/security/check",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/spam-decision",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/tags",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/tracking/reclassify",
+    "source": "email-tracking-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/:messageId/tracking/revoke",
+    "source": "email-tracking-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/messages/backfill-customer-links",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/oauth/:provider/authorize-url",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/oauth/:provider/finish",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/read-receipts",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/relays",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/relays",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/relays/:relayId/accounts",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/relays/:relayId/credentials",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/relays/:relayId/credentials/:credentialId/revoke",
+    "source": "relay-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/remote-content-allowlist",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/settings/security/test-rspamd",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/tags",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/team-members",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/team-members/:teamMemberId/upsert",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/thread-aliases",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/thread-edges",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/threads/backfill",
+    "source": "mail-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/threads/merge",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/threads/split-message",
+    "source": "mail-metadata-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/email/user-signatures/by-account/:accountId/upsert",
+    "source": "user-signature-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/jtl/:resource",
+    "source": "extended-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/jtl/orders",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/jtl/sync/run",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/locks/:messageId",
+    "source": "lock-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/locks/:messageId/takeover",
+    "source": "lock-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/maintenance/migrations/apply",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/maintenance/migrations/check",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/maintenance/reset/execute",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/mssql/test-connection",
+    "source": "settings-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/attachments/:attachmentId/decrypt",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/attachments/:attachmentId/verify",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/identities",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/identities/:identityId/private-key/passphrase",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/identities/generate",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/messages/:messageId/decrypt",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/messages/:messageId/detect",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/messages/:messageId/verify",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/messages/encrypt",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/messages/sign",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/peer-keys",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/pgp/peer-keys/import",
+    "source": "pgp-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/portal/returns/:token",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/products",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/returns",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/spam/decisions",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/spam/learning-events",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/spam/list-entries",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/spam/list-entries/upsert",
+    "source": "spam-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/tasks",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/tasks/([/]+)/toggle",
+    "source": "core-crm-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/user-groups",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/user-groups/([/]+)/members",
+    "source": "user-group-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/webhooks/incoming",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflow-delayed-jobs",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflow-knowledge-bases",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflow-knowledge-chunks",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflow-versions",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflow-versions/by-source/([/]+)/restore",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows/([/]+)/versions",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows/:id/execute",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows/by-source/([/]+)/versions/snapshot",
+    "source": "workflow-runtime-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows/by-source/:sourceId/execute",
+    "source": "workflow-routes.ts"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows/compile-graph",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows/inbound/backfill",
+    "source": "various"
+  },
+  {
+    "method": "POST",
+    "path": "/api/v1/workflows/webhook/incoming",
+    "source": "various"
+  }
+]

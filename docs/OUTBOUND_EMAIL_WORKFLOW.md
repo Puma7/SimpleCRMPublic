@@ -17,9 +17,13 @@
 
 ## Knoten
 
-- **`ai.outbound_review`** — strukturierte Antwort `STATUS: OK` / `STATUS: BLOCK` + `REASON`
+- **`ai.outbound_review`** — strukturierte Antwort `STATUS: OK` / `STATUS: BLOCK` + `REASON`; **sichtbare Ports** `ok` | `block` | `error`
+  - `ok` → z. B. `email.release_outbound` (autoSend)
+  - `block` / `error` → Hold mit Banner; optional Tags `ki-review-block` / `ki-review-error`
+  - Ohne Kante an `block`/`error`: Graph stoppt, Entwurf bleibt fail-closed gehalten
 - **`ai.review`** — generische OK/BLOCK-Prüfung mit Prompt
 - **`email.hold_outbound`** — manuelle Sperre mit Grund
+- **`email.release_outbound`** — Hold aufheben; mit `autoSend: true` direkter Versand nach OK-Prüfung
 
 ## UI
 

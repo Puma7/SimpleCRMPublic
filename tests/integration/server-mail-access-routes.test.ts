@@ -297,7 +297,7 @@ describe('server mailbox ACL migration', () => {
       SELECT to_regclass('public.mail_acl_bindings') IS NOT NULL AS exists
     `);
     if (!exists.rows[0]?.exists) return;
-    const migration = serverMigrations.find((candidate) => candidate.id === '0046_group_rights_and_mail_constraints');
+    const migration = serverMigrations.find((candidate) => candidate.id === '0047_group_rights_and_mail_constraints');
     expect(migration).toBeDefined();
     await applyStatements(migration!.upSql);
   }
@@ -724,6 +724,11 @@ describe('server mailbox ACL migration', () => {
     for (const migration of serverMigrations.filter((candidate) => candidate.id < '0038_mail_acl')) {
       await applyStatements(migration.upSql);
     }
+    // Draft-approval columns are required by inbox predicates / message detail selects
+    // (added after 0038 in 0046); apply early so ACL port tests see a current schema.
+    const draftApprovalMigration = serverMigrations.find((candidate) => candidate.id === '0046_email_draft_approval_fields');
+    expect(draftApprovalMigration).toBeDefined();
+    await applyStatements(draftApprovalMigration!.upSql);
     await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
     await seedLegacyMailAccess();
     await client.query('RESET app.role; RESET app.cross_workspace_access');
@@ -735,7 +740,7 @@ describe('server mailbox ACL migration', () => {
         .filter((candidate) => (
           candidate.id === '0038_mail_acl'
           || candidate.id === '0039_mail_acl_rollout'
-          || candidate.id === '0046_group_rights_and_mail_constraints'
+          || candidate.id === '0047_group_rights_and_mail_constraints'
         ))
         .reverse();
       if (!migrationDownApplied) {
@@ -5047,7 +5052,7 @@ describe('server mailbox ACL migration', () => {
     // FORCE ROW LEVEL SECURITY null Zeilen — die Migration gilt trotzdem als
     // angewendet. Der Test pinnt beides: die Reihenfolge im Migrations-SQL und
     // das tatsaechliche Ergebnis gegen echte Bestandsdaten.
-    const migration = serverMigrations.find((candidate) => candidate.id === '0046_group_rights_and_mail_constraints');
+    const migration = serverMigrations.find((candidate) => candidate.id === '0047_group_rights_and_mail_constraints');
     expect(migration).toBeDefined();
     const systemContextIndex = migration!.upSql.findIndex((statement) => (
       statement.includes("set_config('app.role', 'system', true)")
@@ -5102,7 +5107,7 @@ describe('server mailbox ACL migration', () => {
   test('backfills the team member user link under FORCE RLS as the non-superuser migrator', async () => {
     // Gleiche Klasse wie 0046: email_team_members hat FORCE RLS (0007), ohne
     // System-Kontext liefe der Backfill leer und assigned_to_me bliebe blind.
-    const migration = serverMigrations.find((candidate) => candidate.id === '0047_email_team_member_linked_user');
+    const migration = serverMigrations.find((candidate) => candidate.id === '0048_email_team_member_linked_user');
     expect(migration).toBeDefined();
     const systemContextIndex = migration!.upSql.findIndex((statement) => (
       statement.includes("set_config('app.role', 'system', true)")
@@ -5175,7 +5180,7 @@ describe('server mailbox ACL migration', () => {
   test('down removes only ACL objects and preserves the legacy table', async () => {
     const mailAclMigration = serverMigrations.find((candidate) => candidate.id === '0038_mail_acl');
     const rolloutMigration = serverMigrations.find((candidate) => candidate.id === '0039_mail_acl_rollout');
-    const constraintsMigration = serverMigrations.find((candidate) => candidate.id === '0046_group_rights_and_mail_constraints');
+    const constraintsMigration = serverMigrations.find((candidate) => candidate.id === '0047_group_rights_and_mail_constraints');
     expect(mailAclMigration).toBeDefined();
     expect(rolloutMigration).toBeDefined();
     expect(constraintsMigration).toBeDefined();

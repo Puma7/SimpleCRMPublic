@@ -269,17 +269,42 @@ describe('automation handlers', () => {
 
 describe('automation server', () => {
   test('starts and responds on health', async () => {
-    const { startAutomationApiServer, stopAutomationApiServer } = await import(
+    const settings = require('../../electron/automation/settings') as {
+      getAutomationPort: jest.Mock;
+      isAutomationApiEnabled: jest.Mock;
+    };
+    const { startAutomationApiServer, stopAutomationApiServer, isAutomationServerRunning } = await import(
       '../../electron/automation/server'
     );
     const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn() };
-    await startAutomationApiServer(logger);
-    const status = await new Promise<number>((resolve, reject) => {
-      http
-        .get('http://127.0.0.1:38472/api/v1/health', (res) => resolve(res.statusCode ?? 0))
-        .on('error', reject);
-    });
-    expect(status).toBe(200);
-    await stopAutomationApiServer();
+
+    // Fixed port 38472 collides under parallel Jest workers (EADDRINUSE → silent
+    // no-start → ECONNREFUSED). Pick an ephemeral high port and retry briefly.
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const port = 39100 + Math.floor(Math.random() * 2000);
+      settings.getAutomationPort.mockReturnValue(port);
+      settings.isAutomationApiEnabled.mockReturnValue(true);
+      await stopAutomationApiServer();
+      await startAutomationApiServer(logger);
+      if (!isAutomationServerRunning()) {
+        lastError = new Error(`automation server did not bind port ${port}`);
+        continue;
+      }
+      try {
+        const status = await new Promise<number>((resolve, reject) => {
+          http
+            .get(`http://127.0.0.1:${port}/api/v1/health`, (res) => resolve(res.statusCode ?? 0))
+            .on('error', reject);
+        });
+        expect(status).toBe(200);
+        await stopAutomationApiServer();
+        return;
+      } catch (error) {
+        lastError = error;
+        await stopAutomationApiServer();
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   });
 });

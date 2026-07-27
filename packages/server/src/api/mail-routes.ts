@@ -280,6 +280,8 @@ const MAIL_ROUTES: readonly MailRouteEntry[] = [
   mailRoute('/api/v1/email/messages/:messageId/scheduled-send/retry', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send\/retry$/, (req, ports, params) => handleScheduledSendDraftRetry(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/post-process/retry', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/post-process\/retry$/, (req, ports, params) => handleMessagePostProcessRetry(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/scheduled-send', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/scheduled-send$/, (req, ports, params) => handleScheduledSendDraftSchedule(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/approve-draft-send', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/approve-draft-send$/, (req, ports, params) => handleApproveDraftSend(req, ports, params[0])),
+  mailRoute('/api/v1/email/messages/:messageId/dismiss-draft-approval', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/dismiss-draft-approval$/, (req, ports, params) => handleDismissDraftApproval(req, ports, params[0])),
   mailRoute('/api/v1/email/threads/:threadId/messages', ['GET'], /^\/api\/v1\/email\/threads\/([^/]+)\/messages$/, (req, ports, params) => handleThreadMessageList(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/spam-decision', ['POST'], /^\/api\/v1\/email\/messages\/([^/]+)\/spam-decision$/, (req, ports, params) => handleMessageSpamDecisionMutation(req, ports, params[0])),
   mailRoute('/api/v1/email/messages/:messageId/spam-status', ['PATCH'], /^\/api\/v1\/email\/messages\/([^/]+)\/spam-status$/, (req, ports, params) => handleMessageSpamStatusMutation(req, ports, params[0])),
@@ -1222,6 +1224,82 @@ async function handleScheduledSendDraftRetry(
     }
   }
   return data(200, { success: true });
+}
+
+async function handleApproveDraftSend(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const messageId = positiveIntFromPath(rawId);
+  if (messageId === null) return error(400, 'invalid_email_message_id', 'email message id muss eine positive Ganzzahl sein');
+  if (!ports.emailMessages?.approveDraftSend) {
+    return error(503, 'email_messages_unavailable', 'Email draft-approval API nicht konfiguriert');
+  }
+  const result = await ports.emailMessages.approveDraftSend({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    messageId,
+  });
+  if (!result.ok) return draftApprovalActionError(result.reason, result.message);
+  if (ports.jobQueue) {
+    const sendAt = new Date();
+    try {
+      await ports.jobQueue.enqueue({
+        workspaceId: principal.workspaceId,
+        type: 'mail.send.scheduled',
+        payload: {
+          workspaceId: principal.workspaceId,
+          draftId: messageId,
+          actorUserId: principal.userId,
+          dueBefore: sendAt.toISOString(),
+        },
+        runAfter: sendAt,
+      });
+    } catch (enqueueError) {
+      console.warn(
+        `[mail] approve-draft-send enqueue failed (workspace ${principal.workspaceId} draft ${messageId}); ticker will still send: ${enqueueError instanceof Error ? enqueueError.message : String(enqueueError)}`,
+      );
+    }
+  }
+  return data(200, { success: true });
+}
+
+async function handleDismissDraftApproval(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  rawId: string | undefined,
+): Promise<ApiResponse> {
+  if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  const principal = requirePrincipal(req);
+  if ('status' in principal) return principal;
+  const messageId = positiveIntFromPath(rawId);
+  if (messageId === null) return error(400, 'invalid_email_message_id', 'email message id muss eine positive Ganzzahl sein');
+  if (!ports.emailMessages?.dismissDraftApproval) {
+    return error(503, 'email_messages_unavailable', 'Email draft-approval API nicht konfiguriert');
+  }
+  const result = await ports.emailMessages.dismissDraftApproval({
+    workspaceId: principal.workspaceId,
+    messageId,
+  });
+  if (!result.ok) return draftApprovalActionError(result.reason, result.message);
+  return data(200, { success: true });
+}
+
+function draftApprovalActionError(
+  reason: 'not_found' | 'not_pending' | 'action_failed',
+  message?: string,
+): ApiResponse<ApiErrorBody> {
+  if (reason === 'not_pending') {
+    return error(409, 'email_draft_not_pending_approval', message ?? 'Entwurf wartet nicht auf Freigabe');
+  }
+  if (reason === 'action_failed') {
+    return error(409, 'email_draft_approval_failed', message ?? 'Freigabe fehlgeschlagen');
+  }
+  return error(404, 'email_message_not_found', message ?? 'Email message nicht gefunden');
 }
 
 function composeDraftMutationError(
@@ -2916,6 +2994,9 @@ function sanitizeEmailMessage(message: EmailMessageRecord, includeBody: boolean)
     // Authoritative thread count (list chevron) and per-message tracking choice
     // (draft-reopen checkbox) must survive the sanitizer, or the renderer never
     // sees them in server mode and both fall back to stale/default behaviour.
+    // Approval fields must also pass through — otherwise Freigabe UI is invisible.
+    approvalState: message.approvalState ?? null,
+    approvalReason: message.approvalReason ?? null,
     ...(message.threadMessageCount === undefined ? {} : { threadMessageCount: message.threadMessageCount }),
     ...(message.trackingOverride === undefined ? {} : { trackingOverride: message.trackingOverride }),
     ...(message.searchSnippet === undefined ? {} : { searchSnippet: message.searchSnippet }),

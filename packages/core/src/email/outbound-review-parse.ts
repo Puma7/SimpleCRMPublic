@@ -6,18 +6,67 @@ export type OutboundReviewParse = {
   code: string | null;
 };
 
-/** Parse KI-Antwort für ausgehende Qualitätsprüfung (STATUS: OK | BLOCK). */
+/**
+ * Status-Zeile der Prüfantwort: nur am Zeilenanfang (optional als Aufzählung
+ * oder fett), damit ein irgendwo im Fließtext zitiertes "STATUS: OK" — etwa aus
+ * einer prompt-injizierten Kundenmail — keinen Versand freigibt.
+ */
+const OUTBOUND_STATUS_LINE = /^\s*(?:[-*>]\s*)?(?:\*\*|__)?\s*STATUS\s*(?:\*\*|__)?\s*[:=]\s*(.*)$/i;
+
+/** Markdown-Reste und Schlusszeichen entfernen, damit „**OK**." exakt matcht. */
+function normalizedStatusValue(raw: string): string {
+  return raw
+    .replace(/[*_`]/g, '')
+    .replace(/[.,;:!]+\s*$/, '')
+    .trim()
+    .toUpperCase();
+}
+
+const AMBIGUOUS_STATUS_REASON =
+  'Ausgehende Prüfung ohne eindeutigen STATUS — Versand vorsorglich blockiert';
+
+/**
+ * Parse KI-Antwort für ausgehende Qualitätsprüfung (STATUS: OK | BLOCK).
+ *
+ * Fail-closed: freigegeben wird nur bei **genau einer** Status-Zeile, die
+ * eindeutig OK und nicht zugleich BLOCK nennt. Fehlender, doppelter oder in
+ * sich widersprüchlicher Status ("STATUS: OK oder BLOCK") blockiert.
+ */
 export function parseOutboundReviewResponse(raw: string): OutboundReviewParse {
-  const text = raw.trim();
-  const upper = text.toUpperCase();
-  if (upper.includes('STATUS: OK') || upper === 'OK' || upper.startsWith('OK\n')) {
-    return { ok: true, reason: null, code: null };
+  const text = (raw ?? '').trim();
+  const statusValues: string[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const match = OUTBOUND_STATUS_LINE.exec(line);
+    if (match) statusValues.push((match[1] ?? '').toUpperCase());
   }
+
+  if (statusValues.length === 1) {
+    // Nur der exakte Status gibt frei. Ein blosses \bOK\b wuerde auch
+    // „STATUS: NOT OK" oder „STATUS: ERROR, NOT OK" als Freigabe lesen —
+    // das dokumentierte Format kennt ausschliesslich OK bzw. BLOCK.
+    if (normalizedStatusValue(statusValues[0]!) === 'OK') {
+      return { ok: true, reason: null, code: null };
+    }
+  } else if (statusValues.length === 0) {
+    // Minimalantwort ohne Label ("OK" als komplette Antwort bzw. erste Zeile).
+    const firstLine = text.split(/\r?\n/, 1)[0]?.trim().toUpperCase() ?? '';
+    if (firstLine === 'OK' && !/\bBLOCK\b/i.test(text)) {
+      return { ok: true, reason: null, code: null };
+    }
+  }
+
+  const upper = text.toUpperCase();
+  const ambiguous = statusValues.length > 1
+    || (statusValues.length === 1
+      && normalizedStatusValue(statusValues[0]!) !== 'OK'
+      && normalizedStatusValue(statusValues[0]!) !== 'BLOCK');
   const reasonMatch = /REASON:\s*(.+)/i.exec(text);
   const codeMatch = /CODE:\s*(\w+)/i.exec(text);
   const reason =
     reasonMatch?.[1]?.trim() ||
+    (ambiguous ? AMBIGUOUS_STATUS_REASON : null) ||
     (upper.includes('BLOCK') ? text.replace(/^[\s\S]*?BLOCK\s*/i, '').trim() : null) ||
+    (statusValues.length === 0 ? AMBIGUOUS_STATUS_REASON : null) ||
     'Ausgehende Prüfung fehlgeschlagen';
   return {
     ok: false,

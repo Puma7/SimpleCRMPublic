@@ -23,12 +23,19 @@ describe('resolveResumeNodeAfter', () => {
     expect(resolveResumeNodeAfter(doc, 'delay-1')).toBe('next-1');
   });
 
-  it('returns null when delay has no outgoing edges', () => {
+  it('returns target of ok edge after multi-port node', () => {
     const doc = graph(
-      [{ id: 'delay-1', type: 'registry', data: { registryType: 'logic.delay' } }],
-      [],
+      [
+        { id: 'review-1', type: 'registry', data: { nodeType: 'ai.outbound_review' } },
+        { id: 'release', type: 'registry', data: { nodeType: 'email.release_outbound' } },
+        { id: 'tag-block', type: 'registry', data: { nodeType: 'email.tag' } },
+      ],
+      [
+        { id: 'e_ok', source: 'review-1', target: 'release', label: 'ok' },
+        { id: 'e_block', source: 'review-1', target: 'tag-block', label: 'block' },
+      ],
     );
-    expect(resolveResumeNodeAfter(doc, 'delay-1')).toBeNull();
+    expect(resolveResumeNodeAfter(doc, 'review-1')).toBe('release');
   });
 });
 
@@ -66,5 +73,33 @@ describe('pickEdge (logic.switch)', () => {
     expect(pickEdge([
       { id: 'e1', source: 'node', target: 'next' },
     ], 'default')?.target).toBe('next');
+  });
+});
+
+describe('pickEdge (ai.outbound_review ports)', () => {
+  const edges = [
+    { id: 'e_ok', source: 'r1', target: 'release', label: 'ok' },
+    { id: 'e_block', source: 'r1', target: 'tag-block', label: 'block' },
+    { id: 'e_error', source: 'r1', target: 'tag-error', label: 'error' },
+  ];
+
+  it('matches ok/block/error labels explicitly', () => {
+    expect(pickEdge(edges, 'ok')?.target).toBe('release');
+    expect(pickEdge(edges, 'block')?.target).toBe('tag-block');
+    expect(pickEdge(edges, 'error')?.target).toBe('tag-error');
+  });
+
+  it('falls back to unlabeled edge only for ok, not for block/error/hold/send (fail-closed)', () => {
+    const legacy = [{ id: 'e0', source: 'r1', target: 'release' }];
+    expect(pickEdge(legacy, 'ok')?.target).toBe('release');
+    expect(pickEdge(legacy, 'block')).toBeUndefined();
+    expect(pickEdge(legacy, 'error')).toBeUndefined();
+    expect(pickEdge(legacy, 'hold')).toBeUndefined();
+    expect(pickEdge(legacy, 'send')).toBeUndefined();
+  });
+
+  it('unknown custom ports still follow the default/unlabeled edge', () => {
+    const edges = [{ id: 'e0', source: 'act-1', target: 'switch-1' }];
+    expect(pickEdge(edges, 'approved')?.target).toBe('switch-1');
   });
 });

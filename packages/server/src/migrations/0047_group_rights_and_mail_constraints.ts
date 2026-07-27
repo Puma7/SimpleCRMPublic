@@ -13,7 +13,7 @@ import type { SqlMigration } from './types';
  * sie landen wieder unter dem Legacy-Key).
  */
 export const groupRightsAndMailConstraintsMigration: SqlMigration = {
-  id: '0046_group_rights_and_mail_constraints',
+  id: '0047_group_rights_and_mail_constraints',
   description:
     'Remap legacy group capability keys and add mail ACL binding visibility constraints',
   upSql: [

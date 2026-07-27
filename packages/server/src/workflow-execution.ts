@@ -31,11 +31,28 @@ import {
   type WorkflowGraphDocument,
   type WorkflowGraphNode,
   type WorkflowTriggerKind,
+  messageIsSpamOrReviewForInboundWorkflow,
+  nodeRequestsChainStop,
+  NODE_CHAIN_STOP_MESSAGE,
   type SpamDecisionMessageInput,
   type SpamEngineSettings,
   type SpamFeatureStatInput,
   type SpamListMatch,
 } from '@simplecrm/core';
+import {
+  inboundChainFieldsFromRecord,
+  parseInboundWorkflowChain,
+  type InboundWorkflowChainContext,
+} from './workflow-inbound-chain-context';
+import {
+  cancelPendingWorkflowDelayedJobsForMessage,
+  completeInboundDeferredJoinSibling,
+  inboundJoinAllowsAdvance,
+  initInboundDeferredJoin,
+  isInboundSiblingAborted,
+  markInboundSiblingAbort,
+  tryClaimInboundChainHop,
+} from './workflow-inbound-chain-advance';
 
 import type {
   WorkflowExecutionDryRunResult,
@@ -47,6 +64,11 @@ import {
   createAiReviewPreviewRunner,
   type AiReviewPreviewRunner,
 } from './ai-classification';
+import {
+  executeWorkflowAiDraftReply,
+  executeWorkflowAiReviewDraft,
+  type WorkflowAiDraftNodeDeps,
+} from './workflow-ai-draft-nodes';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
@@ -134,6 +156,7 @@ type MessageRow = Pick<
   | 'spam_decision_source'
   | 'spam_score_breakdown_json'
   | 'raw_headers'
+  | 'reply_parent_message_id'
 >;
 
 type RunRow = Pick<Selectable<EmailWorkflowRunsTable>, 'id' | 'source_sqlite_id'>;
@@ -187,6 +210,9 @@ type ServerWorkflowContext = {
   trustedService?: boolean;
   manualAdminExecute?: boolean;
   previewOutbound?: boolean;
+  /** Priority-chain fields: must survive AI/HTTP/delay continuations. */
+  inboundWorkflowChain?: InboundWorkflowChainContext;
+  skipIfMessageSpamOrReview?: boolean;
 };
 
 type PreparedWorkflowRun =
@@ -213,6 +239,8 @@ type NodeResult = {
   port?: string | null;
   message?: string | null;
   stop?: boolean;
+  /** When true with stop, do not enqueue the next inbound priority-chain workflow. */
+  inboundChainStop?: boolean;
   blocked?: boolean;
   deferred?: boolean;
   blockReason?: string | null;
@@ -223,6 +251,13 @@ type GraphRunResult = {
   status: WorkflowRunStatus;
   blocked: boolean;
   deferred: boolean;
+  /** When true, do not enqueue the next inbound workflow in the priority chain. */
+  inboundChainStop?: boolean;
+  /**
+   * Trigger fan-out only: how many sibling branches returned deferred.
+   * Used to init a join barrier so chain advance waits for every sibling.
+   */
+  deferredBranchCount?: number;
   blockReason: string | null;
   log: string[];
 };
@@ -250,6 +285,7 @@ type ServerWorkflowRuntimePorts = Readonly<{
   workflowImapActions?: ServerWorkflowImapActionPort;
   deferredImapEffects?: DeferredWorkflowImapEffect[];
   aiReviewPreview?: AiReviewPreviewRunner;
+  aiDraft?: WorkflowAiDraftNodeDeps;
 }>;
 
 type ServerInboundBranchGate = {
@@ -278,10 +314,19 @@ export function createPostgresWorkflowExecutionJobPort(
         now: options.now,
       })
       : undefined);
+  const aiDraft: WorkflowAiDraftNodeDeps | undefined = options.secrets
+    ? {
+      db: options.db,
+      secrets: options.secrets,
+      applyWorkspaceSession: options.applyWorkspaceSession,
+      now: options.now,
+    }
+    : undefined;
   const runtimePorts: ServerWorkflowRuntimePorts = {
     mssql: options.mssql,
     workflowImapActions: options.workflowImapActions,
     aiReviewPreview,
+    aiDraft,
   };
   return {
     async execute(input) {
@@ -297,6 +342,17 @@ export function createPostgresWorkflowExecutionJobPort(
               await finishExistingRun(trx, input.workspaceId, input.runId, {
                 status: 'error',
                 log: ['error:workflow_not_found'],
+                now,
+              });
+            }
+            // Deleted mid-chain: still advance so later priority workflows run.
+            const missingTrigger = normalizeWorkflowTrigger(input.triggerName ?? 'inbound');
+            if (missingTrigger === 'inbound' && input.messageId !== undefined) {
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                actorUserId: input.actorUserId,
+                jobContext: input.context ?? {},
                 now,
               });
             }
@@ -409,6 +465,13 @@ export function createPostgresWorkflowExecutionJobPort(
               log: ['skip:workflow_already_applied'],
               now,
             });
+            await maybeEnqueueNextInboundWorkflow(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              actorUserId: input.actorUserId,
+              jobContext,
+              now,
+            });
             return;
           }
 
@@ -429,6 +492,13 @@ export function createPostgresWorkflowExecutionJobPort(
             });
             if (trigger === 'inbound' && message) {
               await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
+                now,
+              });
             }
             return;
           }
@@ -439,6 +509,15 @@ export function createPostgresWorkflowExecutionJobPort(
               log: ['skip:workflow_disabled'],
               now,
             });
+            if (trigger === 'inbound' && message) {
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
+                now,
+              });
+            }
             return;
           }
 
@@ -462,6 +541,18 @@ export function createPostgresWorkflowExecutionJobPort(
               log: [delayedJob.status === 'cancelled' ? 'skip:delayed_job_cancelled' : 'skip:delayed_job_done'],
               now,
             });
+            // Storniertes Delay-Geschwister: siehe unten — die Join-Barriere
+            // zaehlt es weiterhin als pending und bliebe sonst fuer immer offen.
+            if (trigger === 'inbound' && message) {
+              await completeInboundDeferredJoinSibling(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                chainStop: true,
+                now,
+              });
+            }
             return;
           }
           if (delayedJob && !resumeNodeId) {
@@ -488,6 +579,21 @@ export function createPostgresWorkflowExecutionJobPort(
                 log: ['skip:delayed_job_cancelled'],
                 now,
               });
+              // Der Delay-Zweig wurde als Geschwister eines Kettenstopps
+              // storniert, zaehlt in der Join-Barriere aber weiterhin als
+              // pending. Ohne diesen Abschluss erreichte der Zaehler nie null —
+              // die Barriere und der Sibling-Abort-Marker blieben fuer immer
+              // liegen und vergifteten jede spaetere Wiederholung.
+              if (trigger === 'inbound' && message) {
+                await completeInboundDeferredJoinSibling(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: Number(message.id),
+                  workflowId: Number(workflow.id),
+                  chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                  chainStop: true,
+                  now,
+                });
+              }
               return;
             }
           }
@@ -501,7 +607,7 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
-          const context = buildWorkflowContext({
+          const context = await buildWorkflowContext(trx, {
             workspaceId: input.workspaceId,
             workflowId: Number(workflow.id),
             workflowSourceSqliteId: workflowSourceSqliteId(workflow),
@@ -516,6 +622,41 @@ export function createPostgresWorkflowExecutionJobPort(
             manualAdminExecute: input.manualAdminExecute,
             jobContext,
           });
+          if (
+            resumeNodeId
+            && trigger === 'inbound'
+            && message
+            && await isInboundSiblingAborted(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              workflowId: Number(workflow.id),
+              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+            })
+          ) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:sibling_terminal_abort'],
+              now,
+            });
+            await completeInboundDeferredJoinSibling(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              workflowId: Number(workflow.id),
+              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              chainStop: true,
+              now,
+            });
+            if (delayedJob) {
+              await markDelayedJobStatus(
+                trx,
+                input.workspaceId,
+                Number(delayedJob.id),
+                'failed',
+                now,
+              );
+            }
+            return;
+          }
           const result = await runServerWorkflowGraph(trx, {
             workspaceId: input.workspaceId,
             workflow,
@@ -532,8 +673,99 @@ export function createPostgresWorkflowExecutionJobPort(
             log: result.log,
             now,
           });
-          if (trigger === 'inbound' && message && result.status === 'ok' && !result.deferred) {
-            await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+          if (trigger === 'inbound' && message && result.deferred) {
+            // Multi-deferred trigger fan-out: wait for every sibling before
+            // mark-applied / priority-chain advance (Codex Round-10 join).
+            // If a later sibling blocked/stopped the fan-out, seed chainStop and
+            // cancel already-queued delay jobs so they cannot release holds later.
+            const siblingTerminal = result.blocked
+              || result.status === 'blocked'
+              || result.inboundChainStop === true;
+            const chain = parseInboundWorkflowChain(jobContext.inboundWorkflowChain);
+            await initInboundDeferredJoin(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              workflowId: Number(workflow.id),
+              chain,
+              pendingCount: result.deferredBranchCount ?? 1,
+              chainStop: siblingTerminal,
+              // Ein synchron mit Fehler beendeter Geschwisterzweig muss über
+              // die Barriere sichtbar bleiben — sonst markiert der später
+              // abschliessende Kindjob den Workflow als angewendet, obwohl
+              // derselbe Fehler ohne deferiertes Geschwister das verhindert haette.
+              error: result.status === 'error',
+              now,
+            });
+            if (siblingTerminal) {
+              await abortRemainingInboundSiblings(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain,
+                reason: result.inboundChainStop
+                  ? 'sibling_inbound_chain_stop'
+                  : 'sibling_blocked',
+                now,
+              });
+            }
+          } else if (
+            trigger === 'inbound'
+            && message
+            && !result.deferred
+            // 'blocked' gehört dazu: ein Workflow im compiled-Modus, ohne
+            // Trigger oder mit nicht unterstütztem Knoten liefert synchron
+            // blocked. Fiele er hier heraus, würde die serialisierte Kette nie
+            // weitergeschaltet und ein einziger veralteter Workflow legte alle
+            // nachrangigen dauerhaft still. Wie ein Fehler behandeln: nicht als
+            // angewendet markieren, aber weiterschalten.
+            && (
+              result.status === 'ok'
+              || result.status === 'error'
+              || result.status === 'blocked'
+              || result.inboundChainStop === true
+            )
+          ) {
+            const join = await completeInboundDeferredJoinSibling(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              workflowId: Number(workflow.id),
+              chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              chainStop: result.inboundChainStop === true,
+              error: result.status === 'error' || result.status === 'blocked',
+              now,
+            });
+            // Der Kettenstopp kann auch erst in einer Continuation entstehen
+            // (wiederaufgenommener Zweig). Dann muessen die uebrigen deferierten
+            // Geschwister genauso abgebrochen werden wie beim urspruenglichen
+            // Fan-out — sonst laufen sie weiter und koennen noch senden.
+            if (result.inboundChainStop === true) {
+              await abortRemainingInboundSiblings(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                reason: 'sibling_inbound_chain_stop',
+                now,
+              });
+            }
+            if (
+              inboundJoinAllowsAdvance(join)
+              && !result.inboundChainStop
+              && (result.status === 'ok' || result.status === 'error' || result.status === 'blocked')
+            ) {
+              // 'ready_error': ein Geschwisterzweig dieser Fan-out-Runde ist
+              // gescheitert — weiterschalten ja, als angewendet markieren nein.
+              if (result.status === 'ok' && join === 'ready') {
+                await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+              }
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
+                now,
+              });
+            }
           }
           if (delayedJob) {
             await markDelayedJobStatus(
@@ -581,7 +813,7 @@ export function createPostgresWorkflowExecutionJobPort(
             };
           }
 
-          const context = buildWorkflowContext({
+          const context = await buildWorkflowContext(trx, {
             workspaceId: input.workspaceId,
             workflowId: Number(prepared.workflow.id),
             workflowSourceSqliteId: workflowSourceSqliteId(prepared.workflow),
@@ -850,6 +1082,7 @@ async function loadMessage(
       // Anti-Loop-Guards (email.auto_reply / email.send_draft) prüfen
       // Auto-Submitted/X-Auto-Response-Suppress/Precedence/List-Header.
       'raw_headers',
+      'reply_parent_message_id',
     ])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
@@ -1113,9 +1346,10 @@ async function runServerWorkflowGraph(
 
   const log: string[] = [];
   let result: GraphRunResult = { status: 'ok', blocked: false, deferred: false, blockReason: null, log };
+  let deferredBranchCount = 0;
   for (const edge of triggerEdges) {
     const branchContext = cloneServerWorkflowContext(input.context);
-    result = await walkGraph(trx, {
+    const branch = await walkGraph(trx, {
       doc,
       context: branchContext,
       startNodeId: edge.target,
@@ -1125,9 +1359,22 @@ async function runServerWorkflowGraph(
       ports: input.ports,
       inboundGate: branchContext.direction === 'inbound' ? { conditionOk: false } : undefined,
     });
-    if (result.status !== 'ok' || result.blocked || result.deferred) return result;
+    if (branch.deferred) deferredBranchCount += 1;
+    result = {
+      ...branch,
+      deferred: result.deferred === true || branch.deferred === true,
+      deferredBranchCount,
+      // Preserve an earlier sibling error — a later ok branch must not flip the
+      // run back to success (would mark inbound applied and advance the chain).
+      status: result.status === 'error' || branch.status === 'error' ? 'error' : branch.status,
+      log,
+    };
+    if (branch.blocked) return { ...result, deferredBranchCount };
+    if (branch.inboundChainStop) return { ...result, deferredBranchCount };
+    // Keep walking sibling trigger branches after a deferred async/delay node.
+    // Chain advance waits for all deferred siblings via inboundDeferredJoin.
   }
-  return result;
+  return { ...result, deferredBranchCount };
 }
 
 function cloneServerWorkflowContext(context: ServerWorkflowContext): ServerWorkflowContext {
@@ -1254,7 +1501,7 @@ async function walkGraph(
     }
 
     const started = Date.now();
-    const result = await executeServerNode(
+    const result = withNodeChainStop(node, await executeServerNode(
       trx,
       input.doc,
       input.context,
@@ -1263,7 +1510,7 @@ async function walkGraph(
       input.now,
       input.ports,
       input.dryRun,
-    );
+    ));
     const durationMs = Math.max(0, Date.now() - started);
     if (!input.dryRun) {
       await insertRunStep(trx, input.context, node, {
@@ -1304,26 +1551,24 @@ async function walkGraph(
       input.inboundGate.conditionOk = true;
       input.context.variables.__inbound_condition_ok = true;
     }
-    if (result.blocked) {
-      if (!input.dryRun && input.context.direction === 'outbound' && input.context.messageId !== null) {
-        await trx
-          .updateTable('email_messages')
-          .set({
-            outbound_hold: true,
-            outbound_block_reason: result.blockReason ?? result.message ?? 'Workflow blockiert',
-            updated_at: input.now,
-          })
-          .where('workspace_id', '=', input.context.workspaceId)
-          .where('id', '=', input.context.messageId)
-          .execute();
-      }
-      return {
-        status: 'blocked',
-        blocked: true,
-        deferred: false,
-        blockReason: result.blockReason ?? result.message ?? 'Workflow blockiert',
-        log: input.log,
-      };
+    // Hold as side effect, but still follow an *explicit* block/error port so
+    // template branches (tags, notifications) run before finishing blocked.
+    // Do NOT follow ports for ordinary status:'error' (e.g. Continuation-Kontext
+    // overflow) or port:'blocked' unsupported-node results — those must stop.
+    const pendingBlockReason = result.blocked
+      ? (result.blockReason ?? result.message ?? 'Workflow blockiert')
+      : null;
+    if (result.blocked && !input.dryRun && input.context.direction === 'outbound' && input.context.messageId !== null) {
+      await trx
+        .updateTable('email_messages')
+        .set({
+          outbound_hold: true,
+          outbound_block_reason: pendingBlockReason,
+          updated_at: input.now,
+        })
+        .where('workspace_id', '=', input.context.workspaceId)
+        .where('id', '=', input.context.messageId)
+        .execute();
     }
     if (result.status === 'error') {
       return {
@@ -1334,12 +1579,51 @@ async function walkGraph(
         log: input.log,
       };
     }
+    if (result.blocked) {
+      const blockPort = typeof result.port === 'string' ? result.port : '';
+      const followBlockPort = blockPort === 'block' || blockPort === 'error';
+      const outs = outgoing(input.doc.edges, currentId);
+      const blockEdge = followBlockPort ? pickEdge(outs, blockPort) : undefined;
+      if (blockEdge) {
+        const branch = await walkGraph(trx, {
+          ...input,
+          startNodeId: blockEdge.target,
+        });
+        if (branch.blocked || branch.status === 'blocked') return branch;
+        if (branch.deferred) {
+          return {
+            ...branch,
+            status: 'blocked',
+            blocked: true,
+            blockReason: pendingBlockReason,
+          };
+        }
+        if (branch.status === 'error') return branch;
+        return {
+          status: 'blocked',
+          blocked: true,
+          deferred: false,
+          blockReason: pendingBlockReason,
+          log: branch.log,
+        };
+      }
+      return {
+        status: 'blocked',
+        blocked: true,
+        deferred: false,
+        blockReason: pendingBlockReason,
+        log: input.log,
+      };
+    }
     if (result.stop) {
       input.log.push('stop');
       return {
         status: 'ok',
         blocked: false,
         deferred: result.deferred === true,
+        // Ordinary logic.stop ends only this workflow; only spam short-circuit
+        // (stop_after_spam / stopFurtherWorkflows) terminates the priority chain.
+        inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
         blockReason: null,
         log: input.log,
       };
@@ -1377,6 +1661,7 @@ function boundedWorkflowLoopItems(value: unknown): number {
 }
 
 async function executePreviewOutboundAiReview(
+  trx: WorkspaceTransaction,
   ports: ServerWorkflowRuntimePorts,
   context: ServerWorkflowContext,
   config: Record<string, unknown>,
@@ -1413,7 +1698,7 @@ async function executePreviewOutboundAiReview(
           : workflowOutboundReviewSystemPrompt(),
         fallbackUserTemplate: typeof config.fallbackUserTemplate === 'string' && config.fallbackUserTemplate.trim()
           ? config.fallbackUserTemplate.trim()
-          : workflowOutboundReviewUserTemplate(),
+          : await buildOutboundReviewUserTemplate(trx, context, config),
       }
       : { parseMode: 'block_keyword' as const }),
     eventStrings: context.strings,
@@ -1423,12 +1708,22 @@ async function executePreviewOutboundAiReview(
   if (!preview.ok) {
     return {
       status: 'ok',
+      port: 'block',
       blocked: true,
       blockReason: preview.reason,
       message: preview.reason,
+      variables: {
+        'ai.outbound_review.verdict': 'block',
+        'ai.outbound_review.reason': preview.reason,
+      },
     };
   }
-  return { status: 'ok', port: 'default', message: 'preview_ai:ok' };
+  return {
+    status: 'ok',
+    port: 'ok',
+    message: 'preview_ai:ok',
+    variables: { 'ai.outbound_review.verdict': 'ok', 'ai.outbound_review.reason': '' },
+  };
 }
 
 async function executeServerNode(
@@ -1453,6 +1748,33 @@ async function executeServerNode(
   const config = interpolateServerSchemaFields(type, nodeConfig(node), context);
   if (type === 'logic.stop' || type === 'stop') {
     return { status: 'ok', port: 'default', stop: true };
+  }
+  if (type === 'logic.stop_after_spam') {
+    const message = context.message;
+    const spamStatus = String(context.variables['spam.status'] ?? message?.spam_status ?? '').toLowerCase();
+    const spamLabel = String(
+      context.variables['spam.label']
+      ?? context.variables['spam.score_label']
+      ?? message?.spam_score_label
+      ?? '',
+    ).toLowerCase();
+    const isSpam =
+      context.variables['email.is_spam'] === true
+      || messageIsSpamOrReviewForInboundWorkflow({
+        is_spam: message?.is_spam,
+        spam_status: spamStatus || message?.spam_status,
+        spam_score_label: spamLabel || message?.spam_score_label,
+      });
+    if (isSpam) {
+      return {
+        status: 'ok',
+        port: 'default',
+        stop: true,
+        inboundChainStop: true,
+        message: 'stop_after_spam',
+      };
+    }
+    return { status: 'ok', port: 'default', message: 'not_spam:continue' };
   }
   if (type === 'logic.merge' || type === 'logic.loop') {
     return { status: 'ok', port: 'default' };
@@ -1546,10 +1868,10 @@ async function executeServerNode(
       if (context.direction !== 'outbound') {
         return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
       }
-      return executePreviewOutboundAiReview(ports, context, config, type);
+      return executePreviewOutboundAiReview(trx, ports, context, config, type);
     }
     if (type === 'ai.review' || type === 'ai_review') {
-      return executePreviewOutboundAiReview(ports, context, config, type);
+      return executePreviewOutboundAiReview(trx, ports, context, config, type);
     }
   }
   if (dryRun) {
@@ -1564,11 +1886,24 @@ async function executeServerNode(
     if (context.direction !== 'outbound') {
       return { status: 'skipped', port: 'default', message: 'Nur fuer ausgehende Nachrichten' };
     }
+    const portResumeTargets = {
+      ok: resolveResumeNodeAfterPort(doc, node.id, 'ok'),
+      block: resolveResumeNodeAfterPort(doc, node.id, 'block'),
+      error: resolveResumeNodeAfterPort(doc, node.id, 'error'),
+    };
+    const replyParentMessageId = config.checkReplyContext === false
+      ? undefined
+      : resolveOutboundReplyParentId(context);
     return await scheduleAiReviewJob(trx, doc, context, node, {
       ...config,
       blockKeyword: 'BLOCK',
       systemPrompt: workflowOutboundReviewSystemPrompt(),
+      // Parent body is loaded in the ai.review job AFTER content.read ACL —
+      // do not bake it into the template under the system role here.
       fallbackUserTemplate: workflowOutboundReviewUserTemplate(),
+      parseMode: 'outbound_structured',
+      portResumeTargets,
+      ...(replyParentMessageId !== undefined ? { replyParentMessageId } : {}),
     }, now);
   }
   if (type === 'ai.review' || type === 'ai_review') {
@@ -1583,6 +1918,17 @@ async function executeServerNode(
   if (type === 'ai.agent') {
     const createDraft = booleanConfig(config.createDraft, 'createDraft', true);
     if (!createDraft.ok) return { status: 'error', port: 'error', message: createDraft.message };
+    if (context.messageId !== null) {
+      const currentMessage = await trx
+        .selectFrom('email_messages')
+        .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
+        .where('workspace_id', '=', context.workspaceId)
+        .where('id', '=', context.messageId)
+        .executeTakeFirst();
+      if (currentMessage && messageIsSpamOrReview(currentMessage)) {
+        return { status: 'skipped', port: 'default', message: 'skip:agent_message_spam_or_review' };
+      }
+    }
     return await scheduleAiAgentJob(trx, doc, context, node, config, createDraft.value, now);
   }
   if (type === 'ai.pick_canned') {
@@ -1595,6 +1941,43 @@ async function executeServerNode(
   }
   if (type === 'ai.spam_score') {
     return await workflowAiSpamScoreResult(trx, context, config);
+  }
+  if (type === 'ai.draft_reply') {
+    if (context.direction !== 'inbound' || context.messageId === null) {
+      return { status: 'skipped', port: 'default', message: 'Nur fuer eingehende Nachrichten' };
+    }
+    if (dryRun) {
+      if (!ports.aiDraft) {
+        return { status: 'error', port: 'error', message: 'KI-Entwurf: Server-KI nicht konfiguriert' };
+      }
+      return await executeWorkflowAiDraftReply(trx, ports.aiDraft, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        config,
+        strings: context.strings,
+        variables: context.variables,
+        actorUserId: context.actorUserId,
+        dryRun: true,
+      });
+    }
+    return await scheduleAiDraftReplyJob(trx, doc, context, node, config, now);
+  }
+  if (type === 'ai.review_draft') {
+    if (dryRun) {
+      if (!ports.aiDraft) {
+        return { status: 'error', port: 'error', message: 'KI-Gegenpruefung: Server-KI nicht konfiguriert' };
+      }
+      return await executeWorkflowAiReviewDraft(trx, ports.aiDraft, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        config,
+        variables: context.variables,
+        strings: context.strings,
+        actorUserId: context.actorUserId,
+        dryRun: true,
+      });
+    }
+    return await scheduleAiReviewDraftJob(trx, doc, context, node, config, now);
   }
   if (type === 'email.hold_outbound' || type === 'hold_outbound') {
     const reason = String(config.reason ?? node.data.reason ?? '').trim()
@@ -1612,6 +1995,22 @@ async function executeServerNode(
       return dryRunSideEffectResult('email.release_outbound', log, {
         message: 'dry_run:email.release_outbound',
       });
+    }
+    if (
+      context.direction === 'inbound'
+      && context.messageId !== null
+      && await isInboundSiblingAborted(trx, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        workflowId: context.workflowId,
+        chain: context.inboundWorkflowChain ?? null,
+      })
+    ) {
+      return {
+        status: 'skipped',
+        port: 'default',
+        message: 'skip:sibling_terminal_abort',
+      };
     }
     return await releaseWorkflowOutboundHold(trx, context, config, now);
   }
@@ -1716,7 +2115,14 @@ async function executeServerNode(
     if (!train.ok) return { status: 'error', port: 'error', message: train.message };
     const status = spamStatusConfig(config.status);
     const tag = String(config.tag ?? '').trim();
-    return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now);
+    // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
+    // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
+    // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
+    if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
+    return await setWorkflowSpamStatus(trx, context, status, tag, train.value, now, {
+      stopFurtherWorkflows: stopFurther.value,
+    });
   }
   if (type === 'email.mark_spam') {
     const train = booleanConfig(config.train, 'train', false);
@@ -1725,12 +2131,19 @@ async function executeServerNode(
     if (!spam.ok) return { status: 'error', port: 'error', message: spam.message };
     const moveImap = booleanConfig(config.moveImap, 'moveImap', false);
     if (!moveImap.ok) return { status: 'error', port: 'error', message: moveImap.message };
+    // Default false: gespeicherte Graphen kennen dieses Feld nicht — ein
+    // stiller Default true würde in ihnen rückwirkend alle Folgeknoten und die
+    // gesamte Inbound-Kette kappen. Stoppen ist ausdrücklich zu aktivieren.
+    const stopFurther = booleanConfig(config.stopFurtherWorkflows, 'stopFurtherWorkflows', false);
+    if (!stopFurther.ok) return { status: 'error', port: 'error', message: stopFurther.message };
     if (moveImap.value && spam.value) {
       const moveResult = await runWorkflowImapMoveAction(context, 'Spam', ports, log, 'email.mark_spam.move_imap', now);
       if (!moveResult.ok) return moveResult.node;
     }
     const tag = String(config.tag ?? 'auto-spam').trim();
-    return await setWorkflowSpamStatus(trx, context, spam.value ? 'spam' : 'clean', tag, train.value, now);
+    return await setWorkflowSpamStatus(trx, context, spam.value ? 'spam' : 'clean', tag, train.value, now, {
+      stopFurtherWorkflows: stopFurther.value,
+    });
   }
   if (type === 'email.move_imap') {
     return await moveWorkflowMessageOnImap(trx, context, config, now, ports, log);
@@ -2397,6 +2810,16 @@ async function scheduleAiReplySuggestionJob(
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
   }
 
+  const currentMessage = await trx
+    .selectFrom('email_messages')
+    .select(['id', 'is_spam', 'spam_status', 'spam_score_label'])
+    .where('workspace_id', '=', context.workspaceId)
+    .where('id', '=', context.messageId)
+    .executeTakeFirst();
+  if (currentMessage && messageIsSpamOrReview(currentMessage)) {
+    return { status: 'skipped', port: 'default', message: 'skip:message_spam_or_review' };
+  }
+
   const promptId = optionalPositiveIntegerConfig(config.promptId, 'promptId');
   if (!promptId.ok) return { status: 'error', port: 'error', message: promptId.message };
   const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
@@ -2488,6 +2911,7 @@ async function scheduleAiClassificationJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2537,7 +2961,18 @@ async function scheduleAiReviewJob(
   const blockKeyword = workflowAiBlockKeyword(config.blockKeyword);
   if (!blockKeyword.ok) return { status: 'error', port: 'error', message: blockKeyword.message };
 
-  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const parseMode = config.parseMode === 'outbound_structured' ? 'outbound_structured' as const : undefined;
+  const rawPortTargets = objectRecord(config.portResumeTargets);
+  const portResumeTargets = rawPortTargets
+    ? Object.fromEntries(
+      Object.entries(rawPortTargets)
+        .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim().length > 0)
+        .map(([port, target]) => [port, target.trim()]),
+    )
+    : undefined;
+  const resumeNodeId = parseMode === 'outbound_structured'
+    ? (resolveResumeNodeAfterPort(doc, node.id, 'ok') || resolveResumeNodeAfter(doc, node.id))
+    : resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
     direction: context.direction,
@@ -2546,6 +2981,10 @@ async function scheduleAiReviewJob(
     eventStrings: context.strings,
     eventVariables: context.variables,
   };
+  if (parseMode) payload.parseMode = parseMode;
+  if (portResumeTargets && Object.keys(portResumeTargets).length > 0) {
+    payload.portResumeTargets = portResumeTargets;
+  }
   if (typeof config.systemPrompt === 'string' && config.systemPrompt.trim()) {
     payload.systemPrompt = config.systemPrompt.trim();
   }
@@ -2555,6 +2994,13 @@ async function scheduleAiReviewJob(
   if (context.messageId !== null) payload.messageId = context.messageId;
   if (promptId.value !== undefined) payload.promptId = promptId.value;
   if (profileId.value !== undefined) payload.profileId = profileId.value;
+  {
+    const replyParent = optionalPositiveIntegerConfig(config.replyParentMessageId, 'replyParentMessageId');
+    if (!replyParent.ok) {
+      return { status: 'error', port: 'error', message: replyParent.message };
+    }
+    if (replyParent.value !== undefined) payload.replyParentMessageId = replyParent.value;
+  }
   if (resumeNodeId) {
     payload.workflowId = context.workflowId;
     payload.resumeNodeId = resumeNodeId;
@@ -2564,6 +3010,7 @@ async function scheduleAiReviewJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2633,6 +3080,7 @@ async function scheduleAiTransformTextJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2712,6 +3160,7 @@ async function scheduleAiAgentJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2738,6 +3187,190 @@ async function scheduleAiAgentJob(
     variables: {
       'ai.agent.status': 'pending',
       'ai.agent.job_id': jobId,
+    },
+  };
+}
+
+async function scheduleAiDraftReplyJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  if (context.messageId === null) {
+    return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
+  }
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+  const knowledgeBaseId = optionalPositiveIntegerConfig(config.knowledgeBaseId, 'knowledgeBaseId');
+  if (!knowledgeBaseId.ok) return { status: 'error', port: 'error', message: knowledgeBaseId.message };
+
+  const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    messageId: context.messageId,
+    runId: context.runId,
+    ...workflowJobProvenance(context),
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+    // Kettenkontext auch ohne Resume-Kante: ein terminaler KI-Knoten hat keine
+    // Continuation, muss die Kette nach getaner Arbeit aber trotzdem
+    // weiterschalten (inboundChainFromJobPayload liest payload.context).
+    context: { ...inboundChainFieldsFromContext(context) },
+  };
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  if (knowledgeBaseId.value !== undefined) payload.knowledgeBaseId = knowledgeBaseId.value;
+  if (typeof config.systemPrompt === 'string' && config.systemPrompt.trim()) {
+    payload.systemPrompt = config.systemPrompt.trim();
+  }
+  if (config.includeCanned === true) payload.includeCanned = true;
+  if (typeof config.greeting === 'string' && config.greeting.trim()) {
+    payload.greeting = config.greeting.trim();
+  }
+  if (typeof config.signature === 'string' && config.signature.trim()) {
+    payload.signature = config.signature.trim();
+  }
+  if (resumeNodeId) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = resumeNodeId;
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      resumeNodeId,
+      eventStrings: context.strings,
+      eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
+    };
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.draft_reply',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    // Auch ohne Resume-Kante deferred: der KI-Kindjob laeuft asynchron. Ohne
+    // das Flag markierte der Elternlauf den Workflow sofort als angewendet und
+    // startete die naechste Prioritaetsstufe, obwohl noch kein Entwurf
+    // existiert — und ein endgueltig gescheiterter Kindjob liesse den
+    // Applied-Marker stehen, sodass die Wiederverarbeitung ihn nicht nachholt.
+    stop: true,
+    deferred: true,
+    message: `queued_ai_draft_reply:${jobId}`,
+    variables: {
+      'ai.draft.status': 'pending',
+      'ai.draft.job_id': jobId,
+    },
+  };
+}
+
+async function scheduleAiReviewDraftJob(
+  trx: WorkspaceTransaction,
+  doc: WorkflowGraphDocument,
+  context: ServerWorkflowContext,
+  node: WorkflowGraphNode,
+  config: Record<string, unknown>,
+  now: Date,
+): Promise<NodeResult> {
+  const continuationContextError = workflowContinuationContextError(context);
+  if (continuationContextError) {
+    return { status: 'error', port: 'error', message: continuationContextError };
+  }
+  const profileId = optionalPositiveIntegerConfig(config.profileId, 'profileId');
+  if (!profileId.ok) return { status: 'error', port: 'error', message: profileId.message };
+
+  const portResumeTargets = {
+    send: resolveResumeNodeAfterPort(doc, node.id, 'send'),
+    hold: resolveResumeNodeAfterPort(doc, node.id, 'hold'),
+  };
+  const defaultResume = resolveResumeNodeAfter(doc, node.id);
+  // Success-path resume only (explicit send or unlabeled default) — never HOLD.
+  const successResumeNodeId = portResumeTargets.send || defaultResume || undefined;
+  // Still defer when only a HOLD edge exists so the parent waits for the review.
+  const deferAnchor = successResumeNodeId || portResumeTargets.hold || undefined;
+
+  const payload: Record<string, unknown> = {
+    workspaceId: context.workspaceId,
+    // runId wie bei ai.draft_reply: sonst erzeugen zwei Laeufe desselben
+    // Workflows fuer dieselbe Mail denselben Graphile-Job-Key und
+    // jobKeyMode 'replace' verschluckt die erste Gegenpruefung samt ihrer
+    // Continuation — der erste Elternlauf bliebe fuer immer deferred.
+    runId: context.runId,
+    ...workflowJobProvenance(context),
+    eventStrings: context.strings,
+    eventVariables: context.variables,
+    portResumeTargets: Object.fromEntries(
+      Object.entries(portResumeTargets).filter(([, target]) => Boolean(target)),
+    ),
+  };
+  if (context.messageId !== null) payload.messageId = context.messageId;
+  if (profileId.value !== undefined) payload.profileId = profileId.value;
+  const draftIdVar = typeof config.draftIdVariable === 'string' && config.draftIdVariable.trim()
+    ? config.draftIdVariable.trim()
+    : 'draft.id';
+  payload.draftIdVariable = draftIdVar;
+  const draftIdFromVars = Number(context.variables[draftIdVar]);
+  if (Number.isFinite(draftIdFromVars) && draftIdFromVars > 0) {
+    payload.draftId = draftIdFromVars;
+  }
+  if (typeof config.reviewPrompt === 'string' && config.reviewPrompt.trim()) {
+    payload.reviewPrompt = config.reviewPrompt.trim();
+  }
+  if (deferAnchor) {
+    payload.workflowId = context.workflowId;
+    payload.resumeNodeId = deferAnchor;
+    payload.continuation = {
+      workflowId: context.workflowId,
+      triggerName: context.trigger,
+      // Prefer success path; hold-only graphs temporarily park the hold id here
+      // as a deferral anchor — the job handler must not use it for SEND.
+      resumeNodeId: deferAnchor,
+      eventStrings: context.strings,
+      eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
+    };
+  }
+
+  const jobRow = await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'ai.review_draft',
+      payload,
+      run_after: now,
+      max_attempts: 3,
+      workspace_id: context.workspaceId,
+      updated_at: now,
+    })
+    .returning('id')
+    .executeTakeFirstOrThrow();
+  const jobId = Number(jobRow.id);
+
+  return {
+    status: 'ok',
+    port: 'default',
+    stop: Boolean(deferAnchor),
+    deferred: Boolean(deferAnchor),
+    message: `queued_ai_review_draft:${jobId}`,
+    variables: {
+      'ai.review.status': 'pending',
+      'ai.review.job_id': jobId,
     },
   };
 }
@@ -2777,6 +3410,7 @@ async function scheduleAiPickCannedJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2891,6 +3525,7 @@ async function scheduleWorkflowHttpRequestJob(
       ...(!resumeNodeId && errorResumeNodeId ? { completeOnSuccess: true } : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -2960,6 +3595,7 @@ async function scheduleWorkflowForwardCopyJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -3026,6 +3662,7 @@ async function scheduleWorkflowDmarcIngestJob(
       resumeNodeId,
       eventStrings: context.strings,
       eventVariables: context.variables,
+      ...inboundChainFieldsFromContext(context),
     };
   }
 
@@ -3831,6 +4468,13 @@ async function workflowAiSpamScoreResult(
   context: ServerWorkflowContext,
   config: Record<string, unknown>,
 ): Promise<NodeResult> {
+  const hasIgnoredDesktopAiConfig =
+    (config.profileId !== null && config.profileId !== undefined && Number(config.profileId) > 0)
+    || (typeof config.customPrompt === 'string' && config.customPrompt.trim().length > 0)
+    || config.contextMode === 'full';
+  const serverNote = hasIgnoredDesktopAiConfig
+    ? 'Server: Profil/Prompt/contextMode werden ignoriert — es wird der gespeicherte oder lokal berechnete Spam-Score genutzt.'
+    : '';
   const score = numericVariable(context.variables['spam.score']);
   const mode = String(config.contextMode ?? 'stored').trim() || 'stored';
   if (score !== null) {
@@ -3840,6 +4484,7 @@ async function workflowAiSpamScoreResult(
       variables: {
         'ai.spam_score': score,
         'ai.spam_context': `stored:${mode}`,
+        ...(serverNote ? { 'ai.spam_score.server_note': serverNote } : {}),
       },
     };
   }
@@ -3871,6 +4516,7 @@ async function workflowAiSpamScoreResult(
   };
   if (decision.listMatch) variables['spam.list_match'] = decision.listMatch.listType;
   if (firstReason?.label) variables['spam.top_reason'] = firstReason.label;
+  if (serverNote) variables['ai.spam_score.server_note'] = serverNote;
   return {
     status: 'ok',
     port: 'default',
@@ -4341,6 +4987,65 @@ function workflowOutboundReviewUserTemplate(): string {
   ].join('\n');
 }
 
+async function buildOutboundReviewUserTemplate(
+  trx: WorkspaceTransaction,
+  context: ServerWorkflowContext,
+  config: Record<string, unknown>,
+): Promise<string> {
+  // Dry-run / preview only: live scheduling stamps replyParentMessageId and
+  // loads the parent inside the ai.review job after ACL.
+  let template = workflowOutboundReviewUserTemplate();
+  if (config.checkReplyContext === false) return template;
+  const parentId = resolveOutboundReplyParentId(context);
+  if (parentId === undefined) return template;
+  const parentBlock = await loadOutboundReplyParentBlock(trx, context.workspaceId, parentId);
+  return parentBlock ? `${template}${parentBlock}` : template;
+}
+
+function resolveOutboundReplyParentId(context: ServerWorkflowContext): number | undefined {
+  const fromVar = Number(context.variables['outbound.in_reply_to_message_id']);
+  if (Number.isFinite(fromVar) && fromVar > 0) return fromVar;
+  const fromMessage = context.message?.reply_parent_message_id == null
+    ? 0
+    : Number(context.message.reply_parent_message_id);
+  return Number.isFinite(fromMessage) && fromMessage > 0 ? fromMessage : undefined;
+}
+
+export async function loadOutboundReplyParentBlock(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  parentId: number,
+): Promise<string | null> {
+  const parent = await trx
+    .selectFrom('email_messages')
+    .select(['subject', 'body_text', 'snippet', 'from_json', 'is_spam'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', parentId)
+    .executeTakeFirst();
+  if (!parent) return null;
+
+  let fromAddr = '';
+  try {
+    fromAddr = addressesFromRecipientJson(
+      typeof parent.from_json === 'string'
+        ? parent.from_json
+        : parent.from_json == null
+          ? null
+          : JSON.stringify(parent.from_json),
+    );
+  } catch {
+    fromAddr = '';
+  }
+  return [
+    '',
+    '--- Ursprüngliche Nachricht (Antwort-Kontext) ---',
+    `Von: ${fromAddr}`,
+    `Betreff: ${parent.subject ?? ''}`,
+    `Textauszug: ${(parent.body_text ?? parent.snippet ?? '').slice(0, 4000)}`,
+    `Spam markiert: ${parent.is_spam ? 'ja' : 'nein'}`,
+  ].join('\n');
+}
+
 function replySubject(subject: string | null | undefined): string {
   const value = String(subject ?? '').trim();
   if (!value) return 'Re:';
@@ -4355,7 +5060,20 @@ function workflowDelayContext(
     resumeNodeId,
     eventStrings: context.strings,
     eventVariables: context.variables,
+    ...inboundChainFieldsFromContext(context),
   };
+}
+
+function inboundChainFieldsFromContext(context: ServerWorkflowContext): ReturnType<typeof inboundChainFieldsFromRecord> {
+  // Continuations (AI/HTTP/delay) must keep the priority chain, but must NOT
+  // re-stamp skipIfMessageSpamOrReview — that guard is one-shot for the initial
+  // post-process enqueue. Re-applying it after mark_spam with stopFurther=false
+  // would abort the remaining graph on resume.
+  return inboundChainFieldsFromRecord({
+    ...(context.inboundWorkflowChain
+      ? { inboundWorkflowChain: context.inboundWorkflowChain }
+      : {}),
+  });
 }
 
 function boundedDelayMinutes(value: unknown): number {
@@ -4374,7 +5092,12 @@ function boundedDelayMs(value: unknown): number {
 
 function resolveResumeNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
   const outs = outgoing(doc.edges, nodeId);
-  return pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
+  return pickEdge(outs, 'ok')?.target ?? pickEdge(outs, 'default')?.target ?? outs[0]?.target ?? '';
+}
+
+function resolveResumeNodeAfterPort(doc: WorkflowGraphDocument, nodeId: string, port: string): string {
+  const outs = outgoing(doc.edges, nodeId);
+  return pickEdge(outs, port)?.target ?? '';
 }
 
 function resolveHttpSuccessNodeAfter(doc: WorkflowGraphDocument, nodeId: string): string {
@@ -5769,6 +6492,7 @@ async function setWorkflowSpamStatus(
   tag: string,
   train: boolean,
   now: Date,
+  options: { stopFurtherWorkflows?: boolean } = {},
 ): Promise<NodeResult> {
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
@@ -5821,6 +6545,10 @@ async function setWorkflowSpamStatus(
     status: 'ok',
     port: 'default',
     variables: { 'email.is_spam': status === 'spam', 'spam.status': status },
+    // Opt-in (=== true), nicht !== false: ohne gesetztes Feld darf nichts stoppen.
+    ...(options.stopFurtherWorkflows === true && (status === 'spam' || status === 'review')
+      ? { stop: true, inboundChainStop: true, message: 'stop_further_workflows:spam_status' }
+      : {}),
   };
 }
 
@@ -6020,21 +6748,24 @@ async function insertRunStep(
     .execute();
 }
 
-function buildWorkflowContext(input: {
-  workspaceId: string;
-  workflowId: number;
-  workflowSourceSqliteId: number;
-  runId: number;
-  runSourceSqliteId: number;
-  messageId: number | null;
-  trigger: WorkflowTriggerKind;
-  direction: WorkflowDirection;
-  message: MessageRow | null;
-  actorUserId?: string;
-  trustedService?: boolean;
-  manualAdminExecute?: boolean;
-  jobContext: Record<string, unknown>;
-}): ServerWorkflowContext {
+async function buildWorkflowContext(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    workflowId: number;
+    workflowSourceSqliteId: number;
+    runId: number;
+    runSourceSqliteId: number;
+    messageId: number | null;
+    trigger: WorkflowTriggerKind;
+    direction: WorkflowDirection;
+    message: MessageRow | null;
+    actorUserId?: string;
+    trustedService?: boolean;
+    manualAdminExecute?: boolean;
+    jobContext: Record<string, unknown>;
+  },
+): Promise<ServerWorkflowContext> {
   const eventStrings = stringRecord(input.jobContext.eventStrings);
   const eventVariables = variableRecord(input.jobContext.eventVariables);
   const strings = eventStrings ?? (
@@ -6056,6 +6787,31 @@ function buildWorkflowContext(input: {
     if (input.message.customer_source_sqlite_id !== null && input.message.customer_source_sqlite_id !== undefined) {
       variables['customer.source_sqlite_id'] = Number(input.message.customer_source_sqlite_id);
     }
+    // Automated drafts have no later client interpolation — resolve customer
+    // name/email here so signature {{customer.*}} placeholders are not sent literally.
+    if (
+      input.message.customer_id !== null
+      && input.message.customer_id !== undefined
+      && (typeof variables['customer.name'] !== 'string' || !variables['customer.name'])
+    ) {
+      const customer = await trx
+        .selectFrom('customers')
+        .select(['name', 'first_name', 'company', 'email'])
+        .where('workspace_id', '=', input.workspaceId)
+        .where('id', '=', Number(input.message.customer_id))
+        .executeTakeFirst();
+      if (customer) {
+        const displayName = [customer.first_name, customer.name]
+          .map((part) => String(part ?? '').trim())
+          .filter(Boolean)
+          .join(' ')
+          || String(customer.company ?? '').trim()
+          || String(customer.name ?? '').trim();
+        if (displayName) variables['customer.name'] = displayName;
+        const email = String(customer.email ?? '').trim();
+        if (email) variables['customer.email'] = email;
+      }
+    }
     variables['auth.spf'] = authValue(input.message.auth_spf);
     variables['auth.dkim'] = authValue(input.message.auth_dkim);
     variables['auth.dmarc'] = authValue(input.message.auth_dmarc);
@@ -6066,6 +6822,10 @@ function buildWorkflowContext(input: {
     const outbound = objectRecord(input.jobContext.outbound);
     const count = Number(outbound?.attachmentCount ?? 0);
     variables['outbound.attachment_count'] = Number.isFinite(count) ? count : 0;
+    const inReplyTo = Number(outbound?.inReplyToMessageId);
+    if (Number.isFinite(inReplyTo) && inReplyTo > 0) {
+      variables['outbound.in_reply_to_message_id'] = inReplyTo;
+    }
   }
   return {
     workspaceId: input.workspaceId,
@@ -6086,6 +6846,7 @@ function buildWorkflowContext(input: {
     ...(input.trustedService ? { trustedService: true } : {}),
     ...(input.manualAdminExecute ? { manualAdminExecute: true } : {}),
     previewOutbound: input.jobContext.previewOutbound === true,
+    ...inboundChainFieldsFromRecord(input.jobContext),
   };
 }
 
@@ -6368,6 +7129,61 @@ function inboundNodeRequiresConditionGate(node: WorkflowGraphNode): boolean {
   return config.runOnEveryInbound !== true;
 }
 
+/**
+ * Generischer „Weitere Workflows stoppen"-Schalter (siehe @simplecrm/core
+ * node-chain-stop). Zentral hinter jedem Knoten ausgewertet, damit die Option
+ * an JEDEM Knoten zur Verfügung steht statt nur an den Spam-Knoten — z. B.
+ * „Absender auf Blocklist gesetzt ⇒ Kette beenden", während der Whitelist-/
+ * Weiterleitungszweig ohne den Schalter normal weiterläuft.
+ */
+function withNodeChainStop(node: WorkflowGraphNode, result: NodeResult): NodeResult {
+  if (!nodeRequestsChainStop({
+    nodeType: nodeRuntimeType(node),
+    config: nodeConfig(node),
+    result,
+  })) {
+    return result;
+  }
+  return {
+    ...result,
+    stop: true,
+    inboundChainStop: true,
+    message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
+  };
+}
+
+/**
+ * Ein Zweig hat die Inbound-Kette beendet: verbleibende deferierte Geschwister
+ * (KI-Kindjobs, HTTP, Weiterleitung, logic.delay) duerfen keine Nebenwirkungen
+ * mehr ausloesen. Marker setzen UND bereits eingeplante Delay-Jobs stornieren.
+ */
+async function abortRemainingInboundSiblings(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    chain: InboundWorkflowChainContext | null;
+    reason: string;
+    now: Date;
+  },
+): Promise<void> {
+  await markInboundSiblingAbort(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    workflowId: input.workflowId,
+    chain: input.chain,
+    reason: input.reason,
+    now: input.now,
+  });
+  await cancelPendingWorkflowDelayedJobsForMessage(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    workflowId: input.workflowId,
+    now: input.now,
+  });
+}
+
 function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
   if (node.data.config && typeof node.data.config === 'object' && !Array.isArray(node.data.config)) {
     return node.data.config as Record<string, unknown>;
@@ -6621,7 +7437,83 @@ function contextSkipsSpamOrReview(value: Record<string, unknown>): boolean {
   return value.skipIfMessageSpamOrReview === true;
 }
 
-function messageIsSpamOrReview(message: MessageRow): boolean {
+async function maybeEnqueueNextInboundWorkflow(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    actorUserId?: string;
+    jobContext: Record<string, unknown>;
+    now: Date;
+  },
+): Promise<void> {
+  const chain = parseInboundWorkflowChain(input.jobContext.inboundWorkflowChain);
+  if (!chain) return;
+  const nextIndex = chain.index + 1;
+  if (nextIndex >= chain.workflowIds.length) return;
+
+  const message = await trx
+    .selectFrom('email_messages')
+    .select(['id'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.messageId)
+    .executeTakeFirst();
+  // Chain stop is decided exclusively via inboundChainStop on the finished run.
+  // Do not re-bail on spam/review here — that would ignore stopFurtherWorkflows:false.
+  if (!message) return;
+
+  // Sibling deferred continuations share the same inboundWorkflowChain: the first
+  // finisher marks applied + enqueues; later already_applied hops must not
+  // re-enqueue the same next workflow. Claim is shared with terminal-child advance.
+  const claimed = await tryClaimInboundChainHop(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    chain,
+    nextIndex,
+    now: input.now,
+  });
+  if (!claimed) return;
+
+  const payload = input.actorUserId
+    ? {
+      workspaceId: input.workspaceId,
+      actorUserId: input.actorUserId,
+      workflowId: chain.workflowIds[nextIndex]!,
+      messageId: input.messageId,
+      triggerName: 'inbound',
+      context: {
+        // Do not stamp skipIfMessageSpamOrReview on chain hops: after
+        // mark_spam/set_spam_status with stopFurtherWorkflows:false the next
+        // priority workflow must still run. Spam short-circuit is inboundChainStop.
+        inboundWorkflowChain: { workflowIds: chain.workflowIds, index: nextIndex },
+      },
+    }
+    : buildTrustedServiceJobPayload({
+      workspaceId: input.workspaceId,
+      workflowId: chain.workflowIds[nextIndex]!,
+      messageId: input.messageId,
+      triggerName: 'inbound',
+      context: {
+        inboundWorkflowChain: { workflowIds: chain.workflowIds, index: nextIndex },
+      },
+    });
+
+  await trx
+    .insertInto('job_queue')
+    .values({
+      type: 'workflow.execute',
+      payload,
+      run_after: input.now,
+      max_attempts: 3,
+      workspace_id: input.workspaceId,
+      updated_at: input.now,
+    })
+    .execute();
+}
+
+function messageIsSpamOrReview(
+  message: Pick<MessageRow, 'is_spam' | 'spam_status' | 'spam_score_label'>,
+): boolean {
   const status = String(message.spam_status ?? '').toLowerCase();
   const label = String(message.spam_score_label ?? '').toLowerCase();
   return (

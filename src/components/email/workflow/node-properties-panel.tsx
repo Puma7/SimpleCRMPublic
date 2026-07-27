@@ -214,6 +214,10 @@ export function NodePropertiesPanel({
           ) : null}
 
           {node.type !== "trigger" ? (
+            <ChainStopField node={node} patch={patch} catalogByType={catalogByType} />
+          ) : null}
+
+          {node.type !== "trigger" ? (
             <>
               <Separator />
               <Button
@@ -547,6 +551,65 @@ function patchConfig(
   value: unknown,
 ) {
   patch({ config: { ...config, [key]: value } })
+}
+
+const CHAIN_STOP_KEY = "stopFurtherWorkflows"
+
+/**
+ * „Weitere Workflows stoppen" — an JEDEM Knoten (außer Trigger) verfügbar.
+ *
+ * Nach einer eingehenden Mail laufen mehrere Workflows nacheinander. Welcher
+ * Knoten diese Kette beenden soll, weiß nur der Ersteller: Absender auf die
+ * Blocklist gesetzt oder KI-Spam-Score über der Schwelle ⇒ stoppen; Whitelist-
+ * Treffer oder Weiterleitung ⇒ weiterlaufen lassen. Deshalb Opt-in pro Knoten
+ * statt fest verdrahtet. Ausgewertet in beiden Runtimes über
+ * `nodeRequestsChainStop` (@simplecrm/core).
+ *
+ * Nicht gerendert für Knoten, die das Feld in ihrem eigenen Schema deklarieren
+ * (Spam-Knoten: dort ist es statusabhängig) — sonst stünde derselbe Schalter
+ * doppelt im Formular.
+ */
+function ChainStopField({
+  node,
+  patch,
+  catalogByType,
+}: FieldProps & { catalogByType: Map<string, WorkflowNodeCatalogEntry> }) {
+  const data = node.data as Record<string, unknown>
+  const isRegistry = node.type === "registry"
+  const nodeType = isRegistry ? String(data.nodeType ?? "") : ""
+  const declaresOwnField = Boolean(
+    catalogByType.get(nodeType)?.fields?.some((f) => f.key === CHAIN_STOP_KEY),
+  )
+  if (declaresOwnField) return null
+
+  const config = isRegistry
+    ? ((data.config as Record<string, unknown> | undefined) ?? {})
+    : data
+  const raw = config[CHAIN_STOP_KEY]
+  const checked = raw === true || raw === "true" || raw === "1"
+  const setChecked = (value: boolean) => {
+    if (isRegistry) patchConfig(patch, config, CHAIN_STOP_KEY, value)
+    else patch({ [CHAIN_STOP_KEY]: value })
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <Separator />
+      <div className="flex items-center gap-2">
+        <Switch id="node-chain-stop" checked={checked} onCheckedChange={setChecked} />
+        <Label htmlFor="node-chain-stop" className="cursor-pointer text-xs font-normal">
+          Weitere Workflows stoppen
+        </Label>
+      </div>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        Aus (Standard): der Graph läuft nach diesem Knoten normal weiter. Ein: sobald dieser Knoten
+        erfolgreich ausgeführt wurde, endet der Graph hier und nachfolgende Inbound-Workflows laufen
+        für diese Nachricht nicht mehr an — z. B. „Absender auf Blocklist gesetzt". Auf einem
+        Verzweigungsknoten wirkt der Schalter unabhängig vom gewählten Ausgang; setze ihn dort
+        besser auf den Knoten im betroffenen Zweig.
+      </p>
+    </div>
+  )
 }
 
 function SwitchCaseBuilderFields({

@@ -1,6 +1,7 @@
 import type { Kysely, Selectable } from 'kysely';
 import {
   addressesFromRecipientJson,
+  messageIsSpamOrReviewForInboundWorkflow,
   normalizeAddressJson,
   parseOutboundReviewResponse,
 } from '@simplecrm/core';
@@ -30,6 +31,14 @@ import { cannedResponseVisibilityPredicate } from './db/postgres-mail-metadata-r
 import { searchKnowledgeForWorkflow } from './knowledge-workflow-search';
 import type { JobPayload } from './jobs/types';
 import type { MailSqlScope } from './mail-access/types';
+import {
+  resumeContextInboundChainFields,
+  type InboundChainContinuationFields,
+} from './workflow-inbound-chain-context';
+import {
+  enqueueNextInboundWorkflowAfterTerminalChildFailure,
+  isInboundSiblingAborted,
+} from './workflow-inbound-chain-advance';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -68,7 +77,7 @@ export type AiClassificationContinuation = Readonly<{
   resumeNodeId: string;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
-}>;
+} & InboundChainContinuationFields>;
 
 export type AiClassificationJobPlan = Readonly<{
   workspaceId: string;
@@ -110,6 +119,10 @@ export type AiReviewJobPlan = Readonly<{
   direction: 'inbound' | 'outbound';
   systemPrompt?: string;
   fallbackUserTemplate?: string;
+  parseMode?: 'outbound_structured' | 'block_keyword';
+  /** Original inbound message to include when checkReplyContext is enabled. */
+  replyParentMessageId?: number;
+  portResumeTargets?: Readonly<Record<string, string>>;
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
@@ -649,60 +662,124 @@ export function createPostgresAiReviewPort(
         },
         { applySession: options.applyWorkspaceSession },
       );
-      if (!context) throw new Error('Prompt nicht gefunden');
-      if (!context.profile) throw new Error('AI-Profil nicht gefunden');
-
-      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
-      if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
-
       const strings = {
-        ...stringsFromOptionalMessage(context.message),
+        ...stringsFromOptionalMessage(context?.message ?? null),
         ...stringPayload(input.eventStrings),
       };
       const variables = variablePayload(input.eventVariables);
-      const userTemplate = (context.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
+      let userTemplate = (context?.prompt?.user_template ?? input.fallbackUserTemplate ?? '')
         .replace(/\{\{text\}\}/g, strings.combined_text ?? '');
-      const output = await runTrackedChatCompletion(
-        options,
-        {
-          workspaceId: input.workspaceId,
-          aiProfileId: Number(context.profile.id),
-          model: context.profile.model,
-          nodeType: 'ai.review',
-          messageId: input.messageId ?? null,
-          actorUserId: input.actorUserId ?? null,
-        },
-        {
-          profile: context.profile,
-          apiKey,
-          system: input.systemPrompt
-            ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
-          user: interpolateWorkflowTemplate(userTemplate, strings, variables),
-        },
-      );
-      const blockKeyword = input.blockKeyword.trim() || 'BLOCK';
-      const blocked = output.toUpperCase().includes(blockKeyword.toUpperCase());
+      if (input.replyParentMessageId !== undefined) {
+        const parentBlock = await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => loadReplyParentContextBlock(trx, input.workspaceId, input.replyParentMessageId!),
+          { applySession: options.applyWorkspaceSession },
+        );
+        if (parentBlock) userTemplate = `${userTemplate}${parentBlock}`;
+      }
+      try {
+        // Config errors (missing prompt/profile/key) must take the same fail-closed
+        // error-port path as runtime KI failures — otherwise the draft stays held
+        // with no continuation after retries.
+        if (!context) throw new Error('Prompt nicht gefunden');
+        if (!context.profile) throw new Error('AI-Profil nicht gefunden');
+        const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+        if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
 
-      await withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          if (blocked) {
-            await persistAiReviewBlock(trx, input, now());
-            return;
-          }
-          if (input.continuation) {
-            await enqueueContinuation(trx, {
-              workspaceId: input.workspaceId,
-              messageId: input.messageId,
-              continuation: input.continuation,
-              variables: { 'ai.review.status': 'ok' },
-              now: now(),
-            });
-          }
-        },
-        { applySession: options.applyWorkspaceSession },
-      );
+        const output = await runTrackedChatCompletion(
+          options,
+          {
+            workspaceId: input.workspaceId,
+            aiProfileId: Number(context.profile.id),
+            model: context.profile.model,
+            nodeType: 'ai.review',
+            messageId: input.messageId ?? null,
+            actorUserId: input.actorUserId ?? null,
+          },
+          {
+            profile: context.profile,
+            apiKey,
+            system: input.systemPrompt
+              ?? 'Antworte nur mit OK oder BLOCK. BLOCK wenn der Inhalt laut Pruefauftrag problematisch ist.',
+            user: interpolateWorkflowTemplate(userTemplate, strings, variables),
+          },
+        );
+        const blockKeyword = input.blockKeyword.trim() || 'BLOCK';
+
+        if (input.parseMode === 'outbound_structured') {
+          const parsed = parseOutboundReviewResponse(output);
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => {
+              if (!parsed.ok) {
+                const reason = parsed.reason ?? 'Ausgehende KI-Pruefung: Versand blockiert';
+                await persistAiReviewBlock(trx, input, now(), reason);
+                await maybeEnqueueOutboundReviewContinuation(trx, input, 'block', {
+                  'ai.outbound_review.verdict': 'block',
+                  'ai.outbound_review.reason': reason,
+                }, now());
+                return;
+              }
+              await maybeEnqueueOutboundReviewContinuation(trx, input, 'ok', {
+                'ai.outbound_review.verdict': 'ok',
+                'ai.outbound_review.reason': '',
+                'ai.review.status': 'ok',
+              }, now());
+            },
+            { applySession: options.applyWorkspaceSession },
+          );
+          return;
+        }
+
+        const blocked = output.toUpperCase().includes(blockKeyword.toUpperCase());
+
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            if (blocked) {
+              await persistAiReviewBlock(trx, input, now());
+              if (input.continuation) {
+                await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.messageId,
+                  actorUserId: input.continuation.actorUserId,
+                  continuation: input.continuation,
+                }, now());
+              }
+              return;
+            }
+            if (input.continuation) {
+              await enqueueContinuation(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation,
+                variables: { 'ai.review.status': 'ok' },
+                now: now(),
+              });
+            }
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      } catch (error) {
+        if (input.parseMode !== 'outbound_structured') throw error;
+        const msg = error instanceof Error ? error.message : String(error);
+        const holdReason = `KI-Fehler: ${msg}`;
+        await withWorkspaceTransaction(
+          options.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            await persistAiReviewBlock(trx, input, now(), holdReason);
+            await maybeEnqueueOutboundReviewContinuation(trx, input, 'error', {
+              'ai.outbound_review.verdict': 'error',
+              'ai.outbound_review.reason': holdReason,
+            }, now());
+          },
+          { applySession: options.applyWorkspaceSession },
+        );
+      }
     },
   };
 }
@@ -718,6 +795,14 @@ export function createPostgresAiAgentPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          // Vor dem bezahlten Modellaufruf: hat ein Geschwisterzweig die Kette
+          // gestoppt oder wurde die Mail inzwischen als Spam markiert?
+          const abort = await inboundAsyncChildAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          });
+          if (abort) return abort;
           const message = input.messageId === undefined
             ? null
             : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
@@ -746,6 +831,13 @@ export function createPostgresAiAgentPort(
         { applySession: options.applyWorkspaceSession },
       );
       if (!context) return;
+      if (typeof context === 'string') {
+        // Der Knoten hat den übergeordneten workflow.execute bereits deferred —
+        // die Fortsetzung muss laufen (sie räumt Join/Kette auf), nur der
+        // Modellaufruf und der Entwurf entfallen.
+        await enqueueAiChildSkipContinuation(options, input, 'ai.agent', context, now());
+        return;
+      }
       if (!context.profile) throw new Error('AI-Profil nicht gefunden');
 
       const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
@@ -776,6 +868,26 @@ export function createPostgresAiAgentPort(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
+            // Zweiter Check direkt vor der Mutation: der Modellaufruf lief
+            // außerhalb der Transaktion, in dieser Zeit kann ein Geschwisterzweig
+            // Spam markiert bzw. die Kette gestoppt haben.
+            const abort = await inboundAsyncChildAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+            });
+            if (abort) {
+              if (input.continuation) {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+                  continuation: input.continuation,
+                  variables: aiChildSkipVariables('ai.agent', abort),
+                  now: now(),
+                });
+              }
+              return;
+            }
             const continuationVariables: JobPayload = {
               'ai.agent.response': output,
               // P1-8 source transparency: which knowledge chunks the answer drew on.
@@ -866,6 +978,12 @@ export function createPostgresAiPickCannedPort(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          const abort = await inboundAsyncChildAbortReason(trx, {
+            workspaceId: input.workspaceId,
+            messageId: input.messageId,
+            continuation: input.continuation,
+          });
+          if (abort) return abort;
           const message = input.messageId === undefined
             ? null
             : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
@@ -875,6 +993,10 @@ export function createPostgresAiPickCannedPort(
         },
         { applySession: options.applyWorkspaceSession },
       );
+      if (typeof context === 'string') {
+        await enqueueAiChildSkipContinuation(options, input, 'ai.pick_canned', context, now());
+        return;
+      }
       if (!context.profile) throw new Error('AI-Profil nicht gefunden');
       if (context.canned.length === 0) throw new Error('Keine Textbausteine vorhanden');
 
@@ -935,6 +1057,24 @@ export function createPostgresAiPickCannedPort(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
+            // Zweiter Check direkt vor der Mutation (siehe ai.agent).
+            const abort = await inboundAsyncChildAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+            });
+            if (abort) {
+              if (input.continuation) {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+                  continuation: input.continuation,
+                  variables: aiChildSkipVariables('ai.pick_canned', abort),
+                  now: now(),
+                });
+              }
+              return;
+            }
             // Narrow for the closure: TypeScript can't carry the willCreateDraft
             // discriminant into the async callback.
             const draftBodyForCreate = draftBody;
@@ -1027,6 +1167,87 @@ async function selectClassificationMessage(
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId)
     .executeTakeFirst() ?? null;
+}
+
+type InboundAsyncChildAbortReason = 'message_spam_or_review' | 'sibling_terminal_abort';
+
+/**
+ * Darf ein bereits eingeplanter asynchroner KI-Kindjob noch laufen?
+ *
+ * `ai.draft_reply` prüft das seit Runde 9 selbst; `ai.agent`/`ai.pick_canned`
+ * fehlte der Check. Ohne ihn sendet ein deferrter Zweig den Mailinhalt noch an
+ * das Modell und legt einen Entwurf an, obwohl ein späterer Geschwisterzweig die
+ * Nachricht inzwischen als Spam markiert und die Inbound-Kette gestoppt hat.
+ * Vor dem externen Aufruf **und** vor der Mutation aufrufen.
+ */
+async function inboundAsyncChildAbortReason(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId?: number;
+    continuation?: AiClassificationContinuation;
+  },
+): Promise<InboundAsyncChildAbortReason | null> {
+  const messageId = input.messageId;
+  const continuation = input.continuation;
+  if (messageId === undefined || !continuation) return null;
+  if (continuation.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
+
+  const live = await trx
+    .selectFrom('email_messages')
+    .select(['is_spam', 'spam_status', 'spam_score_label'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', messageId)
+    .executeTakeFirst();
+  if (live && messageIsSpamOrReviewForInboundWorkflow(live)) return 'message_spam_or_review';
+
+  const aborted = await isInboundSiblingAborted(trx, {
+    workspaceId: input.workspaceId,
+    messageId,
+    workflowId: continuation.workflowId,
+    chain: continuation.inboundWorkflowChain ?? null,
+  });
+  return aborted ? 'sibling_terminal_abort' : null;
+}
+
+function aiChildSkipVariables(
+  nodeType: 'ai.agent' | 'ai.pick_canned',
+  reason: InboundAsyncChildAbortReason,
+): JobPayload {
+  return {
+    [`${nodeType}.status`]: 'skipped',
+    [`${nodeType}.skip_reason`]: reason,
+  };
+}
+
+/** Fortsetzung ohne KI-Ergebnis einreihen, damit Join/Kette nicht hängen bleiben. */
+async function enqueueAiChildSkipContinuation(
+  options: PostgresAiClassificationPortOptions,
+  input: {
+    workspaceId: string;
+    messageId?: number;
+    continuation?: AiClassificationContinuation;
+  },
+  nodeType: 'ai.agent' | 'ai.pick_canned',
+  reason: InboundAsyncChildAbortReason,
+  now: Date,
+): Promise<void> {
+  const continuation = input.continuation;
+  if (!continuation) return;
+  await withWorkspaceTransaction(
+    options.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => {
+      await enqueueContinuation(trx, {
+        workspaceId: input.workspaceId,
+        ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+        continuation,
+        variables: aiChildSkipVariables(nodeType, reason),
+        now,
+      });
+    },
+    { applySession: options.applyWorkspaceSession },
+  );
 }
 
 async function selectAiProfile(
@@ -1311,6 +1532,7 @@ async function persistAiReviewBlock(
   trx: WorkspaceTransaction,
   input: AiReviewJobPlan,
   now: Date,
+  reason = 'KI-Pruefung: Versand blockiert',
 ): Promise<void> {
   if (input.messageId === undefined) return;
   if (input.direction === 'outbound') {
@@ -1318,7 +1540,7 @@ async function persistAiReviewBlock(
       .updateTable('email_messages')
       .set({
         outbound_hold: true,
-        outbound_block_reason: 'KI-Pruefung: Versand blockiert',
+        outbound_block_reason: reason,
         updated_at: now,
       })
       .where('workspace_id', '=', input.workspaceId)
@@ -1329,6 +1551,38 @@ async function persistAiReviewBlock(
 
   const message = await selectClassificationMessage(trx, input.workspaceId, input.messageId);
   if (message) await addMessageTag(trx, input.workspaceId, message, 'ki-review-block', now);
+}
+
+async function maybeEnqueueOutboundReviewContinuation(
+  trx: WorkspaceTransaction,
+  input: AiReviewJobPlan,
+  port: 'ok' | 'block' | 'error',
+  variables: JobPayload,
+  now: Date,
+): Promise<void> {
+  const continuation = input.continuation;
+  if (!continuation) return;
+  const resumeNodeId = input.portResumeTargets?.[port] ?? (port === 'ok' ? continuation.resumeNodeId : undefined);
+  if (!resumeNodeId) {
+    // No block/error edge: still advance the inbound priority chain so later
+    // workflows are not stranded after a deferred AI child terminates.
+    if (port !== 'ok') {
+      await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+        workspaceId: input.workspaceId,
+        messageId: input.messageId,
+        actorUserId: continuation.actorUserId,
+        continuation,
+      }, now);
+    }
+    return;
+  }
+  await enqueueContinuation(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    continuation: { ...continuation, resumeNodeId },
+    variables,
+    now,
+  });
 }
 
 async function enqueueClassificationContinuation(
@@ -1352,7 +1606,7 @@ async function enqueueClassificationContinuation(
   });
 }
 
-async function enqueueContinuation(
+export async function enqueueContinuation(
   trx: WorkspaceTransaction,
   input: {
     workspaceId: string;
@@ -1378,6 +1632,7 @@ async function enqueueContinuation(
         ...(input.continuation.eventVariables ?? {}),
         ...input.variables,
       },
+      ...resumeContextInboundChainFields(input.continuation),
     },
   }, input.continuation.trustedService === true);
 
@@ -1539,6 +1794,40 @@ function interpolateWorkflowTemplate(
 function stringPayload(value: unknown): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item ?? '')]));
+}
+
+async function loadReplyParentContextBlock(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  parentId: number,
+): Promise<string | null> {
+  const parent = await trx
+    .selectFrom('email_messages')
+    .select(['subject', 'body_text', 'snippet', 'from_json', 'is_spam'])
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', parentId)
+    .executeTakeFirst();
+  if (!parent) return null;
+  let fromAddr = '';
+  try {
+    fromAddr = addressesFromRecipientJson(
+      typeof parent.from_json === 'string'
+        ? parent.from_json
+        : parent.from_json == null
+          ? null
+          : JSON.stringify(parent.from_json),
+    );
+  } catch {
+    fromAddr = '';
+  }
+  return [
+    '',
+    '--- Ursprüngliche Nachricht (Antwort-Kontext) ---',
+    `Von: ${fromAddr}`,
+    `Betreff: ${parent.subject ?? ''}`,
+    `Textauszug: ${(parent.body_text ?? parent.snippet ?? '').slice(0, 4000)}`,
+    `Spam markiert: ${parent.is_spam ? 'ja' : 'nein'}`,
+  ].join('\n');
 }
 
 function variablePayload(value: unknown): JobPayload {

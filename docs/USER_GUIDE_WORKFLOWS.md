@@ -72,6 +72,31 @@ Ein Workflow läuft nur, wenn der Schalter **„Aktiv“** eingeschaltet ist (be
 - **Konto-Auswahl:** Oben links im Editor wählen Sie, ob Sie globale Workflows (für alle Konten) oder die eines bestimmten Kontos sehen.
 - **Import/Export:** Über die Knöpfe **„Import“**/**„Export“** lassen sich Workflows als Datei sichern oder auf einen anderen Rechner übertragen.
 - **Referenz:** Der Knopf **„Referenz“** öffnet ein Nachschlagewerk aller Bausteine, Auslöser und Variablen mit Erklärungen.
+- **JSON-Ansicht:** Das Code-Symbol oben öffnet den **Workflow-Quelltext** — Tab **„Graph (JSON)“** zeigt den Roh-Graph (nur Lesen), Tab **„Kompiliert“** die Regel-Definition.
+
+### Prioritäten bei mehreren eingehenden Workflows
+
+Wenn mehrere Workflows auf **„E-Mail eingehend“** reagieren, entscheidet die **Priorität** (kleinere Zahl = früher). Empfehlung:
+
+| Bereich | Priorität |
+|---------|-----------|
+| Spam-Pipelines | 1–9 |
+| Sortierung / Klassifizierung | 10–49 |
+| KI-Agent / Auto-Antwort | 50+ |
+
+Auf dem Server werden eingehende Workflows **nacheinander** ausgeführt; ist die Mail danach als Spam oder „Spam prüfen“ markiert, werden nachfolgende Workflows übersprungen.
+
+### Ausgehende KI-Qualitätsprüfung — was die Ausgänge bedeuten
+
+Der Baustein **„KI-Ausgangsprüfung“** hat drei sichtbare Ausgänge:
+
+| Ausgang | Bedeutung |
+|---------|-----------|
+| **OK** | Entwurf ist versandfertig → z. B. „Versand freigeben“ (autoSend) anschließen |
+| **Blockiert** | KI hat Beanstandungen — Entwurf bleibt mit gelbem Banner im Posteingang |
+| **KI-Fehler** | KI-Aufruf fehlgeschlagen — sicherheitshalber ebenfalls Hold (fail-closed) |
+
+Ohne Kante an **Blockiert** oder **KI-Fehler** stoppt der Workflow dort — der Entwurf bleibt trotzdem gehalten.
 
 ### Ihr erster Workflow in fünf Schritten
 
@@ -96,7 +121,8 @@ Eine kleine Auswahl der mitgelieferten Vorlagen:
 | Vorlage | Zweck |
 |---------|-------|
 | **Eingehend: Rechnung sortieren** | Rechnungen taggen, einsortieren, Kunden verknüpfen |
-| **Ausgehend: KI-Qualitätsprüfung** | Jede ausgehende Mail vor dem Versand von der KI gegenlesen lassen |
+| **Ausgehend: KI-Qualitätsprüfung** | Jede ausgehende Mail vor dem Versand von der KI gegenlesen lassen — mit sichtbaren Ausgängen **OK** (freigeben), **Blockiert** (Hold) und **KI-Fehler** |
+| **Eingehend: KI-Spam-Pipeline (DSGVO)** | Absender-Filter → KI-Spam-Score (nur Metadaten) → Schwellwert → Spam markieren → Stopp. **Priorität 1–9** empfohlen |
 | **Eingehend: KI antwortet mit Textbaustein (mit Gate)** | KI wählt einen Ihrer Textbausteine und antwortet damit |
 | **Eingehend: KI-Antwort mit Gegenprüfung (empfohlen)** | Frei formulierte KI-Antwort mit zweiter Prüf-KI — siehe unten |
 | **E-Commerce: …** (8 Vorlagen) | Typische Shop-Anliegen erkennen und einsortieren (Wo ist meine Bestellung, Retoure, Reklamation, …) |

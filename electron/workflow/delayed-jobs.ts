@@ -175,6 +175,15 @@ export async function processDueDelayedJobs(
         continue;
       }
       const message = job.message_id != null ? getEmailMessageById(job.message_id) ?? null : null;
+      const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
+      // Bewusst KEIN pauschaler Spam-Check mehr: ein Graph darf die Mail mit
+      // stopFurtherWorkflows:false als Spam markieren und trotzdem
+      // weiterlaufen wollen — ein Abbruch allein wegen des gespeicherten
+      // Spamstatus würde genau diese Konfiguration stillschweigend aushebeln.
+      // Der tatsächliche Kettenabbruch wird persistent abgebildet: runtime.ts
+      // setzt betroffene Jobs bei inboundChainStop auf 'cancelled', und
+      // listDueDelayedJobs liefert nur noch 'pending' — ein abgebrochener
+      // Zweig wacht damit auch nach einem Neustart nicht mehr auf.
       let variables: Record<string, string | number | boolean | null> = {};
       let inboundConditionOk = false;
       let eventStrings: Record<string, string> | undefined;
@@ -208,7 +217,6 @@ export async function processDueDelayedJobs(
       if (inboundConditionOk) {
         variables.__inbound_condition_ok = true;
       }
-      const trigger = (wf.trigger as WorkflowTriggerKind) || 'inbound';
       const direction = workflowDirectionForTrigger(trigger);
 
       const result = await executeWorkflowForTrigger({

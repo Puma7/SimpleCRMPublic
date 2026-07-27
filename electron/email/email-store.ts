@@ -2123,7 +2123,8 @@ export function updateComposeDraft(
     input.bodyHtml !== undefined ||
     input.toJson !== undefined ||
     input.ccJson !== undefined ||
-    input.bccJson !== undefined;
+    input.bccJson !== undefined ||
+    input.draftAttachmentPaths !== undefined;
   if (contentEdited) {
     sets.push('approval_state = NULL', 'approval_reason = NULL', 'auto_submitted = 0');
   }
