@@ -335,6 +335,14 @@ function parseConstraints(body: Record<string, unknown>):
   };
 }
 
+/*
+ * Groessenlimits: MAX_MAIL_BINDING_CONSTRAINT_* aus mail-acl-constraints (auch
+ * clientseitig genutzt). Constraint-Listen werden pro Binding gespeichert und
+ * bei JEDER gescopten Mail-Query des Betroffenen erneut in eine SQL-`in (...)`
+ * Liste eingebettet (sql-scope, visibilityPredicate). Ohne Cap liesse das
+ * 40-MB-Body-Limit Millionen Eintraege zu — ein einziges Binding wuerde dann
+ * das Bind-Parameter-Budget sprengen bzw. jedes Mail-Listing ausbremsen.
+ */
 function parseIdList(value: unknown, label: string):
   | { ok: true; values: number[] }
   | { ok: false; response: ApiResponse<ApiErrorBody> } {
@@ -358,7 +366,8 @@ function parseTextList(value: unknown, label: string):
   if (value.length > MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH) {
     return invalid(`${label} darf maximal ${MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH} Eintraege enthalten`);
   }
-  if (value.some((entry) => entry.length > MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH)) {
+  // Nach dem Trimmen messen: gespeichert wird der getrimmte Wert.
+  if ((value as string[]).some((entry) => entry.trim().length > MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH)) {
     return invalid(`${label}: einzelne Tags duerfen maximal ${MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH} Zeichen lang sein`);
   }
   const values = [...new Set((value as string[]).map((entry) => entry.trim()).filter(Boolean))].sort();

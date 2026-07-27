@@ -30669,11 +30669,21 @@ describe('server edition foundation', () => {
       },
     });
 
-    const reply = await api.handle({
+    // Reine Einstellungs-Konfiguration: Lesen erfordert settings.view (wie
+    // mail-security). Ein Nutzer ohne Einstellungsrechte bekommt 403.
+    const replyDenied = await api.handle({
       method: 'GET',
       path: '/api/v1/email/settings/reply-suggestion',
       query: { accountId: '5' },
       principal,
+    });
+    expect(replyDenied.status).toBe(403);
+
+    const reply = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/reply-suggestion',
+      query: { accountId: '5' },
+      principal: settingsPrincipal,
     });
     expect(reply.status).toBe(200);
     expect((reply.body as any).data).toEqual({

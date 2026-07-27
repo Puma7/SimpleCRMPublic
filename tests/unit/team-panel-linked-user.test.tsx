@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { toast } from 'sonner';
 
 import { TeamPanel } from '@/components/email/settings/team-panel';
 import { getRendererTransport, invokeRenderer } from '@/services/transport';
@@ -35,6 +36,8 @@ describe('team panel user link', () => {
     jest.mocked(getRendererTransport).mockImplementation(() => ({ kind: transportKind }) as never);
     jest.mocked(invokeRenderer).mockReset();
     jest.mocked(invokeRenderer).mockResolvedValue([member] as never);
+    jest.mocked(toast.error).mockReset();
+    jest.mocked(toast.success).mockReset();
   });
 
   test('server edition offers the link field and submits it', async () => {
@@ -74,5 +77,47 @@ describe('team panel user link', () => {
       IPCChannels.Email.SaveTeamMember,
       expect.not.objectContaining({ linkedUserId: expect.anything() }),
     ));
+  });
+
+  test('a rejected save surfaces the server error instead of failing silently', async () => {
+    // Eine ungueltige/unbekannte User-UUID wird serverseitig abgelehnt; ohne
+    // Fehler-Toast glaubte der Admin, die Verknuepfung sei gespeichert.
+    jest.mocked(invokeRenderer).mockImplementation(async (channel: string) => {
+      if (channel === IPCChannels.Email.ListTeamMembers) return [member] as never;
+      throw new Error('email team member linkedUserId must reference a workspace user');
+    });
+    render(<TeamPanel />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Bearbeiten' }));
+    fireEvent.change(screen.getByPlaceholderText('Workspace-User-UUID (leer = keine Verknüpfung)'), {
+      target: { value: 'nicht-existent' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+
+    await waitFor(() => expect(jest.mocked(toast.error)).toHaveBeenCalledWith(
+      'email team member linkedUserId must reference a workspace user',
+    ));
+    expect(jest.mocked(toast.success)).not.toHaveBeenCalled();
+    // Das Bearbeiten-Panel bleibt offen, damit der Wert korrigiert werden kann.
+    expect(screen.getByPlaceholderText('Workspace-User-UUID (leer = keine Verknüpfung)')).toBeInTheDocument();
+  });
+
+  test('a rejected create surfaces the server error', async () => {
+    jest.mocked(invokeRenderer).mockImplementation(async (channel: string) => {
+      if (channel === IPCChannels.Email.ListTeamMembers) return [member] as never;
+      throw new Error('email team member linkedUserId must be a UUID');
+    });
+    render(<TeamPanel />);
+    await screen.findByRole('button', { name: 'Bearbeiten' });
+
+    fireEvent.change(screen.getByPlaceholderText('ID (z. B. agent-2)'), { target: { value: 'agent-3' } });
+    fireEvent.change(screen.getByPlaceholderText('Anzeigename'), { target: { value: 'Agent Drei' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Hinzufügen' }));
+
+    await waitFor(() => expect(jest.mocked(toast.error)).toHaveBeenCalledWith(
+      'email team member linkedUserId must be a UUID',
+    ));
+    expect(jest.mocked(toast.success)).not.toHaveBeenCalled();
+    // Eingaben bleiben stehen, damit nichts verloren geht.
+    expect(screen.getByPlaceholderText('ID (z. B. agent-2)')).toHaveValue('agent-3');
   });
 });

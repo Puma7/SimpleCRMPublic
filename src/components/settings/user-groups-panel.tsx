@@ -75,6 +75,13 @@ const MODULE_OPTIONS: ReadonlyArray<{
   },
 ]
 
+function moduleLevelLabel(
+  option: (typeof MODULE_OPTIONS)[number],
+  level: number,
+): string {
+  return option.levels.find((entry) => entry.value === level)?.label ?? String(level)
+}
+
 export function UserGroupsPanel() {
   const { t } = useTranslation()
   const [groups, setGroups] = useState<UserGroup[]>([])
@@ -181,19 +188,31 @@ export function UserGroupsPanel() {
   const applyTemplate = (templateId: GroupRightsTemplateId) =>
     run(async () => {
       if (selectedGroupId === null) return
-      const template = GROUP_RIGHTS_TEMPLATES.find((t) => t.id === templateId)
-      const nextCapabilities = [...templateCapabilities(templateId)]
-      const willLose = permissions.filter((p) => !nextCapabilities.includes(p as (typeof nextCapabilities)[number]))
-      if (
-        willLose.length > 0
-        && !window.confirm(
-          `Vorlage "${template?.label ?? templateId}" ersetzt ALLE aktuellen Rechte dieser Gruppe. `
-          + `Dabei gehen verloren: ${willLose.join(", ")}. Fortfahren?`,
+      const next = [...templateCapabilities(templateId)]
+      // Vorlagen ERSETZEN alle Rechte der Gruppe (serverseitig delete + insert),
+      // und Capabilities werden pro Request live aufgeloest — ein einziger Klick
+      // wuerde sonst z. B. users.manage/tracking.view sofort und ohne Rueckfrage
+      // fuer alle Mitglieder entfernen. Herabstufungen daher bestaetigen lassen.
+      const downgrades = MODULE_OPTIONS
+        .map((option) => ({
+          option,
+          from: capabilityLevelForModule(permissions, option.module),
+          to: capabilityLevelForModule(next, option.module),
+        }))
+        .filter((entry) => entry.to < entry.from)
+      if (downgrades.length > 0) {
+        const template = GROUP_RIGHTS_TEMPLATES.find((tpl) => tpl.id === templateId)
+        const detail = downgrades
+          .map((entry) => `• ${entry.option.label}: ${moduleLevelLabel(entry.option, entry.from)} → ${moduleLevelLabel(entry.option, entry.to)}`)
+          .join("\n")
+        const confirmed = window.confirm(
+          `Vorlage „${template?.label ?? templateId}" ersetzt ALLE Rechte dieser Gruppe.\n\n`
+          + `Dabei werden Rechte entzogen:\n${detail}\n\n`
+          + "Die Aenderung wirkt sofort fuer alle Mitglieder. Fortfahren?",
         )
-      ) {
-        return
+        if (!confirmed) return
       }
-      setPermissions(await userGroupService.setPermissions(selectedGroupId, nextCapabilities))
+      setPermissions(await userGroupService.setPermissions(selectedGroupId, next))
     })
 
   const setModuleLevel = (module: CapabilityModule, level: number) =>

@@ -16,6 +16,7 @@ import {
 import type { TeamMember } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
+import { logError } from "../log"
 
 export function TeamPanel() {
   const { bumpAccountsRevision } = useMailWorkspace()
@@ -164,6 +165,11 @@ export function TeamPanel() {
                         bumpAccountsRevision()
                         toast.success("Mitglied gespeichert")
                       }).catch((e) => {
+                        // linkedUserId wird serverseitig validiert (UUID-Form,
+                        // muss auf einen Workspace-User zeigen). Ohne catch
+                        // bliebe ein Tippfehler ein stiller Fehlschlag — und die
+                        // Zuweisungsfilter waeren still wirkungslos.
+                        logError("team-panel: save member", e)
                         toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen")
                       })
                     }
@@ -218,14 +224,18 @@ export function TeamPanel() {
                   ? { linkedUserId: newLinkedUserId.trim() || null }
                   : {}),
               })
-              setNewId("")
-              setNewName("")
-              setNewLinkedUserId("")
-              bumpAccountsRevision()
-              toast.success("Mitglied gespeichert")
             } catch (e) {
+              // Wie beim Bearbeiten: eine ungueltige User-UUID darf nicht
+              // kommentarlos verpuffen.
+              logError("team-panel: add member", e)
               toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen")
+              return
             }
+            setNewId("")
+            setNewName("")
+            setNewLinkedUserId("")
+            bumpAccountsRevision()
+            toast.success("Mitglied gespeichert")
           }}
         >
           Hinzufügen

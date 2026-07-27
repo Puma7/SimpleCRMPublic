@@ -60,37 +60,105 @@ describe('UserGroupsPanel', () => {
     expect(await screen.findByText(/existiert bereits/)).toBeInTheDocument();
   });
 
-  test('asks for confirmation before applying a template that removes existing rights', async () => {
-    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(false);
-    mockInvoke.mockImplementation(async (channel: string, payload?: { groupId?: number; permissions?: string[] }) => {
-      switch (channel) {
-        case 'user-groups:list':
-          return [{ id: 1, name: 'Support', description: 'Hotline', memberCount: 2, updatedAt: '2026-06-06T10:00:00.000Z' }];
-        case 'auth:list-users':
-          return [{ id: 'u1', display_name: 'Alice', username: 'alice@example.com' }];
-        case 'user-groups:list-members':
-          return [];
-        case 'user-groups:list-permissions':
-          return ['crm.write', 'users.manage'];
-        case 'user-groups:set-permissions':
-          return payload?.permissions ?? [];
-        default:
-          return undefined;
-      }
+  describe('applying a rights template to an existing group', () => {
+    // Vorlagen sind ein Full-Replace: ohne Rueckfrage wuerde ein Klick alle
+    // nicht in der Vorlage enthaltenen Rechte der Gruppe sofort entziehen.
+    const openSupportGroup = async () => {
+      render(<UserGroupsPanel />);
+      await screen.findByText(/Support/);
+      fireEvent.click(screen.getByRole('button', { name: /Rechte/ }));
+      await screen.findByText(/Vorlage anwenden/);
+    };
+
+    let confirmSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
     });
 
-    render(<UserGroupsPanel />);
-    await screen.findByText(/Support/);
-    fireEvent.click(screen.getByRole('button', { name: /Rechte/ }));
-    await screen.findByText(/Vorlage anwenden/);
+    afterEach(() => {
+      confirmSpy.mockRestore();
+    });
 
-    const setCallsBefore = mockInvoke.mock.calls.filter(([channel]) => channel === 'user-groups:set-permissions').length;
-    fireEvent.click(screen.getByRole('button', { name: 'Support' }));
+    test('asks before a template removes rights and aborts on cancel', async () => {
+      // Gespeichert ist users.manage + crm.write; die Support-Vorlage kennt nur CRM.
+      mockInvoke.mockImplementation(async (channel: string) => {
+        switch (channel) {
+          case 'user-groups:list':
+            return [{ id: 1, name: 'Support', description: null, memberCount: 2, updatedAt: null }];
+          case 'auth:list-users':
+            return [];
+          case 'user-groups:list-members':
+            return [];
+          case 'user-groups:list-permissions':
+            return ['crm.write', 'users.manage'];
+          default:
+            return undefined;
+        }
+      });
+      confirmSpy.mockReturnValue(false);
+      await openSupportGroup();
 
-    await waitFor(() => expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining('users.manage')));
-    const setCallsAfter = mockInvoke.mock.calls.filter(([channel]) => channel === 'user-groups:set-permissions').length;
-    expect(setCallsAfter).toBe(setCallsBefore);
+      fireEvent.click(screen.getByRole('button', { name: 'Support' }));
 
-    confirmSpy.mockRestore();
+      await waitFor(() => expect(confirmSpy).toHaveBeenCalled());
+      expect(confirmSpy.mock.calls[0]![0]).toContain('Benutzer');
+      expect(mockInvoke).not.toHaveBeenCalledWith('user-groups:set-permissions', expect.anything());
+    });
+
+    test('applies the template after confirmation', async () => {
+      mockInvoke.mockImplementation(async (channel: string, payload?: { permissions?: string[] }) => {
+        switch (channel) {
+          case 'user-groups:list':
+            return [{ id: 1, name: 'Support', description: null, memberCount: 2, updatedAt: null }];
+          case 'auth:list-users':
+            return [];
+          case 'user-groups:list-members':
+            return [];
+          case 'user-groups:list-permissions':
+            return ['crm.write', 'users.manage'];
+          case 'user-groups:set-permissions':
+            return payload?.permissions ?? [];
+          default:
+            return undefined;
+        }
+      });
+      await openSupportGroup();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Support' }));
+
+      await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+        'user-groups:set-permissions',
+        expect.objectContaining({ permissions: ['crm.read', 'crm.write'] }),
+      ));
+    });
+
+    test('does not ask when the template only adds rights', async () => {
+      mockInvoke.mockImplementation(async (channel: string, payload?: { permissions?: string[] }) => {
+        switch (channel) {
+          case 'user-groups:list':
+            return [{ id: 1, name: 'Support', description: null, memberCount: 2, updatedAt: null }];
+          case 'auth:list-users':
+            return [];
+          case 'user-groups:list-members':
+            return [];
+          case 'user-groups:list-permissions':
+            return ['crm.read'];
+          case 'user-groups:set-permissions':
+            return payload?.permissions ?? [];
+          default:
+            return undefined;
+        }
+      });
+      await openSupportGroup();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Support' }));
+
+      await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+        'user-groups:set-permissions',
+        expect.anything(),
+      ));
+      expect(confirmSpy).not.toHaveBeenCalled();
+    });
   });
 });

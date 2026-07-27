@@ -29,6 +29,9 @@ Optional unter **Erweitert: Sichtbarkeitsfilter**:
 - Kategorie-Allowlist / Exclude
 - Tag-Allowlist / Exclude (Tags sind Freitext)
 
+Pro Liste sind maximal 500 Einträge erlaubt (Tags zusätzlich max. 200 Zeichen) —
+die Werte landen bei jeder Mail-Abfrage der betroffenen Nutzer in der Query.
+
 Fertig. Neue Support-Mitarbeiter brauchen nur die Gruppenmitgliedschaft.
 
 ---
@@ -43,6 +46,19 @@ Fertig. Neue Support-Mitarbeiter brauchen nur die Gruppenmitgliedschaft.
 | Nur Lesen | ansehen | keins | ansehen |
 
 Owner/Admin haben implizit alle Rechte.
+
+Eine Vorlage **ersetzt** alle Modulrechte der Gruppe (kein Zusammenführen).
+Werden dadurch Rechte entzogen, fragt die UI vorher nach; die Änderung wirkt
+sofort für alle Mitglieder, weil Capabilities pro Request aufgelöst werden.
+
+## Rollout-Modus und Sichtbarkeitsfilter
+
+Der ACL-Rollout kennt `shadow` und `enforce`. Im **Shadow-Modus** entscheidet
+weiterhin die Legacy-ACL über den Konto-/Ordner-Zugriff — die neuen
+Sichtbarkeitsfilter (Zuweisung, Kategorie, Tag) greifen dort aber **bereits
+echt**, sonst wären konfigurierte Bindings wirkungslos und der Vergleich
+aussagelos. Wer in einer Shadow-Workspace einen Filter setzt, verändert also
+sofort die Sichtbarkeit für die betroffenen Nutzer.
 
 ## Diagnose
 

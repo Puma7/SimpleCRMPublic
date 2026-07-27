@@ -544,6 +544,11 @@ async function handleSnoozeSettings(
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
   if (req.method === 'GET') {
+    // Bewusst OHNE settings.view: die Snooze-Zeiten steuern das
+    // „Spaeter erinnern"-Menue im Posteingang (snooze-popover), das jeder
+    // Nutzer ohne Einstellungsrechte oeffnet. Ein Gate hier wuerde Snooze fuer
+    // regulaere Nutzer brechen; geschrieben wird weiterhin nur mit
+    // settings.manage.
     const loaded = await loadSyncInfo(req, ports, [SNOOZE_SETTINGS_KEY]);
     if ('status' in loaded) return loaded;
     return data(200, parseSnoozeSettingsJson(loaded.values.get(SNOOZE_SETTINGS_KEY)));
@@ -572,6 +577,14 @@ async function handleReplySuggestionSettings(
   ports: ServerApiPorts,
 ): Promise<ApiResponse> {
   if (req.method === 'GET') {
+    // Anders als Snooze wird diese Konfiguration ausschliesslich in der
+    // Einstellungs-UI gelesen — daher wie mail-security auf settings.view
+    // gaten, statt sie jedem authentifizierten Principal offenzulegen.
+    const principal = requirePrincipal(req);
+    if ('status' in principal) return principal;
+    if (!requireCapability(principal, 'settings.view')) {
+      return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Ansicht erforderlich');
+    }
     const accountId = parseOptionalPositiveInt(req.query?.accountId);
     if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
     const keys = replySuggestionReadKeys(accountId);

@@ -183,6 +183,64 @@ describe('server mail delegation API', () => {
     expect(denied).toMatchObject({ status: 403, body: { error: { code: 'mail_delegation_denied' } } });
   });
 
+  test('rejects oversized constraint lists before they reach the binding', async () => {
+    // Die Listen landen bei JEDER Mail-Query des Betroffenen in einer
+    // SQL-IN-Klausel — ohne Cap koennte ein einzelnes Binding (40 MB Body-Limit)
+    // das Mail-Listing der Gruppe dauerhaft ausbremsen.
+    const mailDelegation = delegationPort();
+    const api = createServerApi(ports({ mailDelegation }));
+
+    const tooManyIds = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/access/bindings',
+      principal: admin,
+      body: {
+        subject: { type: 'user', id: AGENT },
+        resource: { type: 'account', accountId: ACCOUNT },
+        permissions: ['mail.metadata.read'],
+        constraints: { categoryAllowIds: Array.from({ length: 501 }, (_, i) => i + 1) },
+      },
+    });
+    const tooManyTags = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/access/bindings/900',
+      principal: admin,
+      body: {
+        permissions: ['mail.metadata.read'],
+        constraints: { tagExcludeValues: Array.from({ length: 501 }, (_, i) => `tag-${i}`) },
+      },
+    });
+    const tooLongTag = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/access/bindings',
+      principal: admin,
+      body: {
+        subject: { type: 'user', id: AGENT },
+        resource: { type: 'account', accountId: ACCOUNT },
+        permissions: ['mail.metadata.read'],
+        constraints: { tagAllowValues: ['x'.repeat(201)] },
+      },
+    });
+    const withinLimits = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/access/bindings',
+      principal: admin,
+      body: {
+        subject: { type: 'user', id: AGENT },
+        resource: { type: 'account', accountId: ACCOUNT },
+        permissions: ['mail.metadata.read'],
+        constraints: { categoryAllowIds: [1, 2, 3], tagAllowValues: ['x'.repeat(200)] },
+      },
+    });
+
+    expect(tooManyIds).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
+    expect(tooManyTags).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
+    expect(tooLongTag).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
+    expect(withinLimits.status).toBe(201);
+    expect(mailDelegation.replaceBinding).toHaveBeenCalledTimes(1);
+    expect(mailDelegation.replaceBindingById).not.toHaveBeenCalled();
+  });
+
   test('rejects invalid delegation pagination before calling the port', async () => {
     const mailDelegation = delegationPort();
     const api = createServerApi(ports({ mailDelegation }));
