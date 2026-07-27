@@ -99,15 +99,51 @@ describe('email-scheduled-send', () => {
   });
 
   test('erfolgreicher Versand verbraucht das geparkte HOLD ohne es anzuwenden', async () => {
-    mockSendComposeDraft.mockResolvedValue({ ok: true });
-    syncInfo({
-      'scheduled_send_failures:99': '0',
-      'scheduled_send_deferred_hold:99': 'zu spaet',
+    // Das HOLD entsteht WAEHREND des Versands — genau der Fall, fuer den der
+    // Parkplatz da ist. Ein vorher liegendes HOLD verhindert den Versand (Test
+    // darunter), deshalb wird es hier erst im SMTP-Aufruf gesetzt.
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'zu spaet';
+      return { ok: true };
     });
 
     await processDueScheduledSends(logger);
 
     expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('HOLD aus abgestuerztem Vorlauf verhindert den Versand', async () => {
+    // App weg zwischen Parken und Anwenden: Claim, HOLD und Versandzeitpunkt
+    // ueberleben. Der Boot-Sweep raeumt nur den Claim ab — ohne diese Pruefung
+    // ginge genau der Entwurf raus, den die Gegenlese-KI halten wollte.
+    syncInfo({
+      'scheduled_send_failures:99': '0',
+      'scheduled_send_deferred_hold:99': 'Gegenlese-KI: bitte pruefen',
+    });
+
+    const sent = await processDueScheduledSends(logger);
+
+    expect(sent).toBe(0);
+    expect(mockSendComposeDraft).not.toHaveBeenCalled();
+    expect(mockSetDraftApprovalPending).toHaveBeenCalledWith(99, 'Gegenlese-KI: bitte pruefen');
+  });
+
+  test('belegter Compose-Lock verbraucht das geparkte HOLD nicht', async () => {
+    // „Versand laeuft bereits" beweist keine Zustellung. Scheitert der parallele
+    // Versand, muss das HOLD beim naechsten faelligen Durchlauf noch da sein.
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'zu spaet';
+      return { ok: false, error: 'Versand laeuft bereits fuer diesen Entwurf.' };
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
   });
 });

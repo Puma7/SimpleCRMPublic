@@ -3134,15 +3134,15 @@ async function scheduleAiAgentJob(
     runId: context.runId,
     systemPrompt: systemPrompt.value,
     ...workflowJobProvenance(context),
-    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
-    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
-    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
-    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
     ...(resumeNodeId ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
       terminalNodeId: node.id,
+      triggerName: context.trigger,
     }),
     createDraft,
     eventStrings: context.strings,
@@ -3226,15 +3226,15 @@ async function scheduleAiDraftReplyJob(
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
-    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
-    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
-    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
-    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
     ...(resumeNodeId ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
       terminalNodeId: node.id,
+      triggerName: context.trigger,
     }),
   };
   if (profileId.value !== undefined) payload.profileId = profileId.value;
@@ -3327,15 +3327,15 @@ async function scheduleAiReviewDraftJob(
     // Continuation — der erste Elternlauf bliebe fuer immer deferred.
     runId: context.runId,
     ...workflowJobProvenance(context),
-    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
-    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
-    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
-    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
     ...(deferAnchor ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
       terminalNodeId: node.id,
+      triggerName: context.trigger,
     }),
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -3421,15 +3421,15 @@ async function scheduleAiPickCannedJob(
     // Workflows einen Job-Key und 'replace' verschluckt den ersten Kindjob.
     runId: context.runId,
     ...workflowJobProvenance(context),
-    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
-    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
-    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
-    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
+    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
+    // in workflow-inbound-terminal-child.
     ...(resumeNodeId ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
       terminalNodeId: node.id,
+      triggerName: context.trigger,
     }),
     createDraft,
     eventStrings: context.strings,

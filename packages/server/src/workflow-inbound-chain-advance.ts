@@ -522,12 +522,24 @@ export async function advanceInboundChainAfterTerminalChild(
   return { state: join, advanced: true };
 }
 
-/** Insert the next priority inbound workflow.execute after a terminal child failure. */
+/**
+ * Insert the next priority inbound workflow.execute after a terminal child failure.
+ *
+ * `error: true` NUR fuer echte endgueltige Fehlschlaege setzen (Job endgueltig
+ * gescheitert). Ohne das Flag merkt die Join-Barriere den Ausfall nicht: ein
+ * spaeter abschliessender Geschwisterzweig bekaeme `ready` statt `ready_error`
+ * und markierte den unvollstaendig gelaufenen Workflow als angewendet. Ein
+ * erfolgreicher Abschluss ohne Ausgangskante darf das Flag deshalb nicht setzen.
+ */
 export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
   trx: WorkspaceTransaction,
   payload: Record<string, unknown>,
   now: Date,
+  options: { error?: boolean } = {},
 ): Promise<boolean> {
-  const { advanced } = await advanceInboundChainAfterTerminalChild(trx, payload, { now });
+  const { advanced } = await advanceInboundChainAfterTerminalChild(trx, payload, {
+    ...(options.error === true ? { error: true } : {}),
+    now,
+  });
   return advanced;
 }

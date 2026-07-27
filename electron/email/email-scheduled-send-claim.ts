@@ -64,6 +64,11 @@ function deferredHoldKey(draftId: number): string {
  * Scheitert der SMTP-Aufruf danach (kein Empfänger, Auth, Netz), bliebe ein
  * Entwurf zurück, den die KI ausdrücklich nicht freigegeben hat, der aber wie
  * jeder andere Entwurf beim nächsten fälligen Durchlauf erneut versendet würde.
+ *
+ * Der Parkplatz überlebt einen Absturz absichtlich: `processDueScheduledSends`
+ * liest ihn zu Beginn jedes Versuchs und wendet ein liegengebliebenes HOLD an,
+ * statt zu senden. Der Boot-Sweep unten darf ihn deshalb NICHT mitlöschen — er
+ * räumt nur Claims ab.
  */
 export function deferHoldDuringSend(draftId: number, reason: string): void {
   setSyncInfo(deferredHoldKey(draftId), reason.slice(0, 500) || 'Gegenlese-KI empfiehlt menschliche Prüfung');

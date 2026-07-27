@@ -526,15 +526,29 @@ describe('codex review regression guards', () => {
     expect(terminal).toContain('inbound_terminal_child_done');
     expect(terminal).toContain('.onConflict((oc) => oc.columns([\'workspace_id\', \'key\']).doNothing())');
 
-    // Reihenfolge: erst Join, dann Applied-Marker — und der Marker faellt aus,
-    // wenn ein Geschwisterzweig ausgefallen ist.
+    // Reihenfolge: erst Join, dann Applied-Marker — und der Marker faellt bei
+    // JEDEM Zustand ausser 'ready' aus. 'stop' gehoert ausdruecklich dazu: dort
+    // setzt auch der synchrone Abschluss keinen Marker.
     expect(terminal).toMatch(
-      /advanceInboundChainAfterTerminalChild\([\s\S]*?state === 'ready_error'[\s\S]*?markInboundWorkflowAppliedByIds/,
+      /advanceInboundChainAfterTerminalChild\([\s\S]*?state !== null && state !== 'ready'\) return;[\s\S]*?markInboundWorkflowAppliedByIds/,
     );
 
-    // Kettenloser Kontext (Backfill, Nicht-Inbound): Applied-Marker faellt auf
-    // die direkt gestempelten ids zurueck statt ganz auszubleiben.
+    // Kettenloser Backfill: Applied-Marker faellt auf die direkt gestempelten
+    // ids zurueck — aber nur fuer Inbound. Ein manueller Lauf darf keinen
+    // Inbound-Marker setzen, sonst ueberspringt die echte Inbound-Verarbeitung
+    // den Workflow spaeter komplett.
     expect(terminal).toContain('positiveInt(payload.workflowId)');
+    expect(terminal).toContain("if (!parsed && trimmedString(payload.triggerName) !== 'inbound') return null;");
+    expect(execution.match(/terminalNodeId: node\.id,\n\s+triggerName: context\.trigger,/g)).toHaveLength(4);
+
+    // Endgueltige Kindjob-Fehler muessen ueber die Join-Barriere sichtbar
+    // bleiben, sonst markiert ein spaeter fertiger Geschwisterzweig den
+    // unvollstaendigen Workflow als angewendet.
+    const queuePort = readRepoFile('packages/server/src/db/postgres-job-queue-port.ts');
+    expect(queuePort.match(/\{ error: true \},/g)).toHaveLength(2);
+    expect(graphile).toMatch(
+      /completeInboundDeferredJoinSiblingOnPgClient\([\s\S]*?error: true,/,
+    );
 
     // Knoten- und Lauf-Identitaet auf allen vier terminalen Payloads, sonst
     // teilen sich zwei terminale Zweige Job-Key und Einmal-Schranke.
@@ -565,6 +579,12 @@ describe('codex review regression guards', () => {
     expect(aiNodes).toContain('deferHoldDuringSend(draftId, reason)');
     expect(scheduled).toContain('takeDeferredSendHold(draftId)');
     expect(scheduled).toMatch(/if \(deferredHold && !delivered\) \{[\s\S]*?setDraftApprovalPending\(draftId, deferredHold\)/);
+    // Ein Absturz zwischen Parken und Anwenden darf das HOLD nicht verlieren:
+    // der naechste Versuch liest es VOR dem Senden und wendet es an.
+    expect(scheduled).toMatch(/recoveredHold = takeDeferredSendHold\(draftId\);\s*\n\s*if \(recoveredHold\) continue;/);
+    // Belegter Compose-Lock ist kein Zustellbeweis — HOLD bleibt geparkt.
+    expect(scheduled).toContain('sendInFlightElsewhere = true;');
+    expect(scheduled).toContain('sendInFlightElsewhere ? null : takeDeferredSendHold(draftId)');
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {

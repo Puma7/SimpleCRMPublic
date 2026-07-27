@@ -327,6 +327,10 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             workflowId: currentWorkflowId,
             chain: parsed.chain,
             chainStop: false,
+            // Endgueltiger Fehlschlag: ueber die Barriere sichtbar halten, sonst
+            // markiert ein spaeter fertiger Geschwisterzweig den unvollstaendig
+            // gelaufenen Workflow als angewendet.
+            error: true,
             now: new Date(),
           });
           // 'ready_error' zaehlt hier ebenfalls als fortschaltbar: der Job ist

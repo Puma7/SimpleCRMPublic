@@ -24,7 +24,13 @@
  *
  * Damit der Kindjob das kann, stempeln die Scheduler den Workflow- und
  * Kettenkontext auch dann auf die Job-Payload, wenn es keine Continuation gibt
- * (`terminalChainPayload`). Derselbe Kontext traegt zusaetzlich die
+ * (`terminalChainPayload`). Die Felder dort:
+ *   - `workflowId` / `messageId` — Ziel des Applied-Markers ohne Kette,
+ *   - `context.inboundWorkflowChain` — Join-Barriere und Prioritaetskette,
+ *   - `terminalNodeId` + `runId` — trennen zwei terminale Zweige derselben
+ *     Nachricht in Graphile-Job-Key und Einmal-Schranke,
+ *   - `triggerName` — nur ein Inbound-Lauf darf einen Inbound-Marker setzen.
+ * Derselbe Kontext traegt zusaetzlich die
  * Abbruchpruefung: ohne ihn uebersprang ein terminaler `ai.agent` /
  * `ai.pick_canned` sogar den Spam- und Sibling-Abort-Check, weil beide am
  * Vorhandensein einer Continuation haengen.
@@ -144,14 +150,21 @@ type TerminalChildTarget = {
  *
  * Bevorzugt den Inbound-Kettenkontext; faellt aber auf die direkt gestempelten
  * `workflowId` / `messageId` zurueck. Ohne diesen Fallback bliebe der
- * Applied-Marker in kettenlosen Kontexten (Backfill, forceWorkflowReapply,
- * Nicht-Inbound-Trigger) dauerhaft aus und die Arbeit des Kindjobs wuerde bei
- * jeder Wiederverarbeitung erneut anfallen.
+ * Applied-Marker bei kettenlosen INBOUND-Laeufen (Backfill,
+ * forceWorkflowReapply) dauerhaft aus und die Arbeit des Kindjobs fiele bei
+ * jeder Wiederverarbeitung erneut an.
+ *
+ * Der Fallback gilt bewusst nur fuer `triggerName === 'inbound'`. Ein manueller
+ * Lauf auf derselben Nachricht setzte sonst einen Inbound-Applied-Marker, den
+ * der Elternpfad nie gesetzt haette — die spaetere echte Inbound-Verarbeitung
+ * wuerde den Workflow dann ueber `wasInboundWorkflowApplied` komplett
+ * ueberspringen.
  */
 function terminalChildTarget(payload: Record<string, unknown>): TerminalChildTarget | null {
   const parsed = inboundChainFromJobPayload(payload);
   const workspaceId = parsed?.workspaceId ?? trimmedString(payload.workspaceId);
   if (!workspaceId) return null;
+  if (!parsed && trimmedString(payload.triggerName) !== 'inbound') return null;
   const messageId = parsed?.messageId ?? positiveInt(payload.messageId);
   if (messageId == null) return null;
   const workflowId = (parsed ? parsed.chain.workflowIds[parsed.chain.index] : null)
@@ -226,7 +239,12 @@ export async function completeTerminalInboundChild(
     now: input.now,
   });
   if (!input.applied) return;
-  if (state === 'wait' || state === 'ready_error') return;
+  // Nur `ready` (alle Geschwister durch, keines ausgefallen) und `null` (gar
+  // keine Barriere) rechtfertigen den Marker. `wait` ⇒ ein Geschwister laeuft
+  // noch und markiert spaeter selbst; `ready_error` ⇒ ein Geschwister ist
+  // ausgefallen; `stop` ⇒ ein Geschwister hat die Kette beendet — dort setzt
+  // auch der synchrone Abschluss (inboundChainStop) bewusst keinen Marker.
+  if (state !== null && state !== 'ready') return;
 
   await markInboundWorkflowAppliedByIds(trx, {
     workspaceId: target.workspaceId,

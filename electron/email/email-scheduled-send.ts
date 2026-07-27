@@ -30,6 +30,14 @@ export async function processDueScheduledSends(
     // Ging diese Mail tatsaechlich raus? Entscheidet unten, ob ein waehrend des
     // Versands geparktes HOLD der Gegenlese-KI nachgeholt werden muss.
     let delivered = false;
+    // Ein paralleler Versand haelt den Compose-Lock. Das ist KEIN Zustellbeweis:
+    // scheitert er, muss das geparkte HOLD liegen bleiben und beim naechsten
+    // faelligen Durchlauf greifen.
+    let sendInFlightElsewhere = false;
+    // HOLD aus einem abgestuerzten Vorlauf. Es kann hier nicht sofort angewendet
+    // werden — setDraftApprovalPending verweigert den Stempel, solange unser
+    // eigener Claim steht. Also merken und im finally nach der Freigabe setzen.
+    let recoveredHold: string | null = null;
     try {
       const draft = getEmailMessageById(draftId);
       if (!draft || draft.uid >= 0) {
@@ -37,6 +45,13 @@ export async function processDueScheduledSends(
         delivered = Boolean(draft && draft.uid >= 0);
         continue;
       }
+      // Absturz-Recovery: hat ein frueherer Durchlauf ein HOLD geparkt, ohne es
+      // anwenden zu koennen (App weg zwischen Parken und finally), dann gilt es
+      // jetzt — und dieser Entwurf geht nicht raus. Ohne diese Pruefung raeumt
+      // der Boot-Sweep nur den Claim ab und der naechste Tick versendet genau
+      // den Entwurf, den die Gegenlese-KI zurueckhalten wollte.
+      recoveredHold = takeDeferredSendHold(draftId);
+      if (recoveredHold) continue;
       const to = recipientFieldFromJson(draft.to_json);
       if (!to.trim()) {
         logger.warn(`[email] scheduled send ${draftId}: no recipient`);
@@ -66,8 +81,10 @@ export async function processDueScheduledSends(
       } else {
         const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
         if (errMsg.includes('Versand') && errMsg.includes('bereits')) {
-          // Ein anderer Pfad hat den Entwurf schon verschickt.
-          delivered = true;
+          // Compose-Sendelock belegt: ein anderer Pfad sendet gerade. Ob er
+          // Erfolg hat, wissen wir nicht — deshalb weder als zugestellt werten
+          // noch das geparkte HOLD verbrauchen.
+          sendInFlightElsewhere = true;
           continue;
         }
         const fails = recordScheduledSendAttemptFailure(draftId, errMsg);
@@ -92,7 +109,9 @@ export async function processDueScheduledSends(
       // Erst den Claim freigeben: setDraftApprovalPending verweigert den Stempel,
       // solange er steht (es koennte ein laufender Versand sein).
       releaseScheduledSendClaim(draftId);
-      const deferredHold = takeDeferredSendHold(draftId);
+      // Bei belegtem Compose-Lock bleibt das HOLD bewusst geparkt.
+      const deferredHold = recoveredHold
+        ?? (sendInFlightElsewhere ? null : takeDeferredSendHold(draftId));
       if (deferredHold && !delivered) {
         // Die Gegenlese-KI wollte diesen Entwurf zurueckhalten, kam aber
         // waehrend des Versands nicht durch — und der Versand ist gescheitert.

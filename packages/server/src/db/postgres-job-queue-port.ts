@@ -275,10 +275,14 @@ async function failJob(
     .executeTakeFirst();
 
   if (terminal && row) {
+    // error: true — der Kindjob ist endgueltig gescheitert. Ohne diese Markierung
+    // sieht ein spaeter abschliessender Geschwisterzweig `ready` statt
+    // `ready_error` und markiert den unvollstaendigen Workflow als angewendet.
     await enqueueNextInboundWorkflowAfterTerminalChildFailure(
       db,
       jobPayloadRecord(input.job.payload),
       now,
+      { error: true },
     );
   }
 
@@ -335,10 +339,14 @@ async function failJobTerminal(
   }
 
   if (row) {
+    // error: true — der Kindjob ist endgueltig gescheitert. Ohne diese Markierung
+    // sieht ein spaeter abschliessender Geschwisterzweig `ready` statt
+    // `ready_error` und markiert den unvollstaendigen Workflow als angewendet.
     await enqueueNextInboundWorkflowAfterTerminalChildFailure(
       db,
       jobPayloadRecord(input.job.payload),
       now,
+      { error: true },
     );
   }
 
