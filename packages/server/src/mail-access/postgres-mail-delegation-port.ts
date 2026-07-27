@@ -397,10 +397,38 @@ export function createPostgresMailDelegationPort(
       // delegierte Berechtigung selbst unbeschraenkt haelt. isConstraintsAllowedBy
       // DelegationAuthority verknuepft die Eintraege per every(), die Vererbung
       // schneidet sie, also genuegt der zusaetzliche Eintrag.
-      // Bei leeren permissions NICHT ergaenzen: das ist der Loeschpfad weiter
-      // unten, der ohne Autoritaetspruefung auskommen muss.
-      const authorityPermissions = input.permissions.length === 0
-        || input.permissions.includes(MANAGE_PERMISSION)
+      // Loeschpfad (leere permissions): Der Zielzustand ist "kein Binding", es
+      // gibt also nichts zu vergleichen — geprueft wird stattdessen das
+      // BESTEHENDE Binding gegen die eigene Verwaltungs-Autoritaet. Ohne das
+      // koennte ein auf Kategorie X eingeschraenkter Manager die unbeschraenkte
+      // Delegation eines fremden Teams auf demselben Konto widerrufen, obwohl er
+      // sie weder vergeben noch bearbeiten duerfte (leere Autoritaet => leeres
+      // every() => alles erlaubt).
+      if (input.permissions.length === 0) {
+        if (existing) {
+          const manageAuthority = await loadDelegationAuthority(
+            trx,
+            workspaceId,
+            actor.userId,
+            input.resource,
+            [MANAGE_PERMISSION],
+          );
+          const existingMap = await loadBindingConstraints(trx, [existing.id]);
+          if (!isConstraintsAllowedByDelegationAuthority(existingMap.get(existing.id) ?? null, manageAuthority)) {
+            return { ok: false as const, code: 'privilege_escalation' };
+          }
+        }
+        const affectedForDelete = await affectedUsersForSubject(trx, workspaceId, input.subject);
+        if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
+        return {
+          ok: true as const,
+          binding: null,
+          ...(existing ? { deletedBindingId: existing.id, resource: input.resource } : {}),
+          affectedUserIds: affectedForDelete,
+          deleted: Boolean(existing),
+        };
+      }
+      const authorityPermissions = input.permissions.includes(MANAGE_PERMISSION)
         ? input.permissions
         : [...input.permissions, MANAGE_PERMISSION];
       // Serialized by the canManageResource(forUpdate: true) lock taken above.

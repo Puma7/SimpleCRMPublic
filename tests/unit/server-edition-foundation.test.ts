@@ -33687,11 +33687,13 @@ describe('server edition foundation', () => {
       enabled: false,
       triggerName: stored.triggerName,
       executionMode: stored.executionMode,
+      overrideKey: stored.overrideKey ?? null,
     });
     expect(updateCalls[1].expected).toEqual({
       graph: stored.graph,
       triggerName: stored.triggerName,
       executionMode: stored.executionMode,
+      overrideKey: stored.overrideKey ?? null,
     });
     // Verliert einer den Wettlauf, wird daraus ein 409 statt eines stillen Merges.
     expect(graphPatch.status).toBe(409);
@@ -33776,6 +33778,7 @@ describe('server edition foundation', () => {
       graph: stored.graph,
       triggerName: stored.triggerName,
       executionMode: stored.executionMode,
+      overrideKey: stored.overrideKey ?? null,
     });
   });
 

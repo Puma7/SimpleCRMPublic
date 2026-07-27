@@ -1117,6 +1117,7 @@ async function handleUpdateWorkflow(
     graph?: unknown | null;
     triggerName?: string;
     executionMode?: string | null;
+    overrideKey?: string | null;
   } | undefined;
   if (patchTouchesOutboundField || patchMayTouchPriority) {
     const existing = ports.workflows.get
@@ -1140,6 +1141,13 @@ async function handleUpdateWorkflow(
           ...(parsed.values.triggerName === undefined ? { triggerName: existing.triggerName } : {}),
           ...(parsed.values.executionMode === undefined
             ? { executionMode: existing.executionMode ?? null }
+            : {}),
+          // Der Override-Schluessel ist seit dem Manage-Gate ausfuehrungsrelevant:
+          // setzt ihn ein Admin zwischen Vorab-Read und UPDATE, muss dieser
+          // Editor-Write mit 409 scheitern statt den nun manage-pflichtigen
+          // Workflow zu veraendern.
+          ...(parsed.values.overrideKey === undefined
+            ? { overrideKey: existing.overrideKey ?? null }
             : {}),
         };
         if (Object.keys(expectedState).length === 0) expectedState = undefined;

@@ -67,10 +67,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authRequired, setAuthRequired] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [capabilities, setCapabilities] = useState<readonly string[]>([])
-  // false, solange die Gruppenrechte noch geladen werden. Ohne diese
-  // Unterscheidung ist "noch nicht geladen" nicht von "Recht fehlt" trennbar und
-  // Gates wuerden im ersten Render faelschlich zuschlagen.
-  const [capabilitiesReady, setCapabilitiesReady] = useState(false)
+  // Fuer WELCHEN Nutzer die geladene Capability-Liste gilt. Bewusst kein
+  // ready-Flag: das wurde im unauthentifizierten Zweig auf true gesetzt und war
+  // beim ersten Login eines gewoehnlichen Server-Nutzers im Render VOR dem
+  // Ladeeffekt noch true — Gates sahen "fertig geladen mit leerer Liste" und
+  // leiteten z. B. die Einstellungsseite sofort auf den Konto-Tab um. An die
+  // User-Id gebunden ist der Zustand beim Sitzungswechsel sofort korrekt.
+  const [capabilitiesUserId, setCapabilitiesUserId] = useState<string | null>(null)
   const [serverSessionExpiresAt, setServerSessionExpiresAt] = useState<string | null>(null)
 
   const applyServerSession = useCallback((session: ServerAuthSession | null) => {
@@ -171,7 +174,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!authenticated || !user || getRendererTransport().kind !== "http") {
       setCapabilities([])
-      setCapabilitiesReady(true)
+      setCapabilitiesUserId(null)
       return
     }
     // Owner/Admin halten alle Rechte implizit — fuer sie entfaellt der Abruf,
@@ -180,7 +183,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const adminRole = user.role === "owner" || user.role === "admin"
     if (adminRole) {
       setCapabilities([])
-      setCapabilitiesReady(true)
+      setCapabilitiesUserId(null)
     }
     let cancelled = false
     let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -193,15 +196,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } catch {
         if (!cancelled) setCapabilities([])
       } finally {
-        if (!cancelled) setCapabilitiesReady(true)
+        if (!cancelled) setCapabilitiesUserId(user.id)
       }
     }
 
     if (!adminRole) {
-      // Vor JEDEM Abruf zuruecksetzen: der unauthentifizierte Erst-Render hat
-      // ready bereits auf true gesetzt, sonst saehe die Settings-Seite nach dem
-      // Login kurz "ready mit leerer Liste" und wuerde zum Konto-Tab umleiten.
-      setCapabilitiesReady(false)
+      // Vor JEDEM Abruf zuruecksetzen — bei einem Nutzerwechsel gilt die alte
+      // Liste nicht mehr.
+      setCapabilitiesUserId(null)
       void loadCapabilities()
     }
     const subscription = subscribeServerEvents({
@@ -217,7 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           // das fehl, raeumt refresh() den Auth-State ab.
           void refresh({ force: true })
           if (!adminRole) {
-            setCapabilitiesReady(false)
+            setCapabilitiesUserId(null)
             void loadCapabilities()
           }
         }, 250)
@@ -229,6 +231,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       subscription.unsubscribe()
     }
   }, [authenticated, user, refresh])
+
+  // Abgeleitet statt gespeichert: „fertig" heisst entweder „hier gibt es nichts
+  // zu laden" (Desktop, abgemeldet, Owner/Admin) oder „die geladene Liste gehoert
+  // zu GENAU diesem Nutzer".
+  const capabilitiesReady = useMemo(() => {
+    if (!authenticated || !user || getRendererTransport().kind !== "http") return true
+    if (user.role === "owner" || user.role === "admin") return true
+    return capabilitiesUserId === user.id
+  }, [authenticated, user, capabilitiesUserId])
 
   const hasCapability = useCallback((capability: string): boolean => {
     if (!user) return false

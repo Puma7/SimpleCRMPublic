@@ -3928,6 +3928,10 @@ export type WorkflowApiPort = {
       graph?: unknown | null;
       triggerName?: string;
       executionMode?: string | null;
+      /** Der Override-Schluessel entscheidet mit ueber die Ausfuehrung und ist
+       *  manage-pflichtig — er gehoert deshalb in denselben optimistischen
+       *  Vergleich wie Graph und enabled. */
+      overrideKey?: string | null;
     };
   }): Promise<WorkflowMutationPortResult | null>;
   delete?(input: {
