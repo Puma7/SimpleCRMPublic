@@ -81,6 +81,7 @@ import { WorkflowReferenceDialog } from "./workflow-reference-dialog"
 import { WorkflowVersionsDialog } from "./workflow-versions-dialog"
 import { WorkflowRunHistory } from "./workflow-run-history"
 import { graphHasTriggerToActionShortcut } from "./workflow-graph-layout"
+import { decideWorkflowSaveGate, type WorkflowSaveBaseline } from "./workflow-save-gate"
 import type { WorkflowTemplateDto } from "@shared/workflow-types"
 import { useWorkflowNodeCatalog } from "./use-workflow-node-catalog"
 import { validateWorkflowGraphConfigs } from "@shared/workflow-config-validate"
@@ -178,8 +179,13 @@ export function WorkflowShell() {
   const [versionsOpen, setVersionsOpen] = useState(false)
   const [testMessageId, setTestMessageId] = useState("")
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
-  /** Baseline for omitting unchanged graph/enabled on editor-only saves. */
-  const saveBaselineRef = useRef<{ enabled: boolean; graphJson: string } | null>(null)
+  /**
+   * Baseline for omitting unchanged execution-relevant fields on editor-only
+   * saves. Enthaelt ALLE Felder, die der Server als ausfuehrungsrelevant
+   * behandelt (Graph, enabled, Zeitplan, Zeitplan-Konto) — sonst laesst ein
+   * unveraendert mitgesendeter Zeitplan das manage-Gate anschlagen.
+   */
+  const saveBaselineRef = useRef<WorkflowSaveBaseline | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [triggerFilter, setTriggerFilter] = useState<
     "all" | "inbound" | "outbound" | "other"
@@ -287,6 +293,9 @@ export function WorkflowShell() {
     saveBaselineRef.current = {
       enabled: w.enabled === 1,
       graphJson: JSON.stringify(useWorkflowEditorStore.getState().toGraphDocument()),
+      // Exakt die Normalisierung, die handleSave beim Senden anwendet.
+      cronExpr: (w.cron_expr ?? "").trim() || null,
+      scheduleAccountId: w.schedule_account_id ?? null,
     }
   }
 
@@ -439,23 +448,25 @@ export function WorkflowShell() {
         }
       }
       const graphJson = JSON.stringify(graphDoc)
-      const baseline = saveBaselineRef.current
-      const graphChanged = !baseline || baseline.graphJson !== graphJson
-      const enabledChanged = !baseline || baseline.enabled !== editEnabled
-      const hasSideEffects = workflowGraphHasSideEffectNode(graphDoc)
-      // Match API rejectUnlessSideEffectWorkflowManage: only enabled + side-effect graphs need manage.
-      const needsManage = editEnabled && hasSideEffects
-      const omitActiveGraphFields =
-        !canManageWorkflows
-        && needsManage
-        && baseline?.enabled === true
-        && !graphChanged
-        && !enabledChanged
-      if (
-        !canManageWorkflows
-        && needsManage
-        && (graphChanged || enabledChanged)
-      ) {
+      const cronValue = cronTrim || null
+      const scheduleAccountValue = editScheduleAccountId === "" ? null : editScheduleAccountId
+      // Zeitplan und Zeitplan-Konto sind serverseitig ausfuehrungsrelevant
+      // (patchTouchesOutbound): unveraendert mitgesendet wuerden sie das
+      // manage-Gate ausloesen und eine reine Namensaenderung mit 403 abweisen.
+      const gate = decideWorkflowSaveGate(
+        saveBaselineRef.current,
+        {
+          enabled: editEnabled,
+          graphJson,
+          cronExpr: cronValue,
+          scheduleAccountId: scheduleAccountValue,
+        },
+        {
+          canManageWorkflows,
+          hasSideEffects: workflowGraphHasSideEffectNode(graphDoc),
+        },
+      )
+      if (gate.blocked) {
         toast.error("Aktive Workflows mit Seiteneffekten erfordern workflows.manage")
         setSaving(false)
         return
@@ -465,18 +476,23 @@ export function WorkflowShell() {
         name: editName.trim(),
         priority: parseInt(editPriority, 10) || 100,
         definitionJson,
-        cronExpr: cronTrim || null,
-        scheduleAccountId: editScheduleAccountId === "" ? null : editScheduleAccountId,
-        ...(omitActiveGraphFields
+        ...(gate.omitExecutionFields
           ? {}
           : {
               trigger: trig,
               graphJson,
               enabled: editEnabled,
+              cronExpr: cronValue,
+              scheduleAccountId: scheduleAccountValue,
             }),
       })
       setEditJson(definitionJson)
-      saveBaselineRef.current = { enabled: editEnabled, graphJson }
+      saveBaselineRef.current = {
+        enabled: editEnabled,
+        graphJson,
+        cronExpr: cronValue,
+        scheduleAccountId: scheduleAccountValue,
+      }
       toast.success("Gespeichert.")
       await load()
     } catch (e) {
