@@ -185,6 +185,24 @@ export class MailAccessRolloutService implements MailAccessService {
     return resolve.call(this.options.newAcl, input);
   }
 
+  /**
+   * Wie die Sichtbarkeitsfilter: die eigenen Rechte stammen immer aus der NEUEN
+   * ACL, auch im Shadow-Modus — die Selbstauskunft beschreibt, was NACH dem
+   * Rollout gilt, und blendet Bedienelemente danach aus.
+   *
+   * Ohne diese Implementierung liefe die Route in ihren Fail-closed-Zweig und
+   * meldete JEDEM Delegierten in der Produktion „keine Rechte": die Oberflaeche
+   * verbaerge dann genau die Aktionen, die er ausfuehren darf.
+   */
+  async resolveSelfPermissions(
+    input: Readonly<{ workspaceId: string; userId: string }>,
+  ): Promise<{
+    permissions: MailPermission[];
+    accountPermissions: Record<number, MailPermission[]>;
+  }> {
+    return new NewMailAccessService(this.options.newAcl).resolveSelfPermissions(input);
+  }
+
   async resolveScope(input: Parameters<MailAccessService['resolveScope']>[0]): Promise<MailSqlScope> {
     if (input.actor.workspaceId !== input.workspaceId) return { kind: 'none' };
     if (input.actor.isOwner || input.actor.isAdmin) return { kind: 'all' };
