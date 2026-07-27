@@ -43,7 +43,6 @@ import {
 } from './db/workspace-context';
 import {
   advanceInboundChainAfterTerminalChild,
-  terminalChildCompletionKey,
   terminalInboundChildContext,
 } from './workflow-inbound-chain-advance';
 
@@ -176,6 +175,27 @@ function terminalChildTarget(payload: Record<string, unknown>): TerminalChildTar
 }
 
 /**
+ * Einmal-Schluessel dieses Aufrufs.
+ *
+ * Bewusst leniant, anders als der exportierte {@link terminalChildCompletionKey}:
+ * hier steht bereits fest, dass es sich um einen terminalen Kindjob handelt
+ * (der Aufrufer uebergibt einen `terminalChainPayload`). Der strikte Bauer darf
+ * das nicht annehmen — der Graphile-Fehlerpfad sieht auch nicht-terminale Jobs
+ * und braucht dort `null`. Fuer echte terminale Jobs liefern beide denselben
+ * Schluessel; nur Payloads der Vorgaengerversion ohne `terminalNodeId` fallen
+ * hier auf `terminal:none` zurueck, was fuer sie eindeutig ist.
+ */
+function terminalChildOnceKey(target: TerminalChildTarget): string {
+  return [
+    'inbound_terminal_child_done',
+    target.messageId,
+    target.workflowId,
+    target.nodeId,
+    target.runId ?? 'none',
+  ].join(':');
+}
+
+/**
  * Abschluss eines terminalen Kindjobs — genau einmal pro Knoten und Lauf.
  *
  * @param applied true ⇒ der Kindjob hat seine Arbeit erledigt und der Workflow
@@ -201,7 +221,7 @@ export async function completeTerminalInboundChild(
     .insertInto('sync_info')
     .values({
       workspace_id: target.workspaceId,
-      key: terminalChildCompletionKey(payload) ?? '',
+      key: terminalChildOnceKey(target),
       value: '1',
       last_updated: input.now,
       source_row: { origin: 'inbound_terminal_child' },

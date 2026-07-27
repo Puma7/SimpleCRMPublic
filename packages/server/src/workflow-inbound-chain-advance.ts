@@ -119,11 +119,17 @@ export function terminalInboundChildContext(
  * committet hatte, der Worker aber vor der Bestaetigung starb.
  */
 export function terminalChildCompletionKey(payload: Record<string, unknown>): string | null {
+  // Strikt: NUR echte terminale Kindjobs mit konkreter Knoten-Identitaet.
+  // Ein nicht-terminaler deferierter Kindjob (etwa workflow.forward_copy)
+  // traegt zwar die Kette, aber weder terminalWorkflowCompletion noch
+  // terminalNodeId — er bekaeme sonst denselben `terminal:none`-Schluessel wie
+  // jeder andere, und nach dem ersten endgueltigen Fehlschlag uebersprunge der
+  // zweite sein Join-Dekrement: die Barriere bliebe bei pending = 1 stehen.
+  if (payload.terminalWorkflowCompletion !== true) return null;
+  const nodeId = typeof payload.terminalNodeId === 'string' ? payload.terminalNodeId.trim() : '';
+  if (!nodeId) return null;
   const target = terminalInboundChildContext(payload);
   if (!target) return null;
-  const nodeId = typeof payload.terminalNodeId === 'string' && payload.terminalNodeId.trim()
-    ? payload.terminalNodeId.trim()
-    : 'terminal';
   const runId = positiveInt(payload.runId);
   return [
     'inbound_terminal_child_done',

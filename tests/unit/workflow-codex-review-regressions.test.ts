@@ -529,6 +529,16 @@ describe('codex review regression guards', () => {
     // sonst dekrementiert er die Barriere ein zweites Mal, wenn der Kindjob
     // seinen Erfolg schon committet hatte und der Worker vor dem Ack starb.
     expect(graphile).toContain('terminalChildCompletionKey(payload as Record<string, unknown>)');
+    // ... aber NUR fuer echte terminale Kindjobs. Ein nicht-terminaler
+    // deferierter Kindjob (workflow.forward_copy) traegt die Kette, aber keine
+    // Knoten-Identitaet — er teilte sich sonst einen `terminal:none`-Schluessel
+    // mit jedem anderen und uebersprunge sein Join-Dekrement.
+    expect(advance).toMatch(
+      /export function terminalChildCompletionKey[\s\S]*?if \(payload\.terminalWorkflowCompletion !== true\) return null;[\s\S]*?if \(!nodeId\) return null;/,
+    );
+    // Der Abschluss selbst behaelt seinen lenienten Schluessel (dort steht
+    // bereits fest, dass es ein terminaler Kindjob ist).
+    expect(terminal).toContain('function terminalChildOnceKey(target: TerminalChildTarget): string');
     expect(graphile).toMatch(/if \(completionKey\) \{[\s\S]*?if \(!firstCompletion\.rowCount\)/);
     expect(terminal).toContain('.onConflict((oc) => oc.columns([\'workspace_id\', \'key\']).doNothing())');
 
@@ -676,6 +686,12 @@ describe('codex review regression guards', () => {
     // NACHDEM das Urteil auf dem Entwurf steht — ein Absturz dazwischen liesse
     // sonst weder HOLD noch Pending-Zustand zurueck.
     expect(aiNodes).toContain('deferHoldDuringSend(draftId, reason)');
+    // TOCTOU: erwirbt der Versand den Claim zwischen Pruefung und Stempel,
+    // liefert setDraftApprovalPending false — das Urteil muss trotzdem geparkt
+    // werden, sonst geht der Entwurf beim naechsten Tick ohne HOLD raus.
+    expect(aiNodes).toMatch(
+      /if \(!setDraftApprovalPending\(draftId, reason\)\) \{[\s\S]*?deferHoldDuringSend\(draftId, reason\);/,
+    );
     expect(scheduled).toContain('peekDeferredSendHold(draftId)');
     // Nach dem Claim gegen den Live-Zustand pruefen: der Batch-Schnappschuss
     // kann veraltet sein, wenn die Gegenlese-KI einen spaeteren Entwurf der

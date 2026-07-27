@@ -178,7 +178,13 @@ function holdResultOrSendInFlight(
       },
     };
   }
-  setDraftApprovalPending(draftId, reason);
+  if (!setDraftApprovalPending(draftId, reason)) {
+    // TOCTOU: der Scheduled-Send hat den Claim zwischen der Pruefung oben und
+    // diesem Aufruf erworben, der Stempel ging also nicht durch. Das Urteil
+    // trotzdem parken — scheitert der inzwischen gestartete Versand, bliebe der
+    // Entwurf sonst faellig und ginge beim naechsten Tick ohne das KI-HOLD raus.
+    deferHoldDuringSend(draftId, reason);
+  }
   return {
     status: 'ok',
     port: 'hold',
