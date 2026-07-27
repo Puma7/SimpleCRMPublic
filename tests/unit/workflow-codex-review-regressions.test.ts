@@ -619,10 +619,28 @@ describe('codex review regression guards', () => {
     // ueberlappende Backfills teilten sich sonst einen Zaehler.
     expect(advance).toContain('`inbound_deferred_join:${messageId}:${workflowId}:run:${fanOutRunId}`');
     expect(execution).toContain('inboundFanOutRunId: inboundFanOutRunId(context)');
-    expect(execution.match(/fanOutRunId: jobContextFanOutRunId\(jobContext, run\.id\),/g)).toHaveLength(6);
+    // 6x Join-Abbau/-Init, 2x Sibling-Abort setzen, 1x Sibling-Abort lesen.
+    expect(execution.match(/fanOutRunId: jobContextFanOutRunId\(jobContext, run\.id\),/g)).toHaveLength(9);
     // Der Fan-out-Lauf muss JEDE Fortsetzung ueberleben.
     expect(readRepoFile('packages/server/src/workflow-inbound-chain-context.ts'))
       .toMatch(/resumeContextInboundChainFields[\s\S]*?inboundFanOutRunId: continuation\.inboundFanOutRunId/);
+
+    // Der Sibling-Abort-Marker MUSS denselben Lauf-Scope haben wie die
+    // Join-Barriere. Sonst loescht der fertige Join des einen Laufs den Marker
+    // des anderen (beide Loeschungen haengen am Join) und dessen noch laufende
+    // Kinder senden doch.
+    expect(advance).toContain('`inbound_sibling_abort:${messageId}:${workflowId}:run:${fanOutRunId}`');
+    expect(advance.match(/inboundSiblingAbortKey\(input\.messageId, input\.workflowId, input\.chain, input\.fanOutRunId\)/g))
+      .toHaveLength(4);
+    // Alle Lesepfade reichen ihn mit — sonst prueft ein Kind den falschen Key.
+    for (const [file, expr] of [
+      ['packages/server/src/ai-classification.ts', 'fanOutRunId: continuation?.inboundFanOutRunId ?? terminal?.fanOutRunId'],
+      ['packages/server/src/workflow-ai-draft-nodes.ts', 'fanOutRunId: continuation?.inboundFanOutRunId ?? terminal?.fanOutRunId'],
+      ['packages/server/src/workflow-http-request.ts', 'fanOutRunId: input.continuation!.inboundFanOutRunId'],
+      ['packages/server/src/workflow-forward-copy.ts', 'fanOutRunId: input.continuation.inboundFanOutRunId'],
+    ] as const) {
+      expect(readRepoFile(file)).toContain(expr);
+    }
 
     // Desktop: der Sweep raeumt nur beim echten Prozessstart ab.
     // startEmailBackgroundServices laeuft auch im laufenden Prozess erneut

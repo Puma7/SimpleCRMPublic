@@ -675,6 +675,7 @@ export function createPostgresWorkflowExecutionJobPort(
               messageId: Number(message.id),
               workflowId: Number(workflow.id),
               chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+              fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
             })
           ) {
             await finishRun(trx, input.workspaceId, run.id, {
@@ -748,6 +749,7 @@ export function createPostgresWorkflowExecutionJobPort(
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
                 chain,
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                 reason: result.inboundChainStop
                   ? 'sibling_inbound_chain_stop'
                   : 'sibling_blocked',
@@ -791,6 +793,7 @@ export function createPostgresWorkflowExecutionJobPort(
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
                 chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                fanOutRunId: jobContextFanOutRunId(jobContext, run.id),
                 reason: 'sibling_inbound_chain_stop',
                 now,
               });
@@ -2052,6 +2055,7 @@ async function executeServerNode(
         messageId: context.messageId,
         workflowId: context.workflowId,
         chain: context.inboundWorkflowChain ?? null,
+        fanOutRunId: inboundFanOutRunId(context),
       })
     ) {
       return {
@@ -7316,6 +7320,8 @@ async function abortRemainingInboundSiblings(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     reason: string;
     now: Date;
   },
@@ -7325,6 +7331,7 @@ async function abortRemainingInboundSiblings(
     messageId: input.messageId,
     workflowId: input.workflowId,
     chain: input.chain,
+    fanOutRunId: input.fanOutRunId,
     reason: input.reason,
     now: input.now,
   });

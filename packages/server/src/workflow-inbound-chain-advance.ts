@@ -266,7 +266,7 @@ export async function completeInboundDeferredJoinSiblingOnPgClient(
     `DELETE FROM sync_info
       WHERE workspace_id = $1
         AND key = $2`,
-    [input.workspaceId, inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain)],
+    [input.workspaceId, inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId)],
   );
   if (chainStop) return 'stop';
   return error ? 'ready_error' : 'ready';
@@ -348,11 +348,20 @@ export function inboundSiblingAbortKey(
   messageId: number,
   workflowId: number,
   chain: InboundWorkflowChainContext | null,
+  fanOutRunId?: number | null,
 ): string {
   if (chain) {
     return `inbound_sibling_abort:${messageId}:${chain.workflowIds.join(',')}:${chain.index}`;
   }
-  return `inbound_sibling_abort:${messageId}:${workflowId}`;
+  // Wie bei der Join-Barriere: ohne Kette trennt erst der Ursprungslauf zwei
+  // ueberlappende Backfill-/Reapply-Laeufe. Der Marker gehoert zu EINEM
+  // Fan-out, nicht zur Nachricht — der laufuebergreifende Spamzustand wird
+  // ohnehin separat an der Nachricht selbst geprueft. Ohne den Lauf-Scope
+  // loescht der fertige Join des einen Laufs den Marker des anderen und dessen
+  // noch laufende Kinder senden doch.
+  return fanOutRunId != null
+    ? `inbound_sibling_abort:${messageId}:${workflowId}:run:${fanOutRunId}`
+    : `inbound_sibling_abort:${messageId}:${workflowId}`;
 }
 
 export async function markInboundSiblingAbort(
@@ -362,11 +371,13 @@ export async function markInboundSiblingAbort(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
     reason: string;
     now: Date;
   },
 ): Promise<void> {
-  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   await trx
     .insertInto('sync_info')
     .values({
@@ -393,9 +404,11 @@ export async function isInboundSiblingAborted(
     messageId: number;
     workflowId: number;
     chain: InboundWorkflowChainContext | null;
+    /** Nur ohne Kette relevant: trennt ueberlappende Backfill-/Reapply-Laeufe. */
+    fanOutRunId?: number | null;
   },
 ): Promise<boolean> {
-  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain);
+  const key = inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId);
   const row = await trx
     .selectFrom('sync_info')
     .select(['value'])
@@ -494,7 +507,7 @@ export async function completeInboundDeferredJoinSibling(
   await trx
     .deleteFrom('sync_info')
     .where('workspace_id', '=', input.workspaceId)
-    .where('key', '=', inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain))
+    .where('key', '=', inboundSiblingAbortKey(input.messageId, input.workflowId, input.chain, input.fanOutRunId))
     .execute();
   if (chainStop) return 'stop';
   return error ? 'ready_error' : 'ready';

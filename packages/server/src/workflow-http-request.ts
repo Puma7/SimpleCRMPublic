@@ -95,6 +95,7 @@ export function createPostgresWorkflowHttpRequestPort(
             messageId: input.messageId!,
             workflowId: input.continuation!.workflowId,
             chain: input.continuation!.inboundWorkflowChain ?? null,
+            fanOutRunId: input.continuation!.inboundFanOutRunId,
           }),
           { applySession: options.applyWorkspaceSession },
         );

@@ -1282,6 +1282,7 @@ async function inboundAsyncChildAbortReason(
     messageId,
     workflowId,
     chain: continuation?.inboundWorkflowChain ?? terminal?.chain ?? null,
+    fanOutRunId: continuation?.inboundFanOutRunId ?? terminal?.fanOutRunId,
   });
   return aborted ? 'sibling_terminal_abort' : null;
 }
