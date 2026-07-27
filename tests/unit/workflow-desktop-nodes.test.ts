@@ -294,6 +294,21 @@ describe('email.set_spam_status', () => {
     expect(addMessageTag).not.toHaveBeenCalled();
     expect(r.variables).toMatchObject({ 'email.is_spam': false, 'spam.status': 'clean' });
   });
+
+  test('ohne stopFurtherWorkflows (Legacy-Graph) stoppt der Graph nicht', async () => {
+    const r = await node.execute(ctx(), { status: 'review' }, 'n1');
+    expect(r.stop).toBeUndefined();
+    expect(r.inboundChainStop).toBeUndefined();
+  });
+
+  test('mit stopFurtherWorkflows:true stoppt der Graph bei review', async () => {
+    const r = await node.execute(ctx(), { status: 'review', stopFurtherWorkflows: true }, 'n1');
+    expect(r).toMatchObject({
+      stop: true,
+      inboundChainStop: true,
+      message: 'stop_further_workflows:spam_status',
+    });
+  });
 });
 
 describe('email.mark_spam', () => {
@@ -319,6 +334,25 @@ describe('email.mark_spam', () => {
     await node.execute(ctx({ dryRun: true }), { moveImap: true }, 'n1');
     expect(setMessageSpam).not.toHaveBeenCalled();
     expect(moveImapMessage).not.toHaveBeenCalled();
+  });
+
+  test('ohne stopFurtherWorkflows (Legacy-Graph) stoppt der Graph nicht', async () => {
+    const r = await node.execute(ctx(), { spam: true, tag: 'auto-spam' }, 'n1');
+    expect(r.stop).toBeUndefined();
+    expect(r.inboundChainStop).toBeUndefined();
+  });
+
+  test('mit stopFurtherWorkflows:true stoppt der Graph bei Spam', async () => {
+    const r = await node.execute(
+      ctx(),
+      { spam: true, tag: 'auto-spam', stopFurtherWorkflows: true },
+      'n1',
+    );
+    expect(r).toMatchObject({
+      stop: true,
+      inboundChainStop: true,
+      message: 'stop_further_workflows:mark_spam',
+    });
   });
 });
 
