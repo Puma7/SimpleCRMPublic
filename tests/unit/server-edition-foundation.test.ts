@@ -2232,10 +2232,17 @@ describe('server edition foundation', () => {
     // Workflow-Kontext) bleiben bewusst ohne, damit 'replace' sie nicht frisst.
     expect(graphileJobKeyForJob(
       'ai.pick_canned',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'canned-1', runId: 5, branchKey: 'edge-1' },
+      'workspace-a',
+    )).toBe('ai.pick_canned:workspace-a:23:11:canned-1:5:edge-1');
+    expect(graphileJobKeyForJob('ai.pick_canned', { messageId: 11 }, 'workspace-a')).toBeUndefined();
+    // Ohne Zweig-Identitaet bewusst KEIN Key: zwei konvergierende Trigger-Zweige
+    // teilten sich sonst alles und jobKeyMode 'replace' verschluckte einen.
+    expect(graphileJobKeyForJob(
+      'ai.pick_canned',
       { messageId: 11, workflowId: 23, resumeNodeId: 'canned-1', runId: 5 },
       'workspace-a',
-    )).toBe('ai.pick_canned:workspace-a:23:11:canned-1:5');
-    expect(graphileJobKeyForJob('ai.pick_canned', { messageId: 11 }, 'workspace-a')).toBeUndefined();
+    )).toBeUndefined();
     expect(graphileJobKeyForJob('ai.classify', { messageId: 11, workflowId: 23, resumeNodeId: 'switch-1' }, 'workspace-a'))
       .toBe('ai.classify:workspace-a:23:11:switch-1');
     expect(graphileJobKeyForJob('ai.review', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1' }, 'workspace-a'))

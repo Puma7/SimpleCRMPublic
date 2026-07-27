@@ -3508,6 +3508,9 @@ async function scheduleAiPickCannedJob(
     // runId wie bei ai.draft_reply: sonst teilen sich zwei Laeufe desselben
     // Workflows einen Job-Key und 'replace' verschluckt den ersten Kindjob.
     runId: context.runId,
+    // Zweig-Identitaet fuer den Job-Key: zwei konvergierende Trigger-Zweige
+    // teilen sich sonst alles (Workflow, Nachricht, runId, resumeNodeId).
+    ...(context.branchKey ? { branchKey: context.branchKey } : {}),
     ...workflowJobProvenance(context),
     // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
     // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht

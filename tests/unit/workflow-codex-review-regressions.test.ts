@@ -593,6 +593,16 @@ describe('codex review regression guards', () => {
     expect(graphile).toContain('graphileChildNodeKeyPart');
     // ai.pick_canned hatte ueberhaupt keinen Job-Key.
     expect(graphile).toMatch(/if \(type === 'ai\.pick_canned'\) \{[\s\S]*?graphileChildNodeKeyPart\(payload\)/);
+    // ... aber nur mit Zweig-Identitaet. Ohne sie kein Key, sonst verschluckt
+    // 'replace' einen von zwei konvergierenden nicht-terminalen Zweigen.
+    expect(graphile).toContain('const branchIdentified = payload.terminalWorkflowCompletion === true || Boolean(branchKey);');
+    expect(execution).toContain('...(context.branchKey ? { branchKey: context.branchKey } : {}),');
+
+    // Ein geparktes HOLD darf NICHT ueber den SEND-Port weiterlaufen: dort
+    // haengt email.send_draft, das den Entwurf erneut einplant.
+    expect(aiNodes).toContain("message: 'review_hold_parked:send_in_flight'");
+    expect(aiNodes).not.toContain("message: 'review_hold_skipped:send_in_flight'");
+    expect(aiNodes).toMatch(/deferHoldDuringSend\(draftId, reason\);[\s\S]*?stop: true,/);
 
     // Sibling-Abbruch haengt auch im Entwurfspfad nicht mehr an der Continuation.
     expect(draftNodes).toContain('continuation?.workflowId ?? terminal?.workflowId');

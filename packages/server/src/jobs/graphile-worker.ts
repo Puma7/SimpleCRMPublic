@@ -538,8 +538,17 @@ export function graphileJobKeyForJob(
     const workflowId = graphileKeyScalar(payload.workflowId);
     const nodeKey = graphileChildNodeKeyPart(payload);
     const runId = graphileKeyScalar(payload.runId);
-    if (workspaceKey && workflowId && nodeKey) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}`;
+    // Zweig-Identitaet: terminale Knoten tragen sie bereits in nodeKey, fuer
+    // nicht-terminale liefert sie payload.branchKey. Fehlt sie ganz, gibt es
+    // bewusst KEINEN Key — zwei konvergierende Trigger-Zweige teilten sich sonst
+    // Workflow, Nachricht, runId UND resumeNodeId, 'replace' verschluckte einen
+    // und die mit zwei Zweigen initialisierte Barriere bliebe bei pending = 1.
+    // Ohne Key kann nichts verschluckt werden (Verhalten vor diesem PR).
+    const branchKey = graphileKeyScalar(payload.branchKey);
+    const branchIdentified = payload.terminalWorkflowCompletion === true || Boolean(branchKey);
+    if (workspaceKey && workflowId && nodeKey && branchIdentified) {
+      const base = `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}`;
+      return branchKey ? `${base}:${branchKey}` : base;
     }
   }
   if (type === 'ai.classify') {

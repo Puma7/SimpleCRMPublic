@@ -150,8 +150,9 @@ function signatureHtmlToText(html: string): string {
 }
 
 /**
- * HOLD stempeln — ausser der Entwurf wird gerade versendet. In dem Fall ginge
- * die Mail ohnehin raus; ein 'hold' im Lauf-Verlauf waere schlicht falsch.
+ * HOLD stempeln — ausser der Entwurf wird gerade versendet. In dem Fall kann der
+ * Zustand nicht gesetzt werden (die Mail geht gerade raus), das Urteil wird
+ * geparkt und der Zweig endet ohne Folgeaktionen.
  */
 function holdResultOrSendInFlight(
   draftId: number,
@@ -164,17 +165,24 @@ function holdResultOrSendInFlight(
   // Fehlerfall) wuerde den Zweig sonst auf 'send' kippen, also ausgerechnet auf
   // dem Geldpfad nach aussen oeffnen.
   if (scheduledSendIsClaimed(draftId)) {
-    // Das HOLD nicht verwerfen: scheitert der laufende Versand, wird es beim
-    // Freigeben des Claims nachgeholt (email-scheduled-send).
+    // Der Versand laeuft bereits: „Wartet auf Freigabe" waere jetzt gelogen.
+    // Das HOLD wird geparkt und greift, falls dieser Versand scheitert.
     deferHoldDuringSend(draftId, reason);
+    // Und der Zweig ENDET hier. Ihn als 'send' zu routen waere schlimmer als
+    // ungenau: am SEND-Ausgang haengt in der Zwei-Stufen-Vorlage
+    // email.send_draft, das den Entwurf erneut vorbereitet, den Auto-Reply-Slot
+    // belegt und ihn wieder einplant — und benutzerdefinierte SEND-Zweige
+    // beliebige weitere Erfolgsaktionen. Das spaetere Nachholen des HOLDs macht
+    // davon nichts rueckgaengig. Solange der Versand nicht nachweislich
+    // erfolgreich ist, darf kein Erfolgspfad laufen.
     return {
       status: 'ok',
-      port: 'send',
-      message: 'review_hold_skipped:send_in_flight',
+      stop: true,
+      message: 'review_hold_parked:send_in_flight',
       variables: {
-        'ai.review.verdict': 'send',
+        'ai.review.verdict': 'hold',
         'ai.review.answered': false,
-        'ai.review.reason': 'Versand lief bereits — Gegenprüfung kam zu spät',
+        'ai.review.reason': 'Versand lief bereits — HOLD greift, falls er scheitert',
       },
     };
   }
