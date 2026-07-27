@@ -18,6 +18,13 @@ const PATH = '/api/v1/email/access/self';
 describe('mail access self report', () => {
   const user = { userId: 'user-a', workspaceId: WORKSPACE, role: 'user' as const };
 
+  // Konto 3 ist importiert: interne Id 3, oeffentliche Id 4003. Konto 7 hat
+  // keine Sqlite-Herkunft und behaelt seine interne Id.
+  const accounts = [
+    { id: 3, sourceSqliteId: 4003 },
+    { id: 7, sourceSqliteId: null },
+  ];
+
   const makeApi = (resolveSelfPermissions?: unknown) => createServerApi({
     mailAccess: {
       async assertPermission() {},
@@ -27,6 +34,7 @@ describe('mail access self report', () => {
       ...(resolveSelfPermissions ? { resolveSelfPermissions } : {}),
     },
     mailResourceLookup: { async resolve() { return []; } },
+    emailAccounts: { async list() { return { items: accounts, nextCursor: null }; } },
   } as unknown as ServerApiPorts);
 
   test('reports the permissions the caller actually holds, per account', async () => {
@@ -41,11 +49,15 @@ describe('mail access self report', () => {
 
     const res = await api.handle({ method: 'GET', path: PATH, principal: user });
     expect(res.status).toBe(200);
+    // Umgeschluesselt auf die OEFFENTLICHE Konto-Id: der Renderer kennt Konto 3
+    // als 4003 (mapEmailAccountRecord nimmt sourceSqliteId, sobald sie positiv
+    // ist). Ohne die Umschluesselung liefe hasMailPermissionForAccount ins
+    // Leere und verbaerge die Bedienelemente eines Berechtigten.
     expect((res.body as any).data).toEqual({
       role: 'user',
       unrestricted: false,
       permissions: ['mail.metadata.read', 'mail.account.manage'],
-      accountPermissions: { 3: ['mail.account.manage', 'mail.metadata.read'], 7: ['mail.metadata.read'] },
+      accountPermissions: { 4003: ['mail.account.manage', 'mail.metadata.read'], 7: ['mail.metadata.read'] },
     });
     // Ausschliesslich der eigene Nutzer — die Route nimmt keine userId entgegen.
     expect(calls).toEqual([{ workspaceId: WORKSPACE, userId: 'user-a' }]);

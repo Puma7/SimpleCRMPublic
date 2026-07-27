@@ -200,8 +200,45 @@ async function handleMailAccessSelfRoute(
     role: principal.role,
     unrestricted: false,
     permissions: resolved.permissions,
-    accountPermissions: resolved.accountPermissions,
+    accountPermissions: await withPublicAccountIds(ports, principal.workspaceId, resolved.accountPermissions),
   });
+}
+
+/**
+ * Grants tragen die INTERNE Konto-Id. Der Renderer kennt Konten aber unter
+ * ihrer oeffentlichen Id — `mapEmailAccountRecord` nimmt `sourceSqliteId`,
+ * sobald sie positiv ist, und faellt nur sonst auf `id` zurueck. Bei
+ * importierten Konten unterscheiden sich beide: die Selbstauskunft ginge dann
+ * an der Oberflaeche vorbei (Bedienelemente verschwinden fuer einen
+ * Berechtigten) oder traefe bei einer zufaelligen Zahlenkollision das falsche
+ * Konto. Deshalb wird hier auf dieselbe Id umgeschluesselt.
+ *
+ * Ohne Konten-Port bleibt die Karte leer statt falsch — der Client faellt dann
+ * auf die Anywhere-Liste zurueck, die nichts pro Konto verspricht.
+ */
+async function withPublicAccountIds(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  byInternalId: Record<number, readonly string[]>,
+): Promise<Record<number, readonly string[]>> {
+  const internalIds = Object.keys(byInternalId);
+  if (internalIds.length === 0) return {};
+  if (!ports.emailAccounts?.list) return {};
+  const { items } = await ports.emailAccounts.list({ workspaceId });
+  const publicById = new Map<string, number>();
+  for (const account of items) {
+    const publicId = account.sourceSqliteId != null && account.sourceSqliteId > 0
+      ? account.sourceSqliteId
+      : account.id;
+    publicById.set(String(account.id), Number(publicId));
+  }
+  const out: Record<number, readonly string[]> = {};
+  for (const internalId of internalIds) {
+    const publicId = publicById.get(internalId);
+    if (publicId === undefined) continue;
+    out[publicId] = byInternalId[Number(internalId)]!;
+  }
+  return out;
 }
 
 /**

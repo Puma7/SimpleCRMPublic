@@ -31633,10 +31633,26 @@ describe('server edition foundation', () => {
       autoReplyMaxPerSenderPerDay: 3,
     });
 
-    const misc = await api.handle({
+    // Der GET verlangt seit der Ausnahme vom Mail-Gate settings.view im Handler
+    // selbst — vorher trug das Mail-Gate diese Pruefung. Ein delegierter
+    // Einstellungs-Leser sieht das Secret weiterhin nur maskiert.
+    const miscReader = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['settings.view'],
+    };
+    const miscDenied = await api.handle({
       method: 'GET',
       path: '/api/v1/email/settings/misc',
       principal,
+    });
+    expect(miscDenied.status).toBe(403);
+
+    const misc = await api.handle({
+      method: 'GET',
+      path: '/api/v1/email/settings/misc',
+      principal: miscReader,
     });
     expect(misc.status).toBe(200);
     expect((misc.body as any).data).toEqual({
@@ -32289,7 +32305,8 @@ describe('server edition foundation', () => {
     const unavailable = await readOnlyApi.handle({
       method: 'GET',
       path: '/api/v1/email/settings/misc',
-      principal,
+      // Braucht settings.view, seit der Handler die Pruefung selbst stellt.
+      principal: { ...principal, capabilities: [...principal.capabilities, 'settings.view'] },
     });
     expect(unavailable.status).toBe(503);
     expect((unavailable.body as any).error.code).toBe('sync_info_unavailable');

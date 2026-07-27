@@ -25,11 +25,18 @@ type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki" | "erweitert"
 
 /**
  * Tabs, deren Speicherpfade mail.account.manage AUF DEM KONTO verlangen
- * (PATCH /email/accounts/:id, SMTP-Zuordnung, OAuth-Verknuepfung,
- * Konto-Signaturen). „KI" und „Erweitert" haengen dagegen an settings.manage
- * und gaten sich in ihren eigenen Panels bereits selbst.
+ * (PATCH /email/accounts/:id, SMTP-Zuordnung, OAuth-Verknuepfung).
+ *
+ * „Signatur" steht bewusst NICHT hier: der Tab enthaelt zwei Abschnitte mit
+ * unterschiedlichen Rechten — die geteilten Konto-Signaturen verlangen
+ * Kontoverwaltung, die PERSOENLICHE Signatur dagegen nur mail.draft.create und
+ * ist ausdruecklich Selbstbedienung. Wer Mail verfassen darf, muss seine eigene
+ * Signatur einrichten koennen; der Tab gatet die beiden Abschnitte einzeln.
+ *
+ * „KI" und „Erweitert" haengen an settings.manage und gaten sich in ihren
+ * eigenen Panels bereits selbst.
  */
-const ACCOUNT_MANAGE_TABS = new Set<AccountTab>(["imap", "smtp", "oauth", "signature"])
+const ACCOUNT_MANAGE_TABS = new Set<AccountTab>(["imap", "smtp", "oauth"])
 
 const TABS: { id: AccountTab; label: string }[] = [
   { id: "imap", label: "IMAP / POP3" },
@@ -326,7 +333,9 @@ export function AccountsMasterDetailSettings() {
                   />
                 ) : tab === "signature" && selectedId != null ? (
                   <div className="max-w-3xl space-y-6">
-                    <AccountSignaturesSection embeddedAccountId={selectedId} />
+                    {canManageSelectedAccount ? (
+                      <AccountSignaturesSection embeddedAccountId={selectedId} />
+                    ) : null}
                     {/* Per-user signatures are a server-edition feature — the
                         ListUserSignatures/SaveUserSignature channels have no
                         local Electron handler. */}

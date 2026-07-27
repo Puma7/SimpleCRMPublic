@@ -54,6 +54,15 @@ export const MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH = 500
  *
  * 2000 entspricht vier vollen Bindings. Bewusst grosszuegig — der Deckel soll
  * die Abfragekosten begrenzen, nicht echte Setups behindern.
+ *
+ * BEKANNTE GRENZE: gezaehlt wird pro SUBJEKT, nicht pro effektivem Nutzer.
+ * resolveGrants vereinigt das direkte Nutzer-Subjekt mit jeder
+ * Gruppenmitgliedschaft, ein Nutzer in N Gruppen kann also N * 2000 Eintraege
+ * in seine effektive Abfrage tragen. Das zu schliessen hiesse, das Budget beim
+ * Binding-Schreiben ueber ALLE Subjekte jedes betroffenen Nutzers zu pruefen —
+ * und damit auch Gruppenmitgliedschaften budgetrelevant zu machen (eine
+ * Aufnahme koennte scheitern). Das ist eine Produktentscheidung, keine
+ * Reparatur; bis dahin bleibt der Deckel pro Subjekt.
  */
 export const MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH = 2000
 /** Max length of a single tag value in a visibility filter. */
