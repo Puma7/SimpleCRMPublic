@@ -25,6 +25,7 @@ import {
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
 import { buildTrustedServiceJobPayload, MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD } from './jobs/policy';
+import { isInboundSiblingAborted } from './workflow-inbound-chain-advance';
 import type { JobPayload } from './jobs/types';
 import {
   resumeContextInboundChainFields,
@@ -189,6 +190,37 @@ export function createPostgresWorkflowForwardCopyPort(
 
   return {
     async forwardCopy(input): Promise<void> {
+      // Vor jeder externen Nebenwirkung: hat ein Geschwisterzweig die
+      // Inbound-Kette beendet? Die Fortsetzung wuerde zwar spaeter verworfen,
+      // die Weiterleitung waere dann aber bereits raus.
+      const aborted = await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => (
+          input.continuation
+            ? await isInboundSiblingAborted(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              workflowId: input.continuation.workflowId,
+              chain: input.continuation.inboundWorkflowChain ?? null,
+            })
+            : false
+        ),
+        { applySession: options.applyWorkspaceSession },
+      );
+      if (aborted) {
+        // Fortsetzung trotzdem einreihen: sie raeumt Join-Barriere und Kette auf
+        // und wird im workflow.execute-Guard als skip:sibling_terminal_abort
+        // beendet.
+        await enqueueForwardCopyContinuation(options, input, {
+          ok: false,
+          error: 'skip:sibling_terminal_abort',
+          duplicate: false,
+          now: now(),
+        });
+        return;
+      }
+
       const prepared = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },

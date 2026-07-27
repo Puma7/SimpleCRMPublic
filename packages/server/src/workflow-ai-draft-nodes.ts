@@ -8,6 +8,7 @@ import {
   messageIsSpamOrReviewForInboundWorkflow,
   outboundDraftFingerprint,
   parseDraftReviewResponse,
+  scheduledSendClaimedAtKey,
 } from '@simplecrm/core';
 
 import type { PostgresSecretPort } from './db/postgres-secret-port';
@@ -393,6 +394,20 @@ export async function setDraftApprovalPending(
   const now = new Date();
   // Only stamp pending while the row is still a local draft — a concurrent send
   // or delete must not leave approval_state on a sent/missing message.
+  //
+  // Zusaetzlich: hat der Scheduled-Send-Worker den Entwurf bereits geclaimt,
+  // ist scheduled_send_at schon NULL, waehrend SMTP ausserhalb der Transaktion
+  // weiterlaeuft. Ein Pending-Stempel koennte den Versand dann nicht mehr
+  // stoppen, die Oberflaeche meldete aber „Wartet auf Freigabe", obwohl die
+  // Mail rausgeht. In dem Fall den Stempel auslassen — der Versand gewinnt.
+  const activeClaim = await trx
+    .selectFrom('sync_info')
+    .select(['key'])
+    .where('workspace_id', '=', workspaceId)
+    .where('key', '=', scheduledSendClaimedAtKey(draftId))
+    .executeTakeFirst();
+  if (activeClaim) return;
+
   await trx
     .updateTable('email_messages')
     .set({
@@ -659,6 +674,12 @@ export type AiDraftReplyJobPlan = Readonly<{
   actorUserId?: string;
   /** Workflow run id — scopes draft idempotency so backfill/reapply can mint a new draft. */
   runId?: number;
+  /**
+   * Roh-Payload eines TERMINALEN KI-Knotens (keine Resume-Kante, also keine
+   * Continuation). Traegt den Inbound-Kettenkontext, damit der Kindjob nach
+   * getaner Arbeit Join-Barriere und Prioritaetskette selbst abschliesst.
+   */
+  terminalChainPayload?: Record<string, unknown>;
   profileId?: number;
   knowledgeBaseId?: number;
   systemPrompt?: string;
@@ -716,6 +737,24 @@ function jobVariables(value: unknown): Record<string, string | number | boolean 
     }
   }
   return out;
+}
+
+/** Terminaler ai.draft_reply: Join-Barriere abbauen und Kette weiterschalten. */
+async function finishTerminalDraftReplyChain(
+  deps: WorkflowAiDraftNodeDeps,
+  input: { workspaceId: string; terminalChainPayload?: Record<string, unknown> },
+  now: Date,
+): Promise<void> {
+  const payload = input.terminalChainPayload;
+  if (!payload) return;
+  await withWorkspaceTransaction(
+    deps.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => {
+      await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, payload, now);
+    },
+    { applySession: deps.applyWorkspaceSession },
+  );
 }
 
 export function createPostgresAiDraftReplyPort(
@@ -854,6 +893,10 @@ export function createPostgresAiDraftReplyPort(
       if (prep === 'skip') {
         // Node already deferred the parent workflow.execute — must continue the
         // graph even when we skip the LLM call for spam/review.
+        if (!input.continuation && input.terminalChainPayload) {
+          await finishTerminalDraftReplyChain(deps, input, now());
+          return;
+        }
         if (input.continuation) {
           await withWorkspaceTransaction(
             deps.db,
@@ -1061,6 +1104,15 @@ export function createPostgresAiDraftReplyPort(
               },
               now: stampedAt,
             });
+          } else if (input.terminalChainPayload) {
+            // Terminaler Knoten (keine Resume-Kante): der Elternlauf wartet auf
+            // diesen Kindjob, also Join-Barriere abbauen und Kette hier
+            // weiterschalten.
+            await enqueueNextInboundWorkflowAfterTerminalChildFailure(
+              trx,
+              input.terminalChainPayload,
+              stampedAt,
+            );
           }
         },
         { applySession: deps.applyWorkspaceSession },

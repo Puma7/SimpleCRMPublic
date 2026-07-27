@@ -669,7 +669,7 @@ export function createPostgresWorkflowExecutionJobPort(
               now,
             });
             if (siblingTerminal) {
-              await markInboundSiblingAbort(trx, {
+              await abortRemainingInboundSiblings(trx, {
                 workspaceId: input.workspaceId,
                 messageId: Number(message.id),
                 workflowId: Number(workflow.id),
@@ -677,12 +677,6 @@ export function createPostgresWorkflowExecutionJobPort(
                 reason: result.inboundChainStop
                   ? 'sibling_inbound_chain_stop'
                   : 'sibling_blocked',
-                now,
-              });
-              await cancelPendingWorkflowDelayedJobsForMessage(trx, {
-                workspaceId: input.workspaceId,
-                messageId: Number(message.id),
-                workflowId: Number(workflow.id),
                 now,
               });
             }
@@ -712,6 +706,20 @@ export function createPostgresWorkflowExecutionJobPort(
               error: result.status === 'error' || result.status === 'blocked',
               now,
             });
+            // Der Kettenstopp kann auch erst in einer Continuation entstehen
+            // (wiederaufgenommener Zweig). Dann muessen die uebrigen deferierten
+            // Geschwister genauso abgebrochen werden wie beim urspruenglichen
+            // Fan-out — sonst laufen sie weiter und koennen noch senden.
+            if (result.inboundChainStop === true) {
+              await abortRemainingInboundSiblings(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                reason: 'sibling_inbound_chain_stop',
+                now,
+              });
+            }
             if (
               inboundJoinAllowsAdvance(join)
               && !result.inboundChainStop
@@ -3159,6 +3167,10 @@ async function scheduleAiDraftReplyJob(
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
+    // Kettenkontext auch ohne Resume-Kante: ein terminaler KI-Knoten hat keine
+    // Continuation, muss die Kette nach getaner Arbeit aber trotzdem
+    // weiterschalten (inboundChainFromJobPayload liest payload.context).
+    context: { ...inboundChainFieldsFromContext(context) },
   };
   if (profileId.value !== undefined) payload.profileId = profileId.value;
   if (knowledgeBaseId.value !== undefined) payload.knowledgeBaseId = knowledgeBaseId.value;
@@ -3202,8 +3214,13 @@ async function scheduleAiDraftReplyJob(
   return {
     status: 'ok',
     port: 'default',
-    stop: Boolean(resumeNodeId),
-    deferred: Boolean(resumeNodeId),
+    // Auch ohne Resume-Kante deferred: der KI-Kindjob laeuft asynchron. Ohne
+    // das Flag markierte der Elternlauf den Workflow sofort als angewendet und
+    // startete die naechste Prioritaetsstufe, obwohl noch kein Entwurf
+    // existiert — und ein endgueltig gescheiterter Kindjob liesse den
+    // Applied-Marker stehen, sodass die Wiederverarbeitung ihn nicht nachholt.
+    stop: true,
+    deferred: true,
     message: `queued_ai_draft_reply:${jobId}`,
     variables: {
       'ai.draft.status': 'pending',
@@ -7072,6 +7089,38 @@ function withNodeChainStop(node: WorkflowGraphNode, result: NodeResult): NodeRes
     inboundChainStop: true,
     message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
   };
+}
+
+/**
+ * Ein Zweig hat die Inbound-Kette beendet: verbleibende deferierte Geschwister
+ * (KI-Kindjobs, HTTP, Weiterleitung, logic.delay) duerfen keine Nebenwirkungen
+ * mehr ausloesen. Marker setzen UND bereits eingeplante Delay-Jobs stornieren.
+ */
+async function abortRemainingInboundSiblings(
+  trx: WorkspaceTransaction,
+  input: {
+    workspaceId: string;
+    messageId: number;
+    workflowId: number;
+    chain: InboundWorkflowChainContext | null;
+    reason: string;
+    now: Date;
+  },
+): Promise<void> {
+  await markInboundSiblingAbort(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    workflowId: input.workflowId,
+    chain: input.chain,
+    reason: input.reason,
+    now: input.now,
+  });
+  await cancelPendingWorkflowDelayedJobsForMessage(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    workflowId: input.workflowId,
+    now: input.now,
+  });
 }
 
 function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {

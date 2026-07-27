@@ -430,6 +430,35 @@ describe('codex review regression guards', () => {
     expect(graphile).toContain('inbound_chain_terminal_advance');
   });
 
+  test('codex round-13: sibling abort before every external side effect', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const forward = readRepoFile('packages/server/src/workflow-forward-copy.ts');
+    const http = readRepoFile('packages/server/src/workflow-http-request.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const parse = readRepoFile('packages/core/src/workflow/draft-review-parse.ts');
+
+    // Kettenstopp aus einer Continuation muss die Geschwister ebenso abbrechen
+    // wie der urspruengliche Fan-out.
+    expect(execution).toContain('abortRemainingInboundSiblings');
+    expect(execution).toMatch(
+      /result\.inboundChainStop === true\) \{\s*\n\s*await abortRemainingInboundSiblings/,
+    );
+
+    // Worker mit externer Nebenwirkung pruefen den Marker vor der Aktion.
+    expect(forward).toContain('isInboundSiblingAborted');
+    expect(http).toContain('isInboundSiblingAborted');
+
+    // Terminaler KI-Knoten deferiert und schliesst die Kette selbst ab.
+    expect(execution).toContain('stop: true,\n    deferred: true,');
+    expect(draftNodes).toContain('terminalChainPayload');
+
+    // HOLD darf einen bereits geclaimten Versand nicht als pending ausweisen.
+    expect(draftNodes).toContain('scheduledSendClaimedAtKey(draftId)');
+
+    // Gegenlese: mehrdeutige Statuszeilen ergeben hold.
+    expect(parse).toContain('statusMatches.length > 1');
+  });
+
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {
     const parse = readRepoFile('packages/core/src/email/outbound-review-parse.ts');
     expect(parse).toContain('OUTBOUND_STATUS_LINE');
