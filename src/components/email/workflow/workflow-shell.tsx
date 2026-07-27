@@ -270,18 +270,35 @@ export function WorkflowShell() {
       ? enrichRegistryGraphDocument(doc, labelByType)
       : doc
     useWorkflowEditorStore.getState().resetFromGraph(enriched)
+    // Baseline in DERSELBEN kanonischen Form wie beim Speichern ablegen:
+    // resetFromGraph ergaenzt fehlende Layout-Positionen und toGraphDocument
+    // rundet sie + verwirft Zusatzfelder. Das rohe Dokument als Baseline wuerde
+    // bei aelteren/importierten Graphen ein graphChanged ohne Nutzeraenderung
+    // melden — und damit workflows.edit ohne workflows.manage selbst reine
+    // Namens-/Prioritaets-/Cron-Aenderungen am manage-Gate scheitern lassen.
     saveBaselineRef.current = {
       enabled: w.enabled === 1,
-      graphJson: JSON.stringify(enriched ?? { version: 1, nodes: [], edges: [] }),
+      graphJson: JSON.stringify(useWorkflowEditorStore.getState().toGraphDocument()),
     }
   }
 
   useEffect(() => {
     if (!catalogLoaded || labelByType.size === 0) return
-    const nodes = useWorkflowEditorStore.getState().nodes
+    const store = useWorkflowEditorStore.getState()
+    const nodes = store.nodes
     const next = enrichRegistryFlowNodes(nodes, labelByType)
-    if (next !== nodes) {
-      useWorkflowEditorStore.getState().setNodes(next)
+    if (next === nodes) return
+    const beforeJson = JSON.stringify(store.toGraphDocument())
+    store.setNodes(next)
+    // Katalog-Labels nachtraeglich anzureichern ist KEINE Nutzeraenderung:
+    // solange der Graph noch exakt der Baseline entspricht, die Baseline
+    // mitziehen, sonst gilt der Workflow faelschlich als geaendert.
+    const baseline = saveBaselineRef.current
+    if (baseline && baseline.graphJson === beforeJson) {
+      saveBaselineRef.current = {
+        ...baseline,
+        graphJson: JSON.stringify(useWorkflowEditorStore.getState().toGraphDocument()),
+      }
     }
   }, [catalogLoaded, labelByType])
 

@@ -19,6 +19,11 @@ import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
 
 export function TeamPanel() {
   const { bumpAccountsRevision } = useMailWorkspace()
+  // Die Benutzer-Verknuepfung existiert nur in der Server-Edition: das
+  // SaveTeamMember-IPC-Schema und der Electron-Handler kennen linkedUserId
+  // nicht (zod strippt das Feld), es gaebe also einen Erfolgs-Toast ohne
+  // gespeicherten Wert. Darum ausserhalb des HTTP-Transports ausblenden.
+  const serverClientMode = getRendererTransport().kind === "http"
   const [team, setTeam] = useState<TeamMember[]>([])
   const [newId, setNewId] = useState("")
   const [newName, setNewName] = useState("")
@@ -82,7 +87,9 @@ export function TeamPanel() {
         <p className="text-sm text-muted-foreground">
           Mitglieder können Nachrichten zugewiesen bekommen. Die Team-Signatur dient als Fallback,
           wenn für ein Postfach keine eigene Signatur hinterlegt ist (unter Konten → Signatur).
-          Für Zuweisungsfilter (`assigned_to_me`) eine Workspace-User-UUID verknüpfen.
+          {serverClientMode
+            ? " Für Zuweisungsfilter (assigned_to_me) eine Workspace-User-UUID verknüpfen."
+            : ""}
         </p>
       </div>
       <div className="space-y-2">
@@ -125,15 +132,17 @@ export function TeamPanel() {
               </div>
               {editingId === t.id ? (
                 <div className="space-y-2 border-t pt-2">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Verknüpfte User-UUID</Label>
-                    <Input
-                      className="font-mono text-xs"
-                      placeholder="Workspace-User-UUID (leer = keine Verknüpfung)"
-                      value={editLinkedUserId}
-                      onChange={(e) => setEditLinkedUserId(e.target.value)}
-                    />
-                  </div>
+                  {serverClientMode ? (
+                    <div className="space-y-1.5">
+                      <Label className="text-xs">Verknüpfte User-UUID</Label>
+                      <Input
+                        className="font-mono text-xs"
+                        placeholder="Workspace-User-UUID (leer = keine Verknüpfung)"
+                        value={editLinkedUserId}
+                        onChange={(e) => setEditLinkedUserId(e.target.value)}
+                      />
+                    </div>
+                  ) : null}
                   <Label className="text-xs">Signatur</Label>
                   <SignatureQuillEditor
                     value={editSignature}
@@ -147,7 +156,9 @@ export function TeamPanel() {
                         id: t.id,
                         displayName: t.display_name,
                         signatureHtml: editSignature,
-                        linkedUserId: editLinkedUserId.trim() || null,
+                        ...(serverClientMode
+                          ? { linkedUserId: editLinkedUserId.trim() || null }
+                          : {}),
                       }).then(() => {
                         setEditingId(null)
                         bumpAccountsRevision()
@@ -180,12 +191,14 @@ export function TeamPanel() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
           />
-          <Input
-            className="min-w-[220px] flex-1 font-mono text-xs"
-            placeholder="Verknüpfte User-UUID (optional)"
-            value={newLinkedUserId}
-            onChange={(e) => setNewLinkedUserId(e.target.value)}
-          />
+          {serverClientMode ? (
+            <Input
+              className="min-w-[220px] flex-1 font-mono text-xs"
+              placeholder="Verknüpfte User-UUID (optional)"
+              value={newLinkedUserId}
+              onChange={(e) => setNewLinkedUserId(e.target.value)}
+            />
+          ) : null}
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">Signatur</Label>
@@ -201,7 +214,9 @@ export function TeamPanel() {
                 id: newId.trim(),
                 displayName: newName.trim(),
                 signatureHtml: newSignature,
-                linkedUserId: newLinkedUserId.trim() || null,
+                ...(serverClientMode
+                  ? { linkedUserId: newLinkedUserId.trim() || null }
+                  : {}),
               })
               setNewId("")
               setNewName("")
