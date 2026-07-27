@@ -200,7 +200,47 @@ export class MailAccessRolloutService implements MailAccessService {
     permissions: MailPermission[];
     accountPermissions: Record<number, MailPermission[]>;
   }> {
-    return new NewMailAccessService(this.options.newAcl).resolveSelfPermissions(input);
+    const fromNewAcl = await new NewMailAccessService(this.options.newAcl).resolveSelfPermissions(input);
+    const state = await this.options.state.getState(input.workspaceId);
+    // Nach dem Rollout entscheidet allein die neue ACL — dann ist ihr Ergebnis
+    // auch das ehrliche.
+    if (state.mode !== 'shadow' || state.diagnostic) return fromNewAcl;
+
+    // Im Shadow-Modus lautet die tatsaechliche Entscheidung
+    // `legacyAllowed && (!enforceConstraints || newAllowed)` (siehe
+    // assertPermission). Nur die neue ACL zu melden liesse den Renderer mit dem
+    // Server uneins werden: bei legacyDenyNewAllow boete er Bedienelemente an,
+    // die sicher scheitern.
+    //
+    // Gemeldet wird deshalb der SCHNITT beider Seiten. In der Gegenrichtung
+    // (legacyAllowNewDeny) verbirgt das ein Bedienelement, das heute noch
+    // funktionieren wuerde — bewusst: fuer ein Gate auf mutierende Aktionen ist
+    // Verbergen der sichere Fehler, und genau diese Faelle soll der Rollout
+    // ohnehin abstellen, bevor er auf enforce schaltet.
+    const accountPermissions: Record<number, MailPermission[]> = {};
+    const held = new Set<MailPermission>();
+    for (const [rawAccountId, permissions] of Object.entries(fromNewAcl.accountPermissions)) {
+      const accountId = Number(rawAccountId);
+      const effective: MailPermission[] = [];
+      for (const permission of permissions) {
+        const legacyAccounts = await this.options.legacy.resolveAccountScope({
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          permission,
+        });
+        if (!legacyAccounts.includes(accountId)) continue;
+        effective.push(permission);
+        held.add(permission);
+      }
+      if (effective.length > 0) accountPermissions[accountId] = effective;
+    }
+    return {
+      // Die Anywhere-Liste bleibt die der neuen ACL: sie entscheidet nur, ob ein
+      // Bereich ueberhaupt erscheint, und dort waere Verbergen das groessere
+      // Uebel. Die kontoscharfen Gates haengen an accountPermissions.
+      permissions: fromNewAcl.permissions,
+      accountPermissions,
+    };
   }
 
   async resolveScope(input: Parameters<MailAccessService['resolveScope']>[0]): Promise<MailSqlScope> {

@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react"
@@ -111,6 +112,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     EMPTY_MAIL_PERMISSION_REPORT,
   )
   const [mailPermissionsUserId, setMailPermissionsUserId] = useState<string | null>(null)
+  /** Nur die juengste Antwort darf den Bericht schreiben — siehe loadMailPermissions. */
+  const mailPermissionsGenerationRef = useRef(0)
   const [serverSessionExpiresAt, setServerSessionExpiresAt] = useState<string | null>(null)
 
   const applyServerSession = useCallback((session: ServerAuthSession | null) => {
@@ -241,15 +244,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Auch fuer Owner/Admins abrufen: die Antwort meldet ihnen unrestricted und
     // spart jede Sonderbehandlung im Renderer.
+    //
+    // `generation` statt nur `cancelled`: ein ACL-Ereignis startet einen zweiten
+    // Abruf, waehrend der erste noch laeuft. Ohne Zaehler koennte der AELTERE
+    // zuletzt antworten und den Zustand VOR der Mutation zurueckschreiben —
+    // frisch entzogene Bedienelemente blieben sichtbar, frisch erteilte
+    // verborgen, bis irgendwann das naechste Ereignis kommt.
     const loadMailPermissions = async () => {
+      const generation = mailPermissionsGenerationRef.current + 1
+      mailPermissionsGenerationRef.current = generation
+      const isCurrent = () => !cancelled && mailPermissionsGenerationRef.current === generation
       try {
         const res = await invokeRenderer(IPCChannels.Auth.ListMailPermissions, undefined)
-        if (!cancelled) setMailPermissions(parseMailPermissionReport(res))
+        if (isCurrent()) setMailPermissions(parseMailPermissionReport(res))
       } catch {
-        // Fail closed: lieber ein Bedienelement zu wenig als eines, das 403 liefert.
-        if (!cancelled) setMailPermissions(EMPTY_MAIL_PERMISSION_REPORT)
+        // Fail closed — mit einer Ausnahme: Owner und Admins halten ihre Rechte
+        // implizit ueber die Rolle. Einen voruebergehend fehlgeschlagenen Abruf
+        // in einen dauerhaften Verlust ihrer Bedienelemente zu verwandeln waere
+        // schlicht falsch; ihre Autorisierung haengt nicht an dieser Antwort.
+        if (isCurrent()) {
+          setMailPermissions(adminRole
+            ? { unrestricted: true, permissions: [], accountPermissions: {} }
+            : EMPTY_MAIL_PERMISSION_REPORT)
+        }
       } finally {
-        if (!cancelled) setMailPermissionsUserId(user.id)
+        if (isCurrent()) setMailPermissionsUserId(user.id)
       }
     }
 

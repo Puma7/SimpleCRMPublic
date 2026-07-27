@@ -58,7 +58,8 @@ describe('mail access service contract', () => {
     // Rollout gilt.
     const asked: string[] = [];
     const rollout = new MailAccessRolloutService({
-      state: {} as never,
+      // Nach dem Rollout (enforce) entscheidet allein die neue ACL.
+      state: { async getState() { return { mode: 'enforce', diagnostic: null }; } } as never,
       legacy: {} as never,
       newAcl: {
         async resolveGrants({ permission }: { permission: string }) {
@@ -80,5 +81,37 @@ describe('mail access service contract', () => {
       accountPermissions: { 5: ['mail.account.manage'] },
     });
     expect(asked.length).toBeGreaterThan(1);
+  });
+
+  test('in shadow mode the report is intersected with the legacy account scope', async () => {
+    // Im Shadow-Modus lautet die tatsaechliche Entscheidung
+    // `legacyAllowed && (!enforceConstraints || newAllowed)`. Nur die neue ACL
+    // zu melden liesse den Renderer bei legacyDenyNewAllow Bedienelemente
+    // anbieten, die sicher scheitern.
+    const rollout = new MailAccessRolloutService({
+      state: { async getState() { return { mode: 'shadow', diagnostic: null }; } } as never,
+      legacy: {
+        // Legacy erlaubt nur Konto 5, nicht Konto 9.
+        async resolveAccountScope() { return [5]; },
+      } as never,
+      newAcl: {
+        async resolveGrants({ permission }: { permission: string }) {
+          if (permission !== 'mail.account.manage') return [];
+          return [
+            { bindingId: 1, resourceType: 'account', accountId: 5, folderId: null, messageId: null, constraints: null },
+            { bindingId: 2, resourceType: 'account', accountId: 9, folderId: null, messageId: null, constraints: null },
+          ];
+        },
+      } as never,
+    });
+
+    const result = await rollout.resolveSelfPermissions({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      userId: 'user-a',
+    });
+
+    // Konto 9 faellt raus: die neue ACL erlaubt es, die alte nicht — der Server
+    // wuerde im Shadow-Modus ablehnen.
+    expect(result.accountPermissions).toEqual({ 5: ['mail.account.manage'] });
   });
 });
