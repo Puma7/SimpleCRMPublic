@@ -62,11 +62,13 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  // Sprache am <html>-Element spiegeln — auch beim ERSTEN Rendern, nicht nur
-  // beim Wechsel. Vorher blieb das Dokument auf dem statischen lang aus
-  // index.html stehen, waehrend die Oberflaeche in einer anderen Sprache
-  // erschien; genau diese Diskrepanz laesst Chrome eine Uebersetzung anbieten
-  // bzw. automatisch anwenden, was React den DOM unter den Fuessen wegzieht.
+  // Zweite Verteidigungslinie: Sprache am <html>-Element spiegeln — auch beim
+  // ERSTEN Rendern, nicht nur beim Wechsel. Die eigentliche Unterdrueckung
+  // haengt an translate="no" und <meta name="google" content="notranslate">
+  // in index.html (statisch, ab dem ersten Byte). Das kurze Fenster vor diesem
+  // Effect, in dem bei gespeicherter en noch de steht, ist bewusst unkritisch.
+  // useLayoutEffect oder ein Seiteneffekt in readStoredLanguage() waeren hier
+  // unnoetig — kein Crash-Pfad aus diesem Fenster ableitbar.
   useEffect(() => {
     if (typeof document !== "undefined") document.documentElement.lang = language
   }, [language])
