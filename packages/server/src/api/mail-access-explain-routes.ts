@@ -44,13 +44,25 @@ export async function handleMailAccessExplainRoute(
     return error(400, 'invalid_message_id', 'messageId muss eine positive Ganzzahl sein');
   }
 
-  const targetRole = await resolveTargetUserRole(ports, principal.workspaceId, userId);
-  if (!targetRole) {
+  const targetUser = await resolveTargetUser(ports, principal.workspaceId, userId);
+  if (!targetUser) {
     return data(200, {
       visible: false,
       reason: 'Benutzer nicht gefunden',
       messageId,
       userId,
+    });
+  }
+  const targetRole = targetUser.role;
+  if (targetUser.disabled) {
+    // Deaktivierte Nutzer haben keine gueltige Sitzung mehr — ohne diesen Zweig
+    // meldet die Diagnose fuer einen deaktivierten Admin pauschal visible: true.
+    return data(200, {
+      visible: false,
+      reason: 'Benutzer ist deaktiviert',
+      messageId,
+      userId,
+      role: targetRole,
     });
   }
   const resources = await ports.mailResourceLookup.resolve({
@@ -137,27 +149,35 @@ export async function handleMailAccessExplainRoute(
   });
 }
 
-async function resolveTargetUserRole(
+/**
+ * Rolle UND Deaktivierungsstatus: ein deaktivierter Nutzer hat keine gueltige
+ * Sitzung mehr, die Erklaerung darf ihm also keine Sichtbarkeit bescheinigen —
+ * fuer einen deaktivierten Admin sonst pauschal visible: true.
+ */
+async function resolveTargetUser(
   ports: ServerApiPorts,
   workspaceId: string,
   userId: string,
-): Promise<'owner' | 'admin' | 'user' | null> {
+): Promise<{ role: 'owner' | 'admin' | 'user'; disabled: boolean } | null> {
   const auth = ports.auth as {
     getUser?: (input: { workspaceId: string; userId: string }) => Promise<{
       role: 'owner' | 'admin' | 'user';
+      disabledAt?: string | null;
     } | null>;
     listUsers?: (input: { workspaceId: string }) => Promise<readonly {
       id: string;
       role: 'owner' | 'admin' | 'user';
+      disabledAt?: string | null;
     }[]>;
   } | undefined;
   if (auth?.getUser) {
     const user = await auth.getUser({ workspaceId, userId });
-    return user?.role ?? null;
+    return user ? { role: user.role, disabled: Boolean(user.disabledAt) } : null;
   }
   if (auth?.listUsers) {
     const users = await auth.listUsers({ workspaceId });
-    return users.find((user) => user.id === userId)?.role ?? null;
+    const user = users.find((entry) => entry.id === userId);
+    return user ? { role: user.role, disabled: Boolean(user.disabledAt) } : null;
   }
   return null;
 }

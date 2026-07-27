@@ -1151,6 +1151,13 @@ async function handleCreateEmailTeamMember(
   });
   if (!parsed.ok) return parsed.response;
 
+  const unknownLinkedUser = await rejectUnknownLinkedUser(
+    ports,
+    principal.workspaceId,
+    parsed.values.linkedUserId,
+  );
+  if (unknownLinkedUser) return unknownLinkedUser;
+
   const result = await ports.emailTeamMembers.create({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -1162,6 +1169,32 @@ async function handleCreateEmailTeamMember(
   await auditEmailTeamMember(ports, principal, 'email_team_member.created', member, { role: member.role });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.created', member, principal.userId);
   return data(201, sanitizeEmailTeamMember(member));
+}
+
+/**
+ * Ein manuell eingegebenes linkedUserId ist syntaktisch geprueft, kann aber auf
+ * einen nicht existierenden Nutzer zeigen. Ohne diese Aufloesung wirft der Port
+ * eine gewoehnliche Exception und aus einem Eingabefehler wird ein HTTP 500 —
+ * bei einem Feld, in das Admins UUIDs von Hand eintragen, ein Regelfall.
+ */
+async function rejectUnknownLinkedUser(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  linkedUserId: string | null | undefined,
+): Promise<ApiResponse | null> {
+  if (!linkedUserId) return null;
+  const auth = ports.auth;
+  if (auth?.getUser) {
+    const user = await auth.getUser({ workspaceId, userId: linkedUserId });
+    if (user) return null;
+  } else if (auth?.listUsers) {
+    const users = await auth.listUsers({ workspaceId });
+    if (users.some((user) => user.id === linkedUserId)) return null;
+  } else {
+    // Ohne Auth-Port keine Aufloesung moeglich — der Port validiert weiterhin.
+    return null;
+  }
+  return error(404, 'linked_user_not_found', 'linkedUserId verweist auf keinen Benutzer dieses Workspace');
 }
 
 async function handleUpsertEmailTeamMember(
@@ -1184,6 +1217,13 @@ async function handleUpsertEmailTeamMember(
     requireAny: false,
   });
   if (!parsed.ok) return parsed.response;
+
+  const unknownLinkedUser = await rejectUnknownLinkedUser(
+    ports,
+    principal.workspaceId,
+    parsed.values.linkedUserId,
+  );
+  if (unknownLinkedUser) return unknownLinkedUser;
 
   const created = await ports.emailTeamMembers.create({
     workspaceId: principal.workspaceId,

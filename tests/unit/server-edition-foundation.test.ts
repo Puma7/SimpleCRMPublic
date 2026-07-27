@@ -28738,12 +28738,55 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('team member upsert reports an unknown linked user as a client error', async () => {
+    // Syntaktisch gueltige, aber unbekannte UUID: ohne Aufloesung wirft der Port
+    // und aus dem Eingabefehler wird ein HTTP 500.
+    const api = createServerApi(makeServerApiPorts({
+      authUsers: [],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create() {
+          throw new Error('darf nicht erreicht werden');
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+    const unknown = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members/agent-9/upsert',
+      body: { displayName: 'Agent Neun', linkedUserId: '99999999-9999-4999-8999-999999999999' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+    });
+
+    expect(unknown.status).toBe(404);
+    expect((unknown.body as any).error.code).toBe('linked_user_not_found');
+  });
+
   test('team member upsert accepts and validates the workspace user link', async () => {
     // Die Server-UI schickt linkedUserId bei jedem Speichern mit (null = keine
     // Verknuepfung). Faellt das Feld aus der Allowlist, scheitert JEDES Anlegen
     // und Bearbeiten an einem 400, bevor die Persistenz ueberhaupt laeuft.
     const upsertCalls: any[] = [];
     const api = createServerApi(makeServerApiPorts({
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
       emailTeamMembers: {
         async list() {
           return { items: [], nextCursor: null };
@@ -32919,8 +32962,17 @@ describe('server edition foundation', () => {
     // Beide Patches sind fuer sich genommen erlaubt (deaktiviert bzw. harmloser Graph)…
     expect(updateCalls).toHaveLength(2);
     // …tragen aber den geprueften Vorzustand als Bedingung in den Write.
-    expect(updateCalls[0].expected).toEqual({ enabled: false });
-    expect(updateCalls[1].expected).toEqual({ graph: stored.graph });
+    // Alle Felder, die der Validator aus dem gespeicherten Row gelesen hat.
+    expect(updateCalls[0].expected).toEqual({
+      enabled: false,
+      triggerName: stored.triggerName,
+      executionMode: stored.executionMode,
+    });
+    expect(updateCalls[1].expected).toEqual({
+      graph: stored.graph,
+      triggerName: stored.triggerName,
+      executionMode: stored.executionMode,
+    });
     // Verliert einer den Wettlauf, wird daraus ein 409 statt eines stillen Merges.
     expect(graphPatch.status).toBe(409);
     expect((graphPatch.body as any).error.code).toBe('workflow_state_conflict');
@@ -34059,6 +34111,13 @@ describe('server edition foundation', () => {
       values: {
         graph: { nodes: [{ id: 'versioned' }], edges: [] },
         definition: { steps: [{ id: 'versioned' }] },
+      },
+      // Restore prueft Outbound-Falle und Seiteneffekt-Gate gegen den gelesenen
+      // Row — derselbe optimistische Guard wie im PATCH-Pfad.
+      expected: {
+        enabled: true,
+        triggerName: 'mail.received',
+        executionMode: 'graph',
       },
     }]);
     expect(versionListCalls).toEqual([

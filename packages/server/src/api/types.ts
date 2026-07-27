@@ -3887,7 +3887,12 @@ export type WorkflowApiPort = {
      * patch could change the fields it relied on between check and write. Pass the
      * values that were read; the update then applies only while they still hold.
      */
-    expected?: { enabled?: boolean; graph?: unknown | null };
+    expected?: {
+      enabled?: boolean;
+      graph?: unknown | null;
+      triggerName?: string;
+      executionMode?: string | null;
+    };
   }): Promise<WorkflowMutationPortResult | null>;
   delete?(input: {
     workspaceId: string;

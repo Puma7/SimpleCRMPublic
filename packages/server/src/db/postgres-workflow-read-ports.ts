@@ -754,6 +754,15 @@ export function createPostgresWorkflowReadPort(options: PostgresWorkflowReadPort
           if (input.expected?.enabled !== undefined) {
             updateQuery = updateQuery.where('enabled', '=', input.expected.enabled);
           }
+          if (input.expected?.triggerName !== undefined) {
+            updateQuery = updateQuery.where('trigger_name', '=', input.expected.triggerName);
+          }
+          if (input.expected && 'executionMode' in input.expected) {
+            const expectedMode = input.expected.executionMode ?? null;
+            updateQuery = updateQuery.where(
+              kyselySql<boolean>`execution_mode is not distinct from ${expectedMode}`,
+            );
+          }
           if (input.expected && 'graph' in input.expected) {
             const expectedGraph = input.expected.graph ?? null;
             updateQuery = updateQuery.where(

@@ -27,6 +27,7 @@ import type {
   WorkflowVersionRecord,
 } from './types';
 import { workflowGraphHasSideEffectNode } from '@simplecrm/core';
+import { outboundWorkflowGuardError } from './workflow-outbound-guard';
 import {
   data,
   error,
@@ -440,6 +441,19 @@ async function handleWorkflowVersionSourceRestore(
     );
   }
 
+  // Restore schreibt einen fremden Graphen in einen ggf. AKTIVEN Workflow — es
+  // muss deshalb dieselbe Outbound-Falle pruefen wie Anlegen/Aktualisieren.
+  // Sonst laedt ein Editor eine Version ohne erreichbaren Freigabe-Knoten (oder
+  // ganz ohne Graph) in einen aktiven Ausgangs-Workflow und der haelt jede Mail
+  // dauerhaft fest.
+  const restoreTrap = outboundWorkflowGuardError({
+    graph: restoredGraph,
+    triggerName: existingWorkflow.triggerName,
+    enabled: existingWorkflow.enabled,
+    executionMode: existingWorkflow.executionMode,
+  });
+  if (restoreTrap) return restoreTrap;
+
   const result = await ports.workflows.update({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
@@ -448,9 +462,25 @@ async function handleWorkflowVersionSourceRestore(
       graph: restoredGraph,
       definition: version.definition ?? {},
     },
+    // Gleicher optimistischer Schutz wie im PATCH-Pfad: die Gates oben wurden
+    // gegen den gelesenen Row geprueft, der Write darf nur greifen, solange er gilt.
+    expected: {
+      enabled: existingWorkflow.enabled,
+      triggerName: existingWorkflow.triggerName,
+      executionMode: existingWorkflow.executionMode ?? null,
+    },
   });
   if (!result) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
-  if (!result.ok) return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+  if (!result.ok) {
+    if (result.code === 'workflow_state_conflict') {
+      return error(
+        409,
+        'workflow_state_conflict',
+        'Workflow wurde zwischenzeitlich geaendert — bitte neu laden und erneut wiederherstellen',
+      );
+    }
+    return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+  }
 
   const workflow = result.workflow;
   await auditWorkflowRestore(ports, principal, workflow, version);

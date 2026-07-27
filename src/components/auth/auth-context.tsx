@@ -44,6 +44,12 @@ type AuthState = {
   canViewSettings: boolean
   /** Desktop always true; server edition requires settings.manage (or admin/owner). */
   canManageSettings: boolean
+  /**
+   * false, solange die Gruppenrechte der Server-Edition noch geladen werden.
+   * Gates, die bei fehlendem Recht umleiten oder Inhalte ersetzen, muessen darauf
+   * warten — sonst greifen sie im ersten Render faelschlich.
+   */
+  capabilitiesReady: boolean
   /** Desktop always true; server edition requires workflows.view (or admin/owner). */
   canViewWorkflows: boolean
   login: (username: string, passphrase: string) => Promise<{ ok: boolean; error?: string }>
@@ -59,6 +65,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [authRequired, setAuthRequired] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [capabilities, setCapabilities] = useState<readonly string[]>([])
+  // false, solange die Gruppenrechte noch geladen werden. Ohne diese
+  // Unterscheidung ist "noch nicht geladen" nicht von "Recht fehlt" trennbar und
+  // Gates wuerden im ersten Render faelschlich zuschlagen.
+  const [capabilitiesReady, setCapabilitiesReady] = useState(false)
   const [serverSessionExpiresAt, setServerSessionExpiresAt] = useState<string | null>(null)
 
   const applyServerSession = useCallback((session: ServerAuthSession | null) => {
@@ -157,10 +167,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Also reload on email_acl.changed — group membership/permission updates publish
   // that event, and nav gates must reflect the new capability set without re-login.
   useEffect(() => {
-    if (!authenticated || !user || getRendererTransport().kind !== "http"
-      || user.role === "owner" || user.role === "admin") {
+    if (!authenticated || !user || getRendererTransport().kind !== "http") {
       setCapabilities([])
+      setCapabilitiesReady(true)
       return
+    }
+    // Owner/Admin halten alle Rechte implizit — fuer sie entfaellt der Abruf,
+    // NICHT aber das Event-Abo: email_acl.changed ist zugleich das Signal fuer
+    // Herabstufung/Deaktivierung des eigenen Kontos.
+    const adminRole = user.role === "owner" || user.role === "admin"
+    if (adminRole) {
+      setCapabilities([])
+      setCapabilitiesReady(true)
     }
     let cancelled = false
     let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -172,16 +190,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!cancelled && res && Array.isArray(res.capabilities)) setCapabilities(res.capabilities)
       } catch {
         if (!cancelled) setCapabilities([])
+      } finally {
+        if (!cancelled) setCapabilitiesReady(true)
       }
     }
 
-    void loadCapabilities()
+    if (!adminRole) void loadCapabilities()
     const subscription = subscribeServerEvents({
       onEvent: (event) => {
         if (!isMailAclRefreshEvent(event)) return
         if (debounceTimer) clearTimeout(debounceTimer)
         debounceTimer = setTimeout(() => {
-          void loadCapabilities()
+          // Der Server veroeffentlicht ein selbstadressiertes email_acl.changed
+          // auch bei Rollenwechsel, Deaktivierung und Loeschung (auth-routes).
+          // Nur die Capability-Liste nachzuladen wuerde die alte Rolle stehen
+          // lassen — ein herabgestufter Admin behielte bis zum naechsten
+          // Token-Refresh alle Gates. Deshalb die Sitzung neu einlesen; schlaegt
+          // das fehl, raeumt refresh() den Auth-State ab.
+          void refresh({ force: true })
+          if (!adminRole) void loadCapabilities()
         }, 250)
       },
     })
@@ -190,7 +217,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (debounceTimer) clearTimeout(debounceTimer)
       subscription.unsubscribe()
     }
-  }, [authenticated, user])
+  }, [authenticated, user, refresh])
 
   const hasCapability = useCallback((capability: string): boolean => {
     if (!user) return false
@@ -276,6 +303,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       canWriteCrm,
       canViewSettings,
       canManageSettings,
+      capabilitiesReady,
       canViewWorkflows,
       login,
       logout,
@@ -290,6 +318,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       canWriteCrm,
       canViewSettings,
       canManageSettings,
+      capabilitiesReady,
       canViewWorkflows,
       login,
       logout,

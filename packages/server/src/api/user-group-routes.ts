@@ -302,14 +302,11 @@ async function handlePermissionRoute(
       permissions: raw as string[],
     });
     if (!result.ok) return error(404, 'user_group_not_found', 'Benutzergruppe nicht gefunden');
-    await ports.audit?.record({
-      workspaceId: principal.workspaceId,
-      actorUserId: principal.userId,
-      action: 'user_group.permissions_updated',
-      entityType: 'user_group',
-      entityId: String(groupId),
-      metadata: { permissions: result.permissions },
-    });
+    // Die Rechtezeilen sind bereits committed: erst die Invalidierung an die
+    // Mitglieder schicken, dann auditieren. Andersherum liesse ein temporaer
+    // fehlschlagender Audit-Write die Clients mit ihren alten Capability-Gates
+    // zurueck, waehrend der Server die neuen Rechte schon durchsetzt (wie im
+    // Delegationspfad).
     const members = await ports.userGroups!.listMembers({ workspaceId: principal.workspaceId, groupId });
     if (members) {
       await publishGroupAclInvalidation(
@@ -318,6 +315,22 @@ async function handlePermissionRoute(
         groupId,
         members.map((member) => member.userId),
         'changed',
+      );
+    }
+    try {
+      await ports.audit?.record({
+        workspaceId: principal.workspaceId,
+        actorUserId: principal.userId,
+        action: 'user_group.permissions_updated',
+        entityType: 'user_group',
+        entityId: String(groupId),
+        metadata: { permissions: result.permissions },
+      });
+    } catch (auditError) {
+      // Best effort: die Mutation ist committed und die Clients sind informiert —
+      // ein 500 waere hier irrefuehrend.
+      console.warn(
+        `[user-group] audit record failed for user_group.permissions_updated (group ${groupId}); mutation already committed: ${auditError instanceof Error ? auditError.message : String(auditError)}`,
       );
     }
     return data(200, { permissions: result.permissions });

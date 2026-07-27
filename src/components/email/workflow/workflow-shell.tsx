@@ -1150,6 +1150,7 @@ export function WorkflowShell() {
         />
         <WorkflowVersionsDialog
           workflowId={selectedId}
+          canEdit={canEditWorkflows}
           open={versionsOpen}
           onOpenChange={setVersionsOpen}
           onRestored={() => {

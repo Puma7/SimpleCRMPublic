@@ -44,6 +44,7 @@ import {
   requireCapability,
   requirePrincipal,
 } from './http';
+import { outboundWorkflowGuardError } from './workflow-outbound-guard';
 import { rejectUnlessWorkflowMessageReadable } from '../mail-access/workflow-message-access';
 import { handleWorkflowRuntimeReadRoute } from './workflow-runtime-routes';
 import { isServerWorkflowNodeTypeSupported } from '../workflow-node-catalog';
@@ -956,50 +957,6 @@ async function handleDeleteAiPrompt(
   return data(200, { deleted: true, aiPrompt: sanitizeAiPrompt(prompt) });
 }
 
-/**
- * Reject an outbound workflow that, once ENABLED, would silently trap clean
- * mail. Outbound review selects workflows by the stored `trigger_name` and
- * holds every draft before executing them, so a workflow is only safe if — as
- * an enabled outbound workflow — it can actually release the draft:
- *  - a `compiled` execution mode is unsupported by the server runtime (it
- *    returns blocked before parsing the graph) → always traps;
- *  - no graph at all → the run never reaches a release/send node → always traps;
- *  - a graph whose reachable paths don't all release → traps (findOutboundGraphTraps).
- *
- * All inputs are the EFFECTIVE post-mutation values. A non-outbound or disabled
- * workflow can't be selected by review, so it is never rejected.
- */
-function outboundWorkflowGuardError(input: {
-  graph: unknown;
-  triggerName: string | undefined;
-  enabled: boolean | undefined;
-  executionMode: string | null | undefined;
-}): ApiResponse | null {
-  if (input.triggerName !== 'outbound') return null;
-  if (input.enabled === false) return null;
-  if ((input.executionMode ?? 'graph') === 'compiled') {
-    return error(
-      422,
-      'outbound_workflow_traps_mail',
-      'Aktiver Ausgangs-Workflow im „compiled"-Modus wird serverseitig nicht ausgeführt und hält ' +
-        'jede Mail dauerhaft. Bitte auf den Graph-Modus umstellen.',
-    );
-  }
-  if (!input.graph || typeof input.graph !== 'object') {
-    return error(
-      422,
-      'outbound_workflow_traps_mail',
-      'Aktiver Ausgangs-Workflow ohne Graph hält jede Mail dauerhaft. Bitte einen Graph mit ' +
-        'Freigabe-Knoten (email.release_outbound mit autoSend=true) hinterlegen.',
-    );
-  }
-  const issues = findOutboundGraphTraps(input.graph as WorkflowGraphDocument, {
-    effectiveTrigger: 'outbound',
-  });
-  if (issues.length === 0) return null;
-  return error(422, 'outbound_workflow_traps_mail', formatOutboundGraphTraps(issues));
-}
-
 /** Enabled graphs with side-effect nodes require workflows.manage (admins inherit). */
 function rejectUnlessSideEffectWorkflowManage(
   principal: AuthenticatedPrincipal,
@@ -1090,7 +1047,12 @@ async function handleUpdateWorkflow(
   // Vorzustand, gegen den unten validiert wurde — er geht als optimistischer
   // Guard mit in den Write, damit ein paralleler Patch die geprueften Felder
   // nicht zwischen Pruefung und Schreiben veraendern kann.
-  let expectedState: { enabled?: boolean; graph?: unknown | null } | undefined;
+  let expectedState: {
+    enabled?: boolean;
+    graph?: unknown | null;
+    triggerName?: string;
+    executionMode?: string | null;
+  } | undefined;
   if (patchTouchesOutbound) {
     const existing = ports.workflows.get
       ? await ports.workflows.get({ workspaceId: principal.workspaceId, id })
@@ -1101,6 +1063,10 @@ async function handleUpdateWorkflow(
         // Patch selbst setzt, ist ohnehin Teil dieses Writes.
         ...(parsed.values.enabled === undefined ? { enabled: existing.enabled } : {}),
         ...(parsed.values.graph === undefined ? { graph: existing.graph ?? null } : {}),
+        ...(parsed.values.triggerName === undefined ? { triggerName: existing.triggerName } : {}),
+        ...(parsed.values.executionMode === undefined
+          ? { executionMode: existing.executionMode ?? null }
+          : {}),
       };
       if (Object.keys(expectedState).length === 0) expectedState = undefined;
     }

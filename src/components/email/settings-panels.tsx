@@ -251,8 +251,12 @@ function SettingsNav({ current, onSelect, personalOnly }: NavProps) {
 export function SettingsPanelsPage() {
   const { settingsTab, setSettingsTab } = useMailWorkspace()
   const navigate = useNavigate()
-  const { canViewSettings } = useAuth()
-  const personalOnly = isServerClientMode() && !canViewSettings
+  const { canViewSettings, capabilitiesReady } = useAuth()
+  // Erst nach dem Laden der Gruppenrechte umschalten: sonst ist personalOnly im
+  // ersten Render wahr und der Effekt unten ersetzt bei jedem Direktaufruf von
+  // /email/settings?tab=… sofort die URL durch appUsers — der gewuenschte Tab
+  // kommt danach nicht zurueck.
+  const personalOnly = isServerClientMode() && capabilitiesReady && !canViewSettings
   const active = personalOnly
     ? TAB_DEFS.find((t) => t.id === "appUsers")!
     : TAB_DEFS.find(
