@@ -9,7 +9,9 @@ const mockToastError = jest.fn();
 jest.mock('@/services/transport', () => ({
   invokeRenderer: (...args: unknown[]) => mockInvoke(...args),
   subscribeServerEvents: (...args: unknown[]) => mockSubscribe(...args),
-  getRendererTransport: () => ({ mode: 'server' }),
+  // Das Panel prueft getRendererTransport().kind === 'http' (Server-Edition);
+  // nur dort existiert die linkedUserId-Verknuepfung.
+  getRendererTransport: () => ({ kind: 'http' }),
   isMailAccountDataRefreshEvent: () => false,
 }));
 

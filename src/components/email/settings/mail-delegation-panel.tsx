@@ -16,6 +16,7 @@ import {
   RendererTransportError,
   subscribeServerEvents,
 } from "@/services/transport"
+import { cn } from "@/lib/utils"
 import {
   MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH,
   MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH,
