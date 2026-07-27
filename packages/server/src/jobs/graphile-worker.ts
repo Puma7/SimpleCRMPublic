@@ -584,8 +584,15 @@ export function graphileJobKeyForJob(
     const resumeNodeId = graphileKeyScalar(payload.resumeNodeId)
       ?? graphileKeyScalar(payload.errorResumeNodeId);
     const messageId = graphileKeyScalar(payload.messageId);
+    // Terminale HTTP-Knoten (nur Fehlerkante) teilen sich errorResumeNodeId.
+    // Ohne die Knoten-/Lauf-Identitaet fielen zwei konvergierende Zweige oder
+    // zwei parallele Knoten an derselben Fehlerkante auf denselben Key;
+    // jobKeyMode 'replace' verschluckte einen, die mit zwei Zweigen
+    // initialisierte Join-Barriere faellt dann nie auf null.
+    const terminalNodeId = graphileKeyScalar(payload.terminalNodeId);
     if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+      const base = `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+      return terminalNodeId ? `${base}:${terminalNodeId}` : base;
     }
   }
   if (type === 'workflow.forward_copy') {

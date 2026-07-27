@@ -596,7 +596,7 @@ describe('codex review regression guards', () => {
     // Die Identitaet dafuer reist durch den HTTP-Job hindurch — inklusive runId,
     // sonst ueberlebt die Schranke den Lauf und ein zweiter Lauf derselben
     // Nachricht kehrt vor dem Join-Dekrement zurueck (Barriere haengt).
-    expect(execution).toContain('terminalNodeId: `${terminalNodeExecutionId(context, node)}:run:${context.runId}`');
+    expect(execution).toContain('terminalNodeId: payload.terminalNodeId as string');
     expect(readRepoFile('packages/server/src/workflow-http-request.ts'))
       .toContain('terminalNodeId: continuation.terminalNodeId');
     expect(readRepoFile('packages/server/src/jobs/production-handlers.ts'))
@@ -678,6 +678,19 @@ describe('codex review regression guards', () => {
     // Dedupe-Treffer im terminalen ai.draft_reply ist ein Erfolg — sonst faengt
     // ihn das Sicherheitsnetz als applied:false ab und der Marker bleibt aus.
     expect(draftNodes).toMatch(/if \(priorDraft !== null\) \{[\s\S]*?applied: true,/);
+
+    // Terminaler Review: waehrend der Pruefung VERSENDET zaehlt als angewendet,
+    // geloescht/verschoben nicht — sonst erzeugt eine Wiederverarbeitung eine
+    // zweite Antwort auf eine bereits beantwortete Mail.
+    expect(draftNodes).toContain('const sentDuringReview = Boolean(live && Number(live.uid) >= 0);');
+    expect(draftNodes).toContain('applied: sentDuringReview,');
+
+    // Terminale HTTP-Knoten teilen sich errorResumeNodeId — die Identitaet
+    // muss auf oberster Ebene stehen, sonst sieht der Job-Key sie nicht.
+    expect(execution).toContain('payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${context.runId}`;');
+    expect(graphile).toMatch(
+      /if \(type === 'workflow\.http_request'\) \{[\s\S]*?terminalNodeId \? `\$\{base\}:\$\{terminalNodeId\}` : base/,
+    );
 
     // Delay-Stornierung nur im eigenen Fan-out.
     expect(advance).toContain("eb(sql`context_json->>'inboundFanOutRunId'`, '=', String(input.fanOutRunId))");

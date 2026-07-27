@@ -1413,7 +1413,23 @@ export function createPostgresAiReviewDraftPort(
             if (!stillLocalDraft) {
               // Draft gone/sent — do not stamp pending; still continue the graph.
               const continuation = input.continuation;
-              if (!continuation) return;
+              if (!continuation) {
+                if (input.terminalChainPayload) {
+                  // Versendet und geloescht sind NICHT dasselbe. Ging der
+                  // Entwurf waehrend der Pruefung raus (uid >= 0), ist die
+                  // Arbeit dieses Workflows erledigt und der Marker gehoert
+                  // gesetzt — sonst erzeugt eine spaetere Wiederverarbeitung
+                  // eine zweite Antwort auf eine bereits beantwortete Mail.
+                  // Geloescht oder verschoben zaehlt dagegen nicht: dort ist
+                  // nichts rausgegangen.
+                  const sentDuringReview = Boolean(live && Number(live.uid) >= 0);
+                  await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                    applied: sentDuringReview,
+                    now: now(),
+                  });
+                }
+                return;
+              }
               const namedTarget = input.portResumeTargets?.[port];
               let resumeNodeId = namedTarget;
               if (!resumeNodeId && port === 'send') {

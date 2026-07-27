@@ -3641,23 +3641,21 @@ async function scheduleWorkflowHttpRequestJob(
     payload.workflowId = context.workflowId;
     if (resumeNodeId) payload.resumeNodeId = resumeNodeId;
     if (errorResumeNodeId) payload.errorResumeNodeId = errorResumeNodeId;
+    // Terminal (nur Fehlerkante): Identitaet auch auf oberster Ebene, sonst
+    // sieht graphileJobKeyForJob sie nicht. Warum sie noetig ist: dort.
+    if (!resumeNodeId && errorResumeNodeId) {
+      payload.terminalNodeId = `${terminalNodeExecutionId(context, node)}:run:${context.runId}`;
+    }
     payload.continuation = {
       workflowId: context.workflowId,
       triggerName: context.trigger,
       ...(resumeNodeId ? { resumeNodeId } : {}),
       ...(errorResumeNodeId ? { errorResumeNodeId } : {}),
-      // Die runId gehoert in diese Identitaet: die HTTP-Fortsetzung traegt
-      // keine eigene, und die Einmal-Schranke des terminalen Abschlusses darf
-      // den Lauf nicht ueberleben. Sonst kollidierte ein zweiter Lauf desselben
-      // Workflows auf derselben Nachricht (Backfill, Reapply, oder weil der
-      // erste Fan-out mit ready_error keinen Applied-Marker setzte) mit dem
-      // alten Eintrag und kehrte vor dem Join-Dekrement zurueck — die neue
-      // Barriere bliebe dauerhaft haengen.
+      // Enthaelt die runId: die Fortsetzung traegt keine eigene, und die
+      // Einmal-Schranke des terminalen Abschlusses darf den Lauf nicht
+      // ueberleben (sonst haengt die Barriere eines zweiten Laufs).
       ...(!resumeNodeId && errorResumeNodeId
-        ? {
-          completeOnSuccess: true,
-          terminalNodeId: `${terminalNodeExecutionId(context, node)}:run:${context.runId}`,
-        }
+        ? { completeOnSuccess: true, terminalNodeId: payload.terminalNodeId as string }
         : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,
