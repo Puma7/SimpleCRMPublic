@@ -224,6 +224,14 @@ async function enqueueWorkflowHttpContinuation(
   const payload = workflowContinuationPayload({
     workspaceId: input.workspaceId,
     workflowId: continuation.workflowId,
+    // Auch auf oberster Ebene: graphileJobKeyForJob sieht nur die Payload, nicht
+    // deren `context`. Ohne das fielen zwei terminale Abschlussjobs (zwei
+    // Fan-out-Zweige an nur-Fehlerkanten-HTTP-Knoten) auf denselben
+    // workflow.execute-Key und 'replace' verschluckte einen — die Barriere
+    // wuerde nur einmal dekrementiert und die Prioritaetskette bliebe stehen.
+    ...(!resumeNodeId && continuation.terminalNodeId
+      ? { terminalNodeId: continuation.terminalNodeId }
+      : {}),
     ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
     ...(continuation.actorUserId ? { actorUserId: continuation.actorUserId } : {}),
     ...(continuation.triggerName ? { triggerName: continuation.triggerName } : {}),

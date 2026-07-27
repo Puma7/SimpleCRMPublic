@@ -649,8 +649,16 @@ export function graphileJobKeyForJob(
     const delayedJobId = graphileKeyScalar(payload.delayedJobId);
     const runId = graphileKeyScalar(payload.runId);
     const messageId = graphileKeyScalar(payload.messageId);
+    // Terminaler HTTP-Abschluss: die Knoten-/Lauf-Identitaet trennt zwei
+    // Fan-out-Zweige, die beide ueber eine reine Fehlerkante zurueckkommen.
+    // Ohne sie verschluckt 'replace' einen der beiden Abschlussjobs und die
+    // mit zwei Zweigen initialisierte Join-Barriere faellt nie auf null.
+    const terminalNodeId = graphileKeyScalar(payload.terminalNodeId);
     if (workspaceKey && workflowId && delayedJobId) return `${type}:${workspaceKey}:delayed:${delayedJobId}`;
     if (workspaceKey && workflowId && runId) return `${type}:${workspaceKey}:run:${runId}`;
+    if (workspaceKey && workflowId && messageId && terminalNodeId) {
+      return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:${terminalNodeId}`;
+    }
     if (workspaceKey && workflowId && messageId) return `${type}:${workspaceKey}:${workflowId}:message:${messageId}`;
   }
   if (type === 'lock.cleanup' && workspaceKey) {

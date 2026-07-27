@@ -652,7 +652,19 @@ describe('codex review regression guards', () => {
 
     // Die kettenlose Barriere ist auf den Ursprungslauf skopiert — zwei
     // ueberlappende Backfills teilten sich sonst einen Zaehler.
-    expect(advance).toContain('`inbound_deferred_join:${messageId}:${workflowId}:run:${fanOutRunId}`');
+    // Der Fan-out-Lauf trennt ueberlappende Ausfuehrungen MIT wie OHNE Kette:
+    // ein verketteter workflow.execute, der nach dem Commit erneut zugestellt
+    // wird, erzeugt sonst einen zweiten Satz Kindjobs auf derselben Barriere.
+    expect(advance).toContain("const runSuffix = fanOutRunId != null ? `:run:${fanOutRunId}` : '';");
+    expect(advance).toContain('${chain.index}${runSuffix}');
+    expect(advance).toContain('`inbound_deferred_join:${messageId}:${workflowId}${runSuffix}`');
+
+    // Terminaler HTTP-Abschluss: die Identitaet muss auch im
+    // workflow.execute-Key sichtbar sein, sonst verschluckt 'replace' einen der
+    // beiden Abschlussjobs zweier Fan-out-Zweige.
+    expect(graphile).toContain('`${type}:${workspaceKey}:${workflowId}:message:${messageId}:${terminalNodeId}`');
+    expect(readRepoFile('packages/server/src/workflow-http-request.ts'))
+      .toMatch(/\.\.\.\(!resumeNodeId && continuation\.terminalNodeId\s*\n\s*\? \{ terminalNodeId: continuation\.terminalNodeId \}/);
     expect(execution).toContain('inboundFanOutRunId: inboundFanOutRunId(context)');
     // 6x Join-Abbau/-Init, 2x Sibling-Abort setzen, 1x Sibling-Abort lesen.
     expect(execution.match(/fanOutRunId: jobContextFanOutRunId\(jobContext, run\.id\),/g)).toHaveLength(9);

@@ -178,16 +178,18 @@ export function inboundDeferredJoinKey(
   chain: InboundWorkflowChainContext | null,
   fanOutRunId?: number | null,
 ): string {
+  // Der Fan-out-Lauf trennt UEBERLAPPENDE Ausfuehrungen — mit wie ohne Kette.
+  // Ohne ihn teilen sich zwei Laeufe denselben Zaehler: zwei Backfills derselben
+  // Nachricht, oder ein verketteter workflow.execute, der nach dem Commit seines
+  // deferierten Laufs erneut zugestellt wird und einen zweiten Satz Kindjobs
+  // erzeugt. Die erneute Initialisierung hebt den Zaehler wegen
+  // ON CONFLICT DO NOTHING nicht an, also koennten Abschluesse aus beiden Laeufen
+  // ihn gemeinsam vorzeitig auf null setzen.
+  const runSuffix = fanOutRunId != null ? `:run:${fanOutRunId}` : '';
   if (chain) {
-    return `inbound_deferred_join:${messageId}:${chain.workflowIds.join(',')}:${chain.index}`;
+    return `inbound_deferred_join:${messageId}:${chain.workflowIds.join(',')}:${chain.index}${runSuffix}`;
   }
-  // Ohne Kette identifizieren Nachricht + Workflow den Fan-out NICHT eindeutig:
-  // zwei ueberlappende Backfill-/Reapply-Laeufe teilten sich sonst denselben
-  // Zaehler, und ein Kind aus Lauf B koennte die Barriere von Lauf A auf null
-  // setzen, waehrend dessen Zweige noch laufen. Der Ursprungslauf trennt sie.
-  return fanOutRunId != null
-    ? `inbound_deferred_join:${messageId}:${workflowId}:run:${fanOutRunId}`
-    : `inbound_deferred_join:${messageId}:${workflowId}`;
+  return `inbound_deferred_join:${messageId}:${workflowId}${runSuffix}`;
 }
 
 /**
