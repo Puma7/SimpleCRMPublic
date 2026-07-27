@@ -1,5 +1,6 @@
 const mockGetMessage = jest.fn();
 const mockSendCompose = jest.fn();
+const mockRecoveryState = jest.fn();
 const mockListDue = jest.fn();
 const mockStillDue = jest.fn();
 const mockSetScheduled = jest.fn();
@@ -11,6 +12,7 @@ jest.mock('../../electron/email/email-store', () => ({
 }));
 jest.mock('../../electron/email/email-compose-send', () => ({
   sendComposeDraft: (...args: unknown[]) => mockSendCompose(...args),
+  getComposeDraftRecoveryState: (...args: unknown[]) => mockRecoveryState(...args),
 }));
 jest.mock('../../electron/email/email-message-features', () => ({
   listDueScheduledDraftIds: (...args: unknown[]) => mockListDue(...args),
@@ -35,6 +37,7 @@ describe('email-scheduled-send', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockStillDue.mockReturnValue(true);
+    mockRecoveryState.mockReturnValue({ smtpCommitted: false, needsResendFinalize: false });
     mockGetSyncInfo.mockReturnValue(null);
     mockSendCompose.mockResolvedValue({ ok: true });
   });

@@ -11,6 +11,8 @@
  * (also sync_info) delays mark-applied / chain advance until every sibling
  * has finished — otherwise a lower-priority workflow can start mid-run.
  */
+import { sql } from 'kysely';
+
 import type { WorkspaceTransaction } from './db/workspace-context';
 import { buildTrustedServiceJobPayload } from './jobs/policy';
 import {
@@ -425,6 +427,13 @@ export async function cancelPendingWorkflowDelayedJobsForMessage(
     workspaceId: string;
     messageId: number;
     workflowId: number;
+    /**
+     * Nur Delay-Jobs DIESES Fan-outs stornieren. Ohne den Filter beendet ein
+     * Kettenstopp aus Lauf A auch die logic.delay-Jobs eines ueberlappenden
+     * Laufs B — deren Continuations gelten dann als abgebrochen und B verliert
+     * regulaere Arbeit, obwohl der Abort-Marker laufskopiert ist.
+     */
+    fanOutRunId?: number | null;
     now: Date;
   },
 ): Promise<void> {
@@ -438,6 +447,12 @@ export async function cancelPendingWorkflowDelayedJobsForMessage(
     .where('message_id', '=', input.messageId)
     .where('workflow_id', '=', input.workflowId)
     .where('status', 'in', ['pending', 'running'])
+    .$if(input.fanOutRunId != null, (qb) => qb.where((eb) => eb.or([
+      // Zeilen ohne Markierung stammen aus der Zeit vor dem Lauf-Scope und
+      // werden wie bisher storniert — nur fremde Laeufe bleiben verschont.
+      eb(sql`context_json->>'inboundFanOutRunId'`, 'is', null),
+      eb(sql`context_json->>'inboundFanOutRunId'`, '=', String(input.fanOutRunId)),
+    ])))
     .execute();
 }
 

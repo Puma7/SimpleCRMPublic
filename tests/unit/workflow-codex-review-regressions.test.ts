@@ -671,6 +671,17 @@ describe('codex review regression guards', () => {
     // kann veraltet sein, wenn die Gegenlese-KI einen spaeteren Entwurf der
     // Liste waehrend eines frueheren SMTP-Aufrufs zurueckgehalten hat.
     expect(scheduled).toContain('if (!scheduledSendIsStillDue(draftId)) continue;');
+    // Persistenter SMTP-Commit zaehlt als Zustellung: sonst landet ein HOLD auf
+    // einer bereits versendeten Mail und nimmt dem Commit-Recovery den Anker.
+    expect(scheduled).toContain('getComposeDraftRecoveryState(draftId).smtpCommitted');
+
+    // Dedupe-Treffer im terminalen ai.draft_reply ist ein Erfolg — sonst faengt
+    // ihn das Sicherheitsnetz als applied:false ab und der Marker bleibt aus.
+    expect(draftNodes).toMatch(/if \(priorDraft !== null\) \{[\s\S]*?applied: true,/);
+
+    // Delay-Stornierung nur im eigenen Fan-out.
+    expect(advance).toContain("eb(sql`context_json->>'inboundFanOutRunId'`, '=', String(input.fanOutRunId))");
+    expect(execution).toContain('fanOutRunId: input.fanOutRunId,');
     // Liste und Nachpruefung teilen dieselbe Faelligkeitsbedingung.
     expect(readRepoFile('electron/email/email-message-features.ts'))
       .toContain('DUE_SCHEDULED_SEND_WHERE');

@@ -983,7 +983,26 @@ export function createPostgresAiDraftReplyPort(
           },
           { applySession: deps.applyWorkspaceSession },
         );
-        if (priorDraft !== null) return;
+        if (priorDraft !== null) {
+          // Dedupe-Treffer ist ein ERFOLG, kein Ausfall: ein anderer Zweig oder
+          // ein frueherer Versuch dieses Laufs hat den Entwurf bereits erzeugt.
+          // Ohne diesen Abschluss faengt ihn das Sicherheitsnetz mit
+          // `applied: false` ab, die Barriere endet auf `ready_error` und der
+          // Applied-Marker bleibt aus — spaetere Reapply-/Backfill-Laeufe
+          // erzeugten dann erneut Entwuerfe.
+          if (!input.continuation && input.terminalChainPayload) {
+            await withWorkspaceTransaction(
+              deps.db,
+              { workspaceId: input.workspaceId, role: 'system' },
+              async (trx) => completeTerminalInboundChild(trx, input.terminalChainPayload!, {
+                applied: true,
+                now: now(),
+              }),
+              { applySession: deps.applyWorkspaceSession },
+            );
+          }
+          return;
+        }
 
         // OpenAI outside any workspace transaction (Codex P1).
         let aiText: string;
@@ -1053,6 +1072,13 @@ export function createPostgresAiDraftReplyPort(
             if (prior?.value) {
               const priorDraftId = Number(prior.value);
               if (Number.isInteger(priorDraftId) && priorDraftId > 0) {
+                // Siehe oben: Dedupe-Treffer zaehlt als angewendet.
+                if (!input.continuation && input.terminalChainPayload) {
+                  await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                    applied: true,
+                    now: now(),
+                  });
+                }
                 return;
               }
             }

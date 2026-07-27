@@ -7339,6 +7339,7 @@ async function abortRemainingInboundSiblings(
     workspaceId: input.workspaceId,
     messageId: input.messageId,
     workflowId: input.workflowId,
+    fanOutRunId: input.fanOutRunId,
     now: input.now,
   });
 }

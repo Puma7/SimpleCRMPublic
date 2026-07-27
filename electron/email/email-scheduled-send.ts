@@ -1,5 +1,5 @@
 import { getEmailMessageById } from './email-store';
-import { sendComposeDraft } from './email-compose-send';
+import { getComposeDraftRecoveryState, sendComposeDraft } from './email-compose-send';
 import {
   listDueScheduledDraftIds,
   scheduledSendIsStillDue,
@@ -120,6 +120,13 @@ export async function processDueScheduledSends(
       // Erst den Claim freigeben: setDraftApprovalPending verweigert den Stempel,
       // solange er steht (es koennte ein laufender Versand sein).
       releaseScheduledSendClaim(draftId);
+      // SMTP kann durch sein, obwohl sendComposeDraft danach beim Finalisieren
+      // warf: email_compose_smtp_ok steht dann persistent. Die Mail IST raus —
+      // ein HOLD darauf loeschte scheduled_send_at, naehme dem Commit-Recovery
+      // den Anker und zeigte eine versendete Mail als freigabepflichtigen Entwurf.
+      if (!delivered && getComposeDraftRecoveryState(draftId).smtpCommitted) {
+        delivered = true;
+      }
       // Bei belegtem Compose-Lock bleibt das HOLD bewusst geparkt: der parallele
       // Versand kann noch scheitern, dann greift es beim naechsten Durchlauf.
       const deferredHold = sendInFlightElsewhere

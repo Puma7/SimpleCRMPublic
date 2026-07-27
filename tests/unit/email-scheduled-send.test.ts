@@ -10,6 +10,7 @@ jest.mock('../../electron/sqlite-service', () => ({
   setSyncInfo: (...args: unknown[]) => mockSetSyncInfo(...args),
 }));
 
+const mockRecoveryState = jest.fn();
 const mockSetDraftApprovalPending = jest.fn();
 jest.mock('../../electron/email/email-draft-approval', () => ({
   setDraftApprovalPending: (...args: unknown[]) => mockSetDraftApprovalPending(...args),
@@ -31,6 +32,7 @@ jest.mock('../../electron/email/email-store', () => ({
 
 jest.mock('../../electron/email/email-compose-send', () => ({
   sendComposeDraft: (...args: unknown[]) => mockSendComposeDraft(...args),
+  getComposeDraftRecoveryState: (...args: unknown[]) => mockRecoveryState(...args),
 }));
 
 jest.mock('../../electron/email/email-message-features', () => ({
@@ -56,6 +58,7 @@ describe('email-scheduled-send', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockStillDue.mockReturnValue(true);
+    mockRecoveryState.mockReturnValue({ smtpCommitted: false, needsResendFinalize: false });
     // Die echte Funktion liefert true, wenn der Stempel gesetzt wurde.
     mockSetDraftApprovalPending.mockReturnValue(true);
     mockListDue.mockReturnValue([99]);
@@ -184,5 +187,23 @@ describe('email-scheduled-send', () => {
     expect(mockSendComposeDraft).not.toHaveBeenCalled();
     // Der Claim wird trotzdem sauber freigegeben.
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_claimed_at:99', '');
+  });
+
+  test('persistenter SMTP-Commit verhindert das HOLD auf bereits versendeter Mail', async () => {
+    // SMTP war durch, sendComposeDraft warf danach beim Finalisieren. Der
+    // Entwurf ist raus — ein HOLD darauf loeschte scheduled_send_at und naehme
+    // dem Commit-Recovery den Anker.
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockRecoveryState.mockReturnValue({ smtpCommitted: true, needsResendFinalize: true });
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'zu spaet';
+      throw new Error('finalize failed');
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
   });
 });
