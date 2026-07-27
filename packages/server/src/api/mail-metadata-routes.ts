@@ -1149,6 +1149,25 @@ async function handleDeleteEmailRemoteContentAllowlist(
   return data(200, { deleted: true, remoteContentAllowlist: sanitizeEmailRemoteContentAllowlist(entry) });
 }
 
+/**
+ * Die automatische Verknuepfung ueber die Id-Namensgleichheit im Port ist ein
+ * IMPLIZITES linkedUserId: sie loest denselben workspaceweiten Backfill von
+ * assigned_to_user_id aus wie das explizite Feld, das
+ * rejectLinkedUserMutationWithoutAdmin Nicht-Admins verwehrt. Die Team-Member-
+ * Routen stehen aber auch einem konto-gebundenen mail.account.manage-Halter
+ * offen — der koennte seine eigene Nutzer-UUID als Team-Id anlegen, den
+ * Admin-Guard so umgehen und sich freie Zuweisungen aus fremden Konten ueber
+ * assigned_to_me sichtbar machen. Fuer Nicht-Admins daher ausdruecklich ohne
+ * Verknuepfung anlegen.
+ */
+function creationValuesWithoutImplicitLink<T extends { linkedUserId?: string | null }>(
+  principal: AuthenticatedPrincipal,
+  values: T,
+): T {
+  if (requireAdmin(principal)) return values;
+  return { ...values, linkedUserId: null };
+}
+
 async function handleCreateEmailTeamMember(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1183,13 +1202,17 @@ async function handleCreateEmailTeamMember(
   const result = await ports.emailTeamMembers.create({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    values: parsed.values,
+    values: creationValuesWithoutImplicitLink(principal, parsed.values),
   });
   if (!result.ok) return error(409, 'email_team_member_conflict', 'Email team member existiert bereits');
 
   const member = result.member;
   await auditEmailTeamMember(ports, principal, 'email_team_member.created', member, { role: member.role });
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.created', member, principal.userId);
+  // Das Anlegen backfillt assigned_to_user_id fuer bereits vorhandene freie
+  // Zuweisungen dieses Mitglieds — der verknuepfte Nutzer und seine Gruppen-Peers
+  // sehen diese Nachrichten ab sofort und muessen ihre Liste neu laden.
+  await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [member.linkedUserId]);
   return data(201, sanitizeEmailTeamMember(member));
 }
 
@@ -1274,15 +1297,18 @@ async function handleUpsertEmailTeamMember(
   const created = await ports.emailTeamMembers.create({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    values: {
+    values: creationValuesWithoutImplicitLink(principal, {
       id,
       ...parsed.values,
-    },
+    }),
   });
   if (created.ok) {
     const member = created.member;
     await auditEmailTeamMember(ports, principal, 'email_team_member.created', member, { role: member.role });
     await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.created', member, principal.userId);
+    // Wie im POST-Pfad: der Create-Backfill macht Bestandszuweisungen fuer den
+    // verknuepften Nutzer sichtbar.
+    await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [member.linkedUserId]);
     return data(201, sanitizeEmailTeamMember(member));
   }
 
@@ -1302,7 +1328,9 @@ async function handleUpsertEmailTeamMember(
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.updated', updated, principal.userId);
   if (parsed.values.linkedUserId !== undefined) {
     await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
-      previousLinkedUserId,
+      // Der vom Port aus derselben gesperrten Transaktion gemeldete Vorwert
+      // gewinnt; der Vorher-Read ist nur der Fallback fuer Ports ohne ihn.
+      updated.previousLinkedUserId !== undefined ? updated.previousLinkedUserId : previousLinkedUserId,
       updated.linkedUserId,
     ]);
   }
@@ -1413,7 +1441,8 @@ async function handleUpdateEmailTeamMember(
   await publishEmailTeamMember(ports, principal.workspaceId, 'email_team_member.updated', member, principal.userId);
   if (parsed.values.linkedUserId !== undefined) {
     await publishLinkedUserAclInvalidation(ports, principal.workspaceId, principal.userId, [
-      previousLinkedUserId,
+      // Siehe handleUpsertEmailTeamMember: der atomar gelesene Vorwert gewinnt.
+      member.previousLinkedUserId !== undefined ? member.previousLinkedUserId : previousLinkedUserId,
       member.linkedUserId,
     ]);
   }
@@ -1431,6 +1460,17 @@ async function handleDeleteEmailTeamMember(
   if (id === null) return error(400, 'invalid_email_team_member_id', 'email team member id ist ungueltig');
   if (!ports.emailTeamMembers?.delete) {
     return error(503, 'email_team_members_unavailable', 'Email team member API nicht konfiguriert');
+  }
+  // Das Loeschen wirkt workspaceweit: die Rolle verschwindet fuer ALLE Konten und
+  // der Cleanup unten raeumt assigned_to/assigned_to_user_id in jedem Konto ab —
+  // auch in solchen, fuer die ein konto-gebundener mail.account.manage-Halter
+  // nicht autorisiert ist (die Route steht laut Policy-Manifest auch einem
+  // eingeschraenkten Scope offen). Dort wuerden Nachrichten in den Zustand
+  // "nicht zugewiesen" wechseln und fuer entsprechend gefilterte Nutzer sichtbar.
+  // Dieselbe Linie wie bei der Benutzer-Verknuepfung: workspaceweite Wirkung
+  // bleibt Administratoren vorbehalten. Anlegen und Bearbeiten sind unberuehrt.
+  if (!requireAdmin(principal)) {
+    return error(403, 'forbidden', 'Teammitglieder duerfen nur von Administratoren geloescht werden');
   }
 
   const member = await ports.emailTeamMembers.delete({

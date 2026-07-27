@@ -32,7 +32,12 @@ export function TeamPanel() {
   // antwortet auf die blosse ANWESENHEIT des Feldes mit 403). Fuer alle anderen
   // — etwa einen delegierten Kontoverwalter, der nur die Signatur pflegt — darf
   // das Feld daher weder sichtbar sein noch im Payload landen.
-  const canLinkUser = serverClientMode && (user?.role === "owner" || user?.role === "admin")
+  const isAdmin = user?.role === "owner" || user?.role === "admin"
+  const canLinkUser = serverClientMode && isAdmin
+  // Das Loeschen wirkt workspaceweit (Rolle weg, Zuweisungen in ALLEN Konten
+  // abgeraeumt) und ist serverseitig deshalb admin-only — der Knopf darf fuer
+  // andere gar nicht erst erscheinen.
+  const canDeleteMember = !serverClientMode || isAdmin
   const [team, setTeam] = useState<TeamMember[]>([])
   const [newId, setNewId] = useState("")
   const [newName, setNewName] = useState("")
@@ -126,17 +131,25 @@ export function TeamPanel() {
                   >
                     Bearbeiten
                   </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={async () => {
-                      await invokeRenderer(IPCChannels.Email.DeleteTeamMember, t.id)
-                      await load()
-                    }}
-                  >
-                    Entfernen
-                  </Button>
+                  {canDeleteMember ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={async () => {
+                        try {
+                          await invokeRenderer(IPCChannels.Email.DeleteTeamMember, t.id)
+                        } catch (e) {
+                          logError("team-panel: delete member", e)
+                          toast.error(e instanceof Error ? e.message : "Loeschen fehlgeschlagen")
+                          return
+                        }
+                        await load()
+                      }}
+                    >
+                      Entfernen
+                    </Button>
+                  ) : null}
                 </div>
               </div>
               {editingId === t.id ? (

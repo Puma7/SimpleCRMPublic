@@ -79,6 +79,7 @@ import type {
   EmailTeamMemberMutationInput,
   EmailTeamMemberMutationPortResult,
   EmailTeamMemberRecord,
+  EmailTeamMemberUpdateResult,
   EmailThreadAliasApiPort,
   EmailThreadAliasListResult,
   EmailThreadMergePortResult,
@@ -583,7 +584,7 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
         { applySession: options.applyWorkspaceSession },
       );
     },
-    async update(input): Promise<EmailTeamMemberRecord | null> {
+    async update(input): Promise<EmailTeamMemberUpdateResult | null> {
       const values = normalizeEmailTeamMemberMutation(input.values, {
         requireId: false,
         requireDisplayName: false,
@@ -596,6 +597,20 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
           role: 'user',
         },
         async (trx) => {
+          // Die ERSETZTE Verknuepfung unter Zeilensperre in DERSELBEN Transaktion
+          // lesen: ein Vorher-Read der Route waere nicht atomar — zwei parallele
+          // Aenderungen X→Y und X→Z lesen beide X, die zweite entzieht Y den
+          // Scope, invalidiert aber nur X und Z, und Y behaelt gesperrte
+          // Nachrichten geladen.
+          const previous = values.linkedUserId === undefined
+            ? null
+            : await trx
+              .selectFrom('email_team_members')
+              .select('linked_user_id')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.id)
+              .forUpdate()
+              .executeTakeFirst();
           if (values.linkedUserId) {
             const linkedUser = await trx
               .selectFrom('users')
@@ -629,7 +644,12 @@ export function createPostgresEmailTeamMemberReadPort(options: PostgresMailMetad
               .where('assigned_to', '=', input.id)
               .execute();
           }
-          return mapEmailTeamMemberRow(row);
+          return {
+            ...mapEmailTeamMemberRow(row),
+            ...(values.linkedUserId === undefined
+              ? {}
+              : { previousLinkedUserId: previous?.linked_user_id ? String(previous.linked_user_id) : null }),
+          };
         },
         { applySession: options.applyWorkspaceSession },
       );
@@ -1239,12 +1259,24 @@ export function createPostgresEmailCategoryReadPort(options: PostgresMailMetadat
           // verborgenen Nachrichten wahr — ein mail.triage-Halter koennte sich
           // so seinen eigenen Sichtbarkeitsfilter wegloeschen. Solche
           // Kategorien sind darum nicht loeschbar (fail closed).
+          // email_categories.parent_id kaskadiert ebenfalls (0007): das Loeschen
+          // eines NICHT referenzierten Elternknotens reisst referenzierte
+          // Unterkategorien mit — die Pruefung muss daher den ganzen Teilbaum
+          // erfassen, nicht nur die exakte Id.
           const referenced = await kyselySql<{ exists: boolean }>`
+            WITH RECURSIVE doomed AS (
+              SELECT id FROM email_categories
+              WHERE workspace_id = ${input.workspaceId}::uuid AND id = ${input.id}::bigint
+              UNION ALL
+              SELECT child.id FROM email_categories AS child
+              JOIN doomed ON child.parent_id = doomed.id
+              WHERE child.workspace_id = ${input.workspaceId}::uuid
+            )
             SELECT EXISTS (
-              SELECT 1 FROM mail_acl_binding_constraints
-              WHERE workspace_id = ${input.workspaceId}::uuid
-                AND kind = 'category'
-                AND ${input.id}::bigint = ANY(value_ids)
+              SELECT 1 FROM mail_acl_binding_constraints AS constraints
+              JOIN doomed ON doomed.id = ANY(constraints.value_ids)
+              WHERE constraints.workspace_id = ${input.workspaceId}::uuid
+                AND constraints.kind = 'category'
             ) AS exists
           `.execute(trx);
           if (referenced.rows[0]?.exists) {

@@ -2935,6 +2935,17 @@ export type EmailTeamMemberMutationPortResult =
   | { ok: true; member: EmailTeamMemberRecord }
   | { ok: false; code: 'team_member_conflict' };
 
+/**
+ * Der Datensatz nach dem Update — optional ergaenzt um die ERSETZTE
+ * Verknuepfung. Ein separater Vorher-Read waere nicht atomar: zwei parallele
+ * Link-Aenderungen X→Y und X→Z lesen beide X, die zweite entzieht Y den Scope,
+ * publiziert die Invalidierung aber nur fuer X und Z. Ports, die den alten Wert
+ * aus derselben Transaktion zurueckgeben koennen, sollten das tun.
+ */
+export type EmailTeamMemberUpdateResult = EmailTeamMemberRecord & {
+  previousLinkedUserId?: string | null;
+};
+
 export type EmailTeamMemberApiPort = EmailStringRecordApiPort<EmailTeamMemberRecord, {
   search?: string;
   role?: string;
@@ -2949,7 +2960,7 @@ export type EmailTeamMemberApiPort = EmailStringRecordApiPort<EmailTeamMemberRec
     actorUserId: string;
     id: string;
     values: EmailTeamMemberMutationInput;
-  }): Promise<EmailTeamMemberRecord | null>;
+  }): Promise<EmailTeamMemberUpdateResult | null>;
   delete?(input: {
     workspaceId: string;
     actorUserId: string;

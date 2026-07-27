@@ -2161,7 +2161,11 @@ async function executeServerNode(
     }
     // Keep assigned_to_user_id in sync so assigned_to_me filters do not keep a
     // stale UUID after workflow reassignment (mirrors the mail assign API).
-    // Prefer email_team_members.linked_user_id; fall back to UUID coincidence.
+    // AUSSCHLIESSLICH email_team_members.linked_user_id: der frueher genutzte
+    // Fallback ueber die Id-Namensgleichheit haette eine bewusst entfernte
+    // Verknuepfung bei der naechsten Workflow-Zuweisung wiederhergestellt und
+    // dem Nutzer (plus seinen Gruppen-Peers) erneut assigned_to_me-Sicht
+    // gegeben — entgegen der gespeicherten Einstellung.
     let assignedToUserId: string | null = null;
     if (teamMemberId !== null) {
       const member = await trx
@@ -2170,17 +2174,7 @@ async function executeServerNode(
         .where('workspace_id', '=', context.workspaceId)
         .where('id', '=', teamMemberId)
         .executeTakeFirst();
-      if (member?.linked_user_id) {
-        assignedToUserId = String(member.linked_user_id);
-      } else if (isUuidString(teamMemberId)) {
-        const linkedUser = await trx
-          .selectFrom('users')
-          .select('id')
-          .where('workspace_id', '=', context.workspaceId)
-          .where('id', '=', teamMemberId)
-          .executeTakeFirst();
-        assignedToUserId = linkedUser ? String(linkedUser.id) : null;
-      }
+      if (member?.linked_user_id) assignedToUserId = String(member.linked_user_id);
     }
     const result = await updateWorkflowMessage(trx, context, {
       assigned_to: teamMemberId,
@@ -5128,10 +5122,6 @@ async function updateWorkflowMessage(
     .where('id', '=', context.messageId)
     .execute();
   return null;
-}
-
-function isUuidString(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 /**

@@ -25,6 +25,8 @@ import {
   outboundReviewApprovedKey,
 } from '../../packages/server/src/mail-compose-send';
 import {
+  createPostgresEmailCategoryReadPort,
+  EmailCategoryInUseByAclError,
   createPostgresEmailFolderReadPort,
   createPostgresEmailMessageCategoryReadPort,
   createPostgresEmailTeamMemberReadPort,
@@ -5245,6 +5247,61 @@ describe('server mailbox ACL migration', () => {
     } finally {
       await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
       await client.query(`DELETE FROM email_team_members WHERE workspace_id = '${WORKSPACE_A}' AND id IN ('${USER_SEND}', '${USER_BOTH}')`).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
+  test('a category whose CHILD is referenced by an ACL constraint stays undeletable', async () => {
+    // email_categories.parent_id kaskadiert (0007): das Loeschen eines nicht
+    // referenzierten Elternknotens reisst die referenzierte Unterkategorie mit,
+    // der Ausschlussfilter gibt danach die zuvor verborgenen Nachrichten frei.
+    await ensureMailAclConstraintsSchema();
+    const parentId = 90501;
+    const childId = 90502;
+    const db = createApplicationDb();
+    let bindingId: string | null = null;
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      await client.query(`
+        INSERT INTO email_categories (id, workspace_id, source_sqlite_id, name, sort_order)
+        VALUES (${parentId}, '${WORKSPACE_A}', 90501, 'Eltern', 0)
+      `);
+      await client.query(`
+        INSERT INTO email_categories (id, workspace_id, source_sqlite_id, parent_id, name, sort_order)
+        VALUES (${childId}, '${WORKSPACE_A}', 90502, ${parentId}, 'Kind', 0)
+      `);
+      const binding = await client.query<{ id: string }>(`
+        INSERT INTO mail_acl_bindings (workspace_id, subject_type, subject_id, resource_type, account_id)
+        VALUES ('${WORKSPACE_A}', 'group', '${GROUP_A_REMOVED}', 'account', ${ACCOUNT_A})
+        ON CONFLICT DO NOTHING
+        RETURNING id::text AS id
+      `);
+      bindingId = binding.rows[0]!.id;
+      await client.query(`
+        INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_ids)
+        VALUES ('${WORKSPACE_A}', ${bindingId}, 'category', 'exclude', '{${childId}}'::bigint[])
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      const port = createPostgresEmailCategoryReadPort({ db });
+      await expect(port.delete!({ workspaceId: WORKSPACE_A, actorUserId: USER_READ, id: parentId }))
+        .rejects.toBeInstanceOf(EmailCategoryInUseByAclError);
+
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const survivors = await client.query<{ count: string }>(`
+        SELECT count(*)::text AS count FROM email_categories
+        WHERE workspace_id = '${WORKSPACE_A}' AND id IN (${parentId}, ${childId})
+      `);
+      expect(survivors.rows[0]?.count).toBe('2');
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      if (bindingId) {
+        await client.query(`DELETE FROM mail_acl_binding_constraints WHERE binding_id = ${bindingId}`).catch(() => undefined);
+        await client.query(`DELETE FROM mail_acl_bindings WHERE id = ${bindingId}`).catch(() => undefined);
+      }
+      await client.query(`DELETE FROM email_categories WHERE workspace_id = '${WORKSPACE_A}' AND id IN (${childId}, ${parentId})`).catch(() => undefined);
       await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
       await db.destroy();
     }

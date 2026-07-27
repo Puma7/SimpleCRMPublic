@@ -17317,6 +17317,57 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('deleting a user also invalidates the ACL of its group peers', async () => {
+    // user_group_members kaskadiert mit dem Nutzer weg und assigned_to_user_id
+    // faellt auf null: die uebrigen Gruppenmitglieder verlieren sofort ihre
+    // assigned_to_my_groups-Sicht auf dessen Nachrichten. Ohne Invalidierung
+    // behalten ihre offenen Listen die nun gesperrten Nachrichten geladen.
+    const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
+      id,
+      email: `${id}@example.com`,
+      displayName: id,
+      role,
+      disabledAt: null,
+      createdAt: '2026-06-01T00:00:00.000Z',
+      updatedAt: '2026-06-01T00:00:00.000Z',
+    });
+    const events: ServerEvent[] = [];
+    const peerLookups: Array<{ workspaceId: string; userId: string }> = [];
+    let deleted = false;
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        authUsers: [userRecord('owner-x', 'owner'), userRecord('target', 'user')],
+        events,
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveGroupPeerUserIds(workspaceId: string, userId: string) {
+          peerLookups.push({ workspaceId, userId });
+          // Nach der Loeschung waere die Mitgliedschaft weg — der Lookup MUSS
+          // vorher passieren, sonst kaeme hier nur noch der Nutzer selbst.
+          return deleted ? [userId] : [userId, 'peer-a', 'peer-b'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const res = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/auth/users/target',
+      principal: { userId: 'owner-x', workspaceId: WORKSPACE_A_ID, role: 'owner' as const },
+    });
+    deleted = true;
+
+    expect(res.status).toBe(200);
+    expect(peerLookups).toEqual([{ workspaceId: WORKSPACE_A_ID, userId: 'target' }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual(['target', 'peer-a', 'peer-b']);
+  });
+
   test('a rejecting event port does not fail a committed user delete or role change (R40-1)', async () => {
     const userRecord = (id: string, role: 'owner' | 'admin' | 'user') => ({
       id,
@@ -28661,6 +28712,10 @@ describe('server edition foundation', () => {
         role: 'manager',
         signatureHtml: '<p>Signature</p>',
         sortOrder: 4,
+        // Nicht-Admins legen ausdruecklich OHNE Verknuepfung an: die
+        // automatische Verknuepfung ueber Id-Namensgleichheit waere ein
+        // implizites linkedUserId und wuerde den Admin-Guard umgehen.
+        linkedUserId: null,
       },
     }]);
 
@@ -28682,10 +28737,20 @@ describe('server edition foundation', () => {
       },
     }]);
 
-    const deleted = await api.handle({
+    // Loeschen wirkt workspaceweit (Rolle weg + Zuweisungen in ALLEN Konten
+    // abgeraeumt) und bleibt darum Administratoren vorbehalten.
+    const deleteDenied = await api.handle({
       method: 'DELETE',
       path: '/api/v1/email/team-members/agent-2',
       principal,
+    });
+    expect(deleteDenied.status).toBe(403);
+    expect(deleteCalls).toEqual([]);
+
+    const deleted = await api.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/team-members/agent-2',
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
     });
     expect(deleted.status).toBe(200);
     expect((deleted.body as any).data.deleted).toBe(true);
@@ -28792,6 +28857,8 @@ describe('server edition foundation', () => {
           displayName: 'Agent New',
           signatureHtml: '<p>New</p>',
           sortOrder: 2,
+          // Nicht-Admin: ausdruecklich ohne Verknuepfung (kein implizites Auto-Link).
+          linkedUserId: null,
         },
       },
       {
@@ -28802,6 +28869,7 @@ describe('server edition foundation', () => {
           displayName: 'Agent Existing',
           role: 'manager',
           signatureHtml: null,
+          linkedUserId: null,
         },
       },
     ]);
@@ -28910,6 +28978,162 @@ describe('server edition foundation', () => {
     });
 
     expect(denied.status).toBe(403);
+  });
+
+  test('the port reported previous link wins over the pre-read', async () => {
+    // Der Vorher-Read der Route ist nicht atomar: zwei parallele Aenderungen
+    // X→Y und X→Z lesen beide X. Meldet der Port den TATSAECHLICH ersetzten
+    // Wert aus derselben gesperrten Transaktion, muss dieser gelten — sonst
+    // behaelt Y gesperrte Nachrichten geladen.
+    const events: ServerEvent[] = [];
+    const staleUser = '55555555-5555-4555-8555-555555555555';
+    const raceWinner = '66666666-6666-4666-8666-666666666666';
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          // Was die Route VOR der Transaktion sieht — inzwischen veraltet.
+          return { ...makeEmailTeamMemberRecord('agent-2'), linkedUserId: staleUser };
+        },
+        async create() {
+          return { ok: false as const, code: 'team_member_conflict' as const };
+        },
+        async update(input) {
+          return {
+            ...makeEmailTeamMemberRecord(input.id),
+            linkedUserId: (input.values.linkedUserId ?? null) as string | null,
+            previousLinkedUserId: raceWinner,
+          };
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/team-members/agent-2',
+      body: { linkedUserId: USER_A_ID },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(res.status).toBe(200);
+    const invalidated = events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId).sort();
+    expect(invalidated).toEqual([USER_A_ID, raceWinner].sort());
+    expect(invalidated).not.toContain(staleUser);
+  });
+
+  test('creating a team member invalidates the ACL for the linked user', async () => {
+    // Der Create-Backfill ordnet vorhandene freie Zuweisungen sofort dem
+    // verknuepften Nutzer zu — dessen Liste zeigt sie sonst erst beim naechsten
+    // zufaelligen Refresh.
+    const events: ServerEvent[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      events,
+      authUsers: [{
+        id: USER_A_ID,
+        email: 'agent@example.com',
+        displayName: 'Agent',
+        role: 'user' as const,
+        disabledAt: null,
+        createdAt: '2026-06-01T00:00:00.000Z',
+        updatedAt: '2026-06-01T00:00:00.000Z',
+      }],
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create(input) {
+          return {
+            ok: true as const,
+            member: {
+              ...makeEmailTeamMemberRecord(input.values.id ?? 'agent-2'),
+              linkedUserId: (input.values.linkedUserId ?? null) as string | null,
+            },
+          };
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members',
+      body: { id: 'agent-2', displayName: 'Agent Zwei', linkedUserId: USER_A_ID },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(created.status).toBe(201);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual([USER_A_ID]);
+  });
+
+  test('a non-admin cannot auto-link a team member through a matching user id', async () => {
+    // Die automatische Verknuepfung im Port ist ein IMPLIZITES linkedUserId und
+    // loest denselben workspaceweiten Backfill aus — sonst umgeht ein
+    // konto-gebundener mail.account.manage-Halter den Admin-Guard, indem er
+    // seine eigene Nutzer-UUID als Team-Id anlegt.
+    const createCalls: any[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      emailTeamMembers: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async get() {
+          return null;
+        },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, member: makeEmailTeamMemberRecord(input.values.id ?? 'agent-2') };
+        },
+        async update() {
+          return null;
+        },
+        async delete() {
+          return null;
+        },
+      },
+    }));
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members',
+      body: { id: USER_A_ID, displayName: 'Ich selbst' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] },
+    });
+
+    expect(created.status).toBe(201);
+    expect(createCalls[0].values.linkedUserId).toBeNull();
+
+    // Ein Admin darf weiterhin implizit verknuepfen (Feld bleibt ausgelassen).
+    await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/team-members',
+      body: { id: USER_A_ID, displayName: 'Ich selbst' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+    expect(Object.prototype.hasOwnProperty.call(createCalls[1].values, 'linkedUserId')).toBe(false);
   });
 
   test('team member upsert reports an unknown linked user as a client error', async () => {
@@ -29115,9 +29339,20 @@ describe('server edition foundation', () => {
 
     const missingWrites = await Promise.all([
       writableApi.handle({ method: 'PATCH', path: '/api/v1/email/team-members/agent-2', body: { displayName: 'Agent Two' }, principal }),
-      writableApi.handle({ method: 'DELETE', path: '/api/v1/email/team-members/agent-2', principal }),
+      writableApi.handle({
+        method: 'DELETE',
+        path: '/api/v1/email/team-members/agent-2',
+        // Loeschen ist admin-only; der 404 gilt dem fehlenden Mitglied.
+        principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+      }),
     ]);
     expect(missingWrites.map((response) => response.status)).toEqual([404, 404]);
+    const deleteWithoutAdmin = await writableApi.handle({
+      method: 'DELETE',
+      path: '/api/v1/email/team-members/agent-2',
+      principal,
+    });
+    expect(deleteWithoutAdmin.status).toBe(403);
   });
 
   test('server email thread edge and alias mutation routes write audit records and server events', async () => {
