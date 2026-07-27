@@ -16,7 +16,10 @@ import {
   RendererTransportError,
   subscribeServerEvents,
 } from "@/services/transport"
-import { cn } from "@/lib/utils"
+import {
+  MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH,
+  MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH,
+} from "@shared/mail-acl-constraints"
 
 type DelegationResource =
   | { type: "account"; accountId: number }
@@ -375,6 +378,15 @@ export function MailDelegationPanel() {
       if (!categoryAllow.ok || !categoryExclude.ok) {
         throw new Error("Kategorie-IDs müssen positive Ganzzahlen sein (Komma-getrennt).")
       }
+      const tagAllowValues = parseTagCsv(tagAllowText)
+      const tagExcludeValues = parseTagCsv(tagExcludeText)
+      const listLimitError = validateConstraintListLengths({
+        categoryAllowIds: categoryAllow.ids,
+        categoryExcludeIds: categoryExclude.ids,
+        tagAllowValues,
+        tagExcludeValues,
+      })
+      if (listLimitError) throw new Error(listLimitError)
       const result = await invokeRenderer(IPCChannels.Email.SaveMailDelegationBinding, {
         ...(editingId === null ? {} : { id: editingId }),
         subject: subject.type === "user"
@@ -387,8 +399,8 @@ export function MailDelegationPanel() {
           assignmentMode: assignmentMode === "any" ? null : assignmentMode,
           categoryAllowIds: categoryAllow.ids,
           categoryExcludeIds: categoryExclude.ids,
-          tagAllowValues: parseTagCsv(tagAllowText),
-          tagExcludeValues: parseTagCsv(tagExcludeText),
+          tagAllowValues,
+          tagExcludeValues,
         },
       }) as { success?: boolean; error?: string }
       if (result.success === false) throw new Error(result.error ?? "save_failed")
@@ -824,4 +836,29 @@ function parseTagCsv(value: string): string[] {
       .map((part) => part.trim())
       .filter(Boolean),
   )].sort()
+}
+
+function validateConstraintListLengths(lists: {
+  categoryAllowIds: number[]
+  categoryExcludeIds: number[]
+  tagAllowValues: string[]
+  tagExcludeValues: string[]
+}): string | null {
+  const checks: Array<{ label: string; values: readonly (number | string)[] }> = [
+    { label: "Kategorie-Allowliste", values: lists.categoryAllowIds },
+    { label: "Kategorie-Ausschlussliste", values: lists.categoryExcludeIds },
+    { label: "Tag-Allowliste", values: lists.tagAllowValues },
+    { label: "Tag-Ausschlussliste", values: lists.tagExcludeValues },
+  ]
+  for (const { label, values } of checks) {
+    if (values.length > MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH) {
+      return `${label} darf maximal ${MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH} Eintraege enthalten.`
+    }
+  }
+  for (const tag of [...lists.tagAllowValues, ...lists.tagExcludeValues]) {
+    if (tag.length > MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH) {
+      return `Einzelne Tags duerfen maximal ${MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH} Zeichen lang sein.`
+    }
+  }
+  return null
 }

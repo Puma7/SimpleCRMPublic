@@ -33,6 +33,11 @@ export const DENY_ALL_CATEGORY_ALLOW_ID = -1;
 /** Postgres `text` cannot store NUL bytes; keep this sentinel printable. */
 export const DENY_ALL_TAG_ALLOW_VALUE = '__mail_acl_deny_all__';
 
+/** Max entries per category/tag visibility filter list (client + server). */
+export const MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH = 500;
+/** Max length of a single tag value in a visibility filter. */
+export const MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH = 200;
+
 export const DENY_ALL_MAIL_BINDING_CONSTRAINTS: MailBindingVisibilityConstraints = Object.freeze({
   assignmentMode: null,
   categoryAllowIds: Object.freeze([DENY_ALL_CATEGORY_ALLOW_ID] as number[]),

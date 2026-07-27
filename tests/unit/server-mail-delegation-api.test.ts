@@ -237,6 +237,39 @@ describe('server mail delegation API', () => {
     expect(conflict).toMatchObject({ status: 409, body: { error: { code: 'mail_delegation_conflict' } } });
   });
 
+  test('rejects oversized visibility constraint lists before calling the port', async () => {
+    const mailDelegation = delegationPort();
+    const api = createServerApi(ports({ mailDelegation }));
+    const oversizedIds = Array.from({ length: 501 }, (_, index) => index + 1);
+
+    const oversizedCategoryAllow = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/access/bindings',
+      principal: owner,
+      body: {
+        subject: { type: 'user', id: AGENT },
+        resource: { type: 'account', accountId: ACCOUNT },
+        permissions: ['mail.metadata.read'],
+        constraints: { categoryAllowIds: oversizedIds },
+      },
+    });
+    const oversizedTags = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/access/bindings',
+      principal: owner,
+      body: {
+        subject: { type: 'user', id: AGENT },
+        resource: { type: 'account', accountId: ACCOUNT },
+        permissions: ['mail.metadata.read'],
+        constraints: { tagAllowValues: ['x'.repeat(201)] },
+      },
+    });
+
+    expect(oversizedCategoryAllow).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
+    expect(oversizedTags).toMatchObject({ status: 400, body: { error: { code: 'validation_error' } } });
+    expect(mailDelegation.replaceBinding).not.toHaveBeenCalled();
+  });
+
   test('prevents privilege escalation for delegated managers while owner/admin retain bypass', async () => {
     const grants = new Map<MailPermission, readonly MailAccessGrant[]>([
       ['mail.delegation.manage', [accountGrant(ACCOUNT)]],

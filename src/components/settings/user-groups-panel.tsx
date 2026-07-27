@@ -181,7 +181,19 @@ export function UserGroupsPanel() {
   const applyTemplate = (templateId: GroupRightsTemplateId) =>
     run(async () => {
       if (selectedGroupId === null) return
-      setPermissions(await userGroupService.setPermissions(selectedGroupId, [...templateCapabilities(templateId)]))
+      const template = GROUP_RIGHTS_TEMPLATES.find((t) => t.id === templateId)
+      const nextCapabilities = [...templateCapabilities(templateId)]
+      const willLose = permissions.filter((p) => !nextCapabilities.includes(p as (typeof nextCapabilities)[number]))
+      if (
+        willLose.length > 0
+        && !window.confirm(
+          `Vorlage "${template?.label ?? templateId}" ersetzt ALLE aktuellen Rechte dieser Gruppe. `
+          + `Dabei gehen verloren: ${willLose.join(", ")}. Fortfahren?`,
+        )
+      ) {
+        return
+      }
+      setPermissions(await userGroupService.setPermissions(selectedGroupId, nextCapabilities))
     })
 
   const setModuleLevel = (module: CapabilityModule, level: number) =>

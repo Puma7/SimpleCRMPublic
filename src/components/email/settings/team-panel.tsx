@@ -152,6 +152,8 @@ export function TeamPanel() {
                         setEditingId(null)
                         bumpAccountsRevision()
                         toast.success("Mitglied gespeichert")
+                      }).catch((e) => {
+                        toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen")
                       })
                     }
                   >
@@ -194,17 +196,21 @@ export function TeamPanel() {
           variant="secondary"
           onClick={async () => {
             if (!newId.trim() || !newName.trim()) return
-            await saveMember({
-              id: newId.trim(),
-              displayName: newName.trim(),
-              signatureHtml: newSignature,
-              linkedUserId: newLinkedUserId.trim() || null,
-            })
-            setNewId("")
-            setNewName("")
-            setNewLinkedUserId("")
-            bumpAccountsRevision()
-            toast.success("Mitglied gespeichert")
+            try {
+              await saveMember({
+                id: newId.trim(),
+                displayName: newName.trim(),
+                signatureHtml: newSignature,
+                linkedUserId: newLinkedUserId.trim() || null,
+              })
+              setNewId("")
+              setNewName("")
+              setNewLinkedUserId("")
+              bumpAccountsRevision()
+              toast.success("Mitglied gespeichert")
+            } catch (e) {
+              toast.error(e instanceof Error ? e.message : "Speichern fehlgeschlagen")
+            }
           }}
         >
           Hinzufügen

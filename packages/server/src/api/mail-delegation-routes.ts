@@ -17,7 +17,7 @@ import type {
   ServerApiPorts,
 } from './types';
 import type { MailBindingVisibilityConstraints } from '../mail-access/types';
-import { DENY_ALL_TAG_ALLOW_VALUE } from '../mail-access/types';
+import { DENY_ALL_TAG_ALLOW_VALUE, MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH, MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH } from '../mail-access/mail-acl-constraints';
 import { data, error, positiveIntFromPath, requirePrincipal } from './http';
 
 const BINDINGS_PATH = '/api/v1/email/access/bindings';
@@ -342,6 +342,9 @@ function parseIdList(value: unknown, label: string):
   if (!Array.isArray(value) || value.some((entry) => !isPositiveInteger(entry))) {
     return invalid(`${label} muss ein Array positiver Ganzzahlen sein`);
   }
+  if (value.length > MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH) {
+    return invalid(`${label} darf maximal ${MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH} Eintraege enthalten`);
+  }
   return { ok: true, values: [...new Set(value as number[])].sort((a, b) => a - b) };
 }
 
@@ -351,6 +354,12 @@ function parseTextList(value: unknown, label: string):
   if (value === undefined) return { ok: true, values: [] };
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
     return invalid(`${label} muss ein Array von Zeichenketten sein`);
+  }
+  if (value.length > MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH) {
+    return invalid(`${label} darf maximal ${MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH} Eintraege enthalten`);
+  }
+  if (value.some((entry) => entry.length > MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH)) {
+    return invalid(`${label}: einzelne Tags duerfen maximal ${MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH} Zeichen lang sein`);
   }
   const values = [...new Set((value as string[]).map((entry) => entry.trim()).filter(Boolean))].sort();
   // Reserved deny-all sentinel must never be accepted as a real user tag.
