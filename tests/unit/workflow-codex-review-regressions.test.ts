@@ -524,7 +524,12 @@ describe('codex review regression guards', () => {
 
     // Einmal-Schranke: ein Job-Retry darf die Join-Barriere nicht ein zweites
     // Mal herunterzaehlen (pending faellt sonst zu frueh auf 0).
-    expect(terminal).toContain('inbound_terminal_child_done');
+    expect(advance).toContain('inbound_terminal_child_done');
+    // Der Graphile-Fehlerpfad beansprucht DIESELBE Ausfuehrungsidentitaet:
+    // sonst dekrementiert er die Barriere ein zweites Mal, wenn der Kindjob
+    // seinen Erfolg schon committet hatte und der Worker vor dem Ack starb.
+    expect(graphile).toContain('terminalChildCompletionKey(payload as Record<string, unknown>)');
+    expect(graphile).toMatch(/if \(completionKey\) \{[\s\S]*?if \(!firstCompletion\.rowCount\)/);
     expect(terminal).toContain('.onConflict((oc) => oc.columns([\'workspace_id\', \'key\']).doNothing())');
 
     // Reihenfolge: erst Join, dann Applied-Marker — und der Marker faellt bei
@@ -687,7 +692,9 @@ describe('codex review regression guards', () => {
     // Terminaler Review: waehrend der Pruefung VERSENDET zaehlt als angewendet,
     // geloescht/verschoben nicht — sonst erzeugt eine Wiederverarbeitung eine
     // zweite Antwort auf eine bereits beantwortete Mail.
-    expect(draftNodes).toContain('const sentDuringReview = Boolean(live && Number(live.uid) >= 0);');
+    // Der Server-Compose-Pfad setzt beim Finalisieren nur folder_kind='sent'
+    // und laesst die negative lokale uid stehen — beides zaehlt als Zustellung.
+    expect(draftNodes).toContain("live && (Number(live.uid) >= 0 || live.folder_kind === 'sent')");
     expect(draftNodes).toContain('applied: sentDuringReview,');
 
     // Terminale HTTP-Knoten teilen sich errorResumeNodeId — die Identitaet

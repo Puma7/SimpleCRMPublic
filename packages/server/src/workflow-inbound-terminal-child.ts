@@ -43,6 +43,7 @@ import {
 } from './db/workspace-context';
 import {
   advanceInboundChainAfterTerminalChild,
+  terminalChildCompletionKey,
   terminalInboundChildContext,
 } from './workflow-inbound-chain-advance';
 
@@ -174,16 +175,6 @@ function terminalChildTarget(payload: Record<string, unknown>): TerminalChildTar
   };
 }
 
-function terminalChildCompletionKey(target: TerminalChildTarget): string {
-  return [
-    'inbound_terminal_child_done',
-    target.messageId,
-    target.workflowId,
-    target.nodeId,
-    target.runId ?? 'none',
-  ].join(':');
-}
-
 /**
  * Abschluss eines terminalen Kindjobs — genau einmal pro Knoten und Lauf.
  *
@@ -210,7 +201,7 @@ export async function completeTerminalInboundChild(
     .insertInto('sync_info')
     .values({
       workspace_id: target.workspaceId,
-      key: terminalChildCompletionKey(target),
+      key: terminalChildCompletionKey(payload) ?? '',
       value: '1',
       last_updated: input.now,
       source_row: { origin: 'inbound_terminal_child' },

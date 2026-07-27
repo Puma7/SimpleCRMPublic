@@ -233,6 +233,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
     completeInboundDeferredJoinSiblingOnPgClient,
     inboundChainFromJobPayload,
     inboundChainHopClaimKey,
+    terminalChildCompletionKey,
     terminalInboundChildContext,
   } = await import('../workflow-inbound-chain-advance.js');
   // Auch ohne Kette (Inbound-Backfill/Reapply) muss die Join-Barriere abgebaut
@@ -308,6 +309,30 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
           // Join-Zähler würde doppelt dekrementiert und die Barriere zu früh
           // öffnen. Der Marker macht das Ganze einmalig. Ohne Job-ID (ältere
           // Helper/Tests) bleibt das Verhalten wie bisher.
+          // Dieselbe Ausfuehrungsidentitaet wie der Erfolgsabschluss des
+          // Kindjobs: hat der seinen Abschluss bereits committet und der Worker
+          // starb vor der Graphile-Bestaetigung, darf der spaetere endgueltige
+          // Fehlschlag die Join-Barriere NICHT ein zweites Mal dekrementieren.
+          // Die Schranke pro Graphile-Job allein deckt das nicht ab.
+          const completionKey = terminalChildCompletionKey(payload as Record<string, unknown>);
+          if (completionKey) {
+            const firstCompletion = asPgResult(await client.query(
+              `INSERT INTO sync_info (
+                 workspace_id, key, value, last_updated, source_row, imported_in_run_id, updated_at
+               ) VALUES ($1, $2, '1', now(), $3::jsonb, null, now())
+               ON CONFLICT (workspace_id, key) DO NOTHING
+               RETURNING key`,
+              [
+                target.workspaceId,
+                completionKey,
+                JSON.stringify({ origin: 'inbound_terminal_child' }),
+              ],
+            ));
+            if (!firstCompletion.rowCount) {
+              await client.query('COMMIT');
+              return;
+            }
+          }
           if (advanceGuardKey) {
             const firstRun = asPgResult(await client.query(
               `INSERT INTO sync_info (

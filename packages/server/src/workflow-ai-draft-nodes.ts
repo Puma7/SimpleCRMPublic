@@ -1422,7 +1422,13 @@ export function createPostgresAiReviewDraftPort(
                   // eine zweite Antwort auf eine bereits beantwortete Mail.
                   // Geloescht oder verschoben zaehlt dagegen nicht: dort ist
                   // nichts rausgegangen.
-                  const sentDuringReview = Boolean(live && Number(live.uid) >= 0);
+                  // Der Server-Compose-Pfad (mail-compose-send) setzt beim
+                  // Finalisieren nur `folder_kind = 'sent'` und laesst die
+                  // negative lokale uid stehen — die uid allein reicht als
+                  // Zustellnachweis also nicht.
+                  const sentDuringReview = Boolean(
+                    live && (Number(live.uid) >= 0 || live.folder_kind === 'sent'),
+                  );
                   await completeTerminalInboundChild(trx, input.terminalChainPayload, {
                     applied: sentDuringReview,
                     now: now(),

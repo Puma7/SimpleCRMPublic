@@ -109,6 +109,31 @@ export function terminalInboundChildContext(
   return { workspaceId, messageId, workflowId, chain: null, fanOutRunId: fanOutRunIdFromPayload(payload) };
 }
 
+/**
+ * Einmal-Schluessel fuer den Abschluss EINER terminalen Kindjob-Ausfuehrung.
+ *
+ * Bewusst hier statt in workflow-inbound-terminal-child: der Graphile-Pfad fuer
+ * endgueltige Fehlschlaege muss dieselbe Identitaet beanspruchen. Sonst haette
+ * er nur seine eigene Schranke (pro Graphile-Job) und dekrementierte die
+ * Join-Barriere ein zweites Mal, wenn der Kindjob seinen Erfolg bereits
+ * committet hatte, der Worker aber vor der Bestaetigung starb.
+ */
+export function terminalChildCompletionKey(payload: Record<string, unknown>): string | null {
+  const target = terminalInboundChildContext(payload);
+  if (!target) return null;
+  const nodeId = typeof payload.terminalNodeId === 'string' && payload.terminalNodeId.trim()
+    ? payload.terminalNodeId.trim()
+    : 'terminal';
+  const runId = positiveInt(payload.runId);
+  return [
+    'inbound_terminal_child_done',
+    target.messageId,
+    target.workflowId,
+    nodeId,
+    runId ?? 'none',
+  ].join(':');
+}
+
 /** Der Fan-out-Lauf reist im Continuation- bzw. Kontextteil der Payload mit. */
 function fanOutRunIdFromPayload(payload: Record<string, unknown>): number | null {
   const continuation = objectRecord(payload.continuation);
