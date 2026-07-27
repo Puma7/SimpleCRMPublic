@@ -972,6 +972,9 @@ function buildServerJobHandlers(input: {
         mergeJobHandlerRegistries(
           db ? createMaintenanceJobHandlers({
             db,
+            // Volle Charge => naechste nachschieben, sonst deckelt der Takt den
+            // Durchsatz auf `limit` Zeilen je Intervall (Begruendung dort).
+            ...(ports.jobQueue ? { requeue: ports.jobQueue } : {}),
             ...(auditArchiveRoot ? {
               auditArchive: createJsonlAuditRetentionArchivePort({ rootDir: auditArchiveRoot }),
             } : {}),

@@ -14670,6 +14670,75 @@ describe('server edition foundation', () => {
     }]);
   });
 
+  test('maintenance handlers requeue the next batch only when the current one filled up', async () => {
+    // Ohne Nachschieben deckelt der Takt den Durchsatz: je Lauf hoechstens
+    // `limit` Zeilen, bei taeglichem Takt also `limit` pro Tag. Ein Workspace
+    // mit hoeherer Ereignisrate oder Altbestand holte den Rueckstand nie auf.
+    const auditRows = makeAuditChainRows([
+      { id: 7, createdAt: '2026-05-01T12:00:00.000Z' },
+      { id: 8, createdAt: '2026-05-02T12:00:00.000Z' },
+      { id: 9, createdAt: '2026-05-03T12:00:00.000Z' },
+    ]);
+    const requeued: Array<{ type: string; workspaceId: string; runAfter?: Date }> = [];
+    const makeHandlers = (rows: Record<string, unknown[]>) => createMaintenanceJobHandlers({
+      db: makeMaintenanceDb(rows).db,
+      now: () => new Date('2026-06-03T12:00:00.000Z'),
+      requeue: {
+        async enqueue(input) {
+          requeued.push({
+            type: input.type,
+            workspaceId: input.workspaceId,
+            ...(input.runAfter ? { runAfter: input.runAfter } : {}),
+          });
+          return undefined;
+        },
+      },
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    // Volle Charge (limit 2, zwei geloeschte Sperren) => es liegt vermutlich mehr an.
+    await makeHandlers({
+      conversation_locks: [{ message_id: 41 }, { message_id: 42 }],
+      sync_info: [],
+    })['lock.cleanup']?.(makeQueuedJob({
+      id: 51,
+      type: 'lock.cleanup',
+      payload: { workspaceId: WORKSPACE_A_ID, staleSeconds: 120, limit: 2 },
+    }));
+    expect(requeued).toEqual([{
+      type: 'lock.cleanup',
+      workspaceId: WORKSPACE_A_ID,
+      // Kurze Pause statt sofort: abbauen, ohne die Datenbank zu fluten.
+      runAfter: new Date('2026-06-03T12:00:05.000Z'),
+    }]);
+
+    // Teilcharge => nichts nachschieben, sonst liefe der Takt endlos weiter.
+    requeued.length = 0;
+    await makeHandlers({
+      conversation_locks: [{ message_id: 41 }],
+      sync_info: [],
+    })['lock.cleanup']?.(makeQueuedJob({
+      id: 52,
+      type: 'lock.cleanup',
+      payload: { workspaceId: WORKSPACE_A_ID, staleSeconds: 120, limit: 2 },
+    }));
+    expect(requeued).toEqual([]);
+
+    // audit.retention: limit 2 liest 3 Zeilen, die Randzeile der Hash-Kette
+    // bleibt stehen — zwei Loeschungen sind die volle Charge.
+    requeued.length = 0;
+    await makeHandlers({ audit_events: auditRows })['audit.retention']?.(makeQueuedJob({
+      id: 53,
+      type: 'audit.retention',
+      payload: { workspaceId: WORKSPACE_A_ID, retentionDays: 30, limit: 2 },
+    }));
+    expect(requeued).toEqual([{
+      type: 'audit.retention',
+      workspaceId: WORKSPACE_A_ID,
+      runAfter: new Date('2026-06-03T12:00:05.000Z'),
+    }]);
+  });
+
   test('audit retention preserves a boundary event before retained chain segments', () => {
     expect(auditRetentionDeletionIds([
       { id: 1, created_at: '2026-05-01T00:00:00.000Z' },
