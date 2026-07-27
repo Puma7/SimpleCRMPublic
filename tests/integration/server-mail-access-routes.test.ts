@@ -5252,6 +5252,77 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('resolves the users whose visibility filter names a category or tag', async () => {
+    // Grundlage der Invalidierung nach Kategorie-/Tagmutationen: die Abfrage
+    // muss Array-Overlap und die Gruppenaufloesung gegen echtes Postgres
+    // treffen (&& auf bigint[]/text[], subject_id::bigint fuer Gruppen).
+    await ensureMailAclConstraintsSchema();
+    const db = createApplicationDb();
+    const bindingIds: string[] = [];
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const userBinding = await client.query<{ id: string }>(`
+        INSERT INTO mail_acl_bindings (workspace_id, subject_type, subject_id, resource_type, account_id, folder_id)
+        VALUES ('${WORKSPACE_A}', 'user', '${USER_SEND}', 'folder', ${ACCOUNT_A}, ${FOLDER_A})
+        RETURNING id::text AS id
+      `);
+      bindingIds.push(userBinding.rows[0]!.id);
+      const groupBinding = await client.query<{ id: string }>(`
+        INSERT INTO mail_acl_bindings (workspace_id, subject_type, subject_id, resource_type, account_id, folder_id)
+        VALUES ('${WORKSPACE_A}', 'group', '${GROUP_A}', 'folder', ${ACCOUNT_A}, ${FOLDER_A_SECOND})
+        RETURNING id::text AS id
+      `);
+      bindingIds.push(groupBinding.rows[0]!.id);
+      await client.query(`
+        INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_ids)
+        VALUES ('${WORKSPACE_A}', ${bindingIds[0]}, 'category', 'exclude', '{${CATEGORY_A}}'::bigint[])
+      `);
+      await client.query(`
+        INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_texts)
+        VALUES ('${WORKSPACE_A}', ${bindingIds[1]}, 'tag', 'allow', '{intern}'::text[])
+      `);
+      await client.query(`
+        INSERT INTO user_group_members (workspace_id, group_id, user_id)
+        VALUES ('${WORKSPACE_A}', ${GROUP_A}, '${USER_READ}')
+        ON CONFLICT DO NOTHING
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+
+      const port = createPostgresMailAccessPort({ db });
+      const byCategory = await port.resolveConstraintSubjectUserIds!({
+        workspaceId: WORKSPACE_A,
+        categoryIds: [CATEGORY_A],
+      });
+      expect([...byCategory]).toEqual([USER_SEND]);
+
+      const byTag = await port.resolveConstraintSubjectUserIds!({
+        workspaceId: WORKSPACE_A,
+        tags: ['intern'],
+      });
+      // Die Gruppenbindung loest auf ihre Mitglieder auf.
+      expect([...byTag]).toEqual([USER_READ]);
+
+      const untouched = await port.resolveConstraintSubjectUserIds!({
+        workspaceId: WORKSPACE_A,
+        categoryIds: [CATEGORY_A + 9999],
+        tags: ['nicht-referenziert'],
+      });
+      expect(untouched).toEqual([]);
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      for (const bindingId of bindingIds) {
+        await client.query(`DELETE FROM mail_acl_binding_constraints WHERE binding_id = ${bindingId}`).catch(() => undefined);
+        await client.query(`DELETE FROM mail_acl_bindings WHERE id = ${bindingId}`).catch(() => undefined);
+      }
+      await client.query(`
+        DELETE FROM user_group_members
+        WHERE workspace_id = '${WORKSPACE_A}' AND group_id = ${GROUP_A} AND user_id = '${USER_READ}'
+      `).catch(() => undefined);
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
   test('a category whose CHILD is referenced by an ACL constraint stays undeletable', async () => {
     // email_categories.parent_id kaskadiert (0007): das Loeschen eines nicht
     // referenzierten Elternknotens reisst die referenzierte Unterkategorie mit,

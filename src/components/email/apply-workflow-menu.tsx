@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { hasLocalIpc, type EmailMessage } from "./types"
+import { workflowGraphHasSideEffectNode } from "@shared/email-workflow-graph-validate"
 import { workflowTriggerLabel } from "./workflow/trigger-labels"
 import { WorkflowRunDetailDialog } from "./workflow/workflow-run-detail-dialog"
 import { useAuth } from "@/components/auth/auth-context"
@@ -30,6 +31,7 @@ type WorkflowRow = {
   trigger: string
   enabled: number
   priority: number
+  graph_json?: string | null
 }
 
 type ExecuteResult = {
@@ -58,7 +60,7 @@ export function ApplyWorkflowMenu({
   size = "sm",
   className,
 }: Props) {
-  const { hasCapability } = useAuth()
+  const { hasCapability, user } = useAuth()
   const [open, setOpen] = useState(false)
   const [workflows, setWorkflows] = useState<WorkflowRow[]>([])
   const [loadingList, setLoadingList] = useState(false)
@@ -67,8 +69,15 @@ export function ApplyWorkflowMenu({
   const [runDetailOpen, setRunDetailOpen] = useState(false)
 
   // Server edition: execute/dry-run require workflows.run; hide the dead-end menu.
-  const canExecuteWorkflows =
-    getRendererTransport().kind !== "http" || hasCapability("workflows.run")
+  const serverClientMode = getRendererTransport().kind === "http"
+  const canExecuteWorkflows = !serverClientMode || hasCapability("workflows.run")
+  // Ein LIVE-Lauf eines Graphen mit schreibenden Knoten laeuft serverseitig
+  // unter der System-Rolle ohne Per-Knoten-ACL und ist darum Admins vorbehalten
+  // (handleWorkflowExecute) — unabhaengig von workflows.run/manage. Fuer alle
+  // anderen waere „Jetzt ausfuehren" bei genau den typischen Tag-/Kategorie-/
+  // Mail-Workflows ein garantierter 403; dort bleibt nur der Dry-Run.
+  const canRunSideEffectWorkflowsLive =
+    !serverClientMode || user?.role === "owner" || user?.role === "admin"
 
   const loadWorkflows = useCallback(async () => {
     setLoadingList(true)
@@ -95,6 +104,18 @@ export function ApplyWorkflowMenu({
       ),
     [workflows, message],
   )
+
+  const liveRunBlocked = (row: WorkflowRow): boolean => {
+    if (canRunSideEffectWorkflowsLive) return false
+    if (!row.graph_json) return false
+    try {
+      return workflowGraphHasSideEffectNode(JSON.parse(row.graph_json))
+    } catch {
+      // Unlesbarer Graph: fail closed — lieber den Dry-Run anbieten als einen
+      // Knopf, der sicher im 403 endet.
+      return true
+    }
+  }
 
   const runWorkflow = async (workflowId: number, dryRun: boolean) => {
     if (runningId != null) return
@@ -199,12 +220,18 @@ export function ApplyWorkflowMenu({
                 <span className="truncate">{w.name}</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
-                <DropdownMenuItem
-                  onClick={() => void runWorkflow(w.id, false)}
-                  disabled={runningId != null}
-                >
-                  Jetzt ausführen
-                </DropdownMenuItem>
+                {liveRunBlocked(w) ? (
+                  <DropdownMenuItem disabled className="text-xs text-muted-foreground">
+                    Live-Ausführung erfordert Adminrechte
+                  </DropdownMenuItem>
+                ) : (
+                  <DropdownMenuItem
+                    onClick={() => void runWorkflow(w.id, false)}
+                    disabled={runningId != null}
+                  >
+                    Jetzt ausführen
+                  </DropdownMenuItem>
+                )}
                 {dryRunAvailable ? (
                   <>
                     <DropdownMenuItem

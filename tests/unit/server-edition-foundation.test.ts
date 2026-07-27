@@ -29136,6 +29136,71 @@ describe('server edition foundation', () => {
     expect(Object.prototype.hasOwnProperty.call(createCalls[1].values, 'linkedUserId')).toBe(false);
   });
 
+  test('tag and category mutations invalidate users whose visibility filter names them', async () => {
+    // sql-scope wertet categoryAllow/Exclude und tagAllow/Exclude aus: verliert
+    // eine Nachricht ihre einzige Allow-Kategorie oder bekommt sie einen
+    // ausgeschlossenen Tag, ist sie fuer den gefilterten Nutzer sofort gesperrt.
+    // Das email_message_tag/category-Ereignis erreicht ihn dann nicht mehr (es
+    // wird ueber den AKTUELLEN Nachrichten-Lookup autorisiert), seine Liste
+    // zeigt die Nachricht also weiter.
+    const events: ServerEvent[] = [];
+    const lookups: unknown[] = [];
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailMessageTags: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async create(input) {
+            return {
+              ok: true as const,
+              tag: {
+                id: 5,
+                sourceSqliteId: 5,
+                messageSourceSqliteId: input.values.messageId ?? 11,
+                messageId: input.values.messageId ?? 11,
+                tag: input.values.tag ?? 'intern',
+                createdAt: '2026-06-01T12:00:00.000Z',
+                updatedAt: '2026-06-02T12:00:00.000Z',
+              },
+            };
+          },
+          async delete() {
+            return null;
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          lookups.push(input);
+          return ['filtered-user-a', 'filtered-user-b'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      body: { messageId: 11, tag: 'intern' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(created.status).toBe(201);
+    expect(lookups).toEqual([{ workspaceId: WORKSPACE_A_ID, tags: ['intern'] }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId))
+      .toEqual(['filtered-user-a', 'filtered-user-b']);
+  });
+
   test('team member upsert reports an unknown linked user as a client error', async () => {
     // Syntaktisch gueltige, aber unbekannte UUID: ohne Aufloesung wirft der Port
     // und aus dem Eingabefehler wird ein HTTP 500.

@@ -54,6 +54,9 @@ export function MailSecurityPanel() {
   const canEdit = canManageSettings
   const [s, setS] = useState<MailSecuritySettings | null>(null)
   const [entries, setEntries] = useState<SpamListEntry[]>([])
+  // Die Liste braucht eine eigene Mail-Berechtigung; ohne sie bleibt der
+  // Abschnitt sichtbar, aber ausdruecklich nicht bedienbar.
+  const [spamListAvailable, setSpamListAvailable] = useState(true)
   const [loading, setLoading] = useState(true)
   const [testingRspamd, setTestingRspamd] = useState(false)
   const [newListType, setNewListType] = useState<"allow" | "block">("allow")
@@ -63,15 +66,26 @@ export function MailSecurityPanel() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [settings, list] = await Promise.all([
-        invokeRenderer(IPCChannels.Email.GetMailSecuritySettings) as Promise<MailSecuritySettings>,
-        invokeRenderer(IPCChannels.Email.ListSpamListEntries, "all") as Promise<SpamListEntry[]>,
-      ])
+      const settings = await invokeRenderer(IPCChannels.Email.GetMailSecuritySettings) as MailSecuritySettings
       setS(settings)
-      setEntries(list)
     } catch (e) {
       console.error(e)
       toast.error("Mail-Sicherheit konnte nicht geladen werden.")
+    }
+    // GETRENNT laden: die Allow-/Blocklist haengt an der Mail-Policy
+    // (mail.metadata.read ueber den gesamten Workspace), die Einstellungen
+    // daneben an settings.view/manage. Ein delegierter Einstellungsnutzer ohne
+    // vollen Mail-Scope bekommt hier 403 — in einem gemeinsamen Promise.all
+    // haette der auch die erfolgreich geladenen Sicherheitseinstellungen
+    // verworfen und das ganze Panel leer gelassen.
+    try {
+      const list = await invokeRenderer(IPCChannels.Email.ListSpamListEntries, "all") as SpamListEntry[]
+      setEntries(list)
+      setSpamListAvailable(true)
+    } catch (e) {
+      console.error(e)
+      setEntries([])
+      setSpamListAvailable(false)
     } finally {
       setLoading(false)
     }
@@ -110,7 +124,7 @@ export function MailSecurityPanel() {
   }
 
   const addEntry = async () => {
-    if (!canEdit) return
+    if (!canEdit || !spamListAvailable) return
     const pattern = newPattern.trim()
     if (!pattern) return
     const result = await invokeRenderer(IPCChannels.Email.SaveSpamListEntry, {
@@ -292,13 +306,19 @@ export function MailSecurityPanel() {
 
       <div className="space-y-3 rounded-lg border p-4">
         <h4 className="text-sm font-medium">Allowlist / Blocklist</h4>
+        {spamListAvailable ? null : (
+          <p className="text-xs text-muted-foreground">
+            Nicht verfügbar: die Allow-/Blocklist erfordert Zugriff auf alle Postfächer des
+            Workspace. Die Sicherheitseinstellungen oben lassen sich unabhängig davon bearbeiten.
+          </p>
+        )}
         <div className="grid gap-2 md:grid-cols-[140px_1fr_1fr_auto]">
           <div className="flex rounded-md border p-1">
             <Button
               type="button"
               size="sm"
               variant={newListType === "allow" ? "secondary" : "ghost"}
-              disabled={!canEdit}
+              disabled={!canEdit || !spamListAvailable}
               onClick={() => setNewListType("allow")}
             >
               Allow
@@ -307,15 +327,15 @@ export function MailSecurityPanel() {
               type="button"
               size="sm"
               variant={newListType === "block" ? "secondary" : "ghost"}
-              disabled={!canEdit}
+              disabled={!canEdit || !spamListAvailable}
               onClick={() => setNewListType("block")}
             >
               Block
             </Button>
           </div>
-          <Input value={newPattern} disabled={!canEdit} onChange={(e) => setNewPattern(e.target.value)} placeholder="kunde.de oder name@kunde.de" />
-          <Input value={newNote} disabled={!canEdit} onChange={(e) => setNewNote(e.target.value)} placeholder="Notiz" />
-          <Button type="button" size="icon" disabled={!canEdit} onClick={() => void addEntry()} title="Eintrag hinzufuegen">
+          <Input value={newPattern} disabled={!canEdit || !spamListAvailable} onChange={(e) => setNewPattern(e.target.value)} placeholder="kunde.de oder name@kunde.de" />
+          <Input value={newNote} disabled={!canEdit || !spamListAvailable} onChange={(e) => setNewNote(e.target.value)} placeholder="Notiz" />
+          <Button type="button" size="icon" disabled={!canEdit || !spamListAvailable} onClick={() => void addEntry()} title="Eintrag hinzufuegen">
             <Plus className="h-4 w-4" />
           </Button>
         </div>

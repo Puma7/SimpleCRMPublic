@@ -114,6 +114,18 @@ export interface MailAccessPort {
     workspaceId: string;
     messageId: number;
   }>): Promise<MailMessageVisibilityFacts | null>;
+
+  /**
+   * Nutzer, deren Bindings eine der genannten Kategorien/Tags als
+   * Sichtbarkeitsfilter referenzieren (Gruppen bereits auf Mitglieder
+   * aufgeloest). Eine Kategorie-/Tag-Aenderung an einer Nachricht kann deren
+   * Sichtbarkeit fuer genau diese Nutzer kippen.
+   */
+  resolveConstraintSubjectUserIds?(input: Readonly<{
+    workspaceId: string;
+    categoryIds?: readonly number[];
+    tags?: readonly string[];
+  }>): Promise<readonly string[]>;
 }
 
 export interface MailAccessService {
@@ -137,6 +149,18 @@ export interface MailAccessService {
    * Optional, damit schlanke Test-Doubles den Contract weiterhin erfuellen.
    */
   resolveGroupPeerUserIds?(workspaceId: string, userId: string): Promise<readonly string[]>;
+
+  /**
+   * Nutzer, deren Sichtbarkeitsfilter die genannten Kategorien/Tags
+   * referenzieren — Routen invalidieren nach einer Kategorie-/Tag-Mutation
+   * genau diese, weil deren Liste die Nachricht sonst weiter zeigt (oder
+   * verpasst). Optional, damit schlanke Test-Doubles den Contract erfuellen.
+   */
+  resolveConstraintSubjectUserIds?(input: Readonly<{
+    workspaceId: string;
+    categoryIds?: readonly number[];
+    tags?: readonly string[];
+  }>): Promise<readonly string[]>;
 }
 
 export type MailAclRolloutMode = 'shadow' | 'enforce';

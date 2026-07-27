@@ -170,6 +170,16 @@ export class MailAccessRolloutService implements MailAccessService {
     return context.groupMemberUserIds.length > 0 ? context.groupMemberUserIds : [userId];
   }
 
+  /** Wie die Gruppen-Peers: die Sichtbarkeitsfilter stammen immer aus der NEUEN
+   *  ACL, auch im Shadow-Modus. */
+  async resolveConstraintSubjectUserIds(
+    input: Readonly<{ workspaceId: string; categoryIds?: readonly number[]; tags?: readonly string[] }>,
+  ): Promise<readonly string[]> {
+    const resolve = this.options.newAcl.resolveConstraintSubjectUserIds;
+    if (!resolve) return [];
+    return resolve.call(this.options.newAcl, input);
+  }
+
   async resolveScope(input: Parameters<MailAccessService['resolveScope']>[0]): Promise<MailSqlScope> {
     if (input.actor.workspaceId !== input.workspaceId) return { kind: 'none' };
     if (input.actor.isOwner || input.actor.isAdmin) return { kind: 'all' };

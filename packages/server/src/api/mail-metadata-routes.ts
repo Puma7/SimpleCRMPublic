@@ -673,6 +673,7 @@ async function handleCreateEmailMessageTag(
   const tag = result.tag;
   await auditEmailMessageTag(ports, principal, 'email_message_tag.created', tag, { messageId: tag.messageId, tag: tag.tag });
   await publishEmailMessageTag(ports, principal.workspaceId, 'email_message_tag.created', tag, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, { tags: [tag.tag] });
   return data(201, sanitizeEmailMessageTag(tag));
 }
 
@@ -698,6 +699,7 @@ async function handleDeleteEmailMessageTag(
 
   await auditEmailMessageTag(ports, principal, 'email_message_tag.deleted', tag, { messageId: tag.messageId, tag: tag.tag });
   await publishEmailMessageTag(ports, principal.workspaceId, 'email_message_tag.deleted', tag, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, { tags: [tag.tag] });
   return data(200, { deleted: true, tag: sanitizeEmailMessageTag(tag) });
 }
 
@@ -734,6 +736,7 @@ async function handleDeleteEmailMessageTagForMessage(
 
   await auditEmailMessageTag(ports, principal, 'email_message_tag.deleted', deleted, { messageId: deleted.messageId, tag: deleted.tag });
   await publishEmailMessageTag(ports, principal.workspaceId, 'email_message_tag.deleted', deleted, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, { tags: [deleted.tag] });
   return data(200, { deleted: true, tag: sanitizeEmailMessageTag(deleted) });
 }
 
@@ -912,6 +915,9 @@ async function handleCreateEmailMessageCategory(
     categoryId: category.categoryId,
   });
   await publishEmailMessageCategory(ports, principal.workspaceId, 'email_message_category.created', category, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, {
+    categoryIds: category.categoryId === null ? [] : [category.categoryId],
+  });
   return data(201, sanitizeEmailMessageCategory(category));
 }
 
@@ -940,6 +946,9 @@ async function handleDeleteEmailMessageCategory(
     categoryId: category.categoryId,
   });
   await publishEmailMessageCategory(ports, principal.workspaceId, 'email_message_category.deleted', category, principal.userId);
+  await publishVisibilityFilterInvalidation(ports, principal.workspaceId, principal.userId, {
+    categoryIds: category.categoryId === null ? [] : [category.categoryId],
+  });
   return data(200, { deleted: true, messageCategory: sanitizeEmailMessageCategory(category) });
 }
 
@@ -1166,6 +1175,54 @@ function creationValuesWithoutImplicitLink<T extends { linkedUserId?: string | n
 ): T {
   if (requireAdmin(principal)) return values;
   return { ...values, linkedUserId: null };
+}
+
+/**
+ * Eine Kategorie-/Tag-Aenderung kann die Sichtbarkeit einer Nachricht fuer
+ * Nutzer mit entsprechendem Sichtbarkeitsfilter kippen (sql-scope:
+ * categoryAllow/Exclude, tagAllow/Exclude). Die reinen
+ * email_message_tag/category-Ereignisse helfen dabei nicht: sie werden ueber
+ * den AKTUELLEN Nachrichten-Lookup autorisiert, erreichen den gerade
+ * ausgeschlossenen Nutzer also nicht mehr. Darum zusaetzlich eine gezielte
+ * email_acl.changed-Invalidierung an alle Nutzer, deren Filter genau diese
+ * Kategorie/diesen Tag nennen. Bewusst grob (kein Vorher/Nachher-Diff pro
+ * Nachricht): Ueber-Invalidierung kostet einen Refresh, eine verpasste laesst
+ * eine gesperrte Nachricht offen. Best effort — die Mutation ist committed.
+ */
+async function publishVisibilityFilterInvalidation(
+  ports: ServerApiPorts,
+  workspaceId: string,
+  actorUserId: string,
+  affected: Readonly<{ categoryIds?: readonly number[]; tags?: readonly string[] }>,
+): Promise<void> {
+  let targets: readonly string[] = [];
+  try {
+    const resolve = ports.mailAccess?.resolveConstraintSubjectUserIds;
+    if (!resolve) return;
+    targets = await resolve.call(ports.mailAccess, { workspaceId, ...affected });
+  } catch (error) {
+    console.warn(
+      `[mail-metadata] visibility filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  for (const targetUserId of new Set(targets)) {
+    try {
+      await ports.events?.publish({
+        type: 'email_acl.changed',
+        workspaceId,
+        entityType: 'email_acl',
+        entityId: targetUserId,
+        actorUserId,
+        occurredAt: new Date().toISOString(),
+        payload: { targetUserId, state: 'changed' },
+      });
+    } catch (error) {
+      console.warn(
+        `[mail-metadata] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 }
 
 async function handleCreateEmailTeamMember(

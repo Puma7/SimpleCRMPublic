@@ -187,6 +187,19 @@ export class MailAccessService implements MailAccessServiceContract {
     return context.groupMemberUserIds.length > 0 ? context.groupMemberUserIds : [userId];
   }
 
+  /**
+   * Nutzer, deren Sichtbarkeitsfilter die genannten Kategorien/Tags nennen —
+   * genau die, deren Sicht auf eine Nachricht mit einer Kategorie-/Tag-Aenderung
+   * kippen kann.
+   */
+  async resolveConstraintSubjectUserIds(
+    input: Readonly<{ workspaceId: string; categoryIds?: readonly number[]; tags?: readonly string[] }>,
+  ): Promise<readonly string[]> {
+    const resolve = this.port.resolveConstraintSubjectUserIds;
+    if (!resolve) return [];
+    return resolve.call(this.port, input);
+  }
+
   private async resolveActorContext(workspaceId: string, userId: string): Promise<MailScopeActorContext> {
     if (this.port.resolveScopeActorContext) {
       return this.port.resolveScopeActorContext({ workspaceId, userId });

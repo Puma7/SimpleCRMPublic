@@ -84,6 +84,45 @@ export function createPostgresMailAccessPort(options: PostgresMailAccessPortOpti
         sessionOptions,
       );
     },
+
+    async resolveConstraintSubjectUserIds(input): Promise<readonly string[]> {
+      const categoryIds = (input.categoryIds ?? []).filter((id) => Number.isSafeInteger(id) && id > 0);
+      const tags = (input.tags ?? []).filter((tag) => typeof tag === 'string' && tag.length > 0);
+      if (categoryIds.length === 0 && tags.length === 0) return [];
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          // Bindings, deren Kategorie-/Tag-Filter eine der geaenderten Werte
+          // nennen — Gruppen gleich auf ihre Mitglieder aufgeloest. Bewusst
+          // grob: wir invalidieren jeden Nutzer mit einem betroffenen Filter,
+          // statt pro Nachricht vorher/nachher zu diffen. Ueber-Invalidierung
+          // kostet einen Refresh, eine verpasste laesst eine gesperrte
+          // Nachricht offen.
+          const result = await sql<{ user_id: string }>`
+            WITH affected AS (
+              SELECT binding.subject_type, binding.subject_id
+              FROM mail_acl_binding_constraints AS constraints
+              JOIN mail_acl_bindings AS binding ON binding.id = constraints.binding_id
+              WHERE constraints.workspace_id = ${input.workspaceId}::uuid
+                AND (
+                  (constraints.kind = 'category' AND constraints.value_ids && ${categoryIds}::bigint[])
+                  OR (constraints.kind = 'tag' AND constraints.value_texts && ${tags}::text[])
+                )
+            )
+            SELECT DISTINCT subject_id AS user_id FROM affected WHERE subject_type = 'user'
+            UNION
+            SELECT DISTINCT member.user_id::text AS user_id
+            FROM affected
+            JOIN user_group_members AS member
+              ON member.group_id = affected.subject_id::bigint
+            WHERE affected.subject_type = 'group'
+          `.execute(trx);
+          return result.rows.map((row) => row.user_id);
+        },
+        sessionOptions,
+      );
+    },
   };
 }
 
