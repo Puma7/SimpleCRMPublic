@@ -20,6 +20,11 @@ jest.mock('../../electron/sqlite-service', () => ({
   setSyncInfo: (...args: unknown[]) => mockSetSyncInfo(...args),
 }));
 
+const mockSetDraftApprovalPending = jest.fn();
+jest.mock('../../electron/email/email-draft-approval', () => ({
+  setDraftApprovalPending: (...args: unknown[]) => mockSetDraftApprovalPending(...args),
+}));
+
 import { processDueScheduledSends } from '../../electron/email/email-scheduled-send';
 
 describe('email-scheduled-send', () => {
@@ -79,7 +84,11 @@ describe('email-scheduled-send', () => {
       bcc_json: null,
     });
     mockSendCompose.mockResolvedValue({ ok: false, error: 'smtp fail' });
-    mockGetSyncInfo.mockReturnValue('4');
+    // sync_info ist ein geteilter Schluesselraum: nur der Fehlerzaehler
+    // antwortet, sonst saehe der Lauf ein geparktes HOLD, das es nicht gibt.
+    mockGetSyncInfo.mockImplementation((key: string) => (
+      key === 'scheduled_send_failures:12' ? '4' : null
+    ));
     await processDueScheduledSends(logger);
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_failures:12', '5');
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_status:12', 'failed');

@@ -431,14 +431,23 @@ export async function completeInboundDeferredJoinSibling(
   return error ? 'ready_error' : 'ready';
 }
 
-/** Insert the next priority inbound workflow.execute after a terminal child failure. */
-export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
+/**
+ * Kettenabschluss eines terminalen Kindjobs: Join-Barriere abbauen und — wenn
+ * sie das erlaubt — den naechsten Prioritaets-Workflow einreihen.
+ *
+ * Gibt den Join-Zustand mit zurueck, weil er entscheidet, ob der Aufrufer den
+ * Applied-Marker setzen darf: `ready_error` heisst „alle Geschwister durch, aber
+ * mindestens eines ist ausgefallen" — dann gilt der Lauf nicht als angewendet.
+ * `state: null` ⇒ kein Kettenkontext (oder Nachricht geloescht), nichts zu tun.
+ */
+export async function advanceInboundChainAfterTerminalChild(
   trx: WorkspaceTransaction,
   payload: Record<string, unknown>,
-  now: Date,
-): Promise<boolean> {
+  input: { error?: boolean; now: Date },
+): Promise<{ state: InboundDeferredJoinState | null; advanced: boolean }> {
+  const now = input.now;
   const parsed = inboundChainFromJobPayload(payload);
-  if (!parsed) return false;
+  if (!parsed) return { state: null, advanced: false };
 
   const message = await trx
     .selectFrom('email_messages')
@@ -446,10 +455,10 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
     .where('workspace_id', '=', parsed.workspaceId)
     .where('id', '=', parsed.messageId)
     .executeTakeFirst();
-  if (!message) return false;
+  if (!message) return { state: null, advanced: false };
 
   const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
-  if (currentWorkflowId == null) return false;
+  if (currentWorkflowId == null) return { state: null, advanced: false };
   // Die Join-Barriere muss auch dann abgebaut werden, wenn es keinen nächsten
   // Workflow mehr gibt (letzter Kettenplatz). Sonst bliebe die sync_info-Zeile
   // dauerhaft pending, ein erfolgreicher Geschwisterzweig wartet an der
@@ -461,12 +470,13 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
     workflowId: currentWorkflowId,
     chain: parsed.chain,
     chainStop: false,
+    ...(input.error === true ? { error: true } : {}),
     now,
   });
-  if (!inboundJoinAllowsAdvance(join)) return false;
+  if (!inboundJoinAllowsAdvance(join)) return { state: join, advanced: false };
 
   const nextIndex = parsed.chain.index + 1;
-  if (nextIndex >= parsed.chain.workflowIds.length) return false;
+  if (nextIndex >= parsed.chain.workflowIds.length) return { state: join, advanced: false };
 
   const claimed = await tryClaimInboundChainHop(trx, {
     workspaceId: parsed.workspaceId,
@@ -475,7 +485,7 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
     nextIndex,
     now,
   });
-  if (!claimed) return false;
+  if (!claimed) return { state: join, advanced: false };
 
   const jobPayload = parsed.actorUserId
     ? {
@@ -509,5 +519,15 @@ export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
       updated_at: now,
     })
     .execute();
-  return true;
+  return { state: join, advanced: true };
+}
+
+/** Insert the next priority inbound workflow.execute after a terminal child failure. */
+export async function enqueueNextInboundWorkflowAfterTerminalChildFailure(
+  trx: WorkspaceTransaction,
+  payload: Record<string, unknown>,
+  now: Date,
+): Promise<boolean> {
+  const { advanced } = await advanceInboundChainAfterTerminalChild(trx, payload, { now });
+  return advanced;
 }

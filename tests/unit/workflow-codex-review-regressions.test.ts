@@ -381,7 +381,7 @@ describe('codex review regression guards', () => {
     // Join-Barriere auch am letzten Kettenplatz abbauen (sonst bleibt sync_info
     // dauerhaft pending und ein erfolgreicher Geschwisterzweig wartet ewig).
     expect(advance).toMatch(
-      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return false;\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
+      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return \{ state: join, advanced: false \};\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
     );
     // Gleicher Fehler im Graphile-Terminalpfad: kein return vor dem Join.
     expect(graphile).not.toMatch(
@@ -499,6 +499,72 @@ describe('codex review regression guards', () => {
     expect(scheduled).toContain('releaseScheduledSendClaim(draftId)');
     expect(approval).toContain('scheduledSendIsClaimed(messageId)');
     expect(desktopActions).toContain('scheduledSendIsClaimed(draftId)');
+  });
+
+  test('review-runde 16: die Abschluss-Invariante terminaler KI-Kindjobs traegt', () => {
+    const execution = readRepoFile('packages/server/src/workflow-execution.ts');
+    const terminal = readRepoFile('packages/server/src/workflow-inbound-terminal-child.ts');
+    const classification = readRepoFile('packages/server/src/ai-classification.ts');
+    const draftNodes = readRepoFile('packages/server/src/workflow-ai-draft-nodes.ts');
+    const graphile = readRepoFile('packages/server/src/jobs/graphile-worker.ts');
+    const claim = readRepoFile('electron/email/email-scheduled-send-claim.ts');
+    const scheduled = readRepoFile('electron/email/email-scheduled-send.ts');
+    const aiNodes = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+
+    // Sicherheitsnetz statt Pfad-fuer-Pfad: alle vier Kindjob-Ports laufen
+    // durch runTerminalInboundChild, sonst haengt ein vergessener frueher
+    // `return` (z. B. ai.agent mit createDraft:false) die Kette dauerhaft.
+    expect(
+      (classification.match(/runTerminalInboundChild\(options, input, now, async \(\) => \{/g) ?? []),
+    ).toHaveLength(2);
+    expect(
+      (draftNodes.match(/runTerminalInboundChild\(deps, input, now, async \(\) => \{/g) ?? []),
+    ).toHaveLength(2);
+
+    // Einmal-Schranke: ein Job-Retry darf die Join-Barriere nicht ein zweites
+    // Mal herunterzaehlen (pending faellt sonst zu frueh auf 0).
+    expect(terminal).toContain('inbound_terminal_child_done');
+    expect(terminal).toContain('.onConflict((oc) => oc.columns([\'workspace_id\', \'key\']).doNothing())');
+
+    // Reihenfolge: erst Join, dann Applied-Marker — und der Marker faellt aus,
+    // wenn ein Geschwisterzweig ausgefallen ist.
+    expect(terminal).toMatch(
+      /advanceInboundChainAfterTerminalChild\([\s\S]*?state === 'ready_error'[\s\S]*?markInboundWorkflowAppliedByIds/,
+    );
+
+    // Kettenloser Kontext (Backfill, Nicht-Inbound): Applied-Marker faellt auf
+    // die direkt gestempelten ids zurueck statt ganz auszubleiben.
+    expect(terminal).toContain('positiveInt(payload.workflowId)');
+
+    // Knoten- und Lauf-Identitaet auf allen vier terminalen Payloads, sonst
+    // teilen sich zwei terminale Zweige Job-Key und Einmal-Schranke.
+    expect(execution.match(/terminalNodeId: node\.id,/g)).toHaveLength(4);
+    expect(graphile).toContain('graphileChildNodeKeyPart');
+    // ai.pick_canned hatte ueberhaupt keinen Job-Key.
+    expect(graphile).toMatch(/if \(type === 'ai\.pick_canned'\) \{[\s\S]*?graphileChildNodeKeyPart\(payload\)/);
+
+    // Sibling-Abbruch haengt auch im Entwurfspfad nicht mehr an der Continuation.
+    expect(draftNodes).toContain('terminal?.chain.workflowIds[terminal.chain.index]');
+    expect(
+      (draftNodes.match(/terminalChainPayload: input\.terminalChainPayload,/g) ?? []),
+    ).toHaveLength(4);
+
+    // Gleiche Reihenfolge im HTTP-Terminalpfad: ein Knoten mit Fehler-, aber
+    // ohne Erfolgskante deferiert ebenfalls und zaehlt in der Join-Barriere.
+    expect(execution).toMatch(
+      /continuation:terminal_success[\s\S]*?completeInboundDeferredJoinSibling\([\s\S]*?join === 'ready'[\s\S]*?markInboundWorkflowApplied/,
+    );
+
+    // Desktop: Boot-Sweep raeumt JEDEN Claim ab — nach einem Neustart kann
+    // keiner mehr zu einem laufenden SMTP-Aufruf gehoeren.
+    expect(claim).toMatch(/releaseStaleScheduledSendClaims\(\): number \{[\s\S]*?return rows\.length;/);
+    expect(claim).not.toContain('if (activeClaimAge(row.value, now) !== null) continue;');
+
+    // Desktop: ein waehrend des Versands verworfenes HOLD wird geparkt und bei
+    // gescheitertem Versand nachgeholt.
+    expect(aiNodes).toContain('deferHoldDuringSend(draftId, reason)');
+    expect(scheduled).toContain('takeDeferredSendHold(draftId)');
+    expect(scheduled).toMatch(/if \(deferredHold && !delivered\) \{[\s\S]*?setDraftApprovalPending\(draftId, deferredHold\)/);
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {

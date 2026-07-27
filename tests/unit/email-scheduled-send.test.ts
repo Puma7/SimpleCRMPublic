@@ -9,6 +9,11 @@ jest.mock('../../electron/sqlite-service', () => ({
   setSyncInfo: (...args: unknown[]) => mockSetSyncInfo(...args),
 }));
 
+const mockSetDraftApprovalPending = jest.fn();
+jest.mock('../../electron/email/email-draft-approval', () => ({
+  setDraftApprovalPending: (...args: unknown[]) => mockSetDraftApprovalPending(...args),
+}));
+
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: jest.fn((id: number) => ({
     id,
@@ -37,15 +42,24 @@ import { processDueScheduledSends } from '../../electron/email/email-scheduled-s
 describe('email-scheduled-send', () => {
   const logger = { warn: jest.fn(), debug: jest.fn() };
 
+  /**
+   * sync_info ist ein geteilter Schluesselraum — der Mock muss nach Schluessel
+   * antworten. Ein pauschaler Rueckgabewert liesse jeden Lauf so aussehen, als
+   * laege ein geparktes HOLD der Gegenlese-KI vor.
+   */
+  function syncInfo(values: Record<string, string>): void {
+    mockGetSyncInfo.mockImplementation((key: string) => values[key] ?? '');
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockListDue.mockReturnValue([99]);
-    mockGetSyncInfo.mockReturnValue('0');
+    syncInfo({ 'scheduled_send_failures:99': '0' });
   });
 
   test('clears schedule after repeated throws', async () => {
     mockSendComposeDraft.mockRejectedValue(new Error('db locked'));
-    mockGetSyncInfo.mockReturnValue('4');
+    syncInfo({ 'scheduled_send_failures:99': '4' });
 
     await processDueScheduledSends(logger);
 
@@ -55,11 +69,45 @@ describe('email-scheduled-send', () => {
 
   test('does not clear schedule on first throw', async () => {
     mockSendComposeDraft.mockRejectedValue(new Error('transient'));
-    mockGetSyncInfo.mockReturnValue('0');
+    syncInfo({ 'scheduled_send_failures:99': '0' });
 
     await processDueScheduledSends(logger);
 
     expect(mockSetDraftScheduledSendAt).not.toHaveBeenCalled();
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_failures:99', '1');
+  });
+
+  test('geparktes HOLD wird nach gescheitertem Versand nachgeholt', async () => {
+    // Die Gegenlese-KI kam waehrend des laufenden SMTP-Aufrufs zu spaet und hat
+    // ihr HOLD geparkt. Geht die Mail dann doch nicht raus, muss der Entwurf auf
+    // „Wartet auf Freigabe" — sonst versendet ihn der naechste faellige Lauf
+    // ungeprueft.
+    mockSendComposeDraft.mockResolvedValue({ ok: false, error: 'SMTP 550' });
+    syncInfo({
+      'scheduled_send_failures:99': '0',
+      'scheduled_send_deferred_hold:99': 'Gegenlese-KI empfiehlt menschliche Pruefung',
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).toHaveBeenCalledWith(
+      99,
+      'Gegenlese-KI empfiehlt menschliche Pruefung',
+    );
+    // Der Parkplatz wird dabei verbraucht.
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('erfolgreicher Versand verbraucht das geparkte HOLD ohne es anzuwenden', async () => {
+    mockSendComposeDraft.mockResolvedValue({ ok: true });
+    syncInfo({
+      'scheduled_send_failures:99': '0',
+      'scheduled_send_deferred_hold:99': 'zu spaet',
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
   });
 });

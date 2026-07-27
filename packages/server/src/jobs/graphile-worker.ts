@@ -443,6 +443,22 @@ export function graphileQueueNameForJob(type: ServerJobType, payload: JobPayload
   return undefined;
 }
 
+/**
+ * Knoten-Diskriminante fuer den Job-Key eines KI-Kindjobs.
+ *
+ * Ein TERMINALER Knoten hat keine `resumeNodeId`. Ohne eigene Diskriminante
+ * fielen zwei terminale Zweige derselben Nachricht auf denselben Key und
+ * jobKeyMode 'replace' verschluckte einen davon — der Elternlauf bliebe
+ * dauerhaft deferred, weil nur der ueberlebende Kindjob den Kettenabschluss
+ * ausfuehrt.
+ */
+function graphileChildNodeKeyPart(payload: JobPayload): string | undefined {
+  return graphileKeyScalar(payload.resumeNodeId)
+    ?? (payload.terminalWorkflowCompletion === true
+      ? graphileKeyScalar(payload.terminalNodeId)
+      : undefined);
+}
+
 export function graphileJobKeyForJob(
   type: ServerJobType,
   payload: JobPayload,
@@ -472,11 +488,24 @@ export function graphileJobKeyForJob(
   if (type === 'ai.agent') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
-    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
-    if (workspaceKey && workflowId && resumeNodeId) {
-      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${resumeNodeId}`;
+    const nodeKey = graphileChildNodeKeyPart(payload);
+    const runId = graphileKeyScalar(payload.runId);
+    if (workspaceKey && workflowId && nodeKey) {
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}`;
     }
     if (workspaceKey && messageId) return `${type}:${workspaceKey}:${messageId}`;
+  }
+  if (type === 'ai.pick_canned') {
+    // Nur Workflow-Kindjobs bekommen einen Key. Compose-initiierte Aufrufe
+    // bleiben bewusst ohne, sonst verschluckt jobKeyMode 'replace' die zweite
+    // manuelle Bausteinauswahl auf derselben Nachricht.
+    const messageId = graphileKeyScalar(payload.messageId);
+    const workflowId = graphileKeyScalar(payload.workflowId);
+    const nodeKey = graphileChildNodeKeyPart(payload);
+    const runId = graphileKeyScalar(payload.runId);
+    if (workspaceKey && workflowId && nodeKey) {
+      return `${type}:${workspaceKey}:${workflowId}:${messageId ?? 'none'}:${nodeKey}:${runId ?? 'none'}`;
+    }
   }
   if (type === 'ai.classify') {
     const messageId = graphileKeyScalar(payload.messageId);
@@ -499,7 +528,7 @@ export function graphileJobKeyForJob(
   if (type === 'ai.draft_reply') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
-    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    const resumeNodeId = graphileChildNodeKeyPart(payload);
     // runId gehört in den Key: wird derselbe Workflow erneut auf dieselbe
     // Nachricht angewandt, während der erste KI-Job noch wartet, würde
     // jobKeyMode 'replace' sonst die erste Fortsetzung verschlucken (der erste
@@ -514,7 +543,7 @@ export function graphileJobKeyForJob(
   if (type === 'ai.review_draft') {
     const messageId = graphileKeyScalar(payload.messageId);
     const workflowId = graphileKeyScalar(payload.workflowId);
-    const resumeNodeId = graphileKeyScalar(payload.resumeNodeId);
+    const resumeNodeId = graphileChildNodeKeyPart(payload);
     // Analog zu ai.draft_reply: der konkrete Entwurf gehört in den Key, sonst
     // ersetzt eine zweite Gegenprüfung die erste und ein Entwurf bleibt ungeprüft.
     const draftId = graphileKeyScalar(payload.draftId);

@@ -49,20 +49,53 @@ export function releaseScheduledSendClaim(draftId: number): void {
   setSyncInfo(scheduledSendClaimedAtKey(draftId), '');
 }
 
+const DEFERRED_HOLD_PREFIX = 'scheduled_send_deferred_hold:';
+
+function deferredHoldKey(draftId: number): string {
+  return `${DEFERRED_HOLD_PREFIX}${draftId}`;
+}
+
 /**
- * Beim App-Start: Claims aufräumen, deren Prozess den Versand nie beendet hat.
- * Der Ablauf über `STALE_CLAIM_MS` würde sie ohnehin entwerten; der Sweep hält
- * die sync_info-Tabelle zusätzlich sauber.
+ * Die Gegenlese-KI wollte den Entwurf zurückhalten, kam aber zu spät: der
+ * Versand lief schon. Der Stempel „Wartet auf Freigabe" wäre jetzt gelogen —
+ * also wird das Urteil hier geparkt statt verworfen.
+ *
+ * Ohne diesen Parkplatz wäre ein HOLD endgültig weg, sobald ein Claim stand.
+ * Scheitert der SMTP-Aufruf danach (kein Empfänger, Auth, Netz), bliebe ein
+ * Entwurf zurück, den die KI ausdrücklich nicht freigegeben hat, der aber wie
+ * jeder andere Entwurf beim nächsten fälligen Durchlauf erneut versendet würde.
  */
-export function releaseStaleScheduledSendClaims(now: Date = new Date()): number {
+export function deferHoldDuringSend(draftId: number, reason: string): void {
+  setSyncInfo(deferredHoldKey(draftId), reason.slice(0, 500) || 'Gegenlese-KI empfiehlt menschliche Prüfung');
+}
+
+/** Geparktes HOLD auslesen und verbrauchen (auch wenn es verfällt). */
+export function takeDeferredSendHold(draftId: number): string | null {
+  const reason = getSyncInfo(deferredHoldKey(draftId));
+  if (!reason) return null;
+  setSyncInfo(deferredHoldKey(draftId), '');
+  return reason;
+}
+
+/**
+ * Beim App-Start: ALLE Versand-Claims aufräumen.
+ *
+ * Der Claim gilt nur innerhalb eines laufenden Prozesses — er wird gesetzt,
+ * bevor `sendComposeDraft` losläuft, und im `finally` desselben Aufrufs wieder
+ * freigegeben. Läuft die App neu an, kann per Definition kein Claim mehr zu
+ * einem laufenden SMTP-Aufruf gehören: der Prozess, der ihn hielt, existiert
+ * nicht mehr. Ein Alterstest wäre hier also falsch — ein Claim, der 30 Sekunden
+ * vor dem Absturz gesetzt wurde, ist genauso tot wie einer von gestern, würde
+ * aber überleben und den Entwurf bis zum Ablauf von `STALE_CLAIM_MS` blockieren.
+ * Der Ablauf bleibt trotzdem als zweite Sicherung bestehen (Absturz ohne
+ * Neustart, mehrere Fenster auf derselben Datenbank).
+ */
+export function releaseStaleScheduledSendClaims(): number {
   const rows = getDb()
-    .prepare(`SELECT key, value FROM sync_info WHERE key LIKE ?`)
-    .all(`${SCHEDULED_SEND_CLAIMED_AT_PREFIX}%`) as { key: string; value: string | null }[];
-  let released = 0;
+    .prepare(`SELECT key FROM sync_info WHERE key LIKE ?`)
+    .all(`${SCHEDULED_SEND_CLAIMED_AT_PREFIX}%`) as { key: string }[];
   for (const row of rows) {
-    if (activeClaimAge(row.value, now) !== null) continue;
     getDb().prepare(`DELETE FROM sync_info WHERE key = ?`).run(row.key);
-    released += 1;
   }
-  return released;
+  return rows.length;
 }

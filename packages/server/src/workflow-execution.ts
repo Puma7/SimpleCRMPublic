@@ -490,14 +490,33 @@ export function createPostgresWorkflowExecutionJobPort(
               now,
             });
             if (trigger === 'inbound' && message) {
-              await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
-              await maybeEnqueueNextInboundWorkflow(trx, {
+              // Ein HTTP-Knoten mit Fehlerkante, aber ohne Erfolgskante meldet
+              // sich hier als „fertig" — er hat den Elternlauf aber wie jeder
+              // andere Zweig deferiert und zaehlt in der Join-Barriere. Ohne
+              // dieses Dekrement bliebe die Barriere fuer immer pending, und
+              // der Marker faende ihn angewendet, obwohl ein Geschwisterzweig
+              // noch laeuft oder gescheitert ist. Gleiche Reihenfolge wie im
+              // regulaeren Abschluss weiter unten: erst Join, dann Marker.
+              const join = await completeInboundDeferredJoinSibling(trx, {
                 workspaceId: input.workspaceId,
                 messageId: Number(message.id),
-                actorUserId: input.actorUserId,
-                jobContext,
+                workflowId: Number(workflow.id),
+                chain: parseInboundWorkflowChain(jobContext.inboundWorkflowChain),
+                chainStop: false,
                 now,
               });
+              if (inboundJoinAllowsAdvance(join)) {
+                if (join === 'ready') {
+                  await markInboundWorkflowApplied(trx, input.workspaceId, workflow, message, now);
+                }
+                await maybeEnqueueNextInboundWorkflow(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: Number(message.id),
+                  actorUserId: input.actorUserId,
+                  jobContext,
+                  now,
+                });
+              }
             }
             return;
           }
@@ -3110,16 +3129,20 @@ async function scheduleAiAgentJob(
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    // runId wie bei ai.draft_reply: sonst teilen sich zwei Laeufe desselben
+    // Workflows einen Job-Key und 'replace' verschluckt den ersten Kindjob.
+    runId: context.runId,
     systemPrompt: systemPrompt.value,
     ...workflowJobProvenance(context),
-    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
-    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
-    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
-    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
+    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
+    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
+    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
     ...(resumeNodeId ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
+      terminalNodeId: node.id,
     }),
     createDraft,
     eventStrings: context.strings,
@@ -3203,14 +3226,15 @@ async function scheduleAiDraftReplyJob(
     ...workflowJobProvenance(context),
     eventStrings: context.strings,
     eventVariables: context.variables,
-    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
-    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
-    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
-    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
+    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
+    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
+    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
     ...(resumeNodeId ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
+      terminalNodeId: node.id,
     }),
   };
   if (profileId.value !== undefined) payload.profileId = profileId.value;
@@ -3303,14 +3327,15 @@ async function scheduleAiReviewDraftJob(
     // Continuation — der erste Elternlauf bliebe fuer immer deferred.
     runId: context.runId,
     ...workflowJobProvenance(context),
-    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
-    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
-    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
-    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
+    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
+    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
+    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
     ...(deferAnchor ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
+      terminalNodeId: node.id,
     }),
     eventStrings: context.strings,
     eventVariables: context.variables,
@@ -3392,15 +3417,19 @@ async function scheduleAiPickCannedJob(
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
+    // runId wie bei ai.draft_reply: sonst teilen sich zwei Laeufe desselben
+    // Workflows einen Job-Key und 'replace' verschluckt den ersten Kindjob.
+    runId: context.runId,
     ...workflowJobProvenance(context),
-    // Terminaler Knoten (keine ausgehende Kante): Workflow- und Kettenkontext
-    // trotzdem stempeln. Der Kindjob braucht ihn fuer die Abbruchpruefung
-    // (Live-Spam / Sibling-Abort) und um Applied-Marker, Join-Barriere und
-    // Prioritaetskette selbst abzuschliessen (workflow-inbound-terminal-child).
+    // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln —
+    // der Kindjob prueft damit den Abbruch und schliesst Applied-Marker, Join
+    // und Kette selbst ab. terminalNodeId trennt zwei terminale Zweige derselben
+    // Nachricht (Job-Key, Einmal-Schranke). Siehe workflow-inbound-terminal-child.
     ...(resumeNodeId ? {} : {
       workflowId: context.workflowId,
       context: { ...inboundChainFieldsFromContext(context) },
       terminalWorkflowCompletion: true,
+      terminalNodeId: node.id,
     }),
     createDraft,
     eventStrings: context.strings,

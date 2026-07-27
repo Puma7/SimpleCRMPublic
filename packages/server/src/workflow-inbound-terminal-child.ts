@@ -10,9 +10,17 @@
  *
  * Der Elternlauf deferiert deshalb auch ohne Resume-Kante; der Kindjob
  * uebernimmt den Abschluss und ruft hier genau einmal:
- *   1. Applied-Marker setzen (nur bei Erfolg),
- *   2. Join-Barriere des Fan-outs abbauen,
- *   3. Prioritaetskette weiterschalten.
+ *   1. Join-Barriere des Fan-outs abbauen,
+ *   2. Prioritaetskette weiterschalten,
+ *   3. Applied-Marker setzen — aber nur, wenn Schritt 1 das erlaubt.
+ *
+ * Daraus folgt die Invariante: JEDER normale Ausgang eines terminalen Kindjobs
+ * muss genau einmal hier ankommen. „Genau" traegt {@link runTerminalInboundChild}
+ * (holt vergessene Ausgaenge nach) zusammen mit der Einmal-Schranke in
+ * {@link completeTerminalInboundChild} (verhindert doppeltes Herunterzaehlen der
+ * Join-Barriere bei einem Job-Retry). Wirft der Kindjob, wird bewusst NICHT
+ * abgeschlossen — Graphile wiederholt ihn, erst der endgueltige Fehlschlag
+ * schaltet die Kette weiter.
  *
  * Damit der Kindjob das kann, stempeln die Scheduler den Workflow- und
  * Kettenkontext auch dann auf die Job-Payload, wenn es keine Continuation gibt
@@ -21,9 +29,14 @@
  * `ai.pick_canned` sogar den Spam- und Sibling-Abort-Check, weil beide am
  * Vorhandensein einer Continuation haengen.
  */
-import type { WorkspaceTransaction } from './db/workspace-context';
+import type { ServerDatabase } from './db/schema';
 import {
-  enqueueNextInboundWorkflowAfterTerminalChildFailure,
+  withWorkspaceTransaction,
+  type WorkspaceSessionApplier,
+  type WorkspaceTransaction,
+} from './db/workspace-context';
+import {
+  advanceInboundChainAfterTerminalChild,
   inboundChainFromJobPayload,
 } from './workflow-inbound-chain-advance';
 
@@ -109,8 +122,64 @@ export async function markInboundWorkflowAppliedByIds(
     .execute();
 }
 
+function trimmedString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function positiveInt(value: unknown): number | null {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+type TerminalChildTarget = {
+  workspaceId: string;
+  messageId: number;
+  workflowId: number;
+  nodeId: string;
+  runId: number | null;
+};
+
 /**
- * Abschluss eines terminalen Kindjobs.
+ * Wen schliesst dieser Kindjob ab?
+ *
+ * Bevorzugt den Inbound-Kettenkontext; faellt aber auf die direkt gestempelten
+ * `workflowId` / `messageId` zurueck. Ohne diesen Fallback bliebe der
+ * Applied-Marker in kettenlosen Kontexten (Backfill, forceWorkflowReapply,
+ * Nicht-Inbound-Trigger) dauerhaft aus und die Arbeit des Kindjobs wuerde bei
+ * jeder Wiederverarbeitung erneut anfallen.
+ */
+function terminalChildTarget(payload: Record<string, unknown>): TerminalChildTarget | null {
+  const parsed = inboundChainFromJobPayload(payload);
+  const workspaceId = parsed?.workspaceId ?? trimmedString(payload.workspaceId);
+  if (!workspaceId) return null;
+  const messageId = parsed?.messageId ?? positiveInt(payload.messageId);
+  if (messageId == null) return null;
+  const workflowId = (parsed ? parsed.chain.workflowIds[parsed.chain.index] : null)
+    ?? positiveInt(payload.workflowId);
+  if (workflowId == null) return null;
+  return {
+    workspaceId,
+    messageId,
+    workflowId,
+    // Zwei terminale Knoten desselben Laufs schliessen unabhaengig voneinander
+    // ab und brauchen darum getrennte Einmal-Schluessel.
+    nodeId: trimmedString(payload.terminalNodeId) || 'terminal',
+    runId: positiveInt(payload.runId),
+  };
+}
+
+function terminalChildCompletionKey(target: TerminalChildTarget): string {
+  return [
+    'inbound_terminal_child_done',
+    target.messageId,
+    target.workflowId,
+    target.nodeId,
+    target.runId ?? 'none',
+  ].join(':');
+}
+
+/**
+ * Abschluss eines terminalen Kindjobs — genau einmal pro Knoten und Lauf.
  *
  * @param applied true ⇒ der Kindjob hat seine Arbeit erledigt und der Workflow
  * gilt als angewendet. false ⇒ uebersprungen oder gescheitert: Kette wird
@@ -122,19 +191,86 @@ export async function completeTerminalInboundChild(
   payload: Record<string, unknown>,
   input: { applied: boolean; now: Date },
 ): Promise<void> {
-  const parsed = inboundChainFromJobPayload(payload);
-  if (parsed && input.applied) {
-    const workflowId = parsed.chain.workflowIds[parsed.chain.index];
-    if (workflowId != null) {
-      await markInboundWorkflowAppliedByIds(trx, {
-        workspaceId: parsed.workspaceId,
-        messageId: parsed.messageId,
-        workflowId,
-        now: input.now,
-      });
-    }
-  }
-  // Baut die Join-Barriere ab und schaltet die Kette weiter (der Name stammt
-  // aus dem Fehlerfall, die Logik ist fuer Erfolg und Misserfolg dieselbe).
-  await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, payload, input.now);
+  const target = terminalChildTarget(payload);
+  if (!target) return;
+
+  // Einmal-Schranke. Ein Kindjob kann nach einem bereits committeten Abschluss
+  // erneut anlaufen (Graphile-Retry, doppelt eingereihter Job) und wuerde die
+  // Join-Barriere sonst ein zweites Mal herunterzaehlen: pending faellt zu frueh
+  // auf 0, ein noch laufender Geschwisterzweig verliert seinen Platz und der
+  // naechste Prioritaets-Workflow startet mitten im Lauf. Die Schranke liegt in
+  // derselben Transaktion wie der Abschluss — ein Rollback gibt sie wieder frei.
+  const claimed = await trx
+    .insertInto('sync_info')
+    .values({
+      workspace_id: target.workspaceId,
+      key: terminalChildCompletionKey(target),
+      value: '1',
+      last_updated: input.now,
+      source_row: { origin: 'inbound_terminal_child' },
+      imported_in_run_id: null,
+      updated_at: input.now,
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'key']).doNothing())
+    .returning('key')
+    .executeTakeFirst();
+  if (!claimed) return;
+
+  // Reihenfolge: erst die Join-Barriere, dann der Applied-Marker. Ihr Ergebnis
+  // entscheidet, ob der Marker ueberhaupt gesetzt werden darf — `ready_error`
+  // heisst „alle Geschwister durch, mindestens eines ausgefallen", `wait` heisst
+  // „ein Geschwister laeuft noch und markiert spaeter selbst". Umgekehrt (Marker
+  // zuerst) galte ein Lauf als angewendet, dessen Geschwisterzweig scheiterte.
+  const { state } = await advanceInboundChainAfterTerminalChild(trx, payload, {
+    ...(input.applied ? {} : { error: true }),
+    now: input.now,
+  });
+  if (!input.applied) return;
+  if (state === 'wait' || state === 'ready_error') return;
+
+  await markInboundWorkflowAppliedByIds(trx, {
+    workspaceId: target.workspaceId,
+    messageId: target.messageId,
+    workflowId: target.workflowId,
+    now: input.now,
+  });
+}
+
+export type TerminalInboundChildDeps = Readonly<{
+  db: import('kysely').Kysely<ServerDatabase>;
+  applyWorkspaceSession?: WorkspaceSessionApplier;
+}>;
+
+/**
+ * Sicherheitsnetz um einen terminalen KI-Kindjob.
+ *
+ * Seit terminale KI-Knoten den Elternlauf deferieren, gilt die Invariante: JEDER
+ * normale Ausgang eines solchen Kindjobs muss die Kette genau einmal
+ * abschliessen. Die Ports tun das auf ihrem Erfolgspfad selbst — aber sie haben
+ * viele fruehe `return`s (Abbruch nach dem Modellaufruf, Entwurf verschwunden,
+ * keine Continuation einzureihen, Dedupe-Treffer). Jeden davon einzeln zu
+ * bedienen ist nicht haltbar; ein vergessener Pfad haengt die Kette dauerhaft.
+ *
+ * Darum hier: laeuft der Port normal zu Ende, wird der Abschluss nachgeholt.
+ * Hat der Port ihn bereits mit dem korrekten `applied` durchgefuehrt, greift die
+ * Einmal-Schranke in {@link completeTerminalInboundChild} und dieser Aufruf ist
+ * ein No-op. Wirft der Port, passiert bewusst NICHTS: Graphile wiederholt den
+ * Job, und erst der endgueltige Fehlschlag schaltet die Kette weiter.
+ */
+export async function runTerminalInboundChild<T>(
+  deps: TerminalInboundChildDeps,
+  input: { workspaceId: string; terminalChainPayload?: Record<string, unknown> },
+  now: () => Date,
+  run: () => Promise<T>,
+): Promise<T> {
+  const result = await run();
+  const payload = input.terminalChainPayload;
+  if (!payload) return result;
+  await withWorkspaceTransaction(
+    deps.db,
+    { workspaceId: input.workspaceId, role: 'system' },
+    async (trx) => completeTerminalInboundChild(trx, payload, { applied: false, now: now() }),
+    { applySession: deps.applyWorkspaceSession },
+  );
+  return result;
 }

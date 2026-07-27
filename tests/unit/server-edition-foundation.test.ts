@@ -2216,7 +2216,26 @@ describe('server edition foundation', () => {
     expect(graphileJobKeyForJob('ai.reply_suggestion', { messageId: 11 }, 'workspace-a'))
       .toBe('ai.reply_suggestion:workspace-a:11');
     expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1' }, 'workspace-a'))
-      .toBe('ai.agent:workspace-a:23:11:tag-1');
+      .toBe('ai.agent:workspace-a:23:11:tag-1:none');
+    // runId trennt zwei Laeufe desselben Workflows; ohne ihn verschluckt
+    // jobKeyMode 'replace' den ersten Kindjob und sein Elternlauf bleibt deferred.
+    expect(graphileJobKeyForJob('ai.agent', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1', runId: 5 }, 'workspace-a'))
+      .toBe('ai.agent:workspace-a:23:11:tag-1:5');
+    // Terminaler Knoten: keine resumeNodeId, aber terminalNodeId als
+    // Diskriminante — sonst kollidieren zwei terminale Zweige derselben Mail.
+    expect(graphileJobKeyForJob(
+      'ai.agent',
+      { messageId: 11, workflowId: 23, terminalWorkflowCompletion: true, terminalNodeId: 'agent-2', runId: 5 },
+      'workspace-a',
+    )).toBe('ai.agent:workspace-a:23:11:agent-2:5');
+    // ai.pick_canned hatte gar keinen Key; compose-initiierte Aufrufe (ohne
+    // Workflow-Kontext) bleiben bewusst ohne, damit 'replace' sie nicht frisst.
+    expect(graphileJobKeyForJob(
+      'ai.pick_canned',
+      { messageId: 11, workflowId: 23, resumeNodeId: 'canned-1', runId: 5 },
+      'workspace-a',
+    )).toBe('ai.pick_canned:workspace-a:23:11:canned-1:5');
+    expect(graphileJobKeyForJob('ai.pick_canned', { messageId: 11 }, 'workspace-a')).toBeUndefined();
     expect(graphileJobKeyForJob('ai.classify', { messageId: 11, workflowId: 23, resumeNodeId: 'switch-1' }, 'workspace-a'))
       .toBe('ai.classify:workspace-a:23:11:switch-1');
     expect(graphileJobKeyForJob('ai.review', { messageId: 11, workflowId: 23, resumeNodeId: 'tag-1' }, 'workspace-a'))

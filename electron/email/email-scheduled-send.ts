@@ -6,7 +6,9 @@ import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attach
 import {
   claimScheduledSend,
   releaseScheduledSendClaim,
+  takeDeferredSendHold,
 } from './email-scheduled-send-claim';
+import { setDraftApprovalPending } from './email-draft-approval';
 import {
   clearScheduledSendDraftMeta,
   markScheduledSendDraftFailed,
@@ -25,9 +27,16 @@ export async function processDueScheduledSends(
     // Entwurf nicht auf „Wartet auf Freigabe" stempeln und scheduled_send_at
     // nicht löschen — der SMTP-Aufruf laeuft ausserhalb jeder Transaktion.
     if (!claimScheduledSend(draftId)) continue;
+    // Ging diese Mail tatsaechlich raus? Entscheidet unten, ob ein waehrend des
+    // Versands geparktes HOLD der Gegenlese-KI nachgeholt werden muss.
+    let delivered = false;
     try {
       const draft = getEmailMessageById(draftId);
-      if (!draft || draft.uid >= 0) continue;
+      if (!draft || draft.uid >= 0) {
+        // uid >= 0: bereits verschickt — ein nachtraegliches HOLD waere sinnlos.
+        delivered = Boolean(draft && draft.uid >= 0);
+        continue;
+      }
       const to = recipientFieldFromJson(draft.to_json);
       if (!to.trim()) {
         logger.warn(`[email] scheduled send ${draftId}: no recipient`);
@@ -50,12 +59,15 @@ export async function processDueScheduledSends(
         inReplyToMessageId: replyParent ?? undefined,
       });
       if (r.ok) {
+        delivered = true;
         setDraftScheduledSendAt(draftId, null);
         clearScheduledSendDraftMeta(draftId);
         sent += 1;
       } else {
         const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
         if (errMsg.includes('Versand') && errMsg.includes('bereits')) {
+          // Ein anderer Pfad hat den Entwurf schon verschickt.
+          delivered = true;
           continue;
         }
         const fails = recordScheduledSendAttemptFailure(draftId, errMsg);
@@ -77,7 +89,18 @@ export async function processDueScheduledSends(
         markScheduledSendDraftFailed(draftId, errMsg);
       }
     } finally {
+      // Erst den Claim freigeben: setDraftApprovalPending verweigert den Stempel,
+      // solange er steht (es koennte ein laufender Versand sein).
       releaseScheduledSendClaim(draftId);
+      const deferredHold = takeDeferredSendHold(draftId);
+      if (deferredHold && !delivered) {
+        // Die Gegenlese-KI wollte diesen Entwurf zurueckhalten, kam aber
+        // waehrend des Versands nicht durch — und der Versand ist gescheitert.
+        // Ohne das Nachholen ginge der ungeprueft gebliebene Entwurf beim
+        // naechsten faelligen Durchlauf trotzdem raus.
+        setDraftApprovalPending(draftId, deferredHold);
+        logger.warn(`[email] scheduled send ${draftId}: HOLD der Gegenlese-KI nachgeholt`);
+      }
     }
   }
   return sent;

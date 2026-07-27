@@ -36,10 +36,14 @@ import {
 } from './ai-classification';
 import {
   enqueueNextInboundWorkflowAfterTerminalChildFailure,
+  inboundChainFromJobPayload,
   isInboundSiblingAborted,
 } from './workflow-inbound-chain-advance';
 import type { InboundChainContinuationFields } from './workflow-inbound-chain-context';
-import { completeTerminalInboundChild } from './workflow-inbound-terminal-child';
+import {
+  completeTerminalInboundChild,
+  runTerminalInboundChild,
+} from './workflow-inbound-terminal-child';
 import type { JobPayload } from './jobs/types';
 
 /** Match ai-classification agent/classify caps so draft_reply cannot blow the model context. */
@@ -645,6 +649,12 @@ function aiDraftReplyDedupeKey(input: {
  * - ein Geschwisterzweig hat die Inbound-Kette beendet — seit dem generischen
  *   stopFurtherWorkflows-Schalter kann das auch ein völlig sauberer
  *   Nicht-Spam-Zweig auslösen, weshalb der Spam-Check allein nicht reicht.
+ *
+ * Der Sibling-Check hängt bewusst NICHT an der Continuation: ein terminaler
+ * Knoten hat keine, und ohne den Kettenkontext aus `terminalChainPayload` liefe
+ * ausgerechnet der Zweig ohne Rückkante am Abbruchmarker vorbei — er schickte
+ * den Mailinhalt weiter ans Modell und legte einen Entwurf an, obwohl die Kette
+ * längst gestoppt ist.
  */
 async function inboundDraftJobAbortReason(
   trx: WorkspaceTransaction,
@@ -652,6 +662,8 @@ async function inboundDraftJobAbortReason(
     workspaceId: string;
     messageId?: number;
     continuation?: { workflowId: number; triggerName?: string } & InboundChainContinuationFields;
+    /** Terminaler Knoten: Kettenkontext statt Continuation. */
+    terminalChainPayload?: Record<string, unknown>;
   },
 ): Promise<'message_spam_or_review' | 'sibling_terminal_abort' | null> {
   const messageId = input.messageId;
@@ -666,13 +678,18 @@ async function inboundDraftJobAbortReason(
   if (live && messageIsSpamOrReviewForInboundWorkflow(live)) return 'message_spam_or_review';
 
   const continuation = input.continuation;
-  if (!continuation) return null;
-  if (continuation.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
+  const terminal = continuation
+    ? null
+    : inboundChainFromJobPayload(input.terminalChainPayload ?? {});
+  if (!continuation && !terminal) return null;
+  if (continuation?.triggerName !== undefined && continuation.triggerName !== 'inbound') return null;
+  const workflowId = continuation?.workflowId ?? terminal?.chain.workflowIds[terminal.chain.index];
+  if (workflowId == null) return null;
   const aborted = await isInboundSiblingAborted(trx, {
     workspaceId: input.workspaceId,
     messageId,
-    workflowId: continuation.workflowId,
-    chain: continuation.inboundWorkflowChain ?? null,
+    workflowId,
+    chain: continuation?.inboundWorkflowChain ?? terminal?.chain ?? null,
   });
   return aborted ? 'sibling_terminal_abort' : null;
 }
@@ -785,358 +802,365 @@ export function createPostgresAiDraftReplyPort(
   const now = () => deps.now?.() ?? new Date();
   return {
     async draftReply(input) {
-      const strings = jobStrings(input.eventStrings);
-      const variables = jobVariables(input.eventVariables);
-      const config: Record<string, unknown> = {
-        ...(input.profileId !== undefined ? { profileId: input.profileId } : {}),
-        ...(input.knowledgeBaseId !== undefined ? { knowledgeBaseId: input.knowledgeBaseId } : {}),
-        ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
-        ...(input.includeCanned !== undefined ? { includeCanned: input.includeCanned } : {}),
-        ...(input.greeting !== undefined ? { greeting: input.greeting } : {}),
-        ...(input.signature !== undefined ? { signature: input.signature } : {}),
-      };
+      // Terminaler Knoten: der Elternlauf wartet auf diesen Job. Das
+      // Sicherheitsnetz holt den Kettenabschluss auf jedem normalen Ausgang
+      // nach, den der Port unten nicht selbst bedient.
+      await runTerminalInboundChild(deps, input, now, async () => {
+        const strings = jobStrings(input.eventStrings);
+        const variables = jobVariables(input.eventVariables);
+        const config: Record<string, unknown> = {
+          ...(input.profileId !== undefined ? { profileId: input.profileId } : {}),
+          ...(input.knowledgeBaseId !== undefined ? { knowledgeBaseId: input.knowledgeBaseId } : {}),
+          ...(input.systemPrompt !== undefined ? { systemPrompt: input.systemPrompt } : {}),
+          ...(input.includeCanned !== undefined ? { includeCanned: input.includeCanned } : {}),
+          ...(input.greeting !== undefined ? { greeting: input.greeting } : {}),
+          ...(input.signature !== undefined ? { signature: input.signature } : {}),
+        };
 
-      type Prep = {
-        accountId: number;
-        subject: string | null;
-        fromJson: unknown;
-        rawHeaders: string | null;
-        system: string;
-        user: string;
-        chunks: ReadonlyArray<{ id?: number; title?: string | null }>;
-      };
+        type Prep = {
+          accountId: number;
+          subject: string | null;
+          fromJson: unknown;
+          rawHeaders: string | null;
+          system: string;
+          user: string;
+          chunks: ReadonlyArray<{ id?: number; title?: string | null }>;
+        };
 
-      const prep = await withWorkspaceTransaction(
-        deps.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx): Promise<Prep | 'skip' | null> => {
-          const message = await trx
-            .selectFrom('email_messages')
-            .select([
-              'id',
-              'account_id',
-              'subject',
-              'from_json',
-              'raw_headers',
-              'body_text',
-              'snippet',
-              'is_spam',
-              'spam_status',
-              'spam_score_label',
-            ])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.messageId)
-            .executeTakeFirst();
-          if (!message) throw new Error('Nachricht nicht gefunden');
-          if (messageIsSpamOrReviewForInboundWorkflow(message)) return 'skip';
-          // Nicht nur Spam: ein sauberer Geschwisterzweig kann die Kette über
-          // den generischen stopFurtherWorkflows-Schalter beendet haben.
-          if (await inboundDraftJobAbortReason(trx, {
-            workspaceId: input.workspaceId,
-            messageId: input.messageId,
-            continuation: input.continuation,
-          }) !== null) {
-            return 'skip';
-          }
-          if (message.account_id === null) throw new Error('Nachricht ohne Konto');
-          // Validate recipient before the paid model call — retries would otherwise
-          // burn tokens when Reply-To/From cannot yield an address.
-          if (!firstReplyAddress({
-            from_json: message.from_json,
-            raw_headers: message.raw_headers,
-          })) {
-            throw new Error('Kein Antwort-Empfänger ermittelbar');
-          }
-
-          const knowledgeBaseId = optionalPositiveInt(config.knowledgeBaseId);
-          const query = (strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX);
-          const chunks = knowledgeBaseId !== undefined
-            ? await searchKnowledgeForWorkflow(
-              trx,
-              input.workspaceId,
-              Number(message.account_id),
-              'inbound',
-              query,
-              5,
-              knowledgeBaseId,
-            )
-            : await searchKnowledgeForWorkflow(
-              trx,
-              input.workspaceId,
-              Number(message.account_id),
-              'inbound',
-              query,
-              5,
-            );
-          const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
-
-          let cannedBlock = '';
-          if (config.includeCanned === true) {
-            const canned = await trx
-              .selectFrom('email_canned_responses')
-              .select(['title', 'body'])
+        const prep = await withWorkspaceTransaction(
+          deps.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx): Promise<Prep | 'skip' | null> => {
+            const message = await trx
+              .selectFrom('email_messages')
+              .select([
+                'id',
+                'account_id',
+                'subject',
+                'from_json',
+                'raw_headers',
+                'body_text',
+                'snippet',
+                'is_spam',
+                'spam_status',
+                'spam_score_label',
+              ])
               .where('workspace_id', '=', input.workspaceId)
-              .where((eb) => eb.or([
-                eb('account_id', 'is', null),
-                eb('account_id', '=', Number(message.account_id)),
-              ]))
-              .orderBy('sort_order', 'asc')
-              .orderBy('id', 'asc')
-              .limit(5)
-              .execute();
-            if (canned.length > 0) {
-              cannedBlock = canned
-                .map((c) => `• ${String(c.title ?? '')}:\n${String(c.body ?? '').slice(0, 1200)}`)
-                .join('\n\n');
+              .where('id', '=', input.messageId)
+              .executeTakeFirst();
+            if (!message) throw new Error('Nachricht nicht gefunden');
+            if (messageIsSpamOrReviewForInboundWorkflow(message)) return 'skip';
+            // Nicht nur Spam: ein sauberer Geschwisterzweig kann die Kette über
+            // den generischen stopFurtherWorkflows-Schalter beendet haben.
+            if (await inboundDraftJobAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+              terminalChainPayload: input.terminalChainPayload,
+            }) !== null) {
+              return 'skip';
             }
+            if (message.account_id === null) throw new Error('Nachricht ohne Konto');
+            // Validate recipient before the paid model call — retries would otherwise
+            // burn tokens when Reply-To/From cannot yield an address.
+            if (!firstReplyAddress({
+              from_json: message.from_json,
+              raw_headers: message.raw_headers,
+            })) {
+              throw new Error('Kein Antwort-Empfänger ermittelbar');
+            }
+
+            const knowledgeBaseId = optionalPositiveInt(config.knowledgeBaseId);
+            const query = (strings.combined_text ?? '').slice(0, DRAFT_REPLY_BODY_MAX);
+            const chunks = knowledgeBaseId !== undefined
+              ? await searchKnowledgeForWorkflow(
+                trx,
+                input.workspaceId,
+                Number(message.account_id),
+                'inbound',
+                query,
+                5,
+                knowledgeBaseId,
+              )
+              : await searchKnowledgeForWorkflow(
+                trx,
+                input.workspaceId,
+                Number(message.account_id),
+                'inbound',
+                query,
+                5,
+              );
+            const kbText = chunks.map((c) => c.content).join('\n---\n').slice(0, DRAFT_REPLY_KNOWLEDGE_MAX);
+
+            let cannedBlock = '';
+            if (config.includeCanned === true) {
+              const canned = await trx
+                .selectFrom('email_canned_responses')
+                .select(['title', 'body'])
+                .where('workspace_id', '=', input.workspaceId)
+                .where((eb) => eb.or([
+                  eb('account_id', 'is', null),
+                  eb('account_id', '=', Number(message.account_id)),
+                ]))
+                .orderBy('sort_order', 'asc')
+                .orderBy('id', 'asc')
+                .limit(5)
+                .execute();
+              if (canned.length > 0) {
+                cannedBlock = canned
+                  .map((c) => `• ${String(c.title ?? '')}:\n${String(c.body ?? '').slice(0, 1200)}`)
+                  .join('\n\n');
+              }
+            }
+
+            const system = String(config.systemPrompt ?? '').trim()
+              || 'Beantworte die Kundenmail freundlich auf Deutsch.';
+            const user = [
+              'Kundenmail:',
+              query,
+              kbText ? `\nWissensbasis (relevante Auszüge):\n${kbText}` : '',
+              cannedBlock ? `\nVorhandene Textbausteine (als Formulierungshilfe):\n${cannedBlock}` : '',
+            ].filter(Boolean).join('\n');
+
+            return {
+              accountId: Number(message.account_id),
+              subject: message.subject,
+              fromJson: message.from_json,
+              rawHeaders: message.raw_headers,
+              system,
+              user,
+              chunks,
+            };
+          },
+          { applySession: deps.applyWorkspaceSession },
+        );
+        if (prep === 'skip') {
+          // Node already deferred the parent workflow.execute — must continue the
+          // graph even when we skip the LLM call for spam/review.
+          if (!input.continuation && input.terminalChainPayload) {
+            await finishTerminalDraftReplyChain(deps, input, now());
+            return;
           }
-
-          const system = String(config.systemPrompt ?? '').trim()
-            || 'Beantworte die Kundenmail freundlich auf Deutsch.';
-          const user = [
-            'Kundenmail:',
-            query,
-            kbText ? `\nWissensbasis (relevante Auszüge):\n${kbText}` : '',
-            cannedBlock ? `\nVorhandene Textbausteine (als Formulierungshilfe):\n${cannedBlock}` : '',
-          ].filter(Boolean).join('\n');
-
-          return {
-            accountId: Number(message.account_id),
-            subject: message.subject,
-            fromJson: message.from_json,
-            rawHeaders: message.raw_headers,
-            system,
-            user,
-            chunks,
-          };
-        },
-        { applySession: deps.applyWorkspaceSession },
-      );
-      if (prep === 'skip') {
-        // Node already deferred the parent workflow.execute — must continue the
-        // graph even when we skip the LLM call for spam/review.
-        if (!input.continuation && input.terminalChainPayload) {
-          await finishTerminalDraftReplyChain(deps, input, now());
+          if (input.continuation) {
+            await withWorkspaceTransaction(
+              deps.db,
+              { workspaceId: input.workspaceId, role: 'system' },
+              async (trx) => {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.messageId,
+                  continuation: input.continuation!,
+                  variables: {
+                    'ai.draft.status': 'skipped',
+                    'ai.draft.skip_reason': 'message_spam_or_review',
+                  },
+                  now: now(),
+                });
+              },
+              { applySession: deps.applyWorkspaceSession },
+            );
+          }
           return;
         }
-        if (input.continuation) {
-          await withWorkspaceTransaction(
-            deps.db,
-            { workspaceId: input.workspaceId, role: 'system' },
-            async (trx) => {
-              await enqueueContinuation(trx, {
-                workspaceId: input.workspaceId,
-                messageId: input.messageId,
-                continuation: input.continuation!,
-                variables: {
-                  'ai.draft.status': 'skipped',
-                  'ai.draft.skip_reason': 'message_spam_or_review',
-                },
-                now: now(),
-              });
-            },
-            { applySession: deps.applyWorkspaceSession },
-          );
-        }
-        return;
-      }
-      if (prep === null) return;
+        if (prep === null) return;
 
-      // Job retry after a committed draft: skip the paid model call when a prior
-      // draft already exists for this run (transactional check remains below).
-      const earlyDedupeKey = aiDraftReplyDedupeKey(input);
-      const priorDraft = await withWorkspaceTransaction(
-        deps.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          const prior = await trx
-            .selectFrom('sync_info')
-            .select(['value'])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('key', '=', earlyDedupeKey)
-            .executeTakeFirst();
-          const priorDraftId = Number(prior?.value);
-          return Number.isInteger(priorDraftId) && priorDraftId > 0 ? priorDraftId : null;
-        },
-        { applySession: deps.applyWorkspaceSession },
-      );
-      if (priorDraft !== null) return;
-
-      // OpenAI outside any workspace transaction (Codex P1).
-      let aiText: string;
-      try {
-        aiText = (await runWorkflowTrackedChatCompletion(deps, {
-          workspaceId: input.workspaceId,
-          messageId: input.messageId,
-          nodeType: 'ai.draft_reply',
-          profileId: optionalPositiveInt(config.profileId),
-          actorUserId: input.actorUserId ?? null,
-          system: prep.system,
-          user: prep.user,
-        })).trim();
-      } catch (error) {
-        throw new Error(error instanceof Error ? error.message : String(error));
-      }
-      if (!aiText) throw new Error('KI lieferte keinen Antworttext');
-      if (aiText.length > MAX_AI_DRAFT_REPLY_CHARS) {
-        throw new Error(
-          `KI-Antwort unplausibel lang (${aiText.length} Zeichen, Limit ${MAX_AI_DRAFT_REPLY_CHARS})`,
+        // Job retry after a committed draft: skip the paid model call when a prior
+        // draft already exists for this run (transactional check remains below).
+        const earlyDedupeKey = aiDraftReplyDedupeKey(input);
+        const priorDraft = await withWorkspaceTransaction(
+          deps.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            const prior = await trx
+              .selectFrom('sync_info')
+              .select(['value'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', '=', earlyDedupeKey)
+              .executeTakeFirst();
+            const priorDraftId = Number(prior?.value);
+            return Number.isInteger(priorDraftId) && priorDraftId > 0 ? priorDraftId : null;
+          },
+          { applySession: deps.applyWorkspaceSession },
         );
-      }
+        if (priorDraft !== null) return;
 
-      await withWorkspaceTransaction(
-        deps.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          // Re-check live spam/review after the external AI call — a concurrent
-          // mark_spam during the call must not still mint an auto-reply draft.
-          const liveMessage = await trx
-            .selectFrom('email_messages')
-            .select(['is_spam', 'spam_status', 'spam_score_label'])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.messageId)
-            .executeTakeFirst();
-          const abortNow = await inboundDraftJobAbortReason(trx, {
+        // OpenAI outside any workspace transaction (Codex P1).
+        let aiText: string;
+        try {
+          aiText = (await runWorkflowTrackedChatCompletion(deps, {
             workspaceId: input.workspaceId,
             messageId: input.messageId,
-            continuation: input.continuation,
-          });
-          if (!liveMessage || messageIsSpamOrReviewForInboundWorkflow(liveMessage) || abortNow !== null) {
+            nodeType: 'ai.draft_reply',
+            profileId: optionalPositiveInt(config.profileId),
+            actorUserId: input.actorUserId ?? null,
+            system: prep.system,
+            user: prep.user,
+          })).trim();
+        } catch (error) {
+          throw new Error(error instanceof Error ? error.message : String(error));
+        }
+        if (!aiText) throw new Error('KI lieferte keinen Antworttext');
+        if (aiText.length > MAX_AI_DRAFT_REPLY_CHARS) {
+          throw new Error(
+            `KI-Antwort unplausibel lang (${aiText.length} Zeichen, Limit ${MAX_AI_DRAFT_REPLY_CHARS})`,
+          );
+        }
+
+        await withWorkspaceTransaction(
+          deps.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            // Re-check live spam/review after the external AI call — a concurrent
+            // mark_spam during the call must not still mint an auto-reply draft.
+            const liveMessage = await trx
+              .selectFrom('email_messages')
+              .select(['is_spam', 'spam_status', 'spam_score_label'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.messageId)
+              .executeTakeFirst();
+            const abortNow = await inboundDraftJobAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+              terminalChainPayload: input.terminalChainPayload,
+            });
+            if (!liveMessage || messageIsSpamOrReviewForInboundWorkflow(liveMessage) || abortNow !== null) {
+              if (input.continuation) {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.messageId,
+                  continuation: input.continuation,
+                  variables: {
+                    'ai.draft.status': 'skipped',
+                    'ai.draft.skip_reason': 'message_spam_or_review',
+                  },
+                  now: now(),
+                });
+              }
+              return;
+            }
+
+            // Idempotency: after a committed TX a worker crash can retry the same
+            // job. Reuse the prior draft + skip a second continuation enqueue.
+            const dedupeKey = aiDraftReplyDedupeKey(input);
+            const prior = await trx
+              .selectFrom('sync_info')
+              .select(['value'])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('key', '=', dedupeKey)
+              .executeTakeFirst();
+            if (prior?.value) {
+              const priorDraftId = Number(prior.value);
+              if (Number.isInteger(priorDraftId) && priorDraftId > 0) {
+                return;
+              }
+            }
+
+            const parts: string[] = [];
+            if (config.greeting !== 'none' && !aiDraftLikelyIncludesGreeting(aiText)) {
+              const customerName = variables['customer.name'];
+              parts.push(
+                buildReplyGreeting({
+                  customer:
+                    typeof customerName === 'string' && customerName
+                      ? { name: customerName }
+                      : null,
+                  fromJson: typeof prep.fromJson === 'string'
+                    ? prep.fromJson
+                    : prep.fromJson == null
+                      ? null
+                      : JSON.stringify(prep.fromJson),
+                }),
+                '',
+              );
+            }
+            parts.push(aiText);
+            if (config.signature !== 'none') {
+              const accountSig = await resolveAccountSignatureText(trx, {
+                workspaceId: input.workspaceId,
+                accountId: prep.accountId,
+                variables,
+                actorUserId: input.actorUserId ?? null,
+              });
+              parts.push('', accountSig || 'Mit freundlichen Grüßen');
+            }
+            const bodyText = parts.join('\n');
+            const replyTo = firstReplyAddress({
+              from_json: prep.fromJson,
+              raw_headers: prep.rawHeaders,
+            });
+            if (!replyTo) throw new Error('Kein Antwort-Empfänger ermittelbar');
+
+            const draft = await createPostgresComposeDraftInTransaction(trx, {
+              workspaceId: input.workspaceId,
+              accountId: prep.accountId,
+              values: {
+                accountId: prep.accountId,
+                subject: replySubject(prep.subject),
+                bodyText,
+                toJson: { value: [{ address: replyTo }] },
+              },
+            });
+            if (!draft.ok) {
+              throw new Error(`Entwurf konnte nicht angelegt werden: ${draft.reason}`);
+            }
+
+            const draftId = Number(draft.message.id);
+            const stampedAt = now();
+            await trx
+              .updateTable('email_messages')
+              .set({
+                reply_parent_message_id: input.messageId,
+                ai_suggestion_snapshot: aiText,
+                updated_at: stampedAt,
+              })
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', draftId)
+              .execute();
+
+            await trx
+              .insertInto('sync_info')
+              .values({
+                workspace_id: input.workspaceId,
+                key: dedupeKey,
+                value: String(draftId),
+                last_updated: stampedAt,
+                source_row: kyselySql`jsonb_build_object('origin', 'workflow_ai_draft_reply')`,
+                imported_in_run_id: null,
+                updated_at: stampedAt,
+              })
+              .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
+                value: String(draftId),
+                last_updated: stampedAt,
+                updated_at: stampedAt,
+              }))
+              .execute();
+
             if (input.continuation) {
               await enqueueContinuation(trx, {
                 workspaceId: input.workspaceId,
                 messageId: input.messageId,
                 continuation: input.continuation,
                 variables: {
-                  'ai.draft.status': 'skipped',
-                  'ai.draft.skip_reason': 'message_spam_or_review',
+                  'draft.id': draftId,
+                  'ai.draft.text': bodyText.slice(0, 8000),
+                  'ai.draft.subject': replySubject(prep.subject),
+                  'ai.draft.sources': knowledgeSourcesLabel(prep.chunks),
                 },
-                now: now(),
+                now: stampedAt,
+              });
+            } else if (input.terminalChainPayload) {
+              // Terminaler Knoten (keine Resume-Kante): der Elternlauf wartet auf
+              // diesen Kindjob — Applied-Marker, Join-Barriere und Kette hier.
+              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                applied: true,
+                now: stampedAt,
               });
             }
-            return;
-          }
-
-          // Idempotency: after a committed TX a worker crash can retry the same
-          // job. Reuse the prior draft + skip a second continuation enqueue.
-          const dedupeKey = aiDraftReplyDedupeKey(input);
-          const prior = await trx
-            .selectFrom('sync_info')
-            .select(['value'])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('key', '=', dedupeKey)
-            .executeTakeFirst();
-          if (prior?.value) {
-            const priorDraftId = Number(prior.value);
-            if (Number.isInteger(priorDraftId) && priorDraftId > 0) {
-              return;
-            }
-          }
-
-          const parts: string[] = [];
-          if (config.greeting !== 'none' && !aiDraftLikelyIncludesGreeting(aiText)) {
-            const customerName = variables['customer.name'];
-            parts.push(
-              buildReplyGreeting({
-                customer:
-                  typeof customerName === 'string' && customerName
-                    ? { name: customerName }
-                    : null,
-                fromJson: typeof prep.fromJson === 'string'
-                  ? prep.fromJson
-                  : prep.fromJson == null
-                    ? null
-                    : JSON.stringify(prep.fromJson),
-              }),
-              '',
-            );
-          }
-          parts.push(aiText);
-          if (config.signature !== 'none') {
-            const accountSig = await resolveAccountSignatureText(trx, {
-              workspaceId: input.workspaceId,
-              accountId: prep.accountId,
-              variables,
-              actorUserId: input.actorUserId ?? null,
-            });
-            parts.push('', accountSig || 'Mit freundlichen Grüßen');
-          }
-          const bodyText = parts.join('\n');
-          const replyTo = firstReplyAddress({
-            from_json: prep.fromJson,
-            raw_headers: prep.rawHeaders,
-          });
-          if (!replyTo) throw new Error('Kein Antwort-Empfänger ermittelbar');
-
-          const draft = await createPostgresComposeDraftInTransaction(trx, {
-            workspaceId: input.workspaceId,
-            accountId: prep.accountId,
-            values: {
-              accountId: prep.accountId,
-              subject: replySubject(prep.subject),
-              bodyText,
-              toJson: { value: [{ address: replyTo }] },
-            },
-          });
-          if (!draft.ok) {
-            throw new Error(`Entwurf konnte nicht angelegt werden: ${draft.reason}`);
-          }
-
-          const draftId = Number(draft.message.id);
-          const stampedAt = now();
-          await trx
-            .updateTable('email_messages')
-            .set({
-              reply_parent_message_id: input.messageId,
-              ai_suggestion_snapshot: aiText,
-              updated_at: stampedAt,
-            })
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', draftId)
-            .execute();
-
-          await trx
-            .insertInto('sync_info')
-            .values({
-              workspace_id: input.workspaceId,
-              key: dedupeKey,
-              value: String(draftId),
-              last_updated: stampedAt,
-              source_row: kyselySql`jsonb_build_object('origin', 'workflow_ai_draft_reply')`,
-              imported_in_run_id: null,
-              updated_at: stampedAt,
-            })
-            .onConflict((oc) => oc.columns(['workspace_id', 'key']).doUpdateSet({
-              value: String(draftId),
-              last_updated: stampedAt,
-              updated_at: stampedAt,
-            }))
-            .execute();
-
-          if (input.continuation) {
-            await enqueueContinuation(trx, {
-              workspaceId: input.workspaceId,
-              messageId: input.messageId,
-              continuation: input.continuation,
-              variables: {
-                'draft.id': draftId,
-                'ai.draft.text': bodyText.slice(0, 8000),
-                'ai.draft.subject': replySubject(prep.subject),
-                'ai.draft.sources': knowledgeSourcesLabel(prep.chunks),
-              },
-              now: stampedAt,
-            });
-          } else if (input.terminalChainPayload) {
-            // Terminaler Knoten (keine Resume-Kante): der Elternlauf wartet auf
-            // diesen Kindjob — Applied-Marker, Join-Barriere und Kette hier.
-            await completeTerminalInboundChild(trx, input.terminalChainPayload, {
-              applied: true,
-              now: stampedAt,
-            });
-          }
-        },
-        { applySession: deps.applyWorkspaceSession },
-      );
+          },
+          { applySession: deps.applyWorkspaceSession },
+        );
+      });
     },
   };
 }
@@ -1147,214 +1171,282 @@ export function createPostgresAiReviewDraftPort(
   const now = () => deps.now?.() ?? new Date();
   return {
     async reviewDraft(input) {
-      const strings = jobStrings(input.eventStrings);
-      const variables = jobVariables(input.eventVariables);
-      const draftIdVar = String(input.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
-      const draftId = input.draftId
-        ?? Number(variables[draftIdVar]);
-      if (!Number.isFinite(draftId) || draftId <= 0) {
-        throw new Error(`Kein Entwurf unter Variable ${draftIdVar}`);
-      }
+      // Terminaler Knoten: der Elternlauf wartet auf diesen Job. Das
+      // Sicherheitsnetz holt den Kettenabschluss auf jedem normalen Ausgang
+      // nach, den der Port unten nicht selbst bedient.
+      await runTerminalInboundChild(deps, input, now, async () => {
+        const strings = jobStrings(input.eventStrings);
+        const variables = jobVariables(input.eventVariables);
+        const draftIdVar = String(input.draftIdVariable ?? 'draft.id').trim() || 'draft.id';
+        const draftId = input.draftId
+          ?? Number(variables[draftIdVar]);
+        if (!Number.isFinite(draftId) || draftId <= 0) {
+          throw new Error(`Kein Entwurf unter Variable ${draftIdVar}`);
+        }
 
-      type Prep = {
-        system: string;
-        user: string;
-        reviewedFingerprint: string;
-      };
-      /** Quellmail inzwischen Spam / Kette abgebrochen ⇒ nie automatisch senden. */
-      type PrepAbort = { abort: 'message_spam_or_review' | 'sibling_terminal_abort' };
+        type Prep = {
+          system: string;
+          user: string;
+          reviewedFingerprint: string;
+        };
+        /** Quellmail inzwischen Spam / Kette abgebrochen ⇒ nie automatisch senden. */
+        type PrepAbort = { abort: 'message_spam_or_review' | 'sibling_terminal_abort' };
 
-      const prep = await withWorkspaceTransaction(
-        deps.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx): Promise<Prep | PrepAbort> => {
-          // Vor dem Modellaufruf: wurde die Quellnachricht seit dem Einreihen
-          // (auch manuell) als Spam markiert oder die Kette gestoppt? Ohne
-          // diesen Check ginge der Inhalt weiterhin ans Modell und ein SEND
-          // könnte die Fortsetzung bis email.send_draft durchreichen.
-          const abort = await inboundDraftJobAbortReason(trx, {
-            workspaceId: input.workspaceId,
-            messageId: input.messageId,
-            continuation: input.continuation,
-          });
-          if (abort) return { abort };
-          const draft = await trx
-            .selectFrom('email_messages')
-            .select([
-              'id',
-              'subject',
-              'body_text',
-              'body_html',
-              'to_json',
-              'cc_json',
-              'bcc_json',
-              'draft_attachment_paths_json',
-              'folder_kind',
-              'uid',
-            ])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', draftId)
-            .executeTakeFirst();
-          if (!draft || draft.folder_kind !== 'draft' || Number(draft.uid) >= 0) {
-            throw new Error(`Entwurf ${draftId} nicht gefunden`);
-          }
-
-          const original = input.messageId === undefined
-            ? null
-            : await trx
+        const prep = await withWorkspaceTransaction(
+          deps.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx): Promise<Prep | PrepAbort> => {
+            // Vor dem Modellaufruf: wurde die Quellnachricht seit dem Einreihen
+            // (auch manuell) als Spam markiert oder die Kette gestoppt? Ohne
+            // diesen Check ginge der Inhalt weiterhin ans Modell und ein SEND
+            // könnte die Fortsetzung bis email.send_draft durchreichen.
+            const abort = await inboundDraftJobAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+              terminalChainPayload: input.terminalChainPayload,
+            });
+            if (abort) return { abort };
+            const draft = await trx
               .selectFrom('email_messages')
-              .select(['subject', 'body_text', 'snippet', 'from_json'])
+              .select([
+                'id',
+                'subject',
+                'body_text',
+                'body_html',
+                'to_json',
+                'cc_json',
+                'bcc_json',
+                'draft_attachment_paths_json',
+                'folder_kind',
+                'uid',
+              ])
               .where('workspace_id', '=', input.workspaceId)
-              .where('id', '=', input.messageId)
+              .where('id', '=', draftId)
               .executeTakeFirst();
+            if (!draft || draft.folder_kind !== 'draft' || Number(draft.uid) >= 0) {
+              throw new Error(`Entwurf ${draftId} nicht gefunden`);
+            }
 
-          const extraCriteria = String(input.reviewPrompt ?? '').trim();
-          const system = [
-            'Du bist die Endkontrolle für automatische Kundenservice-Antworten.',
-            'Prüfe: Beantwortet der Entwurf die Fragen des Kunden vollständig und korrekt?',
-            'Ist der Ton professionell? Enthält er keine erfundenen Fakten?',
-            extraCriteria ? `Zusätzliche Kriterien: ${extraCriteria}` : '',
-            '',
-            'Antworte NUR in diesem Format:',
-            'STATUS: SEND oder HOLD',
-            'ANSWERED: yes oder no',
-            'REASON: kurze deutsche Begründung (eine Zeile)',
-            'SEND nur, wenn der Entwurf ohne Änderung verschickt werden kann. Im Zweifel HOLD.',
-          ].filter(Boolean).join('\n');
+            const original = input.messageId === undefined
+              ? null
+              : await trx
+                .selectFrom('email_messages')
+                .select(['subject', 'body_text', 'snippet', 'from_json'])
+                .where('workspace_id', '=', input.workspaceId)
+                .where('id', '=', input.messageId)
+                .executeTakeFirst();
 
-          const user = [
-            '--- Kundenmail ---',
-            original
-              ? [
-                `Betreff: ${original.subject ?? ''}`,
-                `Von: ${strings.from_address ?? ''}`,
-                '',
-                (original.body_text ?? original.snippet ?? '').slice(0, 6000),
-              ].join('\n')
-              : '(Original-Nachricht nicht verfügbar)',
-            '',
-            '--- Antwort-Entwurf ---',
-            `Betreff: ${draft.subject ?? ''}`,
-            '',
-            // Compose-Entwuerfe speichern den Text oft NUR in body_html. Ohne
-            // die Textdarstellung saehe die Gegenlese-KI einen leeren Entwurf
-            // und koennte SEND liefern, waehrend email.send_draft anschliessend
-            // ungepruefte HTML-Inhalte verschickt.
-            extractDraftBodyForOutboundBlock({
-              body_text: draft.body_text,
-              body_html: draft.body_html,
-            }).plain.slice(0, 6000),
-          ].join('\n');
+            const extraCriteria = String(input.reviewPrompt ?? '').trim();
+            const system = [
+              'Du bist die Endkontrolle für automatische Kundenservice-Antworten.',
+              'Prüfe: Beantwortet der Entwurf die Fragen des Kunden vollständig und korrekt?',
+              'Ist der Ton professionell? Enthält er keine erfundenen Fakten?',
+              extraCriteria ? `Zusätzliche Kriterien: ${extraCriteria}` : '',
+              '',
+              'Antworte NUR in diesem Format:',
+              'STATUS: SEND oder HOLD',
+              'ANSWERED: yes oder no',
+              'REASON: kurze deutsche Begründung (eine Zeile)',
+              'SEND nur, wenn der Entwurf ohne Änderung verschickt werden kann. Im Zweifel HOLD.',
+            ].filter(Boolean).join('\n');
 
-          return {
-            system,
-            user,
-            reviewedFingerprint: fingerprintReviewedDraft(draft),
-          };
-        },
-        { applySession: deps.applyWorkspaceSession },
-      );
+            const user = [
+              '--- Kundenmail ---',
+              original
+                ? [
+                  `Betreff: ${original.subject ?? ''}`,
+                  `Von: ${strings.from_address ?? ''}`,
+                  '',
+                  (original.body_text ?? original.snippet ?? '').slice(0, 6000),
+                ].join('\n')
+                : '(Original-Nachricht nicht verfügbar)',
+              '',
+              '--- Antwort-Entwurf ---',
+              `Betreff: ${draft.subject ?? ''}`,
+              '',
+              // Compose-Entwuerfe speichern den Text oft NUR in body_html. Ohne
+              // die Textdarstellung saehe die Gegenlese-KI einen leeren Entwurf
+              // und koennte SEND liefern, waehrend email.send_draft anschliessend
+              // ungepruefte HTML-Inhalte verschickt.
+              extractDraftBodyForOutboundBlock({
+                body_text: draft.body_text,
+                body_html: draft.body_html,
+              }).plain.slice(0, 6000),
+            ].join('\n');
 
-      let port: 'send' | 'hold' = 'hold';
-      let continuationVariables: JobPayload = {
-        'ai.review.verdict': 'hold',
-        'ai.review.answered': false,
-        'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
-      };
-      let approvalReason = 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen';
-      const reviewedFingerprint = 'abort' in prep ? null : prep.reviewedFingerprint;
+            return {
+              system,
+              user,
+              reviewedFingerprint: fingerprintReviewedDraft(draft),
+            };
+          },
+          { applySession: deps.applyWorkspaceSession },
+        );
 
-      if ('abort' in prep) {
-        approvalReason = prep.abort === 'message_spam_or_review'
-          ? 'Quellnachricht ist als Spam/Prüfen markiert — keine automatische Freigabe'
-          : 'Inbound-Kette wurde gestoppt — keine automatische Freigabe';
-        port = 'hold';
-        continuationVariables = {
+        let port: 'send' | 'hold' = 'hold';
+        let continuationVariables: JobPayload = {
           'ai.review.verdict': 'hold',
           'ai.review.answered': false,
-          'ai.review.reason': approvalReason,
+          'ai.review.reason': 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen',
         };
-      } else try {
-        const out = await runWorkflowTrackedChatCompletion(deps, {
-          workspaceId: input.workspaceId,
-          messageId: input.messageId ?? null,
-          nodeType: 'ai.review_draft',
-          profileId: input.profileId,
-          actorUserId: input.actorUserId ?? null,
-          system: prep.system,
-          user: prep.user,
-        });
-        const parsed = parseDraftReviewResponse(out);
-        continuationVariables = {
-          'ai.review.verdict': parsed.verdict,
-          'ai.review.answered': parsed.answered,
-          'ai.review.reason': parsed.reason,
-        };
-        if (parsed.verdict === 'send') {
-          port = 'send';
-          approvalReason = '';
-        } else {
-          port = 'hold';
-          approvalReason = parsed.reason || 'Gegenlese-KI empfiehlt menschliche Prüfung';
-        }
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        approvalReason = `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`;
-        port = 'hold';
-      }
+        let approvalReason = 'KI-Prüfung fehlgeschlagen — bitte manuell prüfen';
+        const reviewedFingerprint = 'abort' in prep ? null : prep.reviewedFingerprint;
 
-      await withWorkspaceTransaction(
-        deps.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          // Re-read draft after the external AI call for EVERY verdict — a human
-          // may have sent or deleted it while the review was in flight.
-          const live = await trx
-            .selectFrom('email_messages')
-            .select([
-              'subject',
-              'body_text',
-              'body_html',
-              'to_json',
-              'cc_json',
-              'bcc_json',
-              'draft_attachment_paths_json',
-              'folder_kind',
-              'uid',
-            ])
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', draftId)
-            .executeTakeFirst();
-          // Zweiter Abort-Check direkt vor der Freigabe: der Modellaufruf lief
-          // ausserhalb der Transaktion, in dieser Zeit kann die Quellmail als
-          // Spam markiert oder die Kette gestoppt worden sein.
-          if (port === 'send' && await inboundDraftJobAbortReason(trx, {
+        if ('abort' in prep) {
+          approvalReason = prep.abort === 'message_spam_or_review'
+            ? 'Quellnachricht ist als Spam/Prüfen markiert — keine automatische Freigabe'
+            : 'Inbound-Kette wurde gestoppt — keine automatische Freigabe';
+          port = 'hold';
+          continuationVariables = {
+            'ai.review.verdict': 'hold',
+            'ai.review.answered': false,
+            'ai.review.reason': approvalReason,
+          };
+        } else try {
+          const out = await runWorkflowTrackedChatCompletion(deps, {
             workspaceId: input.workspaceId,
-            messageId: input.messageId,
-            continuation: input.continuation,
-          }) !== null) {
+            messageId: input.messageId ?? null,
+            nodeType: 'ai.review_draft',
+            profileId: input.profileId,
+            actorUserId: input.actorUserId ?? null,
+            system: prep.system,
+            user: prep.user,
+          });
+          const parsed = parseDraftReviewResponse(out);
+          continuationVariables = {
+            'ai.review.verdict': parsed.verdict,
+            'ai.review.answered': parsed.answered,
+            'ai.review.reason': parsed.reason,
+          };
+          if (parsed.verdict === 'send') {
+            port = 'send';
+            approvalReason = '';
+          } else {
             port = 'hold';
-            approvalReason = 'Quellnachricht/Kette wurde während der Prüfung gestoppt — bitte manuell freigeben';
-            continuationVariables = {
-              'ai.review.verdict': 'hold',
-              'ai.review.answered': false,
-              'ai.review.reason': approvalReason,
-            };
+            approvalReason = parsed.reason || 'Gegenlese-KI empfiehlt menschliche Prüfung';
           }
-          const stillLocalDraft = Boolean(live && live.folder_kind === 'draft' && Number(live.uid) < 0);
-          if (!stillLocalDraft) {
-            // Draft gone/sent — do not stamp pending; still continue the graph.
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          approvalReason = `KI-Prüfung fehlgeschlagen: ${msg.slice(0, 200)}`;
+          port = 'hold';
+        }
+
+        await withWorkspaceTransaction(
+          deps.db,
+          { workspaceId: input.workspaceId, role: 'system' },
+          async (trx) => {
+            // Re-read draft after the external AI call for EVERY verdict — a human
+            // may have sent or deleted it while the review was in flight.
+            const live = await trx
+              .selectFrom('email_messages')
+              .select([
+                'subject',
+                'body_text',
+                'body_html',
+                'to_json',
+                'cc_json',
+                'bcc_json',
+                'draft_attachment_paths_json',
+                'folder_kind',
+                'uid',
+              ])
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', draftId)
+              .executeTakeFirst();
+            // Zweiter Abort-Check direkt vor der Freigabe: der Modellaufruf lief
+            // ausserhalb der Transaktion, in dieser Zeit kann die Quellmail als
+            // Spam markiert oder die Kette gestoppt worden sein.
+            if (port === 'send' && await inboundDraftJobAbortReason(trx, {
+              workspaceId: input.workspaceId,
+              messageId: input.messageId,
+              continuation: input.continuation,
+              terminalChainPayload: input.terminalChainPayload,
+            }) !== null) {
+              port = 'hold';
+              approvalReason = 'Quellnachricht/Kette wurde während der Prüfung gestoppt — bitte manuell freigeben';
+              continuationVariables = {
+                'ai.review.verdict': 'hold',
+                'ai.review.answered': false,
+                'ai.review.reason': approvalReason,
+              };
+            }
+            const stillLocalDraft = Boolean(live && live.folder_kind === 'draft' && Number(live.uid) < 0);
+            if (!stillLocalDraft) {
+              // Draft gone/sent — do not stamp pending; still continue the graph.
+              const continuation = input.continuation;
+              if (!continuation) return;
+              const namedTarget = input.portResumeTargets?.[port];
+              let resumeNodeId = namedTarget;
+              if (!resumeNodeId && port === 'send') {
+                const holdOnlyAnchor = Boolean(input.portResumeTargets?.hold)
+                  && !input.portResumeTargets?.send
+                  && continuation.resumeNodeId === input.portResumeTargets?.hold;
+                if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
+              }
+              if (!resumeNodeId) {
+                await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.messageId,
+                  actorUserId: continuation.actorUserId,
+                  continuation,
+                }, now());
+                return;
+              }
+              await enqueueContinuation(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: { ...continuation, resumeNodeId },
+                variables: {
+                  ...continuationVariables,
+                  'ai.review.verdict': 'hold',
+                  'ai.review.answered': false,
+                  'ai.review.reason': 'Entwurf ist nicht mehr lokal — Freigabe übersprungen',
+                },
+                now: now(),
+              });
+              return;
+            }
+            if (port === 'send') {
+              const liveFp = fingerprintReviewedDraft(live!);
+              if (reviewedFingerprint === null || liveFp !== reviewedFingerprint) {
+                port = 'hold';
+                approvalReason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
+                continuationVariables = {
+                  'ai.review.verdict': 'hold',
+                  'ai.review.answered': false,
+                  'ai.review.reason': approvalReason,
+                };
+              }
+            }
+            if (port === 'hold') {
+              await setDraftApprovalPending(trx, input.workspaceId, draftId, approvalReason);
+            }
             const continuation = input.continuation;
-            if (!continuation) return;
+            if (!continuation) {
+              if (input.terminalChainPayload) {
+                // Terminale Gegenpruefung: der Elternlauf wartet auf sie.
+                // Angewendet nur, wenn sie tatsaechlich ein Urteil gefaellt hat.
+                await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                  applied: port === 'send' || port === 'hold',
+                  now: now(),
+                });
+              }
+              return;
+            }
             const namedTarget = input.portResumeTargets?.[port];
             let resumeNodeId = namedTarget;
             if (!resumeNodeId && port === 'send') {
+              // Do not resume SEND through a HOLD-only deferral anchor.
               const holdOnlyAnchor = Boolean(input.portResumeTargets?.hold)
                 && !input.portResumeTargets?.send
                 && continuation.resumeNodeId === input.portResumeTargets?.hold;
               if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
             }
             if (!resumeNodeId) {
+              // Terminal SEND without a success edge (e.g. hold-only graph) must
+              // still advance the inbound priority chain — otherwise later
+              // workflows stay stranded after a successful child.
               await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
                 workspaceId: input.workspaceId,
                 messageId: input.messageId,
@@ -1367,74 +1459,13 @@ export function createPostgresAiReviewDraftPort(
               workspaceId: input.workspaceId,
               messageId: input.messageId,
               continuation: { ...continuation, resumeNodeId },
-              variables: {
-                ...continuationVariables,
-                'ai.review.verdict': 'hold',
-                'ai.review.answered': false,
-                'ai.review.reason': 'Entwurf ist nicht mehr lokal — Freigabe übersprungen',
-              },
+              variables: continuationVariables,
               now: now(),
             });
-            return;
-          }
-          if (port === 'send') {
-            const liveFp = fingerprintReviewedDraft(live!);
-            if (reviewedFingerprint === null || liveFp !== reviewedFingerprint) {
-              port = 'hold';
-              approvalReason = 'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben';
-              continuationVariables = {
-                'ai.review.verdict': 'hold',
-                'ai.review.answered': false,
-                'ai.review.reason': approvalReason,
-              };
-            }
-          }
-          if (port === 'hold') {
-            await setDraftApprovalPending(trx, input.workspaceId, draftId, approvalReason);
-          }
-          const continuation = input.continuation;
-          if (!continuation) {
-            if (input.terminalChainPayload) {
-              // Terminale Gegenpruefung: der Elternlauf wartet auf sie.
-              // Angewendet nur, wenn sie tatsaechlich ein Urteil gefaellt hat.
-              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
-                applied: port === 'send' || port === 'hold',
-                now: now(),
-              });
-            }
-            return;
-          }
-          const namedTarget = input.portResumeTargets?.[port];
-          let resumeNodeId = namedTarget;
-          if (!resumeNodeId && port === 'send') {
-            // Do not resume SEND through a HOLD-only deferral anchor.
-            const holdOnlyAnchor = Boolean(input.portResumeTargets?.hold)
-              && !input.portResumeTargets?.send
-              && continuation.resumeNodeId === input.portResumeTargets?.hold;
-            if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
-          }
-          if (!resumeNodeId) {
-            // Terminal SEND without a success edge (e.g. hold-only graph) must
-            // still advance the inbound priority chain — otherwise later
-            // workflows stay stranded after a successful child.
-            await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
-              workspaceId: input.workspaceId,
-              messageId: input.messageId,
-              actorUserId: continuation.actorUserId,
-              continuation,
-            }, now());
-            return;
-          }
-          await enqueueContinuation(trx, {
-            workspaceId: input.workspaceId,
-            messageId: input.messageId,
-            continuation: { ...continuation, resumeNodeId },
-            variables: continuationVariables,
-            now: now(),
-          });
-        },
-        { applySession: deps.applyWorkspaceSession },
-      );
+          },
+          { applySession: deps.applyWorkspaceSession },
+        );
+      });
     },
   };
 }

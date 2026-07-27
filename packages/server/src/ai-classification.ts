@@ -40,7 +40,10 @@ import {
   inboundChainFromJobPayload,
   isInboundSiblingAborted,
 } from './workflow-inbound-chain-advance';
-import { completeTerminalInboundChild } from './workflow-inbound-terminal-child';
+import {
+  completeTerminalInboundChild,
+  runTerminalInboundChild,
+} from './workflow-inbound-terminal-child';
 
 const CLASSIFY_BODY_MAX = 12_000;
 const AGENT_KNOWLEDGE_MAX = 12_000;
@@ -799,162 +802,167 @@ export function createPostgresAiAgentPort(
 
   return {
     async runAgent(input): Promise<void> {
-      const context = await withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          // Vor dem bezahlten Modellaufruf: hat ein Geschwisterzweig die Kette
-          // gestoppt oder wurde die Mail inzwischen als Spam markiert?
-          const abort = await inboundAsyncChildAbortReason(trx, {
-            workspaceId: input.workspaceId,
-            messageId: input.messageId,
-            continuation: input.continuation,
-            terminalChainPayload: input.terminalChainPayload,
-          });
-          if (abort) return abort;
-          const message = input.messageId === undefined
-            ? null
-            : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
-          const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
-          const strings = {
-            ...stringsFromOptionalMessage(message),
-            ...stringPayload(input.eventStrings),
-          };
-          const query = strings.combined_text ?? '';
-          const chunks = input.knowledgeBaseId !== undefined
-            ? await selectAgentKnowledgeChunks(trx, input.workspaceId, input.knowledgeBaseId, query, 5)
-            // Opt-in fallback: resolve the account/direction knowledge bases like
-            // reply suggestions do, but only when the node explicitly enabled it.
-            : (input.autoKnowledge && message)
-              ? await searchKnowledgeForWorkflow(
-                trx,
-                input.workspaceId,
-                message.account_id === null ? null : Number(message.account_id),
-                input.direction,
-                query,
-                5,
-              )
-              : [];
-          return { message, profile, strings, chunks };
-        },
-        { applySession: options.applyWorkspaceSession },
-      );
-      if (!context) return;
-      if (typeof context === 'string') {
-        // Der Knoten hat den übergeordneten workflow.execute bereits deferred —
-        // die Fortsetzung muss laufen (sie räumt Join/Kette auf), nur der
-        // Modellaufruf und der Entwurf entfallen.
-        await enqueueAiChildSkipContinuation(options, input, 'ai.agent', context, now());
-        return;
-      }
-      if (!context.profile) throw new Error('AI-Profil nicht gefunden');
-
-      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
-      if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
-
-      const variables = variablePayload(input.eventVariables);
-      const output = (await runTrackedChatCompletion(
-        options,
-        {
-          workspaceId: input.workspaceId,
-          aiProfileId: Number(context.profile.id),
-          model: context.profile.model,
-          nodeType: 'ai.agent',
-          messageId: input.messageId ?? null,
-          actorUserId: input.actorUserId ?? null,
-        },
-        {
-          profile: context.profile,
-          apiKey,
-          system: interpolateWorkflowTemplate(input.systemPrompt, context.strings, variables),
-          user: buildAgentUserPrompt(context.strings, context.chunks, variables),
-        },
-      )).trim();
-      if (!output) throw new Error('KI-Agent-Antwort leer');
-
-      if (input.continuation || input.createDraft) {
-        await withWorkspaceTransaction(
+      // Terminaler Knoten: der Elternlauf wartet auf diesen Job. Das
+      // Sicherheitsnetz holt den Kettenabschluss auf jedem normalen Ausgang
+      // nach, den der Port unten nicht selbst bedient.
+      await runTerminalInboundChild(options, input, now, async () => {
+        const context = await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
-            // Zweiter Check direkt vor der Mutation: der Modellaufruf lief
-            // außerhalb der Transaktion, in dieser Zeit kann ein Geschwisterzweig
-            // Spam markiert bzw. die Kette gestoppt haben.
+            // Vor dem bezahlten Modellaufruf: hat ein Geschwisterzweig die Kette
+            // gestoppt oder wurde die Mail inzwischen als Spam markiert?
             const abort = await inboundAsyncChildAbortReason(trx, {
               workspaceId: input.workspaceId,
               messageId: input.messageId,
               continuation: input.continuation,
               terminalChainPayload: input.terminalChainPayload,
             });
-            if (abort) {
-              if (input.continuation) {
-                await enqueueContinuation(trx, {
-                  workspaceId: input.workspaceId,
-                  ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
-                  continuation: input.continuation,
-                  variables: aiChildSkipVariables('ai.agent', abort),
-                  now: now(),
-                });
-              }
-              return;
-            }
-            const continuationVariables: JobPayload = {
-              'ai.agent.response': output,
-              // P1-8 source transparency: which knowledge chunks the answer drew on.
-              'ai.agent.sources': context.chunks
-                .map((chunk) => (chunk.title?.trim() ? chunk.title.trim() : `#${Number(chunk.id)}`))
-                .join('; '),
-              'ai.agent.source_count': context.chunks.length,
+            if (abort) return abort;
+            const message = input.messageId === undefined
+              ? null
+              : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
+            const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
+            const strings = {
+              ...stringsFromOptionalMessage(message),
+              ...stringPayload(input.eventStrings),
             };
-            if (input.createDraft) {
-              if (!context.message) throw new Error('Nachricht fuer KI-Agent-Entwurf nicht gefunden');
-              const replyToAddress = firstReplyAddress(context.message);
-              if (!replyToAddress) throw new Error('Kein Antwort-Empfaenger ermittelbar');
-              const draft = await createPostgresComposeDraftInTransaction(trx, {
-                workspaceId: input.workspaceId,
-                accountId: Number(context.message.account_id),
-                values: {
-                  accountId: Number(context.message.account_id),
-                  subject: replySubject(context.message.subject),
-                  bodyText: output,
-                  toJson: { value: [{ address: replyToAddress }] },
-                },
-              });
-              if (!draft.ok) throw new Error(`KI-Agent-Entwurf fehlgeschlagen: ${draft.reason}`);
-              continuationVariables['draft.id'] = draft.message.id;
-              // P2-9: snapshot the AI draft so feedback learning can measure how
-              // much a human edits it before sending.
-              await trx
-                .updateTable('email_messages')
-                .set({
-                  ai_suggestion_snapshot: output,
-                  reply_parent_message_id: Number(context.message.id),
-                })
-                .where('workspace_id', '=', input.workspaceId)
-                .where('id', '=', Number(draft.message.id))
-                .execute();
-            }
-            if (!input.continuation && input.terminalChainPayload) {
-              // Terminaler Knoten: Applied-Marker setzen, Join abbauen, Kette
-              // weiterschalten — der Elternlauf hat auf diesen Job gewartet.
-              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
-                applied: true,
-                now: now(),
-              });
-            }
-            if (input.continuation) {
-              await enqueueContinuation(trx, {
-                workspaceId: input.workspaceId,
-                messageId: input.messageId,
-                continuation: input.continuation,
-                variables: continuationVariables,
-                now: now(),
-              });
-            }
+            const query = strings.combined_text ?? '';
+            const chunks = input.knowledgeBaseId !== undefined
+              ? await selectAgentKnowledgeChunks(trx, input.workspaceId, input.knowledgeBaseId, query, 5)
+              // Opt-in fallback: resolve the account/direction knowledge bases like
+              // reply suggestions do, but only when the node explicitly enabled it.
+              : (input.autoKnowledge && message)
+                ? await searchKnowledgeForWorkflow(
+                  trx,
+                  input.workspaceId,
+                  message.account_id === null ? null : Number(message.account_id),
+                  input.direction,
+                  query,
+                  5,
+                )
+                : [];
+            return { message, profile, strings, chunks };
           },
           { applySession: options.applyWorkspaceSession },
         );
-      }
+        if (!context) return;
+        if (typeof context === 'string') {
+          // Der Knoten hat den übergeordneten workflow.execute bereits deferred —
+          // die Fortsetzung muss laufen (sie räumt Join/Kette auf), nur der
+          // Modellaufruf und der Entwurf entfallen.
+          await enqueueAiChildSkipContinuation(options, input, 'ai.agent', context, now());
+          return;
+        }
+        if (!context.profile) throw new Error('AI-Profil nicht gefunden');
+
+        const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+        if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
+
+        const variables = variablePayload(input.eventVariables);
+        const output = (await runTrackedChatCompletion(
+          options,
+          {
+            workspaceId: input.workspaceId,
+            aiProfileId: Number(context.profile.id),
+            model: context.profile.model,
+            nodeType: 'ai.agent',
+            messageId: input.messageId ?? null,
+            actorUserId: input.actorUserId ?? null,
+          },
+          {
+            profile: context.profile,
+            apiKey,
+            system: interpolateWorkflowTemplate(input.systemPrompt, context.strings, variables),
+            user: buildAgentUserPrompt(context.strings, context.chunks, variables),
+          },
+        )).trim();
+        if (!output) throw new Error('KI-Agent-Antwort leer');
+
+        if (input.continuation || input.createDraft) {
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => {
+              // Zweiter Check direkt vor der Mutation: der Modellaufruf lief
+              // außerhalb der Transaktion, in dieser Zeit kann ein Geschwisterzweig
+              // Spam markiert bzw. die Kette gestoppt haben.
+              const abort = await inboundAsyncChildAbortReason(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation,
+                terminalChainPayload: input.terminalChainPayload,
+              });
+              if (abort) {
+                if (input.continuation) {
+                  await enqueueContinuation(trx, {
+                    workspaceId: input.workspaceId,
+                    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+                    continuation: input.continuation,
+                    variables: aiChildSkipVariables('ai.agent', abort),
+                    now: now(),
+                  });
+                }
+                return;
+              }
+              const continuationVariables: JobPayload = {
+                'ai.agent.response': output,
+                // P1-8 source transparency: which knowledge chunks the answer drew on.
+                'ai.agent.sources': context.chunks
+                  .map((chunk) => (chunk.title?.trim() ? chunk.title.trim() : `#${Number(chunk.id)}`))
+                  .join('; '),
+                'ai.agent.source_count': context.chunks.length,
+              };
+              if (input.createDraft) {
+                if (!context.message) throw new Error('Nachricht fuer KI-Agent-Entwurf nicht gefunden');
+                const replyToAddress = firstReplyAddress(context.message);
+                if (!replyToAddress) throw new Error('Kein Antwort-Empfaenger ermittelbar');
+                const draft = await createPostgresComposeDraftInTransaction(trx, {
+                  workspaceId: input.workspaceId,
+                  accountId: Number(context.message.account_id),
+                  values: {
+                    accountId: Number(context.message.account_id),
+                    subject: replySubject(context.message.subject),
+                    bodyText: output,
+                    toJson: { value: [{ address: replyToAddress }] },
+                  },
+                });
+                if (!draft.ok) throw new Error(`KI-Agent-Entwurf fehlgeschlagen: ${draft.reason}`);
+                continuationVariables['draft.id'] = draft.message.id;
+                // P2-9: snapshot the AI draft so feedback learning can measure how
+                // much a human edits it before sending.
+                await trx
+                  .updateTable('email_messages')
+                  .set({
+                    ai_suggestion_snapshot: output,
+                    reply_parent_message_id: Number(context.message.id),
+                  })
+                  .where('workspace_id', '=', input.workspaceId)
+                  .where('id', '=', Number(draft.message.id))
+                  .execute();
+              }
+              if (!input.continuation && input.terminalChainPayload) {
+                // Terminaler Knoten: Applied-Marker setzen, Join abbauen, Kette
+                // weiterschalten — der Elternlauf hat auf diesen Job gewartet.
+                await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                  applied: true,
+                  now: now(),
+                });
+              }
+              if (input.continuation) {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.messageId,
+                  continuation: input.continuation,
+                  variables: continuationVariables,
+                  now: now(),
+                });
+              }
+            },
+            { applySession: options.applyWorkspaceSession },
+          );
+        }
+      });
     },
   };
 }
@@ -998,159 +1006,164 @@ export function createPostgresAiPickCannedPort(
   const now = () => options.now?.() ?? new Date();
   return {
     async pickCanned(input): Promise<void> {
-      const context = await withWorkspaceTransaction(
-        options.db,
-        { workspaceId: input.workspaceId, role: 'system' },
-        async (trx) => {
-          const abort = await inboundAsyncChildAbortReason(trx, {
-            workspaceId: input.workspaceId,
-            messageId: input.messageId,
-            continuation: input.continuation,
-            terminalChainPayload: input.terminalChainPayload,
-          });
-          if (abort) return abort;
-          const message = input.messageId === undefined
-            ? null
-            : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
-          const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
-          const canned = await selectCannedResponses(trx, input.workspaceId, input.cannedScope);
-          return { message, profile, canned };
-        },
-        { applySession: options.applyWorkspaceSession },
-      );
-      if (typeof context === 'string') {
-        await enqueueAiChildSkipContinuation(options, input, 'ai.pick_canned', context, now());
-        return;
-      }
-      if (!context.profile) throw new Error('AI-Profil nicht gefunden');
-      if (context.canned.length === 0) throw new Error('Keine Textbausteine vorhanden');
-
-      const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
-      if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
-
-      const strings = {
-        ...stringsFromOptionalMessage(context.message),
-        ...stringPayload(input.eventStrings),
-      };
-      const list = context.canned.map((row, index) => `${index + 1}. ${row.title}`).join('\n');
-      const output = await runTrackedChatCompletion(
-        options,
-        {
-          workspaceId: input.workspaceId,
-          aiProfileId: Number(context.profile.id),
-          model: context.profile.model,
-          nodeType: 'ai.pick_canned',
-          messageId: input.messageId ?? null,
-          actorUserId: input.actorUserId ?? null,
-        },
-        {
-          profile: context.profile,
-          apiKey,
-          system: 'Du waehlst den am besten passenden Textbaustein fuer die Kundenmail. Antworte nur mit der Nummer des Bausteins, oder 0 wenn keiner passt.',
-          user: `Textbausteine:\n${list}\n\nKundenmail:\n${strings.combined_text ?? ''}`,
-        },
-      );
-      const pick = parseCannedPickNumber(output, context.canned.length);
-
-      const continuationVariables: JobPayload = { 'ai.canned.pick': pick };
-      let draftBody: string | null = null;
-      if (pick > 0) {
-        const chosen = context.canned[pick - 1]!;
-        continuationVariables['ai.canned.id'] = chosen.id;
-        continuationVariables['ai.canned.title'] = chosen.title;
-        draftBody = interpolateWorkflowTemplate(chosen.body, strings, variablePayload(input.eventVariables));
-        continuationVariables['ai.canned.text'] = draftBody.slice(0, 8000);
-      }
-
-      // When the model returns "0 = no canned template fits", draftBody stays
-      // null. If a continuation is queued in that state, downstream nodes such
-      // as email.send_draft would error out (no draft.id). Surface a clear
-      // no-match flag in the continuation variables so the workflow can branch
-      // or skip; do NOT enqueue a continuation that lacks a draft when the
-      // node was configured to create one.
-      if (input.createDraft && draftBody === null) {
-        continuationVariables['ai.canned.no_match'] = true;
-      }
-      const willCreateDraft = input.createDraft && draftBody !== null;
-      // Skip the continuation when createDraft was requested but no draft was
-      // produced — downstream nodes that depend on draft.id would error out.
-      const shouldEnqueueContinuation = !!input.continuation
-        && (willCreateDraft || !input.createDraft);
-
-      if (willCreateDraft || shouldEnqueueContinuation) {
-        await withWorkspaceTransaction(
+      // Terminaler Knoten: der Elternlauf wartet auf diesen Job. Das
+      // Sicherheitsnetz holt den Kettenabschluss auf jedem normalen Ausgang
+      // nach, den der Port unten nicht selbst bedient.
+      await runTerminalInboundChild(options, input, now, async () => {
+        const context = await withWorkspaceTransaction(
           options.db,
           { workspaceId: input.workspaceId, role: 'system' },
           async (trx) => {
-            // Zweiter Check direkt vor der Mutation (siehe ai.agent).
             const abort = await inboundAsyncChildAbortReason(trx, {
               workspaceId: input.workspaceId,
               messageId: input.messageId,
               continuation: input.continuation,
               terminalChainPayload: input.terminalChainPayload,
             });
-            if (abort) {
-              if (input.continuation) {
-                await enqueueContinuation(trx, {
-                  workspaceId: input.workspaceId,
-                  ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
-                  continuation: input.continuation,
-                  variables: aiChildSkipVariables('ai.pick_canned', abort),
-                  now: now(),
-                });
-              }
-              return;
-            }
-            // Narrow for the closure: TypeScript can't carry the willCreateDraft
-            // discriminant into the async callback.
-            const draftBodyForCreate = draftBody;
-            if (willCreateDraft && draftBodyForCreate !== null && context.message) {
-              // Address the canned-response draft to the original sender; without
-              // a recipient, scheduled-send would clear scheduled_send_at and the
-              // auto-reply would never actually go out (silently no-op).
-              const replyToAddress = firstReplyAddress(context.message);
-              if (!replyToAddress) throw new Error('Kein Antwort-Empfaenger ermittelbar');
-              const draft = await createPostgresComposeDraftInTransaction(trx, {
-                workspaceId: input.workspaceId,
-                accountId: Number(context.message.account_id),
-                values: {
-                  accountId: Number(context.message.account_id),
-                  subject: replySubject(context.message.subject),
-                  bodyText: draftBodyForCreate,
-                  toJson: { value: [{ address: replyToAddress }] },
-                },
-              });
-              if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);
-              continuationVariables['draft.id'] = draft.message.id;
-              await trx
-                .updateTable('email_messages')
-                .set({
-                  ai_suggestion_snapshot: draftBodyForCreate,
-                  reply_parent_message_id: Number(context.message.id),
-                })
-                .where('workspace_id', '=', input.workspaceId)
-                .where('id', '=', Number(draft.message.id))
-                .execute();
-            }
-            if (!input.continuation && input.terminalChainPayload) {
-              await completeTerminalInboundChild(trx, input.terminalChainPayload, {
-                applied: true,
-                now: now(),
-              });
-            }
-            if (shouldEnqueueContinuation) {
-              await enqueueContinuation(trx, {
-                workspaceId: input.workspaceId,
-                messageId: input.messageId,
-                continuation: input.continuation!,
-                variables: continuationVariables,
-                now: now(),
-              });
-            }
+            if (abort) return abort;
+            const message = input.messageId === undefined
+              ? null
+              : await selectClassificationMessage(trx, input.workspaceId, input.messageId);
+            const profile = await selectAiProfile(trx, input.workspaceId, input.profileId, null);
+            const canned = await selectCannedResponses(trx, input.workspaceId, input.cannedScope);
+            return { message, profile, canned };
           },
           { applySession: options.applyWorkspaceSession },
         );
-      }
+        if (typeof context === 'string') {
+          await enqueueAiChildSkipContinuation(options, input, 'ai.pick_canned', context, now());
+          return;
+        }
+        if (!context.profile) throw new Error('AI-Profil nicht gefunden');
+        if (context.canned.length === 0) throw new Error('Keine Textbausteine vorhanden');
+
+        const apiKey = await readProfileApiKey(options.secrets, input.workspaceId, context.profile);
+        if (!apiKey) throw new Error('Kein KI-API-Schluessel konfiguriert');
+
+        const strings = {
+          ...stringsFromOptionalMessage(context.message),
+          ...stringPayload(input.eventStrings),
+        };
+        const list = context.canned.map((row, index) => `${index + 1}. ${row.title}`).join('\n');
+        const output = await runTrackedChatCompletion(
+          options,
+          {
+            workspaceId: input.workspaceId,
+            aiProfileId: Number(context.profile.id),
+            model: context.profile.model,
+            nodeType: 'ai.pick_canned',
+            messageId: input.messageId ?? null,
+            actorUserId: input.actorUserId ?? null,
+          },
+          {
+            profile: context.profile,
+            apiKey,
+            system: 'Du waehlst den am besten passenden Textbaustein fuer die Kundenmail. Antworte nur mit der Nummer des Bausteins, oder 0 wenn keiner passt.',
+            user: `Textbausteine:\n${list}\n\nKundenmail:\n${strings.combined_text ?? ''}`,
+          },
+        );
+        const pick = parseCannedPickNumber(output, context.canned.length);
+
+        const continuationVariables: JobPayload = { 'ai.canned.pick': pick };
+        let draftBody: string | null = null;
+        if (pick > 0) {
+          const chosen = context.canned[pick - 1]!;
+          continuationVariables['ai.canned.id'] = chosen.id;
+          continuationVariables['ai.canned.title'] = chosen.title;
+          draftBody = interpolateWorkflowTemplate(chosen.body, strings, variablePayload(input.eventVariables));
+          continuationVariables['ai.canned.text'] = draftBody.slice(0, 8000);
+        }
+
+        // When the model returns "0 = no canned template fits", draftBody stays
+        // null. If a continuation is queued in that state, downstream nodes such
+        // as email.send_draft would error out (no draft.id). Surface a clear
+        // no-match flag in the continuation variables so the workflow can branch
+        // or skip; do NOT enqueue a continuation that lacks a draft when the
+        // node was configured to create one.
+        if (input.createDraft && draftBody === null) {
+          continuationVariables['ai.canned.no_match'] = true;
+        }
+        const willCreateDraft = input.createDraft && draftBody !== null;
+        // Skip the continuation when createDraft was requested but no draft was
+        // produced — downstream nodes that depend on draft.id would error out.
+        const shouldEnqueueContinuation = !!input.continuation
+          && (willCreateDraft || !input.createDraft);
+
+        if (willCreateDraft || shouldEnqueueContinuation) {
+          await withWorkspaceTransaction(
+            options.db,
+            { workspaceId: input.workspaceId, role: 'system' },
+            async (trx) => {
+              // Zweiter Check direkt vor der Mutation (siehe ai.agent).
+              const abort = await inboundAsyncChildAbortReason(trx, {
+                workspaceId: input.workspaceId,
+                messageId: input.messageId,
+                continuation: input.continuation,
+                terminalChainPayload: input.terminalChainPayload,
+              });
+              if (abort) {
+                if (input.continuation) {
+                  await enqueueContinuation(trx, {
+                    workspaceId: input.workspaceId,
+                    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
+                    continuation: input.continuation,
+                    variables: aiChildSkipVariables('ai.pick_canned', abort),
+                    now: now(),
+                  });
+                }
+                return;
+              }
+              // Narrow for the closure: TypeScript can't carry the willCreateDraft
+              // discriminant into the async callback.
+              const draftBodyForCreate = draftBody;
+              if (willCreateDraft && draftBodyForCreate !== null && context.message) {
+                // Address the canned-response draft to the original sender; without
+                // a recipient, scheduled-send would clear scheduled_send_at and the
+                // auto-reply would never actually go out (silently no-op).
+                const replyToAddress = firstReplyAddress(context.message);
+                if (!replyToAddress) throw new Error('Kein Antwort-Empfaenger ermittelbar');
+                const draft = await createPostgresComposeDraftInTransaction(trx, {
+                  workspaceId: input.workspaceId,
+                  accountId: Number(context.message.account_id),
+                  values: {
+                    accountId: Number(context.message.account_id),
+                    subject: replySubject(context.message.subject),
+                    bodyText: draftBodyForCreate,
+                    toJson: { value: [{ address: replyToAddress }] },
+                  },
+                });
+                if (!draft.ok) throw new Error(`Textbaustein-Entwurf fehlgeschlagen: ${draft.reason}`);
+                continuationVariables['draft.id'] = draft.message.id;
+                await trx
+                  .updateTable('email_messages')
+                  .set({
+                    ai_suggestion_snapshot: draftBodyForCreate,
+                    reply_parent_message_id: Number(context.message.id),
+                  })
+                  .where('workspace_id', '=', input.workspaceId)
+                  .where('id', '=', Number(draft.message.id))
+                  .execute();
+              }
+              if (!input.continuation && input.terminalChainPayload) {
+                await completeTerminalInboundChild(trx, input.terminalChainPayload, {
+                  applied: true,
+                  now: now(),
+                });
+              }
+              if (shouldEnqueueContinuation) {
+                await enqueueContinuation(trx, {
+                  workspaceId: input.workspaceId,
+                  messageId: input.messageId,
+                  continuation: input.continuation!,
+                  variables: continuationVariables,
+                  now: now(),
+                });
+              }
+            },
+            { applySession: options.applyWorkspaceSession },
+          );
+        }
+      });
     },
   };
 }

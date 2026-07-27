@@ -53,7 +53,7 @@ import {
   interpolateSignatureTemplate,
 } from '../../../shared/signature-template';
 import { setDraftApprovalPending } from '../../email/email-draft-approval';
-import { scheduledSendIsClaimed } from '../../email/email-scheduled-send-claim';
+import { deferHoldDuringSend, scheduledSendIsClaimed } from '../../email/email-scheduled-send-claim';
 import { parseDraftReviewResponse } from '../draft-review-parse';
 import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
@@ -164,6 +164,9 @@ function holdResultOrSendInFlight(
   // Fehlerfall) wuerde den Zweig sonst auf 'send' kippen, also ausgerechnet auf
   // dem Geldpfad nach aussen oeffnen.
   if (scheduledSendIsClaimed(draftId)) {
+    // Das HOLD nicht verwerfen: scheitert der laufende Versand, wird es beim
+    // Freigeben des Claims nachgeholt (email-scheduled-send).
+    deferHoldDuringSend(draftId, reason);
     return {
       status: 'ok',
       port: 'send',
