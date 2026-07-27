@@ -14,6 +14,9 @@ const mockMarkAutoReplySent = jest.fn();
 
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => db,
+  // Der Freigabe-Pfad prueft ueber sync_info, ob gerade ein Versand laeuft.
+  getSyncInfo: () => null,
+  setSyncInfo: () => undefined,
 }));
 
 jest.mock('../../electron/email/email-store', () => ({

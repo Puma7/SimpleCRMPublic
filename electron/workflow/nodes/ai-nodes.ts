@@ -53,6 +53,7 @@ import {
   interpolateSignatureTemplate,
 } from '../../../shared/signature-template';
 import { setDraftApprovalPending } from '../../email/email-draft-approval';
+import { scheduledSendIsClaimed } from '../../email/email-scheduled-send-claim';
 import { parseDraftReviewResponse } from '../draft-review-parse';
 import { parseOutboundReviewResponse } from '../../email/email-outbound-review-parse';
 // createComposeDraft used by ai.agent
@@ -157,26 +158,31 @@ function holdResultOrSendInFlight(
   reason: string,
   variables?: Record<string, string | number | boolean | null>,
 ): NodeExecuteResult {
-  const held = setDraftApprovalPending(draftId, reason);
-  if (held) {
+  // Fail-closed: NUR ein tatsaechlich aktiver Versand-Claim darf das HOLD
+  // verhindern. Die Entscheidung bewusst nicht am Rueckgabewert von
+  // setDraftApprovalPending festmachen — ein falsy Wert (nicht gesetzt, anderer
+  // Fehlerfall) wuerde den Zweig sonst auf 'send' kippen, also ausgerechnet auf
+  // dem Geldpfad nach aussen oeffnen.
+  if (scheduledSendIsClaimed(draftId)) {
     return {
       status: 'ok',
-      port: 'hold',
-      variables: variables ?? {
-        'ai.review.verdict': 'hold',
+      port: 'send',
+      message: 'review_hold_skipped:send_in_flight',
+      variables: {
+        'ai.review.verdict': 'send',
         'ai.review.answered': false,
-        'ai.review.reason': reason,
+        'ai.review.reason': 'Versand lief bereits — Gegenprüfung kam zu spät',
       },
     };
   }
+  setDraftApprovalPending(draftId, reason);
   return {
     status: 'ok',
-    port: 'send',
-    message: 'review_hold_skipped:send_in_flight',
-    variables: {
-      'ai.review.verdict': 'send',
+    port: 'hold',
+    variables: variables ?? {
+      'ai.review.verdict': 'hold',
       'ai.review.answered': false,
-      'ai.review.reason': 'Versand lief bereits — Gegenprüfung kam zu spät',
+      'ai.review.reason': reason,
     },
   };
 }

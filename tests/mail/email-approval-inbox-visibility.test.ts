@@ -13,6 +13,9 @@ db.pragma('foreign_keys = OFF');
 
 jest.mock('../../electron/sqlite-service', () => ({
   getDb: () => db,
+  // Der Freigabe-Pfad prueft ueber sync_info, ob gerade ein Versand laeuft.
+  getSyncInfo: () => null,
+  setSyncInfo: () => undefined,
 }));
 
 import { createEmailMessagesTable } from '../../electron/database-schema';
