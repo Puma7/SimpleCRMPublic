@@ -3,6 +3,7 @@ const mockSetSyncInfo = jest.fn();
 const mockSendComposeDraft = jest.fn();
 const mockSetDraftScheduledSendAt = jest.fn();
 const mockListDue = jest.fn();
+const mockStillDue = jest.fn();
 
 jest.mock('../../electron/sqlite-service', () => ({
   getSyncInfo: (...args: unknown[]) => mockGetSyncInfo(...args),
@@ -35,6 +36,7 @@ jest.mock('../../electron/email/email-compose-send', () => ({
 jest.mock('../../electron/email/email-message-features', () => ({
   listDueScheduledDraftIds: () => mockListDue(),
   setDraftScheduledSendAt: (...args: unknown[]) => mockSetDraftScheduledSendAt(...args),
+  scheduledSendIsStillDue: (...args: unknown[]) => mockStillDue(...args),
 }));
 
 import { processDueScheduledSends } from '../../electron/email/email-scheduled-send';
@@ -53,6 +55,7 @@ describe('email-scheduled-send', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockStillDue.mockReturnValue(true);
     // Die echte Funktion liefert true, wenn der Stempel gesetzt wurde.
     mockSetDraftApprovalPending.mockReturnValue(true);
     mockListDue.mockReturnValue([99]);
@@ -166,5 +169,20 @@ describe('email-scheduled-send', () => {
 
     expect(mockSetDraftApprovalPending).not.toHaveBeenCalled();
     expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('Entwurf, der waehrend des Batches zurueckgehalten wurde, geht nicht raus', async () => {
+    // `ids` ist ein Schnappschuss: waehrend des SMTP-Aufrufs fuer einen
+    // frueheren Entwurf hat die Gegenlese-KI diesen hier gestempelt und
+    // scheduled_send_at geloescht. Unser Claim stand da noch nicht, sie kam
+    // also durch — ohne Live-Nachpruefung ginge er trotzdem raus.
+    mockStillDue.mockReturnValue(false);
+
+    const sent = await processDueScheduledSends(logger);
+
+    expect(sent).toBe(0);
+    expect(mockSendComposeDraft).not.toHaveBeenCalled();
+    // Der Claim wird trotzdem sauber freigegeben.
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_claimed_at:99', '');
   });
 });

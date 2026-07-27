@@ -667,6 +667,13 @@ describe('codex review regression guards', () => {
     // sonst weder HOLD noch Pending-Zustand zurueck.
     expect(aiNodes).toContain('deferHoldDuringSend(draftId, reason)');
     expect(scheduled).toContain('peekDeferredSendHold(draftId)');
+    // Nach dem Claim gegen den Live-Zustand pruefen: der Batch-Schnappschuss
+    // kann veraltet sein, wenn die Gegenlese-KI einen spaeteren Entwurf der
+    // Liste waehrend eines frueheren SMTP-Aufrufs zurueckgehalten hat.
+    expect(scheduled).toContain('if (!scheduledSendIsStillDue(draftId)) continue;');
+    // Liste und Nachpruefung teilen dieselbe Faelligkeitsbedingung.
+    expect(readRepoFile('electron/email/email-message-features.ts'))
+      .toContain('DUE_SCHEDULED_SEND_WHERE');
     expect(scheduled).not.toContain('takeDeferredSendHold');
     expect(scheduled).toMatch(
       /if \(setDraftApprovalPending\(draftId, deferredHold\)\) \{\s*\n\s*clearDeferredSendHold\(draftId\);/,

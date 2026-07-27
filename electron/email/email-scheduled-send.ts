@@ -1,6 +1,10 @@
 import { getEmailMessageById } from './email-store';
 import { sendComposeDraft } from './email-compose-send';
-import { listDueScheduledDraftIds, setDraftScheduledSendAt } from './email-message-features';
+import {
+  listDueScheduledDraftIds,
+  scheduledSendIsStillDue,
+  setDraftScheduledSendAt,
+} from './email-message-features';
 import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 import {
@@ -40,6 +44,12 @@ export async function processDueScheduledSends(
     // eigener Claim steht. Also merken und im finally nach der Freigabe setzen.
     let recoveredHold: string | null = null;
     try {
+      // Erst NACH dem Claim gegen den Live-Zustand pruefen: `ids` ist ein
+      // Schnappschuss vom Schleifenanfang, und waehrend des SMTP-Aufrufs fuer
+      // einen frueheren Entwurf kann die Gegenlese-KI diesen hier zurueckgehalten
+      // haben (setDraftApprovalPending loescht scheduled_send_at). Ihr Claim-Schutz
+      // griff dabei nicht, weil unser Claim zu dem Zeitpunkt noch nicht stand.
+      if (!scheduledSendIsStillDue(draftId)) continue;
       const draft = getEmailMessageById(draftId);
       if (!draft || draft.uid >= 0) {
         // uid >= 0: bereits verschickt — ein nachtraegliches HOLD waere sinnlos.
