@@ -46,7 +46,7 @@ import {
 import { CalendarEventDetails } from './components/event-details';
 import { CalendarEventForm } from './components/event-form';
 import type { EventFormData, EventFormSubmitPayload, TaskFormState } from './types';
-import { toCalendarRbcEvent, toLocalCalendarDate } from './date-utils';
+import { defaultQuickAddEventTimes, toCalendarRbcEvent, toLocalCalendarDate } from './date-utils';
 
 // Initialize calendar
 const locales = {
@@ -894,9 +894,7 @@ export default function CalendarPage() {
             {canWriteCrm ? (
               <Button
                 onClick={() => {
-                  const now = new Date();
-                  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0);
-                  const end = new Date(start.getTime() + 60 * 60 * 1000);
+                  const { start, end } = defaultQuickAddEventTimes();
                   setEventFormData({
                     title: "",
                     start,
