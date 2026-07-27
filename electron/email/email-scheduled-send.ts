@@ -5,8 +5,9 @@ import { recipientFieldFromJson } from '../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 import {
   claimScheduledSend,
+  clearDeferredSendHold,
+  peekDeferredSendHold,
   releaseScheduledSendClaim,
-  takeDeferredSendHold,
 } from './email-scheduled-send-claim';
 import { setDraftApprovalPending } from './email-draft-approval';
 import {
@@ -50,7 +51,7 @@ export async function processDueScheduledSends(
       // jetzt — und dieser Entwurf geht nicht raus. Ohne diese Pruefung raeumt
       // der Boot-Sweep nur den Claim ab und der naechste Tick versendet genau
       // den Entwurf, den die Gegenlese-KI zurueckhalten wollte.
-      recoveredHold = takeDeferredSendHold(draftId);
+      recoveredHold = peekDeferredSendHold(draftId);
       if (recoveredHold) continue;
       const to = recipientFieldFromJson(draft.to_json);
       if (!to.trim()) {
@@ -109,16 +110,27 @@ export async function processDueScheduledSends(
       // Erst den Claim freigeben: setDraftApprovalPending verweigert den Stempel,
       // solange er steht (es koennte ein laufender Versand sein).
       releaseScheduledSendClaim(draftId);
-      // Bei belegtem Compose-Lock bleibt das HOLD bewusst geparkt.
-      const deferredHold = recoveredHold
-        ?? (sendInFlightElsewhere ? null : takeDeferredSendHold(draftId));
-      if (deferredHold && !delivered) {
+      // Bei belegtem Compose-Lock bleibt das HOLD bewusst geparkt: der parallele
+      // Versand kann noch scheitern, dann greift es beim naechsten Durchlauf.
+      const deferredHold = sendInFlightElsewhere
+        ? null
+        : recoveredHold ?? peekDeferredSendHold(draftId);
+      if (deferredHold && delivered) {
+        // Zugestellt ⇒ das HOLD ist gegenstandslos.
+        clearDeferredSendHold(draftId);
+      } else if (deferredHold) {
         // Die Gegenlese-KI wollte diesen Entwurf zurueckhalten, kam aber
         // waehrend des Versands nicht durch — und der Versand ist gescheitert.
         // Ohne das Nachholen ginge der ungeprueft gebliebene Entwurf beim
         // naechsten faelligen Durchlauf trotzdem raus.
-        setDraftApprovalPending(draftId, deferredHold);
-        logger.warn(`[email] scheduled send ${draftId}: HOLD der Gegenlese-KI nachgeholt`);
+        //
+        // Reihenfolge: erst anwenden, dann den Parkplatz raeumen. Andersherum
+        // waere nach einem Absturz dazwischen weder das HOLD noch der
+        // Pending-Zustand da und der Entwurf ginge doch noch raus.
+        if (setDraftApprovalPending(draftId, deferredHold)) {
+          clearDeferredSendHold(draftId);
+          logger.warn(`[email] scheduled send ${draftId}: HOLD der Gegenlese-KI nachgeholt`);
+        }
       }
     }
   }

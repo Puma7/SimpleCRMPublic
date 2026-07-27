@@ -53,6 +53,8 @@ describe('email-scheduled-send', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // Die echte Funktion liefert true, wenn der Stempel gesetzt wurde.
+    mockSetDraftApprovalPending.mockReturnValue(true);
     mockListDue.mockReturnValue([99]);
     syncInfo({ 'scheduled_send_failures:99': '0' });
   });
@@ -82,10 +84,11 @@ describe('email-scheduled-send', () => {
     // ihr HOLD geparkt. Geht die Mail dann doch nicht raus, muss der Entwurf auf
     // „Wartet auf Freigabe" — sonst versendet ihn der naechste faellige Lauf
     // ungeprueft.
-    mockSendComposeDraft.mockResolvedValue({ ok: false, error: 'SMTP 550' });
-    syncInfo({
-      'scheduled_send_failures:99': '0',
-      'scheduled_send_deferred_hold:99': 'Gegenlese-KI empfiehlt menschliche Pruefung',
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'Gegenlese-KI empfiehlt menschliche Pruefung';
+      return { ok: false, error: 'SMTP 550' };
     });
 
     await processDueScheduledSends(logger);
@@ -94,8 +97,26 @@ describe('email-scheduled-send', () => {
       99,
       'Gegenlese-KI empfiehlt menschliche Pruefung',
     );
-    // Der Parkplatz wird dabei verbraucht.
+    // Der Parkplatz wird erst danach verbraucht.
     expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
+  });
+
+  test('HOLD bleibt geparkt, wenn der Stempel nicht gesetzt werden konnte', async () => {
+    // Fail-safe: setDraftApprovalPending verweigert (z. B. weil doch noch ein
+    // Claim steht). Wuerde der Parkplatz trotzdem geraeumt, waere das Urteil
+    // weg und der weiterhin faellige Entwurf ginge beim naechsten Tick raus.
+    mockSetDraftApprovalPending.mockReturnValue(false);
+    const values: Record<string, string> = { 'scheduled_send_failures:99': '0' };
+    syncInfo(values);
+    mockSendComposeDraft.mockImplementation(async () => {
+      values['scheduled_send_deferred_hold:99'] = 'bitte pruefen';
+      return { ok: false, error: 'SMTP 550' };
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftApprovalPending).toHaveBeenCalledWith(99, 'bitte pruefen');
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_deferred_hold:99', '');
   });
 
   test('erfolgreicher Versand verbraucht das geparkte HOLD ohne es anzuwenden', async () => {

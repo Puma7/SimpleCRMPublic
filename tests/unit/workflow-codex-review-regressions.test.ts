@@ -381,7 +381,7 @@ describe('codex review regression guards', () => {
     // Join-Barriere auch am letzten Kettenplatz abbauen (sonst bleibt sync_info
     // dauerhaft pending und ein erfolgreicher Geschwisterzweig wartet ewig).
     expect(advance).toMatch(
-      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return \{ state: join, advanced: false \};\s*\n\s*const nextIndex = parsed\.chain\.index \+ 1;/,
+      /completeInboundDeferredJoinSibling\([\s\S]*?if \(!inboundJoinAllowsAdvance\(join\)\) return \{ state: join, advanced: false \};[\s\S]{0,400}?const nextIndex = parsed\.chain\.index \+ 1;/,
     );
     // Gleicher Fehler im Graphile-Terminalpfad: kein return vor dem Join.
     expect(graphile).not.toMatch(
@@ -510,6 +510,7 @@ describe('codex review regression guards', () => {
     const claim = readRepoFile('electron/email/email-scheduled-send-claim.ts');
     const scheduled = readRepoFile('electron/email/email-scheduled-send.ts');
     const aiNodes = readRepoFile('electron/workflow/nodes/ai-nodes.ts');
+    const advance = readRepoFile('packages/server/src/workflow-inbound-chain-advance.ts');
 
     // Sicherheitsnetz statt Pfad-fuer-Pfad: alle vier Kindjob-Ports laufen
     // durch runTerminalInboundChild, sonst haengt ein vergessener frueher
@@ -590,12 +591,21 @@ describe('codex review regression guards', () => {
       /continuation:terminal_success[\s\S]*?claimTerminalHttpCompletion\([\s\S]*?completeInboundDeferredJoinSibling\([\s\S]*?join === 'ready'[\s\S]*?markInboundWorkflowApplied/,
     );
     expect(execution).toContain('inbound_terminal_http_done:');
-    // Die Identitaet dafuer reist durch den HTTP-Job hindurch.
-    expect(execution).toContain('{ completeOnSuccess: true, terminalNodeId: terminalNodeExecutionId(context, node) }');
+    // Die Identitaet dafuer reist durch den HTTP-Job hindurch — inklusive runId,
+    // sonst ueberlebt die Schranke den Lauf und ein zweiter Lauf derselben
+    // Nachricht kehrt vor dem Join-Dekrement zurueck (Barriere haengt).
+    expect(execution).toContain('terminalNodeId: `${terminalNodeExecutionId(context, node)}:run:${context.runId}`');
     expect(readRepoFile('packages/server/src/workflow-http-request.ts'))
       .toContain('terminalNodeId: continuation.terminalNodeId');
     expect(readRepoFile('packages/server/src/jobs/production-handlers.ts'))
       .toContain("optionalString(continuationPayload, 'terminalNodeId', 200)");
+
+    // Kettenloser Inbound-Fan-out (Backfill/Reapply) legt eine Barriere mit
+    // chain: null an — der Kindjob muss sie ueber die direkt gestempelten ids
+    // abbauen, sonst haengt sie und der erste Erfolg markiert vorschnell.
+    expect(advance).toContain('terminalChildIdsFromPayload(payload)');
+    expect(advance).toContain("if (payload.terminalWorkflowCompletion !== true) return null;");
+    expect(advance).toMatch(/chain: parsed\?\.chain \?\? null,/);
 
     // Desktop: der Sweep raeumt nur beim echten Prozessstart ab.
     // startEmailBackgroundServices laeuft auch im laufenden Prozess erneut
@@ -609,16 +619,21 @@ describe('codex review regression guards', () => {
     expect(claim).not.toContain('if (activeClaimAge(row.value, now) !== null) continue;');
 
     // Desktop: ein waehrend des Versands verworfenes HOLD wird geparkt und bei
-    // gescheitertem Versand nachgeholt.
+    // gescheitertem Versand nachgeholt. Der Parkplatz wird dabei erst geraeumt,
+    // NACHDEM das Urteil auf dem Entwurf steht — ein Absturz dazwischen liesse
+    // sonst weder HOLD noch Pending-Zustand zurueck.
     expect(aiNodes).toContain('deferHoldDuringSend(draftId, reason)');
-    expect(scheduled).toContain('takeDeferredSendHold(draftId)');
-    expect(scheduled).toMatch(/if \(deferredHold && !delivered\) \{[\s\S]*?setDraftApprovalPending\(draftId, deferredHold\)/);
+    expect(scheduled).toContain('peekDeferredSendHold(draftId)');
+    expect(scheduled).not.toContain('takeDeferredSendHold');
+    expect(scheduled).toMatch(
+      /if \(setDraftApprovalPending\(draftId, deferredHold\)\) \{\s*\n\s*clearDeferredSendHold\(draftId\);/,
+    );
     // Ein Absturz zwischen Parken und Anwenden darf das HOLD nicht verlieren:
     // der naechste Versuch liest es VOR dem Senden und wendet es an.
-    expect(scheduled).toMatch(/recoveredHold = takeDeferredSendHold\(draftId\);\s*\n\s*if \(recoveredHold\) continue;/);
+    expect(scheduled).toMatch(/recoveredHold = peekDeferredSendHold\(draftId\);\s*\n\s*if \(recoveredHold\) continue;/);
     // Belegter Compose-Lock ist kein Zustellbeweis — HOLD bleibt geparkt.
     expect(scheduled).toContain('sendInFlightElsewhere = true;');
-    expect(scheduled).toContain('sendInFlightElsewhere ? null : takeDeferredSendHold(draftId)');
+    expect(scheduled).toContain('recoveredHold ?? peekDeferredSendHold(draftId)');
   });
 
   test('codex round-12: outbound review status is line-anchored and fail-closed', () => {

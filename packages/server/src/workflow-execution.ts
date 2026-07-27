@@ -3634,8 +3634,18 @@ async function scheduleWorkflowHttpRequestJob(
       triggerName: context.trigger,
       ...(resumeNodeId ? { resumeNodeId } : {}),
       ...(errorResumeNodeId ? { errorResumeNodeId } : {}),
+      // Die runId gehoert in diese Identitaet: die HTTP-Fortsetzung traegt
+      // keine eigene, und die Einmal-Schranke des terminalen Abschlusses darf
+      // den Lauf nicht ueberleben. Sonst kollidierte ein zweiter Lauf desselben
+      // Workflows auf derselben Nachricht (Backfill, Reapply, oder weil der
+      // erste Fan-out mit ready_error keinen Applied-Marker setzte) mit dem
+      // alten Eintrag und kehrte vor dem Join-Dekrement zurueck — die neue
+      // Barriere bliebe dauerhaft haengen.
       ...(!resumeNodeId && errorResumeNodeId
-        ? { completeOnSuccess: true, terminalNodeId: terminalNodeExecutionId(context, node) }
+        ? {
+          completeOnSuccess: true,
+          terminalNodeId: `${terminalNodeExecutionId(context, node)}:run:${context.runId}`,
+        }
         : {}),
       eventStrings: context.strings,
       eventVariables: context.variables,

@@ -58,6 +58,27 @@ export function inboundChainFromJobPayload(payload: Record<string, unknown>): {
   return { chain, workspaceId, messageId, ...(actorUserId ? { actorUserId } : {}) };
 }
 
+/**
+ * Direkt gestempelte ids eines TERMINALEN Kindjobs — der Ersatz fuer den
+ * Kettenkontext, wenn der Lauf gar keine Kette hat.
+ *
+ * Bewusst nur fuer explizit als terminal markierte Payloads: `failJob` ruft den
+ * Kettenabschluss fuer JEDEN endgueltig gescheiterten Job auf, und ein
+ * beliebiger Job mit `workflowId` duerfte keine fremde Join-Barriere anfassen.
+ */
+function terminalChildIdsFromPayload(payload: Record<string, unknown>): {
+  workspaceId: string;
+  messageId: number;
+  workflowId: number;
+} | null {
+  if (payload.terminalWorkflowCompletion !== true) return null;
+  const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId.trim() : '';
+  const messageId = positiveInt(payload.messageId);
+  const workflowId = positiveInt(payload.workflowId);
+  if (!workspaceId || messageId == null || workflowId == null) return null;
+  return { workspaceId, messageId, workflowId };
+}
+
 /** Stable claim key for one hop from chain.index → nextIndex. */
 export function inboundChainHopClaimKey(
   messageId: number,
@@ -447,33 +468,48 @@ export async function advanceInboundChainAfterTerminalChild(
 ): Promise<{ state: InboundDeferredJoinState | null; advanced: boolean }> {
   const now = input.now;
   const parsed = inboundChainFromJobPayload(payload);
-  if (!parsed) return { state: null, advanced: false };
+  // Ein kettenloser Inbound-Lauf (Backfill, forceWorkflowReapply) hat keine
+  // `inboundWorkflowChain`, faechert aber genauso auf: der Elternlauf legt bei
+  // mehreren deferierten Zweigen eine Join-Barriere mit `chain: null` an. Ohne
+  // diesen Fallback landete jeder Kindjob sofort bei `state: null`, die
+  // Barriere wuerde nie dekrementiert — und der Aufrufer laese `null` als
+  // „keine Barriere", sodass schon der erste erfolgreiche Zweig den
+  // Applied-Marker setzt, obwohl ein spaeterer noch scheitern kann.
+  const fallback = terminalChildIdsFromPayload(payload);
+  const workspaceId = parsed?.workspaceId ?? fallback?.workspaceId;
+  const messageId = parsed?.messageId ?? fallback?.messageId;
+  const currentWorkflowId = (parsed ? parsed.chain.workflowIds[parsed.chain.index] : null)
+    ?? fallback?.workflowId;
+  if (!workspaceId || messageId == null || currentWorkflowId == null) {
+    return { state: null, advanced: false };
+  }
 
   const message = await trx
     .selectFrom('email_messages')
     .select(['id'])
-    .where('workspace_id', '=', parsed.workspaceId)
-    .where('id', '=', parsed.messageId)
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', messageId)
     .executeTakeFirst();
   if (!message) return { state: null, advanced: false };
 
-  const currentWorkflowId = parsed.chain.workflowIds[parsed.chain.index];
-  if (currentWorkflowId == null) return { state: null, advanced: false };
   // Die Join-Barriere muss auch dann abgebaut werden, wenn es keinen nächsten
   // Workflow mehr gibt (letzter Kettenplatz). Sonst bliebe die sync_info-Zeile
   // dauerhaft pending, ein erfolgreicher Geschwisterzweig wartet an der
   // veralteten Barriere und initInboundDeferredJoin (ON CONFLICT DO NOTHING)
   // reanimiert denselben Key bei jedem Retry.
   const join = await completeInboundDeferredJoinSibling(trx, {
-    workspaceId: parsed.workspaceId,
-    messageId: parsed.messageId,
+    workspaceId,
+    messageId,
     workflowId: currentWorkflowId,
-    chain: parsed.chain,
+    chain: parsed?.chain ?? null,
     chainStop: false,
     ...(input.error === true ? { error: true } : {}),
     now,
   });
   if (!inboundJoinAllowsAdvance(join)) return { state: join, advanced: false };
+  // Ohne Kette gibt es keine Prioritaetsstufe, die weitergeschaltet werden
+  // koennte — die Barriere ist aber abgebaut und der Zustand aussagekraeftig.
+  if (!parsed) return { state: join, advanced: false };
 
   const nextIndex = parsed.chain.index + 1;
   if (nextIndex >= parsed.chain.workflowIds.length) return { state: join, advanced: false };

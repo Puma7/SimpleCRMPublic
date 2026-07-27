@@ -74,12 +74,22 @@ export function deferHoldDuringSend(draftId: number, reason: string): void {
   setSyncInfo(deferredHoldKey(draftId), reason.slice(0, 500) || 'Gegenlese-KI empfiehlt menschliche Prüfung');
 }
 
-/** Geparktes HOLD auslesen und verbrauchen (auch wenn es verfällt). */
-export function takeDeferredSendHold(draftId: number): string | null {
-  const reason = getSyncInfo(deferredHoldKey(draftId));
-  if (!reason) return null;
+/**
+ * Geparktes HOLD lesen, OHNE es zu verbrauchen.
+ *
+ * Bewusst nicht-destruktiv: würde der Parkplatz schon beim Lesen geleert und
+ * der Prozess stürzte vor `setDraftApprovalPending` ab, wäre danach weder das
+ * HOLD noch `approval_state='pending'` vorhanden — und der weiterhin fällige
+ * Entwurf ginge beim nächsten Durchlauf raus. Erst {@link clearDeferredSendHold}
+ * aufrufen, wenn das Urteil auf dem Entwurf steht.
+ */
+export function peekDeferredSendHold(draftId: number): string | null {
+  return getSyncInfo(deferredHoldKey(draftId)) || null;
+}
+
+/** Parkplatz räumen — nachdem das HOLD angewendet oder gegenstandslos wurde. */
+export function clearDeferredSendHold(draftId: number): void {
   setSyncInfo(deferredHoldKey(draftId), '');
-  return reason;
 }
 
 /** Nur der erste Aufruf in diesem Prozess ist ein echter Boot. */
