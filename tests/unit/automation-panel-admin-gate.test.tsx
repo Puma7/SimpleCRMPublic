@@ -57,4 +57,32 @@ describe('AutomationPanel admin gate', () => {
     expect(mockSubscribeServerEvents).not.toHaveBeenCalled();
     expect(screen.getByText('Workflow-Automatisierung (intern)')).toBeTruthy();
   });
+
+  test('workflow options and misc settings are read-only without the matching rights', async () => {
+    // /workflow/settings/automation ist beim Schreiben admin-only, Webhook und
+    // Anhaenge verlangen settings.manage — Bedienelemente mit garantiertem 403
+    // duerfen gar nicht erst aktiv sein.
+    render(<AutomationPanel />);
+
+    expect(await screen.findByText(/Nur lesbar: Workflow-Optionen/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Workflow-Optionen speichern' })).toBeDisabled();
+    expect(screen.getByLabelText('HTTP-Allowlist (Hosts)')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Speichern' })).toBeDisabled();
+  });
+
+  test('a settings.manage holder may edit webhook and attachment settings but not the secret', async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'user-1', role: 'user' },
+      loading: false,
+      canManageSettings: true,
+    });
+    render(<AutomationPanel />);
+
+    // Webhook/Anhaenge sind frei …
+    expect(await screen.findByRole('button', { name: 'Speichern' })).not.toBeDisabled();
+    // … das Secret bleibt Admins vorbehalten (der Wert kommt nur maskiert).
+    expect(screen.getByLabelText(/Webhook-Secret/)).toBeDisabled();
+    // Die Workflow-Optionen bleiben admin-only.
+    expect(screen.getByRole('button', { name: 'Workflow-Optionen speichern' })).toBeDisabled();
+  });
 });

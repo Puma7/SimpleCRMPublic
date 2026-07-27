@@ -193,7 +193,12 @@ export class MailAccessService implements MailAccessServiceContract {
    * kippen kann.
    */
   async resolveConstraintSubjectUserIds(
-    input: Readonly<{ workspaceId: string; categoryIds?: readonly number[]; tags?: readonly string[] }>,
+    input: Readonly<{
+      workspaceId: string;
+      categoryIds?: readonly number[];
+      tags?: readonly string[];
+      includeAssignmentModes?: boolean;
+    }>,
   ): Promise<readonly string[]> {
     const resolve = this.port.resolveConstraintSubjectUserIds;
     if (!resolve) return [];

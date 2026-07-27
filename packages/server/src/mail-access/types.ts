@@ -125,6 +125,10 @@ export interface MailAccessPort {
     workspaceId: string;
     categoryIds?: readonly number[];
     tags?: readonly string[];
+    /** Zusaetzlich alle Nutzer mit einem Zuweisungsfilter (assigned_to_me,
+     *  assigned_to_my_groups, unassigned) — deren Sicht kippt mit jeder
+     *  Zuweisungsaenderung, unabhaengig von Kategorie/Tag. */
+    includeAssignmentModes?: boolean;
   }>): Promise<readonly string[]>;
 }
 
@@ -160,6 +164,10 @@ export interface MailAccessService {
     workspaceId: string;
     categoryIds?: readonly number[];
     tags?: readonly string[];
+    /** Zusaetzlich alle Nutzer mit einem Zuweisungsfilter (assigned_to_me,
+     *  assigned_to_my_groups, unassigned) — deren Sicht kippt mit jeder
+     *  Zuweisungsaenderung, unabhaengig von Kategorie/Tag. */
+    includeAssignmentModes?: boolean;
   }>): Promise<readonly string[]>;
 }
 

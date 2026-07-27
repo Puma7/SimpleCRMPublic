@@ -973,6 +973,33 @@ function rejectUnlessSideEffectWorkflowManage(
   );
 }
 
+/**
+ * Ein overrideKey bildet eine VERDRAENGUNGS-Beziehung: bei gleichem Schluessel
+ * gewinnt der konto-spezifische Workflow und der globale wird fuer dieses
+ * Postfach unterdrueckt (resolveScopedInboundWorkflowOverrides in
+ * mail-inbound-workflow-enqueue). Ein Editor koennte damit einen globalen,
+ * privilegierten Spam-/Compliance-Workflow stilllegen, ohne dessen Graphen
+ * anzufassen — das Seiteneffekt-Gate sieht davon nichts, weil es nur den
+ * eigenen Graphen prueft. Ein AKTIVER Workflow mit Override-Schluessel
+ * verlangt deshalb workflows.manage. Bewusst ohne Nachschlagen, ob wirklich
+ * schon ein zweiter Workflow denselben Schluessel fuehrt: das waere ein
+ * Wettlauf (der andere kann gleichzeitig entstehen) und der Schluessel hat
+ * ausserhalb dieser Beziehung ohnehin keine Funktion.
+ */
+function rejectUnlessOverrideKeyManage(
+  principal: AuthenticatedPrincipal,
+  input: Readonly<{ enabled: boolean | undefined; overrideKey: string | null | undefined }>,
+): ApiResponse | null {
+  if (input.enabled === false) return null;
+  if (typeof input.overrideKey !== 'string' || input.overrideKey.trim() === '') return null;
+  if (requireCapability(principal, 'workflows.manage')) return null;
+  return error(
+    403,
+    'forbidden',
+    'Aktive Workflows mit Override-Schluessel erfordern workflows.manage',
+  );
+}
+
 async function handleCreateWorkflow(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1004,6 +1031,11 @@ async function handleCreateWorkflow(
     enabled: parsed.values.enabled ?? true,
   });
   if (sideEffectDenied) return sideEffectDenied;
+  const overrideDenied = rejectUnlessOverrideKeyManage(principal, {
+    enabled: parsed.values.enabled ?? true,
+    overrideKey: parsed.values.overrideKey,
+  });
+  if (overrideDenied) return overrideDenied;
 
   const result = await ports.workflows.create({
     workspaceId: principal.workspaceId,
@@ -1055,7 +1087,11 @@ async function handleUpdateWorkflow(
     // Workflow laeuft (null = alle, siehe mail-inbound-workflow-enqueue) — ein
     // reines accountId-Patch koennte einen privilegierten Seiteneffekt-Workflow
     // sonst ohne manage auf weitere Postfaecher ausweiten.
-    parsed.values.accountId !== undefined;
+    parsed.values.accountId !== undefined ||
+    // overrideKey entscheidet, WELCHER Workflow bei gleichem Schluessel laeuft
+    // (siehe rejectUnlessOverrideKeyManage) — ein reines overrideKey-PATCH
+    // muss den Guard also ebenfalls ausloesen.
+    parsed.values.overrideKey !== undefined;
   // priority bestimmt die tatsaechliche Ausfuehrungsreihenfolge (ORDER BY
   // priority in mail-inbound-workflow-enqueue) und beim Ausgang zusaetzlich,
   // WELCHE Workflows das LIMIT MAX_OUTBOUND_WORKFLOWS_PER_SEND ueberhaupt noch
@@ -1111,6 +1147,13 @@ async function handleUpdateWorkflow(
         enabled: parsed.values.enabled ?? existing?.enabled,
       });
       if (sideEffectDenied) return sideEffectDenied;
+      const overrideDenied = rejectUnlessOverrideKeyManage(principal, {
+        enabled: parsed.values.enabled ?? existing?.enabled,
+        overrideKey: parsed.values.overrideKey !== undefined
+          ? parsed.values.overrideKey
+          : existing?.overrideKey ?? null,
+      });
+      if (overrideDenied) return overrideDenied;
     }
   }
 

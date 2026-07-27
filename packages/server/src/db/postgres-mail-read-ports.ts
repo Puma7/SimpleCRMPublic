@@ -2979,6 +2979,17 @@ async function assignMessageTeamMember(
     }
   }
 
+  // Vorwert unter Zeilensperre in derselben Transaktion: er entscheidet, WEM
+  // die Route die Sicht invalidieren muss (der bisherige Bearbeiter verliert
+  // assigned_to_me sofort).
+  const before = await trx
+    .selectFrom('email_messages')
+    .select('assigned_to_user_id')
+    .where('workspace_id', '=', input.workspaceId)
+    .where('id', '=', input.messageId)
+    .forUpdate()
+    .executeTakeFirst();
+
   const assignContentPredicate = mailScopePredicate(input.mailContentScope, {
     accountId: 'email_messages.account_id',
     folderId: 'email_messages.folder_id',
@@ -3001,7 +3012,11 @@ async function assignMessageTeamMember(
     : assignUpdate
   ).executeTakeFirst();
   return updated
-    ? { ok: true as const, message: mapEmailMessageRow(updated, false) }
+    ? {
+      ok: true as const,
+      message: mapEmailMessageRow(updated, false),
+      previousAssignedToUserId: before?.assigned_to_user_id ? String(before.assigned_to_user_id) : null,
+    }
     : { ok: false as const, reason: 'not_found' as const };
 }
 

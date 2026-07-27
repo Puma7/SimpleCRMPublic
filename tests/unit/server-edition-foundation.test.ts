@@ -29201,6 +29201,147 @@ describe('server edition foundation', () => {
       .toEqual(['filtered-user-a', 'filtered-user-b']);
   });
 
+  test('an assignment change invalidates old and new assignee plus assignment-filtered users', async () => {
+    // Die Zuweisung schreibt assigned_to_user_id und kippt damit assigned_to_me,
+    // assigned_to_my_groups und unassigned — ohne Invalidierung behalten offene
+    // Clients eine jetzt gesperrte Nachricht geladen.
+    const events: ServerEvent[] = [];
+    const constraintLookups: unknown[] = [];
+    const previousUser = '55555555-5555-4555-8555-555555555555';
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailMessages: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async assign() {
+            return {
+              ok: true as const,
+              message: { ...makeEmailMessageRecord(11), assignedToUserId: USER_A_ID },
+              previousAssignedToUserId: previousUser,
+            };
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveGroupPeerUserIds(_workspaceId: string, userId: string) {
+          return [userId, `${userId}-peer`];
+        },
+        async resolveConstraintSubjectUserIds(input: unknown) {
+          constraintLookups.push(input);
+          return ['unassigned-filtered-user'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+
+    const res = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/11/assignment',
+      body: { teamMemberId: 'agent-2' },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const },
+    });
+
+    expect(res.status).toBe(200);
+    expect(constraintLookups).toEqual([{ workspaceId: WORKSPACE_A_ID, includeAssignmentModes: true }]);
+    expect(events.filter((event) => event.type === 'email_acl.changed').map((event) => event.entityId).sort())
+      .toEqual([
+        previousUser,
+        `${previousUser}-peer`,
+        USER_A_ID,
+        `${USER_A_ID}-peer`,
+        'unassigned-filtered-user',
+      ].sort());
+  });
+
+  test('an active workflow with an override key requires workflows.manage', async () => {
+    // Bei gleichem overrideKey verdraengt der konto-spezifische Workflow den
+    // globalen (resolveScopedInboundWorkflowOverrides) — ein Editor koennte so
+    // einen privilegierten Spam-/Compliance-Workflow stilllegen.
+    const createCalls: unknown[] = [];
+    const stored = { ...makeWorkflowRecord(23), enabled: true, overrideKey: null, graph: null };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [stored], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? stored : null; },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, workflow: { ...makeWorkflowRecord(24), ...input.values } };
+        },
+        async update() { throw new Error('darf nicht erreicht werden'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Konto-Override',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        overrideKey: 'spam-guard',
+      },
+      principal: editor,
+    });
+    expect(created.status).toBe(403);
+    expect(createCalls).toEqual([]);
+
+    // Reines overrideKey-PATCH: greift ebenfalls.
+    const patched = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/23',
+      body: { overrideKey: 'spam-guard' },
+      principal: editor,
+    });
+    expect(patched.status).toBe(403);
+
+    // Deaktiviert ist es harmlos …
+    const disabled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Inaktiv',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: false,
+        overrideKey: 'spam-guard',
+      },
+      principal: editor,
+    });
+    expect(disabled.status).toBe(201);
+
+    // … und mit workflows.manage ohnehin erlaubt.
+    const managed = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: {
+        name: 'Konto-Override',
+        triggerName: 'inbound',
+        definition: { version: 1, rules: [] },
+        enabled: true,
+        overrideKey: 'spam-guard',
+      },
+      principal: { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] },
+    });
+    expect(managed.status).toBe(201);
+  });
+
   test('team member upsert reports an unknown linked user as a client error', async () => {
     // Syntaktisch gueltige, aber unbekannte UUID: ohne Aufloesung wirft der Port
     // und aus dem Eingabefehler wird ein HTTP 500.

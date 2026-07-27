@@ -2470,6 +2470,16 @@ export type EmailMessageMetadataMutationResult =
   | { ok: true; message: EmailMessageRecord }
   | { ok: false; reason: 'not_found' | 'customer_not_found' | 'team_member_not_found' };
 
+/**
+ * Wie EmailMessageMetadataMutationResult, aber mit der ERSETZTEN
+ * Nutzerzuordnung: eine Zuweisung aendert assigned_to_user_id und damit sofort
+ * assigned_to_me / assigned_to_my_groups / unassigned. Die Route braucht den
+ * Vorwert, um auch dem bisherigen Bearbeiter die Sicht zu invalidieren.
+ */
+export type EmailMessageAssignMutationResult =
+  | { ok: true; message: EmailMessageRecord; previousAssignedToUserId?: string | null }
+  | { ok: false; reason: 'not_found' | 'customer_not_found' | 'team_member_not_found' };
+
 export type EmailMessageCustomerBackfillResult = {
   count: number;
 };
@@ -2736,7 +2746,7 @@ export type EmailMessageApiPort = {
     teamMemberId: string | null;
     // See linkCustomer: redacts the returned row's content for metadata-only callers.
     mailContentScope?: MailSqlScope;
-  }): Promise<EmailMessageMetadataMutationResult>;
+  }): Promise<EmailMessageAssignMutationResult>;
   setSpamStatus?(input: {
     workspaceId: string;
     actorUserId: string;

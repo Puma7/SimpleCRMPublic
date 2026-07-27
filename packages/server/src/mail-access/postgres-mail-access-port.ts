@@ -88,7 +88,8 @@ export function createPostgresMailAccessPort(options: PostgresMailAccessPortOpti
     async resolveConstraintSubjectUserIds(input): Promise<readonly string[]> {
       const categoryIds = (input.categoryIds ?? []).filter((id) => Number.isSafeInteger(id) && id > 0);
       const tags = (input.tags ?? []).filter((tag) => typeof tag === 'string' && tag.length > 0);
-      if (categoryIds.length === 0 && tags.length === 0) return [];
+      const includeAssignmentModes = input.includeAssignmentModes === true;
+      if (categoryIds.length === 0 && tags.length === 0 && !includeAssignmentModes) return [];
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
@@ -108,6 +109,7 @@ export function createPostgresMailAccessPort(options: PostgresMailAccessPortOpti
                 AND (
                   (constraints.kind = 'category' AND constraints.value_ids && ${categoryIds}::bigint[])
                   OR (constraints.kind = 'tag' AND constraints.value_texts && ${tags}::text[])
+                  OR (${includeAssignmentModes}::boolean AND constraints.kind = 'assignment')
                 )
             )
             SELECT DISTINCT subject_id AS user_id FROM affected WHERE subject_type = 'user'
