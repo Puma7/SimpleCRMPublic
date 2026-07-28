@@ -178,6 +178,33 @@ write_backup_metadata() {
         ELSE coalesce((SELECT string_agg(key_id || ':' || fingerprint, ',' ORDER BY key_id)
                        FROM master_key_fingerprints), 'none')
       END" 2>/dev/null || printf 'unknown')"
+    # Wie viele Zeilen ausserhalb von `secrets` haengen am Master-Key?
+    #
+    # Die blosse Zeilenzahl von email_tracking_events taugt dafuer nicht: die
+    # meisten Ereignisse tragen gar keine versiegelten Rohmetadaten, und sie als
+    # Schluesselmaterial zu zaehlen behauptete eine .env-Abhaengigkeit, die die
+    # Startpruefung selbst nicht sieht — sie schaut ausdruecklich nur auf
+    # Ereignisse mit gefuellten raw_metadata_-Spalten. Deshalb hier derselbe
+    # Massstab wie dort.
+    #
+    # Die Zaehlungen laufen ueber query_to_xml und nicht als gewoehnliche
+    # Unterabfragen: ein CASE schuetzt nicht vor dem Planen. Steht die Tabelle
+    # direkt im SQL, scheitert die ganze Anweisung schon beim Aufloesen des
+    # Namens, wenn es sie nicht gibt — der 'n/a'-Zweig kaeme nie zum Zug.
+    # Derselbe Grund wie bei den Zeilenzahlen weiter oben.
+    printf 'master_key_encrypted_rows=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
+      SELECT CASE
+        WHEN to_regclass('public.email_tracking_links') IS NULL
+          OR to_regclass('public.email_tracking_events') IS NULL
+        THEN 'n/a'
+        ELSE ((xpath('/row/c/text()', query_to_xml(
+                 'SELECT count(*) AS c FROM public.email_tracking_links',
+                 false, true, '')))[1]::text::bigint
+            + (xpath('/row/c/text()', query_to_xml(
+                 'SELECT count(*) AS c FROM public.email_tracking_events
+                  WHERE raw_metadata_ciphertext IS NOT NULL',
+                 false, true, '')))[1]::text::bigint)::text
+      END" 2>/dev/null || printf 'unknown')"
     # Bewusst NICHT 'rows_...': die Pruefschleife liest jeden rows_-Eintrag als
     # Tabellennamen, ein Marker in dem Namensraum waere eine Tabelle namens
     # 'recorded' und die Pruefung suchte sie vergeblich.
@@ -424,20 +451,35 @@ report_master_key_material() {
       #
       # Nicht nur `secrets` haengt am Master-Key: aus ihm leitet die API auch
       # die Tracking-Schluessel ab. Ein Backup ohne ein einziges Secret, aber
-      # mit Tracking-Daten braucht die urspruengliche .env genauso. Die
-      # Zeilenzahlen dafuer stehen ohnehin in dieser Datei — die Metadaten
-      # erfassen jede Tabelle mit RLS.
+      # mit versiegelten Tracking-Daten braucht die urspruengliche .env genauso.
+      #
+      # Gezaehlt wird dafuer master_key_encrypted_rows und NICHT die Zeilenzahl
+      # von email_tracking_events: die meisten Ereignisse tragen keine
+      # versiegelten Rohmetadaten, und sie mitzuzaehlen behauptete eine
+      # .env-Abhaengigkeit, die die Startpruefung gar nicht sieht — sie wuerde
+      # dort einen neuen Schluessel anstandslos eintragen. Eine Warnung, die der
+      # Wirklichkeit widerspricht, ist schlimmer als keine.
       encrypted='no'
-      [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ] && encrypted='yes'
-      for tracking_table in email_tracking_links email_tracking_events; do
-        tracking_rows="$(backup_metadata_value "$meta_path" "rows_$tracking_table" || printf '0')"
-        case "$tracking_rows" in
-          '' | '0' | *[!0123456789]*) ;;
+      if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
+        # Secrets sind eindeutig; was der Zaehler sagt, aendert daran nichts.
+        encrypted='yes'
+      else
+        encrypted_rows="$(backup_metadata_value "$meta_path" 'master_key_encrypted_rows' || printf 'unknown')"
+        case "$encrypted_rows" in
+          '0' | 'n/a') ;;
+          '' | *[!0123456789]*)
+            # Aeltere Backups fuehren den Zaehler nicht. Dann ist die Antwort
+            # "weiss nicht" — und die wird auch so gesagt, statt eine der beiden
+            # Behauptungen zu raten.
+            encrypted='unknown'
+            ;;
           *) encrypted='yes' ;;
         esac
-      done
+      fi
 
-      if [ "$encrypted" = 'yes' ]; then
+      if [ "$encrypted" = 'unknown' ]; then
+        echo "$label: no fingerprint travelled with this dump, and it does not record how many rows are encrypted with the master key; if this installation used e-mail tracking, the original .env is still required." >&2
+      elif [ "$encrypted" = 'yes' ]; then
         # Die Tabelle ist nur noch nicht zurueckgefuellt (Backup aus dem Zustand
         # direkt nach dem Upgrade auf 0049). Von freier Schluesselwahl kann
         # keine Rede sein — die API probiert den Schluessel beim Start an den

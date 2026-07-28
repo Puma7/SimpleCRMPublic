@@ -13,6 +13,11 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 - `backup-<stamp>.meta`: schema version, required master-key id, and row counts
   for **every table with row level security enabled** — derived from the catalog,
   not from a list in the script, so a new table is covered the moment it exists.
+  Plus `master_key_encrypted_rows`: how many rows outside `secrets` are sealed
+  with the master key. That is deliberately not the row count of
+  `email_tracking_events` — most events carry no sealed raw metadata, and
+  counting them would claim a dependency on the old `.env` that the startup
+  check itself does not see.
   Covered by the same manifest. While the backup is still running the file is
   named `backup-<stamp>.meta.partial` and is renamed once the dump exists — the
   counts are taken *before* the dump, and a concurrent backup's retention pass
