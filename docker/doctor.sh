@@ -67,6 +67,17 @@ check_latest_backup() {
   echo "backup_metadata=ok"
   echo "backup_schema_migration=$(backup_metadata_value "$meta" 'schema_migration' || echo unknown)"
   echo "backup_secret_key_ids=$(backup_metadata_value "$meta" 'secret_key_ids' || echo unknown)"
+
+  # Ein Backup, dessen Zaehlung gescheitert ist, sieht hier sonst tadellos aus:
+  # Pruefsumme stimmt, Metadatei da. Erst ein echter Restore wuerde es
+  # ablehnen — also im Ernstfall. Genau dafuer gibt es doctor.
+  counts="$(backup_metadata_value "$meta" 'row_counts' || echo unknown)"
+  if [ "$counts" = 'failed' ] || { [ "$counts" = 'unknown' ] && ! grep -q '^rows_' "$meta"; }; then
+    echo "backup_row_counts=missing"
+    fail_backup_check "latest backup has no row counts; a restore will refuse to report it as verified"
+    return
+  fi
+  echo "backup_row_counts=ok"
 }
 
 pg_isready -d "$DATABASE_URL"

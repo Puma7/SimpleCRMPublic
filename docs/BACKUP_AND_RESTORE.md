@@ -197,13 +197,25 @@ application role again and later migrations keep working.
 
 Two things to know before you rely on it:
 
-**`--clean` only drops what the dump knows about.** Tables and columns created
-by migrations that ran *after* the dump was taken survive the restore, because
-they do not appear in the archive. At the same time `simplecrm_schema_migrations`
-comes back at the dump's state, so the migrate CLI will re-apply those
-migrations on the next update. Today's migrations are written with
-`IF NOT EXISTS` and tolerate that, but it is a property of those migrations, not
-a guarantee. **Roll back code and data together, not one without the other.**
+**Restoring an older dump onto the current database does not work across a
+schema change.** `pg_restore --clean` drops only the objects it is about to
+restore — objects created by later migrations are not in the archive and stay
+put. If such a newer table has a foreign key into an older one, the drop fails:
+restoring a pre-0038 dump onto a current database makes `pg_restore` try to
+`DROP TABLE workspaces` while `mail_acl_bindings` still references it, which
+errors out without `CASCADE` and aborts the whole restore. `restore-compose.sh`
+then stops before migrations and before restarting the services.
+
+**For a rollback across migrations, restore into an empty database.** Drop and
+recreate the database (or point `DATABASE_URL` at a fresh one) and restore
+there — that is the only way the newer objects actually disappear. The restore
+drill already works this way: it creates a throwaway database per run, which is
+why it passes where an in-place rollback would not.
+
+Restoring a dump of the **same** schema version onto the current database is
+unaffected and works as expected.
+
+**Roll back code and data together, not one without the other.**
 
 **The restore is verified, not just executed.** After `pg_restore` finishes,
 `restore.sh` compares the restored row counts against `backup-<stamp>.meta`.

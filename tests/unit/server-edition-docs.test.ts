@@ -60,7 +60,13 @@ describe('server edition AP-12 operator docs', () => {
     expect(backup).toEqual(expect.stringContaining('Keep a copy of `docker/.env` **outside** the backup volume'));
     // Rollback: --clean loescht nur, was im Dump steht.
     expect(backup).toEqual(expect.stringContaining('Rolling Back To An Earlier Backup'));
-    expect(backup).toEqual(expect.stringContaining('only drops what the dump knows about'));
+    expect(backup).toEqual(expect.stringContaining('drops only the objects it is about to\nrestore'));
+    // Ein Rollback ueber eine Schemaaenderung hinweg scheitert in die
+    // LAUFENDE Datenbank: pg_restore --clean kann workspaces nicht droppen,
+    // solange eine neuere Tabelle es referenziert. Die Doku darf das nicht
+    // versprechen — sonst steht der Betrieb im Ernstfall davor.
+    expect(backup).toEqual(expect.stringContaining('does not work across a\nschema change'));
+    expect(backup).toEqual(expect.stringContaining('restore into an empty database'));
 
     const threatModel = readRepoFile('docs/THREAT_MODEL.md');
     expect(threatModel).toEqual(expect.stringContaining('Invalid `Authorization` headers must not fall back'));
@@ -196,6 +202,11 @@ describe('server edition AP-12 operator docs', () => {
     // doctor zeigt Schemastand und benoetigten Schluessel, bevor es ernst wird.
     expect(doctor).toEqual(expect.stringContaining('backup_secret_key_ids='));
     expect(doctor).toEqual(expect.stringContaining('backup_schema_migration='));
+    // Und meldet ein Backup ohne Zaehlung als Mangel, statt es tadellos
+    // aussehen zu lassen — sonst faellt es erst beim echten Restore auf, also
+    // im Ernstfall. Genau dafuer gibt es doctor.
+    expect(doctor).toEqual(expect.stringContaining('backup_row_counts=missing'));
+    expect(doctor).toEqual(expect.stringContaining("fail_backup_check \"latest backup has no row counts"));
     // Jeder Dienst, der eines der Skripte ausfuehrt, braucht den Helfer.
     expect(compose.match(/backup-metadata\.sh:\/app\/backup-metadata\.sh:ro/g)).toHaveLength(5);
   });
