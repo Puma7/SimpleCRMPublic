@@ -242,6 +242,21 @@ backup_metadata_is_listed() {
 backup_metadata_is_verifiable() {
   meta_path="$1"
   [ -f "$meta_path" ] || return 0
+
+  # Kein Schluessel darf zweimal vorkommen.
+  #
+  # backup_metadata_value liefert JEDE passende Zeile. Zwei Eintraege fuer
+  # dieselbe Tabelle ergeben damit einen Wert aus zwei Zeilen, der erst nach dem
+  # Restore an der Zahlenpruefung scheitert — also wieder: Produktivdaten
+  # ersetzt, Dienste gestoppt, dann der Abbruch. Und es trifft nicht nur die
+  # Zeilenzahlen: eine zusaetzliche Zeile `row_counts=ok` neben `row_counts=failed`
+  # wuerde den Marker verdecken, weil der Vergleich dann gegen "failed\nok"
+  # laeuft und ungleich 'failed' ist. Eine echte Metadatei hat jeden Schluessel
+  # genau einmal.
+  if [ -n "$(sed -n 's/^\([^=]*\)=.*/\1/p' "$meta_path" | sort | uniq -d)" ]; then
+    return 1
+  fi
+
   recorded="$(backup_metadata_value "$meta_path" 'row_counts' || printf 'unknown')"
   [ "$recorded" != 'failed' ] || return 1
   grep -q '^rows_' "$meta_path" || return 1

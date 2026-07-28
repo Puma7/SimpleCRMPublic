@@ -215,6 +215,11 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toMatch(
       /backup_metadata_is_verifiable\(\)[\s\S]*?backup_metadata_is_identifier "\$entry_table" \|\| return 1/,
     );
+    // Und kein Schluessel darf zweimal vorkommen: backup_metadata_value liefert
+    // jede passende Zeile, zwei Eintraege ergeben also einen zweizeiligen Wert.
+    // Das faellt sonst erst nach dem Restore auf — und eine zusaetzliche Zeile
+    // row_counts=ok wuerde ein row_counts=failed sogar ganz verdecken.
+    expect(metadata).toMatch(/uniq -d/);
     expect(restore).toMatch(
       /backup_metadata_is_verifiable "\$METADATA_PATH"[\s\S]*?exit 1[\s\S]*?pg_restore/,
     );
