@@ -74,6 +74,30 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             })
             .execute();
 
+          // Rollout-Zustand der Mail-ACL materialisieren.
+          //
+          // Migration 0039 hat die Zeile nur fuer die damals vorhandenen
+          // Workspaces angelegt; ohne diesen Insert haette ein neu erstellter
+          // Workspace GAR KEINE. Der Port faellt dann auf enforce zurueck
+          // (defaultEnforceState) — dieselbe Wirkung, aber unsichtbar: die
+          // Readiness-Ansicht meldet erfundene Nullzaehler, und beide
+          // Bedienaktionen laufen ins Leere, weil sie eine vorhandene Zeile
+          // per UPDATE erwarten. Ein frisch aufgesetztes System stuende damit
+          // dauerhaft in einem Zustand, den es weder ablesen noch aendern kann.
+          //
+          // 'enforce' ist fuer einen NEUEN Workspace auch inhaltlich richtig:
+          // die Shadow-Phase existiert, um bestehende Installationen von der
+          // Legacy-Autorisierung auf die neue ACL zu heben und dabei die
+          // Abweichungen zu zaehlen. Ein Workspace, der nach Einfuehrung der
+          // neuen ACL entsteht, hat keinen Legacy-Zustand, gegen den sich
+          // vergleichen liesse. Das Verhalten bleibt damit exakt wie bisher —
+          // neu ist nur, dass der Zustand explizit in der Tabelle steht.
+          await trx
+            .insertInto('mail_acl_rollout_state')
+            .values({ workspace_id: workspaceId, mode: 'enforce' })
+            .onConflict((oc) => oc.column('workspace_id').doNothing())
+            .execute();
+
           const created = await trx
             .insertInto('users')
             .values({

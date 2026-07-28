@@ -16912,6 +16912,105 @@ describe('server edition foundation', () => {
     });
   });
 
+  test('initial owner setup seeds the mail ACL rollout state row', async () => {
+    // Migration 0039 legt die Rollout-Zeile nur fuer die damals vorhandenen
+    // Workspaces an. Ohne diesen Insert haette ein neu erstellter Workspace gar
+    // keine: der Port faellt dann auf enforce zurueck (defaultEnforceState) —
+    // wirkungsgleich, aber unsichtbar, und beide Bedienaktionen (Zaehler
+    // zuruecksetzen, auf enforce schalten) laufen ins Leere, weil sie eine
+    // vorhandene Zeile per UPDATE erwarten.
+    const inserts: Array<{ table: string; values: Record<string, unknown> }> = [];
+    const trx = {
+      getExecutor() {
+        return {
+          async executeQuery() {
+            return { rows: [] };
+          },
+          transformQuery(node: unknown) {
+            return node;
+          },
+          compileQuery(node: unknown) {
+            return { sql: '', parameters: [], query: node };
+          },
+          provideConnection: async <T>(consumer: (c: unknown) => Promise<T>) => consumer({}),
+          adapter: { supportsReturning: true },
+          withPluginAtFront() {
+            return this;
+          },
+          plugins: [],
+        };
+      },
+      selectFrom(table: string) {
+        const builder = {
+          select() { return builder; },
+          limit() { return builder; },
+          async executeTakeFirst() {
+            expect(table).toBe('users');
+            return undefined;
+          },
+        };
+        return builder;
+      },
+      insertInto(table: string) {
+        const builder = {
+          values(values: Record<string, unknown>) {
+            inserts.push({ table, values });
+            return builder;
+          },
+          onConflict(callback: (oc: unknown) => unknown) {
+            callback({ column: () => ({ doNothing: () => undefined }) });
+            return builder;
+          },
+          returning() { return builder; },
+          async execute() { return []; },
+          async executeTakeFirst() {
+            return table === 'users'
+              ? {
+                id: USER_A_ID,
+                workspace_id: WORKSPACE_A_ID,
+                email: 'owner@example.com',
+                display_name: 'Owner',
+                role: 'owner',
+                password_hash: 'hash',
+                disabled_at: null,
+              }
+              : { id: 'session-created' };
+          },
+        };
+        return builder;
+      },
+      transaction() {
+        return { execute: async <T>(operation: (t: unknown) => Promise<T>) => operation(trx) };
+      },
+    };
+    const port = createPostgresAuthPort({
+      db: trx as unknown as Kysely<ServerDatabase>,
+      accessTokenSigner: accessTokenSignerFromBase64(Buffer.alloc(32, 7).toString('base64'), 'primary'),
+      now: () => new Date('2026-07-28T08:00:00.000Z'),
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const result = await port.createInitialOwner({
+      workspaceName: 'Acme',
+      email: 'owner@example.com',
+      displayName: 'Owner',
+      password: 'correct horse battery staple',
+      device: 'web',
+    });
+
+    expect(result.ok).toBe(true);
+    const rollout = inserts.find((row) => row.table === 'mail_acl_rollout_state');
+    expect(rollout).toBeDefined();
+    // enforce ist fuer einen NEUEN Workspace auch inhaltlich richtig: die
+    // Shadow-Phase vergleicht die neue ACL gegen die Legacy-Autorisierung, und
+    // einen Legacy-Zustand gibt es hier nicht. Das Verhalten bleibt damit wie
+    // bisher — neu ist nur, dass der Zustand explizit in der Tabelle steht.
+    expect(rollout?.values).toMatchObject({ mode: 'enforce' });
+    expect(rollout?.values.workspace_id).toEqual(
+      inserts.find((row) => row.table === 'workspaces')?.values.id,
+    );
+  });
+
   test('postgres auth port issues access tokens bound to refresh-token session ids', async () => {
     const signer = accessTokenSignerFromBase64(Buffer.alloc(32, 5).toString('base64'), 'primary');
     const now = new Date('2026-06-02T12:00:00.000Z');
