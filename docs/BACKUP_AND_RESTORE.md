@@ -93,20 +93,38 @@ The id alone says nothing — the server derives it without passing one, so it i
 migration 0049 the server stores a fingerprint of the master key in the
 database, so it travels with the dump. The key cannot be read out of it.
 
-**The metadata reads that value out of the dump, not out of the database.**
-The line is supposed to say which key belongs to *this* dump, and no query
-against the running database answers that. Ask before `pg_dump` and a
-fingerprint recorded during the dump is missing from the file while sitting in
-the dump — restore and doctor promise a free choice of key, and the restored API
-then refuses to start with a different `.env`. Ask afterwards and the race
-merely turns around: the file names a fingerprint the dump does not contain, and
-a backup that would restore perfectly well is written off as unusable without
-the original `.env`. Both directions are wrong and neither can be fixed by
-picking a better moment. The dump itself, on the other hand, knows exactly — it
-*is* the snapshot. So `backup.sh` runs `pg_restore --table=master_key_fingerprints`
-against the finished file. No exported snapshot, no second session held open
-alongside the dump, no race. `n/a` there means the table is not in the dump at
-all (taken before migration 0049), `none` that it is in the dump and empty.
+**The metadata reads every key statement out of the dump, not out of the
+database.** That covers all four of them: `master_key_fingerprints`,
+`secret_key_ids`, `master_key_encrypted_rows` and `rows_email_tracking_events`.
+They are supposed to say which key *this dump* needs, and no query against the
+running database answers that. Ask before `pg_dump` and a secret or a tracking
+row written during the dump is missing from the file while sitting in the dump —
+restore and doctor promise a free choice of key, and the restored API then
+either refuses to start with a different `.env` or comes up unverified and
+stores re-delivered evidence twice. Ask afterwards and the race merely turns
+around: the file names key material the dump does not contain, and a backup that
+would restore perfectly well is written off as unusable without the original
+`.env`. Both directions are wrong and neither can be fixed by picking a better
+moment. In a rolling upgrade an old replica really does still write in that
+window; this is not a theoretical race.
+
+The dump itself, on the other hand, knows exactly — it *is* the snapshot. So
+once the dump is on disk, `backup.sh` reads those four values back out of it
+with `pg_restore --table=...`. No exported snapshot, no second session held open
+alongside the dump, no race. `n/a` means the table is not in the dump at all
+(taken before migration 0049), `none` that it is in the dump and empty.
+
+The custom format carries a table of contents with offsets, so `--table` seeks
+instead of scanning: on a dump of 4 million tracking rows (58 MB, `pg_dump`
+7.0 s) reading all four values back costs 2.8 s — and that is the worst case, a
+database consisting of nothing but tracking data. Reading is far cheaper than
+writing: no compression, nothing crossing a connection.
+
+The remaining `rows_*` counts stay as they are, taken just before the dump.
+Their inexactness is deliberate and documented (the completeness check is
+explicitly not an equality test). `rows_email_tracking_events` is the one
+exception, because `backup_metadata_encrypted_state` decides the `retained`
+verdict on it — that is a statement about the key, not about completeness.
 
 **Treat that value as a key checker, not as public information.** It is derived
 with scrypt, deliberately expensive, and that is not decoration: against a

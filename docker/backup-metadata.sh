@@ -112,69 +112,177 @@ publish_backup_metadata() {
   mv "$partial_path" "$(backup_metadata_path "$1" "$2")"
 }
 
-# Den Fingerabdruck AUS DEM DUMP lesen — nicht aus der Datenbank.
+# Alles, was ueber den Master-Key ausgesagt wird, AUS DEM DUMP lesen — nicht
+# aus der Datenbank.
 #
-# Die Zeile soll aussagen, welcher Schluessel zu DIESEM Dump gehoert. Jede
-# Abfrage der laufenden Datenbank beantwortet eine andere Frage ("welcher gilt
-# gerade") und geht daneben, sobald der erste Start nach einem Upgrade den
-# Fingerabdruck genau um den Dump herum anlegt. Fragt man vorher, steht 'none'
-# in der Datei, waehrend der Dump die Zeile hat: Restore und Doctor versprechen
-# freie Schluesselwahl, und die wiederhergestellte API verweigert mit einer
-# anderen .env den Start. Fragt man nachher, kehrt sich das Rennen nur um — die
-# Datei nennt einen Fingerabdruck, den der Dump nicht enthaelt, und ein Backup,
-# das sich einwandfrei einspielen liesse, gilt als nur mit der Original-.env
-# brauchbar. Beide Richtungen sind falsch, keine laesst sich durch die Wahl des
-# Zeitpunkts vermeiden.
+# Diese Angaben sollen sagen, welchen Schluessel DIESER Dump braucht. Jede
+# Abfrage der laufenden Datenbank beantwortet eine andere Frage ("was gilt
+# gerade") und geht daneben, sobald sich um den Dump herum etwas aendert — bei
+# einem Rolling Upgrade schreibt eine alte Replik durchaus noch ein Secret oder
+# ein Tracking-Ereignis zwischen Zaehlung und Snapshot. Fragt man vor dem Dump,
+# meldet die Datei Leerstand, waehrend der Dump die Zeile hat: Restore und
+# Doctor versprechen freie Schluesselwahl, und die wiederhergestellte API
+# verweigert mit einer anderen .env den Start oder laeuft ungeprueft an und
+# speichert erneut zugestellte Evidenz doppelt. Fragt man nach dem Dump, kehrt
+# sich das Rennen nur um — die Datei nennt Schluesselmaterial, das der Dump
+# nicht enthaelt, und ein einwandfrei einspielbares Backup gilt als nur mit der
+# Original-.env brauchbar. Beide Richtungen sind falsch, und keine laesst sich
+# durch die Wahl des Zeitpunkts vermeiden.
 #
 # Der Dump selbst kennt die Antwort dagegen genau: er IST der Snapshot. Also
-# wird er gefragt. Das braucht keinen exportierten Snapshot, keine offene
-# Parallelsitzung und kein Rennen — nur pg_restore auf eine Datei, die schon
-# fertig dasteht.
+# wird er gefragt. Das braucht keinen exportierten Snapshot, keine ueber die
+# Dump-Laufzeit offen gehaltene Parallelsitzung und kein Rennen — nur
+# pg_restore auf eine Datei, die fertig dasteht.
 #
-# Unterschieden wird dabei zwischen "Tabelle steht gar nicht im Dump" (vor
-# Migration 0049 — 'n/a') und "Tabelle steht drin, ist aber leer" ('none'):
-# das erste heisst "diese Sicherung weiss es nicht", das zweite "hier ist
-# nichts festgelegt". Sortiert wird nach key_id, damit zwei Sicherungen
-# desselben Standes dieselbe Zeile ergeben; die Reihenfolge im Dump ist die
-# des Heaps und damit beliebig.
-read_dump_master_key_fingerprints() {
-  dump_path="$1"
+# Und es ist billig. Das Custom-Format hat ein Inhaltsverzeichnis mit
+# Offsets, `--table` springt also hin, statt das Archiv zu durchsuchen.
+# Gemessen an einem Dump mit 4 Mio. Tracking-Zeilen (58 MB, pg_dump 7,0 s):
+# Secrets 0,05 s, 2 Mio. Links 1,2 s, 2 Mio. Ereignisse 0,2 s. Lesen ist um ein
+# Vielfaches guenstiger als Schreiben — es faellt keine Kompression an und
+# nichts geht ueber eine Verbindung.
+#
+# Die Zeilenzahlen (rows_*) bleiben davon unberuehrt: sie entstehen weiter vor
+# dem Dump, und dort ist die Ungenauigkeit ausdruecklich eingeplant
+# (verify_backup_metadata prueft bewusst nicht auf Gleichheit, Begruendung ganz
+# oben). Nur rows_email_tracking_events wird mitgezogen, weil
+# backup_metadata_encrypted_state daran den Zustand 'retained' festmacht — und
+# das ist eine Aussage ueber den Schluessel, keine ueber die Vollstaendigkeit.
 
-  schema="$(pg_restore --schema-only --table=master_key_fingerprints -f - "$dump_path" 2>/dev/null)" \
-    || { printf 'unknown'; return 0; }
+# Steht die Tabelle im Dump? 0 = ja, 1 = nein, 2 = pg_restore selbst gescheitert.
+# Die drei werden auseinandergehalten, weil sie drei verschiedene Dinge heissen:
+# "vor der Migration gesichert", "gibt es nicht" und "wir wissen es nicht".
+dump_table_present() {
+  schema="$(pg_restore --schema-only --table="$2" -f - "$1" 2>/dev/null)" || return 2
   case "$schema" in
-    *'CREATE TABLE'*) ;;
-    *) printf 'n/a'; return 0 ;;
+    *'CREATE TABLE'*) return 0 ;;
+    *) return 1 ;;
   esac
+}
 
-  rows="$(pg_restore --data-only --table=master_key_fingerprints -f - "$dump_path" 2>/dev/null)" \
-    || { printf 'unknown'; return 0; }
-
-  # Die Spaltenreihenfolge kommt aus dem COPY-Kopf und wird NICHT geraten: sie
-  # folgt der Reihenfolge im Dump, und die haengt daran, in welcher Reihenfolge
-  # spaetere Migrationen Spalten angehaengt haben.
-  printf '%s' "$rows" | awk '
-    /^COPY .*master_key_fingerprints .*FROM stdin;$/ {
+# Eine Spalte einer Tabelle aus dem Dump, eine Zeile je Datensatz.
+#
+# Die Spaltenreihenfolge kommt aus dem COPY-Kopf und wird NICHT geraten: sie
+# folgt der Reihenfolge im Dump, und die haengt daran, in welcher Reihenfolge
+# spaetere Migrationen Spalten angehaengt haben. NULL steht im Textformat als
+# \N da, und weil COPY Zeilenumbrueche in den Daten als \n schreibt, ist jeder
+# Datensatz genau eine Zeile.
+dump_table_column() {
+  pg_restore --data-only --table="$2" -f - "$1" 2>/dev/null | awk -v want="$3" '
+    /^COPY .* FROM stdin;$/ {
       head = $0
       sub(/^[^(]*\(/, "", head)
       sub(/\).*$/, "", head)
       n = split(head, cols, /,/)
+      col = 0
       for (i = 1; i <= n; i++) {
         gsub(/[" \t]/, "", cols[i])
-        idx[cols[i]] = i
+        if (cols[i] == want) col = i
       }
       copying = 1
       next
     }
     copying && $0 == "\\." { copying = 0; next }
-    copying && idx["key_id"] && idx["fingerprint"] {
-      split($0, f, "\t")
-      print f[idx["key_id"]] ":" f[idx["fingerprint"]]
-    }
-  ' | LC_ALL=C sort | paste -sd, - | { read -r joined || joined=''; printf '%s' "${joined:-none}"; }
+    copying && col { split($0, f, "\t"); print f[col] }
+  '
 }
 
-# ... und die gelesene Zeile in die Metadatei eintragen, sobald der Dump liegt.
+# Zwei Spalten als 'a:b', sortiert. Sortiert, damit zwei Sicherungen desselben
+# Standes dieselbe Zeile ergeben — die Reihenfolge im Dump ist die des Heaps
+# und damit beliebig.
+dump_table_pairs() {
+  pg_restore --data-only --table="$2" -f - "$1" 2>/dev/null | awk -v a="$3" -v b="$4" '
+    /^COPY .* FROM stdin;$/ {
+      head = $0
+      sub(/^[^(]*\(/, "", head)
+      sub(/\).*$/, "", head)
+      n = split(head, cols, /,/)
+      for (i = 1; i <= n; i++) { gsub(/[" \t]/, "", cols[i]); idx[cols[i]] = i }
+      copying = 1
+      next
+    }
+    copying && $0 == "\\." { copying = 0; next }
+    copying && idx[a] && idx[b] { split($0, f, "\t"); print f[idx[a]] ":" f[idx[b]] }
+  ' | LC_ALL=C sort
+}
+
+# Zeilen einer Tabelle im Dump zaehlen. Optional nur die, deren Spalte $3 nicht
+# NULL ist.
+dump_table_row_count() {
+  pg_restore --data-only --table="$2" -f - "$1" 2>/dev/null | awk -v want="${3:-}" '
+    /^COPY .* FROM stdin;$/ {
+      head = $0
+      sub(/^[^(]*\(/, "", head)
+      sub(/\).*$/, "", head)
+      n = split(head, cols, /,/)
+      col = 0
+      for (i = 1; i <= n; i++) { gsub(/[" \t]/, "", cols[i]); if (cols[i] == want) col = i }
+      copying = 1
+      next
+    }
+    copying && $0 == "\\." { copying = 0; next }
+    copying {
+      if (want == "") { n_rows++; next }
+      if (!col) next
+      split($0, f, "\t")
+      if (f[col] != "\\N") n_rows++
+    }
+    END { print n_rows + 0 }
+  '
+}
+
+# Leere Liste zu 'none' machen, sonst mit Komma verbinden.
+backup_metadata_join_or_none() {
+  LC_ALL=C sort -u | paste -sd, - | { read -r joined || joined=''; printf '%s' "${joined:-none}"; }
+}
+
+read_dump_master_key_fingerprints() {
+  # `|| status=$?` und nicht der blosse Aufruf: unter `set -e` (backup.sh) risse
+  # ein Rueckgabewert != 0 ausserhalb einer Bedingung das ganze Backup ab.
+  status=0
+  dump_table_present "$1" 'master_key_fingerprints' || status=$?
+  case $status in
+    1) printf 'n/a'; return 0 ;;
+    2) printf 'unknown'; return 0 ;;
+  esac
+  dump_table_pairs "$1" 'master_key_fingerprints' 'key_id' 'fingerprint' \
+    | backup_metadata_join_or_none
+}
+
+read_dump_secret_key_ids() {
+  status=0
+  dump_table_present "$1" 'secrets' || status=$?
+  case $status in
+    1) printf 'n/a'; return 0 ;;
+    2) printf 'unknown'; return 0 ;;
+  esac
+  dump_table_column "$1" 'secrets' 'key_id' | backup_metadata_join_or_none
+}
+
+# Wie viele Zeilen ausserhalb von `secrets` haengen am Master-Key?
+#
+# Derselbe Massstab wie in der Startpruefung der API: Links, Ereignisse MIT
+# versiegelten Rohmetadaten (die grosse Mehrheit hat keine, und sie
+# mitzuzaehlen behauptete eine .env-Abhaengigkeit, die die Startpruefung gar
+# nicht sieht) und die Resolver-Zeilen, deren token_hash am Tracking-Schluessel
+# haengt.
+read_dump_master_key_encrypted_rows() {
+  total=0
+  for spec in 'email_tracking_links|' 'email_tracking_events|raw_metadata_ciphertext' \
+              'email_tracking_token_resolver|'; do
+    table="${spec%%|*}"
+    column="${spec#*|}"
+    status=0
+    dump_table_present "$1" "$table" || status=$?
+    case $status in
+      1) printf 'n/a'; return 0 ;;
+      2) printf 'unknown'; return 0 ;;
+    esac
+    total=$((total + $(dump_table_row_count "$1" "$table" "$column")))
+  done
+  printf '%s' "$total"
+}
+
+# Die gelesenen Angaben in die Metadatei eintragen, sobald der Dump liegt.
 refresh_backup_metadata_master_key() {
   partial_path="$(backup_metadata_partial_path "$1" "$2")"
   [ -f "$partial_path" ] || return 0
@@ -182,16 +290,30 @@ refresh_backup_metadata_master_key() {
   [ -f "$dump_path" ] || return 0
 
   fingerprints="$(read_dump_master_key_fingerprints "$dump_path")"
+  key_ids="$(read_dump_secret_key_ids "$dump_path")"
+  encrypted_rows="$(read_dump_master_key_encrypted_rows "$dump_path")"
+  # Fehlt die Tabelle im Dump, bleibt der vor dem Dump gezaehlte Wert stehen:
+  # 'n/a' als Zeilenzahl waere kein gueltiger Eintrag fuer die Pruefschleife.
+  tracking_events=''
+  if dump_table_present "$dump_path" 'email_tracking_events'; then
+    tracking_events="$(dump_table_row_count "$dump_path" 'email_tracking_events')"
+  fi
 
-  # Bewusst NUR diese eine Zeile ersetzen und die Datei sonst unangetastet
-  # lassen: die Zeilenzahlen sollen ihren Stand von VOR dem Dump behalten
-  # (Begruendung in backup.sh), und jede weitere Aenderung hier waere eine
-  # Fehlerquelle mehr. Die Pruefsumme entsteht ohnehin erst spaeter.
+  # Bewusst NUR diese Zeilen ersetzen und die Datei sonst unangetastet lassen:
+  # die uebrigen Zeilenzahlen sollen ihren Stand von VOR dem Dump behalten
+  # (Begruendung oben), und jede weitere Aenderung hier waere eine Fehlerquelle
+  # mehr. Die Pruefsumme entsteht ohnehin erst spaeter.
   #
   # Ueber eine Nebendatei und mv, nicht in place: bricht der Lauf mitten im
   # Schreiben ab, ist entweder die alte oder die neue Datei da, nie eine halbe.
-  awk -v value="$fingerprints" '
-    /^master_key_fingerprints=/ { print "master_key_fingerprints=" value; next }
+  awk -v fingerprints="$fingerprints" -v key_ids="$key_ids" \
+      -v encrypted_rows="$encrypted_rows" -v tracking_events="$tracking_events" '
+    /^master_key_fingerprints=/    { print "master_key_fingerprints=" fingerprints; next }
+    /^secret_key_ids=/             { print "secret_key_ids=" key_ids; next }
+    /^master_key_encrypted_rows=/  { print "master_key_encrypted_rows=" encrypted_rows; next }
+    /^rows_email_tracking_events=/ && tracking_events != "" {
+      print "rows_email_tracking_events=" tracking_events; next
+    }
     { print }
   ' "$partial_path" > "$partial_path.new" && mv "$partial_path.new" "$partial_path"
 }
@@ -268,6 +390,12 @@ write_backup_metadata() {
       "SELECT coalesce(max(id), 'none') FROM simplecrm_schema_migrations" 2>/dev/null || printf 'unknown')"
     # NUR die Schluessel-KENNUNG, niemals der Schluessel. Sie steht als
     # Klartextspalte neben dem Chiffrat und verraet nichts ueber dessen Inhalt.
+    #
+    # Alle drei Schluessel-Angaben hier sind VORLAEUFIG: sie entstehen vor dem
+    # Dump und werden danach durch die aus dem Dump gelesenen ersetzt
+    # (refresh_backup_metadata_master_key, Begruendung dort). Stehen bleiben sie
+    # nur, wenn das Nachtragen ausfaellt — dann lieber eine Angabe aus derselben
+    # Datenbank als gar keine.
     printf 'secret_key_ids=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
       SELECT CASE WHEN to_regclass('public.secrets') IS NULL
         THEN 'n/a'
@@ -280,9 +408,6 @@ write_backup_metadata() {
     # verschiedene Schluessel ergeben zwei verschiedene Werte. Wer diesen Stand
     # wiederherstellt und die passende .env sucht, kann sie damit erkennen,
     # statt sie zu vermuten.
-    # Er wird nach dem Dump noch einmal nachgetragen (refresh_backup_metadata_master_key):
-    # legt der erste Start nach einem Upgrade die Zeile genau zwischen hier und
-    # pg_dump an, stuende sonst 'none' in der Datei, waehrend der Dump sie hat.
     printf 'master_key_fingerprints=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
       "$BACKUP_METADATA_MASTER_KEY_SQL" 2>/dev/null || printf 'unknown')"
     # Wie viele Zeilen ausserhalb von `secrets` haengen am Master-Key?
