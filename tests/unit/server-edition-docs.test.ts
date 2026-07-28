@@ -287,7 +287,13 @@ describe('server edition AP-12 operator docs', () => {
     // aussehen zu lassen — sonst faellt es erst beim echten Restore auf, also
     // im Ernstfall. Genau dafuer gibt es doctor.
     expect(doctor).toEqual(expect.stringContaining('backup_row_counts=missing'));
-    expect(doctor).toEqual(expect.stringContaining("fail_backup_check \"latest backup has no row counts"));
+    // Und zwar mit DERSELBEN Pruefung wie restore.sh. Eine eigene, laxere
+    // Fassung hiesse: doctor bescheinigt ein Backup, das der Restore
+    // verweigert — und auffallen wuerde es erst im Ernstfall, also genau dort,
+    // wo doctor es haette verhindern sollen.
+    expect(doctor).toEqual(expect.stringContaining('backup_metadata_is_verifiable "$meta"'));
+    expect(doctor).toEqual(expect.stringContaining('cannot be verified on restore'));
+    expect(doctor).not.toMatch(/grep -q '\^rows_' "\$meta"/);
     // Jeder Dienst, der eines der Skripte ausfuehrt, braucht den Helfer.
     expect(compose.match(/backup-metadata\.sh:\/app\/backup-metadata\.sh:ro/g)).toHaveLength(5);
   });

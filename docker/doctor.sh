@@ -68,13 +68,19 @@ check_latest_backup() {
   echo "backup_schema_migration=$(backup_metadata_value "$meta" 'schema_migration' || echo unknown)"
   echo "backup_secret_key_ids=$(backup_metadata_value "$meta" 'secret_key_ids' || echo unknown)"
 
-  # Ein Backup, dessen Zaehlung gescheitert ist, sieht hier sonst tadellos aus:
-  # Pruefsumme stimmt, Metadatei da. Erst ein echter Restore wuerde es
-  # ablehnen — also im Ernstfall. Genau dafuer gibt es doctor.
-  counts="$(backup_metadata_value "$meta" 'row_counts' || echo unknown)"
-  if [ "$counts" = 'failed' ] || { [ "$counts" = 'unknown' ] && ! grep -q '^rows_' "$meta"; }; then
+  # Ein Backup, das der Restore ablehnen wuerde, sieht hier sonst tadellos aus:
+  # Pruefsumme stimmt, Metadatei da. Auffallen wuerde es erst im Ernstfall —
+  # genau dafuer gibt es doctor.
+  #
+  # Und zwar mit DERSELBEN Pruefung, die restore.sh vor dem Zerstoerenden
+  # fahren laesst. Eine eigene, laxere Fassung hier hiesse: doctor bescheinigt
+  # ein Backup, das der Restore verweigert. Sie war genau das — sie sah nur den
+  # Marker und ob ueberhaupt rows_-Zeilen da sind, nicht die Bezeichner, nicht
+  # die Zahlen, nicht doppelte Schluessel; eine Datei mit row_counts=ok ganz
+  # ohne rows_-Zeilen ging sogar als in Ordnung durch.
+  if ! backup_metadata_is_verifiable "$meta"; then
     echo "backup_row_counts=missing"
-    fail_backup_check "latest backup has no row counts; a restore will refuse to report it as verified"
+    fail_backup_check "latest backup cannot be verified on restore (missing, malformed or duplicate row counts)"
     return
   fi
   echo "backup_row_counts=ok"
