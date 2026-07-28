@@ -805,8 +805,13 @@ export async function assertMasterKeyMatchesDatabase(
       .select('fingerprint')
       .where('key_id', '=', masterKey.keyId)
       .executeTakeFirst();
-  } catch {
-    return;
+  } catch (err) {
+    // Nur "Tabelle fehlt" (Migration 0049 noch nicht gelaufen) darf den Start
+    // durchlassen. Jeder andere Fehler (Verbindung, Auth, Timeout) muss laut
+    // scheitern — sonst startet der Server unbemerkt mit einem ungeprueften
+    // Schluessel, genau das Szenario, das diese Pruefung verhindern soll.
+    if ((err as { code?: string } | undefined)?.code === '42P01') return;
+    throw err;
   }
 
   if (!stored) {
