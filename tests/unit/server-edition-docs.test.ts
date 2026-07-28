@@ -188,6 +188,13 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining("format('public.%I', :'tbl')"));
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_identifier "$2" ||'));
     expect(metadata).toEqual(expect.stringContaining('which is not a valid table name'));
+    // Und die Zahl muss eine Zahl sein. Wurde 'n/a' uebersprungen und alles
+    // andere Nichtnumerische nur als Hinweis gemeldet, liess sich die gesamte
+    // Pruefung aushebeln: in der manipulierten Metadatei jeden Wert durch Text
+    // ersetzen, Pruefsumme daneben neu berechnen — und der Restore meldete
+    // Erfolg, ohne eine einzige Tabelle geprueft zu haben.
+    expect(metadata).toEqual(expect.stringContaining('which is not a number'));
+    expect(metadata).not.toMatch(/\[ "\$expected" = 'n\/a' \] && continue/);
     // Waehrend das Backup laeuft, heisst die Metadatei .partial: sie entsteht
     // VOR dem Dump, und die Aufraeumung eines parallel laufenden Backups haelt
     // eine backup-*.meta ohne zugehoerigen Dump fuer eine Waise und loescht sie.

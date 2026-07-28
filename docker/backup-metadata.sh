@@ -290,8 +290,22 @@ verify_backup_metadata() {
       empty=1
       continue
     fi
-    expected="$(backup_metadata_value "$meta_path" "rows_$table" || printf 'n/a')"
-    [ "$expected" = 'n/a' ] && continue
+    # Die Zahl muss eine Zahl sein.
+    #
+    # Frueher wurde 'n/a' uebersprungen und alles andere Nichtnumerische fiel in
+    # den blossen Hinweiszweig. Damit liess sich die ganze Pruefung aushebeln:
+    # in einer manipulierten Metadatei jeden Wert durch Text ersetzen, die
+    # Pruefsumme daneben neu berechnen — und verify_backup_metadata meldete
+    # Erfolg, ohne eine einzige Tabelle geprueft zu haben. Ein Wert, der keine
+    # Zahl ist, kommt aus keinem echten Backup.
+    expected="$(backup_metadata_value "$meta_path" "rows_$table" || printf '')"
+    case "$expected" in
+      '' | *[!0123456789]*)
+        echo "$label: metadata records '$expected' as the row count for $table, which is not a number; this file has been altered" >&2
+        empty=1
+        continue
+        ;;
+    esac
     actual="$(backup_metadata_count "$database_url" "$table")"
     [ "$actual" = "$expected" ] && continue
     if [ "$actual" = 'n/a' ]; then
