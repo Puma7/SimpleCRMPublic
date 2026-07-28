@@ -9,6 +9,7 @@ import {
   masterKeyFingerprint,
   masterKeyFingerprintMatches,
   masterKeyLooksGuessable,
+  newMasterKeyFingerprintSalt,
   parseBase64MasterKey,
 } from '../../packages/server/src/security/master-key';
 import { encryptSecretValue } from '../../packages/server/src/security/secret-envelope';
@@ -28,6 +29,8 @@ const RICHTIG = parseBase64MasterKey(
 const FALSCH = parseBase64MasterKey(
   Buffer.from(Array.from({ length: 32 }, (_unused, index) => 255 - index)).toString('base64'),
 );
+/** Fester Salt in den Tests; im Betrieb ist er je Installation zufaellig. */
+const SALT = 'test-salt-fest';
 
 /**
  * Alle Secrets in der Datenbank sind mit dem Master-Key verschluesselt, der
@@ -39,12 +42,12 @@ const FALSCH = parseBase64MasterKey(
  */
 describe('Master-Key-Fingerabdruck', () => {
   test('haengt am Schluessel und unterscheidet verschiedene', () => {
-    expect(masterKeyFingerprint(RICHTIG)).toBe(masterKeyFingerprint(RICHTIG));
-    expect(masterKeyFingerprint(RICHTIG)).not.toBe(masterKeyFingerprint(FALSCH));
+    expect(masterKeyFingerprint(RICHTIG, SALT)).toBe(masterKeyFingerprint(RICHTIG, SALT));
+    expect(masterKeyFingerprint(RICHTIG, SALT)).not.toBe(masterKeyFingerprint(FALSCH, SALT));
   });
 
   test('verraet den Schluessel nicht', () => {
-    const fingerprint = masterKeyFingerprint(RICHTIG);
+    const fingerprint = masterKeyFingerprint(RICHTIG, SALT);
     // Weder das Schluesselmaterial in irgendeiner gaengigen Kodierung ...
     expect(fingerprint).not.toContain(RICHTIG.bytes.toString('base64').slice(0, 8));
     expect(fingerprint).not.toContain(RICHTIG.bytes.toString('hex').slice(0, 8));
@@ -65,7 +68,7 @@ describe('Master-Key-Fingerabdruck', () => {
     // Wochen. Gemessen wird grosszuegig, der Test soll die Absicht festhalten
     // und nicht die Maschine benoten.
     const started = process.hrtime.bigint();
-    masterKeyFingerprint(FALSCH);
+    masterKeyFingerprint(FALSCH, SALT);
     const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
     expect(elapsedMs).toBeGreaterThan(10);
   });
@@ -83,16 +86,27 @@ describe('Master-Key-Fingerabdruck', () => {
     expect(masterKeyLooksGuessable(randomBytes(32))).toBe(false);
   });
 
+  test('haengt am Salt: derselbe Schluessel, zwei Installationen, zwei Werte', () => {
+    // Mit dem festen Etikett als einzigem Salt waere der Wert global: einmal
+    // rechnen, gegen beliebig viele fremde Backup-Metadaten halten — und
+    // nebenbei sehen, wo derselbe Schluessel zweimal benutzt wurde.
+    const a = newMasterKeyFingerprintSalt();
+    const b = newMasterKeyFingerprintSalt();
+    expect(a).not.toBe(b);
+    expect(masterKeyFingerprint(RICHTIG, a)).not.toBe(masterKeyFingerprint(RICHTIG, b));
+    expect(() => masterKeyFingerprint(RICHTIG, '')).toThrow('salt is required');
+  });
+
   test('vergleicht ohne Laengen- oder Inhaltsfalle', () => {
-    const fingerprint = masterKeyFingerprint(RICHTIG);
+    const fingerprint = masterKeyFingerprint(RICHTIG, SALT);
     expect(masterKeyFingerprintMatches(fingerprint, fingerprint)).toBe(true);
-    expect(masterKeyFingerprintMatches(fingerprint, masterKeyFingerprint(FALSCH))).toBe(false);
+    expect(masterKeyFingerprintMatches(fingerprint, masterKeyFingerprint(FALSCH, SALT))).toBe(false);
     expect(masterKeyFingerprintMatches(fingerprint, '')).toBe(false);
     expect(masterKeyFingerprintMatches(fingerprint, `${fingerprint}x`)).toBe(false);
   });
 });
 
-type StoredRow = { key_id: string; fingerprint: string };
+type StoredRow = { key_id: string; fingerprint: string; salt: string };
 type SecretRow = Record<string, unknown>;
 type FakeDbCalls = { inserted: StoredRow[]; selects: number };
 
@@ -125,6 +139,18 @@ function trackingLinkRow(key: typeof RICHTIG, id = 'l-1'): Record<string, unknow
     target_ciphertext: sealed.ciphertext,
     target_nonce: sealed.nonce,
     target_auth_tag: sealed.authTag,
+  };
+}
+
+/** Und fuer eine Resolver-Zeile: der Hash haengt am Tracking-Token. */
+function trackingTokenRow(key: typeof RICHTIG, kind: 'open' | 'click' = 'open'): Record<string, unknown> {
+  const crypto = createEmailTrackingCrypto(key.bytes);
+  const id = kind === 'open' ? 't-1' : 'l-1';
+  return {
+    token_hash: crypto.tokenHash(crypto.token(kind, id)),
+    tracking_message_id: 't-1',
+    link_id: kind === 'open' ? null : 'l-1',
+    token_kind: kind,
   };
 }
 
@@ -162,6 +188,8 @@ function fakeDb(
     secrets?: SecretRow[];
     trackingLinks?: Array<Record<string, unknown>>;
     trackingEvents?: Array<Record<string, unknown>>;
+    trackingTokens?: Array<Record<string, unknown>>;
+    fingerprintTableMissing?: boolean;
   } = {},
 ): { db: Kysely<ServerDatabase>; calls: FakeDbCalls } {
   const calls: FakeDbCalls = { inserted: [], selects: 0 };
@@ -199,6 +227,10 @@ function fakeDb(
         }
         if (table === 'email_tracking_links') return options.trackingLinks ?? [];
         if (table === 'email_tracking_events') return options.trackingEvents ?? [];
+        if (table === 'email_tracking_token_resolver') return options.trackingTokens ?? [];
+        if (table === 'master_key_fingerprints' && options.fingerprintTableMissing) {
+          throw Object.assign(new Error('relation "master_key_fingerprints" does not exist'), { code: '42P01' });
+        }
         return rows;
       },
       async executeTakeFirst() {
@@ -258,19 +290,22 @@ describe('Master-Key-Pruefung beim Serverstart', () => {
   test('legt den Fingerabdruck beim ersten Start an', async () => {
     const { db, calls } = fakeDb([]);
     await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
-    expect(calls.inserted).toEqual([
-      { key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) },
-    ]);
+    expect(calls.inserted).toHaveLength(1);
+    const eingetragen = calls.inserted[0]!;
+    expect(eingetragen.key_id).toBe('default');
+    // Der Salt entsteht zufaellig; nachgerechnet wird mit dem, der eingetragen
+    // wurde.
+    expect(eingetragen.fingerprint).toBe(masterKeyFingerprint(RICHTIG, eingetragen.salt));
   });
 
   test('laesst den passenden Schluessel durch, ohne erneut zu schreiben', async () => {
-    const { db, calls } = fakeDb([{ key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) }]);
+    const { db, calls } = fakeDb([{ key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG, SALT), salt: SALT }]);
     await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
     expect(calls.inserted).toEqual([]);
   });
 
   test('bricht bei einem fremden Schluessel ab', async () => {
-    const { db } = fakeDb([{ key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) }]);
+    const { db } = fakeDb([{ key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG, SALT), salt: SALT }]);
     // Abbruch und nicht Warnung: weiterzulaufen hiesse, mit unlesbaren Secrets
     // zu arbeiten und dabei neue mit dem falschen Schluessel zu schreiben — aus
     // einem behebbaren Konfigurationsfehler wuerde ein Datenschaden.
@@ -284,7 +319,7 @@ describe('Master-Key-Pruefung beim Serverstart', () => {
     // Nachlesen waere ausgerechnet der Fall ungeprueft durchgegangen, fuer den
     // die Pruefung existiert.
     const { db, calls } = fakeDb([], {
-      insertLosesRace: { key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) },
+      insertLosesRace: { key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG, SALT), salt: SALT },
     });
     await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
       .rejects.toThrow('does not match this database');
@@ -319,7 +354,7 @@ describe('Master-Key-Pruefung beim Serverstart', () => {
     // Derselbe Fehler andersherum: die Secrets hier sind mit einem Schluessel
     // verschluesselt, der jetzt nicht mehr gesetzt ist. Weiterzulaufen hiesse,
     // auf unlesbaren Secrets zu arbeiten.
-    const { db } = fakeDb([{ key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) }]);
+    const { db } = fakeDb([{ key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG, SALT), salt: SALT }]);
     await expect(assertMasterKeyMatchesDatabase(db, undefined))
       .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
   });
@@ -341,7 +376,7 @@ describe('Master-Key-Pruefung beim Serverstart', () => {
     // Konfiguration, der Abbruch nur dort, wo er folgenlos ist.
     const schwach = parseBase64MasterKey(Buffer.alloc(32, 3).toString('base64'));
     const { db } = fakeDb([
-      { key_id: 'default', fingerprint: masterKeyFingerprint(schwach) },
+      { key_id: 'default', fingerprint: masterKeyFingerprint(schwach, SALT), salt: SALT },
     ]);
     await expect(assertMasterKeyMatchesDatabase(db, schwach)).resolves.toBeUndefined();
   });
@@ -365,9 +400,12 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
   test('der richtige Schluessel bewaehrt sich an einem Secret und wird hinterlegt', async () => {
     const { db, calls } = fakeDb([], { secrets: [await secretRow(RICHTIG)] });
     await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
-    expect(calls.inserted).toEqual([
-      { key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) },
-    ]);
+    expect(calls.inserted).toHaveLength(1);
+    const eingetragen = calls.inserted[0]!;
+    expect(eingetragen.key_id).toBe('default');
+    // Der Salt entsteht zufaellig; nachgerechnet wird mit dem, der eingetragen
+    // wurde.
+    expect(eingetragen.fingerprint).toBe(masterKeyFingerprint(RICHTIG, eingetragen.salt));
   });
 
   test('der falsche Schluessel wird abgewiesen, statt sich als Wahrheit einzutragen', async () => {
@@ -443,6 +481,46 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
     const passend = fakeDb([], { trackingEvents: [trackingEventRow(RICHTIG)] });
     await expect(assertMasterKeyMatchesDatabase(passend.db, RICHTIG)).resolves.toBeUndefined();
     expect(passend.calls.inserted).toHaveLength(1);
+  });
+
+  test('ausgestellte Tokens zaehlen, auch ohne Links und ohne Rohdaten', async () => {
+    // Wer nur Oeffnungen zaehlt und keine Rohdaten sammelt, hat weder Links
+    // noch versiegelte Ereignisse — aber fuer jede getrackte Nachricht eine
+    // Resolver-Zeile. Der token_hash haengt am Tracking-Schluessel und damit am
+    // Master-Key; ein fremder Schluessel machte jedes ausgestellte Zaehlpixel
+    // unaufloesbar.
+    for (const kind of ['open', 'click'] as const) {
+      const { db, calls } = fakeDb([], { trackingTokens: [trackingTokenRow(RICHTIG, kind)] });
+      await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
+        .rejects.toThrow('does not match this database');
+      expect(calls.inserted).toEqual([]);
+    }
+    const passend = fakeDb([], { trackingTokens: [trackingTokenRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(passend.db, RICHTIG)).resolves.toBeUndefined();
+    expect(passend.calls.inserted).toHaveLength(1);
+  });
+
+  test('fehlt die Fingerabdruck-Tabelle, wird trotzdem geprobt', async () => {
+    // Im Compose-Ablauf wartet die API auf `migrate`, ein Rolling Deployment
+    // muss das nicht. Frueher galt die Pruefung hier als bestanden — eine
+    // falsche .env kaeme in genau diesem Fenster durch und schriebe Daten unter
+    // einem zweiten Schluessel.
+    const { db, calls } = fakeDb([], {
+      fingerprintTableMissing: true,
+      secrets: [await secretRow(RICHTIG)],
+    });
+    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
+      .rejects.toThrow('does not match this database');
+    expect(calls.inserted).toEqual([]);
+  });
+
+  test('fehlt die Tabelle und passt der Schluessel, laeuft der Start ohne Eintrag', async () => {
+    const { db, calls } = fakeDb([], {
+      fingerprintTableMissing: true,
+      secrets: [await secretRow(RICHTIG)],
+    });
+    await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
+    expect(calls.inserted).toEqual([]);
   });
 
   test('ohne Schluessel bricht auch reines Tracking den Start ab', async () => {

@@ -178,10 +178,43 @@ const NON_ROUTE_INTERPOLATED_PATHS: readonly string[] = [
   '/api/v1/deals/${id}',
   '/api/v1/tasks/${id}',
   '/api/v1/email/messages/${messageId}/tags',
+  // SMTP-Relay: die kanonische Liste setzt jeden Pfad aus einer gemeinsamen
+  // Konstanten zusammen (relay-routes.ts). Die Probe erreicht diese Routen
+  // ueber die ausgeschriebenen Regex-Muster daneben — nicht ueber diese
+  // Literale.
+  '${BASE_PATH}/:relayId',
+  '${BASE_PATH}/:relayId/accounts',
+  '${BASE_PATH}/:relayId/accounts/:accountId',
+  '${BASE_PATH}/:relayId/credentials',
+  '${BASE_PATH}/:relayId/credentials/:credentialId/revoke',
+  '${BASE_PATH}/:relayId/submissions',
+  // Praefix-Vergleiche (startsWith) und der generische Inventar-Bauer, keine
+  // eigenen Endpunkte.
+  '${BASE_PATH}/',
+  '${BINDINGS_PATH}/',
+  '${route.listPath}/:id',
+  // Gar keine Route: die Adresse eines fremden Dienstes.
+  '${parsed.values.rspamdUrl}/stat',
 ];
 
-/** Pfadliterale in jeder Schreibweise: '…', "…" und `…`. */
-const PATH_LITERAL = /(['"`])(\/(?:api\/v1|health|openapi|t)\/?[^'"`\s]*)\1/g;
+/**
+ * Pfadliterale in jeder Schreibweise: '…', "…" und `…`.
+ *
+ * Zwei Formen: entweder faengt das Literal mit einem bekannten API-Praefix an,
+ * oder es beginnt mit einer Interpolation und traegt danach einen Pfad. Die
+ * zweite Form fehlte — `${BASE_PATH}/:id` sah die Probe ueberhaupt nicht, weder
+ * als Pfad noch als Interpolation, und die Vollstaendigkeitspruefung blieb
+ * gruen. Genau so sind die SMTP-Relay-Routen geschrieben; dass sie trotzdem
+ * geprobt werden, verdanken sie allein ihren ausgeschriebenen Regex-Mustern.
+ */
+const PATH_LITERAL = new RegExp(
+  String.raw`(['"\`])(` // Anfuehrungszeichen
+  + String.raw`\/(?:api\/v1|health|openapi|t)\/?[^'"\`\s]*` // /api/v1/...
+  + '|'
+  + String.raw`\$\{[A-Za-z_$][\w$.]*\}\/[^'"\`\s]*` // ${BASE_PATH}/...
+  + String.raw`)\1`,
+  'g',
+);
 
 /**
  * Die Routen kommen aus den Quellen, nicht aus einer gepflegten Liste — eine

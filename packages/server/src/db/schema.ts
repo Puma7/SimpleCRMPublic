@@ -170,6 +170,7 @@ export type SecretsTable = {
 export type MasterKeyFingerprintsTable = {
   key_id: string;
   fingerprint: string;
+  salt: string;
   created_at: ColumnType<Date, Date | string | undefined, never>;
   updated_at: ColumnType<Date, Date | string | undefined, Date | string>;
 };

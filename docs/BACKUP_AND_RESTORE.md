@@ -100,6 +100,14 @@ access to any encrypted secret needed. At roughly 100 ms per candidate that
 turns a wordlist run of seconds into one of weeks. Generate the key with
 `openssl rand -base64 32`.
 
+It is also **salted per installation** — the salt is random, generated when the
+fingerprint is first recorded, and stored beside it. With only a fixed label as
+salt the value would be global: the same key would produce the same published
+fingerprint everywhere, so one computation could be held against any number of
+other installations' backup metadata, and key reuse across installations would
+be visible at a glance. With its own salt, every computation buys exactly one
+installation.
+
 A key that decodes to text-like or repetitive bytes is refused **while the
 database still holds no secrets** — that is the last moment replacing it costs
 nothing. An installation that already runs on such a key only gets a warning:
@@ -145,12 +153,26 @@ exists, later starts compare that instead.
 and link-hash keys are derived from the same master key, so a database with no
 secrets but with tracking rows is not fresh either — a wrong key invalidates
 issued open/click tokens, makes stored target URLs unreadable, and turns the raw
-metadata of tracking events into a permanent `rawUnavailable`. Both
-`email_tracking_links` and the sealed columns of `email_tracking_events` are
-checked; an installation that only records opens has no links at all. Those
-tables can grow into the millions, so unlike `secrets` they are **sampled**: the
-oldest and newest few rows, because a key change falls somewhere in time and the
-edges show it. That is a sample, not a proof.
+metadata of tracking events into a permanent `rawUnavailable`. Three tables are
+checked, and it takes all three to cover the field: `email_tracking_links`, the
+sealed columns of `email_tracking_events`, and `email_tracking_token_resolver`.
+An installation that only counts opens and stores no raw metadata has neither
+links nor sealed events — but one resolver row per tracked message, and its
+`token_hash` is recomputable from the key. Those tables can grow into the
+millions, so unlike `secrets` they are **sampled**: the oldest and newest few
+rows, because a key change falls somewhere in time and the edges show it. That
+is a sample, not a proof.
+
+Two derived values are deliberately *not* checked: `target_url_hash` and the
+event `dedupe_key`. Both are keyed hashes of inputs the check does not have, so
+there is nothing to compare against. They never appear alone — whatever writes
+them writes a resolver row too — so the coverage above still catches the case.
+
+**A missing fingerprint table is not a free pass.** In the Compose flow the API
+waits for `migrate`, but a rolling deployment or another orchestrator can start
+it before migration 0049. The probe runs anyway; only *recording* the
+fingerprint waits for the table. Otherwise a wrong `.env` would slip through
+exactly that window and write data under a second key.
 
 **The check and the decision happen under one lock.** Without it, two replicas
 starting at once on a fresh database both see an empty table — and a replica

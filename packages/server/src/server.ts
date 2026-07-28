@@ -131,6 +131,7 @@ import {
   masterKeyFingerprint,
   masterKeyFingerprintMatches,
   masterKeyLooksGuessable,
+  newMasterKeyFingerprintSalt,
   parseBase64MasterKey,
   SECRET_ENVELOPE_ALGORITHM,
   type MasterKeyMaterial,
@@ -880,15 +881,10 @@ export async function assertMasterKeyMatchesDatabase(
   // Die Kennung ist eine feste Zahl; sie steht fuer "Master-Key dieser
   // Datenbank" und sonst nichts. pg_advisory_xact_lock endet mit der
   // Transaktion, auch wenn der Start scheitert.
-  try {
-    await db.transaction().execute(async (trx) => {
-      await sql`SELECT pg_advisory_xact_lock(${MASTER_KEY_ADVISORY_LOCK})`.execute(trx);
-      await assertMasterKeyMatchesDatabaseLocked(trx, masterKey);
-    });
-  } catch (error) {
-    if (isMissingTableError(error)) return;
-    throw error;
-  }
+  await db.transaction().execute(async (trx) => {
+    await sql`SELECT pg_advisory_xact_lock(${MASTER_KEY_ADVISORY_LOCK})`.execute(trx);
+    await assertMasterKeyMatchesDatabaseLocked(trx, masterKey);
+  });
 }
 
 /** Ein Wert, der nur hier vorkommt — er benennt die Sperre, nicht mehr. */
@@ -898,16 +894,37 @@ async function assertMasterKeyMatchesDatabaseLocked(
   db: Kysely<ServerDatabase>,
   masterKey: MasterKeyMaterial | undefined,
 ): Promise<void> {
-  const stored = await db
-    .selectFrom('master_key_fingerprints')
-    .select(['key_id', 'fingerprint'])
-    .execute();
+  // Fehlt die Tabelle, ist Migration 0049 noch nicht gelaufen. Frueher hiess
+  // das: Pruefung beendet, Start frei. Das ist zu viel — im Compose-Ablauf
+  // wartet die API zwar auf `migrate`, aber ein Rolling Deployment oder ein
+  // anderer Orchestrator startet sie auch mal davor, und dann liefe eine
+  // falsche .env genau in dem Fenster durch und schriebe Daten unter einem
+  // zweiten Schluessel. Uebersprungen wird deshalb nur das SPEICHERN; geprobt
+  // wird trotzdem.
+  //
+  // Der SAVEPOINT ist nicht Zierde: alles laeuft in einer Transaktion, und ein
+  // Fehler reisst sie ab. Ohne ihn scheiterte jede weitere Anweisung mit
+  // "current transaction is aborted" — aus der Toleranz waere eine Startsperre
+  // geworden.
+  let stored: Array<{ key_id: string; fingerprint: string; salt: string }> | undefined;
+  await sql`SAVEPOINT master_key_fingerprints_read`.execute(db);
+  try {
+    stored = await db
+      .selectFrom('master_key_fingerprints')
+      .select(['key_id', 'fingerprint', 'salt'])
+      .execute();
+    await sql`RELEASE SAVEPOINT master_key_fingerprints_read`.execute(db);
+  } catch (error) {
+    await sql`ROLLBACK TO SAVEPOINT master_key_fingerprints_read`.execute(db);
+    if (!isMissingTableError(error)) throw error;
+    stored = undefined;
+  }
 
   const existing = masterKey
-    ? stored.find((row) => row.key_id === masterKey.keyId)
+    ? stored?.find((row) => row.key_id === masterKey.keyId)
     : undefined;
   if (masterKey && existing) {
-    const fingerprintOfConfiguredKey = masterKeyFingerprint(masterKey);
+    const fingerprintOfConfiguredKey = masterKeyFingerprint(masterKey, existing.salt);
     if (!masterKeyFingerprintMatches(existing.fingerprint, fingerprintOfConfiguredKey)) {
       throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
     }
@@ -920,7 +937,7 @@ async function assertMasterKeyMatchesDatabaseLocked(
   const probe = await findSecretProbe(db, masterKey?.keyId);
 
   if (!masterKey) {
-    if (stored.length === 0 && probe.kind === 'none') return;
+    if ((stored?.length ?? 0) === 0 && probe.kind === 'none') return;
     throw new Error(MASTER_KEY_MISSING_MESSAGE);
   }
 
@@ -955,7 +972,14 @@ async function assertMasterKeyMatchesDatabaseLocked(
     for (const row of probe.trackingEvents) {
       if (!trackingEventIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
     }
+    for (const row of probe.trackingTokens) {
+      if (!trackingTokenIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
   }
+
+  // Die Tabelle gibt es noch nicht — geprobt wurde trotzdem, hinterlegt wird
+  // erst nach der Migration.
+  if (stored === undefined) return;
 
   // Ab hier legt sich diese Installation auf den Schluessel fest. Der letzte
   // Moment, in dem ein ratbarer Schluessel noch folgenlos ersetzt werden kann:
@@ -970,23 +994,34 @@ async function assertMasterKeyMatchesDatabaseLocked(
     );
   }
 
-  const fingerprint = masterKeyFingerprint(masterKey);
+  // Ein eigener Zufallssalt je Installation. Mit einem festen Etikett als Salt
+  // ergaebe derselbe Schluessel ueberall denselben veroeffentlichten Wert:
+  // einmal rechnen, gegen beliebig viele fremde Backup-Metadaten halten — und
+  // nebenbei sieht man, wo derselbe Schluessel zweimal benutzt wurde. Genau die
+  // Tabellen-Wiederverwendung, die weiter oben fuer einen blossen Hash
+  // ausgeschlossen wird.
+  const salt = newMasterKeyFingerprintSalt();
+  const fingerprint = masterKeyFingerprint(masterKey, salt);
   await db
     .insertInto('master_key_fingerprints')
-    .values({ key_id: masterKey.keyId, fingerprint })
+    .values({ key_id: masterKey.keyId, fingerprint, salt })
     .onConflict((oc) => oc.column('key_id').doNothing())
     .execute();
 
   // Der Konflikt-Zweig schreibt nichts — und genau dann ist der hinterlegte
   // Wert ein fremder: zwei Instanzen starten gleichzeitig, die andere war
   // zuerst da. Ohne dieses Nachlesen waere ausgerechnet der Fall ungeprueft
-  // durchgegangen, fuer den die Pruefung da ist.
+  // durchgegangen, fuer den die Pruefung da ist. Verglichen wird mit DEM Salt,
+  // der in der Datenbank steht, nicht mit dem eigenen.
   const after = await db
     .selectFrom('master_key_fingerprints')
-    .select('fingerprint')
+    .select(['fingerprint', 'salt'])
     .where('key_id', '=', masterKey.keyId)
     .executeTakeFirst();
-  if (after && !masterKeyFingerprintMatches(after.fingerprint, fingerprint)) {
+  if (after && !masterKeyFingerprintMatches(
+    after.fingerprint,
+    masterKeyFingerprint(masterKey, after.salt),
+  )) {
     throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
   }
 }
@@ -1019,6 +1054,13 @@ type TrackingEventProbeRow = Readonly<{
   raw_metadata_auth_tag: Buffer | Uint8Array;
 }>;
 
+type TrackingTokenProbeRow = Readonly<{
+  token_hash: string;
+  tracking_message_id: string;
+  link_id: string | null;
+  token_kind: string;
+}>;
+
 type SecretProbe =
   | { kind: 'none' }
   | { kind: 'unusable'; found: readonly SecretKind[] }
@@ -1027,6 +1069,7 @@ type SecretProbe =
     secrets: readonly SecretProbeRow[];
     tracking: readonly TrackingProbeRow[];
     trackingEvents: readonly TrackingEventProbeRow[];
+    trackingTokens: readonly TrackingTokenProbeRow[];
   };
 
 /**
@@ -1093,12 +1136,26 @@ async function findSecretProbe(
   `.execute(trx);
 
   // Fehlt eine der Tabellen, ist die Datenbank aelter als die Migration, die
-  // sie anlegt — dann gibt es dort auch nichts zu schuetzen. Nur 42P01,
-  // alles andere fliegt weiter.
+  // sie anlegt — dann gibt es dort auch nichts zu schuetzen. Nur 42P01, alles
+  // andere fliegt weiter.
+  //
+  // Und zwar mit SAVEPOINT: seit alles unter einer Sperre in EINER Transaktion
+  // laeuft, reisst ein Fehler die ganze Transaktion ab. Ein blosses try/catch
+  // faengt zwar den Fehler, aber jede weitere Anweisung scheitert danach mit
+  // "current transaction is aborted" — die Toleranz waere zur Startsperre
+  // geworden. Aufgefallen ist das erst gegen eine echte Datenbank; ein Stub
+  // haette nichts davon gemerkt.
+  let savepoint = 0;
   const tolerateMissing = async <T>(query: () => Promise<T[]>): Promise<T[]> => {
+    savepoint += 1;
+    const name = `master_key_probe_${savepoint}`;
+    await sql.raw(`SAVEPOINT ${name}`).execute(trx);
     try {
-      return await query();
+      const rows = await query();
+      await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx);
+      return rows;
     } catch (error) {
+      await sql.raw(`ROLLBACK TO SAVEPOINT ${name}`).execute(trx);
       if (isMissingTableError(error)) return [];
       throw error;
     }
@@ -1150,10 +1207,16 @@ async function findSecretProbe(
     'workspace_id', 'tracking_message_id', 'dedupe_key',
     'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag',
   ] as const;
+  // Nacheinander, nicht mit Promise.all: die beiden Abfragen laufen auf
+  // derselben Verbindung und setzen je einen SAVEPOINT. Verschraenkt gaebe das
+  // SAVEPOINT a, SAVEPOINT b, RELEASE a — und mit a verschwindet b, weil ein
+  // aeusserer Savepoint die inneren mitnimmt. Nebenlaeufigkeit gaebe es hier
+  // ohnehin keine: eine Verbindung fuehrt eine Anweisung nach der anderen aus.
   const edges = async <T extends { }>(
     query: (direction: 'asc' | 'desc') => Promise<T[]>,
   ): Promise<T[]> => {
-    const [oldest, newest] = await Promise.all([query('asc'), query('desc')]);
+    const oldest = await query('asc');
+    const newest = await query('desc');
     return [...oldest, ...newest];
   };
 
@@ -1172,10 +1235,28 @@ async function findSecretProbe(
     (row) => `${String(row.workspace_id)}:${String(row.dedupe_key)}`,
   ) as unknown as TrackingEventProbeRow[];
 
-  if (secrets.length === 0 && tracking.length === 0 && trackingEvents.length === 0) {
+  // Der Resolver ist die letzte Stelle, an der ein Master-Key Spuren
+  // hinterlaesst: `token_hash` ist der SHA-256 eines HMAC ueber den
+  // Tracking-Schluessel. Eine Installation, die nur Oeffnungen zaehlt und keine
+  // Rohdaten sammelt, hat weder Links noch versiegelte Ereignisse — aber fuer
+  // jede getrackte Nachricht eine Resolver-Zeile. Ohne sie saehe diese
+  // Datenbank leer aus, und ein falscher Schluessel machte jedes ausgestellte
+  // Zaehlpixel unaufloesbar.
+  const trackingTokens = dedupeBy(
+    await edges((direction) => tolerateMissing(() => trx
+      .selectFrom('email_tracking_token_resolver')
+      .select(['token_hash', 'tracking_message_id', 'link_id', 'token_kind'])
+      .orderBy('created_at', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+    (row) => String(row.token_hash),
+  ) as unknown as TrackingTokenProbeRow[];
+
+  if (secrets.length === 0
+    && tracking.length === 0
+    && trackingEvents.length === 0
+    && trackingTokens.length === 0) {
     return { kind: 'none' };
   }
-  return { kind: 'material', secrets, tracking, trackingEvents };
+  return { kind: 'material', secrets, tracking, trackingEvents, trackingTokens };
 }
 
 function dedupeBy<T>(rows: readonly T[], key: (row: T) => string): T[] {
@@ -1231,6 +1312,29 @@ function trackingEventIsReadableWith(
       authTag: Buffer.from(row.raw_metadata_auth_tag),
     }, emailTrackingEventAssociatedData(row.workspace_id, row.tracking_message_id, row.dedupe_key));
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Und fuer die ausgestellten Tokens. Hier gibt es nichts zu entschluesseln —
+ * der Hash wird nachgerechnet: token(kind, id) haengt am Tracking-Schluessel,
+ * und der haengt am Master-Key. Stimmt er ueberein, war es derselbe Schluessel.
+ */
+function trackingTokenIsReadableWith(
+  row: TrackingTokenProbeRow,
+  masterKey: MasterKeyMaterial,
+): boolean {
+  const purpose = row.token_kind === 'open' ? 'open' : 'click';
+  const id = purpose === 'open' ? row.tracking_message_id : row.link_id;
+  // Eine Zeile ohne die Kennung, aus der ihr Token entstanden ist, laesst sich
+  // nicht nachrechnen. Sie darf den Start nicht aufhalten — die anderen Proben
+  // greifen weiterhin.
+  if (!id) return true;
+  try {
+    const crypto = createEmailTrackingCrypto(masterKey.bytes);
+    return crypto.tokenHash(crypto.token(purpose, id)) === row.token_hash;
   } catch {
     return false;
   }

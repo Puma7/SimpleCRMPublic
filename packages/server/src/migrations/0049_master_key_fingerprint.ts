@@ -20,6 +20,11 @@ import type { SqlMigration } from './types';
  *
  * Ein Datensatz je key_id, damit ein spaeterer Schluesselwechsel beide Werte
  * nebeneinander halten kann, statt den alten stillschweigend zu ueberschreiben.
+ *
+ * Der Salt steht daneben und ist je Installation zufaellig: sonst waere das
+ * feste Etikett ein globaler Salt, derselbe Schluessel ergaebe ueberall
+ * denselben Wert, und ein Angreifer koennte einmal rechnen und gegen beliebig
+ * viele fremde Backup-Metadaten halten.
  */
 export const masterKeyFingerprintMigration: SqlMigration = {
   id: '0049_master_key_fingerprint',
@@ -28,6 +33,7 @@ export const masterKeyFingerprintMigration: SqlMigration = {
     `CREATE TABLE IF NOT EXISTS master_key_fingerprints (
   key_id text PRIMARY KEY,
   fingerprint text NOT NULL,
+  salt text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );`,

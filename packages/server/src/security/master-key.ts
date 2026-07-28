@@ -78,8 +78,23 @@ export function equalSecretBytes(a: Buffer, b: Buffer): boolean {
  * Gekuerzt auf 16 Byte. Das reicht, um Verwechslungen zu erkennen — mehr soll
  * der Wert nicht leisten, und je kuerzer er ist, desto weniger traegt er.
  */
-export const MASTER_KEY_FINGERPRINT_LABEL = 'simplecrm-master-key-fingerprint-v2';
+export const MASTER_KEY_FINGERPRINT_LABEL = 'simplecrm-master-key-fingerprint-v3';
 export const MASTER_KEY_FINGERPRINT_BYTES = 16;
+export const MASTER_KEY_FINGERPRINT_SALT_BYTES = 16;
+
+/**
+ * Ein Zufallssalt je Installation, gespeichert neben dem Fingerabdruck.
+ *
+ * Mit dem festen Etikett allein waere der Salt global: derselbe Schluessel
+ * ergaebe ueberall denselben veroeffentlichten Wert. Ein Angreifer koennte
+ * Kandidaten einmal durchrechnen und gegen beliebig viele fremde
+ * Backup-Metadaten halten — und nebenbei erkennen, wo derselbe Schluessel
+ * zweimal benutzt wurde. Mit eigenem Salt gilt jede Rechnung nur fuer eine
+ * Installation.
+ */
+export function newMasterKeyFingerprintSalt(): string {
+  return randomBytes(MASTER_KEY_FINGERPRINT_SALT_BYTES).toString('base64url');
+}
 
 /**
  * scrypt-Parameter. N=2^15, r=8, p=1 braucht rund 32 MiB und ~100 ms — der
@@ -88,10 +103,11 @@ export const MASTER_KEY_FINGERPRINT_BYTES = 16;
  */
 const FINGERPRINT_SCRYPT = { N: 32768, r: 8, p: 1, maxmem: 96 * 1024 * 1024 } as const;
 
-export function masterKeyFingerprint(key: MasterKeyMaterial): string {
+export function masterKeyFingerprint(key: MasterKeyMaterial, salt: string): string {
+  if (!salt.trim()) throw new Error('master key fingerprint salt is required');
   const derived = scryptSync(
     key.bytes,
-    MASTER_KEY_FINGERPRINT_LABEL,
+    `${MASTER_KEY_FINGERPRINT_LABEL}\0${salt}`,
     MASTER_KEY_FINGERPRINT_BYTES,
     FINGERPRINT_SCRYPT,
   );

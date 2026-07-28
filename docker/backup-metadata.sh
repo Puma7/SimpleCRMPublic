@@ -14,8 +14,9 @@
 #
 #    Die Kennung allein sagt dabei nichts: der Server vergibt sie ohne Argument,
 #    sie lautet ueberall 'default'. Seit Migration 0049 steht deshalb zusaetzlich
-#    ein nicht-geheimer FINGERABDRUCK des Schluessels in der Datenbank (HMAC
-#    ueber ein festes Etikett) und wandert mit dem Dump. Er wird hier nur
+#    ein FINGERABDRUCK des Schluessels in der Datenbank (scrypt ueber ein festes
+#    Etikett plus einen zufaelligen Salt je Installation) und wandert mit dem
+#    Dump. Er wird hier nur
 #    angezeigt — pruefen kann ihn nur, wer den Schluessel hat, und das ist die
 #    API: sie verweigert den Start, wenn ihr SIMPLECRM_MASTER_KEY nicht zu der
 #    Datenbank passt, die sie gerade vorfindet.
@@ -418,6 +419,31 @@ verify_backup_metadata() {
 # ueberhaupt verifizieren liesse) — haenge man diese Ausgabe dort hinein,
 # bliebe doctor genau bei dem Backup stumm, dessen Restore spaeter am
 # Schluessel scheitert.
+# Haengt an diesem Backup ueberhaupt etwas am Master-Key? 'yes', 'no' oder
+# 'unknown'.
+#
+# Gezaehlt wird master_key_encrypted_rows und NICHT die Zeilenzahl von
+# email_tracking_events: die meisten Ereignisse tragen keine versiegelten
+# Rohmetadaten, und sie mitzuzaehlen behauptete eine .env-Abhaengigkeit, die die
+# Startpruefung gar nicht sieht — sie wuerde dort einen neuen Schluessel
+# anstandslos eintragen. Eine Warnung, die der Wirklichkeit widerspricht, ist
+# schlimmer als keine.
+backup_metadata_encrypted_state() {
+  if [ "$2" != 'none' ] && [ "$2" != 'n/a' ] && [ "$2" != 'unknown' ]; then
+    # Secrets sind eindeutig; was der Zaehler sagt, aendert daran nichts.
+    printf 'yes'
+    return 0
+  fi
+  case "$(backup_metadata_value "$1" 'master_key_encrypted_rows' || printf 'unknown')" in
+    '0' | 'n/a') printf 'no' ;;
+    # Aeltere Backups fuehren den Zaehler nicht. Dann ist die Antwort "weiss
+    # nicht" — und die wird auch so gesagt, statt eine der beiden Behauptungen
+    # zu raten.
+    '' | *[!0123456789]*) printf 'unknown' ;;
+    *) printf 'yes' ;;
+  esac
+}
+
 report_master_key_material() {
   meta_path="$1"
   label="${2:-restore}"
@@ -441,10 +467,19 @@ report_master_key_material() {
   fingerprints="$(backup_metadata_value "$meta_path" 'master_key_fingerprints' || printf 'unknown')"
   case "$fingerprints" in
     'unknown' | 'n/a' | '')
-      # Aeltere Backups (vor Migration 0049) fuehren keinen Fingerabdruck.
-      if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
-        echo "$label: this backup predates the master-key fingerprint, so a wrong .env cannot be detected here; restore it from the same system." >&2
-      fi
+      # Keine Fingerabdruck-Tabelle. Das ist nicht nur "altes Backup": der
+      # backup-scheduler haengt in docker-compose.yml an postgres und NICHT am
+      # migrate-Dienst, sein Start-Backup kann also vor Migration 0049 laufen.
+      # Auch dieser Stand braucht die urspruengliche .env, wenn etwas darin
+      # verschluesselt ist — und das steht nicht nur in secret_key_ids.
+      case "$(backup_metadata_encrypted_state "$meta_path" "$key_ids")" in
+        'yes')
+          echo "$label: this backup predates the master-key fingerprint, so a wrong .env cannot be detected here; it does contain data encrypted with the master key, so restore it from the same system." >&2
+          ;;
+        'unknown')
+          echo "$label: this backup predates the master-key fingerprint and does not record how much is encrypted with the master key; if this installation used secrets or e-mail tracking, restore it from the same system." >&2
+          ;;
+      esac
       ;;
     'none')
       # Tabelle vorhanden, aber leer — und das heisst zweierlei.
@@ -459,23 +494,7 @@ report_master_key_material() {
       # .env-Abhaengigkeit, die die Startpruefung gar nicht sieht — sie wuerde
       # dort einen neuen Schluessel anstandslos eintragen. Eine Warnung, die der
       # Wirklichkeit widerspricht, ist schlimmer als keine.
-      encrypted='no'
-      if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
-        # Secrets sind eindeutig; was der Zaehler sagt, aendert daran nichts.
-        encrypted='yes'
-      else
-        encrypted_rows="$(backup_metadata_value "$meta_path" 'master_key_encrypted_rows' || printf 'unknown')"
-        case "$encrypted_rows" in
-          '0' | 'n/a') ;;
-          '' | *[!0123456789]*)
-            # Aeltere Backups fuehren den Zaehler nicht. Dann ist die Antwort
-            # "weiss nicht" — und die wird auch so gesagt, statt eine der beiden
-            # Behauptungen zu raten.
-            encrypted='unknown'
-            ;;
-          *) encrypted='yes' ;;
-        esac
-      fi
+      encrypted="$(backup_metadata_encrypted_state "$meta_path" "$key_ids")"
 
       if [ "$encrypted" = 'unknown' ]; then
         echo "$label: no fingerprint travelled with this dump, and it does not record how many rows are encrypted with the master key; if this installation used e-mail tracking, the original .env is still required." >&2
