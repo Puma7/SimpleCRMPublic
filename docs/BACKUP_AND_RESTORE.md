@@ -24,7 +24,9 @@ before `pg_restore` touches anything, because such a backup cannot be checked
 for completeness and finding that out afterwards would leave the database
 replaced and the application down. If it is the only backup you have, set
 `RESTORE_ALLOW_UNVERIFIABLE=1` to accept an unverified restore deliberately; the
-run then completes and only warns.
+run then completes and only warns. In the Compose flow set it on the host —
+`RESTORE_ALLOW_UNVERIFIABLE=1 sh ./simplecrm restore` — the `restore` service
+passes it through.
 
 The restore and doctor scripts verify the manifest when it exists.
 

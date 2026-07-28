@@ -167,14 +167,28 @@ Paar aus **E-Mail und IP**. Wer aus vielen Adressen kommt — Botnet, Proxy-Pool
 bekommt pro Adresse einen frischen Zähler, und die dauerhafte Sperre greift nie.
 Es bliebe nur das IP-Limit von 20 Login-Anfragen pro Minute.
 
-Deshalb zählt der Login zusätzlich die Fehlversuche **für das Konto über alle
-Adressen** in den letzten 15 Minuten, und zwar *vor* der Passwortprüfung:
+Deshalb prüft der Login zusätzlich, **von wie vielen verschiedenen Adressen** in
+den letzten 15 Minuten ein Fehlversuch gegen dieses Konto kam — *vor* der
+Passwortprüfung:
 
-| Fehlversuche (15 min, alle IPs) | Turnstile eingerichtet | Turnstile nicht eingerichtet |
+| Adressen mit Fehlversuch (15 min) | Turnstile eingerichtet | Turnstile nicht eingerichtet |
 |---|---|---|
-| < 10 | normal | normal |
-| ≥ 10 | **CAPTCHA verpflichtend** | normal |
-| ≥ 50 | CAPTCHA verpflichtend | `429`, Fenster läuft ab |
+| < 6 | normal | normal |
+| ≥ 6 | **CAPTCHA verpflichtend** | normal |
+| ≥ 20 | CAPTCHA verpflichtend | `429`, Fenster läuft ab |
+
+**Warum Adressen und nicht Versuche.** `auth_login_failures` führt je Paar aus
+E-Mail und IP *eine* Zeile mit einem kumulierten Zähler; `failed_at` ist nur der
+letzte Versuch dieses Paares. „Wie viele Versuche in den letzten 15 Minuten"
+lässt sich daraus nicht ableiten — ein über Monate auf 49 gelaufenes Paar würde
+nach einem einzigen neuen Versuch als 50 frische zählen. Eine Zeile im Fenster
+bedeutet dagegen genau eine überprüfbare Sache: von dieser Adresse kam gerade
+ein Fehlversuch.
+
+Das ist zugleich das passendere Maß, denn die Lücke entsteht durch **Breite**.
+Tiefe je Adresse fängt die Staffelung oben ab: ab dem vierten Versuch 24 Stunden.
+Ein Mensch scheitert nicht binnen einer Viertelstunde von sechs verschiedenen
+Anschlüssen aus — ein Botnet tut genau das.
 
 **Warum kein kontoweites Sperren.** Eine solche Sperre könnte jeder auslösen,
 der eine E-Mail-Adresse kennt — man könnte fremde Konten nach Belieben von der

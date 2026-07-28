@@ -41,9 +41,23 @@ export function shouldResetFailureCounterAfterSuccess(): true {
  * ein CAPTCHA: der Angreifer muss fuer jeden Rateversuch bezahlen, der Nutzer
  * klickt einmal und kommt durch.
  */
+/**
+ * Gemessen wird BREITE, nicht Tiefe: von wie vielen verschiedenen Adressen kam
+ * im Fenster ein Fehlversuch gegen dieses Konto. Tiefe je Adresse faengt die
+ * Staffelung oben ab (ab dem vierten Versuch 24 Stunden Sperre fuer das Paar).
+ *
+ * Und nur Breite ist mit auth_login_failures ueberhaupt ehrlich messbar: die
+ * Tabelle fuehrt je Paar eine Zeile mit kumuliertem Zaehler, failed_at ist der
+ * letzte Versuch. "Wie viele Versuche in den letzten 15 Minuten" laesst sich
+ * daraus nicht ableiten — "von wie vielen Adressen kam gerade etwas" schon.
+ *
+ * Sechs Adressen: ein Mensch scheitert nicht binnen einer Viertelstunde von
+ * sechs verschiedenen Anschluessen aus, ein Botnet tut genau das. Die Folge ist
+ * ohnehin nur eine Huerde, keine Sperre.
+ */
 export const ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS = 15 * 60;
-export const ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES = 10;
-export const ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES = 50;
+export const ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES = 6;
+export const ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES = 20;
 
 export type AccountWideLoginDefense = 'none' | 'captcha' | 'throttle';
 
@@ -58,12 +72,12 @@ export type AccountWideLoginDefense = 'none' | 'captcha' | 'throttle';
  * saubere Weg ist der Anbieter — daher der Hinweis in LOGIN_SECURITY.md.
  */
 export function accountWideLoginDefense(
-  recentFailures: number,
+  recentSources: number,
   captchaAvailable: boolean,
 ): AccountWideLoginDefense {
-  if (!Number.isFinite(recentFailures) || recentFailures < 0) return 'none';
+  if (!Number.isFinite(recentSources) || recentSources < 0) return 'none';
   if (captchaAvailable) {
-    return recentFailures >= ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES ? 'captcha' : 'none';
+    return recentSources >= ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES ? 'captcha' : 'none';
   }
-  return recentFailures >= ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES ? 'throttle' : 'none';
+  return recentSources >= ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES ? 'throttle' : 'none';
 }

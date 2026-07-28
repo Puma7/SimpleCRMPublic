@@ -172,8 +172,8 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
   // dasselbe Konto gleichzeitig von hundert Adressen aus durchprobiert wird.
   // Diese Zahl schliesst die Luecke. Sie steht bewusst VOR der Passwortpruefung:
   // dahinter haette der Angreifer seine Antwort schon.
-  const accountFailures = ports.auth.countRecentLoginFailuresForAccount
-    ? await ports.auth.countRecentLoginFailuresForAccount({
+  const accountSources = ports.auth.countRecentLoginFailureSourcesForAccount
+    ? await ports.auth.countRecentLoginFailureSourcesForAccount({
       email,
       windowSeconds: ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
     })
@@ -182,7 +182,7 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
   // hat, ist fuer die Eskalation unerheblich; sie blendet es dann zusaetzlich
   // ein (die Login-Seite reagiert auf captcha_required und zeigt das Widget).
   const captchaAvailable = Boolean(ports.loginSecurity) && loginConfig?.captcha.provider === 'turnstile';
-  const accountDefense = accountWideLoginDefense(accountFailures, captchaAvailable);
+  const accountDefense = accountWideLoginDefense(accountSources, captchaAvailable);
   if (accountDefense === 'throttle') {
     return error(429, 'rate_limited', 'Zu viele Fehlversuche fuer dieses Konto', {
       scope: 'account',
@@ -237,9 +237,15 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
 
   if (workspaceSettings && ports.loginSecurity) {
     if (workspaceSettings.pinKeypadEnabled && user.loginPinEnabled && !pin?.trim()) {
+      // `captchaRequired`, nicht `loginConfig.captcha.enabled`: bei
+      // kontoweiter Eskalation ist der Workspace-Schalter aus, die Challenge
+      // wurde oben aber trotzdem verlangt und verbraucht. Ohne Fortsetzung
+      // wirft der Client sie weg (performServerLogin raeumt sie im finally auf)
+      // und der rechtmaessige Nutzer muesste vor der PIN ein zweites CAPTCHA
+      // loesen — ausgerechnet waehrend sein Konto unter Beschuss steht.
       return data(200, {
         pinRequired: true,
-        ...(loginConfig?.captcha.enabled
+        ...(captchaRequired
           ? { captchaChallenge: ports.loginSecurity.issueCaptchaContinuation({ ip }) }
           : {}),
       });

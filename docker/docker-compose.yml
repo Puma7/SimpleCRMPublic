@@ -206,6 +206,11 @@ services:
       RESTORE_DUMP_PATH: ${RESTORE_DUMP_PATH:-}
       RESTORE_ATTACHMENTS_PATH: ${RESTORE_ATTACHMENTS_PATH:-}
       RESTORE_AUDIT_ARCHIVE_PATH: ${RESTORE_AUDIT_ARCHIVE_PATH:-}
+      # Muss durchgereicht werden, sonst kommt der Notfallschalter nie im
+      # Container an: restore-compose.sh stoppt api und caddy VOR dem Restore,
+      # und der einzige vorhandene Backup-Satz waere weiter abgewiesen —
+      # Anwendung aus, kein Weg zurueck.
+      RESTORE_ALLOW_UNVERIFIABLE: ${RESTORE_ALLOW_UNVERIFIABLE:-}
     command:
       - sh
       - -c

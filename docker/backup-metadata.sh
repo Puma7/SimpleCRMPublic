@@ -195,8 +195,17 @@ assert_backup_role_reads_all_rows() {
   case "$bypass" in
     true) return 0 ;;
     unknown)
-      echo "warning: could not determine whether the backup role bypasses row level security" >&2
-      return 0
+      # Nicht feststellbar ist nicht dasselbe wie in Ordnung — und hier faellt
+      # es besonders ins Gewicht: kann die Rolle die Zeilen nicht alle sehen,
+      # ist nicht nur der Dump gefiltert, sondern auch die Zaehlung, die ihn
+      # belegen soll. Beide laufen ueber dieselbe Verbindung. Die spaetere
+      # Restore-Pruefung verglich dann gefiltert mit gefiltert und meldete
+      # Erfolg. Genau das Vertrauen, das diese Pruefung herstellen soll, waere
+      # damit unbegruendet — also lieber kein Backup als eines, dem man
+      # faelschlich traut.
+      echo "refusing to back up: could not determine whether the backup role bypasses row level security" >&2
+      echo "hint: the backup role needs to read pg_roles; without that this backup cannot be shown to be complete" >&2
+      return 1
       ;;
     *)
       echo "refusing to back up: the backup role does not bypass row level security, so pg_dump would silently produce a filtered dump" >&2

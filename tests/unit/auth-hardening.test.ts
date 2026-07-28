@@ -1,8 +1,8 @@
 import { createServerApi } from '../../packages/server/src/api/server-api';
 import {
-  ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES,
+  ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES,
   ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
-  ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES,
+  ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES,
   accountWideLoginDefense,
 } from '../../packages/server/src/auth/brute-force-policy';
 import type { ServerApiPorts } from '../../packages/server/src/api/types';
@@ -18,20 +18,20 @@ const WORKSPACE = '11111111-1111-4111-8111-111111111111';
 describe('kontoweite Brute-Force-Abwehr', () => {
   test('unterhalb der Schwelle bleibt der Login unveraendert', () => {
     expect(accountWideLoginDefense(0, true)).toBe('none');
-    expect(accountWideLoginDefense(ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES - 1, true)).toBe('none');
+    expect(accountWideLoginDefense(ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES - 1, true)).toBe('none');
   });
 
   test('mit Anbieter eskaliert sie zum CAPTCHA, nie zur Sperre', () => {
-    expect(accountWideLoginDefense(ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES, true)).toBe('captcha');
+    expect(accountWideLoginDefense(ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES, true)).toBe('captcha');
     // Auch weit oberhalb bleibt es beim CAPTCHA: eine kontoweite Sperre koennte
     // jeder ausloesen, der die Adresse kennt.
-    expect(accountWideLoginDefense(ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES * 10, true)).toBe('captcha');
+    expect(accountWideLoginDefense(ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES * 10, true)).toBe('captcha');
   });
 
   test('ohne Anbieter bremst sie erst spaet', () => {
-    expect(accountWideLoginDefense(ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES, false)).toBe('none');
-    expect(accountWideLoginDefense(ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES - 1, false)).toBe('none');
-    expect(accountWideLoginDefense(ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES, false)).toBe('throttle');
+    expect(accountWideLoginDefense(ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES, false)).toBe('none');
+    expect(accountWideLoginDefense(ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES - 1, false)).toBe('none');
+    expect(accountWideLoginDefense(ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES, false)).toBe('throttle');
   });
 
   test('unsinnige Zaehlerstaende werden nicht zur Abwehr', () => {
@@ -41,7 +41,7 @@ describe('kontoweite Brute-Force-Abwehr', () => {
 });
 
 type LoginPortOptions = {
-  accountFailures: number;
+  accountSources: number;
   captchaProvider: 'turnstile' | null;
   workspaceCaptchaEnabled?: boolean;
   onCaptchaChallenge?: (challenge: string | undefined) => boolean;
@@ -54,9 +54,9 @@ function loginPorts(options: LoginPortOptions): {
   const calls = { verifiedPassword: false, windowSeconds: null as number | null };
   const ports = {
     auth: {
-      async countRecentLoginFailuresForAccount(input: { windowSeconds: number }) {
+      async countRecentLoginFailureSourcesForAccount(input: { windowSeconds: number }) {
         calls.windowSeconds = input.windowSeconds;
-        return options.accountFailures;
+        return options.accountSources;
       },
       async checkLoginLock() {
         return null;
@@ -107,7 +107,7 @@ async function login(ports: ServerApiPorts, body: Record<string, unknown> = {}) 
 describe('Login-Route unter verteiltem Raten', () => {
   test('fordert ein CAPTCHA, sobald das Konto verteilt beschossen wird', async () => {
     const { ports, calls } = loginPorts({
-      accountFailures: ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES,
+      accountSources: ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES,
       captchaProvider: 'turnstile',
       // Der Workspace-Toggle ist AUS — die Eskalation braucht nur den Anbieter.
       workspaceCaptchaEnabled: false,
@@ -123,7 +123,7 @@ describe('Login-Route unter verteiltem Raten', () => {
 
   test('eine geloeste Challenge laesst den rechtmaessigen Nutzer durch', async () => {
     const { ports, calls } = loginPorts({
-      accountFailures: ACCOUNT_WIDE_CAPTCHA_AFTER_FAILURES * 5,
+      accountSources: ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES * 5,
       captchaProvider: 'turnstile',
       onCaptchaChallenge: (challenge) => challenge === 'gueltig',
     });
@@ -136,18 +136,62 @@ describe('Login-Route unter verteiltem Raten', () => {
 
   test('ohne CAPTCHA-Anbieter bremst sie erst bei der hohen Schwelle', async () => {
     const below = loginPorts({
-      accountFailures: ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES - 1,
+      accountSources: ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES - 1,
       captchaProvider: null,
     });
     expect((await login(below.ports)).status).toBe(401);
 
     const above = loginPorts({
-      accountFailures: ACCOUNT_WIDE_THROTTLE_AFTER_FAILURES,
+      accountSources: ACCOUNT_WIDE_THROTTLE_AFTER_SOURCES,
       captchaProvider: null,
     });
     const res = await login(above.ports);
     expect(res.status).toBe(429);
     expect(above.calls.verifiedPassword).toBe(false);
+  });
+
+  test('bei erzwungenem CAPTCHA bekommt der PIN-Schritt eine Fortsetzung', async () => {
+    // Die Challenge wurde oben schon verbraucht. Ohne Fortsetzung wirft der
+    // Client sie weg und der Nutzer muesste vor der PIN ein zweites CAPTCHA
+    // loesen — ausgerechnet waehrend sein Konto unter Beschuss steht.
+    const user = {
+      id: 'u1',
+      workspaceId: WORKSPACE,
+      email: 'ziel@example.com',
+      passwordHash: 'hash',
+      disabledAt: null,
+      loginPinEnabled: true,
+    };
+    const ports = {
+      auth: {
+        async countRecentLoginFailureSourcesForAccount() { return ACCOUNT_WIDE_CAPTCHA_AFTER_SOURCES; },
+        async checkLoginLock() { return null; },
+        async findUserByEmail() { return user; },
+        async verifyPassword() { return true; },
+        async recordFailedLogin() { return 1; },
+      },
+      loginSecurity: {
+        async getLoginConfig() {
+          return {
+            // Workspace-Schalter AUS — die Pflicht kommt allein aus der
+            // kontoweiten Eskalation.
+            captcha: { enabled: false, provider: 'turnstile', siteKey: 'site-key' },
+            pinKeypad: { enabled: true },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          };
+        },
+        async assertCaptchaChallenge() { return true; },
+        async getWorkspaceSettings() { return { pinKeypadEnabled: true }; },
+        issueCaptchaContinuation() { return 'fortsetzung'; },
+      },
+    } as unknown as ServerApiPorts;
+
+    const res = await login(ports, { captchaChallenge: 'geloest' });
+    expect(res.status).toBe(200);
+    const body = res.body as { data: { pinRequired: boolean; captchaChallenge?: string } };
+    expect(body.data.pinRequired).toBe(true);
+    expect(body.data.captchaChallenge).toBe('fortsetzung');
   });
 
   test('ein Port ohne den Zaehler aendert nichts am Verhalten', async () => {

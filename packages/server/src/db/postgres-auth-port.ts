@@ -522,23 +522,33 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       };
     },
 
-    // Summe der Fehlversuche fuer dieses Konto ueber alle Adressen im Fenster.
-    // Der Index auth_login_failures_email_idx (email_normalized, failed_at DESC)
-    // aus 0002 bedient genau diese Abfrage — er lag bisher ungenutzt da.
+    // Wie viele VERSCHIEDENE Adressen sind im Fenster gegen dieses Konto
+    // gelaufen? Der Index auth_login_failures_email_idx (email_normalized,
+    // failed_at DESC) aus 0002 bedient genau diese Abfrage.
     //
-    // Gezaehlt wird failed_attempts je Zeile, nicht die Zeilenzahl: eine Zeile
-    // steht fuer ein Paar (E-Mail, IP) und traegt dessen Zaehler. Wer zwanzigmal
-    // von derselben Adresse probiert, faellt sonst als eine einzige Zeile auf.
-    async countRecentLoginFailuresForAccount(input) {
+    // Bewusst Zeilen und nicht die Summe von failed_attempts: die Tabelle fuehrt
+    // je Paar (E-Mail, IP) EINE Zeile mit einem kumulierten Zaehler, und
+    // failed_at ist nur der letzte Versuch dieses Paares. Eine Summe ueber
+    // failed_at >= since zaehlt deshalb die gesamte Vorgeschichte eines Paares
+    // als "gerade eben": ein ueber Monate auf 49 gelaufenes Paar meldet nach
+    // einem einzigen neuen Versuch 50 im Fenster. Aus diesem Schema laesst sich
+    // "Versuche im Fenster" schlicht nicht ableiten.
+    //
+    // Eine Zeile im Fenster heisst dagegen genau eine Sache, und die stimmt:
+    // von dieser Adresse kam gerade ein Fehlversuch. Das ist auch das bessere
+    // Mass fuer die Luecke, um die es geht — sie entsteht durch BREITE, viele
+    // Adressen gegen ein Konto. Tiefe je Adresse faengt die gestaffelte Sperre
+    // ohnehin ab (ab dem vierten Versuch 24 Stunden).
+    async countRecentLoginFailureSourcesForAccount(input) {
       const since = new Date(now().getTime() - input.windowSeconds * 1000);
       const row = await options.db
         .selectFrom('auth_login_failures')
-        .select((eb) => eb.fn.sum<string | number | null>('failed_attempts').as('total'))
+        .select((eb) => eb.fn.countAll<string | number>().as('sources'))
         .where('email_normalized', '=', input.email.toLowerCase())
         .where('failed_at', '>=', since)
         .executeTakeFirst();
-      const total = Number(row?.total ?? 0);
-      return Number.isFinite(total) ? total : 0;
+      const sources = Number(row?.sources ?? 0);
+      return Number.isFinite(sources) ? sources : 0;
     },
 
     async recordFailedLogin(input) {

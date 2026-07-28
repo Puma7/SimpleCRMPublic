@@ -205,6 +205,17 @@ describe('server edition AP-12 operator docs', () => {
       /backup_metadata_is_verifiable "\$METADATA_PATH"[\s\S]*?exit 1[\s\S]*?pg_restore/,
     );
     expect(restore).toEqual(expect.stringContaining('RESTORE_ALLOW_UNVERIFIABLE'));
+    // Der Schalter muss auch im Container ankommen. Host-Variablen wandern
+    // nicht von selbst in einen Compose-Dienst — ohne diese Zeile waere der
+    // Notfallweg wirkungslos, und zwar nachdem restore-compose.sh api und
+    // caddy bereits gestoppt hat.
+    expect(compose).toEqual(expect.stringContaining('RESTORE_ALLOW_UNVERIFIABLE: ${RESTORE_ALLOW_UNVERIFIABLE:-}'));
+    // Unklar ist nicht in Ordnung: kann die Rolle die Zeilen nicht alle sehen,
+    // ist auch die Zaehlung gefiltert, die den Dump belegen soll — beide laufen
+    // ueber dieselbe Verbindung, und die Restore-Pruefung verglich dann
+    // gefiltert mit gefiltert.
+    expect(metadata).toMatch(/unknown\)[\s\S]{0,900}?refusing to back up/);
+    expect(metadata).not.toMatch(/could not determine whether the backup role bypasses row level security"? >&2\s*\n\s*return 0/);
     // Mit gesetztem Notfallschalter darf dieselbe Erkenntnis den Lauf nicht
     // nachtraeglich scheitern lassen — sonst bleibt restore-compose.sh vor
     // Migrationen und Neustart stehen, obwohl die Daten liegen.
