@@ -1,4 +1,5 @@
 import type {
+  ApiErrorBody,
   ApiRequest,
   ApiResponse,
   AuthenticatedPrincipal,
@@ -25,20 +26,28 @@ export async function handleUserGroupRoute(
 
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  // Lesen ist hier NICHT harmlos: die Antworten sind zusammen die
-  // Rechte-Landkarte des Workspace — welche Gruppe welche Berechtigung haelt und
-  // wer darin sitzt. Fuer einen Angreifer mit irgendeinem Konto ist das die
-  // Auskunft, welches Ziel sich lohnt. Bisher genuegte dafuer ein beliebiges
-  // angemeldetes Konto; die Schreibpfade waren schon immer Admin-gebunden.
+  if (!ports.userGroups) return error(503, 'user_groups_unavailable', 'Benutzergruppen-API nicht konfiguriert');
+
+  // Die heiklen Ansichten sind die Mitglieder- und die Rechteliste: sie ergeben
+  // zusammen die Rechte-Landkarte des Workspace — welche Gruppe welche
+  // Berechtigung haelt und wer darin sitzt. Fuer einen Angreifer mit irgendeinem
+  // Konto ist das die Auskunft, welches Ziel sich lohnt. Dafuer genuegte bisher
+  // ein beliebiges angemeldetes Konto; die Schreibpfade waren immer
+  // Admin-gebunden.
   //
   // settings.view und nicht requireAdmin: die Gruppenverwaltung liegt unter
   // Einstellungen, und die Oberflaeche blendet diesen Bereich ohnehin nur mit
-  // settings.view ein (personalOnly in settings-panels.tsx). Admins halten die
-  // Berechtigung implizit. Die Schranke deckt sich damit genau mit dem, was die
-  // UI heute zeigt — sie nimmt nur denen den Zugriff, die ihn nie sehen sollten.
-  const deniedRead = rejectUnlessSettingsView(principal);
-  if (deniedRead) return deniedRead;
-  if (!ports.userGroups) return error(503, 'user_groups_unavailable', 'Benutzergruppen-API nicht konfiguriert');
+  // dieser Berechtigung ein. Admins halten sie implizit.
+  //
+  // Die blosse LISTE bleibt bewusst offen. Sie traegt nur Name und Anzahl, und
+  // sie ist eine Arbeitsgrundlage ausserhalb der Einstellungen: die
+  // Aufgaben-Zuweisung laedt sie zusammen mit der Nutzerliste in einem
+  // Promise.all (src/app/tasks/page.tsx). Ein 403 darauf haette dort auch die
+  // Nutzerliste verworfen und beide Auswahlfelder geleert — bei einem Nutzer,
+  // der Aufgaben anlegen darf. Rechte sind unabhaengig vergebbar: crm.write
+  // ohne settings.view ist eine vorgesehene Kombination.
+  const requireSettingsView = (): ApiResponse<ApiErrorBody> | null =>
+    rejectUnlessSettingsView(principal);
 
   if (req.path === '/api/v1/user-groups') {
     if (req.method === 'GET') {
@@ -53,6 +62,10 @@ export async function handleUserGroupRoute(
   if (memberMatch) {
     const groupId = positiveIntFromPath(memberMatch[1]);
     if (groupId === null) return error(400, 'invalid_group_id', 'group id muss eine positive Ganzzahl sein');
+    if (req.method === 'GET') {
+      const denied = requireSettingsView();
+      if (denied) return denied;
+    }
     return handleMemberRoute(req, ports, principal, groupId, memberMatch[2]);
   }
 
@@ -60,6 +73,10 @@ export async function handleUserGroupRoute(
   if (permissionMatch) {
     const groupId = positiveIntFromPath(permissionMatch[1]);
     if (groupId === null) return error(400, 'invalid_group_id', 'group id muss eine positive Ganzzahl sein');
+    if (req.method === 'GET') {
+      const denied = requireSettingsView();
+      if (denied) return denied;
+    }
     return handlePermissionRoute(req, ports, principal, groupId);
   }
 

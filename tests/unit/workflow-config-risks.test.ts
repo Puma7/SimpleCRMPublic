@@ -52,8 +52,9 @@ describe.each([
     expect(risks[0]).toMatchObject({ field: 'url', placeholder: 'subject' });
   });
 
-  test('Versand ohne Freigabe wird benannt', () => {
+  test('Versand ohne Freigabe wird benannt, wenn KI im Spiel ist', () => {
     const risks = findWorkflowConfigRisks(graph([
+      { id: 'ai', type: 'registry', data: { nodeType: 'ai.draft_reply', config: {} } },
       {
         id: 'n3',
         type: 'registry',
@@ -63,6 +64,39 @@ describe.each([
     expect(risks).toEqual([
       { code: 'auto_send_without_review', nodeId: 'n3', nodeType: 'email.release_outbound' },
     ]);
+  });
+
+  // send_draft ist der zweite ausdruecklich unterstuetzte Weg ohne Pruefung —
+  // runOutboundReview: false ist dort der Katalog-Standard ("sendet ohne
+  // weitere Pruefung"). ai.draft_reply → email.send_draft verschickt damit
+  // vollautomatisch, was die KI aus fremdem Text formuliert hat.
+  test('auch send_draft ohne Ausgangspruefung', () => {
+    const risks = findWorkflowConfigRisks(graph([
+      { id: 'ai', type: 'registry', data: { nodeType: 'ai.draft_reply', config: {} } },
+      { id: 's', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+    ]) as never);
+    expect(risks).toEqual([
+      { code: 'auto_send_without_review', nodeId: 's', nodeType: 'email.send_draft' },
+    ]);
+  });
+
+  test('mit erzwungener Ausgangspruefung schweigt sie', () => {
+    const risks = findWorkflowConfigRisks(graph([
+      { id: 'ai', type: 'registry', data: { nodeType: 'ai.draft_reply', config: {} } },
+      { id: 's', type: 'registry', data: { nodeType: 'email.send_draft', config: { runOutboundReview: true } } },
+    ]) as never);
+    expect(risks).toEqual([]);
+  });
+
+  // Ohne KI-Knoten ist automatischer Versand eine gewoehnliche Automatisierung.
+  // Dort zu warnen hiesse, an jedem zweiten Workflow zu warnen — und eine
+  // Warnung, die immer erscheint, liest niemand mehr.
+  test('ohne KI-Knoten bleibt automatischer Versand unkommentiert', () => {
+    const risks = findWorkflowConfigRisks(graph([
+      { id: 's', type: 'registry', data: { nodeType: 'email.send_draft', config: {} } },
+      { id: 'r', type: 'registry', data: { nodeType: 'email.release_outbound', config: { autoSend: true } } },
+    ]) as never);
+    expect(risks).toEqual([]);
   });
 
   test('harmlose Konfigurationen warnen nicht', () => {

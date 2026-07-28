@@ -539,6 +539,37 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
     // Mass fuer die Luecke, um die es geht — sie entsteht durch BREITE, viele
     // Adressen gegen ein Konto. Tiefe je Adresse faengt die gestaffelte Sperre
     // ohnehin ab (ab dem vierten Versuch 24 Stunden).
+    // Atomare Reservierung: die Zeile entsteht (oder ihr Zeitstempel wandert
+    // vor), bevor irgendwer zaehlt. failed_attempts bleibt auf 0 und
+    // penalty_kind/lock_until bleiben unberuehrt — ein Anmeldeversuch ist noch
+    // kein Fehlversuch, und ein Doppelklick darf niemanden aussperren. Ein
+    // spaeterer recordFailedLogin zaehlt von 0 auf 1 hoch wie bisher.
+    async reserveLoginAttempt(input) {
+      await withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => {
+          await trx
+            .insertInto('auth_login_failures')
+            .values({
+              workspace_id: null,
+              user_id: null,
+              email_normalized: input.email.toLowerCase(),
+              ip_address: input.ip,
+              failed_at: now(),
+              failed_attempts: 0,
+              penalty_kind: 'none',
+              lock_until: null,
+              user_agent: null,
+            })
+            .onConflict((oc) => oc
+              .columns(['email_normalized', 'ip_address'])
+              .doUpdateSet({ failed_at: now() }))
+            .execute();
+        },
+      );
+    },
+
     async countRecentLoginFailureSourcesForAccount(input) {
       const since = new Date(now().getTime() - input.windowSeconds * 1000);
       const row = await options.db

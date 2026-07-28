@@ -51,10 +51,18 @@ function loginPorts(options: LoginPortOptions): {
   ports: ServerApiPorts;
   calls: { verifiedPassword: boolean; windowSeconds: number | null };
 } {
-  const calls = { verifiedPassword: false, windowSeconds: null as number | null };
+  const calls = {
+    verifiedPassword: false,
+    windowSeconds: null as number | null,
+    order: [] as string[],
+  };
   const ports = {
     auth: {
+      async reserveLoginAttempt() {
+        calls.order.push('reserve');
+      },
       async countRecentLoginFailureSourcesForAccount(input: { windowSeconds: number }) {
+        calls.order.push('count');
         calls.windowSeconds = input.windowSeconds;
         return options.accountSources;
       },
@@ -65,6 +73,7 @@ function loginPorts(options: LoginPortOptions): {
         return null;
       },
       async verifyPassword() {
+        calls.order.push('verify');
         calls.verifiedPassword = true;
         return false;
       },
@@ -194,6 +203,16 @@ describe('Login-Route unter verteiltem Raten', () => {
     expect(body.data.captchaChallenge).toBe('fortsetzung');
   });
 
+  // Ohne Reservierung liefen gleichzeitige Anfragen alle durch dieselbe
+  // Pruefung, BEVOR die erste ihren Fehlschlag notiert — ein synchronisierter
+  // Schwarm bekaeme seine Rateversuche frei, gerade der Fall, gegen den diese
+  // Abwehr gedacht ist.
+  test('der Versuch wird reserviert, bevor gezaehlt und geprueft wird', async () => {
+    const { ports, calls } = loginPorts({ accountSources: 0, captchaProvider: 'turnstile' });
+    await login(ports);
+    expect(calls.order).toEqual(['reserve', 'count', 'verify']);
+  });
+
   test('ein Port ohne den Zaehler aendert nichts am Verhalten', async () => {
     const ports = {
       auth: {
@@ -222,8 +241,9 @@ describe('Benutzergruppen sind keine oeffentliche Auskunft', () => {
     },
   } as unknown as ServerApiPorts;
 
+  // Nur die heiklen Ansichten. Die blosse Liste bleibt offen — sie wird
+  // ausserhalb der Einstellungen fuer die Aufgaben-Zuweisung gebraucht.
   const readPaths = [
-    '/api/v1/user-groups',
     '/api/v1/user-groups/1/members',
     '/api/v1/user-groups/1/permissions',
   ] as const;

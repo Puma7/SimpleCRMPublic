@@ -348,6 +348,23 @@ export type AuthApiPort = {
     email: string;
     windowSeconds: number;
   }): Promise<number>;
+  /**
+   * Diesen Versuch VOR der Zaehlung sichtbar machen.
+   *
+   * Ohne das laufen hunderte gleichzeitige Anfragen alle durch dieselbe
+   * Pruefung, bevor die erste ihren Fehlschlag notiert — ein synchronisierter
+   * Schwarm bekaeme seine Rateversuche also frei, gerade der Fall, gegen den
+   * die kontoweite Abwehr gedacht ist. Die Reservierung ist ein atomares
+   * UPSERT: wer danach zaehlt, sieht sich selbst und jeden, der vorher da war.
+   *
+   * Sie beruehrt Zaehler und Sperrzeit NICHT, nur den Zeitstempel — sonst
+   * wuerde ein blosser Anmeldeversuch die gestaffelte Sperre ausloesen und ein
+   * Doppelklick den rechtmaessigen Nutzer aussperren.
+   */
+  reserveLoginAttempt?(input: {
+    email: string;
+    ip: string;
+  }): Promise<void>;
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   verifyPassword(password: string, passwordHash: string): Promise<boolean>;
   recordFailedLogin(input: {

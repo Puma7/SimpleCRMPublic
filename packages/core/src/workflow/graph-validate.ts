@@ -860,8 +860,24 @@ export function findWorkflowConfigRisks(doc: WorkflowGraphDocument): WorkflowCon
         risks.push({ code: 'mail_derived_target', nodeId: node.id, nodeType, field: key, placeholder });
       }
     }
-    if (nodeType === 'email.release_outbound' && config.autoSend === true) {
-      risks.push({ code: 'auto_send_without_review', nodeId: node.id, nodeType });
+  }
+
+  // Versand ohne Freigabe wird nur gemeldet, wenn der Graph ueberhaupt einen
+  // KI-Knoten enthaelt. Sonst waere es eine Warnung an jeder gewoehnlichen
+  // Automatisierung — und eine Warnung, die immer erscheint, liest niemand
+  // mehr. Der Anlass ist die Verbindung: KI formuliert aus fremdem Text, und
+  // das Ergebnis geht ohne menschlichen Blick hinaus.
+  const hasAiNode = doc.nodes.some((node) => runtimeType(node).startsWith('ai.'));
+  if (hasAiNode) {
+    for (const node of doc.nodes) {
+      const nodeType = runtimeType(node);
+      const config = nodeConfig(node);
+      const autoSends =
+        (nodeType === 'email.release_outbound' && config.autoSend === true) ||
+        (nodeType === 'email.send_draft' && config.runOutboundReview !== true);
+      if (autoSends) {
+        risks.push({ code: 'auto_send_without_review', nodeId: node.id, nodeType });
+      }
     }
   }
   return risks;

@@ -170,8 +170,16 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
 
   // Die Sperre oben zaehlt je (E-Mail, IP) und sieht deshalb nicht, wenn
   // dasselbe Konto gleichzeitig von hundert Adressen aus durchprobiert wird.
-  // Diese Zahl schliesst die Luecke. Sie steht bewusst VOR der Passwortpruefung:
-  // dahinter haette der Angreifer seine Antwort schon.
+  // Die folgende Zahl schliesst die Luecke. Sie steht bewusst VOR der
+  // Passwortpruefung: dahinter haette der Angreifer seine Antwort schon.
+  //
+  // Zuerst aber diesen Versuch sichtbar machen. Ohne die Reservierung liefen
+  // gleichzeitige Anfragen alle durch dieselbe Pruefung, BEVOR die erste ihren
+  // Fehlschlag notiert — ein synchronisierter Schwarm bekaeme seine
+  // Rateversuche also frei, gerade der Fall, gegen den diese Abwehr gedacht
+  // ist. Das UPSERT ist atomar: wer danach zaehlt, sieht sich selbst und jeden,
+  // der vorher da war, und der k-te gleichzeitige Versuch sieht mindestens k.
+  await ports.auth.reserveLoginAttempt?.({ email, ip });
   const accountSources = ports.auth.countRecentLoginFailureSourcesForAccount
     ? await ports.auth.countRecentLoginFailureSourcesForAccount({
       email,

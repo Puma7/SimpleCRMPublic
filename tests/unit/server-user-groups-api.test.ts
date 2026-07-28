@@ -31,16 +31,32 @@ describe('server user groups API', () => {
     const userGroups = groupPort();
     const api = createServerApi(ports({ userGroups }));
     for (const path of [
-      '/api/v1/user-groups',
       '/api/v1/user-groups/5/members',
       '/api/v1/user-groups/5/permissions',
     ]) {
       const res = await api.handle({ method: 'GET', path, principal: member });
       expect({ path, status: res.status }).toEqual({ path, status: 403 });
     }
-    expect(userGroups.list).not.toHaveBeenCalled();
     expect(userGroups.listMembers).not.toHaveBeenCalled();
     expect(userGroups.listPermissions).not.toHaveBeenCalled();
+  });
+
+  // Die blosse Liste bleibt offen: sie traegt nur Name und Anzahl und wird
+  // ausserhalb der Einstellungen gebraucht. Die Aufgaben-Zuweisung laedt sie
+  // zusammen mit der Nutzerliste in einem Promise.all — ein 403 darauf haette
+  // dort auch die Nutzerliste verworfen und beide Auswahlfelder geleert, bei
+  // einem Nutzer, der Aufgaben anlegen darf. crm.write ohne settings.view ist
+  // eine vorgesehene Kombination.
+  test('the plain list stays available for the task assignment picker', async () => {
+    const userGroups = groupPort();
+    const api = createServerApi(ports({ userGroups }));
+    const res = await api.handle({
+      method: 'GET',
+      path: '/api/v1/user-groups',
+      principal: { ...member, capabilities: ['crm.write'] },
+    });
+    expect(res.status).toBe(200);
+    expect((res.body as any).data.items[0].name).toBe('Support');
   });
 
   test('creating a group requires admin', async () => {
