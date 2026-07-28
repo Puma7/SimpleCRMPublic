@@ -144,6 +144,19 @@ export default function LoginPage() {
   useEffect(() => {
     setLoginPin("")
     setLoginPinRequired(false)
+    // Auch das erzwungene CAPTCHA gehoert zur Identitaet, nicht zur Seite. Ohne
+    // Ruecksetzen blieb es fuer die restliche Lebensdauer der Seite stehen: wer
+    // sich in der Adresse vertippt hat, stand vor einer bildschirmfuellenden
+    // Huerde ohne Zurueck und musste sie loesen oder neu laden, bevor er den
+    // Tippfehler korrigieren konnte — und danach galt sie auch fuer ein ganz
+    // anderes Konto weiter, obwohl der Server dafuer gar nichts verlangt.
+    //
+    // NUR das Flag. Die geloeste Challenge bleibt: sie haengt am Browser und
+    // seiner Adresse, nicht am Konto, und ist ohnehin einmalig. Sie hier
+    // mitzuloeschen warf beim ersten Rendern (das Feld wird aus der gemerkten
+    // Adresse vorbelegt) eine gerade erst geloeste Bestaetigung weg und
+    // sperrte den Nutzer hinter einer neuen.
+    setCaptchaForced(false)
   }, [username])
 
   useEffect(() => {

@@ -244,7 +244,28 @@ backup_metadata_is_verifiable() {
   [ -f "$meta_path" ] || return 0
   recorded="$(backup_metadata_value "$meta_path" 'row_counts' || printf 'unknown')"
   [ "$recorded" != 'failed' ] || return 1
-  grep -q '^rows_' "$meta_path"
+  grep -q '^rows_' "$meta_path" || return 1
+
+  # Auch die Eintraege selbst pruefen, und zwar HIER.
+  #
+  # Ob ein Tabellenname ein Bezeichner und eine Zeilenzahl eine Zahl ist, steht
+  # allein in der Datei — dafuer braucht es keine Datenbank und keinen Restore.
+  # Diese Pruefungen erst nachher laufen zu lassen hiess: eine manipulierte
+  # Sicherung ersetzt zuerst die Produktivdaten und faellt dann durch, mit
+  # gestoppter API und gestopptem Caddy. Was sich vorher entscheiden laesst,
+  # wird vorher entschieden.
+  while IFS= read -r entry; do
+    entry_table="${entry%%=*}"
+    entry_table="${entry_table#rows_}"
+    entry_value="${entry#*=}"
+    backup_metadata_is_identifier "$entry_table" || return 1
+    case "$entry_value" in
+      '' | *[!0123456789]*) return 1 ;;
+    esac
+  done <<EOF
+$(grep '^rows_' "$meta_path")
+EOF
+  return 0
 }
 
 backup_metadata_value() {

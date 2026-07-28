@@ -570,6 +570,24 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       );
     },
 
+    // Nur Zeilen ohne jeden Fehlversuch (failed_attempts = 0) und nur solche,
+    // die aelter sind als das Zeitfenster — eine noch zaehlende Reservierung
+    // darf nicht verschwinden, sonst waere die Schwelle wieder blind. Echte
+    // Fehlversuche bleiben unberuehrt: sie tragen die Staffelung.
+    async pruneProvisionalLoginAttempts(input) {
+      const cutoff = new Date(now().getTime() - input.olderThanSeconds * 1000);
+      const result = await withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => trx
+          .deleteFrom('auth_login_failures')
+          .where('failed_attempts', '=', 0)
+          .where('failed_at', '<', cutoff)
+          .executeTakeFirst(),
+      );
+      return Number(result?.numDeletedRows ?? 0);
+    },
+
     async countRecentLoginFailureSourcesForAccount(input) {
       const since = new Date(now().getTime() - input.windowSeconds * 1000);
       const row = await options.db

@@ -365,6 +365,18 @@ export type AuthApiPort = {
     email: string;
     ip: string;
   }): Promise<void>;
+  /**
+   * Reservierungen wegraeumen, aus denen nie ein Fehlversuch wurde.
+   *
+   * Die Reservierung entsteht VOR der CAPTCHA-Pruefung — sonst waere sie fuer
+   * die Schwelle zu spaet. Eine abgewiesene Anfrage laesst damit eine Zeile
+   * zurueck, und wer unangemeldet mit wechselnden Adressen anklopft, erzeugt
+   * beliebig viele davon. Geloescht wurden sie bisher nur durch eine
+   * erfolgreiche Anmeldung genau dieses Paares, die es hier nie gibt.
+   */
+  pruneProvisionalLoginAttempts?(input: {
+    olderThanSeconds: number;
+  }): Promise<number>;
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   verifyPassword(password: string, passwordHash: string): Promise<boolean>;
   recordFailedLogin(input: {

@@ -208,6 +208,13 @@ describe('server edition AP-12 operator docs', () => {
     // waeren die Produktivdaten schon ersetzt und der Abbruch liesse die
     // Anwendung ausgeschaltet zurueck.
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_verifiable()'));
+    // Die Vorabpruefung muss auch die EINTRAEGE pruefen, nicht nur den Marker.
+    // Ob ein Name ein Bezeichner und eine Zahl eine Zahl ist, steht allein in
+    // der Datei — das erst nach pg_restore --clean zu bemerken hiesse: die
+    // Produktivdaten sind schon ersetzt und die Dienste stehen.
+    expect(metadata).toMatch(
+      /backup_metadata_is_verifiable\(\)[\s\S]*?backup_metadata_is_identifier "\$entry_table" \|\| return 1/,
+    );
     expect(restore).toMatch(
       /backup_metadata_is_verifiable "\$METADATA_PATH"[\s\S]*?exit 1[\s\S]*?pg_restore/,
     );

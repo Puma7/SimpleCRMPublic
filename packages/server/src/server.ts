@@ -130,6 +130,7 @@ import {
   type AccessTokenSigner,
 } from './security';
 import { createAuthInvitationMailerPort } from './auth-invitation-mailer';
+import { ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS } from './auth';
 import { createLoginSecurityService } from './auth/login-security-service';
 import { createPostgresAiReplySuggestionPort } from './ai-reply-suggestion';
 import {
@@ -442,6 +443,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
           service: { pruneWorkspace: ports.emailTracking.pruneWorkspace },
         });
       }
+      maintenanceTickers.push(startProvisionalLoginAttemptCleanup(ports));
       // Wartungsjobs takten. Ohne diese Ticker wurden lock.cleanup und
       // audit.retention nie eingereiht — Handler und Policy gab es, nur keinen
       // Ausloeser. Begruendung der Bauform in jobs/maintenance-ticker.
@@ -739,6 +741,35 @@ function warnAboutNullCorsOrigin(origins: readonly string[]): void {
     + 'Anfragen stellen und deren Antworten lesen. Nur setzen, wenn ein gepackter Client es '
     + 'zwingend braucht; sonst die echte Origin des Clients eintragen.',
   );
+}
+
+/**
+ * Reservierungen wegraeumen, aus denen nie ein Fehlversuch wurde.
+ *
+ * Der Login reserviert seinen Versuch VOR der CAPTCHA-Pruefung, weil die
+ * kontoweite Schwelle sonst zu spaet zaehlt. Eine dort abgewiesene Anfrage
+ * laesst damit eine Zeile zurueck — und wer unangemeldet mit wechselnden
+ * Adressen anklopft, erzeugt beliebig viele. Geloescht wurden sie sonst nur
+ * durch eine erfolgreiche Anmeldung genau dieses Paares, die es in dem Fall nie
+ * gibt.
+ *
+ * Geraeumt wird nur, was aelter ist als das Zaehlfenster: eine noch zaehlende
+ * Reservierung darf nicht verschwinden, sonst waere die Schwelle wieder blind.
+ */
+const PROVISIONAL_LOGIN_CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+
+function startProvisionalLoginAttemptCleanup(ports: ServerApiPorts): { stop(): void } {
+  const prune = ports.auth.pruneProvisionalLoginAttempts;
+  if (!prune) return { stop() { /* nichts zu takten */ } };
+  const timer = setInterval(() => {
+    void prune({ olderThanSeconds: ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS }).catch((error: unknown) => {
+      console.warn(`[auth] provisional login attempt cleanup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`);
+    });
+  }, PROVISIONAL_LOGIN_CLEANUP_INTERVAL_MS);
+  timer.unref?.();
+  return { stop() { clearInterval(timer); } };
 }
 
 function accessTokenSignerFromEnv(env: ServerEditionEnv): AccessTokenSigner | undefined {
