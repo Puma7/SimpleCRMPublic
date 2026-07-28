@@ -11,7 +11,9 @@ import {
 } from "@shared/email-workflow-graph-compile"
 import {
   findOutboundGraphTraps,
+  findWorkflowConfigRisks,
   formatOutboundGraphTraps,
+  formatWorkflowConfigRisks,
   workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
 } from "@shared/email-workflow-graph-validate"
@@ -452,6 +454,16 @@ export function WorkflowShell() {
             `Ausgangs-Workflow blockiert Mails dauerhaft. ${formatOutboundGraphTraps(traps)}`,
           )
         }
+      }
+      // Warnung, kein Riegel: ein Platzhalter im Empfaengerfeld kann bewusst
+      // gewollt sein ({{from_address}} als Rueckantwort ist ein normaler
+      // Bauplan). Man sieht dem Feld beim Ausfuellen aber nicht an, dass der
+      // Wert aus der eingegangenen Mail stammt und der Absender damit
+      // mitbestimmt, wohin eine Kopie geht — deshalb wird es beim Speichern
+      // einmal ausgesprochen.
+      const configRisks = findWorkflowConfigRisks(graphDoc)
+      if (configRisks.length > 0) {
+        toast.warning(formatWorkflowConfigRisks(configRisks), { duration: 12000 })
       }
       if (selectedId != null) {
         await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, {

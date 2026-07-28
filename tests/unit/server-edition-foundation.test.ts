@@ -100,7 +100,6 @@ import {
   LEGACY_EMAIL_KEYTAR_SERVICE,
   LEGACY_PGP_KEYTAR_SERVICE,
   LOGIN_BACKOFF_SECONDS,
-  LOGIN_PERMANENT_LOCK_AFTER_FAILURES,
   MASTER_KEY_BYTES,
   PGP_PRIVATE_KEY_ENVELOPE_ALGORITHM,
   SECRET_ENVELOPE_ALGORITHM,
@@ -1292,13 +1291,26 @@ describe('server edition foundation', () => {
         NODE_ENV: 'production',
       })).toThrow('ACCESS_TOKEN_SECRET');
     }
-    expect(parseServerEditionConfig({
+    // `CI=true` hebt die Pruefung NICHT mehr auf. Die Variable wird in
+    // Container-Images und Build-Umgebungen gern pauschal gesetzt, ohne dass
+    // dabei jemand an Secrets denkt — sie hob damit ausgerechnet dort ab, wo
+    // die veroeffentlichten Smoke-Werte am ehesten mitkopiert werden.
+    expect(() => parseServerEditionConfig({
       DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
       SIMPLECRM_MASTER_KEY: CI_SMOKE_MASTER_KEY,
       ACCESS_TOKEN_SECRET: CI_SMOKE_ACCESS_TOKEN_SECRET,
       PUBLIC_BASE_URL: 'https://crm.example.com/',
       NODE_ENV: 'production',
       CI: 'true',
+    })).toThrow('SIMPLECRM_MASTER_KEY');
+    // Nur ein ausdrueckliches NODE_ENV laesst sie durch — das brauchen die
+    // Tests selbst (Jest setzt NODE_ENV=test).
+    expect(parseServerEditionConfig({
+      DATABASE_URL: 'postgres://simplecrm@postgres/simplecrm',
+      SIMPLECRM_MASTER_KEY: CI_SMOKE_MASTER_KEY,
+      ACCESS_TOKEN_SECRET: CI_SMOKE_ACCESS_TOKEN_SECRET,
+      PUBLIC_BASE_URL: 'https://crm.example.com/',
+      NODE_ENV: 'test',
     })).toMatchObject({
       databaseUrl: 'postgres://simplecrm@postgres/simplecrm',
     });
@@ -16594,14 +16606,18 @@ describe('server edition foundation', () => {
 
   test('login brute-force policy escalates and resets counters after success', () => {
     expect(LOGIN_BACKOFF_SECONDS).toEqual([30, 300, 3600, 86400]);
-    expect(LOGIN_PERMANENT_LOCK_AFTER_FAILURES).toBe(50);
     expect(calculateLoginPenalty(0)).toEqual({ kind: 'none' });
     expect(calculateLoginPenalty(1)).toEqual({ kind: 'temporary', lockSeconds: 30 });
     expect(calculateLoginPenalty(2)).toEqual({ kind: 'temporary', lockSeconds: 300 });
     expect(calculateLoginPenalty(3)).toEqual({ kind: 'temporary', lockSeconds: 3600 });
     expect(calculateLoginPenalty(4)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
     expect(calculateLoginPenalty(49)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
-    expect(calculateLoginPenalty(50)).toEqual({ kind: 'permanent' });
+    // Keine dauerhafte Sperre mehr: ab dem vierten Versuch liegen 24 Stunden
+    // zwischen den Versuchen, der 50. war von einer Adresse aus rund 46 Tage
+    // entfernt. Die Schwelle traf faktisch nie einen Angreifer, wohl aber
+    // Anschluesse hinter geteiltem NAT — und die kamen nicht mehr zurueck.
+    expect(calculateLoginPenalty(50)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
+    expect(calculateLoginPenalty(5000)).toEqual({ kind: 'temporary', lockSeconds: 86400 });
     expect(shouldResetFailureCounterAfterSuccess()).toBe(true);
     expect(() => calculateLoginPenalty(-1)).toThrow('non-negative integer');
   });
@@ -18272,7 +18288,9 @@ describe('server edition foundation', () => {
 
     expect(bad.status).toBe(401);
     expect((bad.body as any).error.code).toBe('invalid_credentials');
-    expect((bad.body as any).error.details.failedAttempts).toBe(1);
+    // Nur die Wartezeit, nicht der Zaehlerstand: die Wartezeit braucht der
+    // rechtmaessige Nutzer, der rohe Zaehler nuetzt allein dem Ratenden.
+    expect((bad.body as any).error.details.failedAttempts).toBeUndefined();
     expect((bad.body as any).error.details.penalty).toEqual({ kind: 'temporary', lockSeconds: 30 });
   });
 

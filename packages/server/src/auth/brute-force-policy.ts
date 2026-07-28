@@ -4,8 +4,26 @@ export type LoginPenalty =
   | { kind: 'permanent' };
 
 export const LOGIN_BACKOFF_SECONDS = [30, 300, 3600, 86400] as const;
-export const LOGIN_PERMANENT_LOCK_AFTER_FAILURES = 50;
 
+/**
+ * Es gibt keine dauerhafte Sperre mehr — sie versprach Schutz, den sie nie
+ * geliefert hat.
+ *
+ * Frueher: `permanent` ab 50 Fehlversuchen je (E-Mail, IP). Der Zaehler steigt
+ * aber gestaffelt, ab dem vierten Versuch mit 24 Stunden Wartezeit dazwischen —
+ * von einer Adresse aus dauerte der 50. Versuch damit rund 46 Tage. Ein
+ * Angreifer erreichte die Schwelle also nie, und wer sie doch erreichte, war
+ * eher ein Anschluss hinter geteiltem NAT, der dann dauerhaft ausgesperrt war,
+ * ohne dass es dafuer einen Weg zurueck gab.
+ *
+ * Was tatsaechlich schuetzt, steht woanders: die Staffelung bis 24 Stunden je
+ * Adresse gegen hartnaeckiges Raten, und die kontoweite CAPTCHA-Pflicht unten
+ * gegen verteiltes. Beides greift, beides sperrt niemanden dauerhaft aus.
+ *
+ * Bereits gesetzte `permanent`-Zeilen werden weiterhin geachtet
+ * (postgres-auth-port.checkLoginLock) — bestehende Sperren verschwinden nicht
+ * still, es entstehen nur keine neuen mehr.
+ */
 export function calculateLoginPenalty(failedAttempts: number): LoginPenalty {
   if (!Number.isInteger(failedAttempts) || failedAttempts < 0) {
     throw new Error('failedAttempts must be a non-negative integer');
@@ -13,10 +31,6 @@ export function calculateLoginPenalty(failedAttempts: number): LoginPenalty {
 
   if (failedAttempts === 0) {
     return { kind: 'none' };
-  }
-
-  if (failedAttempts >= LOGIN_PERMANENT_LOCK_AFTER_FAILURES) {
-    return { kind: 'permanent' };
   }
 
   const index = Math.min(failedAttempts - 1, LOGIN_BACKOFF_SECONDS.length - 1);

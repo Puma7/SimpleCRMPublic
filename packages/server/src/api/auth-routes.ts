@@ -225,8 +225,11 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
       });
     }
     const locked = penalty.kind === 'permanent';
+    // Nur die Wartezeit, nicht der Zaehlerstand. Die Wartezeit braucht der
+    // rechtmaessige Nutzer; der rohe Zaehler nuetzt allein dem, der sein
+    // Rateverhalten daran ausrichtet. (`permanent` entsteht nicht mehr neu,
+    // bereits gesetzte Sperren werden aber weiter gemeldet.)
     return error(locked ? 423 : 401, locked ? 'account_locked' : 'invalid_credentials', 'Ungültige Zugangsdaten', {
-      failedAttempts,
       penalty,
     });
   }
@@ -259,7 +262,6 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
       const failedAttempts = await ports.auth.recordFailedLogin({ email, ip, userId: user.id });
       const penalty = calculateLoginPenalty(failedAttempts);
       return error(401, 'invalid_credentials', 'Ungültige Zugangsdaten', {
-        failedAttempts,
         penalty,
       });
     }

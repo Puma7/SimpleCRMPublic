@@ -176,8 +176,14 @@ export function assertNoKnownWeakProductionSecrets(
   // copied the published CI smoke ACCESS_TOKEN_SECRET/SIMPLECRM_MASTER_KEY into
   // a real deployment without NODE_ENV=production booted with no warning — and
   // since those secrets are public source constants, anyone could forge tokens.
+  // Nur ein ausdrueckliches NODE_ENV hebt die Pruefung auf. `CI=true` tat das
+  // frueher ebenfalls — und das ist eine Variable, die in Container-Images und
+  // Build-Umgebungen gern pauschal gesetzt wird, ohne dass jemand dabei an
+  // Secrets denkt. Sie hob damit ausgerechnet in der Umgebung ab, in der die
+  // veroeffentlichten Smoke-Werte am ehesten mitkopiert werden. Die Tests
+  // brauchen sie nicht: Jest setzt NODE_ENV=test.
   const nodeEnv = env.NODE_ENV?.trim();
-  if (nodeEnv === 'development' || nodeEnv === 'test' || env.CI?.trim() === 'true') return;
+  if (nodeEnv === 'development' || nodeEnv === 'test') return;
   if (isKnownWeakSecret(masterKey, KNOWN_WEAK_CI_SMOKE_MASTER_KEYS)) {
     throw new Error('SIMPLECRM_MASTER_KEY uses the known weak CI smoke-test value');
   }

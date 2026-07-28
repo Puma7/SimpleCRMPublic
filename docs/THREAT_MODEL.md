@@ -84,6 +84,28 @@ Event and audit metadata must avoid plaintext passwords, tokens, PGP private key
 - Inbound PGP attachment decrypt/verify is available as transient server-client actions over stored attachment content; decrypted bytes are returned to the requester and are not persisted. Server compose send and the direct PGP plaintext API can encrypt/sign plaintext bodies plus bounded attachment payloads, and HTML drafts are reduced to encrypted text-only payloads so no unencrypted rich HTML part is sent.
 - Retention and restore drills need more live-volume hardening before claiming production completeness.
 
+## Workflows Driven By Untrusted Mail
+
+An inbound workflow runs on a message a stranger sent. Two consequences the
+workflow author owns:
+
+- **Mail-derived placeholders decide targets.** `{{from_address}}`, `{{subject}}`,
+  `{{body_text}}` and friends are filled from the incoming message. In a text
+  field that only colours the content; in a recipient field (`to`/`cc`/`bcc`) or
+  a request `url` the sender helps decide **where data goes**. The host of an
+  HTTP request stays bound by the allowlist, but path, query and body do not.
+  The editor warns when it finds such a placeholder in one of those fields — it
+  does not block, because the pattern is sometimes exactly what is intended.
+- **AI output is not a security decision.** Classification and draft prompts
+  receive the message text unfiltered, so its author can influence both the
+  branch taken and the wording produced. Treat AI results as a suggestion, never
+  as an authorisation. `email.release_outbound` with `autoSend` sends without a
+  human step; on paths that carry AI-generated text derived from foreign input,
+  put a review node in front of it.
+
+Neither path can change users, groups, capabilities or ACL bindings — no
+mail-driven code writes them. These are data-flow risks, not takeover paths.
+
 ## Operator Controls
 
 - Keep `MASTER_KEY`, `ACCESS_TOKEN_SECRET`, `PG_ADMIN_PASSWORD`, and `PG_PASSWORD` outside source control.

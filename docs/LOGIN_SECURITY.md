@@ -162,10 +162,10 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 
 ### Verteiltes Raten (Credential Stuffing)
 
-Die gestaffelte Sperre (30 s → 5 min → 1 h → 24 h, dauerhaft ab 50) zählt je
-Paar aus **E-Mail und IP**. Wer aus vielen Adressen kommt — Botnet, Proxy-Pool —
-bekommt pro Adresse einen frischen Zähler, und die dauerhafte Sperre greift nie.
-Es bliebe nur das IP-Limit von 20 Login-Anfragen pro Minute.
+Die gestaffelte Sperre (30 s → 5 min → 1 h → 24 h) zählt je Paar aus
+**E-Mail und IP**. Wer aus vielen Adressen kommt — Botnet, Proxy-Pool — bekommt
+pro Adresse einen frischen Zähler. Es bliebe nur das IP-Limit von 20
+Login-Anfragen pro Minute.
 
 Deshalb prüft der Login zusätzlich, **von wie vielen verschiedenen Adressen** in
 den letzten 15 Minuten ein Fehlversuch gegen dieses Konto kam — *vor* der
@@ -199,11 +199,11 @@ Die Eskalation greift **auch wenn der Workspace-Toggle für CAPTCHA aus ist** �
 sie braucht nur einen eingerichteten Anbieter. Die Login-Seite blendet das
 Widget dann auf `captcha_required` hin ein.
 
-**Ohne eingerichteten Turnstile** bleibt nur Bremsen, und Bremsen sperrt aus.
-Die Schwelle liegt dort deshalb bei 50 und das Fenster läuft nach 15 Minuten ab.
-Das ist die schlechtere Hälfte des Kompromisses: **richten Sie Turnstile ein**,
-dann ist der Login gegen verteiltes Raten geschützt, ohne dass ein Angreifer
-Konten lahmlegen kann.
+**Ohne eingerichteten Turnstile** bleibt nur Bremsen, und Bremsen sperrt aus:
+ab **20 Adressen** im Fenster erhält das Konto 15 Minuten lang `429` — auch der
+rechtmäßige Nutzer. Das ist die schlechtere Hälfte des Kompromisses und der
+Grund für die Empfehlung: **richten Sie Turnstile ein.** Dann greift die
+CAPTCHA-Pflicht, und niemand kann fremde Konten lahmlegen.
 
 Details und Restrisiken: [THREAT_MODEL.md](THREAT_MODEL.md), Learnings: [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md).
 
