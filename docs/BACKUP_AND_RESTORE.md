@@ -81,12 +81,20 @@ or an offline copy. Without the master key your backup is only half a backup.
 (never the key itself), and `restore.sh` and `doctor.sh` print them as a
 reminder.
 
-**Treat that as a reminder, not a check.** The server derives the id without
-passing one, so it is `default` in every installation — a wrong key carries the
-same id as the right one. Whether your `.env` matches cannot be decided from the
-backup; only a non-secret key fingerprint written by the server, or a canary
-decryption, could answer that. Until then the safeguard is procedural: keep the
-`.env` with the backup set.
+The id alone says nothing — the server derives it without passing one, so it is
+`default` everywhere. **The fingerprint next to it does say something.** Since
+migration 0049 the server stores a non-secret fingerprint of the master key
+(an HMAC over a fixed label; the key cannot be derived from it) in the database,
+so it travels with the dump.
+
+Nothing in the backup path can check it — checking needs the key, and the key
+lives with the API. **The API does check it: it refuses to start when its
+`SIMPLECRM_MASTER_KEY` does not match the database it finds.** A dump restored
+with the wrong `.env` therefore fails immediately and visibly, instead of
+surfacing weeks later as a mailbox that stopped syncing.
+
+Backups taken before 0049 carry no fingerprint; `restore.sh` says so explicitly
+rather than implying a check it cannot perform.
 
 ## Run A One-Shot Backup
 

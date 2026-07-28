@@ -12,10 +12,13 @@
 #    Secrets niemand mehr. Die Metadaten halten die verwendeten key_id fest
 #    (nicht den Schluessel) und erinnern beim Restore daran.
 #
-#    Das ist ausdruecklich nur eine Erinnerung: der Server vergibt die Kennung
-#    ohne Argument, sie lautet also ueberall 'default'. Ein falscher Schluessel
-#    ist daran NICHT zu erkennen. Wer das wirklich pruefen will, braucht einen
-#    nicht-geheimen Fingerabdruck des Schluessels, den der Server hinterlegt.
+#    Die Kennung allein sagt dabei nichts: der Server vergibt sie ohne Argument,
+#    sie lautet ueberall 'default'. Seit Migration 0049 steht deshalb zusaetzlich
+#    ein nicht-geheimer FINGERABDRUCK des Schluessels in der Datenbank (HMAC
+#    ueber ein festes Etikett) und wandert mit dem Dump. Er wird hier nur
+#    angezeigt — pruefen kann ihn nur, wer den Schluessel hat, und das ist die
+#    API: sie verweigert den Start, wenn ihr SIMPLECRM_MASTER_KEY nicht zu der
+#    Datenbank passt, die sie gerade vorfindet.
 #
 # 2. `pg_restore` meldet Erfolg, sobald es durchgelaufen ist — nicht, ob die
 #    Daten vollstaendig sind. Ein Dump, der wegen fehlender Leserechte halb
@@ -163,6 +166,17 @@ write_backup_metadata() {
       SELECT CASE WHEN to_regclass('public.secrets') IS NULL
         THEN 'n/a'
         ELSE coalesce((SELECT string_agg(DISTINCT key_id, ',' ORDER BY key_id) FROM secrets), 'none')
+      END" 2>/dev/null || printf 'unknown')"
+    # Der Fingerabdruck macht aus der Kennung eine Aussage. Er ist ein HMAC des
+    # Master-Keys ueber ein festes Etikett — nicht geheim, aber eindeutig: zwei
+    # verschiedene Schluessel ergeben zwei verschiedene Werte. Wer diesen Stand
+    # wiederherstellt und die passende .env sucht, kann sie damit erkennen,
+    # statt sie zu vermuten.
+    printf 'master_key_fingerprints=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
+      SELECT CASE WHEN to_regclass('public.master_key_fingerprints') IS NULL
+        THEN 'n/a'
+        ELSE coalesce((SELECT string_agg(key_id || ':' || fingerprint, ',' ORDER BY key_id)
+                       FROM master_key_fingerprints), 'none')
       END" 2>/dev/null || printf 'unknown')"
     # Bewusst NICHT 'rows_...': die Pruefschleife liest jeden rows_-Eintrag als
     # Tabellennamen, ein Marker in dem Namensraum waere eine Tabelle namens
@@ -374,7 +388,21 @@ verify_backup_metadata() {
     # nicht-geheimer Fingerabdruck (den der Server schreiben muesste) oder eine
     # Probe-Entschluesselung koennte das beantworten.
     echo "$label: reminder — the secrets in this dump are encrypted with SIMPLECRM_MASTER_KEY (recorded key id: $key_ids)." >&2
-    echo "$label: that id is NOT proof of a matching key; restore the .env from the same system or the secrets stay unreadable." >&2
+    fingerprints="$(backup_metadata_value "$meta_path" 'master_key_fingerprints' || printf 'unknown')"
+    case "$fingerprints" in
+      'unknown' | 'n/a' | 'none' | '')
+        # Aeltere Backups (vor Migration 0049) fuehren keinen Fingerabdruck.
+        echo "$label: this backup predates the master-key fingerprint, so a wrong .env cannot be detected here; restore it from the same system." >&2
+        ;;
+      *)
+        # Der Wert selbst ist nicht geheim und darf hier stehen: er ist ein HMAC
+        # ueber ein festes Etikett, aus dem sich der Schluessel nicht ableiten
+        # laesst. Geprueft wird er beim Start der API — dort liegt der
+        # Schluessel, hier nicht.
+        echo "$label: master key fingerprint recorded with this dump: $fingerprints" >&2
+        echo "$label: the API refuses to start if its SIMPLECRM_MASTER_KEY does not match this value." >&2
+        ;;
+    esac
   fi
 
   [ "$empty" -eq 0 ]

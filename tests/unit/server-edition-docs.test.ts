@@ -269,7 +269,15 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining('WARNING — $table is empty after restore'));
     // Die Schluessel-Kennung ist eine Erinnerung, keine Pruefung — der Server
     // vergibt sie ohne Argument, sie lautet ueberall 'default'.
-    expect(metadata).toEqual(expect.stringContaining('NOT proof of a matching key'));
+    // Die Kennung allein sagt nichts (ueberall 'default'). Seit Migration 0049
+    // steht ein nicht-geheimer Fingerabdruck daneben — pruefen kann ihn nur,
+    // wer den Schluessel hat, und das ist die API. Der Restore zeigt ihn nur,
+    // und sagt bei aelteren Backups ausdruecklich, dass er fehlt, statt eine
+    // Pruefung anzudeuten, die er nicht leisten kann.
+    expect(metadata).toEqual(expect.stringContaining('master key fingerprint recorded with this dump'));
+    expect(metadata).toEqual(expect.stringContaining('refuses to start if its SIMPLECRM_MASTER_KEY does not match'));
+    expect(metadata).toEqual(expect.stringContaining('predates the master-key fingerprint'));
+    expect(metadata).toEqual(expect.stringContaining("printf 'master_key_fingerprints=%s"));
     expect(metadata).toEqual(expect.stringContaining('writes between count and dump are expected'));
     // Die Ursache des stillen Fehlerfalls ist beim Backup direkt pruefbar.
     expect(metadata).toEqual(expect.stringContaining('SELECT (rolsuper OR rolbypassrls)'));

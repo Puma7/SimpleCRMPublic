@@ -126,7 +126,10 @@ import {
 } from './diagnostics/server-log-capture';
 import {
   accessTokenSignerFromBase64,
+  masterKeyFingerprint,
+  masterKeyFingerprintMatches,
   parseBase64MasterKey,
+  type MasterKeyMaterial,
   type AccessTokenSigner,
 } from './security';
 import { createAuthInvitationMailerPort } from './auth-invitation-mailer';
@@ -772,6 +775,60 @@ function startProvisionalLoginAttemptCleanup(ports: ServerApiPorts): { stop(): v
   return { stop() { clearInterval(timer); } };
 }
 
+/**
+ * Gehoert dieser Master-Key zu dieser Datenbank?
+ *
+ * Alle Secrets darin sind mit ihm verschluesselt, er selbst steht nur in der
+ * .env. Wird ein Dump mit der falschen .env eingespielt, ist die Datenbank
+ * vollstaendig und trotzdem unbrauchbar — und das fiel bisher erst auf, wenn
+ * das erste Postfach nicht mehr synchronisierte, also mitten im Betrieb und
+ * ohne erkennbaren Zusammenhang zur Wiederherstellung.
+ *
+ * Beim ersten Start mit einem Schluessel wird sein Fingerabdruck hinterlegt,
+ * danach verglichen. Abbruch bei Abweichung, nicht Warnung: weiterzulaufen
+ * hiesse, mit unlesbaren Secrets zu arbeiten und dabei neue mit dem falschen
+ * Schluessel zu schreiben — aus einem behebbaren Konfigurationsfehler wuerde
+ * ein Datenschaden.
+ *
+ * Fehlt die Tabelle (Migrationen noch nicht gelaufen), passiert nichts. Der
+ * Start darf nicht daran haengen, dass ein Schema schon aktuell ist.
+ */
+export async function assertMasterKeyMatchesDatabase(
+  db: Kysely<ServerDatabase>,
+  masterKey: MasterKeyMaterial,
+): Promise<void> {
+  const fingerprint = masterKeyFingerprint(masterKey);
+  let stored: { fingerprint: string } | undefined;
+  try {
+    stored = await db
+      .selectFrom('master_key_fingerprints')
+      .select('fingerprint')
+      .where('key_id', '=', masterKey.keyId)
+      .executeTakeFirst();
+  } catch {
+    return;
+  }
+
+  if (!stored) {
+    await db
+      .insertInto('master_key_fingerprints')
+      .values({ key_id: masterKey.keyId, fingerprint })
+      .onConflict((oc) => oc.column('key_id').doNothing())
+      .execute();
+    return;
+  }
+
+  if (!masterKeyFingerprintMatches(stored.fingerprint, fingerprint)) {
+    throw new Error(
+      'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '
+      + 'encrypted with a different key and cannot be decrypted with this one. This usually '
+      + 'means a dump was restored without its matching docker/.env. Restore the original '
+      + '.env, or — if the key really was replaced on purpose — clear the row in '
+      + 'master_key_fingerprints and re-enter every secret.',
+    );
+  }
+}
+
 function accessTokenSignerFromEnv(env: ServerEditionEnv): AccessTokenSigner | undefined {
   const secret = env.ACCESS_TOKEN_SECRET;
   if (!secret) return undefined;
@@ -814,6 +871,7 @@ async function createDefaultServerPorts(input: {
   const masterKey = input.masterKey?.trim()
     ? parseBase64MasterKey(input.masterKey)
     : undefined;
+  if (masterKey) await assertMasterKeyMatchesDatabase(db, masterKey);
   const secrets = masterKey
     ? createPostgresSecretPort({
       db,
