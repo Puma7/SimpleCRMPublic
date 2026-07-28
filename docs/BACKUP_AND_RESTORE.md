@@ -195,10 +195,21 @@ migrations on the next update. Today's migrations are written with
 a guarantee. **Roll back code and data together, not one without the other.**
 
 **The restore is verified, not just executed.** After `pg_restore` finishes,
-`restore.sh` compares the restored row counts against `backup-<stamp>.meta` and
-fails when they differ. That catches a dump that was taken with insufficient
-privileges — row level security is forced on nearly every table, so a dump taken
-by the wrong role restores cleanly while being silently incomplete.
+`restore.sh` compares the restored row counts against `backup-<stamp>.meta`.
+
+This is deliberately **not** an equality check. The counts are taken just before
+`pg_dump` starts, both against a live database, so rows written in between show
+up in the dump but not in the recorded numbers. Demanding equality would raise
+false alarms under normal write load, and an alarm that gets ignored out of habit
+is worse than no alarm. The restore therefore fails only on the case that cannot
+arise harmlessly: **the backup recorded rows and the restore has none.** Any
+other divergence is printed as a note.
+
+The underlying failure mode — row level security is forced on nearly every table,
+so a dump taken by a role that does not bypass it restores cleanly while being
+silently filtered — is checked directly at its cause: `backup.sh` refuses to run
+when the backup role neither is a superuser nor holds `BYPASSRLS`. No backup is
+better than one you wrongly trust.
 
 Do not skip the pre-update backup in `docker/update.sh`. The migration path is
 exercised on an empty database in CI; migrating **populated** production data is

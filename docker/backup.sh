@@ -19,6 +19,18 @@ METADATA_FILE="backup-$STAMP.meta"
 
 mkdir -p "$BACKUP_DIR"
 
+# Vor allem anderen: darf diese Rolle alle Zeilen sehen? Sonst waere der Dump
+# still gefiltert (Begruendung in backup-metadata.sh).
+assert_backup_role_reads_all_rows "$DATABASE_URL"
+
+# Zaehlen VOR dem Dump. pg_dump friert seinen Snapshot beim Start ein; wird
+# danach gezaehlt, faengt die Zahl auch die Schreibvorgaenge waehrend der
+# Dump-Laufzeit ein und ein vollstaendiger Restore erschiene spaeter zu klein.
+# Das Fenster ist damit nicht geschlossen, nur auf die Dauer der Zaehlung
+# verkleinert — deshalb prueft verify_backup_metadata bewusst nicht auf
+# Gleichheit (Begruendung dort).
+write_backup_metadata "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
+
 pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP"
 
 if [ -d "$ATTACHMENTS_DIR" ]; then
@@ -28,11 +40,6 @@ fi
 if [ -d "$AUDIT_ARCHIVE_DIR" ]; then
   tar -C "$AUDIT_ARCHIVE_DIR" -cf "$BACKUP_DIR/$AUDIT_ARCHIVE" .
 fi
-
-# Begleitmetadaten: Schemastand, benoetigte Schluessel-Kennung und Zeilenzahlen.
-# Sie gehen in dieselbe Pruefsumme wie der Dump — sonst waere die Aussage
-# manipulierbar, gegen die spaeter verglichen wird.
-write_backup_metadata "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
 
 (
   cd "$BACKUP_DIR"

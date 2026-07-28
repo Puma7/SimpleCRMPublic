@@ -122,6 +122,7 @@ describe('server edition AP-12 operator docs', () => {
 
   test('backup metadata turns a finished restore into a verified one', () => {
     const metadata = readRepoFile('docker/backup-metadata.sh');
+    const backup = readRepoFile('docker/backup.sh');
     const restore = readRepoFile('docker/restore.sh');
     const drill = readRepoFile('docker/restore-drill.sh');
     const doctor = readRepoFile('docker/doctor.sh');
@@ -136,7 +137,20 @@ describe('server edition AP-12 operator docs', () => {
     // pg_restore meldet nur "keine Fehler". Erst der Abgleich der Zeilenzahlen
     // belegt Vollstaendigkeit — eine unter zu schwachen Rechten gezogene
     // Sicherung stellt sich sonst sauber, aber halb leer wieder her.
-    expect(metadata).toEqual(expect.stringContaining('row count mismatch for'));
+    // Gezaehlt wird VOR dem Dump — danach faenge die Zahl auch die Schreibvorgaenge
+    // waehrend der Dump-Laufzeit ein (Gatekeeper-Befund zu #183).
+    expect(backup).toMatch(
+      /write_backup_metadata "\$DATABASE_URL" "\$BACKUP_DIR" "\$STAMP"[\s\S]*?pg_dump -Fc/,
+    );
+    // Und die Pruefung ist bewusst KEINE Gleichheitsprobe: zwischen Zaehlung und
+    // Snapshot duerfen Zeilen dazukommen. Alarm nur fuer den Fall, der nicht
+    // harmlos entstehen kann — Backup hatte Zeilen, Restore hat keine.
+    expect(metadata).toEqual(expect.stringContaining('is EMPTY after restore but the backup recorded'));
+    expect(metadata).toEqual(expect.stringContaining('writes between count and dump are expected'));
+    // Die Ursache des stillen Fehlerfalls ist beim Backup direkt pruefbar.
+    expect(metadata).toEqual(expect.stringContaining('SELECT (rolsuper OR rolbypassrls)'));
+    expect(metadata).toEqual(expect.stringContaining('refusing to back up'));
+    expect(backup).toEqual(expect.stringContaining('assert_backup_role_reads_all_rows "$DATABASE_URL"'));
     expect(restore).toEqual(expect.stringContaining("verify_backup_metadata \"$METADATA_PATH\" \"$DATABASE_URL\" 'restore'"));
     expect(drill).toEqual(expect.stringContaining("verify_backup_metadata \"$METADATA_PATH\" \"$DRILL_DATABASE_URL\" 'restore drill'"));
     // Die Metadatei haengt an derselben Pruefsumme wie der Dump.
