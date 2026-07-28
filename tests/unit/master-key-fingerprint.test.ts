@@ -604,9 +604,10 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
       message = error.message;
     });
     expect(message).toMatch(/DELETE FROM secrets/);
-    expect(message).toMatch(/DELETE FROM email_tracking_links/);
-    expect(message).toMatch(/DELETE FROM email_tracking_token_resolver/);
-    expect(message).toMatch(/raw_metadata_ciphertext = NULL/);
+    // Ein DELETE auf die Tracking-Nachrichten raeumt Links, Ereignisse und
+    // Resolver per Kaskade mit — auch die aufbewahrten Ereignisse, die den
+    // naechsten Start sonst unentschieden liessen.
+    expect(message).toMatch(/DELETE FROM email_tracking_messages/);
     expect(message).toMatch(/set_config\('app\.role','system',true\)/);
   });
 });

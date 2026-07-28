@@ -818,14 +818,14 @@ const MASTER_KEY_RECOVERY_HINT =
   + 'so with "DELETE 0", which would leave exactly the state that refuses the next start. '
   + 'Run it with a session context instead — BEGIN; SELECT '
   + "set_config('app.role','system',true), set_config('app.cross_workspace_access','on',true); "
-  + 'DELETE FROM secrets; DELETE FROM email_tracking_token_resolver; DELETE FROM '
-  + 'email_tracking_links; UPDATE email_tracking_events SET raw_metadata_ciphertext = NULL, '
-  + 'raw_metadata_nonce = NULL, raw_metadata_auth_tag = NULL; DELETE FROM '
-  + 'master_key_fingerprints; COMMIT; — or connect as the admin role, which bypasses RLS. The '
-  + 'tracking rows belong in there: their tokens and sealed target URLs hang on the same key '
-  + 'and would refuse the next start just like the secrets. The resolver needs its own DELETE — '
-  + 'open-tracking rows carry no link_id, so removing the links does not cascade to them. Then '
-  + 'start with the new key and enter every credential again.';
+  + 'DELETE FROM secrets; DELETE FROM email_tracking_messages; DELETE FROM '
+  + 'master_key_fingerprints; COMMIT; — or connect as the admin role, which bypasses RLS. '
+  + 'Deleting the tracking messages cascades to links, events and the token resolver, and all '
+  + 'three have to go: sealed target URLs, issued tokens and the HMAC dedupe keys of retained '
+  + 'events all hang on the old key. Leaving the events behind is the subtle one — the next '
+  + 'start would find key-bound data it cannot verify, run on without recording a fingerprint, '
+  + 'and two replicas could then settle on different keys. Then start with the new key and '
+  + 'enter every credential again.';
 
 const MASTER_KEY_MISMATCH_MESSAGE =
   'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '

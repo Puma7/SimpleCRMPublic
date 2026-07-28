@@ -234,22 +234,22 @@ BEGIN;
 SELECT set_config('app.role', 'system', true),
        set_config('app.cross_workspace_access', 'on', true);
 DELETE FROM secrets;
-DELETE FROM email_tracking_token_resolver;
-DELETE FROM email_tracking_links;
-UPDATE email_tracking_events
-   SET raw_metadata_ciphertext = NULL,
-       raw_metadata_nonce = NULL,
-       raw_metadata_auth_tag = NULL;
+DELETE FROM email_tracking_messages;  -- cascades to links, events, token resolver
 DELETE FROM master_key_fingerprints;
 COMMIT;
 SQL
 ```
 
-The tracking rows belong in there. Their tokens and sealed target URLs hang on
-the same key, so leaving them behind makes the next start refuse for exactly the
-same reason the secrets would have. The resolver needs its own `DELETE`:
-open-tracking rows carry no `link_id`, so removing the links does not cascade to
-them.
+The tracking rows belong in there. Sealed target URLs, issued tokens and the
+HMAC dedupe keys of retained events all hang on the old key, and deleting the
+tracking *messages* is what clears all three — links, events and the token
+resolver cascade from them.
+
+Leaving the events behind is the subtle one. They would not make the next start
+refuse; they would make it *undecided* — key-bound data that cannot be verified,
+so the server runs on without recording a fingerprint. In a multi-replica
+deployment two replicas could then settle on different new keys and write
+secrets under incompatible material.
 
 **The session context is not optional.** Row level security is forced on
 `secrets`, so a plain `DELETE FROM secrets` over the application connection
