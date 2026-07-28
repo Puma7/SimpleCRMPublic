@@ -300,6 +300,14 @@ type DeferredWorkflowImapEffect =
 type WorkflowVisibilityInvalidation = {
   tags: Set<string>;
   categoryIds: Set<number>;
+  /**
+   * Eine ZUWEISUNG kippt die Sichtbarkeit ohne Tag und ohne Kategorie: die
+   * Filter assigned_to_me, assigned_to_my_groups und unassigned haengen allein
+   * an assigned_to_user_id. Der manuelle Assign-Pfad (mail-routes) invalidiert
+   * dafuer laengst; der Workflow-Knoten email.assign tat es nicht — betroffene
+   * Nutzer sahen eine gerade gesperrte, bereits geladene Nachricht weiter.
+   */
+  assignmentChanged: boolean;
 };
 
 type ServerWorkflowRuntimePorts = Readonly<{
@@ -353,7 +361,7 @@ async function flushWorkflowVisibilityInvalidation(input: Readonly<{
   events?: Pick<ServerEventPort, 'publish'>;
 }>): Promise<void> {
   const { collected, mailAccess, events } = input;
-  if (collected.tags.size === 0 && collected.categoryIds.size === 0) return;
+  if (collected.tags.size === 0 && collected.categoryIds.size === 0 && !collected.assignmentChanged) return;
   const resolve = mailAccess?.resolveConstraintSubjectUserIds;
   if (!resolve || !events) return;
 
@@ -363,6 +371,10 @@ async function flushWorkflowVisibilityInvalidation(input: Readonly<{
       workspaceId: input.workspaceId,
       ...(collected.categoryIds.size > 0 ? { categoryIds: [...collected.categoryIds] } : {}),
       ...(collected.tags.size > 0 ? { tags: [...collected.tags] } : {}),
+      // Wie im manuellen Assign-Pfad: die Zuweisungsfilter haengen an keinem
+      // Wert, den man mitgeben koennte — sie treffen jeden, der einen von
+      // ihnen haelt.
+      ...(collected.assignmentChanged ? { includeAssignmentModes: true } : {}),
     });
   } catch (error) {
     console.warn(
@@ -414,6 +426,7 @@ export function createPostgresWorkflowExecutionJobPort(
       const visibilityInvalidation: WorkflowVisibilityInvalidation = {
         tags: new Set<string>(),
         categoryIds: new Set<number>(),
+        assignmentChanged: false,
       };
       await withWorkspaceTransaction(
         options.db,
@@ -2299,6 +2312,11 @@ async function executeServerNode(
       assigned_to_user_id: assignedToUserId,
       updated_at: now,
     });
+    // Die Zuweisung kippt assigned_to_me, assigned_to_my_groups und
+    // unassigned — fuer den bisherigen Zustaendigen ebenso wie fuer den neuen.
+    // Ohne diese Meldung sieht ein eingeschraenkter Betrachter eine gerade
+    // gesperrte, bereits geladene Nachricht bis zum naechsten Reload weiter.
+    if (ports?.visibilityInvalidation) ports.visibilityInvalidation.assignmentChanged = true;
     return result ?? { status: 'ok', port: 'default', variables: { 'email.assigned_to': teamMemberId } };
   }
   if (type === 'crm.create_task') {

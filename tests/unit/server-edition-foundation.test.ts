@@ -7457,6 +7457,100 @@ describe('server edition foundation', () => {
     expect(published.every((event) => event.type === 'email_acl.changed')).toBe(true);
   });
 
+  test('a workflow ASSIGNMENT invalidates the assignment-filter holders too', async () => {
+    // assigned_to_me, assigned_to_my_groups und unassigned haengen allein an
+    // assigned_to_user_id — eine Zuweisung kippt die Sichtbarkeit ohne jeden
+    // Tag und ohne jede Kategorie. Der manuelle Assign-Pfad invalidiert dafuer
+    // laengst; der Workflow-Knoten tat es nicht, und betroffene Nutzer sahen
+    // eine gerade gesperrte, bereits geladene Nachricht weiter.
+    const now = new Date('2026-07-04T10:34:00.000Z');
+    const { db } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 31,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 310,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } },
+            {
+              id: 'assign-1',
+              type: 'registry',
+              data: { nodeType: 'email.assign', config: { teamMemberId: 'agent-1' } },
+            },
+          ],
+          edges: [{ id: 'e1', source: 'trigger-1', target: 'assign-1' }],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 17,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 170,
+        subject: 'Zuweisung',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Zuweisung',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+        seen_local: false,
+        archived: false,
+        done_local: false,
+        is_spam: false,
+        spam_status: null,
+        assigned_to: null,
+      }],
+      teamMembers: [{
+        id: 'agent-1',
+        workspace_id: WORKSPACE_A_ID,
+        linked_user_id: null,
+      }],
+    });
+
+    const lookups: Array<Record<string, unknown>> = [];
+    const published: Array<{ payload: { targetUserId?: string; reason?: string } }> = [];
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      mailAccess: {
+        async resolveConstraintSubjectUserIds(input: Record<string, unknown>) {
+          lookups.push(input);
+          return ['assignment-filter-user'];
+        },
+      } as never,
+      events: {
+        async publish(event: { payload: { targetUserId?: string; reason?: string } }) {
+          published.push(event);
+        },
+      } as never,
+    });
+
+    await port.execute({
+      workspaceId: WORKSPACE_A_ID,
+      workflowId: 31,
+      messageId: 17,
+      triggerName: 'manual',
+      actorUserId: 'user-actor',
+      context: {},
+    });
+
+    // Kein Tag, keine Kategorie — trotzdem genau EIN Lookup, und zwar mit den
+    // Zuweisungsmodi.
+    expect(lookups).toHaveLength(1);
+    expect(lookups[0]).toMatchObject({ includeAssignmentModes: true });
+    expect(lookups[0]).not.toHaveProperty('tags');
+    expect(lookups[0]).not.toHaveProperty('categoryIds');
+    expect(published.map((event) => event.payload.targetUserId)).toEqual(['assignment-filter-user']);
+    expect(published[0]!.payload.reason).toBe('visibility_filter');
+  });
+
   test('a workflow that writes no tags or categories publishes nothing', async () => {
     const now = new Date('2026-07-04T10:33:00.000Z');
     const { db } = makeWorkflowExecutionDb({

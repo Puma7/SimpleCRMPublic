@@ -1703,6 +1703,14 @@ describe('server mail job and event ACL', () => {
       acl({ targetUserId: 'user-a' }, { entityType: 'email_message' as ServerEvent['entityType'] }),
       'user-a',
     )).toBe(false);
+    // Die reine SICHTBARKEITS-Auffrischung ist kein Herabstufungssignal: Rolle
+    // und Konto sind unveraendert, der zwischengespeicherte Principal also
+    // nicht veraltet. Sie zu erzwingen kostete je eingehender getaggter
+    // Nachricht und betroffenem Nutzer eine Auth- und Datenbankabfrage.
+    expect(isSelfTargetedAclInvalidation(
+      acl({ targetUserId: 'user-a', state: 'changed', reason: 'visibility_filter' }),
+      'user-a',
+    )).toBe(false);
   });
 
   test('ACL invalidation events reach scoped non-admin delegation managers when the payload carries the binding resource', async () => {
