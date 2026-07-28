@@ -52,6 +52,15 @@ describe('server edition AP-12 operator docs', () => {
     expect(backup).toEqual(expect.stringContaining('BACKUP_RETENTION_DAILY'));
     expect(backup).toEqual(expect.stringContaining('BACKUP_RETENTION_WEEKLY'));
     expect(backup).toEqual(expect.stringContaining('BACKUP_RETENTION_MONTHLY'));
+    // Die gefaehrlichste Luecke eines Backups ist die, von der der Betrieb
+    // nichts weiss: der Master-Key liegt NICHT im Backup, und ohne ihn ist ein
+    // technisch einwandfreier Dump fuer jedes Secret wertlos.
+    expect(backup).toEqual(expect.stringContaining('What The Backup Does **Not** Contain'));
+    expect(backup).toEqual(expect.stringContaining('SIMPLECRM_MASTER_KEY'));
+    expect(backup).toEqual(expect.stringContaining('Keep a copy of `docker/.env` **outside** the backup volume'));
+    // Rollback: --clean loescht nur, was im Dump steht.
+    expect(backup).toEqual(expect.stringContaining('Rolling Back To An Earlier Backup'));
+    expect(backup).toEqual(expect.stringContaining('only drops what the dump knows about'));
 
     const threatModel = readRepoFile('docs/THREAT_MODEL.md');
     expect(threatModel).toEqual(expect.stringContaining('Invalid `Authorization` headers must not fall back'));
@@ -102,6 +111,42 @@ describe('server edition AP-12 operator docs', () => {
     expect(retention).toEqual(expect.stringContaining('daily_count < daily'));
     expect(retention).toEqual(expect.stringContaining('weekly_count < weekly'));
     expect(retention).toEqual(expect.stringContaining('monthly_count < monthly'));
+    // Die Metadatei gehoert zum Backup-Satz: mitschreiben, mitpruefen,
+    // mitloeschen. Ohne den Aufraeumpfad blieben .meta-Dateien fuer immer
+    // liegen, waehrend ihr Dump laengst rotiert ist.
+    expect(backup).toEqual(expect.stringContaining('write_backup_metadata "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"'));
+    expect(backup).toEqual(expect.stringContaining('sha256sum "$METADATA_FILE" >> "$CHECKSUM_MANIFEST"'));
+    expect(retention).toEqual(expect.stringContaining('"$backup_dir/backup-$stamp.meta"'));
+    expect(retention).toEqual(expect.stringContaining('"$backup_dir"/backup-*.meta'));
+  });
+
+  test('backup metadata turns a finished restore into a verified one', () => {
+    const metadata = readRepoFile('docker/backup-metadata.sh');
+    const restore = readRepoFile('docker/restore.sh');
+    const drill = readRepoFile('docker/restore-drill.sh');
+    const doctor = readRepoFile('docker/doctor.sh');
+    const compose = readRepoFile('docker/docker-compose.yml');
+
+    // Nur die Schluessel-KENNUNG wandert ins Backup, nie der Schluessel.
+    expect(metadata).toEqual(expect.stringContaining('string_agg(DISTINCT key_id'));
+    expect(metadata).not.toEqual(expect.stringContaining('SIMPLECRM_MASTER_KEY='));
+    // Fehlende Tabellen duerfen ein Backup nicht verhindern.
+    expect(metadata).toEqual(expect.stringContaining("to_regclass('public.$2') IS NULL"));
+
+    // pg_restore meldet nur "keine Fehler". Erst der Abgleich der Zeilenzahlen
+    // belegt Vollstaendigkeit — eine unter zu schwachen Rechten gezogene
+    // Sicherung stellt sich sonst sauber, aber halb leer wieder her.
+    expect(metadata).toEqual(expect.stringContaining('row count mismatch for'));
+    expect(restore).toEqual(expect.stringContaining("verify_backup_metadata \"$METADATA_PATH\" \"$DATABASE_URL\" 'restore'"));
+    expect(drill).toEqual(expect.stringContaining("verify_backup_metadata \"$METADATA_PATH\" \"$DRILL_DATABASE_URL\" 'restore drill'"));
+    // Die Metadatei haengt an derselben Pruefsumme wie der Dump.
+    expect(restore).toEqual(expect.stringContaining('verify_backup_file "$METADATA_PATH" "$CHECKSUM_MANIFEST"'));
+    expect(drill).toEqual(expect.stringContaining('verify_backup_file "$METADATA_PATH" "$CHECKSUM_MANIFEST"'));
+    // doctor zeigt Schemastand und benoetigten Schluessel, bevor es ernst wird.
+    expect(doctor).toEqual(expect.stringContaining('backup_secret_key_ids='));
+    expect(doctor).toEqual(expect.stringContaining('backup_schema_migration='));
+    // Jeder Dienst, der eines der Skripte ausfuehrt, braucht den Helfer.
+    expect(compose.match(/backup-metadata\.sh:\/app\/backup-metadata\.sh:ro/g)).toHaveLength(5);
   });
 
   test('documents optional Docker profiles without adding them to the standard stack', () => {

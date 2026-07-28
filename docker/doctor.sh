@@ -3,6 +3,9 @@ set -eu
 
 : "${DATABASE_URL:?DATABASE_URL is required}"
 
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/backup-metadata.sh"
+
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 DOCTOR_REQUIRE_BACKUP="${DOCTOR_REQUIRE_BACKUP:-false}"
 
@@ -51,6 +54,19 @@ check_latest_backup() {
 
   echo "latest_backup=$dump_file"
   echo "backup_checksum=ok"
+
+  # Schemastand und Schluessel-Kennung des Backups sichtbar machen. Ohne die
+  # passende .env (SIMPLECRM_MASTER_KEY) laesst sich aus einem technisch
+  # einwandfreien Dump kein einziges Secret entschluesseln — das soll man hier
+  # sehen und nicht erst im Ernstfall.
+  meta="$BACKUP_DIR/backup-$stamp.meta"
+  if [ ! -f "$meta" ]; then
+    echo "backup_metadata=missing"
+    return
+  fi
+  echo "backup_metadata=ok"
+  echo "backup_schema_migration=$(backup_metadata_value "$meta" 'schema_migration' || echo unknown)"
+  echo "backup_secret_key_ids=$(backup_metadata_value "$meta" 'secret_key_ids' || echo unknown)"
 }
 
 pg_isready -d "$DATABASE_URL"
