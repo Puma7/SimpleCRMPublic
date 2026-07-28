@@ -8,6 +8,7 @@ import {
   masterKeyFingerprintMatches,
   parseBase64MasterKey,
 } from '../../packages/server/src/security/master-key';
+import { encryptSecretValue } from '../../packages/server/src/security/secret-envelope';
 
 const RICHTIG = parseBase64MasterKey(Buffer.alloc(32, 7).toString('base64'));
 const FALSCH = parseBase64MasterKey(Buffer.alloc(32, 8).toString('base64'));
@@ -49,38 +50,86 @@ describe('Master-Key-Fingerabdruck', () => {
 });
 
 type StoredRow = { key_id: string; fingerprint: string };
+type SecretRow = Record<string, unknown>;
 type FakeDbCalls = { inserted: StoredRow[]; selects: number };
+
+/** Ein echtes Envelope, damit die Probeentschluesselung etwas zu tun hat. */
+async function secretRow(key: typeof RICHTIG): Promise<SecretRow> {
+  const associatedData = { workspaceId: 'w-1', kind: 'imap', name: 'probe' };
+  const envelope = await encryptSecretValue({ key, value: 'geheim', associatedData });
+  return {
+    id: 's-1',
+    workspace_id: associatedData.workspaceId,
+    kind: associatedData.kind,
+    name: associatedData.name,
+    key_id: envelope.keyId,
+    algorithm: envelope.algorithm,
+    nonce: envelope.nonce,
+    ciphertext: envelope.ciphertext,
+  };
+}
 
 /**
  * Kysely-Ausschnitt, den assertMasterKeyMatchesDatabase tatsaechlich benutzt:
- * ein `select` ueber alle Zeilen, ein `insert ... on conflict do nothing`, und
- * danach ein gezieltes Nachlesen einer key_id.
+ * ein `select` ueber die Fingerabdruecke, ein `insert ... on conflict do
+ * nothing` mit anschliessendem Nachlesen, und — in einer Transaktion mit
+ * gelockerter RLS-Sitzung — ein Blick in `secrets`.
  *
- * `selectThrows` bekommt einen fertigen Fehler statt eines Schalters — der
+ * `selectThrows` bekommt einen fertigen Fehler statt eines Schalters: der
  * Unterschied zwischen "Tabelle fehlt" und "Datenbank nicht erreichbar" ist
  * genau der, um den es hier geht.
  */
 function fakeDb(
   stored: StoredRow[],
-  options: { selectThrows?: unknown; insertLosesRace?: StoredRow } = {},
+  options: {
+    selectThrows?: unknown;
+    insertLosesRace?: StoredRow;
+    secrets?: SecretRow[];
+  } = {},
 ): { db: Kysely<ServerDatabase>; calls: FakeDbCalls } {
   const calls: FakeDbCalls = { inserted: [], selects: 0 };
   const rows = [...stored];
+  const secrets = options.secrets ?? [];
+
+  const selectBuilder = (table: string) => {
+    const filters: Array<[string, unknown]> = [];
+    const matching = () => secrets.filter(
+      (row) => filters.every(([column, value]) => row[column] === value),
+    );
+    return {
+      select() { return this; },
+      selectAll() { return this; },
+      limit() { return this; },
+      where(column: string, _op: string, value: unknown) {
+        filters.push([column, value]);
+        return this;
+      },
+      async execute() {
+        calls.selects += 1;
+        if (options.selectThrows) throw options.selectThrows;
+        return table === 'secrets' ? matching() : rows;
+      },
+      async executeTakeFirst() {
+        calls.selects += 1;
+        if (options.selectThrows) throw options.selectThrows;
+        if (table === 'secrets') return matching()[0];
+        const keyId = filters.find(([column]) => column === 'key_id')?.[1];
+        return rows.find((row) => row.key_id === keyId);
+      },
+    };
+  };
+
   const db = {
-    selectFrom() {
-      let keyId: string | undefined;
+    selectFrom(table: string) { return selectBuilder(table); },
+    transaction() {
       return {
-        select() { return this; },
-        where(_column: string, _op: string, value: string) { keyId = value; return this; },
-        async execute() {
-          calls.selects += 1;
-          if (options.selectThrows) throw options.selectThrows;
-          return rows;
-        },
-        async executeTakeFirst() {
-          calls.selects += 1;
-          if (options.selectThrows) throw options.selectThrows;
-          return rows.find((row) => row.key_id === keyId);
+        async execute<T>(operation: (trx: unknown) => Promise<T>): Promise<T> {
+          return operation({
+            selectFrom(table: string) { return selectBuilder(table); },
+            // Die RLS-Sitzung wird ueber sql`` gesetzt; der kysely-Mock braucht
+            // dafuer nur einen Executor, der nichts zurueckgibt.
+            getExecutor: () => ({ executeQuery: async () => ({ rows: [] }) }),
+          });
         },
       };
     },
@@ -184,9 +233,58 @@ describe('Master-Key-Pruefung beim Serverstart', () => {
   });
 
   test('laesst eine frische Installation ohne Schluessel starten', async () => {
-    // Leere Tabelle = es gibt noch keine Secrets, die unlesbar werden koennten.
+    // Leere Tabelle UND keine Secrets = es gibt nichts, was unlesbar werden
+    // koennte.
     const { db, calls } = fakeDb([]);
     await expect(assertMasterKeyMatchesDatabase(db, undefined)).resolves.toBeUndefined();
     expect(calls.inserted).toEqual([]);
+  });
+});
+
+/**
+ * Migration 0049 legt die Tabelle ohne Backfill an, und ein Dump von vorher
+ * bringt sie leer mit. Eine leere Tabelle beweist also NICHT, dass die
+ * Datenbank frisch ist — und das ist genau der Fall, um den es geht: ein
+ * pre-0049-Dump, eingespielt mit der falschen .env.
+ */
+describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
+  test('der richtige Schluessel bewaehrt sich an einem Secret und wird hinterlegt', async () => {
+    const { db, calls } = fakeDb([], { secrets: [await secretRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
+    expect(calls.inserted).toEqual([
+      { key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) },
+    ]);
+  });
+
+  test('der falsche Schluessel wird abgewiesen, statt sich als Wahrheit einzutragen', async () => {
+    // Ohne die Probeentschluesselung wuerde hier der falsche Fingerabdruck
+    // hinterlegt — und der richtige Schluessel spaeter abgewiesen. Aus einem
+    // behebbaren Fehler wuerde ein dauerhafter.
+    const { db, calls } = fakeDb([], { secrets: [await secretRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
+      .rejects.toThrow('does not match this database');
+    expect(calls.inserted).toEqual([]);
+  });
+
+  test('ohne Schluessel ist Schluss, sobald ueberhaupt Secrets da sind', async () => {
+    const { db } = fakeDb([], { secrets: [await secretRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(db, undefined))
+      .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
+  });
+
+  test('nicht probierbare Secrets: nichts hinterlegen, aber auch nicht blockieren', async () => {
+    // Fremde key_id (etwa mitten in einer Rotation): der Schluessel laesst sich
+    // an nichts pruefen. Einen ungeprueften Fingerabdruck einzutragen waere die
+    // schlechtere Wahl — er wuerde spaeter den richtigen Schluessel abweisen.
+    const fremd = { ...await secretRow(RICHTIG), key_id: 'anderer' };
+    const { db, calls } = fakeDb([], { secrets: [fremd] });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
+      expect(calls.inserted).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('trial-decrypted'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

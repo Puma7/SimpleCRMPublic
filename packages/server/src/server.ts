@@ -126,9 +126,11 @@ import {
 } from './diagnostics/server-log-capture';
 import {
   accessTokenSignerFromBase64,
+  decryptSecretValue,
   masterKeyFingerprint,
   masterKeyFingerprintMatches,
   parseBase64MasterKey,
+  SECRET_ENVELOPE_ALGORITHM,
   type MasterKeyMaterial,
   type AccessTokenSigner,
 } from './security';
@@ -814,11 +816,19 @@ const MASTER_KEY_MISSING_MESSAGE =
  * Schluessel zu schreiben — aus einem behebbaren Konfigurationsfehler wuerde
  * ein Datenschaden.
  *
- * Ein FEHLENDER Schluessel ist derselbe Fehler, nur andersherum: steht in der
- * Tabelle schon ein Fingerabdruck, wurde diese Datenbank mit einem Schluessel
- * betrieben, und ohne ihn weiterzulaufen hiesse wieder, auf unlesbaren Secrets
- * zu arbeiten. Ist sie leer, ist es eine frische Installation ohne Secrets —
- * die laeuft weiter wie bisher.
+ * Ein FEHLENDER Schluessel ist derselbe Fehler, nur andersherum: wurde diese
+ * Datenbank schon mit einem Schluessel betrieben, hiesse ohne ihn
+ * weiterzulaufen wieder, auf unlesbaren Secrets zu arbeiten.
+ *
+ * Eine LEERE Tabelle beweist dabei gar nichts. Migration 0049 legt sie ohne
+ * Backfill an, und ein Dump von vorher bringt sie leer mit — also genau in dem
+ * Fall, um den es hier geht: pre-0049-Dump mit der falschen .env eingespielt.
+ * Ohne weitere Pruefung wuerde der falsche Schluessel dann als Wahrheit
+ * hinterlegt und der richtige spaeter abgewiesen. Sind Secrets vorhanden, wird
+ * der Schluessel deshalb an einem davon geprobt: das Envelope ist AEAD-versiegelt
+ * (XChaCha20-Poly1305 ueber workspace/kind/name), ein fremder Schluessel scheitert
+ * an der Authentifizierung. Erst wenn er sich bewaehrt hat, wird sein
+ * Fingerabdruck angelegt.
  *
  * Fehlt die TABELLE (Migration 0049 noch nicht gelaufen), passiert nichts: die
  * Migrationen sind ein eigener Dienst, der Start darf nicht daran haengen, dass
@@ -842,20 +852,43 @@ export async function assertMasterKeyMatchesDatabase(
     throw error;
   }
 
-  if (!masterKey) {
-    if (stored.length === 0) return;
-    throw new Error(MASTER_KEY_MISSING_MESSAGE);
-  }
-
-  const fingerprint = masterKeyFingerprint(masterKey);
-  const existing = stored.find((row) => row.key_id === masterKey.keyId);
-  if (existing) {
-    if (!masterKeyFingerprintMatches(existing.fingerprint, fingerprint)) {
+  const existing = masterKey
+    ? stored.find((row) => row.key_id === masterKey.keyId)
+    : undefined;
+  if (masterKey && existing) {
+    const fingerprintOfConfiguredKey = masterKeyFingerprint(masterKey);
+    if (!masterKeyFingerprintMatches(existing.fingerprint, fingerprintOfConfiguredKey)) {
       throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
     }
     return;
   }
 
+  // Kein passender Eintrag. Bevor das als "frische Installation" durchgeht:
+  // gibt es ueberhaupt Secrets? Nach einem Upgrade oder einem eingespielten
+  // pre-0049-Dump ist die Tabelle leer und die Datenbank trotzdem voll.
+  const probe = await findSecretProbe(db, masterKey?.keyId);
+
+  if (!masterKey) {
+    if (stored.length === 0 && probe.kind === 'none') return;
+    throw new Error(MASTER_KEY_MISSING_MESSAGE);
+  }
+
+  if (probe.kind === 'unusable') {
+    // Secrets vorhanden, aber keines mit dieser key_id und diesem Algorithmus:
+    // nicht probierbar. Dann lieber nichts hinterlegen als etwas Falsches — ein
+    // einmal eingetragener falscher Fingerabdruck wuerde spaeter den richtigen
+    // Schluessel abweisen.
+    console.warn(
+      '[master-key] this database holds secrets, but none of them can be trial-decrypted with '
+      + `key id "${masterKey.keyId}" (algorithm ${SECRET_ENVELOPE_ALGORITHM}); no fingerprint recorded`,
+    );
+    return;
+  }
+  if (probe.kind === 'row' && !await secretIsReadableWith(probe.row, masterKey)) {
+    throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+  }
+
+  const fingerprint = masterKeyFingerprint(masterKey);
   await db
     .insertInto('master_key_fingerprints')
     .values({ key_id: masterKey.keyId, fingerprint })
@@ -873,6 +906,85 @@ export async function assertMasterKeyMatchesDatabase(
     .executeTakeFirst();
   if (after && !masterKeyFingerprintMatches(after.fingerprint, fingerprint)) {
     throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+  }
+}
+
+type SecretProbeRow = Readonly<{
+  workspace_id: string;
+  kind: string;
+  name: string;
+  nonce: Buffer | Uint8Array;
+  ciphertext: Buffer | Uint8Array;
+}>;
+
+type SecretProbe =
+  | { kind: 'none' }
+  | { kind: 'unusable' }
+  | { kind: 'row'; row: SecretProbeRow };
+
+/**
+ * Ein Secret, an dem sich der Schluessel proben laesst.
+ *
+ * `secrets` hat FORCE ROW LEVEL SECURITY, eine gewoehnliche Abfrage saehe also
+ * null Zeilen und die Datenbank faelschlich als leer. Deshalb dieselbe
+ * transaktionslokale Freigabe, die auch die Migrationen benutzen: Rolle
+ * `system` plus `cross_workspace_access`. Gelesen wird nur das Envelope, nie
+ * ein Klartext.
+ */
+async function findSecretProbe(
+  db: Kysely<ServerDatabase>,
+  keyId: string | undefined,
+): Promise<SecretProbe> {
+  try {
+    return await db.transaction().execute(async (trx) => {
+      await sql`
+        SELECT set_config('app.role', 'system', true),
+               set_config('app.cross_workspace_access', 'on', true)
+      `.execute(trx);
+      if (keyId !== undefined) {
+        const row = await trx
+          .selectFrom('secrets')
+          .select(['workspace_id', 'kind', 'name', 'nonce', 'ciphertext'])
+          .where('key_id', '=', keyId)
+          .where('algorithm', '=', SECRET_ENVELOPE_ALGORITHM)
+          .limit(1)
+          .executeTakeFirst();
+        if (row) return { kind: 'row', row: row as SecretProbeRow } as const;
+      }
+      const any = await trx.selectFrom('secrets').select('id').limit(1).executeTakeFirst();
+      return any ? ({ kind: 'unusable' } as const) : ({ kind: 'none' } as const);
+    });
+  } catch (error) {
+    // Kein `secrets` = eine Datenbank vor 0002; dann gibt es auch nichts zu
+    // schuetzen. Jeder andere Fehler geht durch, aus demselben Grund wie oben.
+    if (isMissingTableError(error)) return { kind: 'none' };
+    throw error;
+  }
+}
+
+/**
+ * Probeentschluesselung. Das Envelope ist AEAD-versiegelt und bindet
+ * workspace/kind/name mit ein — ein fremder Schluessel scheitert an der
+ * Authentifizierung, er liefert keinen Muell, sondern einen Fehler.
+ */
+async function secretIsReadableWith(
+  row: SecretProbeRow,
+  masterKey: MasterKeyMaterial,
+): Promise<boolean> {
+  try {
+    await decryptSecretValue({
+      key: masterKey,
+      envelope: {
+        algorithm: SECRET_ENVELOPE_ALGORITHM,
+        keyId: masterKey.keyId,
+        nonce: Buffer.from(row.nonce),
+        ciphertext: Buffer.from(row.ciphertext),
+      },
+      associatedData: { workspaceId: row.workspace_id, kind: row.kind, name: row.name },
+    });
+    return true;
+  } catch {
+    return false;
   }
 }
 

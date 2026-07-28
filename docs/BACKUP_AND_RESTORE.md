@@ -94,9 +94,19 @@ with the wrong `.env` therefore fails immediately and visibly, instead of
 surfacing weeks later as a mailbox that stopped syncing.
 
 A **missing** key is the same mistake the other way round and is refused too:
-if the database already carries a fingerprint, it was run with a key, and
-starting without one would mean working on secrets nobody can read. A database
-with no fingerprint yet is a fresh installation and still starts without a key.
+if this database was already run with a key, starting without one would mean
+working on secrets nobody can read. Only a database with neither a fingerprint
+nor a single stored secret counts as a fresh installation and still starts
+without a key.
+
+**An empty fingerprint table proves nothing.** Migration 0049 creates it without
+a backfill, and a dump taken before 0049 brings it along empty — which is
+precisely the case this is meant to catch: an old dump restored with the wrong
+`.env`. Taking that as "fresh" would record the wrong key as the truth and
+reject the right one later. So when the table is empty but secrets exist, the
+key is tried against one of them: the envelope is AEAD-sealed, a foreign key
+fails authentication rather than returning garbage. Only a key that proves
+itself gets its fingerprint recorded.
 
 The check tolerates exactly one failure: the table not existing yet, because
 migrations are a separate service and the API must not depend on the schema

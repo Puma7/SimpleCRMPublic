@@ -90,18 +90,65 @@ function throwingPorts(trail = ''): unknown {
   });
 }
 
-/** Ein Regex-Routenmuster in einen konkreten Beispielpfad verwandeln. */
-function sampleFromPattern(raw: string): string | null {
-  if (!raw.startsWith('^')) return null;
-  let s = raw.replace(/^\^/, '').replace(/\$$/, '');
-  s = s.replace(/\(\?:[^()]*\)\?/g, '');
-  s = s.replace(/\(\\d\+\)/g, '1').replace(/\\d\+/g, '1');
-  s = s.replace(/\(\[\^\/\]\+\)/g, 'x').replace(/\[\^\/\]\+/g, 'x');
-  s = s.replace(/\[[^\]]+\]\+/g, 'x');
-  s = s.replace(/\(([a-z0-9|_-]+)\)/gi, (_m, alts: string) => alts.split('|')[0] ?? 'x');
-  s = s.replace(/\\\//g, '/').replace(/\\-/g, '-').replace(/\\\./g, '.');
-  if (/[\\()[\]+*?{}|^$]/.test(s)) return null;
-  return s.startsWith('/') ? s : null;
+/**
+ * Optionale Gruppen in beide Faelle aufloesen: `(?:\/([^/]+))?` steht fuer
+ * ZWEI Routen, die Liste und den einzelnen Datensatz, und die haben
+ * verschiedene Handler.
+ *
+ * Der frueher benutzte Einzeiler (`\(\?:[^()]*\)\?` einfach loeschen) scheiterte
+ * an der Verschachtelung — und schwieg dazu. Acht Routenfamilien, darunter
+ * user-groups/:id/members, ai/profiles und calendar-entries, wurden dadurch
+ * ueberhaupt nicht geprobt.
+ */
+function expandOptionalGroups(pattern: string): string[] {
+  const start = pattern.indexOf('(?:');
+  if (start === -1) return [pattern];
+  let level = 0;
+  let end = -1;
+  for (let i = start; i < pattern.length; i += 1) {
+    const ch = pattern[i];
+    if (ch === '\\') { i += 1; continue; }
+    if (ch === '(') level += 1;
+    else if (ch === ')') {
+      level -= 1;
+      if (level === 0) { end = i; break; }
+    }
+  }
+  // Nicht balanciert oder nicht optional: das Muster bleibt unveraendert und
+  // faellt unten durch die Metazeichen-Pruefung — es wird gemeldet, nicht
+  // uebergangen.
+  if (end === -1 || pattern[end + 1] !== '?') return [pattern];
+  const head = pattern.slice(0, start);
+  const inner = pattern.slice(start + 3, end);
+  const rest = pattern.slice(end + 2);
+  return [`${head}${inner}${rest}`, `${head}${rest}`].flatMap(expandOptionalGroups);
+}
+
+/**
+ * Ein Regex-Routenmuster in konkrete Beispielpfade verwandeln. Leeres Ergebnis
+ * heisst "nicht abbildbar" — und wird oben zum Testfehler, statt die Route
+ * still aus der Probe zu nehmen.
+ */
+function samplesFromPattern(raw: string): string[] {
+  if (!raw.startsWith('^')) return [];
+  const body = raw.replace(/^\^/, '').replace(/\$$/, '');
+  // Mehr als vier optionale Gruppen waeren 16 Varianten — dann stimmt etwas
+  // anderes nicht, und Raten hilft hier niemandem.
+  if ((body.match(/\(\?:/g) ?? []).length > 4) return [];
+  const samples: string[] = [];
+  for (const variant of expandOptionalGroups(body)) {
+    let s = variant;
+    s = s.replace(/\(\\d\+\)/g, '1').replace(/\\d\+/g, '1');
+    s = s.replace(/\(\[\^\/\]\+\)/g, 'x').replace(/\[\^\/\]\+/g, 'x');
+    s = s.replace(/\[[^\]]+\]\+/g, 'x');
+    s = s.replace(/\(([a-z0-9|_-]+)\)/gi, (_m, alts: string) => alts.split('|')[0] ?? 'x');
+    s = s.replace(/\\\//g, '/').replace(/\\-/g, '-').replace(/\\\./g, '.');
+    // Bleibt in EINER Variante ein Metazeichen stehen, ist das ganze Muster
+    // nicht verstanden. Dann lieber nichts liefern als eine halbe Familie.
+    if (/[\\()[\]+*?{}|^$]/.test(s) || !s.startsWith('/')) return [];
+    samples.push(s);
+  }
+  return samples;
 }
 
 /**
@@ -134,9 +181,10 @@ const PATH_LITERAL = /(['"`])(\/(?:api\/v1|health|openapi|t)\/?[^'"`\s]*)\1/g;
  * aufloesen laesst (Interpolation, geteilte Konstanten), faengt die Pruefung
  * darunter ab.
  */
-function collectRoutePaths(): { paths: string[]; interpolated: string[] } {
+function collectRoutePaths(): { paths: string[]; interpolated: string[]; unmappable: string[] } {
   const paths = new Set<string>();
   const interpolated = new Set<string>();
+  const unmappable = new Set<string>();
   for (const file of readdirSync(API_DIR).filter((name) => name.endsWith('.ts'))) {
     // Reine Kommentarzeilen fliegen raus: dort steht Prosa ueber Routen, keine
     // Route. `/api/v1/portal/returns/...` aus einem Kopfkommentar wuerde sonst
@@ -159,11 +207,16 @@ function collectRoutePaths(): { paths: string[]; interpolated: string[] } {
     for (const match of source.matchAll(/\/\^([^\n]*?)\$\//g)) {
       const raw = `^${match[1]}$`;
       if (!raw.includes('api')) continue;
-      const sample = sampleFromPattern(raw);
-      if (sample) paths.add(sample);
+      const samples = samplesFromPattern(raw);
+      if (samples.length === 0) unmappable.add(raw);
+      for (const sample of samples) paths.add(sample);
     }
   }
-  return { paths: [...paths].sort(), interpolated: [...interpolated].sort() };
+  return {
+    paths: [...paths].sort(),
+    interpolated: [...interpolated].sort(),
+    unmappable: [...unmappable].sort(),
+  };
 }
 
 /** Beispielpfad zurueck auf die sprechende Form bringen, die oben steht. */
@@ -196,6 +249,15 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
     // muss sagen, ob es eine Route ist. Waere er eine, muesste er anders
     // geschrieben werden — sonst pruefte ihn niemand.
     expect(collectRoutePaths().interpolated).toEqual([...NON_ROUTE_INTERPOLATED_PATHS].sort());
+  });
+
+  test('jedes Routen-Regex laesst sich in Beispielpfade aufloesen', () => {
+    // Ein Muster, das die Vereinfachung nicht versteht, wurde frueher still
+    // uebersprungen — und damit die ganze Routenfamilie ungeprobt gelassen.
+    // Genau dort waere ein fehlendes requirePrincipal folgenlos geblieben.
+    // Kommt eine Schreibweise hinzu, die hier niemand vorhergesehen hat, faellt
+    // dieser Test und nicht die Absicherung.
+    expect(collectRoutePaths().unmappable).toEqual([]);
   });
 
   test('nur die bewusst oeffentlichen Endpunkte antworten ohne Principal', async () => {

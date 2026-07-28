@@ -2193,12 +2193,27 @@ describe('server edition repository boundaries', () => {
       secret: Buffer.alloc(32, 11),
     };
     const destroyed = jest.fn(async () => undefined);
+    // Seit der Master-Key-Pruefung liest der Start die Fingerabdruck-Tabelle und
+    // — weil eine leere Tabelle nach einem Upgrade nichts beweist — auch
+    // `secrets`, letzteres in einer Transaktion mit gelockerter RLS-Sitzung.
+    // Beides leer = frische Installation: kein Schluessel hinterlegt, keine
+    // Secrets, die unlesbar werden koennten.
+    const emptySelect: Record<string, unknown> = {
+      select: () => emptySelect,
+      limit: () => emptySelect,
+      where: () => emptySelect,
+      execute: async () => [],
+      executeTakeFirst: async () => undefined,
+    };
     const fakeDb = {
       destroy: destroyed,
-      // Seit der Master-Key-Pruefung liest der Start die Fingerabdruck-Tabelle.
-      // Leer = frische Installation: hier ist noch kein Schluessel hinterlegt,
-      // also gibt es auch keine Secrets, die unlesbar werden koennten.
-      selectFrom: () => ({ select: () => ({ execute: async () => [] }) }),
+      selectFrom: () => emptySelect,
+      transaction: () => ({
+        execute: async (operation: (trx: unknown) => Promise<unknown>) => operation({
+          selectFrom: () => emptySelect,
+          getExecutor: () => ({ executeQuery: async () => ({ rows: [] }) }),
+        }),
+      }),
     } as unknown as Kysely<ServerDatabase>;
     const createDatabase = jest.fn(async () => fakeDb);
     const closedNotifications = jest.fn(async () => undefined);
