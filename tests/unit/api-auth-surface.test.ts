@@ -326,6 +326,36 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
     expect(markers).toHaveLength(registered.length);
   });
 
+  test('am Adapter haengen nur die bekannten Direktregistrierungen', () => {
+    // Die Probe unten schiesst gegen den Dispatcher. Eine Route, die direkt am
+    // Fastify-Adapter registriert wird, kennt der Dispatcher nicht: er
+    // antwortet 404, und 404 gilt hier als "gibt es nicht" — ein
+    // unauthentifizierter Handler bliebe unsichtbar. Fuer WebSockets ist das
+    // ausdruecklich geregelt; fuer gewoehnliche HTTP-Routen gab es bisher gar
+    // keine Schranke. Diese Liste ist sie: kommt eine Registrierung hinzu,
+    // faellt der Test, und wer sie hinzufuegt muss sagen, wie sie geprobt wird.
+    const adapter = readFileSync(join(API_DIR, 'fastify-adapter.ts'), 'utf8');
+    const registered = [
+      ...adapter.matchAll(
+        /\bapp\.(get|post|put|patch|delete|head|options|all)\(\s*(['"`])([^'"`]+)\2/g,
+      ),
+    ].map((match) => `${match[1]} ${match[3]}`);
+    const routeCalls = [...adapter.matchAll(/\bapp\.route\(\{([\s\S]*?)\}\s*\)/g)]
+      .map((match) => /url:\s*(['"`])([^'"`]+)\1/.exec(match[1] ?? '')?.[2] ?? '?')
+      .map((url) => `route ${url}`);
+
+    expect([...registered, ...routeCalls].sort()).toEqual([
+      // Der Ereignis-Strom. Geprobt in
+      // tests/integration/api-auth-surface-websocket.test.ts.
+      'get /api/v1/events',
+      // CORS-Preflight. Antwortet 204 oder 403 und liefert keine Daten.
+      'options /*',
+      // Die Sammelroute in den Dispatcher — alles, was durch sie laeuft, deckt
+      // die Probe unten ab.
+      'route /*',
+    ]);
+  });
+
   test('jedes Routen-Regex laesst sich in Beispielpfade aufloesen', () => {
     // Ein Muster, das die Vereinfachung nicht versteht, wurde frueher still
     // uebersprungen — und damit die ganze Routenfamilie ungeprobt gelassen.

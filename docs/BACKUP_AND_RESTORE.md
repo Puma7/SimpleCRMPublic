@@ -214,17 +214,19 @@ id with different key material — a state that only surfaces at the next start,
 with half the secrets unreadable. Refusing costs nothing here: without
 migrations there is no schema, so the API could not serve anything anyway.
 
-**Secret writes are locked out while the check runs.** The advisory lock
+**Writes are locked out while the check runs.** The advisory lock
 serialises startups, not the normal write path — that one does not take it. In a
 rolling deployment an old replica keeps serving requests, and under `READ
 COMMITTED` every page of the check sees its own snapshot, so a secret inserted
 after the last page (or with a smaller uuid than the cursor) would slip past
 unchecked and the fingerprint would be recorded anyway. The one-time check
-therefore takes `LOCK TABLE secrets IN SHARE MODE`: reads continue, writes wait.
-With a `lock_timeout` of five seconds — if someone really is writing secrets
-right now, the start fails visibly instead of quietly walking past the row.
-Later starts never reach this point, so nothing blocks once a fingerprint
-exists.
+therefore takes `LOCK TABLE ... IN SHARE MODE` on `secrets` **and the three
+tracking tables**: reads continue, writes wait. Taking a lock costs nothing
+regardless of table size, and without it the same old replica could push links,
+tokens or events in beside the samples. With a `lock_timeout` of five seconds —
+if someone really is writing right now, the start fails visibly instead of
+quietly walking past the row. Later starts never reach this point, so nothing
+blocks once a fingerprint exists.
 
 **The check and the decision happen under one lock.** Without it, two replicas
 starting at once on a fresh database both see an empty table — and a replica

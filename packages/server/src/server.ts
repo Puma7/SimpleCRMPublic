@@ -1250,26 +1250,39 @@ async function findSecretProbe(
     }
   };
 
-  // Schreibsperre auf `secrets`, solange geprueft wird.
+  // Schreibsperre auf allem, was gleich geprueft wird.
   //
   // Die Advisory-Sperre serialisiert nur Startvorgaenge, nicht den normalen
   // Schreibpfad — der nimmt sie nicht. Bei einem Rolling Deployment bedient
   // eine alte Replik weiter Anfragen, und unter READ COMMITTED sieht jede
-  // Seite dieser Pruefung ihren eigenen Snapshot: ein Secret, das nach der
-  // letzten Seite oder mit einer kleineren uuid dazukommt, bliebe ungeprueft —
-  // und der Fingerabdruck wuerde trotzdem festgeschrieben. SHARE erlaubt
-  // weiter jedes Lesen und blockiert nur Schreibvorgaenge, fuer die Dauer
-  // dieser einmaligen Pruefung.
+  // Seite dieser Pruefung ihren eigenen Snapshot: eine Zeile, die nach der
+  // Probe dazukommt, bliebe ungeprueft — und der Fingerabdruck wuerde trotzdem
+  // festgeschrieben. SHARE erlaubt weiter jedes Lesen und blockiert nur
+  // Schreibvorgaenge, fuer die Dauer dieser einmaligen Pruefung.
+  //
+  // Auch die Tracking-Tabellen, obwohl dort nur gestichprobt wird: eine Sperre
+  // zu nehmen kostet unabhaengig von der Tabellengroesse nichts, und ohne sie
+  // koennte dieselbe alte Replik waehrend der Probe Links, Tokens oder
+  // Ereignisse mit einem anderen Schluessel nachschieben. Was die Stichprobe
+  // nicht leisten kann, bleibt davon unberuehrt (siehe TRACKING_PROBE_SAMPLE) —
+  // aber wenigstens laeuft ihr nichts mehr unter den Haenden weg.
   //
   // lock_timeout, damit ein langlaufender Schreiber den Start nicht endlos
   // haengen laesst. Laeuft er ab, faellt der Start mit dem Postgres-Fehler aus
-  // — und das ist richtig so: dann schreibt gerade jemand anders Secrets, und
-  // genau dagegen wird hier gesperrt.
+  // — und das ist richtig so: dann schreibt gerade jemand anders, und genau
+  // dagegen wird hier gesperrt.
   await sql`SET LOCAL lock_timeout = '5s'`.execute(trx);
-  await tolerateMissing(async () => {
-    await sql`LOCK TABLE secrets IN SHARE MODE`.execute(trx);
-    return [];
-  });
+  for (const table of [
+    'secrets',
+    'email_tracking_links',
+    'email_tracking_events',
+    'email_tracking_token_resolver',
+  ]) {
+    await tolerateMissing(async () => {
+      await sql.raw(`LOCK TABLE ${table} IN SHARE MODE`).execute(trx);
+      return [];
+    });
+  }
 
   const kinds = await tolerateMissing(() => trx
     .selectFrom('secrets')

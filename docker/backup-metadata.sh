@@ -358,6 +358,11 @@ verify_backup_metadata() {
   recorded="$(backup_metadata_value "$meta_path" 'row_counts' || printf 'unknown')"
   if [ "$recorded" = 'failed' ] || ! grep -q '^rows_' "$meta_path"; then
     echo "$label: this backup carries no row counts, so completeness cannot be verified" >&2
+    # Die Schluessel-Auskunft haengt nicht an der Zaehlung — und gerade hier
+    # wird sie gebraucht: mit RESTORE_ALLOW_UNVERIFIABLE=1 laeuft der Restore
+    # trotz dieses Rueckwegs weiter, und ohne diesen Aufruf erfuehre der
+    # Betreiber von der noetigen .env erst beim Startabbruch der API.
+    report_master_key_material "$meta_path" "$label"
     return 1
   fi
 
