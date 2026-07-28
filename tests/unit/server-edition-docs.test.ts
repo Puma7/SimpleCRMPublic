@@ -143,6 +143,16 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).not.toMatch(/BACKUP_METADATA_TABLES=/);
     // Und geprueft wird ueber die Tabellen, die IM BACKUP stehen.
     expect(metadata).toEqual(expect.stringContaining("awk -F= '/^rows_/"));
+    // Nicht lesbar ist nicht dasselbe wie in Ordnung: fehlt die Tabelle nach der
+    // Wiederherstellung oder scheitert die Abfrage, wurde die Vollstaendigkeit
+    // NICHT geprueft — das als Erfolg zu melden waere die schlimmere Variante.
+    expect(metadata).toEqual(expect.stringContaining('cannot read $table after restore'));
+    // Und eine im Manifest gelistete, aber fehlende Metadatei bricht ab; nur
+    // Backups von vor dieser Aenderung duerfen ungeprueft durchlaufen.
+    expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_listed()'));
+    for (const script of [restore, drill]) {
+      expect(script).toEqual(expect.stringContaining('is listed in the checksum manifest but missing'));
+    }
 
     // pg_restore meldet nur "keine Fehler". Erst der Abgleich der Zeilenzahlen
     // belegt Vollstaendigkeit — eine unter zu schwachen Rechten gezogene

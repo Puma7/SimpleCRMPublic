@@ -70,6 +70,11 @@ if [ -n "$CHECKSUM_MANIFEST" ] && [ -f "$CHECKSUM_MANIFEST" ]; then
   if [ -n "$METADATA_PATH" ] && [ -f "$METADATA_PATH" ]; then
     verify_backup_file "$METADATA_PATH" "$CHECKSUM_MANIFEST"
   fi
+  if [ -n "$METADATA_PATH" ] && [ ! -f "$METADATA_PATH" ] \
+    && backup_metadata_is_listed "$CHECKSUM_MANIFEST" "$(basename "$METADATA_PATH")"; then
+    echo "backup metadata is listed in the checksum manifest but missing: $METADATA_PATH" >&2
+    exit 1
+  fi
 else
   echo "warning: checksum manifest not found; restoring without backup hash verification" >&2
 fi

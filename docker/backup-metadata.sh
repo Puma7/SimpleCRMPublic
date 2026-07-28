@@ -116,6 +116,19 @@ assert_backup_role_reads_all_rows() {
   esac
 }
 
+# Steht die Metadatei in der Pruefsummenliste?
+#
+# Fehlt sie DORT, stammt das Backup aus der Zeit davor und die Pruefung entfaellt
+# zu Recht. Steht sie drin und die Datei fehlt trotzdem, ist der Satz
+# unvollstaendig — dann darf nicht stillschweigend ungeprueft wiederhergestellt
+# werden, nur weil die Datei abhandengekommen ist.
+backup_metadata_is_listed() {
+  manifest_path="$1"
+  meta_name="$2"
+  [ -f "$manifest_path" ] || return 1
+  awk -v name="$meta_name" '($2 == name || $2 == "*" name) { found = 1 } END { exit !found }' "$manifest_path"
+}
+
 backup_metadata_value() {
   # $1 = Pfad zur .meta, $2 = Schluessel
   awk -F= -v key="$2" '$1 == key { sub(/^[^=]*=/, ""); print; found = 1 } END { if (!found) exit 1 }' "$1"
@@ -143,7 +156,14 @@ verify_backup_metadata() {
     [ "$expected" = 'n/a' ] && continue
     actual="$(backup_metadata_count "$database_url" "$table")"
     [ "$actual" = "$expected" ] && continue
-    if [ "$expected" -gt 0 ] 2>/dev/null && [ "$actual" = '0' ]; then
+    if [ "$actual" = 'n/a' ]; then
+      # Die Tabelle fehlt nach der Wiederherstellung, oder die Abfrage ist
+      # gescheitert. Beides heisst: die Vollstaendigkeit wurde NICHT geprueft —
+      # das als Erfolg zu melden waere die schlimmere Variante des Fehlers, den
+      # diese Pruefung verhindern soll.
+      echo "$label: cannot read $table after restore, but the backup recorded $expected rows" >&2
+      empty=1
+    elif [ "$expected" -gt 0 ] 2>/dev/null && [ "$actual" = '0' ]; then
       # Der eine Fall, der nicht harmlos entstehen kann.
       echo "$label: $table is EMPTY after restore but the backup recorded $expected rows" >&2
       empty=1
