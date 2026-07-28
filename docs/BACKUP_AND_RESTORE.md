@@ -182,11 +182,24 @@ issued token — the next start records properly. Restore and doctor report the
 same state for such a backup instead of promising a free choice of key.
 
 **The samples are index-bound, not time-ordered.** No index covers `created_at`
-on these tables, so `ORDER BY created_at LIMIT 3` would read the whole table and
-sort it — six times, before the API starts listening. The probes order by
-primary key instead, and the event probe looks for sealed rows inside a window
-of the newest rows rather than filtering the entire table. Retention keeps
-sealed metadata recent, so that window is where they are.
+on these tables, so ordering by it would read the whole table and sort it — six
+times, before the API starts listening. The probes order by primary key instead,
+and the event probe looks for sealed rows inside a window of the newest rows
+rather than filtering the entire table. Retention keeps sealed metadata recent,
+so that window is where they are.
+
+**And they are samples, not proof — deliberately.** For events the primary key
+is time-ordered, so both ends really are old and new. For links (random uuid)
+and the resolver (hash) they are two arbitrary but stable points. A pre-0049
+database whose tracking rows come from two different master keys can therefore
+pass if the drawn rows all happen to belong to the configured one, and the
+fingerprint is then recorded for good. That risk is accepted **here and not for
+secrets**: an unreadable tracking row costs the pixels and click targets of a
+past campaign, an unreadable secret costs credentials. Where credentials are at
+stake the check is exhaustive; where evidence is at stake it draws 25 rows per
+end and table, which costs nothing over the index and catches a key change in
+all but contrived cases. Verifying every tracking row would mean decrypting
+millions of them before the API answers its first request.
 
 **A missing fingerprint table is not a free pass.** In the Compose flow the API
 waits for `migrate`, but a rolling deployment or another orchestrator can start

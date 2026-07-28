@@ -1139,12 +1139,28 @@ type SecretProbe =
  * ungeprueft und trotzdem fuer immer festgeschrieben.
  *
  * Tracking-Zeilen koennen dagegen sechsstellig werden; die zu jedem Erststart
- * durchzurechnen waere nicht vertretbar. Dort eine Stichprobe von den aeltesten
- * UND den juengsten Zeilen: ein Schluesselwechsel faellt zeitlich, und die
- * Raender zeigen ihn. Das ist ausdruecklich eine Stichprobe, keine Garantie.
+ * durchzurechnen waere nicht vertretbar — und teuer zu proben auch nicht: schon
+ * das blosse Sortieren nach created_at war ein Vollscan je Tabelle (dafuer gibt
+ * es dort keinen Index). Deshalb eine Stichprobe von beiden Enden des
+ * PRIMAERSCHLUESSELS.
+ *
+ * Was diese Stichprobe NICHT ist: ein Beweis. Bei den Ereignissen ist der
+ * Schluessel (bigserial) zeitlich geordnet, die Enden sind also alt und neu.
+ * Bei Links (zufaellige uuid) und Resolver (Hash) sind es zwei beliebige,
+ * bloss stabile Punkte — eine pre-0049-Datenbank mit Tracking-Zeilen aus zwei
+ * Schluesselgenerationen kann hier durchkommen, wenn die gezogenen Zeilen
+ * zufaellig alle zur konfigurierten gehoeren.
+ *
+ * Diese Restunschaerfe wird bewusst getragen, und zwar hier und nicht bei den
+ * Secrets: ein unlesbarer Tracking-Bestand kostet Zaehlpixel und Klick-Ziele
+ * einer vergangenen Kampagne, ein unlesbares Secret kostet Zugangsdaten. Wo es
+ * um Zugangsdaten geht, wird vollstaendig geprueft; wo es um Belege geht,
+ * genuegt eine Stichprobe, die gross genug ist, um einen Schluesselwechsel
+ * praktisch immer zu treffen — 25 Zeilen je Ende und Tabelle kosten ueber den
+ * Index nichts.
  */
 const SECRET_PROBE_PAGE = 500;
-const TRACKING_PROBE_SAMPLE = 3;
+const TRACKING_PROBE_SAMPLE = 25;
 /** Fenster ueber die juengsten Ereignisse, in dem nach versiegelten gesucht wird. */
 const TRACKING_EVENT_SCAN_WINDOW = 5000;
 
@@ -1269,27 +1285,29 @@ async function findSecretProbe(
   // SAVEPOINT a, SAVEPOINT b, RELEASE a — und mit a verschwindet b, weil ein
   // aeusserer Savepoint die inneren mitnimmt. Nebenlaeufigkeit gaebe es hier
   // ohnehin keine: eine Verbindung fuehrt eine Anweisung nach der anderen aus.
-  const edges = async <T extends { }>(
+  const bothEnds = async <T extends { }>(
     query: (direction: 'asc' | 'desc') => Promise<T[]>,
   ): Promise<T[]> => {
-    const oldest = await query('asc');
-    const newest = await query('desc');
-    return [...oldest, ...newest];
+    const ascending = await query('asc');
+    const descending = await query('desc');
+    return [...ascending, ...descending];
   };
 
   // Sortiert wird ueber den PRIMAERSCHLUESSEL, nicht ueber created_at.
   //
-  // `LIMIT 3` begrenzt das Ergebnis, nicht die Arbeit: auf created_at liegt in
+  // Das Ergebnis-LIMIT begrenzt nicht die Arbeit: auf created_at liegt in
   // keiner dieser Tabellen ein Index (0027 legt fuer Links und Resolver gar
   // keinen Zeitindex an, der Ereignisindex beginnt mit workspace_id). Postgres
   // muesste also jede — moeglicherweise millionenschwere — Tabelle vollstaendig
   // lesen und per Top-N sortieren, und das sechsmal, bevor die API ueberhaupt
   // zu lauschen beginnt. Ueber den Primaerschluessel ist es ein
   // Index-Scan von beiden Enden. Zeitlich geordnet ist das nur bei den
-  // Ereignissen (bigserial); bei Links und Resolver sind es zwei feste,
-  // beliebige Zeilen — als Stichprobe genuegt das, und nur darum geht es hier.
+  // Ereignissen (bigserial); bei Links (zufaellige uuid) und Resolver (Hash)
+  // sind es zwei beliebige, bloss stabile Punkte. Die Stichprobe ist damit
+  // ausdruecklich kein Beweis — die Abwaegung dazu steht bei
+  // TRACKING_PROBE_SAMPLE.
   const tracking = dedupeBy(
-    await edges((direction) => tolerateMissing(() => trx
+    await bothEnds((direction) => tolerateMissing(() => trx
       .selectFrom('email_tracking_links').select(linkColumns)
       .orderBy('id', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
     (row) => String(row.id),
@@ -1323,7 +1341,7 @@ async function findSecretProbe(
   // Datenbank leer aus, und ein falscher Schluessel machte jedes ausgestellte
   // Zaehlpixel unaufloesbar.
   const trackingTokens = dedupeBy(
-    await edges((direction) => tolerateMissing(() => trx
+    await bothEnds((direction) => tolerateMissing(() => trx
       .selectFrom('email_tracking_token_resolver')
       .select(['token_hash', 'tracking_message_id', 'link_id', 'token_kind'])
       .orderBy('token_hash', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
