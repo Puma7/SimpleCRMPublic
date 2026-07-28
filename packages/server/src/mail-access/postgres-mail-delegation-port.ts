@@ -18,6 +18,8 @@ import {
   DENY_ALL_TAG_ALLOW_VALUE,
   hasMailBindingConstraints,
   isConstraintsAtLeastAsRestrictive,
+  mailBindingConstraintEntryCount,
+  MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH,
   mergeAuthorityConstraints,
 } from './mail-acl-constraints';
 import type { ServerDatabase } from '../db/schema';
@@ -292,12 +294,16 @@ export function createPostgresMailDelegationPort(
       return withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
-        async (trx) => replaceBySubjectResource(trx, input.workspaceId, input.actor, {
-          subject: input.subject,
-          resource: input.resource,
-          permissions: uniquePermissions(input.permissions),
-          ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
-        }),
+        async (trx) => {
+          // Erste Anweisung jeder mutierenden Transaktion, siehe lockAclMutation.
+          await lockAclMutation(trx, input.workspaceId);
+          return replaceBySubjectResource(trx, input.workspaceId, input.actor, {
+            subject: input.subject,
+            resource: input.resource,
+            permissions: uniquePermissions(input.permissions),
+            ...(input.constraints !== undefined ? { constraints: input.constraints } : {}),
+          });
+        },
         sessionOptions,
       );
     },
@@ -307,6 +313,13 @@ export function createPostgresMailDelegationPort(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
         async (trx) => {
+          // Erste Anweisung, VOR jeder Zeilensperre: sonst haelt der PATCH die
+          // Binding-Zeile und wartet auf die Advisory-Sperre, waehrend ein
+          // paralleler POST sie umgekehrt haelt — Postgres bricht dann eine der
+          // beiden gueltigen Anfragen als Deadlock ab, statt sie zu
+          // serialisieren. Der frueher noetige ungesperrte Vorablick auf das
+          // Subjekt entfaellt damit: der Schluessel haengt nur am Workspace.
+          await lockAclMutation(trx, input.workspaceId);
           const existing = await findBindingById(trx, input.workspaceId, input.bindingId);
           if (!existing) return { ok: false as const, code: 'binding_not_found' as const };
           return replaceBySubjectResource(trx, input.workspaceId, input.actor, {
@@ -328,6 +341,10 @@ export function createPostgresMailDelegationPort(
         options.db,
         { workspaceId: input.workspaceId, userId: input.actor.userId, role: actorRole(input.actor) },
         async (trx) => {
+          // Auch das Loeschen sperrt die Autoritaets-Bindings des Handelnden und
+          // die Zielzeile — dieselbe Zyklushaelfte wie POST und PATCH, also
+          // dieselbe Sperre zuerst.
+          await lockAclMutation(trx, input.workspaceId);
           const existing = await findBindingById(trx, input.workspaceId, input.bindingId);
           if (!existing) return { ok: false as const, code: 'binding_not_found' as const };
           const resource = rowResource(existing);
@@ -395,6 +412,17 @@ export function createPostgresMailDelegationPort(
     if (!subject.ok) return subject;
     const resource = await validateResource(trx, workspaceId, input.resource);
     if (!resource.ok) return resource;
+    // Die ACL-Mutationssperre haelt bereits der Aufrufer (replaceBinding /
+    // replaceBindingById) — hier steht sie nur als Sicherung, falls ein neuer
+    // Einstiegspunkt sie vergisst: pg_advisory_xact_lock ist innerhalb
+    // derselben Transaktion wiederholbar. Sie muss VOR dem Aufloesen von
+    // `existing` liegen, sonst koennten zwei gleichzeitige POSTs auf dasselbe
+    // Subjekt/dieselbe Ressource beide `existing` als leer sehen: der
+    // Nachzuegler saehe die frisch committete Zeile zwar in den Geschwistern,
+    // haette aber weiterhin replacedBindingId === null — er zaehlte den
+    // gespeicherten Verbrauch UND seinen eigenen und lehnte ab, obwohl der
+    // Upsert die alte Zeile ersetzt.
+    await lockAclMutation(trx, workspaceId);
     // Lock the actor's authorizing grant rows FOR UPDATE (forUpdate: true) while creating /
     // replacing a delegated binding, so a concurrent revocation of the actor's own authority
     // serializes with this write rather than racing it under read-committed (R48-4).
@@ -492,12 +520,21 @@ export function createPostgresMailDelegationPort(
       }
     }
 
-    if (constraints !== undefined && await unknownConstraintCategoryExists(trx, workspaceId, constraints)) {
-      return { ok: false as const, code: 'category_not_found' as const };
-    }
-
-    const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
+    // Der LOESCHPFAD kommt VOR Kategorie- und Budgetpruefung.
+    //
+    // Beide beschreiben den Zielzustand eines Bindings — der ist hier aber
+    // "kein Binding". Die Budgetpruefung zaehlt den Verbrauch der GESCHWISTER
+    // mit: liegt der bereits ueber dem Limit (Altbestand aus der Zeit vor der
+    // Pruefung oder ein spaeter gesenktes Limit), lehnte sie ausgerechnet die
+    // Loeschung mit constraint_budget_exceeded ab — obwohl gerade sie den
+    // Verbrauch senkt und die einzige Bewegung aus der Sackgasse heraus ist.
+    // Dasselbe gilt fuer eine inzwischen geloeschte Kategorie in den
+    // mitgeschickten (und ohnehin verworfenen) Filtern.
+    //
+    // Der Nicht-Admin-Zweig oben hat den Loeschfall bereits samt seiner
+    // Autoritaetspruefung beantwortet; hier landen nur Owner/Admins.
     if (input.permissions.length === 0) {
+      const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
       if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
       // Surface the deleted row's id AND its resource so the route can still publish the
       // email_acl.changed invalidation (binding is null on delete) WITH the tombstone
@@ -513,6 +550,16 @@ export function createPostgresMailDelegationPort(
       };
     }
 
+    if (constraints !== undefined && await unknownConstraintCategoryExists(trx, workspaceId, constraints)) {
+      return { ok: false as const, code: 'category_not_found' as const };
+    }
+
+    if (constraints !== undefined) {
+      const budget = await constraintBudgetExceeded(trx, workspaceId, input.subject, existing?.id ?? null, constraints);
+      if (budget) return { ok: false as const, code: 'constraint_budget_exceeded' as const, ...budget };
+    }
+
+    const affectedUserIds = await affectedUsersForSubject(trx, workspaceId, input.subject);
     const now = options.now?.() ?? new Date();
     let bindingRow: BindingRow | null;
     if (existing) {
@@ -886,6 +933,9 @@ async function findBindingById(
   workspaceId: string,
   bindingId: number,
 ): Promise<BindingRow | null> {
+  // Immer sperrend: die ACL-Mutationssperre des Workspaces liegt zu diesem
+  // Zeitpunkt bereits an, die Zeilensperre kann also keine Reihenfolge mehr
+  // verletzen.
   const row = await trx
     .selectFrom('mail_acl_bindings')
     .selectAll()
@@ -1107,6 +1157,110 @@ async function loadBindingConstraints(
  * gefaehrlicher als eine Fehlermeldung. Das Deny-All-Sentinel (-1) ist keine
  * echte Kategorie und wird uebersprungen.
  */
+/**
+ * Kumulatives Budget ueber ALLE Bindings eines Subjekts.
+ *
+ * Das Limit pro Liste (MAX_..._LIST_LENGTH, Routen-Validierung) deckelt genau
+ * ein Binding. sql-scope bettet aber die Constraints JEDES Bindings des
+ * Betroffenen in dieselbe gescopte Mail-Query ein und ODER-verknuepft sie —
+ * die Summe bestimmt also die Abfragekosten, nicht das Maximum. Ohne diesen
+ * Deckel baut ein Subjekt mit vielen gefilterten Bindings beliebig grosse
+ * `in (...)`-Listen auf.
+ *
+ * Gezaehlt wird in DERSELBEN Transaktion wie die Schreibung, damit zwei
+ * parallele Bindings nicht beide am halben Budget vorbeikommen: die Bindings
+ * des Subjekts werden dafuer gesperrt.
+ */
+/**
+ * Transaktionsweite Advisory-Sperre fuer JEDE ACL-Mutation eines Workspaces.
+ *
+ * Zwei Gruende, in dieser Reihenfolge entstanden:
+ *
+ * 1. Budget. FOR UPDATE auf die gefundenen Bindings genuegt nicht: es nimmt
+ *    keine Praedikats-/Luecken-Sperre, sperrt bei einem Subjekt ohne Bindings
+ *    also gar nichts, und eine wartende Anweisung sieht ein parallel
+ *    eingefuegtes Phantom aus ihrem aelteren Snapshot nicht. Die Advisory-Sperre
+ *    existiert unabhaengig von vorhandenen Zeilen.
+ *
+ * 2. Sperr-Reihenfolge. Der Schluessel war zuerst das ZIELSUBJEKT — das ordnet
+ *    aber nur Mutationen an demselben Subjekt. Jede Mutation sperrt zusaetzlich
+ *    die Autoritaets-Bindings des Handelnden (canManageResource mit forUpdate),
+ *    und deren Subjekt ist der HANDELNDE. Zwei delegierte Manager A und B, die
+ *    gleichzeitig am Binding des jeweils anderen arbeiten, sperren damit ueber
+ *    Kreuz: A haelt die Zeilen von A (als eigene Autoritaet) und will die von B
+ *    (als Ziel), B spiegelbildlich. Verschiedene Subjekte, also verschiedene
+ *    Schluessel — die Subjektsperre konnte den Zyklus nicht aufloesen, und
+ *    Postgres brach eine der beiden gueltigen Mutationen ab.
+ *
+ * Deshalb EIN Schluessel pro Workspace, genommen als erste Anweisung jeder
+ * mutierenden Transaktion: Ziel- und Autoritaetssubjekte sind damit gemeinsam
+ * geordnet, unabhaengig davon, wer an wem arbeitet. Der Preis ist, dass
+ * ACL-Mutationen eines Workspaces serialisieren — es sind seltene, kurze
+ * Verwaltungsvorgaenge, und die Alternative waere, saemtliche beteiligten
+ * Subjekte vorab zu ermitteln und sortiert zu sperren (inklusive der
+ * Gruppenmitgliedschaften des Handelnden), also mehr Sperren und mehr
+ * Reihenfolge-Annahmen fuer denselben Effekt.
+ */
+async function lockAclMutation(trx: Trx, workspaceId: string): Promise<void> {
+  const key = `mail_acl_mutation:${workspaceId}`;
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`.execute(trx);
+}
+
+async function constraintBudgetExceeded(
+  trx: Trx,
+  workspaceId: string,
+  subject: MailDelegationSubject,
+  replacedBindingId: number | null,
+  next: MailBindingVisibilityConstraints | null,
+): Promise<{ used: number; limit: number } | null> {
+  const nextCount = mailBindingConstraintEntryCount(next);
+  // Die Subjektsperre haelt bereits replaceBySubjectResource — sie muss VOR dem
+  // Aufloesen des bestehenden Bindings genommen werden, damit `existing` und die
+  // hier gezaehlten Geschwister denselben Zustand beschreiben.
+  const siblings = await trx
+    .selectFrom('mail_acl_bindings')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('subject_type', '=', subject.type)
+    .where('subject_id', '=', subjectId(subject))
+    .execute();
+  // Die zu ersetzende Zeile wird MITGELESEN, nicht bloss uebersprungen: ihr
+  // bisheriger Verbrauch entscheidet, ob eine Aenderung senkt oder haeuft.
+  const bindingIds = siblings.map((row) => Number(row.id));
+
+  let others = 0;
+  let replacedCurrent = 0;
+  if (bindingIds.length > 0) {
+    const rows = await trx
+      .selectFrom('mail_acl_binding_constraints')
+      .select(['binding_id', 'value_ids', 'value_texts'])
+      .where('workspace_id', '=', workspaceId)
+      .where('binding_id', 'in', bindingIds)
+      .execute();
+    for (const row of rows) {
+      const entries = (row.value_ids?.length ?? 0) + (row.value_texts?.length ?? 0);
+      if (replacedBindingId !== null && Number(row.binding_id) === replacedBindingId) {
+        replacedCurrent += entries;
+      } else {
+        others += entries;
+      }
+    }
+  }
+  const used = nextCount + others;
+  if (used <= MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH) return null;
+  // Ueber dem Limit — aber eine Aenderung, die den Verbrauch STRIKT SENKT,
+  // bleibt erlaubt.
+  //
+  // Sonst sitzt ein Subjekt fest, das ueber dem Limit liegt (Altbestand aus
+  // der Zeit vor der Pruefung oder ein spaeter gesenktes Limit): jedes
+  // Aufraeumen in Schritten prallte ab, weil die SUMME weiterhin darueber
+  // liegt, und nur das vollstaendige Loeschen eines Bindings kam durch (siehe
+  // Loeschpfad). Genau das ist die falsche Richtung — wer aufraeumt, soll
+  // aufraeumen duerfen.
+  if (nextCount < replacedCurrent) return null;
+  return { used, limit: MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH };
+}
+
 async function unknownConstraintCategoryExists(
   trx: Trx,
   workspaceId: string,

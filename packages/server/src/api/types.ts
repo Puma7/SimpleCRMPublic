@@ -827,6 +827,8 @@ export type MailDelegationMutationCode =
   | 'resource_not_found'
   | 'subject_not_found'
   | 'category_not_found'
+  /** Kumulatives Constraint-Budget des Subjekts ueberschritten. */
+  | 'constraint_budget_exceeded'
   | 'owner_admin_subject_forbidden';
 
 export type MailDelegationApiPort = {
@@ -871,7 +873,8 @@ export type MailDelegationApiPort = {
     constraints?: MailBindingVisibilityConstraints | null;
   }): Promise<
     | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted?: boolean }
-    | { ok: false; code: MailDelegationMutationCode }
+    /** `used`/`limit` nur bei constraint_budget_exceeded — die Route nennt sie im Fehlertext. */
+    | { ok: false; code: MailDelegationMutationCode; used?: number; limit?: number }
   >;
   replaceBindingById(input: {
     workspaceId: string;
@@ -881,7 +884,8 @@ export type MailDelegationApiPort = {
     constraints?: MailBindingVisibilityConstraints | null;
   }): Promise<
     | { ok: true; binding: MailDelegationBinding | null; resource?: MailDelegationResource; deletedBindingId?: number; affectedUserIds: readonly string[]; deleted: boolean }
-    | { ok: false; code: MailDelegationMutationCode }
+    /** `used`/`limit` nur bei constraint_budget_exceeded — wie im Create-Pfad. */
+    | { ok: false; code: MailDelegationMutationCode; used?: number; limit?: number }
   >;
   deleteBinding(input: {
     workspaceId: string;

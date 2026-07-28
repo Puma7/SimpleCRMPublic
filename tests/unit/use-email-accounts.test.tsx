@@ -11,6 +11,11 @@ jest.mock('@/services/transport', () => ({
   invokeRenderer: (...args: unknown[]) => mockInvoke(...args),
   subscribeServerEvents: (...args: unknown[]) => mockSubscribe(...args),
   isMailAclRefreshEvent: (event: { type?: string }) => event.type === 'email_acl.changed',
+  // Reine Sichtbarkeitsauffrischung: der Hook darf Konten-, Team- und
+  // Auswahlzustand dafuer NICHT wegwerfen.
+  isMailVisibilityOnlyAclEvent: (event: { type?: string; payload?: { reason?: string } }) => (
+    event.type === 'email_acl.changed' && event.payload?.reason === 'visibility_filter'
+  ),
 }));
 
 jest.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => mockToastError(...args) } }));
@@ -176,6 +181,53 @@ describe('useEmailAccounts ACL invalidation', () => {
     await waitFor(() => expect(accountRequest).toBe(2));
     await flushAclReload();
     expect(accountRequest).toBe(2);
+  });
+
+  test('ignores a pure visibility refresh instead of dropping account state', async () => {
+    // Schreibt ein Workflow oder die KI-Klassifizierung einen gefilterten Tag,
+    // veroeffentlicht der Server email_acl.changed mit reason
+    // 'visibility_filter'. Konten, Team und Auswahl sind dabei unveraendert —
+    // nur WELCHE Nachrichten sichtbar sind. Diesen Zustand wegzuwerfen und in
+    // den Posteingang zu springen waere bei laufender Mailverarbeitung
+    // Dauerstoerung: der Knoten laeuft auf JEDER eingehenden Nachricht.
+    let accountRequest = 0;
+    mockInvoke.mockImplementation((channel: string) => {
+      if (channel === 'email:list-accounts') {
+        accountRequest += 1;
+        return Promise.resolve([account(101)]);
+      }
+      if (channel === 'email:list-team-members') return Promise.resolve([]);
+      throw new Error(`Unexpected channel ${channel}`);
+    });
+
+    renderHookHarness();
+    await waitFor(() => expect(screen.getByTestId('accounts')).toHaveTextContent('101'));
+    expect(accountRequest).toBe(1);
+
+    const subscription = mockSubscribe.mock.calls.at(-1)?.[0] as { onEvent: (event: unknown) => void };
+    act(() => {
+      subscription.onEvent({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        payload: { targetUserId: 'user-a', state: 'changed', reason: 'visibility_filter' },
+      });
+    });
+
+    // Die Kontenliste bleibt stehen, es wird nicht nachgeladen.
+    await flushAclReload();
+    expect(accountRequest).toBe(1);
+    expect(screen.getByTestId('accounts')).toHaveTextContent('101');
+
+    // Eine ECHTE ACL-Mutation raeumt weiterhin ab und laedt neu.
+    act(() => {
+      subscription.onEvent({
+        type: 'email_acl.changed',
+        entityType: 'email_acl',
+        payload: { targetUserId: 'user-a', state: 'changed' },
+      });
+    });
+    await flushAclReload();
+    await waitFor(() => expect(accountRequest).toBe(2));
   });
 });
 

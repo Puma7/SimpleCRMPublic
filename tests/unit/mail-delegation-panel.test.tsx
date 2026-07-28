@@ -9,6 +9,9 @@ jest.mock('@/services/transport', () => ({
   invokeRenderer: (...args: unknown[]) => mockInvoke(...args),
   subscribeServerEvents: (...args: unknown[]) => mockSubscribe(...args),
   isMailAclRefreshEvent: (event: { type?: string }) => event.type === 'email_acl.changed',
+  isMailVisibilityOnlyAclEvent: (event: { type?: string; payload?: { reason?: string } }) => (
+    event.type === 'email_acl.changed' && event.payload?.reason === 'visibility_filter'
+  ),
   RendererTransportError: class RendererTransportError extends Error {
     status?: number;
     code?: string;
@@ -250,6 +253,30 @@ describe('MailDelegationPanel', () => {
     ));
     const saves = mockInvoke.mock.calls.filter(([channel]) => channel === 'email:save-mail-delegation-binding');
     expect(saves.at(-1)?.[1]).not.toHaveProperty('id');
+  });
+
+  test('ignores a pure visibility refresh — the bindings themselves did not change', async () => {
+    // Ein Workflow oder die KI-Klassifizierung schreibt einen Tag bzw. eine
+    // Kategorie, die in einem Sichtbarkeitsfilter vorkommt: der Server meldet
+    // email_acl.changed mit reason=visibility_filter. Die DELEGATIONEN sind
+    // davon unberuehrt — diese Tabelle bei jeder eingehenden Nachricht neu zu
+    // laden waere ein Abruf ohne jeden Unterschied.
+    render(<MailDelegationPanel />);
+    expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
+
+    const before = mockInvoke.mock.calls.length;
+    const subscription = mockSubscribe.mock.calls.at(-1)?.[0] as { onEvent: (event: unknown) => void };
+    act(() => subscription.onEvent({
+      type: 'email_acl.changed',
+      payload: { targetUserId: 'manager', state: 'changed', reason: 'visibility_filter' },
+    }));
+    await flushAclReload();
+    expect(mockInvoke.mock.calls.length).toBe(before);
+
+    // Die echte ACL-Mutation laedt weiterhin neu.
+    act(() => subscription.onEvent({ type: 'email_acl.changed', payload: { targetUserId: 'manager' } }));
+    await flushAclReload();
+    expect(mockInvoke.mock.calls.length).toBeGreaterThan(before);
   });
 
   test('unsubscribes and ignores an in-flight ACL refresh after unmount under StrictMode', async () => {

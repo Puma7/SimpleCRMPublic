@@ -311,6 +311,18 @@ describe('server mail policy manifest', () => {
       'workspace_admin_security: POST /api/v1/email/relays/:relayId/credentials',
       'workspace_admin_security: POST /api/v1/email/relays/:relayId/credentials/:credentialId/revoke',
       'workspace_admin_security: POST /api/v1/email/settings/security/test-rspamd',
+      // Workspace-globale Mail-EINSTELLUNGEN. Nur die Schreibmethoden — die
+      // zugehoerigen GETs bleiben am Mail-Gate. Jeder dieser drei Handler ruft
+      // rejectUnlessSettingsManage, bevor er irgendetwas schreibt; die Ausnahme
+      // weitet also ausschliesslich fuer einen Einstellungsverwalter OHNE
+      // Postfachfreigabe und verengt fuer niemanden. Wer hier eine Zeile
+      // ergaenzt, muss dieselbe Pruefung im Handler nachweisen.
+      'workspace_global_settings: GET /api/v1/email/settings/misc',
+      'workspace_global_settings: GET /api/v1/email/settings/reply-suggestion',
+      'workspace_global_settings: GET /api/v1/email/settings/snooze',
+      'workspace_global_settings: PATCH /api/v1/email/settings/misc',
+      'workspace_global_settings: PATCH /api/v1/email/settings/reply-suggestion',
+      'workspace_global_settings: PATCH /api/v1/email/settings/snooze',
     ].sort());
   });
 
@@ -351,14 +363,8 @@ describe('server mail policy manifest', () => {
     const matrix = [
       ['GET', '/api/v1/email/tracking/settings', 'mail.metadata.read', { kind: 'workspace_global' }],
       ['GET', '/api/v1/email/messages/42/tracking', 'mail.metadata.read', messagePath()],
-      ['GET', '/api/v1/email/settings/misc', 'mail.metadata.read', { kind: 'workspace_global' }],
-      ['PATCH', '/api/v1/email/settings/misc', 'mail.account.manage', { kind: 'workspace_global' }],
       ['GET', '/api/v1/email/settings/account-mail', 'mail.metadata.read', account('query')],
       ['PATCH', '/api/v1/email/settings/account-mail', 'mail.account.manage', account('body')],
-      ['GET', '/api/v1/email/settings/snooze', 'mail.metadata.read', { kind: 'workspace_global' }],
-      ['PATCH', '/api/v1/email/settings/snooze', 'mail.triage', { kind: 'workspace_global' }],
-      ['GET', '/api/v1/email/settings/reply-suggestion', 'mail.metadata.read', optionalAccount('query')],
-      ['PATCH', '/api/v1/email/settings/reply-suggestion', 'mail.account.manage', optionalAccount('body')],
       ['POST', '/api/v1/email/compose/send', 'mail.send', messageBody('draftMessageId')],
       ['GET', '/api/v1/email/attachments/7', 'mail.attachment.read', attachmentPath()],
       ['GET', '/api/v1/email/attachments/7/content', 'mail.attachment.read', attachmentPath()],
@@ -394,6 +400,26 @@ describe('server mail policy manifest', () => {
       ['PATCH', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
       ['DELETE', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
     ] as const;
+
+    // Die drei workspace-globalen Einstellungsrouten stehen bewusst NICHT in der
+    // Matrix — BEIDE Methoden sind vom Mail-Gate ausgenommen und haengen an den
+    // Gates ihrer Handler. Nur den PATCH auszunehmen genuegte nicht: der Editor
+    // laedt vor dem Speichern, ein am Mail-Gate abgewiesener GET macht das
+    // Schreibrecht also wertlos (bei misc kippt das leere maskierte Secret
+    // zusaetzlich das Speichern).
+    for (const path of [
+      '/api/v1/email/settings/misc',
+      '/api/v1/email/settings/snooze',
+      '/api/v1/email/settings/reply-suggestion',
+    ]) {
+      for (const method of ['GET', 'PATCH'] as const) {
+        expect({ method, path, policy: assertMailRoutePolicy(method, path).policy }).toEqual({
+          method,
+          path,
+          policy: { kind: 'exempt', reason: 'workspace_global_settings' },
+        });
+      }
+    }
 
     for (const [method, path, permission, resource] of matrix) {
       expect(assertMailRoutePolicy(method, path).policy).toEqual({

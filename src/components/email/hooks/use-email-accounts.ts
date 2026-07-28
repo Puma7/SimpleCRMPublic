@@ -9,6 +9,7 @@ import { useMailWorkspace } from "../workspace-context"
 import {
   invokeRenderer,
   isMailAclRefreshEvent,
+  isMailVisibilityOnlyAclEvent,
   subscribeServerEvents,
 } from "@/services/transport"
 
@@ -102,6 +103,12 @@ export function useEmailAccounts() {
     const subscription = subscribeServerEvents({
       onEvent(event) {
         if (!isMailAclRefreshEvent(event)) return
+        // Reine Sichtbarkeitsauffrischung: Konten, Team und Auswahl sind
+        // unveraendert — nur WELCHE Nachrichten sichtbar sind. Den Zustand
+        // wegzuwerfen und in den Posteingang zu springen waere bei laufender
+        // Mailverarbeitung Dauerstoerung. Die Nachrichtenliste haengt an ihrem
+        // eigenen Filter und aktualisiert sich weiterhin.
+        if (isMailVisibilityOnlyAclEvent(event)) return
         // Clear stale mail immediately on every event (fail-closed), but debounce the
         // reload so a burst of per-member ACL events collapses into one refresh.
         invalidateAclState()

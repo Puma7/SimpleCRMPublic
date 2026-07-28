@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   ApiRequest,
   ApiResponse,
+  AuthenticatedPrincipal,
   CanonicalApiRoute,
   CanonicalApiRouteRegistration,
   EmailAccountMailSettingsMutationInput,
@@ -10,6 +11,8 @@ import type {
   ServerApiPorts,
   SyncInfoRecord,
 } from './types';
+import type { MailPermission } from '@simplecrm/core';
+import { MailAccessDeniedError } from '../mail-access/service';
 import { buildDefaultServerAccountMailSettings } from '../account-mail-settings-defaults';
 import {
   data,
@@ -312,6 +315,14 @@ async function handleEmailMiscSettings(
   if (req.method === 'GET') {
     const principal = requirePrincipal(req);
     if ('status' in principal) return principal;
+    // Vorher trug das Mail-Gate diese Pruefung (mail.metadata.read). Seit der
+    // Ausnahme fuer workspace-globale Einstellungen muss der Handler sie selbst
+    // stellen — sonst laese JEDER angemeldete Nutzer die Anhangs-Konfiguration
+    // und das maskierte Webhook-Secret, dessen Maske erstes und letztes Zeichen
+    // zeigt. Gleiche Stufe wie bei den Antwortvorschlaegen.
+    if (!requireCapability(principal, 'settings.view')) {
+      return error(403, 'forbidden', 'Adminrechte oder Einstellungs-Ansicht erforderlich');
+    }
     const loaded = await loadSyncInfo(req, ports, EMAIL_MISC_KEYS);
     if ('status' in loaded) return loaded;
     const canReadSecret = requireAdmin(principal);
@@ -601,6 +612,21 @@ async function handleReplySuggestionSettings(
     }
     const accountId = parseOptionalPositiveInt(req.query?.accountId);
     if (accountId === null) return error(400, 'invalid_account_id', 'accountId muss eine positive Ganzzahl sein');
+    // Wie beim PATCH ist die Abfrage mit accountId postfachbezogen — aber LESEN
+    // verlangt Sichtbarkeit, nicht Verwaltung. Der KI-Tab zeigt die Werte
+    // ausdruecklich auch schreibgeschuetzt an; mit mail.account.manage zu gaten
+    // haette einem Betrachter mit mail.metadata.read „Einstellungen nicht
+    // verfuegbar" gezeigt, obwohl er das Konto sehen darf.
+    if (accountId !== undefined) {
+      const accountDenied = await rejectUnlessAccountPermission(
+        req,
+        ports,
+        principal,
+        accountId,
+        'mail.metadata.read',
+      );
+      if (accountDenied) return accountDenied;
+    }
     const keys = replySuggestionReadKeys(accountId);
     const loaded = await loadSyncInfo(req, ports, keys);
     if ('status' in loaded) return loaded;
@@ -614,6 +640,23 @@ async function handleReplySuggestionSettings(
   if (settingsDenied) return settingsDenied;
   const parsed = parseReplySuggestionSettingsBody(req.body);
   if (!parsed.ok) return parsed.response;
+  // Die Route ist vom Mail-Gate ausgenommen, WEIL der workspace-globale Fall
+  // reine Konfiguration ist. Mit einer accountId im Body ist er das aber NICHT:
+  // vorher verlangte optionalAccount('body') dafuer mail.account.manage auf
+  // genau diesem Konto. Ohne diese Pruefung koennte jeder settings.manage-Halter
+  // die KI-Antwortvorschlaege JEDES Postfachs umschreiben, auch ohne eine
+  // einzige Delegation darauf. Die Pruefung liegt deshalb hier im Handler —
+  // die Ausnahme selbst kann nicht zwischen den beiden Faellen unterscheiden.
+  if (parsed.accountId !== undefined) {
+    const accountDenied = await rejectUnlessAccountPermission(
+      req,
+      ports,
+      principal,
+      parsed.accountId,
+      'mail.account.manage',
+    );
+    if (accountDenied) return accountDenied;
+  }
   const loaded = await loadSyncInfo(req, ports, replySuggestionReadKeys(parsed.accountId));
   if ('status' in loaded) return loaded;
   const next = normalizeReplySuggestionSettings({
@@ -631,6 +674,53 @@ async function handleReplySuggestionSettings(
   );
   if ('status' in saved) return saved;
   return data(200, next);
+}
+
+/**
+ * Konto-Autorisierung fuer eine vom Mail-Gate ausgenommene Route.
+ *
+ * Antwortet wie der Enforcer mit 404 statt 403 — die Existenz eines Kontos, das
+ * der Aufrufer nicht verwalten darf, soll die Antwort nicht verraten.
+ */
+async function rejectUnlessAccountPermission(
+  req: ApiRequest,
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  accountId: number,
+  permission: MailPermission,
+): Promise<ApiResponse | null> {
+  if (!ports.mailAccess || !ports.mailResourceLookup) {
+    return error(503, 'mail_access_unavailable', 'Mail-Zugriff ist nicht konfiguriert');
+  }
+  const actor = {
+    workspaceId: principal.workspaceId,
+    userId: principal.userId,
+    isOwner: principal.role === 'owner',
+    isAdmin: principal.role === 'admin',
+  };
+  const resources = await ports.mailResourceLookup.resolve({
+    workspaceId: principal.workspaceId,
+    target: { kind: 'account', id: accountId },
+  });
+  if (resources.length === 0) {
+    return error(404, 'mail_resource_not_found', 'Mail-Ressource nicht gefunden');
+  }
+  try {
+    for (const resource of resources) {
+      await ports.mailAccess.assertPermission({
+        workspaceId: principal.workspaceId,
+        actor,
+        permission,
+        resource,
+      });
+    }
+  } catch (caught) {
+    if (caught instanceof MailAccessDeniedError) {
+      return error(404, 'mail_resource_not_found', 'Mail-Ressource nicht gefunden');
+    }
+    throw caught;
+  }
+  return null;
 }
 
 async function handleMssqlSettings(

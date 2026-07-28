@@ -467,6 +467,15 @@ export function isSelfTargetedAclInvalidation(event: ServerEvent, userId: string
     event.type === 'email_acl.changed'
     && event.entityType === 'email_acl'
     && event.payload.targetUserId === userId
+    // Die reine SICHTBARKEITS-Auffrischung ist kein Herabstufungs-, Sperr- oder
+    // Loeschsignal: sie meldet nur, dass ein Tag, eine Kategorie oder eine
+    // Zuweisung einen Sichtbarkeitsfilter beruehrt hat. Rolle und Konto des
+    // Nutzers sind unveraendert, der zwischengespeicherte Principal also nicht
+    // veraltet. Sie hier durchzulassen erzwaenge je Nachricht und betroffenem
+    // Nutzer eine sofortige Principal-Neuaufloesung samt Auth- und
+    // Datenbankabfrage — bei einem Tagging-Workflow auf jeder eingehenden
+    // Nachricht. Die normale TTL-Revalidierung laeuft unveraendert weiter.
+    && event.payload.reason !== 'visibility_filter'
   );
 }
 

@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button"
 import {
   invokeRenderer,
   isMailAclRefreshEvent,
+  isMailVisibilityOnlyAclEvent,
   RendererTransportError,
   subscribeServerEvents,
 } from "@/services/transport"
@@ -291,6 +292,11 @@ export function MailDelegationPanel() {
     const subscription = subscribeServerEvents({
       onEvent(event) {
         if (!isMailAclRefreshEvent(event)) return
+        // Reine Sichtbarkeitsauffrischung: ein Workflow oder die KI hat einen
+        // Tag/eine Kategorie geschrieben, die in einem Filter vorkommt. Die
+        // BINDINGS selbst sind unveraendert — diese Tabelle neu zu laden waere
+        // bei jeder eingehenden Nachricht ein Abruf ohne jeden Unterschied.
+        if (isMailVisibilityOnlyAclEvent(event)) return
         // A group binding/membership change fans out one ACL event per member;
         // debounce so a burst collapses into one reload instead of one per event.
         if (aclReloadTimerRef.current !== null) clearTimeout(aclReloadTimerRef.current)

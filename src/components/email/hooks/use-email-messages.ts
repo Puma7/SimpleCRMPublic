@@ -10,6 +10,7 @@ import type { MailAccountScope } from "../account-scope"
 import type { EmailMessage, MailView } from "../types"
 import { logError } from "../log"
 import { pickAdjacentMessageId } from "../select-adjacent-message"
+import { aclReconcileLimit } from "./reconcile-visible-messages"
 import { useMailWorkspace } from "../workspace-context"
 import { invokeRenderer } from "@/services/transport"
 
@@ -28,6 +29,12 @@ type LoadMessagesOpts = {
   silent?: boolean
   selectMessageId?: number | null
   advanceFromRemovedId?: number
+  /**
+   * Abgleich statt Erhalt: was der Server nicht mehr liefert, verschwindet —
+   * samt Auswahl. Fuer ACL-Aenderungen, die Sichtbarkeit ENTZIEHEN koennen.
+   * Siehe reconcile-visible-messages.
+   */
+  dropMissing?: boolean
 }
 
 export type BulkListAction =
@@ -78,6 +85,13 @@ export function useEmailMessages() {
   const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Ein ACL-Abgleich ist SCHULDIG, bis er einmal durchgelaufen ist: verdraengt
+  // ihn ein gewoehnlicher Ladevorgang, erbt dieser die Pflicht.
+  const pendingAclReconcileRef = useRef(false)
+  // Ref statt Dependency: der Fehlerpfad des Abgleichs plant eine Wiederholung,
+  // und loadMessages darf davon nicht seine Identitaet aendern (daran haengen
+  // mehrere Reload-Effekte).
+  const scheduleSilentReconcileRef = useRef<() => void>(() => {})
   const loadMessagesRef = useRef<(
     accountScope: MailAccountScope,
     view: MailView,
@@ -207,11 +221,40 @@ export function useEmailMessages() {
       if (!append && !silent) selectionRequestRef.current += 1
       const offset = append ? offsetRef.current : silent ? 0 : 0
       const keepId = opts?.preserveSelection ? selectedMessageIdRef.current ?? undefined : undefined
+      // Der ACL-Abgleich prueft den GESAMTEN geladenen Bereich, nicht nur die
+      // erste Seite: eine entzogene Nachricht — auch die gerade geoeffnete —
+      // kann tiefer liegen, und was der Server nicht beurteilt hat, koennte der
+      // Abgleich nur raten.
+      //
+      // Die Pflicht ueberlebt dabei einen VERDRAENGENDEN Ladevorgang. Jeder
+      // nicht-anhaengende Load erhoeht loadGenerationRef und verwirft damit die
+      // Antwort eines laufenden Abgleichs; ohne diese Uebernahme liefe der
+      // Nachfolger im erhaltenden Modus und haengte die inzwischen entzogene
+      // Zeile samt Auswahl wieder an. Ein Mail-Ereignis oder ein manueller
+      // Refresh waehrend einer langsamen ACL-Antwort genuegte dafuer.
+      const reconcile = !append && (opts?.dropMissing === true || pendingAclReconcileRef.current)
+      if (reconcile) pendingAclReconcileRef.current = true
+      // Der Abgleich holt den geladenen Bereich SEITENWEISE. Der HTTP-Transport
+      // deckelt jede Listenabfrage auf DEFAULT_LIST_LIMIT (limitValue in
+      // channel-http-registry) — ein groesseres `limit` kaeme still gekappt
+      // zurueck, und der Abgleich haette die gekappte Antwort fuer den
+      // vollstaendigen Bereich gehalten und alle tieferen, weiterhin erlaubten
+      // Zeilen samt Auswahl verworfen.
+      const reconcileRows = reconcile
+        ? aclReconcileLimit(messagesRef.current.length, PAGE_SIZE)
+        : PAGE_SIZE
       if (append) setLoadingMore(true)
       else if (!silent) setLoadingMessages(true)
       try {
-        let list: EmailMessage[]
+        let list: EmailMessage[] = []
         const doneFilter = view === "inbox" ? messageDoneFilter : undefined
+        // Der Abgleich laeuft ueber mehrere Seiten, jeder andere Ladevorgang
+        // ueber genau eine.
+        let pageOffset = offset
+        let lastPageFull = false
+        let searchHasMore = false
+        do {
+        let page: EmailMessage[]
         if (query.trim()) {
           const scopePrefs = searchScopeRef.current
           const broadSearch = scopePrefs.allFolders
@@ -229,7 +272,7 @@ export function useEmailMessages() {
             accountId: accountScope,
             query: query.trim(),
             limit: PAGE_SIZE,
-            offset,
+            offset: pageOffset,
             view,
             categoryId: view === "inbox" ? catId : null,
             // Broad-Suche ignoriert den Erledigt-Filter — nicht mitsenden,
@@ -243,7 +286,7 @@ export function useEmailMessages() {
             hasMore?: boolean
           }
           if (generation !== loadGenerationRef.current) return
-          list = res.messages
+          page = res.messages
           if (!silent) {
             if (res.searchMode === "like") {
               toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
@@ -259,21 +302,28 @@ export function useEmailMessages() {
               })
             }
           }
-          setHasMore(Boolean(res.hasMore))
+          searchHasMore = Boolean(res.hasMore)
         } else {
-          list = await invokeRenderer(IPCChannels.Email.ListMessagesByView, {
+          page = await invokeRenderer(IPCChannels.Email.ListMessagesByView, {
             accountId: accountScope,
             view,
             limit: PAGE_SIZE,
-            offset,
+            offset: pageOffset,
             categoryId: view === "inbox" ? catId : null,
             sort,
             listFilter: listFilter === "all" ? undefined : listFilter,
             doneFilter,
           }) as EmailMessage[]
           if (generation !== loadGenerationRef.current) return
-          setHasMore(list.length >= PAGE_SIZE)
         }
+          lastPageFull = page.length >= PAGE_SIZE
+          list = pageOffset === offset ? page : [...list, ...page]
+          pageOffset += page.length
+        } while (reconcile && lastPageFull && list.length < reconcileRows)
+        setHasMore(query.trim() ? searchHasMore : lastPageFull)
+        // Ab hier ist die Antwort da und wird angewendet — die Pflicht ist
+        // erfuellt. (Bei einem Fehler bleibt sie stehen, siehe catch.)
+        if (reconcile) pendingAclReconcileRef.current = false
         if (append) {
           setMessages((prev) => {
             const ids = new Set(prev.map((m) => m.id))
@@ -281,20 +331,26 @@ export function useEmailMessages() {
           })
           offsetRef.current = offset + list.length
         } else if (silent && keepId != null) {
-          setMessages((prev) => {
-            const byId = new Map(list.map((m) => [m.id, m]))
-            const merged = prev.map((m) => byId.get(m.id) ?? m)
-            for (const m of list) {
-              if (!prev.some((p) => p.id === m.id)) merged.push(m)
-            }
-            const listIdOrder = new Map(list.map((m, i) => [m.id, i]))
-            const inServer = merged
-              .filter((m) => listIdOrder.has(m.id))
-              .sort((a, b) => listIdOrder.get(a.id)! - listIdOrder.get(b.id)!)
-            const notInServer = merged.filter((m) => !listIdOrder.has(m.id))
-            return [...inServer, ...notInServer]
-          })
-          offsetRef.current = Math.max(offsetRef.current, list.length)
+          if (reconcile) {
+            // Die Antwort deckt den geladenen Bereich ab und gilt als Ganzes.
+            setMessages(list)
+            offsetRef.current = list.length
+          } else {
+            setMessages((prev) => {
+              const byId = new Map(list.map((m) => [m.id, m]))
+              const merged = prev.map((m) => byId.get(m.id) ?? m)
+              for (const m of list) {
+                if (!prev.some((p) => p.id === m.id)) merged.push(m)
+              }
+              const listIdOrder = new Map(list.map((m, i) => [m.id, i]))
+              const inServer = merged
+                .filter((m) => listIdOrder.has(m.id))
+                .sort((a, b) => listIdOrder.get(a.id)! - listIdOrder.get(b.id)!)
+              const notInServer = merged.filter((m) => !listIdOrder.has(m.id))
+              return [...inServer, ...notInServer]
+            })
+            offsetRef.current = Math.max(offsetRef.current, list.length)
+          }
         } else {
           setMessages(list)
           offsetRef.current = list.length
@@ -308,9 +364,14 @@ export function useEmailMessages() {
           }
           await selectMessageById(targetId, true)
         } else if (keepId != null && !append) {
-          const still =
-            messagesRef.current.find((m) => m.id === keepId) ??
-            list.find((m) => m.id === keepId)
+          // Beim Abgleich zaehlt NUR, was ihn ueberlebt hat: die alte Liste
+          // zuerst zu befragen liesse die Auswahl auf einer gerade entzogenen
+          // Nachricht stehen — und der Detail-Refresh protokolliert die
+          // abgelehnte Anfrage bloss und laesst den alten Inhalt sichtbar.
+          const still = reconcile
+            ? list.find((m) => m.id === keepId)
+            : messagesRef.current.find((m) => m.id === keepId) ??
+              list.find((m) => m.id === keepId)
           if (still) {
             setSelectedMessage((prev) =>
               prev?.id === keepId ? { ...prev, ...still } : still,
@@ -323,7 +384,25 @@ export function useEmailMessages() {
         }
       } catch (e) {
         logError("use-email-messages: load", e)
-        if (!silent && generation === loadGenerationRef.current) {
+        if (generation !== loadGenerationRef.current) return
+        if (reconcile) {
+          // FAIL CLOSED. Der Abgleich sollte pruefen, ob geladene Nachrichten
+          // noch sichtbar sind — konnte er das nicht, weiss niemand es. Die
+          // alte Liste einfach stehenzulassen hiesse, moeglicherweise bereits
+          // entzogene Inhalte weiter anzuzeigen, und der Detailbereich haelt
+          // ohnehin an seinem geladenen Inhalt fest (ein abgelehnter
+          // Nachladeversuch protokolliert nur).
+          //
+          // Also: Auswahl und ungeprueften Bestand raeumen und EINEN neuen
+          // Versuch planen. Klappt er, fuellt der Server die Liste selbst
+          // wieder — gescopt und damit per Definition unbedenklich.
+          setMessages([])
+          offsetRef.current = 0
+          setHasMore(false)
+          await selectMessageById(null, true)
+          scheduleSilentReconcileRef.current()
+        }
+        if (!silent) {
           toast.error("Nachrichten konnten nicht geladen werden.")
         }
       } finally {
@@ -339,6 +418,10 @@ export function useEmailMessages() {
   useEffect(() => {
     loadMessagesRef.current = loadMessages
   }, [loadMessages])
+
+  useEffect(() => {
+    scheduleSilentReconcileRef.current = scheduleSilentReconcile
+  }, [scheduleSilentReconcile])
 
   // Scope-Änderungen lösen nur bei aktiver Suche einen Reload aus; ohne Query
   // bleibt der Toggle folgenlos (die Auswahl gilt ab der nächsten Suche).
@@ -405,6 +488,7 @@ export function useEmailMessages() {
       selectMessageId?: number | null
       advanceFromRemovedId?: number
       silent?: boolean
+      dropMissing?: boolean
     }) => {
       if (!opts?.silent) offsetRef.current = 0
       if (selectedAccountId == null) return

@@ -1,4 +1,4 @@
-import type { MailResource } from '@simplecrm/core';
+import { MAIL_PERMISSIONS, type MailPermission, type MailResource } from '@simplecrm/core';
 
 import { hasMailBindingConstraints } from './mail-acl-constraints';
 import type {
@@ -203,6 +203,60 @@ export class MailAccessService implements MailAccessServiceContract {
     const resolve = this.port.resolveConstraintSubjectUserIds;
     if (!resolve) return [];
     return resolve.call(this.port, input);
+  }
+
+  /**
+   * Welche Mail-Berechtigungen der Nutzer SELBST haelt — und auf welchen Konten.
+   *
+   * Gegenstueck zu explainMessageVisibility, das bewusst admin-only ist: der
+   * Renderer kennt die Mail-ACL nicht und bot deshalb Bedienelemente an, deren
+   * Aufruf garantiert im 403 endet (Konto anlegen/loeschen, SMTP, OAuth,
+   * Signaturen). Ohne Selbstauskunft laesst sich das clientseitig nicht
+   * entscheiden.
+   *
+   * Absichtlich nur die EIGENEN Rechte: die Antwort verraet nichts ueber andere
+   * Nutzer und ist damit fuer jeden authentifizierten Principal unbedenklich.
+   */
+  async resolveSelfPermissions(
+    input: Readonly<{ workspaceId: string; userId: string }>,
+  ): Promise<{
+    permissions: MailPermission[];
+    accountPermissions: Record<number, MailPermission[]>;
+  }> {
+    const permissions: MailPermission[] = [];
+    const byAccount = new Map<number, Set<MailPermission>>();
+    for (const permission of MAIL_PERMISSIONS) {
+      // OHNE evaluationContext: der Postgres-Port verlangt dort einen
+      // symbolgebundenen Transaktions-Kontext (requirePostgresMailAclRolloutTransaction)
+      // und wirft bei einem blossen { workspaceId }. Ohne das Argument oeffnet
+      // er seine normale Workspace-Transaktion — genau richtig fuer eine
+      // Auskunft, die ausserhalb einer geteilten Auswertung laeuft.
+      const grants = await this.port.resolveGrants({
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        permission,
+      });
+      if (grants.length === 0) continue;
+      permissions.push(permission);
+      for (const grant of grants) {
+        // NUR Konto-Grants. Ein Grant auf einen Ordner UNTERHALB des Kontos
+        // autorisiert keine Konto-Ressource (grantAllowsResource lehnt ihn ab),
+        // wuerde hier aber unter derselben Konto-Id landen — der Renderer boete
+        // dann „Konto loeschen" an und kassierte genau das 403, das die Auskunft
+        // verhindern soll. Ordner- und Nachrichten-Grants bleiben in
+        // `permissions` sichtbar: fuer „das Bedienelement ueberhaupt anbieten"
+        // ist das die richtige Frage.
+        if (grant.resourceType !== 'account') continue;
+        const existing = byAccount.get(grant.accountId) ?? new Set<MailPermission>();
+        existing.add(permission);
+        byAccount.set(grant.accountId, existing);
+      }
+    }
+    const accountPermissions: Record<number, MailPermission[]> = {};
+    for (const [accountId, held] of [...byAccount.entries()].sort((a, b) => a[0] - b[0])) {
+      accountPermissions[accountId] = [...held].sort();
+    }
+    return { permissions: permissions.sort(), accountPermissions };
   }
 
   private async resolveActorContext(workspaceId: string, userId: string): Promise<MailScopeActorContext> {

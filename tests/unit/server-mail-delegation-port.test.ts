@@ -149,6 +149,14 @@ describe('createPostgresMailDelegationPort', () => {
         tagExcludeValues: [],
       },
     })).resolves.toMatchObject({ ok: true });
+
+    // Das kumulative Budget wird unter einer Advisory-Sperre geprueft. FOR
+    // UPDATE auf die gefundenen Bindings genuegte nicht: es nimmt keine
+    // Luecken-Sperre und sperrt bei einem Subjekt ohne Bindings gar nichts,
+    // sodass zwei parallele Creates beide unter dem Budget landen koennten.
+    expect(withinManageScope.calls).toContainEqual(
+      ['sql', expect.stringContaining('pg_advisory_xact_lock'), expect.anything()],
+    );
   });
 
   test('rejects a visibility filter that names an unknown category', async () => {
@@ -363,6 +371,196 @@ describe('createPostgresMailDelegationPort', () => {
       resource: { type: 'account', accountId: 101 },
       permissions: [],
     })).resolves.toMatchObject({ ok: true, deleted: true });
+  });
+
+  test('every mutating path takes the workspace ACL lock before any row lock', async () => {
+    // Jede Mutation sperrt zwei Dinge: die Autoritaets-Bindings des Handelnden
+    // (canManageResource mit forUpdate, Subjekt = der Handelnde) und die
+    // Zielzeile (Subjekt = das Ziel). Zwei delegierte Manager A und B, die
+    // gleichzeitig am Binding des jeweils anderen arbeiten, sperren damit ueber
+    // Kreuz — ein Zyklus ueber ZWEI verschiedene Subjekte, den eine Sperre pro
+    // Zielsubjekt nicht ordnen kann. Deshalb ein Schluessel pro Workspace, und
+    // zwar als ERSTE Anweisung, vor jeder Zeilensperre; sonst haelt der eine
+    // Pfad die Zeile und wartet auf die Advisory-Sperre, waehrend der andere es
+    // umgekehrt tut, und Postgres bricht eine der beiden gueltigen Mutationen
+    // ab.
+    const existingBinding = {
+      id: 901,
+      workspace_id: WORKSPACE,
+      subject_type: 'user' as const,
+      subject_id: AGENT,
+      resource_type: 'account' as const,
+      account_id: 101,
+      folder_id: null,
+      message_id: null,
+      updated_at: '2026-07-20T10:00:00.000Z',
+    };
+    // Nicht-Admin: nur dann fragt canManageResource die Autoritaetszeilen
+    // ueberhaupt sperrend ab (Admins kuerzen ab).
+    const fixtures = {
+      actor: { id: ACTOR, role: 'user', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+      actorPermissions: ['mail.delegation.manage', 'mail.metadata.read'] as const,
+    };
+    const portFor = (trx: ReturnType<typeof createDelegationTransaction>) => createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+    const lockOrder = (trx: ReturnType<typeof createDelegationTransaction>) => trx.calls
+      .filter(([operation, detail]) => (
+        (operation === 'sql' && String(detail).includes('pg_advisory_xact_lock'))
+        || (operation === 'forUpdate' && detail === 'mail_acl_bindings')
+      ))
+      .map(([operation]) => operation);
+
+    const post = createDelegationTransaction(fixtures);
+    await portFor(post).replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: ['mail.metadata.read'],
+      constraints: null,
+    });
+
+    const patch = createDelegationTransaction(fixtures);
+    await portFor(patch).replaceBindingById({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      bindingId: 901,
+      permissions: ['mail.metadata.read'],
+    });
+
+    const remove = createDelegationTransaction(fixtures);
+    await portFor(remove).deleteBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: false },
+      bindingId: 901,
+    });
+
+    // Jedes Mal: erst die Advisory-Sperre, dann Zeilensperren.
+    for (const trx of [post, patch, remove]) {
+      expect(lockOrder(trx)[0]).toBe('sql');
+      expect(lockOrder(trx)).toContain('forUpdate');
+    }
+
+    // Und der Schluessel haengt AM WORKSPACE, nicht am Zielsubjekt — sonst
+    // ordnet er die Kreuz-Konstellation zweier Manager nicht.
+    const advisory = post.calls
+      .find(([operation, detail]) => operation === 'sql' && String(detail).includes('pg_advisory_xact_lock'));
+    const keys = (advisory?.[2] as readonly unknown[] | undefined ?? []).map(String);
+    expect(keys).toEqual([`mail_acl_mutation:${WORKSPACE}`]);
+    expect(keys.every((key) => !key.includes(AGENT))).toBe(true);
+  });
+
+  test('a budget-REDUCING update is allowed even above the limit', async () => {
+    // Liegt ein Subjekt bereits ueber dem Limit — Altbestand aus der Zeit vor
+    // der Pruefung oder ein spaeter gesenktes Limit —, prallte auch das
+    // Aufraeumen ab, weil die SUMME weiterhin darueber liegt. Durch kam nur das
+    // vollstaendige Loeschen eines Bindings. Genau die falsche Richtung: wer
+    // aufraeumt, soll aufraeumen duerfen.
+    const existingBinding = {
+      id: 901,
+      workspace_id: WORKSPACE,
+      subject_type: 'user' as const,
+      subject_id: AGENT,
+      resource_type: 'account' as const,
+      account_id: 101,
+      folder_id: null,
+      message_id: null,
+      updated_at: new Date('2026-07-19T12:00:00.000Z'),
+    };
+    const fixtures = {
+      actor: { id: ACTOR, role: 'admin', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+      // Dieses Binding traegt 1500 Eintraege, ein Geschwister 1000 — zusammen
+      // 2500 und damit ueber dem Limit von 2000.
+      budgetConstraintRows: [
+        { binding_id: 901, value_ids: null, value_texts: Array.from({ length: 1500 }, (_, i) => `a-${i}`) },
+        { binding_id: 902, value_ids: null, value_texts: Array.from({ length: 1000 }, (_, i) => `b-${i}`) },
+      ],
+      oversizedSiblingBindingIds: [902],
+    };
+    const portFor = (trx: ReturnType<typeof createDelegationTransaction>) => createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+    const patch = (entries: number) => ({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      subject: { type: 'user' as const, id: AGENT },
+      resource: { type: 'account' as const, accountId: 101 },
+      permissions: ['mail.metadata.read' as const],
+      constraints: {
+        assignmentMode: null,
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: Array.from({ length: entries }, (_, i) => `n-${i}`),
+        tagExcludeValues: [],
+      },
+    });
+
+    // 1500 → 1200: die Summe bleibt mit 2200 ueber dem Limit, aber die
+    // Richtung stimmt.
+    await expect(portFor(createDelegationTransaction(fixtures)).replaceBinding(patch(1200)))
+      .resolves.toMatchObject({ ok: true });
+
+    // 1500 → 1600 haeuft weiter auf und bleibt abgelehnt.
+    await expect(portFor(createDelegationTransaction(fixtures)).replaceBinding(patch(1600)))
+      .resolves.toMatchObject({ ok: false, code: 'constraint_budget_exceeded' });
+  });
+
+  test('deleting a binding is never rejected by the constraint budget', async () => {
+    // Das Budget zaehlt den Verbrauch der GESCHWISTER mit. Liegt der bereits
+    // ueber dem Limit — Altbestand aus der Zeit vor der Pruefung oder ein
+    // spaeter gesenktes Limit —, lehnte die Pruefung ausgerechnet die Loeschung
+    // mit constraint_budget_exceeded ab: die einzige Bewegung, die den
+    // Verbrauch senkt, waere blockiert und das Subjekt sitzt in der Sackgasse.
+    // Der Zielzustand des Loeschpfads ist "kein Binding" — es gibt nichts zu
+    // budgetieren.
+    const trx = createDelegationTransaction({
+      actor: { id: ACTOR, role: 'admin', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding: {
+        id: 901,
+        workspace_id: WORKSPACE,
+        subject_type: 'user',
+        subject_id: AGENT,
+        resource_type: 'account',
+        account_id: 101,
+        folder_id: null,
+        message_id: null,
+        updated_at: new Date('2026-07-19T12:00:00.000Z'),
+      },
+      affectedUsers: [{ id: AGENT }],
+      oversizedSiblingBindingIds: [902],
+    });
+    const port = createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+
+    await expect(port.replaceBinding({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      subject: { type: 'user', id: AGENT },
+      resource: { type: 'account', accountId: 101 },
+      permissions: [],
+      // Die Route reicht mitgeschickte Filter durch (constraintsProvided) —
+      // auch dann, wenn die leere Berechtigungsliste sie ohnehin verwirft.
+      constraints: null,
+    })).resolves.toMatchObject({ ok: true, deleted: true });
+    expect(trx.calls).toContainEqual(['deleteFrom', 'mail_acl_bindings']);
   });
 
   test('blocks non-admin re-delegation of relative assignment modes onto other subjects', async () => {
@@ -702,6 +900,16 @@ function createDelegationTransaction(fixtures: {
   existingConstraints?: Array<Record<string, unknown>>;
   /** Kategorie-Ids, die es im Workspace NICHT gibt (Default: alle existieren). */
   unknownCategoryIds?: readonly number[];
+  /**
+   * Weitere Bindings desselben Subjekts, deren Filter zusammen bereits ueber
+   * dem Budget liegen — die Sackgasse, aus der nur eine Loeschung herausfuehrt.
+   */
+  oversizedSiblingBindingIds?: readonly number[];
+  /**
+   * Constraint-Zeilen der Budget-Abfrage, nach binding_id gefiltert — damit ein
+   * Test den Verbrauch des ZU ERSETZENDEN Bindings vom Rest unterscheiden kann.
+   */
+  budgetConstraintRows?: ReadonlyArray<{ binding_id: number; value_ids: number[] | null; value_texts: string[] | null }>;
 }) {
   const calls: unknown[][] = [];
   const selectCounts = new Map<string, number>();
@@ -752,11 +960,23 @@ function createDelegationTransaction(fixtures: {
         permission_key: permission,
       }));
     }
-    if (table === 'mail_acl_bindings') return fixtures.existingBinding ? [fixtures.existingBinding] : [];
+    if (table === 'mail_acl_bindings') {
+      const own = fixtures.existingBinding ? [fixtures.existingBinding] : [];
+      // Die Geschwisterabfrage der Budget-Pruefung liest dieselbe Tabelle;
+      // findBinding nimmt weiterhin die erste Zeile.
+      return [...own, ...(fixtures.oversizedSiblingBindingIds ?? []).map((id) => ({ id }))];
+    }
     if (table === 'mail_acl_binding_permissions') {
       return [{ binding_id: (fixtures.existingBinding as { id?: number } | null)?.id ?? 901, permission_key: 'mail.metadata.read' }];
     }
     if (table === 'mail_acl_binding_constraints') {
+      if (fixtures.budgetConstraintRows && inIds.length > 0) {
+        return fixtures.budgetConstraintRows.filter((row) => inIds.includes(row.binding_id));
+      }
+      const siblingIds = fixtures.oversizedSiblingBindingIds ?? [];
+      if (siblingIds.length > 0 && inIds.some((id) => siblingIds.includes(id))) {
+        return [{ value_ids: [], value_texts: Array.from({ length: 2001 }, (_, index) => `t-${index}`) }];
+      }
       const index = nextCount('mail_acl_binding_constraints');
       // First load is usually authority constraints; later loads target existing binding.
       if (index === 0 && fixtures.actorAuthorityConstraints) return fixtures.actorAuthorityConstraints;
@@ -818,6 +1038,19 @@ function createDelegationTransaction(fixtures: {
   };
   return {
     calls,
+    /**
+     * Roh-SQL laeuft ueber diesen Executor. Gebraucht wird er fuer die
+     * Advisory-Sperre der Budget-Pruefung — sie darf im Fake nichts tun, muss
+     * aber sichtbar sein, damit ein Test sie zusichern kann.
+     */
+    getExecutor() {
+      return {
+        async executeQuery(compiled: { sql: string; parameters?: readonly unknown[] }) {
+          calls.push(['sql', compiled.sql, compiled.parameters ?? []]);
+          return { rows: [] };
+        },
+      };
+    },
     selectFrom(table: string) {
       calls.push(['selectFrom', table]);
       return createBuilder(table, 'select');

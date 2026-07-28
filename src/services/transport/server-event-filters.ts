@@ -278,6 +278,9 @@ export function isMailListRefreshEvent(event: ServerEvent): boolean {
   // behaelt die verbotenen Nachrichten bis zum naechsten zufaelligen Refresh —
   // genau das erwartet auth-routes beim Herabstufen/Deaktivieren ("clears loaded
   // mail immediately"). Der erneute Abruf ist fail-closed: der Server scoped neu.
+  // Die reine Sichtbarkeitsauffrischung gehoert hier ausdruecklich DAZU — sie
+  // aendert genau das, was diese Liste zeigt (im Gegensatz zur Konten- und
+  // Teamliste, siehe isMailAccountDataRefreshEvent).
   if (isMailAclRefreshEvent(event)) return true
   if (event.entityType === "email_message") {
     return MAIL_MESSAGE_REFRESH_EVENT_TYPES.has(event.type)
@@ -332,7 +335,12 @@ export function isMailTrackingRefreshEvent(event: ServerEvent, messageId?: numbe
 }
 
 export function isMailAccountDataRefreshEvent(event: ServerEvent): boolean {
-  if (isMailAclRefreshEvent(event)) return true
+  // Eine reine Sichtbarkeitsauffrischung laesst Konten, Team und Signaturen
+  // unangetastet — nur WELCHE Nachrichten sichtbar sind, aendert sich. Sie hier
+  // durchzulassen machte die Unterscheidung in use-email-accounts wirkungslos:
+  // die mail-shell bumpt daraufhin ihre accountsRevision und laedt Konten- und
+  // Teamliste neu, bei jeder getaggten eingehenden Nachricht erneut.
+  if (isMailAclRefreshEvent(event)) return !isMailVisibilityOnlyAclEvent(event)
   if (event.entityType === "email_account") {
     return MAIL_ACCOUNT_REFRESH_EVENT_TYPES.has(event.type)
   }
@@ -347,6 +355,27 @@ export function isMailAccountDataRefreshEvent(event: ServerEvent): boolean {
 
 export function isMailAclRefreshEvent(event: ServerEvent): boolean {
   return event.entityType === "email_acl" && MAIL_ACL_REFRESH_EVENT_TYPES.has(event.type)
+}
+
+/**
+ * Reine SICHTBARKEITS-Auffrischung: ein Workflow oder die KI-Klassifizierung
+ * hat einen Tag bzw. eine Kategorie geschrieben, die in einem
+ * Sichtbarkeitsfilter vorkommt. Weder Rolle noch Rechte noch die Konten- oder
+ * Team-Liste haben sich geaendert — nur WELCHE Nachrichten ein Betroffener
+ * sieht.
+ *
+ * Ohne diese Unterscheidung behandelt jeder Verbraucher von
+ * email_acl.changed das Ereignis als echte ACL-Mutation: der AuthProvider
+ * erneuert die Sitzung samt Token-Rotation und Audit-Eintrag, und
+ * use-email-accounts wirft Konten-, Team- und Auswahlzustand weg und springt
+ * zurueck in den Posteingang. Ein Tagging-Workflow laeuft auf JEDER
+ * eingehenden Nachricht — das waere Dauerstoerung fuer jeden verbundenen
+ * Betroffenen. Die Nachrichtenliste selbst haengt an ihrem eigenen Filter und
+ * aktualisiert sich weiterhin.
+ */
+export function isMailVisibilityOnlyAclEvent(event: ServerEvent): boolean {
+  if (!isMailAclRefreshEvent(event)) return false
+  return (event.payload as { reason?: unknown } | undefined)?.reason === "visibility_filter"
 }
 
 export function isMailComposeAuxDataRefreshEvent(event: ServerEvent): boolean {

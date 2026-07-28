@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 import type { EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 import { AccountForm } from "./account-form"
@@ -21,6 +22,25 @@ import { AccountAdvancedPanel } from "./account-advanced-panel"
 import { AccountsShippingHint } from "./accounts-shipping-hint"
 
 type AccountTab = "imap" | "smtp" | "oauth" | "signature" | "ki" | "erweitert"
+
+/**
+ * Tabs, deren Speicherpfade mail.account.manage AUF DEM KONTO verlangen
+ * (PATCH /email/accounts/:id, SMTP-Zuordnung, OAuth-Verknuepfung).
+ *
+ * „Signatur" steht bewusst NICHT hier: der Tab enthaelt zwei Abschnitte mit
+ * unterschiedlichen Rechten — die geteilten Konto-Signaturen verlangen
+ * Kontoverwaltung, die PERSOENLICHE Signatur dagegen nur mail.draft.create und
+ * ist ausdruecklich Selbstbedienung. Wer Mail verfassen darf, muss seine eigene
+ * Signatur einrichten koennen; der Tab gatet die beiden Abschnitte einzeln.
+ *
+ * „KI" und „Erweitert" haengen an settings.manage und gaten sich in ihren
+ * eigenen Panels bereits selbst — mit einer Ausnahme: die kontospezifischen
+ * Antwortvorschlaege verlangen zusaetzlich mail.metadata.read AUF DEM KONTO
+ * (siehe canReadSelectedAccountSettings). Der Abschnitt wird deshalb einzeln
+ * gegated, nicht der ganze Tab: die Wissensablagen daneben haengen an den
+ * Workflow-Capabilities.
+ */
+const ACCOUNT_MANAGE_TABS = new Set<AccountTab>(["imap", "smtp", "oauth"])
 
 const TABS: { id: AccountTab; label: string }[] = [
   { id: "imap", label: "IMAP / POP3" },
@@ -56,6 +76,27 @@ export function AccountsMasterDetailSettings() {
   const [editAccount, setEditAccount] = useState<EmailAccount | null>(null)
   const [tab, setTab] = useState<AccountTab>("imap")
   const [creating, setCreating] = useState(false)
+  // Konto anlegen und loeschen haengen serverseitig an mail.account.manage —
+  // einer Mail-ACL-Berechtigung, NICHT an settings.manage. Ohne sie waeren die
+  // Knoepfe garantierte 403er.
+  //
+  // Die beiden Faelle sind aber NICHT gleich:
+  // - DELETE /email/accounts/:id ist ressourcen-gescopt (accountPath), ein
+  //   Delegierter mit dem Recht AUF DIESEM KONTO darf es also wirklich.
+  // - POST /email/accounts haengt am mailScope und steht NICHT in
+  //   RESTRICTED_SCOPE_WRITE_PATHS. Eine eingeschraenkte Delegation scheitert
+  //   dort auch mit mail.account.manage — Anlegen ist faktisch Owner/Admin.
+  //   Deshalb `mailAccessUnrestricted` statt der blossen Berechtigung; wer das
+  //   fuer Delegierte oeffnen will, muss zuerst die Server-Policy aendern.
+  const { hasMailPermissionForAccount, mailAccessUnrestricted } = useAuth()
+  const canCreateAccount = mailAccessUnrestricted
+
+  // Faellt das Recht weg (Bericht trifft spaet ein, oder eine ACL-Aenderung
+  // entzieht es), darf kein offenes Anlege-Formular stehenbleiben — sein
+  // Absenden liefe garantiert ins 403.
+  useEffect(() => {
+    if (!canCreateAccount && creating) setCreating(false)
+  }, [canCreateAccount, creating])
 
   const load = useCallback(async () => {
     try {
@@ -140,6 +181,31 @@ export function AccountsMasterDetailSettings() {
   }
 
   const selected = accounts.find((a) => a.id === selectedId) ?? editAccount
+  // PATCH /email/accounts/:id, die SMTP-Zuordnung, die OAuth-Verknuepfung und
+  // die Konto-Signaturen verlangen alle mail.account.manage AUF DIESEM KONTO.
+  // Wer das Konto nur sehen darf, bekaeme beim Speichern garantiert ein 403 —
+  // die Editoren bleiben deshalb weg, die Auswahl selbst nicht.
+  const canManageSelectedAccount = selected != null
+    && hasMailPermissionForAccount("mail.account.manage", selected.id)
+
+  // Sichtbarkeit ist nicht dasselbe wie Zugriff AUF DAS KONTO. Wer nur einen
+  // Ordner oder eine Nachricht darunter delegiert bekommt, sieht das Konto
+  // trotzdem in der Liste — der Lese-Port nimmt solche Elternkonten redigiert
+  // auf. GET /email/settings/reply-suggestion?accountId= prueft dagegen
+  // mail.metadata.read auf der KONTO-Ressource, und die lehnt ein Kindgrant ab.
+  // Ohne diese Abfrage endete der sichtbare KI-Abschnitt fuer ihn deterministisch
+  // im Fehler. Dieselbe Unterscheidung wie in der Selbstauskunft, die in
+  // accountPermissions bewusst nur Konto-Grants fuehrt.
+  const canReadSelectedAccountSettings = selected != null
+    && hasMailPermissionForAccount("mail.metadata.read", selected.id)
+
+  // Die PERSOENLICHE Signatur ist Selbstbedienung — aber fuer Verfassende:
+  // GET /email/user-signatures und der Upsert je Konto verlangen beide
+  // mail.draft.create, der Upsert ausdruecklich auf DIESEM Konto (accountPath).
+  // Wer das Postfach nur lesen darf, sah den Abschnitt trotzdem und scheiterte
+  // schon beim ersten Abruf.
+  const canDraftFromSelectedAccount = selected != null
+    && hasMailPermissionForAccount("mail.draft.create", selected.id)
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -148,19 +214,21 @@ export function AccountsMasterDetailSettings() {
           <p className="text-xs text-muted-foreground">
             <span className="font-semibold text-foreground">{accounts.length}</span> verbunden
           </p>
-          <Button
-            type="button"
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={() => {
-              setCreating(true)
-              setSelectedId(null)
-              setEditAccount(null)
-            }}
-          >
-            <Plus className="h-3 w-3" />
-            Konto
-          </Button>
+          {canCreateAccount ? (
+            <Button
+              type="button"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              onClick={() => {
+                setCreating(true)
+                setSelectedId(null)
+                setEditAccount(null)
+              }}
+            >
+              <Plus className="h-3 w-3" />
+              Konto
+            </Button>
+          ) : null}
         </div>
         <ScrollArea className="flex-1">
           <ul className="space-y-1 p-2">
@@ -217,7 +285,7 @@ export function AccountsMasterDetailSettings() {
                   </p>
                 ) : null}
               </div>
-              {!creating && selected ? (
+              {!creating && selected && canManageSelectedAccount ? (
                 <Button
                   type="button"
                   size="sm"
@@ -263,6 +331,11 @@ export function AccountsMasterDetailSettings() {
                       }}
                     />
                   </div>
+                ) : !canManageSelectedAccount && ACCOUNT_MANAGE_TABS.has(tab) ? (
+                  <p className="max-w-xl text-sm text-muted-foreground">
+                    Für dieses Postfach fehlt die Berechtigung zur Kontoverwaltung.
+                    Wenden Sie sich an eine Administratorin oder einen Administrator.
+                  </p>
                 ) : tab === "imap" ? (
                   <AccountForm
                     key={`edit-${editAccount?.id ?? "none"}`}
@@ -283,14 +356,26 @@ export function AccountsMasterDetailSettings() {
                   />
                 ) : tab === "signature" && selectedId != null ? (
                   <div className="max-w-3xl space-y-6">
-                    <AccountSignaturesSection embeddedAccountId={selectedId} />
+                    {canManageSelectedAccount ? (
+                      <AccountSignaturesSection embeddedAccountId={selectedId} />
+                    ) : null}
                     {/* Per-user signatures are a server-edition feature — the
                         ListUserSignatures/SaveUserSignature channels have no
-                        local Electron handler. */}
-                    {serverClientMode ? (
+                        local Electron handler.
+                        Und sie sind Selbstbedienung fuer WERFASSENDE: GET
+                        /email/user-signatures und der Upsert je Konto verlangen
+                        mail.draft.create. Wer das Postfach nur lesen darf,
+                        scheiterte hier schon beim Laden. */}
+                    {serverClientMode && canDraftFromSelectedAccount ? (
                       <div className="border-t pt-5">
                         <UserSignaturesSection embeddedAccountId={selectedId} />
                       </div>
+                    ) : null}
+                    {serverClientMode && !canDraftFromSelectedAccount && !canManageSelectedAccount ? (
+                      <p className="text-sm text-muted-foreground">
+                        Für dieses Postfach dürfen Sie keine Signaturen pflegen — dafür wird
+                        die Berechtigung zum Verfassen benötigt.
+                      </p>
                     ) : null}
                   </div>
                 ) : tab === "ki" && selectedId != null ? (
@@ -299,7 +384,15 @@ export function AccountsMasterDetailSettings() {
                       Kontospezifische KI-Antwortvorschläge. Globale Voreinstellungen (Profile,
                       Modelle) unter Einstellungen → KI.
                     </p>
-                    <ReplySuggestionSettingsSection accountId={selectedId} />
+                    {canReadSelectedAccountSettings ? (
+                      <ReplySuggestionSettingsSection accountId={selectedId} />
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        Die kontospezifischen Antwortvorschläge sind für dieses Postfach nicht
+                        einsehbar — die Delegation gilt nur für einzelne Ordner oder Nachrichten
+                        darin.
+                      </p>
+                    )}
                     <AccountKnowledgeSlots accountId={selectedId} />
                   </div>
                 ) : tab === "erweitert" && selectedId != null ? (
@@ -310,7 +403,7 @@ export function AccountsMasterDetailSettings() {
           </>
         ) : (
           <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-            Postfach wählen oder neues Konto anlegen.
+            {canCreateAccount ? "Postfach wählen oder neues Konto anlegen." : "Postfach wählen."}
           </div>
         )}
       </div>

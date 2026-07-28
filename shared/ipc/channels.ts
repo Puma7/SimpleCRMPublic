@@ -130,6 +130,12 @@ const AuthChannels = literal({
   SaveUser: 'auth:save-user',
   DeleteUser: 'auth:delete-user',
   ListCapabilities: 'auth:list-capabilities',
+  /**
+   * Die EIGENEN Mail-Berechtigungen (GET /api/v1/email/access/self). Ohne sie
+   * kennt der Renderer die Mail-ACL nicht und bietet Bedienelemente an, deren
+   * Aufruf garantiert im 403 endet. Server-Edition; im Desktop gibt es keine ACL.
+   */
+  ListMailPermissions: 'auth:list-mail-permissions',
   ChangePassword: 'auth:change-password',
   CreateInvite: 'auth:create-invite',
   GetOneTimeSetupPassword: 'auth:get-one-time-setup-password',

@@ -185,6 +185,87 @@ export class MailAccessRolloutService implements MailAccessService {
     return resolve.call(this.options.newAcl, input);
   }
 
+  /**
+   * Wie die Sichtbarkeitsfilter: die eigenen Rechte stammen immer aus der NEUEN
+   * ACL, auch im Shadow-Modus — die Selbstauskunft beschreibt, was NACH dem
+   * Rollout gilt, und blendet Bedienelemente danach aus.
+   *
+   * Ohne diese Implementierung liefe die Route in ihren Fail-closed-Zweig und
+   * meldete JEDEM Delegierten in der Produktion „keine Rechte": die Oberflaeche
+   * verbaerge dann genau die Aktionen, die er ausfuehren darf.
+   */
+  async resolveSelfPermissions(
+    input: Readonly<{ workspaceId: string; userId: string }>,
+  ): Promise<{
+    permissions: MailPermission[];
+    accountPermissions: Record<number, MailPermission[]>;
+  }> {
+    const fromNewAcl = await new NewMailAccessService(this.options.newAcl).resolveSelfPermissions(input);
+    const state = await this.options.state.getState(input.workspaceId);
+    // Nach dem Rollout entscheidet allein die neue ACL — dann ist ihr Ergebnis
+    // auch das ehrliche.
+    if (state.mode !== 'shadow' || state.diagnostic) return fromNewAcl;
+
+    // Im Shadow-Modus lautet die tatsaechliche Entscheidung
+    // `legacyAllowed && (!enforceConstraints || newAllowed)` (siehe
+    // assertPermission). Nur die neue ACL zu melden liesse den Renderer mit dem
+    // Server uneins werden: bei legacyDenyNewAllow boete er Bedienelemente an,
+    // die sicher scheitern.
+    //
+    // Gemeldet wird deshalb der SCHNITT beider Seiten. In der Gegenrichtung
+    // (legacyAllowNewDeny) verbirgt das ein Bedienelement, das heute noch
+    // funktionieren wuerde — bewusst: fuer ein Gate auf mutierende Aktionen ist
+    // Verbergen der sichere Fehler, und genau diese Faelle soll der Rollout
+    // ohnehin abstellen, bevor er auf enforce schaltet.
+    //
+    // Der Schnitt gilt NUR fuer vergleichbare Berechtigungen. Fuer alle anderen
+    // (mail.account.manage, mail.triage, mail.delegation.manage, …) kennt die
+    // Legacy-Seite gar keine Entsprechung: assertPermission entscheidet sie auch
+    // im Shadow-Modus allein nach der neuen ACL, und resolveAccountScope liefert
+    // fuer sie ausnahmslos []. Sie mitzuschneiden haette sie IMMER entfernt —
+    // die Oberflaeche verbaerge dann genau die Konto- und Delegationsaktionen,
+    // die der Server erlaubt (derselbe Fehler, den die Selbstauskunft beheben
+    // sollte).
+    //
+    // resolveAccountScope haengt nur an (Workspace, Nutzer, Berechtigung), nicht
+    // am Konto: eine Antwort je Berechtigung genuegt. Ohne den Cache kostete ein
+    // Bericht ueber M Konten M sequenzielle Workspace-Transaktionen.
+    const legacyScopeByPermission = new Map<MailPermission, Promise<readonly number[]>>();
+    const legacyScope = (permission: MailPermission): Promise<readonly number[]> => {
+      let pending = legacyScopeByPermission.get(permission);
+      if (!pending) {
+        pending = this.options.legacy.resolveAccountScope({
+          workspaceId: input.workspaceId,
+          userId: input.userId,
+          permission,
+        });
+        legacyScopeByPermission.set(permission, pending);
+      }
+      return pending;
+    };
+
+    const accountPermissions: Record<number, MailPermission[]> = {};
+    for (const [rawAccountId, permissions] of Object.entries(fromNewAcl.accountPermissions)) {
+      const accountId = Number(rawAccountId);
+      const effective: MailPermission[] = [];
+      for (const permission of permissions) {
+        if (comparableLegacyFlag(permission)) {
+          const legacyAccounts = await legacyScope(permission);
+          if (!legacyAccounts.includes(accountId)) continue;
+        }
+        effective.push(permission);
+      }
+      if (effective.length > 0) accountPermissions[accountId] = effective;
+    }
+    return {
+      // Die Anywhere-Liste bleibt die der neuen ACL: sie entscheidet nur, ob ein
+      // Bereich ueberhaupt erscheint, und dort waere Verbergen das groessere
+      // Uebel. Die kontoscharfen Gates haengen an accountPermissions.
+      permissions: fromNewAcl.permissions,
+      accountPermissions,
+    };
+  }
+
   async resolveScope(input: Parameters<MailAccessService['resolveScope']>[0]): Promise<MailSqlScope> {
     if (input.actor.workspaceId !== input.workspaceId) return { kind: 'none' };
     if (input.actor.isOwner || input.actor.isAdmin) return { kind: 'all' };

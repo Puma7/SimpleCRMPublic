@@ -29,12 +29,19 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
   // Server-Edition: PATCH /api/v1/email/settings/reply-suggestion verlangt
   // settings.manage. Ohne diese Stufe bleibt der Abschnitt nur lesbar, statt
   // Bedienelemente anzubieten, die im 403 enden. Desktop bleibt unbeschraenkt.
-  const { canManageSettings } = useAuth()
+  // Der Schreibpfad verlangt settings.manage UND — sobald eine accountId im
+  // Spiel ist — mail.account.manage auf genau diesem Konto. Ohne das zweite
+  // waere jedes Feld bedienbar und das Speichern liefe sicher ins 404. Die
+  // workspace-globale Variante (ohne accountId) haengt weiterhin allein an
+  // settings.manage.
+  const { canManageSettings, hasMailPermissionForAccount } = useAuth()
   const [settings, setSettings] = useState<ReplySuggestionSettings | null>(null)
   const [categories, setCategories] = useState<CategoryRow[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const perAccount = accountId != null
+  const canEdit = canManageSettings
+    && (!perAccount || hasMailPermissionForAccount("mail.account.manage", accountId))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -141,7 +148,7 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
         <Switch
           id="reply-suggestion-auto"
           checked={settings.autoEnabled}
-          disabled={loading || !canManageSettings}
+          disabled={loading || !canEdit}
           onCheckedChange={(v) => patch({ autoEnabled: v })}
         />
       </div>
@@ -154,7 +161,7 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
           <Checkbox
             className="mt-0.5"
             checked={settings.triggerOnInbound}
-            disabled={loading || !settings.autoEnabled || !canManageSettings}
+            disabled={loading || !settings.autoEnabled || !canEdit}
             onCheckedChange={(c) => patch({ triggerOnInbound: c === true })}
           />
           <span>
@@ -169,7 +176,7 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
           <Checkbox
             className="mt-0.5"
             checked={settings.triggerOnOpen}
-            disabled={loading || !settings.autoEnabled || !canManageSettings}
+            disabled={loading || !settings.autoEnabled || !canEdit}
             onCheckedChange={(c) => patch({ triggerOnOpen: c === true })}
           />
           <span>
@@ -191,7 +198,7 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
         <Label>Kategorie-Filter (optional)</Label>
         <Select
           value={settings.categoryMode}
-          disabled={loading || !settings.autoEnabled || !canManageSettings}
+          disabled={loading || !settings.autoEnabled || !canEdit}
           onValueChange={(v) =>
             patch({ categoryMode: v === "only_listed" ? "only_listed" : "any" })}
         >
@@ -212,7 +219,7 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
                 <label key={c.id} className="flex items-center gap-2 text-sm">
                   <Checkbox
                     checked={settings.categoryIds.includes(c.id)}
-                    disabled={loading || !settings.autoEnabled || !canManageSettings}
+                    disabled={loading || !settings.autoEnabled || !canEdit}
                     onCheckedChange={(checked) => toggleCategory(c.id, checked === true)}
                   />
                   {c.name}
@@ -228,7 +235,7 @@ export function ReplySuggestionSettingsSection({ accountId }: Props) {
         kurze Texte erzeugt.
       </p>
 
-      {canManageSettings ? (
+      {canEdit ? (
         <Button type="button" disabled={loading || saving} onClick={() => void save()}>
           {saving ? "Speichern…" : perAccount ? "Konto-Einstellungen speichern" : "Globale Einstellungen speichern"}
         </Button>

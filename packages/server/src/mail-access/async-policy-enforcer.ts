@@ -94,7 +94,13 @@ const MAIL_EVENT_POLICY_TYPES = new Set(MAIL_EVENT_POLICY_MANIFEST.map((entry) =
 const SERVER_EVENT_TYPE_SET = new Set<string>(SERVER_EVENT_TYPES);
 
 const EVENT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  'email_acl.changed': ['bindingId', 'targetUserId', 'state', 'resourceType', 'accountId', 'folderId'],
+  // `reason` unterscheidet die reine SICHTBARKEITS-Auffrischung (ein Workflow
+  // oder die KI-Klassifizierung hat einen gefilterten Tag/eine Kategorie
+  // geschrieben) von einer echten ACL-Mutation. Ohne dieses Feld erneuert der
+  // AuthProvider bei JEDEM selbstadressierten Ereignis die Sitzung mit force —
+  // Token-Rotation samt Audit-Eintrag, dazu beide Rechtelisten. Es ist ein
+  // konstanter Bezeichner ohne Bezug zu einer Ressource und verraet nichts.
+  'email_acl.changed': ['bindingId', 'targetUserId', 'state', 'resourceType', 'accountId', 'folderId', 'reason'],
   'email_account.created': ['accountId', 'state'],
   'email_account.updated': ['accountId', 'state'],
   'email_account.deleted': ['accountId', 'state'],

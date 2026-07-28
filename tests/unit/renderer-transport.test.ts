@@ -1846,6 +1846,29 @@ describe('renderer transport', () => {
       entityType: 'email_account_signature',
       entityId: '-2',
     })).toBe(false);
+
+    // Eine echte ACL-Mutation aendert die Konten-/Teamliste — sie zaehlt.
+    const aclEvent = {
+      ...baseEvent,
+      type: 'email_acl.changed',
+      entityType: 'email_acl',
+      entityId: 'user-b',
+      payload: { targetUserId: 'user-b', state: 'changed' },
+    };
+    expect(isMailAccountDataRefreshEvent(aclEvent)).toBe(true);
+    // Die reine Sichtbarkeitsauffrischung nicht: Konten, Team und Signaturen
+    // sind unveraendert, nur WELCHE Nachrichten sichtbar sind. Sie laeuft bei
+    // jeder getaggten eingehenden Nachricht — ein Konten-Reload je Nachricht
+    // waere Dauerlast ohne Unterschied.
+    expect(isMailAccountDataRefreshEvent({
+      ...aclEvent,
+      payload: { targetUserId: 'user-b', state: 'changed', reason: 'visibility_filter' },
+    })).toBe(false);
+    // Die NACHRICHTENLISTE muss sie dagegen sehr wohl neu laden.
+    expect(isMailListRefreshEvent({
+      ...aclEvent,
+      payload: { targetUserId: 'user-b', state: 'changed', reason: 'visibility_filter' },
+    })).toBe(true);
   });
 
   test('matches mail compose auxiliary data refresh server events for canned responses and prompts', () => {

@@ -38,6 +38,26 @@ export const MAX_MAIL_BINDING_CONSTRAINT_LIST_LENGTH = 500;
 /** Max length of a single tag value in a visibility filter. */
 export const MAX_MAIL_BINDING_CONSTRAINT_TAG_LENGTH = 200;
 
+/**
+ * Kumulatives Budget ueber ALLE Bindings eines Subjekts (Spiegel von
+ * shared/mail-acl-constraints.ts). Das Limit pro Liste deckelt nur ein
+ * einzelnes Binding; sql-scope ODER-verknuepft aber die Constraints JEDES
+ * Bindings in derselben gescopten Mail-Query, sodass die Summe die Abfrage
+ * bestimmt. 2000 entspricht vier vollen Bindings.
+ */
+export const MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH = 2000;
+
+/** Zaehlbare Groesse eines Constraint-Satzes: Kategorie-Ids plus Tag-Werte. */
+export function mailBindingConstraintEntryCount(
+  constraints: MailBindingVisibilityConstraints | null | undefined,
+): number {
+  if (!constraints) return 0;
+  return constraints.categoryAllowIds.length
+    + constraints.categoryExcludeIds.length
+    + constraints.tagAllowValues.length
+    + constraints.tagExcludeValues.length;
+}
+
 export const DENY_ALL_MAIL_BINDING_CONSTRAINTS: MailBindingVisibilityConstraints = Object.freeze({
   assignmentMode: null,
   categoryAllowIds: Object.freeze([DENY_ALL_CATEGORY_ALLOW_ID] as number[]),
