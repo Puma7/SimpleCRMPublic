@@ -165,7 +165,12 @@ describe('server edition AP-12 operator docs', () => {
     // Und die Pruefung ist bewusst KEINE Gleichheitsprobe: zwischen Zaehlung und
     // Snapshot duerfen Zeilen dazukommen. Alarm nur fuer den Fall, der nicht
     // harmlos entstehen kann — Backup hatte Zeilen, Restore hat keine.
-    expect(metadata).toEqual(expect.stringContaining('is EMPTY after restore but the backup recorded'));
+    // Eine leere Tabelle warnt, bricht aber NICHT ab: wird die letzte Zeile
+    // zwischen Zaehlung und Dump-Snapshot geloescht, ist genau das rechtmaessig.
+    expect(metadata).toEqual(expect.stringContaining('WARNING — $table is empty after restore'));
+    // Die Schluessel-Kennung ist eine Erinnerung, keine Pruefung — der Server
+    // vergibt sie ohne Argument, sie lautet ueberall 'default'.
+    expect(metadata).toEqual(expect.stringContaining('NOT proof of a matching key'));
     expect(metadata).toEqual(expect.stringContaining('writes between count and dump are expected'));
     // Die Ursache des stillen Fehlerfalls ist beim Backup direkt pruefbar.
     expect(metadata).toEqual(expect.stringContaining('SELECT (rolsuper OR rolbypassrls)'));

@@ -33,8 +33,15 @@ Keep a copy of `docker/.env` **outside** the backup volume — a password manage
 or an offline copy. Without it your backup is only half a backup.
 
 `backup-<stamp>.meta` records the `key_id` values the dump was encrypted with
-(never the key itself). `restore.sh` and `doctor.sh` print them, so a key
-mismatch surfaces during a drill instead of during an incident.
+(never the key itself), and `restore.sh` and `doctor.sh` print them as a
+reminder.
+
+**Treat that as a reminder, not a check.** The server derives the id without
+passing one, so it is `default` in every installation — a wrong key carries the
+same id as the right one. Whether your `.env` matches cannot be decided from the
+backup; only a non-secret key fingerprint written by the server, or a canary
+decryption, could answer that. Until then the safeguard is procedural: keep the
+`.env` with the backup set.
 
 ## Run A One-Shot Backup
 
@@ -203,9 +210,12 @@ This is deliberately **not** an equality check. The counts are taken just before
 `pg_dump` starts, both against a live database, so rows written in between show
 up in the dump but not in the recorded numbers. Demanding equality would raise
 false alarms under normal write load, and an alarm that gets ignored out of habit
-is worse than no alarm. The restore therefore fails only on the case that cannot
-arise harmlessly: **the backup recorded rows and the restore has none.** Any
-other divergence is printed as a note.
+is worse than no alarm. The restore therefore fails only when a recorded table
+**cannot be read back at all** — it is missing, or the query failed, so
+completeness was never checked. A table that comes back empty is reported
+loudly but does not fail the restore: deleting the last row of a table between
+the count and the dump snapshot produces exactly that, legitimately. Any other
+divergence is printed as a note.
 
 The underlying failure mode — row level security is forced on nearly every table,
 so a dump taken by a role that does not bypass it restores cleanly while being

@@ -10,7 +10,12 @@
 #    absichtlich nirgends im Backup. Wird ein Dump ohne dieselbe .env
 #    eingespielt, ist die Datenbank vollstaendig — nur entschluesseln kann die
 #    Secrets niemand mehr. Die Metadaten halten die verwendeten key_id fest
-#    (nicht den Schluessel), damit dieser Fall VOR dem Ernstfall auffaellt.
+#    (nicht den Schluessel) und erinnern beim Restore daran.
+#
+#    Das ist ausdruecklich nur eine Erinnerung: der Server vergibt die Kennung
+#    ohne Argument, sie lautet also ueberall 'default'. Ein falscher Schluessel
+#    ist daran NICHT zu erkennen. Wer das wirklich pruefen will, braucht einen
+#    nicht-geheimen Fingerabdruck des Schluessels, den der Server hinterlegt.
 #
 # 2. `pg_restore` meldet Erfolg, sobald es durchgelaufen ist — nicht, ob die
 #    Daten vollstaendig sind. Ein Dump, der wegen fehlender Leserechte halb
@@ -164,9 +169,13 @@ verify_backup_metadata() {
       echo "$label: cannot read $table after restore, but the backup recorded $expected rows" >&2
       empty=1
     elif [ "$expected" -gt 0 ] 2>/dev/null && [ "$actual" = '0' ]; then
-      # Der eine Fall, der nicht harmlos entstehen kann.
-      echo "$label: $table is EMPTY after restore but the backup recorded $expected rows" >&2
-      empty=1
+      # Auffaellig, aber KEIN Abbruch. Wird die letzte Zeile einer Tabelle
+      # zwischen Zaehlung und Dump-Snapshot geloescht, ist genau das hier das
+      # rechtmaessige Ergebnis — ein einzelnes Postfach oder ein einzelnes
+      # Secret reichen dafuer. Die eigentliche Ursache eines still gefilterten
+      # Dumps faengt ohnehin assert_backup_role_reads_all_rows deterministisch
+      # ab, und zwar bevor der Dump laeuft.
+      echo "$label: WARNING — $table is empty after restore but the backup recorded $expected rows; check this before trusting the restore" >&2
     else
       echo "$label: note — $table has $actual rows, backup recorded $expected (writes between count and dump are expected)" >&2
     fi
@@ -174,10 +183,15 @@ verify_backup_metadata() {
 
   key_ids="$(backup_metadata_value "$meta_path" 'secret_key_ids' || printf 'unknown')"
   if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
-    # Kein Abbruch: der Schluessel laesst sich hier nicht pruefen, nur benennen.
-    # Ohne die passende .env bleiben die Secrets unlesbar, obwohl die
-    # Wiederherstellung technisch fehlerfrei war.
-    echo "$label: this dump needs SIMPLECRM_MASTER_KEY with key id(s) $key_ids — restore the matching .env as well" >&2
+    # ERINNERUNG, KEINE PRUEFUNG — und das muss so dastehen, damit sich niemand
+    # darauf verlaesst: der Server vergibt die Kennung ueber
+    # parseBase64MasterKey ohne Argument, sie lautet also in jeder Installation
+    # 'default'. Ein falscher Schluessel traegt damit dieselbe Kennung wie der
+    # richtige; ob die .env passt, laesst sich hier nicht feststellen. Erst ein
+    # nicht-geheimer Fingerabdruck (den der Server schreiben muesste) oder eine
+    # Probe-Entschluesselung koennte das beantworten.
+    echo "$label: reminder — the secrets in this dump are encrypted with SIMPLECRM_MASTER_KEY (recorded key id: $key_ids)." >&2
+    echo "$label: that id is NOT proof of a matching key; restore the .env from the same system or the secrets stay unreadable." >&2
   fi
 
   [ "$empty" -eq 0 ]
