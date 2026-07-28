@@ -457,6 +457,67 @@ describe('createPostgresMailDelegationPort', () => {
     expect(keys.every((key) => !key.includes(AGENT))).toBe(true);
   });
 
+  test('a budget-REDUCING update is allowed even above the limit', async () => {
+    // Liegt ein Subjekt bereits ueber dem Limit — Altbestand aus der Zeit vor
+    // der Pruefung oder ein spaeter gesenktes Limit —, prallte auch das
+    // Aufraeumen ab, weil die SUMME weiterhin darueber liegt. Durch kam nur das
+    // vollstaendige Loeschen eines Bindings. Genau die falsche Richtung: wer
+    // aufraeumt, soll aufraeumen duerfen.
+    const existingBinding = {
+      id: 901,
+      workspace_id: WORKSPACE,
+      subject_type: 'user' as const,
+      subject_id: AGENT,
+      resource_type: 'account' as const,
+      account_id: 101,
+      folder_id: null,
+      message_id: null,
+      updated_at: new Date('2026-07-19T12:00:00.000Z'),
+    };
+    const fixtures = {
+      actor: { id: ACTOR, role: 'admin', disabled_at: null },
+      subject: { id: AGENT, display_name: 'Agent', role: 'user', disabled_at: null },
+      account: { id: 101, display_name: 'Support' },
+      folder: null,
+      existingBinding,
+      affectedUsers: [{ id: AGENT }],
+      // Dieses Binding traegt 1500 Eintraege, ein Geschwister 1000 — zusammen
+      // 2500 und damit ueber dem Limit von 2000.
+      budgetConstraintRows: [
+        { binding_id: 901, value_ids: null, value_texts: Array.from({ length: 1500 }, (_, i) => `a-${i}`) },
+        { binding_id: 902, value_ids: null, value_texts: Array.from({ length: 1000 }, (_, i) => `b-${i}`) },
+      ],
+      oversizedSiblingBindingIds: [902],
+    };
+    const portFor = (trx: ReturnType<typeof createDelegationTransaction>) => createPostgresMailDelegationPort({
+      db: { transaction: () => ({ execute: async (operation: (t: typeof trx) => unknown) => operation(trx) }) } as never,
+      applyWorkspaceSession: async () => {},
+    });
+    const patch = (entries: number) => ({
+      workspaceId: WORKSPACE,
+      actor: { userId: ACTOR, isOwner: false, isAdmin: true },
+      subject: { type: 'user' as const, id: AGENT },
+      resource: { type: 'account' as const, accountId: 101 },
+      permissions: ['mail.metadata.read' as const],
+      constraints: {
+        assignmentMode: null,
+        categoryAllowIds: [],
+        categoryExcludeIds: [],
+        tagAllowValues: Array.from({ length: entries }, (_, i) => `n-${i}`),
+        tagExcludeValues: [],
+      },
+    });
+
+    // 1500 → 1200: die Summe bleibt mit 2200 ueber dem Limit, aber die
+    // Richtung stimmt.
+    await expect(portFor(createDelegationTransaction(fixtures)).replaceBinding(patch(1200)))
+      .resolves.toMatchObject({ ok: true });
+
+    // 1500 → 1600 haeuft weiter auf und bleibt abgelehnt.
+    await expect(portFor(createDelegationTransaction(fixtures)).replaceBinding(patch(1600)))
+      .resolves.toMatchObject({ ok: false, code: 'constraint_budget_exceeded' });
+  });
+
   test('deleting a binding is never rejected by the constraint budget', async () => {
     // Das Budget zaehlt den Verbrauch der GESCHWISTER mit. Liegt der bereits
     // ueber dem Limit — Altbestand aus der Zeit vor der Pruefung oder ein
@@ -844,6 +905,11 @@ function createDelegationTransaction(fixtures: {
    * dem Budget liegen — die Sackgasse, aus der nur eine Loeschung herausfuehrt.
    */
   oversizedSiblingBindingIds?: readonly number[];
+  /**
+   * Constraint-Zeilen der Budget-Abfrage, nach binding_id gefiltert — damit ein
+   * Test den Verbrauch des ZU ERSETZENDEN Bindings vom Rest unterscheiden kann.
+   */
+  budgetConstraintRows?: ReadonlyArray<{ binding_id: number; value_ids: number[] | null; value_texts: string[] | null }>;
 }) {
   const calls: unknown[][] = [];
   const selectCounts = new Map<string, number>();
@@ -904,6 +970,9 @@ function createDelegationTransaction(fixtures: {
       return [{ binding_id: (fixtures.existingBinding as { id?: number } | null)?.id ?? 901, permission_key: 'mail.metadata.read' }];
     }
     if (table === 'mail_acl_binding_constraints') {
+      if (fixtures.budgetConstraintRows && inIds.length > 0) {
+        return fixtures.budgetConstraintRows.filter((row) => inIds.includes(row.binding_id));
+      }
       const siblingIds = fixtures.oversizedSiblingBindingIds ?? [];
       if (siblingIds.length > 0 && inIds.some((id) => siblingIds.includes(id))) {
         return [{ value_ids: [], value_texts: Array.from({ length: 2001 }, (_, index) => `t-${index}`) }];

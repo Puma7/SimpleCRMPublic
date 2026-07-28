@@ -1224,23 +1224,40 @@ async function constraintBudgetExceeded(
     .where('subject_type', '=', subject.type)
     .where('subject_id', '=', subjectId(subject))
     .execute();
-  const otherIds = siblings
-    .map((row) => Number(row.id))
-    .filter((id) => id !== replacedBindingId);
+  // Die zu ersetzende Zeile wird MITGELESEN, nicht bloss uebersprungen: ihr
+  // bisheriger Verbrauch entscheidet, ob eine Aenderung senkt oder haeuft.
+  const bindingIds = siblings.map((row) => Number(row.id));
 
-  let used = nextCount;
-  if (otherIds.length > 0) {
+  let others = 0;
+  let replacedCurrent = 0;
+  if (bindingIds.length > 0) {
     const rows = await trx
       .selectFrom('mail_acl_binding_constraints')
-      .select(['value_ids', 'value_texts'])
+      .select(['binding_id', 'value_ids', 'value_texts'])
       .where('workspace_id', '=', workspaceId)
-      .where('binding_id', 'in', otherIds)
+      .where('binding_id', 'in', bindingIds)
       .execute();
     for (const row of rows) {
-      used += (row.value_ids?.length ?? 0) + (row.value_texts?.length ?? 0);
+      const entries = (row.value_ids?.length ?? 0) + (row.value_texts?.length ?? 0);
+      if (replacedBindingId !== null && Number(row.binding_id) === replacedBindingId) {
+        replacedCurrent += entries;
+      } else {
+        others += entries;
+      }
     }
   }
+  const used = nextCount + others;
   if (used <= MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH) return null;
+  // Ueber dem Limit — aber eine Aenderung, die den Verbrauch STRIKT SENKT,
+  // bleibt erlaubt.
+  //
+  // Sonst sitzt ein Subjekt fest, das ueber dem Limit liegt (Altbestand aus
+  // der Zeit vor der Pruefung oder ein spaeter gesenktes Limit): jedes
+  // Aufraeumen in Schritten prallte ab, weil die SUMME weiterhin darueber
+  // liegt, und nur das vollstaendige Loeschen eines Bindings kam durch (siehe
+  // Loeschpfad). Genau das ist die falsche Richtung — wer aufraeumt, soll
+  // aufraeumen duerfen.
+  if (nextCount < replacedCurrent) return null;
   return { used, limit: MAX_MAIL_BINDING_CONSTRAINT_TOTAL_LENGTH };
 }
 
