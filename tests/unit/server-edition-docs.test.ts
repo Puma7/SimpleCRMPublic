@@ -1,6 +1,8 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
+import { collectMigrationSql } from '../../packages/server/src/migrations';
+
 const repoRoot = join(__dirname, '..', '..');
 
 const readRepoFile = (path: string) => readFileSync(join(repoRoot, path), 'utf8');
@@ -161,6 +163,47 @@ describe('server edition AP-12 operator docs', () => {
     expect(doctor).toEqual(expect.stringContaining('backup_schema_migration='));
     // Jeder Dienst, der eines der Skripte ausfuehrt, braucht den Helfer.
     expect(compose.match(/backup-metadata\.sh:\/app\/backup-metadata\.sh:ro/g)).toHaveLength(5);
+  });
+
+  test('backup metadata counts every core CRM table protected by FORCE row level security', () => {
+    const metadata = readRepoFile('docker/backup-metadata.sh');
+    const tablesMatch = metadata.match(/^BACKUP_METADATA_TABLES='([^']+)'/m);
+    expect(tablesMatch).not.toBeNull();
+    const metadataTables = new Set(tablesMatch![1].split(/\s+/));
+
+    const requiredCoreTables = [
+      'workspaces',
+      'users',
+      'customers',
+      'deals',
+      'deal_products',
+      'products',
+      'returns',
+      'return_items',
+      'email_accounts',
+      'email_messages',
+      'secrets',
+    ];
+
+    for (const table of requiredCoreTables) {
+      expect(metadataTables).toContain(table);
+    }
+
+    const migrationSql = collectMigrationSql('up');
+    const forceRlsTables = new Set<string>();
+    const forceRegex = /ALTER TABLE ([a-z_]+) FORCE ROW LEVEL SECURITY;/g;
+    let match: RegExpExecArray | null;
+    while ((match = forceRegex.exec(migrationSql)) !== null) {
+      forceRlsTables.add(match[1]);
+    }
+
+    for (const table of requiredCoreTables) {
+      expect(forceRlsTables).toContain(table);
+    }
+
+    for (const table of metadataTables) {
+      expect(migrationSql).toMatch(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?${table}\\b`));
+    }
   });
 
   test('documents optional Docker profiles without adding them to the standard stack', () => {

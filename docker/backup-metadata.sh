@@ -31,7 +31,7 @@
 # 3. Der Schemastand sagt, welcher Code zu diesem Dump gehoert. Beim
 #    Zurueckrollen ist das die Information, die man sonst raten muesste.
 
-BACKUP_METADATA_TABLES='workspaces users email_accounts email_messages secrets'
+BACKUP_METADATA_TABLES='workspaces users customers deals deal_products products returns return_items email_accounts email_messages secrets'
 
 backup_metadata_path() {
   # $1 = Backup-Verzeichnis, $2 = Zeitstempel
