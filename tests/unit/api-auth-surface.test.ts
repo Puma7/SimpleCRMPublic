@@ -105,17 +105,55 @@ function sampleFromPattern(raw: string): string | null {
 }
 
 /**
+ * Zusammengesetzte Pfadliterale, die KEINE Route sind.
+ *
+ * Ein interpoliertes Literal kann die Probe nicht schiessen — es gibt keinen
+ * festen Pfad. Statt das stillschweigend zu ueberspringen (dann waere ein so
+ * geschriebener neuer Endpunkt unsichtbar und der Test trotzdem gruen), sind
+ * die vorhandenen hier aufgezaehlt und jedes neue faellt auf. Alle drei sind
+ * Rueckgabewerte in Antwortkoerpern, keine Vergleiche gegen req.path.
+ */
+const NON_ROUTE_INTERPOLATED_PATHS: readonly string[] = [
+  '/api/v1/deals/${id}',
+  '/api/v1/tasks/${id}',
+  '/api/v1/email/messages/${messageId}/tags',
+];
+
+/** Pfadliterale in jeder Schreibweise: '…', "…" und `…`. */
+const PATH_LITERAL = /(['"`])(\/(?:api\/v1|health|openapi|t)\/?[^'"`\s]*)\1/g;
+
+/**
  * Die Routen kommen aus den Quellen, nicht aus einer gepflegten Liste — eine
  * Liste waere schon beim naechsten neuen Endpunkt unvollstaendig, und
  * ausgerechnet der neue Endpunkt ist der, um den es hier geht.
+ *
+ * Erfasst werden alle drei Anfuehrungsarten. Anfangs waren es nur einfache
+ * Anfuehrungszeichen — dieselbe Luecke eine Ebene tiefer: ein Pfad in
+ * doppelten Anfuehrungszeichen oder in einem Backtick-Literal waere durch die
+ * Probe gefallen und sie waere gruen geblieben. Was sich nicht statisch
+ * aufloesen laesst (Interpolation, geteilte Konstanten), faengt die Pruefung
+ * darunter ab.
  */
-function collectRoutePaths(): string[] {
+function collectRoutePaths(): { paths: string[]; interpolated: string[] } {
   const paths = new Set<string>();
+  const interpolated = new Set<string>();
   for (const file of readdirSync(API_DIR).filter((name) => name.endsWith('.ts'))) {
-    const source = readFileSync(join(API_DIR, file), 'utf8');
-    for (const match of source.matchAll(/'(\/(?:api\/v1|health|openapi|t)\/?[^'`\s]*)'/g)) {
-      const path = match[1];
-      if (!path || path.includes('${') || path.includes('*')) continue;
+    // Reine Kommentarzeilen fliegen raus: dort steht Prosa ueber Routen, keine
+    // Route. `/api/v1/portal/returns/...` aus einem Kopfkommentar wuerde sonst
+    // als eigener Pfad geprobt und als offener Endpunkt gemeldet. Eine echte
+    // Route steht nie ausschliesslich in einem Kommentar, es geht also nichts
+    // verloren.
+    const source = readFileSync(join(API_DIR, file), 'utf8')
+      .split('\n')
+      .filter((line) => !/^\s*(\/\/|\/?\*)/.test(line))
+      .join('\n');
+    for (const match of source.matchAll(PATH_LITERAL)) {
+      const path = match[2];
+      if (!path || path.includes('*')) continue;
+      if (path.includes('${')) {
+        interpolated.add(path);
+        continue;
+      }
       paths.add(path);
     }
     for (const match of source.matchAll(/\/\^([^\n]*?)\$\//g)) {
@@ -125,7 +163,7 @@ function collectRoutePaths(): string[] {
       if (sample) paths.add(sample);
     }
   }
-  return [...paths].sort();
+  return { paths: [...paths].sort(), interpolated: [...interpolated].sort() };
 }
 
 /** Beispielpfad zurueck auf die sprechende Form bringen, die oben steht. */
@@ -151,8 +189,17 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
     expect(adapterMethods).toEqual([...METHODS].sort());
   });
 
+  test('kein Pfad entzieht sich der Probe durch Interpolation', () => {
+    // Was zusammengesetzt wird, kann die Probe nicht schiessen. Diese Liste
+    // macht aus dem stillen Ueberspringen eine sichtbare Entscheidung: kommt
+    // ein interpolierter Pfad hinzu, faellt der Test, und wer ihn hinzufuegt
+    // muss sagen, ob es eine Route ist. Waere er eine, muesste er anders
+    // geschrieben werden — sonst pruefte ihn niemand.
+    expect(collectRoutePaths().interpolated).toEqual([...NON_ROUTE_INTERPOLATED_PATHS].sort());
+  });
+
   test('nur die bewusst oeffentlichen Endpunkte antworten ohne Principal', async () => {
-    const routePaths = collectRoutePaths();
+    const { paths: routePaths } = collectRoutePaths();
     // Schutz gegen eine stillschweigend leere Probe: findet die Extraktion
     // nichts mehr (umbenanntes Verzeichnis, geaenderte Schreibweise), waere der
     // Test gruen, ohne irgendetwas geprueft zu haben.

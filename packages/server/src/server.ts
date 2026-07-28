@@ -775,6 +775,30 @@ function startProvisionalLoginAttemptCleanup(ports: ServerApiPorts): { stop(): v
   return { stop() { clearInterval(timer); } };
 }
 
+/** PostgreSQL: undefined_table. Der einzige Fehler, den die Pruefung unten aushaelt. */
+const PG_UNDEFINED_TABLE = '42P01';
+
+function isMissingTableError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === PG_UNDEFINED_TABLE;
+}
+
+const MASTER_KEY_MISMATCH_MESSAGE =
+  'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '
+  + 'encrypted with a different key and cannot be decrypted with this one. This usually '
+  + 'means a dump was restored without its matching docker/.env. Restore the original '
+  + '.env, or — if the key really was replaced on purpose — clear the row in '
+  + 'master_key_fingerprints and re-enter every secret.';
+
+const MASTER_KEY_MISSING_MESSAGE =
+  'SIMPLECRM_MASTER_KEY is not set, but this database already holds secrets encrypted '
+  + 'with a master key. Starting without it would leave every stored credential '
+  + 'unreadable while new ones are written unencrypted-by-omission. Restore the '
+  + 'matching docker/.env — the fingerprints of the keys this database was used with '
+  + 'are in master_key_fingerprints.';
+
 /**
  * Gehoert dieser Master-Key zu dieser Datenbank?
  *
@@ -790,42 +814,65 @@ function startProvisionalLoginAttemptCleanup(ports: ServerApiPorts): { stop(): v
  * Schluessel zu schreiben — aus einem behebbaren Konfigurationsfehler wuerde
  * ein Datenschaden.
  *
- * Fehlt die Tabelle (Migrationen noch nicht gelaufen), passiert nichts. Der
- * Start darf nicht daran haengen, dass ein Schema schon aktuell ist.
+ * Ein FEHLENDER Schluessel ist derselbe Fehler, nur andersherum: steht in der
+ * Tabelle schon ein Fingerabdruck, wurde diese Datenbank mit einem Schluessel
+ * betrieben, und ohne ihn weiterzulaufen hiesse wieder, auf unlesbaren Secrets
+ * zu arbeiten. Ist sie leer, ist es eine frische Installation ohne Secrets —
+ * die laeuft weiter wie bisher.
+ *
+ * Fehlt die TABELLE (Migration 0049 noch nicht gelaufen), passiert nichts: die
+ * Migrationen sind ein eigener Dienst, der Start darf nicht daran haengen, dass
+ * ein Schema schon aktuell ist. Toleriert wird dafuer ausschliesslich der
+ * Postgres-Code 42P01. Jeder andere Fehler — Verbindungsabbruch, rotiertes
+ * PG_PASSWORD, `too many clients` — wird durchgereicht, sonst saehe ein
+ * gescheiterter Start aus wie eine bestandene Pruefung.
  */
 export async function assertMasterKeyMatchesDatabase(
   db: Kysely<ServerDatabase>,
-  masterKey: MasterKeyMaterial,
+  masterKey: MasterKeyMaterial | undefined,
 ): Promise<void> {
-  const fingerprint = masterKeyFingerprint(masterKey);
-  let stored: { fingerprint: string } | undefined;
+  let stored: Array<{ key_id: string; fingerprint: string }>;
   try {
     stored = await db
       .selectFrom('master_key_fingerprints')
-      .select('fingerprint')
-      .where('key_id', '=', masterKey.keyId)
-      .executeTakeFirst();
-  } catch {
-    return;
-  }
-
-  if (!stored) {
-    await db
-      .insertInto('master_key_fingerprints')
-      .values({ key_id: masterKey.keyId, fingerprint })
-      .onConflict((oc) => oc.column('key_id').doNothing())
+      .select(['key_id', 'fingerprint'])
       .execute();
+  } catch (error) {
+    if (isMissingTableError(error)) return;
+    throw error;
+  }
+
+  if (!masterKey) {
+    if (stored.length === 0) return;
+    throw new Error(MASTER_KEY_MISSING_MESSAGE);
+  }
+
+  const fingerprint = masterKeyFingerprint(masterKey);
+  const existing = stored.find((row) => row.key_id === masterKey.keyId);
+  if (existing) {
+    if (!masterKeyFingerprintMatches(existing.fingerprint, fingerprint)) {
+      throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
     return;
   }
 
-  if (!masterKeyFingerprintMatches(stored.fingerprint, fingerprint)) {
-    throw new Error(
-      'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '
-      + 'encrypted with a different key and cannot be decrypted with this one. This usually '
-      + 'means a dump was restored without its matching docker/.env. Restore the original '
-      + '.env, or — if the key really was replaced on purpose — clear the row in '
-      + 'master_key_fingerprints and re-enter every secret.',
-    );
+  await db
+    .insertInto('master_key_fingerprints')
+    .values({ key_id: masterKey.keyId, fingerprint })
+    .onConflict((oc) => oc.column('key_id').doNothing())
+    .execute();
+
+  // Der Konflikt-Zweig schreibt nichts — und genau dann ist der hinterlegte
+  // Wert ein fremder: zwei Instanzen starten gleichzeitig, die andere war
+  // zuerst da. Ohne dieses Nachlesen waere ausgerechnet der Fall ungeprueft
+  // durchgegangen, fuer den die Pruefung da ist.
+  const after = await db
+    .selectFrom('master_key_fingerprints')
+    .select('fingerprint')
+    .where('key_id', '=', masterKey.keyId)
+    .executeTakeFirst();
+  if (after && !masterKeyFingerprintMatches(after.fingerprint, fingerprint)) {
+    throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
   }
 }
 
@@ -860,18 +907,30 @@ async function createDefaultServerPorts(input: {
   if (!input.accessTokenSigner) {
     throw new Error('ACCESS_TOKEN_SECRET is required when DATABASE_URL is configured');
   }
+  // Vor der Datenbank: ein unbrauchbarer Schluessel soll scheitern, bevor
+  // irgendeine Verbindung offen ist.
+  const masterKey = input.masterKey?.trim()
+    ? parseBase64MasterKey(input.masterKey)
+    : undefined;
   const db = await (input.createDatabase ?? createPostgresDatabase)({
     databaseUrl: input.databaseUrl,
   });
+  // Und vor dem Benachrichtigungskanal: der haelt eine dauerhafte
+  // LISTEN-Verbindung offen. Bricht die Pruefung danach ab, kaeme startServer
+  // nie bis zum Aufraeumen, der Einstiegspunkt setzt nur process.exitCode — und
+  // das offene Socket haelt Node am Leben. Der Container haenge dann, statt zu
+  // beenden und von `restart: unless-stopped` neu gestartet zu werden.
+  try {
+    await assertMasterKeyMatchesDatabase(db, masterKey);
+  } catch (error) {
+    await db.destroy().catch(() => undefined);
+    throw error;
+  }
   const eventNotifications = await (
     input.createEventNotifications ?? createPostgresServerEventNotificationChannel
   )({
     databaseUrl: input.databaseUrl,
   });
-  const masterKey = input.masterKey?.trim()
-    ? parseBase64MasterKey(input.masterKey)
-    : undefined;
-  if (masterKey) await assertMasterKeyMatchesDatabase(db, masterKey);
   const secrets = masterKey
     ? createPostgresSecretPort({
       db,

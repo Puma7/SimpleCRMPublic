@@ -93,6 +93,17 @@ lives with the API. **The API does check it: it refuses to start when its
 with the wrong `.env` therefore fails immediately and visibly, instead of
 surfacing weeks later as a mailbox that stopped syncing.
 
+A **missing** key is the same mistake the other way round and is refused too:
+if the database already carries a fingerprint, it was run with a key, and
+starting without one would mean working on secrets nobody can read. A database
+with no fingerprint yet is a fresh installation and still starts without a key.
+
+The check tolerates exactly one failure: the table not existing yet, because
+migrations are a separate service and the API must not depend on the schema
+already being current. Every other database error — connection lost, rotated
+`PG_PASSWORD`, `too many clients` — aborts the start. A check that could not run
+must not look like a check that passed.
+
 Backups taken before 0049 carry no fingerprint; `restore.sh` says so explicitly
 rather than implying a check it cannot perform.
 

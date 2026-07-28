@@ -2193,7 +2193,13 @@ describe('server edition repository boundaries', () => {
       secret: Buffer.alloc(32, 11),
     };
     const destroyed = jest.fn(async () => undefined);
-    const fakeDb = { destroy: destroyed } as unknown as Kysely<ServerDatabase>;
+    const fakeDb = {
+      destroy: destroyed,
+      // Seit der Master-Key-Pruefung liest der Start die Fingerabdruck-Tabelle.
+      // Leer = frische Installation: hier ist noch kein Schluessel hinterlegt,
+      // also gibt es auch keine Secrets, die unlesbar werden koennten.
+      selectFrom: () => ({ select: () => ({ execute: async () => [] }) }),
+    } as unknown as Kysely<ServerDatabase>;
     const createDatabase = jest.fn(async () => fakeDb);
     const closedNotifications = jest.fn(async () => undefined);
     const createEventNotifications = jest.fn(async () => ({
