@@ -356,6 +356,57 @@ describe('LoginPage server-client mode', () => {
     expect(window.sessionStorage.getItem(CAPTCHA_CHALLENGE_STORAGE_KEY)).toBeNull();
   });
 
+  // Das erzwungene CAPTCHA haengt an der eingegebenen Adresse — der Server
+  // verlangt es, weil auf DIESES Konto verteilt Fehlversuche einlaufen. Das
+  // Gate ersetzt aber die ganze Anmeldemaske und damit auch das Feld, mit dem
+  // man einen Tippfehler korrigieren wuerde. Ohne Ausweg sass der Nutzer fest:
+  // das Zuruecksetzen beim Wechsel der Adresse konnte nicht greifen, weil sich
+  // die Adresse nicht mehr wechseln liess.
+  test('lets the user get back to the form when CAPTCHA was forced for a mistyped address', async () => {
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        return Promise.resolve(jsonResponse({
+          data: {
+            // Workspace-Schalter AUS — die Pflicht kommt allein aus der
+            // kontoweiten Eskalation des Servers.
+            captcha: { enabled: false, provider: 'turnstile', siteKey: 'site-key' },
+            pinKeypad: { enabled: false },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          },
+        }));
+      }
+      if (String(url).includes('/auth/login') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          error: { code: 'captcha_required', message: 'CAPTCHA-Bestaetigung erforderlich' },
+        }, 403));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+    fireEvent.change(await screen.findByLabelText('E-Mail'), {
+      target: { value: 'vertippt@example.com' },
+    });
+    fireEvent.change(await screen.findByLabelText('Passwort'), {
+      target: { value: 'irgendwas' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Anmelden' }));
+
+    // Der Server verlangt die Bestaetigung, das Gate erscheint.
+    const back = await screen.findByRole('button', { name: 'Andere E-Mail-Adresse verwenden' });
+    expect(screen.queryByLabelText('E-Mail')).not.toBeInTheDocument();
+
+    fireEvent.click(back);
+
+    // Und die Maske ist wieder da, samt Feld fuer die Korrektur.
+    expect(await screen.findByLabelText('E-Mail')).toBeInTheDocument();
+  });
+
   test('keeps a server-issued CAPTCHA continuation while showing the PIN keypad', async () => {
     window.sessionStorage.setItem(CAPTCHA_CHALLENGE_STORAGE_KEY, 'solved-once');
     global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {

@@ -725,16 +725,41 @@ export default function LoginPage() {
   if (loginConfig && (loginConfig.captcha.enabled || captchaForced) && !captchaPassed) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
-        <LoginCaptchaGate
-          config={
-            loginConfig.captcha.enabled
-              ? loginConfig
-              : { ...loginConfig, captcha: { ...loginConfig.captcha, enabled: true } }
-          }
-          busy={isLoading}
-          error={error}
-          onVerify={handleCaptchaVerify}
-        />
+        <div className="w-full max-w-md space-y-3">
+          <LoginCaptchaGate
+            config={
+              loginConfig.captcha.enabled
+                ? loginConfig
+                : { ...loginConfig, captcha: { ...loginConfig.captcha, enabled: true } }
+            }
+            busy={isLoading}
+            error={error}
+            onVerify={handleCaptchaVerify}
+          />
+          {/*
+            Nur beim erzwungenen CAPTCHA: es haengt an der eingegebenen Adresse,
+            und das Gate blendet ausgerechnet das Feld aus, mit dem man sie
+            korrigieren wuerde. Wer sich vertippt hat, sass sonst fest — das
+            Zuruecksetzen beim Wechsel der Adresse konnte gar nicht greifen,
+            weil sich die Adresse nicht mehr wechseln liess. Beim
+            Workspace-CAPTCHA gibt es diesen Ausweg nicht und braucht ihn auch
+            nicht: dort ist die Bestaetigung fuer jeden faellig, unabhaengig
+            davon, wer sich anmeldet.
+          */}
+          {!loginConfig.captcha.enabled ? (
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full"
+              onClick={() => {
+                setCaptchaForced(false)
+                setError(null)
+              }}
+            >
+              Andere E-Mail-Adresse verwenden
+            </Button>
+          ) : null}
+        </div>
       </div>
     )
   }
