@@ -14,7 +14,9 @@ This document covers the current Docker backup, restore, restore-drill, and doct
   for **every table with row level security enabled** — derived from the catalog,
   not from a list in the script, so a new table is covered the moment it exists.
   Covered by the same manifest, so it cannot be edited without breaking checksum
-  verification.
+  verification. If the counts cannot be taken, the backup still runs but records
+  `rows_recorded=failed`, and a restore then refuses to report itself as
+  verified rather than silently checking nothing.
 
 The restore and doctor scripts verify the manifest when it exists.
 

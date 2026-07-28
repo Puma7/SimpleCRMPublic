@@ -80,6 +80,25 @@ write_backup_metadata() {
   stamp="$3"
   meta_path="$(backup_metadata_path "$backup_dir" "$stamp")"
 
+  # Die Zaehlung zuerst und getrennt, damit ihr Scheitern sichtbar wird. Ein
+  # `|| true` mitten in der Datei erzeugte sonst eine Metadatei GANZ OHNE
+  # rows_-Eintraege: verify_backup_metadata liefe dann ueber null Tabellen und
+  # meldete Erfolg — die Vollstaendigkeitspruefung waere lautlos verschwunden,
+  # obwohl die Datei ordentlich in der Pruefsumme steht.
+  #
+  # Der Dump wird trotzdem gezogen: er ist das wertvolle Stueck, und ihn wegen
+  # einer gescheiterten Zaehlung ausfallen zu lassen waere der teurere Fehler.
+  # Stattdessen sagt die Metadatei selbst, dass sie unvollstaendig ist, und
+  # jeder Restore verweigert daraufhin die Erfolgsmeldung.
+  if counts="$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "$BACKUP_METADATA_COUNT_SQL" 2>&1)" \
+    && [ -n "$counts" ]; then
+    rows_recorded='ok'
+  else
+    rows_recorded='failed'
+    counts=''
+    echo "warning: could not record row counts for this backup; a restore will refuse to report it as verified" >&2
+  fi
+
   {
     printf 'created_at=%s\n' "$stamp"
     printf 'schema_migration=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
@@ -91,7 +110,8 @@ write_backup_metadata() {
         THEN 'n/a'
         ELSE coalesce((SELECT string_agg(DISTINCT key_id, ',' ORDER BY key_id) FROM secrets), 'none')
       END" 2>/dev/null || printf 'unknown')"
-    psql "$database_url" -v ON_ERROR_STOP=1 -Atc "$BACKUP_METADATA_COUNT_SQL" 2>/dev/null || true
+    printf 'rows_recorded=%s\n' "$rows_recorded"
+    [ -n "$counts" ] && printf '%s\n' "$counts"
   } > "$meta_path"
 }
 
@@ -150,6 +170,17 @@ verify_backup_metadata() {
   if [ ! -f "$meta_path" ]; then
     echo "warning: no backup metadata next to this dump; skipping completeness check" >&2
     return 0
+  fi
+
+  # Eine Metadatei ohne Zaehlung darf nicht als geprueft durchgehen. Sie
+  # entsteht, wenn die Katalog-Abfrage beim Backup gescheitert ist (Sperren,
+  # statement_timeout) — die Datei sieht dann vollstaendig aus, enthaelt aber
+  # nichts zu pruefen. Aeltere Backups ohne den Marker gelten als in Ordnung,
+  # solange sie Zeilen fuehren.
+  recorded="$(backup_metadata_value "$meta_path" 'rows_recorded' || printf 'unknown')"
+  if [ "$recorded" = 'failed' ] || ! grep -q '^rows_' "$meta_path"; then
+    echo "$label: this backup carries no row counts, so completeness cannot be verified" >&2
+    return 1
   fi
 
   # Ueber die Tabellen laufen, die IM BACKUP stehen — nicht ueber eine hier

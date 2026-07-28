@@ -147,6 +147,14 @@ describe('server edition AP-12 operator docs', () => {
     // Wiederherstellung oder scheitert die Abfrage, wurde die Vollstaendigkeit
     // NICHT geprueft — das als Erfolg zu melden waere die schlimmere Variante.
     expect(metadata).toEqual(expect.stringContaining('cannot read $table after restore'));
+    // Scheitert die Katalog-Abfrage, entstuende sonst eine Metadatei ohne
+    // rows_-Eintraege: die Pruefung liefe ueber null Tabellen und meldete
+    // Erfolg — die Verifikation waere lautlos verschwunden. Die Datei sagt
+    // jetzt selbst, dass sie unvollstaendig ist, und der Restore verweigert
+    // daraufhin die Erfolgsmeldung.
+    expect(metadata).toEqual(expect.stringContaining("rows_recorded='failed'"));
+    expect(metadata).toEqual(expect.stringContaining('this backup carries no row counts'));
+    expect(metadata).not.toMatch(/BACKUP_METADATA_COUNT_SQL" 2>\/dev\/null \|\| true/);
     // Und eine im Manifest gelistete, aber fehlende Metadatei bricht ab; nur
     // Backups von vor dieser Aenderung duerfen ungeprueft durchlaufen.
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_listed()'));
