@@ -137,6 +137,15 @@ describe('server edition AP-12 operator docs', () => {
     // belegt Vollstaendigkeit — eine unter zu schwachen Rechten gezogene
     // Sicherung stellt sich sonst sauber, aber halb leer wieder her.
     expect(metadata).toEqual(expect.stringContaining('row count mismatch for'));
+    // Zeilenzahlen muessen vor pg_dump erfasst werden, sonst zaehlt die
+    // Metadatei Schreibvorgaenge aus der Dump-Laufzeit mit und der Restore-
+    // Guard meldet faelschlich einen Mismatch.
+    const backup = readRepoFile('docker/backup.sh');
+    const metadataPos = backup.indexOf('write_backup_metadata');
+    const dumpPos = backup.indexOf('pg_dump -Fc');
+    expect(metadataPos).toBeGreaterThan(-1);
+    expect(dumpPos).toBeGreaterThan(-1);
+    expect(metadataPos).toBeLessThan(dumpPos);
     expect(restore).toEqual(expect.stringContaining("verify_backup_metadata \"$METADATA_PATH\" \"$DATABASE_URL\" 'restore'"));
     expect(drill).toEqual(expect.stringContaining("verify_backup_metadata \"$METADATA_PATH\" \"$DRILL_DATABASE_URL\" 'restore drill'"));
     // Die Metadatei haengt an derselben Pruefsumme wie der Dump.

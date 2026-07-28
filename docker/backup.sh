@@ -19,6 +19,13 @@ METADATA_FILE="backup-$STAMP.meta"
 
 mkdir -p "$BACKUP_DIR"
 
+# Zeilenzahlen VOR dem Dump erfassen, nicht danach: pg_dump friert seinen
+# eigenen Snapshot beim Start ein, waehrend eine Zaehlung nach getaner
+# Dump-Arbeit zusaetzliche Schreibvorgaenge aus der Dump-Laufzeit einfaengt
+# und damit einen vollstaendigen Restore spaeter faelschlich als
+# unvollstaendig markiert.
+write_backup_metadata "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
+
 pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP"
 
 if [ -d "$ATTACHMENTS_DIR" ]; then
@@ -28,11 +35,6 @@ fi
 if [ -d "$AUDIT_ARCHIVE_DIR" ]; then
   tar -C "$AUDIT_ARCHIVE_DIR" -cf "$BACKUP_DIR/$AUDIT_ARCHIVE" .
 fi
-
-# Begleitmetadaten: Schemastand, benoetigte Schluessel-Kennung und Zeilenzahlen.
-# Sie gehen in dieselbe Pruefsumme wie der Dump — sonst waere die Aussage
-# manipulierbar, gegen die spaeter verglichen wird.
-write_backup_metadata "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
 
 (
   cd "$BACKUP_DIR"
