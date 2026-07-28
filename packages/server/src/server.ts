@@ -287,13 +287,11 @@ export function createAppServer(
 
 export async function startServer(options: ServerListenOptions = {}): Promise<FastifyInstance> {
   const env = options.env ?? process.env;
-  assertNoKnownWeakProductionSecrets(env, env.SIMPLECRM_MASTER_KEY, env.ACCESS_TOKEN_SECRET);
   const port = options.port ?? parsePort(env.PORT ?? '3000');
   const host = options.host ?? env.HOST ?? '0.0.0.0';
   const accessTokenSigner = options.accessTokenSigner ?? accessTokenSignerFromEnv(env);
   const databaseUrl = options.databaseUrl ?? env.DATABASE_URL;
   const corsAllowedOrigins = parseCorsAllowedOrigins(env);
-  warnAboutNullCorsOrigin(corsAllowedOrigins);
   const attachmentsRoot = env.ATTACHMENTS_DIR?.trim() || '/app/data/attachments';
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
@@ -306,6 +304,17 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   });
   const captureLogs = options.logger !== false;
   if (captureLogs) installConsoleLogCapture(serverLogStore);
+
+  // ERST JETZT die Startwarnungen. Vorher standen sie weiter oben und liefen
+  // ins Leere: die Erfassung war noch nicht installiert, also landeten sie auf
+  // dem momentanen stderr und weder im SERVER_LOG_FILE noch in der
+  // Diagnose-API. Bei einer bestehenden Installation mit textartigem
+  // Master-Key ist diese Warnung das EINZIGE Signal — die Datenbankpruefung
+  // darf den weiterhin benoetigten alten Schluessel ja nicht ablehnen. Ein
+  // Signal, das nirgends nachlesbar ist, ist keines.
+  assertNoKnownWeakProductionSecrets(env, env.SIMPLECRM_MASTER_KEY, env.ACCESS_TOKEN_SECRET);
+  warnAboutNullCorsOrigin(corsAllowedOrigins);
+
   let db: Kysely<ServerDatabase> | undefined;
   let secrets: PostgresSecretPort | undefined;
   let apiJobQueue: GraphileQueuePort | undefined;
@@ -979,9 +988,30 @@ async function assertMasterKeyMatchesDatabaseLocked(
     }
   }
 
-  // Die Tabelle gibt es noch nicht — geprobt wurde trotzdem, hinterlegt wird
-  // erst nach der Migration.
-  if (stored === undefined) return;
+  if (stored === undefined) {
+    // Geprobt wurde; hinterlegen geht ohne die Tabelle nicht. Solange etwas da
+    // war, das der Schluessel lesen konnte, ist das in Ordnung: die
+    // Festlegung holt der naechste Start nach der Migration nach.
+    if (probe.kind !== 'none') return;
+
+    // Ist die Datenbank aber LEER, ist dieser Zustand nicht abzusichern. Zwei
+    // Replikate mit verschiedenen Schluesseln kaemen hier nacheinander durch —
+    // es gibt weder etwas zu proben noch etwas zu hinterlegen, und die Sperre
+    // endet mit der Transaktion. Danach schrieben beide Secrets unter derselben
+    // key_id mit verschiedenem Schluesselmaterial; auffallen wuerde es erst beim
+    // naechsten Start, und dann waere die Haelfte unlesbar.
+    //
+    // Der Abbruch kostet hier fast nichts: ohne Migrationen gibt es kein
+    // Schema, die API koennte ohnehin nichts ausliefern. Im Compose-Ablauf
+    // wartet sie auf `migrate` und sieht diesen Zweig nie.
+    throw new Error(
+      'This database has no master_key_fingerprints table yet, so migration 0049 has not run. '
+      + 'The database is also empty, which means the key this server starts with cannot be '
+      + 'recorded — two servers with different keys would both come through here and write '
+      + 'secrets under the same key id with different key material. Run the migrations first, '
+      + 'then start the API (the Compose flow does this via the `migrate` service).',
+    );
+  }
 
   // Ab hier legt sich diese Installation auf den Schluessel fest. Der letzte
   // Moment, in dem ein ratbarer Schluessel noch folgenlos ersetzt werden kann:

@@ -326,11 +326,18 @@ describe('Master-Key-Pruefung beim Serverstart', () => {
     expect(calls.inserted).toHaveLength(1);
   });
 
-  test('haelt den Start nicht auf, wenn die Tabelle noch fehlt', async () => {
-    // Migrationen laufen als eigener Dienst. Der Start darf nicht daran
-    // haengen, dass ein Schema schon aktuell ist.
+  test('leere Datenbank ohne Fingerabdruck-Tabelle: Start verweigert', async () => {
+    // Frueher lief der Start hier einfach durch ("Migrationen sind ein eigener
+    // Dienst"). Nur: ohne die Tabelle laesst sich der Schluessel nicht
+    // festlegen, und ohne Daten gibt es auch nichts zu proben. Zwei Replikate
+    // mit verschiedenen Schluesseln kaemen nacheinander durch und schrieben
+    // danach Secrets unter derselben key_id mit verschiedenem Material — die
+    // Sperre endet mit der Transaktion und schuetzt nichts, was niemand
+    // hinterlegt hat. Der Abbruch kostet fast nichts: ohne Migrationen gibt es
+    // kein Schema, die API koennte ohnehin nichts ausliefern.
     const { db, calls } = fakeDb([], { selectThrows: missingTableError() });
-    await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
+    await expect(assertMasterKeyMatchesDatabase(db, RICHTIG))
+      .rejects.toThrow('migration 0049 has not run');
     expect(calls.inserted).toEqual([]);
   });
 

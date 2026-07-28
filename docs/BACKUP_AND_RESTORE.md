@@ -176,6 +176,13 @@ it before migration 0049. The probe runs anyway; only *recording* the
 fingerprint waits for the table. Otherwise a wrong `.env` would slip through
 exactly that window and write data under a second key.
 
+If the database is **also empty** in that window, the API refuses to start at
+all. There is nothing to probe and nothing to record, so two servers with
+different keys would both come through and then write secrets under the same key
+id with different key material — a state that only surfaces at the next start,
+with half the secrets unreadable. Refusing costs nothing here: without
+migrations there is no schema, so the API could not serve anything anyway.
+
 **The check and the decision happen under one lock.** Without it, two replicas
 starting at once on a fresh database both see an empty table — and a replica
 whose `.env` has no key at all would keep running healthy, without secret or
