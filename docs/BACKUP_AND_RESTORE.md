@@ -214,6 +214,18 @@ id with different key material — a state that only surfaces at the next start,
 with half the secrets unreadable. Refusing costs nothing here: without
 migrations there is no schema, so the API could not serve anything anyway.
 
+**Secret writes are locked out while the check runs.** The advisory lock
+serialises startups, not the normal write path — that one does not take it. In a
+rolling deployment an old replica keeps serving requests, and under `READ
+COMMITTED` every page of the check sees its own snapshot, so a secret inserted
+after the last page (or with a smaller uuid than the cursor) would slip past
+unchecked and the fingerprint would be recorded anyway. The one-time check
+therefore takes `LOCK TABLE secrets IN SHARE MODE`: reads continue, writes wait.
+With a `lock_timeout` of five seconds — if someone really is writing secrets
+right now, the start fails visibly instead of quietly walking past the row.
+Later starts never reach this point, so nothing blocks once a fingerprint
+exists.
+
 **The check and the decision happen under one lock.** Without it, two replicas
 starting at once on a fresh database both see an empty table — and a replica
 whose `.env` has no key at all would keep running healthy, without secret or
@@ -221,6 +233,14 @@ tracking crypto, while the other records its fingerprint. A conflict-safe insert
 does not help there: the keyless replica never writes anything. A Postgres
 advisory lock makes read and commit one step, so whoever comes second sees the
 first one's result.
+
+One case stays open by nature: a **keyless** replica that wins the lock on an
+empty database finds nothing to compare and nothing to record, so it starts and
+releases the lock — a keyed replica can then claim the database while the first
+keeps running without secret and tracking crypto until it is restarted. Nothing
+in the database can prevent that (the keyless process has no key to write), so
+it is said out loud instead: that start logs a warning naming exactly this
+outcome.
 
 **There is no online re-keying.** Re-encrypting needs the old key, and if you
 had it this would not be a problem. So the error message names the path that

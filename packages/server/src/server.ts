@@ -948,7 +948,23 @@ async function assertMasterKeyMatchesDatabaseLocked(
   const probe = await findSecretProbe(db, masterKey?.keyId);
 
   if (!masterKey) {
-    if ((stored?.length ?? 0) === 0 && probe.kind === 'none') return;
+    if ((stored?.length ?? 0) === 0 && probe.kind === 'none') {
+      // Nichts da, kein Schluessel gesetzt: die Installation ist frei, sich
+      // spaeter festzulegen. Aber nicht stillschweigend — die Sperre
+      // serialisiert nur diesen Blick, nicht die Zukunft. Startet gleich
+      // darauf eine zweite Replik MIT Schluessel, traegt die ihren
+      // Fingerabdruck ein, waehrend diese hier ohne Secret- und
+      // Tracking-Krypto weiterlaeuft, bis jemand sie neu startet. Verhindern
+      // laesst sich das hier nicht (es gibt nichts zu vergleichen und nichts
+      // zu hinterlegen), benennen schon.
+      console.warn(
+        '[master-key] starting without SIMPLECRM_MASTER_KEY against a database that holds no '
+        + 'secrets and no fingerprint yet. Secret and e-mail-tracking features stay unavailable '
+        + 'in this process. If another replica starts with a key, it will claim this database '
+        + 'and this process will keep running without crypto until it is restarted.',
+      );
+      return;
+    }
     throw new Error(MASTER_KEY_MISSING_MESSAGE);
   }
 
@@ -1233,6 +1249,27 @@ async function findSecretProbe(
       throw error;
     }
   };
+
+  // Schreibsperre auf `secrets`, solange geprueft wird.
+  //
+  // Die Advisory-Sperre serialisiert nur Startvorgaenge, nicht den normalen
+  // Schreibpfad — der nimmt sie nicht. Bei einem Rolling Deployment bedient
+  // eine alte Replik weiter Anfragen, und unter READ COMMITTED sieht jede
+  // Seite dieser Pruefung ihren eigenen Snapshot: ein Secret, das nach der
+  // letzten Seite oder mit einer kleineren uuid dazukommt, bliebe ungeprueft —
+  // und der Fingerabdruck wuerde trotzdem festgeschrieben. SHARE erlaubt
+  // weiter jedes Lesen und blockiert nur Schreibvorgaenge, fuer die Dauer
+  // dieser einmaligen Pruefung.
+  //
+  // lock_timeout, damit ein langlaufender Schreiber den Start nicht endlos
+  // haengen laesst. Laeuft er ab, faellt der Start mit dem Postgres-Fehler aus
+  // — und das ist richtig so: dann schreibt gerade jemand anders Secrets, und
+  // genau dagegen wird hier gesperrt.
+  await sql`SET LOCAL lock_timeout = '5s'`.execute(trx);
+  await tolerateMissing(async () => {
+    await sql`LOCK TABLE secrets IN SHARE MODE`.execute(trx);
+    return [];
+  });
 
   const kinds = await tolerateMissing(() => trx
     .selectFrom('secrets')

@@ -2,6 +2,7 @@ import { createFastifyServer } from '../../packages/server/src/api/fastify-adapt
 import type { ServerApiPorts } from '../../packages/server/src/api/types';
 import { createAccessToken } from '../../packages/server/src/security/access-token';
 import type { AccessTokenSigner } from '../../packages/server/src/security/access-token';
+import { WEBSOCKET_ROUTES } from '../setup/websocket-routes';
 
 /**
  * Die WebSocket-Route ist der blinde Fleck der schnellen Auth-Probe.
@@ -43,9 +44,10 @@ type CloseInfo = { code: number; reason: string };
 
 async function connectAndWaitForClose(
   app: Awaited<ReturnType<typeof createFastifyServer>>,
+  route: string,
   headers: Record<string, string> = {},
 ): Promise<CloseInfo | 'stayed-open'> {
-  const socket = await app.injectWS('/api/v1/events', { headers });
+  const socket = await app.injectWS(route, { headers });
   try {
     return await new Promise<CloseInfo | 'stayed-open'>((resolve) => {
       const timer = setTimeout(() => resolve('stayed-open'), 1_000);
@@ -59,7 +61,11 @@ async function connectAndWaitForClose(
   }
 }
 
-describe('Ereignis-WebSocket ohne Anmeldung', () => {
+// Ueber DIESELBE Liste, die der Unit-Test gegen die Adapter-Registrierungen
+// haelt. Waere der Pfad hier fest verdrahtet, koennte eine zweite Route dort
+// eingetragen werden, ohne je angeschossen zu werden — der Unit-Test waere
+// gruen und diese Probe unveraendert blind.
+describe.each(WEBSOCKET_ROUTES)('WebSocket %s ohne Anmeldung', (route) => {
   test('ohne Token wird die Verbindung abgewiesen', async () => {
     const app = createFastifyServer({
       ports: throwingPorts() as ServerApiPorts,
@@ -69,7 +75,8 @@ describe('Ereignis-WebSocket ohne Anmeldung', () => {
       await app.ready();
       // 1008 = policy violation. Nicht "irgendwie geschlossen": der Grund muss
       // die Anmeldung sein, sonst koennte auch ein Fehler im Handler so aussehen.
-      expect(await connectAndWaitForClose(app)).toEqual({ code: 1008, reason: 'unauthorized' });
+      expect(await connectAndWaitForClose(app, route))
+        .toEqual({ code: 1008, reason: 'unauthorized' });
     } finally {
       await app.close();
     }
@@ -88,7 +95,7 @@ describe('Ereignis-WebSocket ohne Anmeldung', () => {
     });
     try {
       await app.ready();
-      expect(await connectAndWaitForClose(app, { authorization: `Bearer ${fremd}` }))
+      expect(await connectAndWaitForClose(app, route, { authorization: `Bearer ${fremd}` }))
         .toEqual({ code: 1008, reason: 'unauthorized' });
     } finally {
       await app.close();

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { createServerApi } from '../../packages/server/src/api/server-api';
 import type { HttpMethod, ServerApiPorts } from '../../packages/server/src/api/types';
+import { WEBSOCKET_ROUTES } from '../setup/websocket-routes';
 
 const API_DIR = join(__dirname, '..', '..', 'packages', 'server', 'src', 'api');
 
@@ -77,10 +78,12 @@ const PUBLIC_SURFACE: readonly string[] = [
  * bliebe hier also unsichtbar. Geprobt wird sie deshalb dort, wo sie
  * stattfindet: tests/integration/api-auth-surface-websocket.test.ts.
  *
- * Diese Liste haelt beides zusammen: kommt eine WebSocket-Route hinzu, faellt
- * der Test unten, und die neue Route muss in der Integrationsprobe auftauchen.
+ * Die Liste steht in tests/setup/websocket-routes.ts und wird von BEIDEN
+ * Proben benutzt: hier gegen die Registrierungen im Adapter gehalten, dort
+ * tatsaechlich angeschossen. Getrennte Listen waeren die halbe Absicherung —
+ * wer eine neue Route hinzufuegt und diesen Test durch Nachtragen gruen macht,
+ * haette sie damit noch lange nicht geprobt.
  */
-const WEBSOCKET_ROUTES: readonly string[] = ['/api/v1/events'];
 
 /**
  * Jede Port-Eigenschaft existiert (kein `if (!ports.x) return 503`-Kurzschluss
