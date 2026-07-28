@@ -378,15 +378,30 @@ verify_backup_metadata() {
     fi
   done
 
+  report_master_key_material "$meta_path" "$label"
+
+  [ "$empty" -eq 0 ]
+}
+
+# Was sagt dieses Backup ueber den Schluessel, den es zum Lesen braucht?
+#
+# Eigene Funktion, weil BEIDE Wege sie brauchen: restore.sh ueber
+# verify_backup_metadata und doctor.sh direkt. Doctor ruft
+# verify_backup_metadata nicht auf (er prueft nur, OB sich das Backup
+# ueberhaupt verifizieren liesse) — haenge man diese Ausgabe dort hinein,
+# bliebe doctor genau bei dem Backup stumm, dessen Restore spaeter am
+# Schluessel scheitert.
+report_master_key_material() {
+  meta_path="$1"
+  label="${2:-restore}"
+
   key_ids="$(backup_metadata_value "$meta_path" 'secret_key_ids' || printf 'unknown')"
   if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
     # ERINNERUNG, KEINE PRUEFUNG — und das muss so dastehen, damit sich niemand
     # darauf verlaesst: der Server vergibt die Kennung ueber
     # parseBase64MasterKey ohne Argument, sie lautet also in jeder Installation
     # 'default'. Ein falscher Schluessel traegt damit dieselbe Kennung wie der
-    # richtige; ob die .env passt, laesst sich hier nicht feststellen. Erst ein
-    # nicht-geheimer Fingerabdruck (den der Server schreiben muesste) oder eine
-    # Probe-Entschluesselung koennte das beantworten.
+    # richtige; ob die .env passt, laesst sich hier nicht feststellen.
     echo "$label: reminder — the secrets in this dump are encrypted with SIMPLECRM_MASTER_KEY (recorded key id: $key_ids)." >&2
   fi
 
@@ -418,6 +433,4 @@ verify_backup_metadata() {
       echo "$label: the API refuses to start if its SIMPLECRM_MASTER_KEY does not match this value." >&2
       ;;
   esac
-
-  [ "$empty" -eq 0 ]
 }

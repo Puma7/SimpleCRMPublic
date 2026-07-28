@@ -13,8 +13,16 @@ import {
 } from '../../packages/server/src/security/master-key';
 import { encryptSecretValue } from '../../packages/server/src/security/secret-envelope';
 
-const RICHTIG = parseBase64MasterKey(Buffer.alloc(32, 7).toString('base64'));
-const FALSCH = parseBase64MasterKey(Buffer.alloc(32, 8).toString('base64'));
+// Feste, aber zufaellig AUSSEHENDE Schluessel: 32 verschiedene Bytewerte,
+// nicht druckbar. Buffer.alloc(32, 7) waere bequemer — genau solche Schluessel
+// weist der Start seit der Entropie-Pruefung aber ab, und diese Tests handeln
+// vom Fingerabdruck, nicht davon.
+const RICHTIG = parseBase64MasterKey(
+  Buffer.from(Array.from({ length: 32 }, (_unused, index) => index)).toString('base64'),
+);
+const FALSCH = parseBase64MasterKey(
+  Buffer.from(Array.from({ length: 32 }, (_unused, index) => 255 - index)).toString('base64'),
+);
 
 /**
  * Alle Secrets in der Datenbank sind mit dem Master-Key verschluesselt, der
@@ -62,8 +70,11 @@ describe('Master-Key-Fingerabdruck', () => {
     // base64-kodierte Passphrase durch.
     expect(masterKeyLooksGuessable(Buffer.from('correct-horse-battery-staple-1234'.slice(0, 32), 'utf8')))
       .toBe(true);
-    expect(masterKeyLooksGuessable(Buffer.alloc(32, 7))).toBe(true);
-    expect(masterKeyLooksGuessable(RICHTIG.bytes)).toBe(true); // lauter gleiche Byte
+    expect(masterKeyLooksGuessable(Buffer.alloc(32, 7))).toBe(true); // lauter gleiche Byte
+    // Die Fassung davor liess das hier durch: weder ein einziges Byte noch
+    // reines ASCII — aber zwei verschiedene Werte.
+    expect(masterKeyLooksGuessable(Buffer.from(`${'a'.repeat(31)}\n`, 'utf8'))).toBe(true);
+    expect(masterKeyLooksGuessable(RICHTIG.bytes)).toBe(false);
     expect(masterKeyLooksGuessable(randomBytes(32))).toBe(false);
   });
 
@@ -258,6 +269,28 @@ describe('Master-Key-Pruefung beim Serverstart', () => {
     const { db } = fakeDb([{ key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG) }]);
     await expect(assertMasterKeyMatchesDatabase(db, undefined))
       .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
+  });
+
+  test('weist einen ratbaren Schluessel ab, solange nichts daran haengt', async () => {
+    // Frische Datenbank: kein Eintrag, kein Secret. Der letzte Moment, in dem
+    // sich ein solcher Schluessel folgenlos ersetzen laesst.
+    const schwach = parseBase64MasterKey(Buffer.alloc(32, 3).toString('base64'));
+    const { db, calls } = fakeDb([]);
+    await expect(assertMasterKeyMatchesDatabase(db, schwach))
+      .rejects.toThrow('does not look like random key material');
+    expect(calls.inserted).toEqual([]);
+  });
+
+  test('haelt eine bestehende Installation mit ratbarem Schluessel nicht an', async () => {
+    // Sie kaeme sonst nirgendwo hin: mit dem alten Schluessel duerfte sie nicht
+    // starten, und ein neuer macht jedes gespeicherte Secret unlesbar — ein
+    // Umschluesseln im Betrieb gibt es nicht. Die Warnung steht in der
+    // Konfiguration, der Abbruch nur dort, wo er folgenlos ist.
+    const schwach = parseBase64MasterKey(Buffer.alloc(32, 3).toString('base64'));
+    const { db } = fakeDb([
+      { key_id: 'default', fingerprint: masterKeyFingerprint(schwach) },
+    ]);
+    await expect(assertMasterKeyMatchesDatabase(db, schwach)).resolves.toBeUndefined();
   });
 
   test('laesst eine frische Installation ohne Schluessel starten', async () => {

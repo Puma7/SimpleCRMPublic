@@ -101,16 +101,31 @@ export function masterKeyFingerprint(key: MasterKeyMaterial): string {
 /**
  * Sieht dieser Schluessel nach Text aus statt nach Zufall?
  *
- * Ein zufaelliger 32-Byte-Schluessel besteht praktisch nie nur aus druckbaren
- * ASCII-Zeichen — die Wahrscheinlichkeit liegt bei (95/256)^32, also jenseits
- * von 10^-13. Trifft es doch zu, ist es fast sicher eine base64-kodierte
- * Passphrase, und die ist ratbar. Ebenso ein Schluessel aus lauter gleichen
- * Bytes.
+ * Was das ist und was nicht: ein Stolperdraht gegen das Versehen — jemand
+ * schreibt eine Passphrase in die .env, weil 32 Zeichen eben 32 Byte sind —,
+ * KEINE Sicherheitsgrenze. Aus 32 Byte laesst sich Entropie nicht messen; wer
+ * einen schwachen Schluessel unbedingt durchbringen will, findet immer eine
+ * Form, die hier durchgeht. Was den Schaden begrenzt, ist die teure Ableitung
+ * des Fingerabdrucks (scrypt) — diese Pruefung faengt nur die Faelle ab, die
+ * aus Bequemlichkeit entstehen, und zwar frueh.
+ *
+ * Drei Merkmale, jedes fuer sich bei echtem Zufall praktisch ausgeschlossen:
+ *
+ * - lauter gleiche Bytes;
+ * - ausschliesslich druckbares ASCII ((95/256)^32, jenseits von 10^-13);
+ * - zu wenige verschiedene Bytewerte. Das faengt die Faelle, die an den
+ *   ersten beiden vorbeikommen — 'a' 31-mal plus ein Zeilenumbruch ist weder
+ *   ein einziges Byte noch reines ASCII, hat aber zwei Werte. Bei 32
+ *   Zufallsbytes liegt der Erwartungswert bei rund 30 verschiedenen Werten;
+ *   unter 16 zu fallen ist so unwahrscheinlich, dass es kein Fehlalarm ist.
  */
+const MASTER_KEY_MIN_DISTINCT_BYTES = 16;
+
 export function masterKeyLooksGuessable(bytes: Buffer): boolean {
   if (bytes.length === 0) return true;
   if (bytes.every((byte) => byte === bytes[0])) return true;
-  return bytes.every((byte) => byte >= 0x20 && byte <= 0x7e);
+  if (bytes.every((byte) => byte >= 0x20 && byte <= 0x7e)) return true;
+  return new Set(bytes).size < MASTER_KEY_MIN_DISTINCT_BYTES;
 }
 
 /**

@@ -93,8 +93,15 @@ as a passphrase and base64-encoded, a cheap fingerprint would be exactly the
 offline oracle it is meant not to be — compute once per guess and compare, no
 access to any encrypted secret needed. At roughly 100 ms per candidate that
 turns a wordlist run of seconds into one of weeks. Generate the key with
-`openssl rand -base64 32`; the server refuses to start on a production
-configuration whose key decodes to printable text or to one repeated byte.
+`openssl rand -base64 32`.
+
+A key that decodes to text-like or repetitive bytes is refused **while the
+database still holds no secrets** — that is the last moment replacing it costs
+nothing. An installation that already runs on such a key only gets a warning:
+refusing there would strand it, because starting with the old key would be
+forbidden and starting with a new one would make every stored credential
+unreadable. The check is a tripwire against the accident, not a security
+boundary; entropy cannot be measured from 32 bytes.
 
 Nothing in the backup path can check it — checking needs the key, and the key
 lives with the API. **The API does check it: it refuses to start when its
@@ -123,10 +130,26 @@ under a second key beside the unreadable ones.
 **There is no online re-keying.** Re-encrypting needs the old key, and if you
 had it this would not be a problem. So the error message names the path that
 actually works: restore the original `.env` — or, if the old key is gone for
-good, accept that the encrypted rows are lost, delete them together with the
-fingerprint row, and enter every credential again. Clearing
-`master_key_fingerprints` alone is not enough; the unreadable rows in `secrets`
-would refuse the next start just the same.
+good, accept that the encrypted rows are lost and remove them together with the
+fingerprint row:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT set_config('app.role', 'system', true),
+       set_config('app.cross_workspace_access', 'on', true);
+DELETE FROM secrets;
+DELETE FROM master_key_fingerprints;
+COMMIT;
+SQL
+```
+
+**The session context is not optional.** Row level security is forced on
+`secrets`, so a plain `DELETE FROM secrets` over the application connection
+matches no row at all and reports `DELETE 0` — while the delete from the
+RLS-free fingerprint table succeeds. That combination produces exactly the state
+the next start refuses. Connecting as the admin role works too; it bypasses RLS.
+Then start with the new key and enter every credential again.
 
 The check tolerates exactly one failure: the table not existing yet, because
 migrations are a separate service and the API must not depend on the schema

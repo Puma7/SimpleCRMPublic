@@ -195,16 +195,26 @@ export function assertNoKnownWeakProductionSecrets(
   // Die Laengenpruefung in parseBase64MasterKey laesst eine base64-kodierte
   // Passphrase durch — 32 Zeichen Text sind 32 Byte. Ein solcher Schluessel ist
   // ratbar, und seit der Fingerabdruck in Backup-Metadaten und
-  // Restore-Ausgaben steht, gibt es dafuer auch etwas zum Vergleichen. Der
-  // Fingerabdruck ist deshalb absichtlich teuer abzuleiten — aber teuer machen
-  // ist Schadensbegrenzung, nicht Ersatz fuer einen zufaelligen Schluessel.
+  // Restore-Ausgaben steht, gibt es dafuer auch etwas zum Vergleichen.
+  //
+  // Hier nur eine WARNUNG, kein Abbruch. Ein Abbruch an dieser Stelle traefe
+  // auch eine bestehende Installation, deren Schluessel bisher gueltig war —
+  // und die kaeme nirgendwo hin: mit dem alten Schluessel duerfte sie nicht
+  // starten, und einen neuen einzusetzen macht jedes gespeicherte Secret
+  // unlesbar, denn ein Umschluesseln im Betrieb gibt es nicht. Verweigert wird
+  // der Start deshalb dort, wo sich beantworten laesst, ob ueberhaupt etwas
+  // daran haengt: beim Blick in die Datenbank (assertMasterKeyMatchesDatabase).
+  // Eine frische Installation faellt dort durch, eine bestehende laeuft weiter.
   if (masterKey !== undefined && looksLikeTextMasterKey(masterKey)) {
-    throw new Error(
-      'SIMPLECRM_MASTER_KEY does not look like random key material — it decodes to printable text '
-      + 'or repeats a single byte. Generate it with `openssl rand -base64 32`.',
-    );
+    console.warn(MASTER_KEY_LOOKS_GUESSABLE_MESSAGE);
   }
 }
+
+export const MASTER_KEY_LOOKS_GUESSABLE_MESSAGE =
+  'SIMPLECRM_MASTER_KEY does not look like random key material — it decodes to text-like or '
+  + 'repetitive bytes. Every secret in the database hangs on this key, and its fingerprint '
+  + 'travels in backup metadata, so a guessable key is testable offline. Generate it with '
+  + '`openssl rand -base64 32`.';
 
 function looksLikeTextMasterKey(value: string): boolean {
   const bytes = Buffer.from(value.trim(), 'base64');

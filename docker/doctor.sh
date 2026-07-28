@@ -67,6 +67,14 @@ check_latest_backup() {
   echo "backup_metadata=ok"
   echo "backup_schema_migration=$(backup_metadata_value "$meta" 'schema_migration' || echo unknown)"
   echo "backup_secret_key_ids=$(backup_metadata_value "$meta" 'secret_key_ids' || echo unknown)"
+  echo "backup_master_key_fingerprints=$(backup_metadata_value "$meta" 'master_key_fingerprints' || echo unknown)"
+  # Und die Deutung dazu, mit derselben Funktion, die der Restore benutzt.
+  # Doctor ruft verify_backup_metadata bewusst nicht auf — er prueft, OB sich
+  # das Backup verifizieren liesse, nicht gegen welche Datenbank. Die Auskunft
+  # ueber den benoetigten Schluessel haengt daran aber nicht: gerade das
+  # Backup, dessen Restore spaeter am Schluessel scheitert, sieht hier sonst
+  # tadellos aus.
+  report_master_key_material "$meta" 'doctor'
 
   # Ein Backup, das der Restore ablehnen wuerde, sieht hier sonst tadellos aus:
   # Pruefsumme stimmt, Metadatei da. Auffallen wuerde es erst im Ernstfall —

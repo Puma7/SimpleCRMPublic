@@ -267,10 +267,27 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
 
   test('die WebSocket-Routen sind die, die anderswo geprobt werden', () => {
     const adapter = readFileSync(join(API_DIR, 'fastify-adapter.ts'), 'utf8');
-    const registered = [...adapter.matchAll(/app\.get\(\s*'([^']+)'\s*,\s*\{\s*websocket:\s*true/g)]
-      .map((match) => match[1])
+    // Jede Anfuehrungsart, jede Position im Optionsobjekt. Die erste Fassung
+    // verlangte einfache Anfuehrungszeichen und `{ websocket: true` als
+    // Anfang — `{ config: ..., websocket: true }` waere durchgefallen und die
+    // erwartete Liste unveraendert geblieben.
+    const registered = [
+      // Das Optionsobjekt darf eine Verschachtelungsebene haben ({ config: {} });
+      // was tiefer verschachtelt ist, faengt die Vollstaendigkeitsprobe darunter.
+      ...adapter.matchAll(
+        /\.(?:get|route)\(\s*(?:(['"`])([^'"`]+)\1\s*,\s*)?\{((?:[^{}]|\{[^{}]*\})*)\}/g,
+      ),
+    ]
+      .filter((match) => /\b(?:websocket\s*:\s*true|wsHandler\s*:)/.test(match[3] ?? ''))
+      .map((match) => match[2] ?? /url\s*:\s*['"`]([^'"`]+)/.exec(match[3] ?? '')?.[1] ?? '?')
       .sort();
     expect(registered).toEqual([...WEBSOCKET_ROUTES].sort());
+
+    // Und eine Vollstaendigkeitsprobe: jedes Vorkommen der Merkmale muss von
+    // einer erfassten Registrierung stammen. Eine Schreibweise, die das Muster
+    // oben nicht kennt, faellt damit auf, statt still zu verschwinden.
+    const markers = adapter.match(/\bwebsocket\s*:\s*true|\bwsHandler\s*:/g) ?? [];
+    expect(markers).toHaveLength(registered.length);
   });
 
   test('jedes Routen-Regex laesst sich in Beispielpfade aufloesen', () => {

@@ -10,6 +10,7 @@ import {
 } from './api';
 import {
   assertNoKnownWeakProductionSecrets,
+  MASTER_KEY_LOOKS_GUESSABLE_MESSAGE,
   parseCorsAllowedOrigins,
   parseAuthInvitationMailConfig,
   parseEmailTrackingIpIntelligenceConfig,
@@ -129,6 +130,7 @@ import {
   decryptSecretValue,
   masterKeyFingerprint,
   masterKeyFingerprintMatches,
+  masterKeyLooksGuessable,
   parseBase64MasterKey,
   SECRET_ENVELOPE_ALGORITHM,
   type MasterKeyMaterial,
@@ -797,10 +799,15 @@ function isMissingTableError(error: unknown): boolean {
  */
 const MASTER_KEY_RECOVERY_HINT =
   'Restore the original docker/.env and the server starts again. If the old key is gone '
-  + 'for good, the encrypted rows are lost with it: delete them (DELETE FROM secrets) '
-  + 'together with the row in master_key_fingerprints, start with the new key and enter '
-  + 'every credential again. Clearing master_key_fingerprints alone is not enough — the '
-  + 'unreadable rows in secrets would refuse the next start just the same.';
+  + 'for good, the encrypted rows are lost with it and have to go, together with the row '
+  + 'in master_key_fingerprints. Mind that row level security is FORCED on secrets: a '
+  + 'plain "DELETE FROM secrets" over the application connection matches nothing and says '
+  + 'so with "DELETE 0", which would leave exactly the state that refuses the next start. '
+  + 'Run it with a session context instead — BEGIN; SELECT '
+  + "set_config('app.role','system',true), set_config('app.cross_workspace_access','on',true); "
+  + 'DELETE FROM secrets; DELETE FROM master_key_fingerprints; COMMIT; — or connect as the '
+  + 'admin role, which bypasses RLS. Then start with the new key and enter every credential '
+  + 'again. Clearing master_key_fingerprints alone is not enough.';
 
 const MASTER_KEY_MISMATCH_MESSAGE =
   'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '
@@ -902,6 +909,19 @@ export async function assertMasterKeyMatchesDatabase(
   }
   if (probe.kind === 'row' && !await secretIsReadableWith(probe.row, masterKey)) {
     throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+  }
+
+  // Ab hier legt sich diese Installation auf den Schluessel fest. Der letzte
+  // Moment, in dem ein ratbarer Schluessel noch folgenlos ersetzt werden kann:
+  // es gibt weder einen Eintrag noch ein Secret, das dabei unlesbar wuerde.
+  // Nur DESHALB steht die Weigerung hier und nicht in der Konfiguration —
+  // dort traefe sie auch eine bestehende Installation, die mit ihrem alten
+  // Schluessel nirgendwo mehr hinkaeme.
+  if (stored.length === 0 && probe.kind === 'none' && masterKeyLooksGuessable(masterKey.bytes)) {
+    throw new Error(
+      `${MASTER_KEY_LOOKS_GUESSABLE_MESSAGE} This database is still empty of secrets, so `
+      + 'replacing the key now costs nothing — later it would cost every stored credential.',
+    );
   }
 
   const fingerprint = masterKeyFingerprint(masterKey);
