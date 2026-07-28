@@ -138,7 +138,11 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining('string_agg(DISTINCT key_id'));
     expect(metadata).not.toEqual(expect.stringContaining('SIMPLECRM_MASTER_KEY='));
     // Fehlende Tabellen duerfen ein Backup nicht verhindern.
-    expect(metadata).toEqual(expect.stringContaining("to_regclass('public.$2') IS NULL"));
+    expect(metadata).toEqual(expect.stringContaining("to_regclass(format('public.%I', :'tbl')) IS NULL"));
+    // Und die Anweisung muss ueber stdin laufen: mit -c reicht psql den Text
+    // unveraendert an den Server durch und ersetzt :'tbl' ueberhaupt nicht —
+    // die Zaehlung liefe dann fuer jede Tabelle auf einen Fehler hinaus.
+    expect(metadata).toMatch(/-v tbl="\$2" -At -f -/);
     // Die Tabellenliste kommt aus dem Katalog, nicht aus dieser Datei. Eine
     // handgepflegte Liste war schon in der ersten Fassung unvollstaendig —
     // ausgerechnet customers, deals, products und returns fehlten, also die
@@ -172,6 +176,18 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).not.toMatch(/rows_recorded/);
     expect(metadata).toEqual(expect.stringContaining('this backup carries no row counts'));
     expect(metadata).not.toMatch(/BACKUP_METADATA_COUNT_SQL" 2>\/dev\/null \|\| true/);
+    // Tabellennamen aus der .meta sind FREMDE EINGABE: die Pruefsummenliste
+    // liegt daneben und wird beim Manipulieren mitgeschrieben, belegt also
+    // keine Herkunft. Der Name darf deshalb weder in den Befehlstext gespleisst
+    // werden noch ungeprueft durchgehen — restore und Drill laufen mit der
+    // Admin-Rolle, ein eingeschleustes Statement haette mehr Rechte als das
+    // pg_restore selbst.
+    expect(metadata).not.toMatch(/to_regclass\('public\.\$2'\)/);
+    expect(metadata).not.toMatch(/FROM \$2/);
+    expect(metadata).toEqual(expect.stringContaining("-v tbl=\"$2\""));
+    expect(metadata).toEqual(expect.stringContaining("format('public.%I', :'tbl')"));
+    expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_identifier "$2" ||'));
+    expect(metadata).toEqual(expect.stringContaining('which is not a valid table name'));
     // Und eine im Manifest gelistete, aber fehlende Metadatei bricht ab; nur
     // Backups von vor dieser Aenderung duerfen ungeprueft durchlaufen.
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_listed()'));

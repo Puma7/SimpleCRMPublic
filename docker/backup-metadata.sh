@@ -63,15 +63,45 @@ backup_metadata_path() {
   printf '%s/backup-%s.meta' "$1" "$2"
 }
 
+# Ist das ueberhaupt ein Tabellenname?
+#
+# Die Namen fuer die Restore-Pruefung kommen aus der .meta-Datei DES BACKUPS,
+# und ein Backup ist kein vertrauenswuerdiger Eingang: die SHA-256-Liste liegt
+# direkt daneben und wird beim Manipulieren einfach mitgeschrieben, sie belegt
+# also Unversehrtheit gegen Bitfehler, nicht Herkunft. Ein praeparierter
+# rows_-Eintrag darf deshalb nicht in SQL landen — restore.sh und
+# restore-drill.sh laufen mit der Admin-Rolle und damit mit deutlich mehr
+# Rechten als das pg_restore selbst, das bewusst als App-Rolle arbeitet.
+backup_metadata_is_identifier() {
+  case "$1" in
+    '' | *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) return 1 ;;
+    [0123456789]*) return 1 ;;
+  esac
+  [ "${#1}" -le 63 ]
+}
+
 # Eine Zahl aus der Datenbank holen, ohne bei fehlender Tabelle abzubrechen:
 # aeltere Backups kennen nicht jede Tabelle, und ein fehlendes Detail darf ein
 # Backup nicht verhindern.
+#
+# Der Name wird NICHT in den Befehlstext geschrieben. psql bekommt ihn als
+# -v-Variable, `:'tbl'` macht daraus ein maskiertes String-Literal und
+# `format('%I', ...)` serverseitig einen Bezeichner. Die Anweisung kommt ueber
+# stdin (-f -), nicht ueber -c: mit -c reicht psql den Text unveraendert an den
+# Server weiter und ersetzt gar keine Variablen.
+BACKUP_METADATA_TABLE_COUNT_SQL="
+  SELECT CASE WHEN to_regclass(format('public.%I', :'tbl')) IS NULL
+    THEN 'n/a'
+    ELSE (xpath('/row/c/text()', query_to_xml(
+            format('SELECT count(*) AS c FROM public.%I', :'tbl'),
+            false, true, '')))[1]::text
+  END"
+
 backup_metadata_count() {
-  psql "$1" -v ON_ERROR_STOP=1 -Atc "
-    SELECT CASE WHEN to_regclass('public.$2') IS NULL
-      THEN 'n/a'
-      ELSE (SELECT count(*)::text FROM $2)
-    END" 2>/dev/null || printf 'n/a'
+  backup_metadata_is_identifier "$2" || { printf 'n/a'; return 0; }
+  printf '%s' "$BACKUP_METADATA_TABLE_COUNT_SQL" \
+    | psql "$1" -v ON_ERROR_STOP=1 -v tbl="$2" -At -f - 2>/dev/null \
+    || printf 'n/a'
 }
 
 write_backup_metadata() {
@@ -198,6 +228,15 @@ verify_backup_metadata() {
   # erfasst hat, auch wenn das Schema sich seither veraendert hat.
   empty=0
   for table in $(awk -F= '/^rows_/ { sub(/^rows_/, "", $1); print $1 }' "$meta_path"); do
+    # Was kein Bezeichner ist, kann keine Tabelle aus einem echten Backup sein.
+    # Nicht ueberspringen, sondern melden und die Pruefung durchfallen lassen:
+    # eine Metadatei mit solchen Eintraegen wurde veraendert, und dann ist auch
+    # der Rest ihrer Angaben nichts mehr wert.
+    if ! backup_metadata_is_identifier "$table"; then
+      echo "$label: metadata lists '$table', which is not a valid table name; this file has been altered" >&2
+      empty=1
+      continue
+    fi
     expected="$(backup_metadata_value "$meta_path" "rows_$table" || printf 'n/a')"
     [ "$expected" = 'n/a' ] && continue
     actual="$(backup_metadata_count "$database_url" "$table")"
