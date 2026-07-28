@@ -3,6 +3,9 @@ set -eu
 
 : "${DATABASE_URL:?DATABASE_URL is required}"
 
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/backup-metadata.sh"
+
 DUMP_PATH="${1:-}"
 ATTACHMENTS_ARCHIVE="${2:-}"
 AUDIT_ARCHIVE="${3:-}"
@@ -46,11 +49,13 @@ validate_tar_archive() {
 DUMP_DIR="$(dirname "$DUMP_PATH")"
 DUMP_FILE="$(basename "$DUMP_PATH")"
 CHECKSUM_MANIFEST=""
+METADATA_PATH=""
 case "$DUMP_FILE" in
   db-*.dump)
     STAMP="${DUMP_FILE#db-}"
     STAMP="${STAMP%.dump}"
     CHECKSUM_MANIFEST="$DUMP_DIR/backup-$STAMP.sha256"
+    METADATA_PATH="$DUMP_DIR/backup-$STAMP.meta"
     ;;
 esac
 
@@ -62,6 +67,14 @@ if [ -n "$CHECKSUM_MANIFEST" ] && [ -f "$CHECKSUM_MANIFEST" ]; then
   if [ -n "$AUDIT_ARCHIVE" ]; then
     verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"
   fi
+  if [ -n "$METADATA_PATH" ] && [ -f "$METADATA_PATH" ]; then
+    verify_backup_file "$METADATA_PATH" "$CHECKSUM_MANIFEST"
+  fi
+  if [ -n "$METADATA_PATH" ] && [ ! -f "$METADATA_PATH" ] \
+    && backup_metadata_is_listed "$CHECKSUM_MANIFEST" "$(basename "$METADATA_PATH")"; then
+    echo "backup metadata is listed in the checksum manifest but missing: $METADATA_PATH" >&2
+    exit 1
+  fi
 else
   echo "warning: checksum manifest not found; restoring without backup hash verification" >&2
 fi
@@ -72,6 +85,28 @@ fi
 
 if [ -n "$AUDIT_ARCHIVE" ]; then
   validate_tar_archive "$AUDIT_ARCHIVE"
+fi
+
+# Letzte Gelegenheit, NICHTS kaputtzumachen.
+#
+# Ein Backup, dessen Zaehlung beim Erstellen gescheitert ist, traegt das selbst
+# ein. Diese Sicherung laesst sich nicht auf Vollstaendigkeit pruefen — und das
+# steht fest, bevor irgendetwas angefasst wird. Also hier abbrechen und nicht
+# erst hinterher, wenn die Produktivdaten schon ersetzt sind.
+#
+# Der Schalter ist fuer den Notfall gedacht, in dem das die einzige vorhandene
+# Sicherung ist: dann ist eine ungeprueft eingespielte besser als gar keine —
+# aber es muss eine bewusste Entscheidung sein.
+UNVERIFIABLE_ACCEPTED=0
+if [ -n "$METADATA_PATH" ] && ! backup_metadata_is_verifiable "$METADATA_PATH"; then
+  if [ "${RESTORE_ALLOW_UNVERIFIABLE:-}" = '1' ]; then
+    UNVERIFIABLE_ACCEPTED=1
+    echo "restore: WARNING — this backup carries no usable row counts; restoring anyway because RESTORE_ALLOW_UNVERIFIABLE=1" >&2
+  else
+    echo "restore: refusing to restore — this backup recorded no usable row counts, so its completeness cannot be verified" >&2
+    echo "restore: nothing has been changed. Use a different backup, or set RESTORE_ALLOW_UNVERIFIABLE=1 to accept an unverifiable restore." >&2
+    exit 1
+  fi
 fi
 
 if [ -n "$PG_RESTORE_ROLE" ]; then
@@ -88,4 +123,29 @@ fi
 if [ -n "$AUDIT_ARCHIVE" ]; then
   mkdir -p "$AUDIT_ARCHIVE_DIR"
   tar -C "$AUDIT_ARCHIVE_DIR" --no-same-owner --no-same-permissions -xf "$AUDIT_ARCHIVE"
+fi
+
+# Ein durchgelaufenes pg_restore heisst nur "keine Fehler", nicht "vollstaendig".
+# Gegen die im Backup festgehaltenen Zeilenzahlen pruefen und benennen, welcher
+# Master-Key zu diesem Stand gehoert — ohne die passende .env bleiben alle
+# Secrets unlesbar, obwohl die Wiederherstellung technisch sauber war.
+#
+# Wer den Notfallschalter gesetzt hat, weiss bereits, dass diese Sicherung sich
+# nicht pruefen laesst — das war die Bedingung, unter der sie ueberhaupt bis
+# hierher kam. Dann darf dieselbe Erkenntnis das Skript nicht nachtraeglich
+# scheitern lassen: restore-compose.sh wuerde sonst vor Migrationen und
+# Neustart stehenbleiben und die Anwendung ausgeschaltet zuruecklassen, obwohl
+# die Daten liegen. Gemeldet wird es weiterhin, nur nicht mehr als Abbruch.
+# Gemildert wird NUR der Fall, den die Vorabpruefung selbst festgestellt hat.
+# Die blosse Variable genuegt nicht: sie bleibt gern in der Shell stehen, und
+# beim naechsten — diesmal pruefbaren — Backup wuerde sie sonst auch echte
+# Befunde schlucken: eine nach dem Restore fehlende Tabelle, eine gescheiterte
+# Abfrage, ein manipulierter Eintrag in der Metadatei. Ein pruefbares Backup
+# muss durchfallen duerfen.
+if [ -n "$METADATA_PATH" ]; then
+  if [ "$UNVERIFIABLE_ACCEPTED" = '1' ]; then
+    verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore' || true
+  else
+    verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore'
+  fi
 fi

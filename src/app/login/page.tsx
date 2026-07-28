@@ -58,6 +58,12 @@ export default function LoginPage() {
   const [loginConfig, setLoginConfig] = useState<ServerLoginConfig | null>(null)
   const [loginConfigResolved, setLoginConfigResolved] = useState(false)
   const [captchaPassed, setCaptchaPassed] = useState(false)
+  // Der Server kann ein CAPTCHA auch dann verlangen, wenn der Workspace keines
+  // eingeschaltet hat: naemlich wenn auf dieses Konto gerade von vielen
+  // Adressen aus Fehlversuche einlaufen. Ohne dieses Flag bekaeme der echte
+  // Nutzer in genau dem Moment nur eine Fehlermeldung und kein Widget — die
+  // Abwehr waere dann eine Kontosperre statt einer Huerde.
+  const [captchaForced, setCaptchaForced] = useState(false)
   const [loginPin, setLoginPin] = useState("")
   const [loginPinRequired, setLoginPinRequired] = useState(false)
   const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null)
@@ -138,6 +144,19 @@ export default function LoginPage() {
   useEffect(() => {
     setLoginPin("")
     setLoginPinRequired(false)
+    // Auch das erzwungene CAPTCHA gehoert zur Identitaet, nicht zur Seite. Ohne
+    // Ruecksetzen blieb es fuer die restliche Lebensdauer der Seite stehen: wer
+    // sich in der Adresse vertippt hat, stand vor einer bildschirmfuellenden
+    // Huerde ohne Zurueck und musste sie loesen oder neu laden, bevor er den
+    // Tippfehler korrigieren konnte — und danach galt sie auch fuer ein ganz
+    // anderes Konto weiter, obwohl der Server dafuer gar nichts verlangt.
+    //
+    // NUR das Flag. Die geloeste Challenge bleibt: sie haengt am Browser und
+    // seiner Adresse, nicht am Konto, und ist ohnehin einmalig. Sie hier
+    // mitzuloeschen warf beim ersten Rendern (das Feld wird aus der gemerkten
+    // Adresse vorbelegt) eine gerade erst geloeste Bestaetigung weg und
+    // sperrte den Nutzer hinter einer neuen.
+    setCaptchaForced(false)
   }, [username])
 
   useEffect(() => {
@@ -178,6 +197,45 @@ export default function LoginPage() {
     }
   }, [needsSetup, inviteToken])
 
+  // Fehler anzeigen — und bei `captcha_required` zusaetzlich das Widget
+  // einblenden. Der Server verlangt die Bestaetigung auch dann, wenn der
+  // Workspace kein CAPTCHA aktiviert hat: sobald auf dieses Konto verteilt
+  // Fehlversuche einlaufen. Der Site-Key steht in der Login-Konfiguration,
+  // sobald ein Anbieter eingerichtet ist, unabhaengig von `enabled`.
+  function reportAuthError(err: unknown) {
+    if (err instanceof ServerAuthClientError && err.code === "captcha_required") {
+      if (loginConfig?.captcha.siteKey) {
+        setCaptchaForced(true)
+        setCaptchaPassed(false)
+      } else {
+        // Kein Site-Key bekannt — das heisst hier nicht "kein Anbieter",
+        // sondern meist: die Konfiguration liess sich beim Laden der Seite
+        // nicht holen, und der Ersatzwert traegt keinen. Der Server verlangt
+        // aber gerade eine Bestaetigung. Ohne Nachholen bliebe nur eine
+        // Fehlermeldung ohne Widget, und selbst nach zurueckgekehrter
+        // Verbindung haette der Nutzer nur das Neuladen der Seite.
+        void refreshLoginConfigForForcedCaptcha()
+      }
+    }
+    setError(formatAuthError(err, serverSetupMode))
+  }
+
+  async function refreshLoginConfigForForcedCaptcha() {
+    const serverAuth = getActiveServerAuthClient()
+    if (!serverAuth) return
+    try {
+      const config = await serverAuth.getLoginConfig()
+      setLoginConfig(config)
+      if (config.captcha.siteKey) {
+        setCaptchaForced(true)
+        setCaptchaPassed(false)
+      }
+    } catch {
+      // Immer noch nicht erreichbar. Die Fehlermeldung steht bereits, und ein
+      // Widget ohne Site-Key waere ohnehin keins.
+    }
+  }
+
   async function handleCaptchaVerify(token: string) {
     const serverAuth = getActiveServerAuthClient()
     if (!serverAuth) return
@@ -188,7 +246,7 @@ export default function LoginPage() {
       storeCaptchaChallenge(challenge)
       setCaptchaPassed(true)
     } catch (err) {
-      setError(formatAuthError(err, serverSetupMode))
+      reportAuthError(err)
     } finally {
       setIsLoading(false)
     }
@@ -253,7 +311,7 @@ export default function LoginPage() {
       await refresh()
       navigate({ to: "/" })
     } catch (err) {
-      setError(formatAuthError(err, serverSetupMode))
+      reportAuthError(err)
     } finally {
       setIsLoading(false)
     }
@@ -356,7 +414,7 @@ export default function LoginPage() {
           : "Einrichtung fehlgeschlagen"
       setError(err)
     } catch (err) {
-      setError(formatAuthError(err, serverSetupMode))
+      reportAuthError(err)
     } finally {
       setIsLoading(false)
     }
@@ -430,7 +488,7 @@ export default function LoginPage() {
       rememberLoginEmail(loginIdentity)
       navigate({ to: "/" })
     } catch (err) {
-      setError(formatAuthError(err, serverSetupMode))
+      reportAuthError(err)
     } finally {
       setIsLoading(false)
     }
@@ -457,7 +515,7 @@ export default function LoginPage() {
     try {
       await performServerLogin(pinValue)
     } catch (err) {
-      setError(formatAuthError(err, serverSetupMode))
+      reportAuthError(err)
       setLoginPin("")
     } finally {
       setIsLoading(false)
@@ -686,15 +744,44 @@ export default function LoginPage() {
     )
   }
 
-  if (loginConfig?.captcha.enabled && !captchaPassed) {
+  if (loginConfig && (loginConfig.captcha.enabled || captchaForced) && !captchaPassed) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background p-4">
-        <LoginCaptchaGate
-          config={loginConfig}
-          busy={isLoading}
-          error={error}
-          onVerify={handleCaptchaVerify}
-        />
+        <div className="w-full max-w-md space-y-3">
+          <LoginCaptchaGate
+            config={
+              loginConfig.captcha.enabled
+                ? loginConfig
+                : { ...loginConfig, captcha: { ...loginConfig.captcha, enabled: true } }
+            }
+            busy={isLoading}
+            error={error}
+            onVerify={handleCaptchaVerify}
+          />
+          {/*
+            Nur beim erzwungenen CAPTCHA: es haengt an der eingegebenen Adresse,
+            und das Gate blendet ausgerechnet das Feld aus, mit dem man sie
+            korrigieren wuerde. Wer sich vertippt hat, sass sonst fest — das
+            Zuruecksetzen beim Wechsel der Adresse konnte gar nicht greifen,
+            weil sich die Adresse nicht mehr wechseln liess. Beim
+            Workspace-CAPTCHA gibt es diesen Ausweg nicht und braucht ihn auch
+            nicht: dort ist die Bestaetigung fuer jeden faellig, unabhaengig
+            davon, wer sich anmeldet.
+          */}
+          {!loginConfig.captcha.enabled ? (
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full"
+              onClick={() => {
+                setCaptchaForced(false)
+                setError(null)
+              }}
+            >
+              Andere E-Mail-Adresse verwenden
+            </Button>
+          ) : null}
+        </div>
       </div>
     )
   }

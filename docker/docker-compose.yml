@@ -158,6 +158,7 @@ services:
     volumes:
       - ./backup.sh:/app/backup.sh:ro
       - ./backup-retention.sh:/app/backup-retention.sh:ro
+      - ./backup-metadata.sh:/app/backup-metadata.sh:ro
       - ./restore.sh:/app/restore.sh:ro
       - ./doctor.sh:/app/doctor.sh:ro
       - attachments:/data/attachments:ro
@@ -185,6 +186,7 @@ services:
     volumes:
       - ./backup.sh:/app/backup.sh:ro
       - ./backup-retention.sh:/app/backup-retention.sh:ro
+      - ./backup-metadata.sh:/app/backup-metadata.sh:ro
       - ./backup-scheduler.sh:/app/backup-scheduler.sh:ro
       - attachments:/data/attachments:ro
       - audit_archives:/data/audit-archive:ro
@@ -204,6 +206,11 @@ services:
       RESTORE_DUMP_PATH: ${RESTORE_DUMP_PATH:-}
       RESTORE_ATTACHMENTS_PATH: ${RESTORE_ATTACHMENTS_PATH:-}
       RESTORE_AUDIT_ARCHIVE_PATH: ${RESTORE_AUDIT_ARCHIVE_PATH:-}
+      # Muss durchgereicht werden, sonst kommt der Notfallschalter nie im
+      # Container an: restore-compose.sh stoppt api und caddy VOR dem Restore,
+      # und der einzige vorhandene Backup-Satz waere weiter abgewiesen —
+      # Anwendung aus, kein Weg zurueck.
+      RESTORE_ALLOW_UNVERIFIABLE: ${RESTORE_ALLOW_UNVERIFIABLE:-}
     command:
       - sh
       - -c
@@ -235,6 +242,7 @@ services:
         exec sh /app/restore.sh "$$dump"
     volumes:
       - ./restore.sh:/app/restore.sh:ro
+      - ./backup-metadata.sh:/app/backup-metadata.sh:ro
       - backups:/backups:ro
       - attachments:/data/attachments
       - audit_archives:/data/audit-archive
@@ -252,6 +260,7 @@ services:
     command: ["sh", "/app/doctor.sh"]
     volumes:
       - ./doctor.sh:/app/doctor.sh:ro
+      - ./backup-metadata.sh:/app/backup-metadata.sh:ro
       - backups:/backups:ro
     depends_on:
       postgres:
@@ -301,6 +310,7 @@ services:
         exec sh /app/restore-drill.sh "$$dump"
     volumes:
       - ./restore-drill.sh:/app/restore-drill.sh:ro
+      - ./backup-metadata.sh:/app/backup-metadata.sh:ro
       - backups:/backups:ro
     depends_on:
       postgres:

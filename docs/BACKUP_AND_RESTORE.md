@@ -10,8 +10,83 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 - `attachments-<stamp>.tar`: optional attachment archive when `ATTACHMENTS_DIR` exists.
 - `audit-archive-<stamp>.tar`: optional audit archive when `AUDIT_ARCHIVE_DIR` exists.
 - `backup-<stamp>.sha256`: SHA-256 manifest for every file in the set.
+- `backup-<stamp>.meta`: schema version, required master-key id, and row counts
+  for **every table with row level security enabled** — derived from the catalog,
+  not from a list in the script, so a new table is covered the moment it exists.
+  Covered by the same manifest. While the backup is still running the file is
+  named `backup-<stamp>.meta.partial` and is renamed once the dump exists — the
+  counts are taken *before* the dump, and a concurrent backup's retention pass
+  would otherwise delete a `.meta` with no matching dump as an orphan.
+
+If the counts cannot be taken, the backup still runs — the dump is the valuable
+part — but records `row_counts=failed`. **`restore.sh` then refuses to start**,
+before `pg_restore` touches anything, because such a backup cannot be checked
+for completeness and finding that out afterwards would leave the database
+replaced and the application down. If it is the only backup you have, set
+`RESTORE_ALLOW_UNVERIFIABLE=1` to accept an unverified restore deliberately; the
+run then completes and only warns. In the Compose flow set it on the host —
+`RESTORE_ALLOW_UNVERIFIABLE=1 sh ./simplecrm restore` — the `restore` service
+passes it through.
 
 The restore and doctor scripts verify the manifest when it exists.
+
+### What The Manifest Proves — And What It Does Not
+
+The manifest detects **accidental damage**: a truncated transfer, a bad disk, a
+half-written file. It is **not** proof of origin. It lies next to the files it
+describes, so anyone who can change a backup can recompute the hashes in the
+same step and the check passes. Treat it as a corruption check, not as
+protection against tampering.
+
+If you need that guarantee, the manifest has to be authenticated or stored
+apart from the backup — signed, or copied to storage the backup host cannot
+write to (append-only bucket, offline medium).
+
+Because of this, the restore path treats the metadata file as untrusted input:
+table names out of `backup-<stamp>.meta` are validated as identifiers and
+quoted by the server rather than pasted into SQL. `restore.sh` and
+`restore-drill.sh` connect as the admin role, so a manipulated backup must not
+be able to smuggle statements in through that file.
+
+## What The Backup Does **Not** Contain
+
+**Your `.env` is not in the backup, and a dump alone cannot be restored into a
+working system.**
+
+Every secret in the database — mailbox passwords, OAuth tokens, AI provider keys
+— is encrypted with the master key. Restore a dump on a host without that exact
+key and you get a complete database whose secrets nobody can decrypt.
+
+Mind the two names for it: in `docker/.env` the variable is **`MASTER_KEY`**;
+Compose passes it to the API container as `SIMPLECRM_MASTER_KEY`
+(`SIMPLECRM_MASTER_KEY: ${MASTER_KEY}`). Writing `SIMPLECRM_MASTER_KEY` into
+`docker/.env` does nothing — `${MASTER_KEY}` stays empty and the API comes up
+without a key.
+
+`MASTER_KEY` is the one value that cannot be replaced. The other secrets in
+`docker/.env` are rotatable and only have to be internally consistent:
+
+- `PG_PASSWORD` / `PG_ADMIN_PASSWORD`: new passwords are fine as long as the
+  database roles and `docker/.env` carry the same ones. They protect access to
+  the data, they do not encrypt it.
+- `ACCESS_TOKEN_SECRET`: a new secret signs newly issued access tokens.
+  Existing browser sessions survive it — refresh tokens are hashed
+  independently of this secret, so a client simply refreshes once and continues.
+  Rotate it deliberately (after a suspected leak) rather than by accident.
+
+Keep a copy of `docker/.env` **outside** the backup volume — a password manager
+or an offline copy. Without the master key your backup is only half a backup.
+
+`backup-<stamp>.meta` records the `key_id` values the dump was encrypted with
+(never the key itself), and `restore.sh` and `doctor.sh` print them as a
+reminder.
+
+**Treat that as a reminder, not a check.** The server derives the id without
+passing one, so it is `default` in every installation — a wrong key carries the
+same id as the right one. Whether your `.env` matches cannot be decided from the
+backup; only a non-secret key fingerprint written by the server, or a canary
+decryption, could answer that. Until then the safeguard is procedural: keep the
+`.env` with the backup set.
 
 ## Run A One-Shot Backup
 
@@ -156,3 +231,55 @@ pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$D
 
 - Restore should be treated as an operator action; confirm you have the right backup before running it.
 - Production restore runbooks and live 100k-mail restore drills are not complete.
+
+## Rolling Back To An Earlier Backup
+
+`restore.sh` runs `pg_restore --clean --if-exists --no-owner` with
+`PG_RESTORE_ROLE=simplecrm_app`, so restored objects are owned by the
+application role again and later migrations keep working.
+
+Two things to know before you rely on it:
+
+**Restoring an older dump onto the current database does not work across a
+schema change.** `pg_restore --clean` drops only the objects it is about to
+restore — objects created by later migrations are not in the archive and stay
+put. If such a newer table has a foreign key into an older one, the drop fails:
+restoring a pre-0038 dump onto a current database makes `pg_restore` try to
+`DROP TABLE workspaces` while `mail_acl_bindings` still references it, which
+errors out without `CASCADE` and aborts the whole restore. `restore-compose.sh`
+then stops before migrations and before restarting the services.
+
+**For a rollback across migrations, restore into an empty database.** Drop and
+recreate the database (or point `DATABASE_URL` at a fresh one) and restore
+there — that is the only way the newer objects actually disappear. The restore
+drill already works this way: it creates a throwaway database per run, which is
+why it passes where an in-place rollback would not.
+
+Restoring a dump of the **same** schema version onto the current database is
+unaffected and works as expected.
+
+**Roll back code and data together, not one without the other.**
+
+**The restore is verified, not just executed.** After `pg_restore` finishes,
+`restore.sh` compares the restored row counts against `backup-<stamp>.meta`.
+
+This is deliberately **not** an equality check. The counts are taken just before
+`pg_dump` starts, both against a live database, so rows written in between show
+up in the dump but not in the recorded numbers. Demanding equality would raise
+false alarms under normal write load, and an alarm that gets ignored out of habit
+is worse than no alarm. The restore therefore fails only when a recorded table
+**cannot be read back at all** — it is missing, or the query failed, so
+completeness was never checked. A table that comes back empty is reported
+loudly but does not fail the restore: deleting the last row of a table between
+the count and the dump snapshot produces exactly that, legitimately. Any other
+divergence is printed as a note.
+
+The underlying failure mode — row level security is forced on nearly every table,
+so a dump taken by a role that does not bypass it restores cleanly while being
+silently filtered — is checked directly at its cause: `backup.sh` refuses to run
+when the backup role neither is a superuser nor holds `BYPASSRLS`. No backup is
+better than one you wrongly trust.
+
+Do not skip the pre-update backup in `docker/update.sh`. The migration path is
+exercised on an empty database in CI; migrating **populated** production data is
+not, and the backup is the actual safety net.

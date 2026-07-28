@@ -3,6 +3,9 @@ set -eu
 
 : "${DATABASE_URL:?DATABASE_URL is required}"
 
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/backup-metadata.sh"
+
 DUMP_PATH="${1:-}"
 ATTACHMENTS_ARCHIVE="${2:-}"
 AUDIT_ARCHIVE="${3:-}"
@@ -52,11 +55,13 @@ quote_ident_literal() {
 DUMP_DIR="$(dirname "$DUMP_PATH")"
 DUMP_FILE="$(basename "$DUMP_PATH")"
 CHECKSUM_MANIFEST=""
+METADATA_PATH=""
 case "$DUMP_FILE" in
   db-*.dump)
     STAMP="${DUMP_FILE#db-}"
     STAMP="${STAMP%.dump}"
     CHECKSUM_MANIFEST="$DUMP_DIR/backup-$STAMP.sha256"
+    METADATA_PATH="$DUMP_DIR/backup-$STAMP.meta"
     ;;
 esac
 
@@ -67,6 +72,14 @@ if [ -n "$CHECKSUM_MANIFEST" ] && [ -f "$CHECKSUM_MANIFEST" ]; then
   fi
   if [ -n "$AUDIT_ARCHIVE" ]; then
     verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"
+  fi
+  if [ -n "$METADATA_PATH" ] && [ -f "$METADATA_PATH" ]; then
+    verify_backup_file "$METADATA_PATH" "$CHECKSUM_MANIFEST"
+  fi
+  if [ -n "$METADATA_PATH" ] && [ ! -f "$METADATA_PATH" ] \
+    && backup_metadata_is_listed "$CHECKSUM_MANIFEST" "$(basename "$METADATA_PATH")"; then
+    echo "backup metadata is listed in the checksum manifest but missing: $METADATA_PATH" >&2
+    exit 1
   fi
 else
   echo "warning: checksum manifest not found; restore drill continues without backup hash verification" >&2
@@ -111,6 +124,13 @@ if [ -n "$PG_RESTORE_ROLE" ]; then
 else
   pg_restore --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"
 fi
+# Frueher endete der Drill hier mit einem blossen count(*) auf workspaces: das
+# belegt, dass die Wiederherstellung nicht abgestuerzt ist, nicht dass die Daten
+# vollstaendig sind. Jetzt wird gegen die Zeilenzahlen geprueft, die das Backup
+# selbst festgehalten hat — eine halb leere Sicherung faellt damit auf.
 psql "$DRILL_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM workspaces;" >/dev/null
+if [ -n "$METADATA_PATH" ]; then
+  verify_backup_metadata "$METADATA_PATH" "$DRILL_DATABASE_URL" 'restore drill'
+fi
 
 echo "restore drill succeeded for $DUMP_FILE using temporary database $DRILL_DB_NAME"

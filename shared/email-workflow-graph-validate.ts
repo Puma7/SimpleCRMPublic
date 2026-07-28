@@ -378,3 +378,97 @@ export function workflowGraphHasChainStopNode(graph: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * Platzhalter, deren Inhalt aus der eingegangenen Mail stammt — und damit von
+ * dem, der sie geschickt hat. Der Server fuellt sie in stringsFromMessage.
+ */
+const MAIL_DERIVED_PLACEHOLDERS: ReadonlySet<string> = new Set([
+  'text',
+  'combined_text',
+  'subject',
+  'body_text',
+  'snippet',
+  'from_address',
+  'to_address',
+  'cc_address',
+  'attachment_names',
+  'attachment_types',
+]);
+
+/**
+ * Felder, bei denen ein absendergesteuerter Wert das ZIEL verschiebt, statt nur
+ * den Inhalt zu faerben. In einem Textbaustein ist fremder Text unschoen; in
+ * einem Empfaengerfeld entscheidet er, wer die Kopie bekommt.
+ */
+const RISKY_TARGET_FIELD_KEYS: ReadonlySet<string> = new Set(['to', 'cc', 'bcc', 'url']);
+
+export type WorkflowConfigRisk =
+  | { code: 'mail_derived_target'; nodeId: string; nodeType: string; field: string; placeholder: string }
+  | { code: 'auto_send_without_review'; nodeId: string; nodeType: string };
+
+function placeholdersIn(value: string): string[] {
+  return [...value.matchAll(/\{\{\s*([^{}]+?)\s*\}\}/g)].map((match) => match[1] ?? '');
+}
+
+/**
+ * Konfigurationen, bei denen der Absender einer Mail mitbestimmt, wohin etwas
+ * geht oder was ungeprueft rausgeht.
+ *
+ * Das ist KEIN Fehler und darf nichts blockieren: einen Platzhalter im
+ * Empfaengerfeld kann man bewusst wollen, und {{from_address}} als Rueckantwort
+ * an den Absender ist ein voellig normaler Bauplan. Es ist eine Warnung, weil
+ * derselbe Bauplan mit einem anderen Knoten davor eine vollstaendige Kopie
+ * samt Anhaengen an eine vom Angreifer gewaehlte Adresse schickt — und weil man
+ * das dem Feld beim Ausfuellen nicht ansieht.
+ *
+ * Ebenso autoSend: der Freigabeknoten existiert, aber ob er im Graphen steht,
+ * entscheidet der Autor. Bei einer KI-Antwort auf fremden Text ist "ohne
+ * Freigabe versenden" die Stelle, an der Prompt Injection nach draussen wirkt.
+ */
+export function findWorkflowConfigRisks(doc: WorkflowGraphDocument): WorkflowConfigRisk[] {
+  if (!doc || !Array.isArray(doc.nodes)) return [];
+  const risks: WorkflowConfigRisk[] = [];
+  for (const node of doc.nodes) {
+    // Laufzeit-Typ und config liegen unter node.data — dieselben Helfer, die
+    // auch die Trap-Erkennung oben benutzt. Direkt an node.config zu greifen
+    // faende schlicht nie etwas.
+    const nodeType = runtimeType(node);
+    const config = nodeConfig(node);
+    for (const [key, value] of Object.entries(config)) {
+      if (!RISKY_TARGET_FIELD_KEYS.has(key) || typeof value !== 'string') continue;
+      for (const placeholder of placeholdersIn(value)) {
+        if (!MAIL_DERIVED_PLACEHOLDERS.has(placeholder)) continue;
+        risks.push({ code: 'mail_derived_target', nodeId: node.id, nodeType, field: key, placeholder });
+      }
+    }
+  }
+
+  // Versand ohne Freigabe wird nur gemeldet, wenn der Graph ueberhaupt einen
+  // KI-Knoten enthaelt. Sonst waere es eine Warnung an jeder gewoehnlichen
+  // Automatisierung — und eine Warnung, die immer erscheint, liest niemand
+  // mehr. Der Anlass ist die Verbindung: KI formuliert aus fremdem Text, und
+  // das Ergebnis geht ohne menschlichen Blick hinaus.
+  const hasAiNode = doc.nodes.some((node) => runtimeType(node).startsWith('ai.'));
+  if (hasAiNode) {
+    for (const node of doc.nodes) {
+      const nodeType = runtimeType(node);
+      const config = nodeConfig(node);
+      const autoSends =
+        (nodeType === 'email.release_outbound' && config.autoSend === true) ||
+        (nodeType === 'email.send_draft' && config.runOutboundReview !== true);
+      if (autoSends) {
+        risks.push({ code: 'auto_send_without_review', nodeId: node.id, nodeType });
+      }
+    }
+  }
+  return risks;
+}
+
+export function formatWorkflowConfigRisks(risks: readonly WorkflowConfigRisk[]): string {
+  return risks.map((risk) => (
+    risk.code === 'mail_derived_target'
+      ? `„${risk.field}" in ${risk.nodeType} enthält {{${risk.placeholder}}} — dieser Wert kommt aus der eingegangenen Mail, der Absender bestimmt das Ziel also mit.`
+      : `${risk.nodeType} versendet ohne Freigabe (autoSend). Bei Inhalten aus fremden Mails empfiehlt sich ein Freigabeschritt davor.`
+  )).join(' ');
+}

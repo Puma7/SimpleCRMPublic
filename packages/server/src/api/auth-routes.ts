@@ -3,6 +3,8 @@ import {
   MIN_PASSWORD_LENGTH,
 } from '@simplecrm/core';
 import {
+  ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
+  accountWideLoginDefense,
   calculateLoginPenalty,
   shouldResetFailureCounterAfterSuccess,
 } from '../auth';
@@ -165,7 +167,39 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
   const loginConfig = ports.loginSecurity
     ? await ports.loginSecurity.getLoginConfig()
     : null;
-  if (loginConfig?.captcha.enabled && ports.loginSecurity) {
+
+  // Die Sperre oben zaehlt je (E-Mail, IP) und sieht deshalb nicht, wenn
+  // dasselbe Konto gleichzeitig von hundert Adressen aus durchprobiert wird.
+  // Die folgende Zahl schliesst die Luecke. Sie steht bewusst VOR der
+  // Passwortpruefung: dahinter haette der Angreifer seine Antwort schon.
+  //
+  // Zuerst aber diesen Versuch sichtbar machen. Ohne die Reservierung liefen
+  // gleichzeitige Anfragen alle durch dieselbe Pruefung, BEVOR die erste ihren
+  // Fehlschlag notiert — ein synchronisierter Schwarm bekaeme seine
+  // Rateversuche also frei, gerade der Fall, gegen den diese Abwehr gedacht
+  // ist. Das UPSERT ist atomar: wer danach zaehlt, sieht sich selbst und jeden,
+  // der vorher da war, und der k-te gleichzeitige Versuch sieht mindestens k.
+  await ports.auth.reserveLoginAttempt?.({ email, ip });
+  const accountSources = ports.auth.countRecentLoginFailureSourcesForAccount
+    ? await ports.auth.countRecentLoginFailureSourcesForAccount({
+      email,
+      windowSeconds: ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
+    })
+    : 0;
+  // Anbieter eingerichtet genuegt — ob der Workspace das CAPTCHA eingeschaltet
+  // hat, ist fuer die Eskalation unerheblich; sie blendet es dann zusaetzlich
+  // ein (die Login-Seite reagiert auf captcha_required und zeigt das Widget).
+  const captchaAvailable = Boolean(ports.loginSecurity) && loginConfig?.captcha.provider === 'turnstile';
+  const accountDefense = accountWideLoginDefense(accountSources, captchaAvailable);
+  if (accountDefense === 'throttle') {
+    return error(429, 'rate_limited', 'Zu viele Fehlversuche fuer dieses Konto', {
+      scope: 'account',
+      retryAfterSeconds: ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
+    });
+  }
+
+  const captchaRequired = Boolean(loginConfig?.captcha.enabled) || accountDefense === 'captcha';
+  if (captchaRequired && ports.loginSecurity) {
     if (!(await ports.loginSecurity.assertCaptchaChallenge({ challenge: captchaChallenge, ip }))) {
       return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
     }
@@ -199,8 +233,11 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
       });
     }
     const locked = penalty.kind === 'permanent';
+    // Nur die Wartezeit, nicht der Zaehlerstand. Die Wartezeit braucht der
+    // rechtmaessige Nutzer; der rohe Zaehler nuetzt allein dem, der sein
+    // Rateverhalten daran ausrichtet. (`permanent` entsteht nicht mehr neu,
+    // bereits gesetzte Sperren werden aber weiter gemeldet.)
     return error(locked ? 423 : 401, locked ? 'account_locked' : 'invalid_credentials', 'Ungültige Zugangsdaten', {
-      failedAttempts,
       penalty,
     });
   }
@@ -211,9 +248,15 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
 
   if (workspaceSettings && ports.loginSecurity) {
     if (workspaceSettings.pinKeypadEnabled && user.loginPinEnabled && !pin?.trim()) {
+      // `captchaRequired`, nicht `loginConfig.captcha.enabled`: bei
+      // kontoweiter Eskalation ist der Workspace-Schalter aus, die Challenge
+      // wurde oben aber trotzdem verlangt und verbraucht. Ohne Fortsetzung
+      // wirft der Client sie weg (performServerLogin raeumt sie im finally auf)
+      // und der rechtmaessige Nutzer muesste vor der PIN ein zweites CAPTCHA
+      // loesen — ausgerechnet waehrend sein Konto unter Beschuss steht.
       return data(200, {
         pinRequired: true,
-        ...(loginConfig?.captcha.enabled
+        ...(captchaRequired
           ? { captchaChallenge: ports.loginSecurity.issueCaptchaContinuation({ ip }) }
           : {}),
       });
@@ -227,7 +270,6 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
       const failedAttempts = await ports.auth.recordFailedLogin({ email, ip, userId: user.id });
       const penalty = calculateLoginPenalty(failedAttempts);
       return error(401, 'invalid_credentials', 'Ungültige Zugangsdaten', {
-        failedAttempts,
         penalty,
       });
     }

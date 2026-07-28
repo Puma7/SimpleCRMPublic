@@ -74,6 +74,30 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             })
             .execute();
 
+          // Rollout-Zustand der Mail-ACL materialisieren.
+          //
+          // Migration 0039 hat die Zeile nur fuer die damals vorhandenen
+          // Workspaces angelegt; ohne diesen Insert haette ein neu erstellter
+          // Workspace GAR KEINE. Der Port faellt dann auf enforce zurueck
+          // (defaultEnforceState) — dieselbe Wirkung, aber unsichtbar: die
+          // Readiness-Ansicht meldet erfundene Nullzaehler, und beide
+          // Bedienaktionen laufen ins Leere, weil sie eine vorhandene Zeile
+          // per UPDATE erwarten. Ein frisch aufgesetztes System stuende damit
+          // dauerhaft in einem Zustand, den es weder ablesen noch aendern kann.
+          //
+          // 'enforce' ist fuer einen NEUEN Workspace auch inhaltlich richtig:
+          // die Shadow-Phase existiert, um bestehende Installationen von der
+          // Legacy-Autorisierung auf die neue ACL zu heben und dabei die
+          // Abweichungen zu zaehlen. Ein Workspace, der nach Einfuehrung der
+          // neuen ACL entsteht, hat keinen Legacy-Zustand, gegen den sich
+          // vergleichen liesse. Das Verhalten bleibt damit exakt wie bisher —
+          // neu ist nur, dass der Zustand explizit in der Tabelle steht.
+          await trx
+            .insertInto('mail_acl_rollout_state')
+            .values({ workspace_id: workspaceId, mode: 'enforce' })
+            .onConflict((oc) => oc.column('workspace_id').doNothing())
+            .execute();
+
           const created = await trx
             .insertInto('users')
             .values({
@@ -496,6 +520,84 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         kind: 'temporary',
         lockSeconds: Math.max(1, Math.ceil(lockMs / 1000)),
       };
+    },
+
+    // Wie viele VERSCHIEDENE Adressen sind im Fenster gegen dieses Konto
+    // gelaufen? Der Index auth_login_failures_email_idx (email_normalized,
+    // failed_at DESC) aus 0002 bedient genau diese Abfrage.
+    //
+    // Bewusst Zeilen und nicht die Summe von failed_attempts: die Tabelle fuehrt
+    // je Paar (E-Mail, IP) EINE Zeile mit einem kumulierten Zaehler, und
+    // failed_at ist nur der letzte Versuch dieses Paares. Eine Summe ueber
+    // failed_at >= since zaehlt deshalb die gesamte Vorgeschichte eines Paares
+    // als "gerade eben": ein ueber Monate auf 49 gelaufenes Paar meldet nach
+    // einem einzigen neuen Versuch 50 im Fenster. Aus diesem Schema laesst sich
+    // "Versuche im Fenster" schlicht nicht ableiten.
+    //
+    // Eine Zeile im Fenster heisst dagegen genau eine Sache, und die stimmt:
+    // von dieser Adresse kam gerade ein Fehlversuch. Das ist auch das bessere
+    // Mass fuer die Luecke, um die es geht — sie entsteht durch BREITE, viele
+    // Adressen gegen ein Konto. Tiefe je Adresse faengt die gestaffelte Sperre
+    // ohnehin ab (ab dem vierten Versuch 24 Stunden).
+    // Atomare Reservierung: die Zeile entsteht (oder ihr Zeitstempel wandert
+    // vor), bevor irgendwer zaehlt. failed_attempts bleibt auf 0 und
+    // penalty_kind/lock_until bleiben unberuehrt — ein Anmeldeversuch ist noch
+    // kein Fehlversuch, und ein Doppelklick darf niemanden aussperren. Ein
+    // spaeterer recordFailedLogin zaehlt von 0 auf 1 hoch wie bisher.
+    async reserveLoginAttempt(input) {
+      await withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => {
+          await trx
+            .insertInto('auth_login_failures')
+            .values({
+              workspace_id: null,
+              user_id: null,
+              email_normalized: input.email.toLowerCase(),
+              ip_address: input.ip,
+              failed_at: now(),
+              failed_attempts: 0,
+              penalty_kind: 'none',
+              lock_until: null,
+              user_agent: null,
+            })
+            .onConflict((oc) => oc
+              .columns(['email_normalized', 'ip_address'])
+              .doUpdateSet({ failed_at: now() }))
+            .execute();
+        },
+      );
+    },
+
+    // Nur Zeilen ohne jeden Fehlversuch (failed_attempts = 0) und nur solche,
+    // die aelter sind als das Zeitfenster — eine noch zaehlende Reservierung
+    // darf nicht verschwinden, sonst waere die Schwelle wieder blind. Echte
+    // Fehlversuche bleiben unberuehrt: sie tragen die Staffelung.
+    async pruneProvisionalLoginAttempts(input) {
+      const cutoff = new Date(now().getTime() - input.olderThanSeconds * 1000);
+      const result = await withCrossWorkspaceAuthTransaction(
+        options.db,
+        options.applyWorkspaceSession,
+        async (trx) => trx
+          .deleteFrom('auth_login_failures')
+          .where('failed_attempts', '=', 0)
+          .where('failed_at', '<', cutoff)
+          .executeTakeFirst(),
+      );
+      return Number(result?.numDeletedRows ?? 0);
+    },
+
+    async countRecentLoginFailureSourcesForAccount(input) {
+      const since = new Date(now().getTime() - input.windowSeconds * 1000);
+      const row = await options.db
+        .selectFrom('auth_login_failures')
+        .select((eb) => eb.fn.countAll<string | number>().as('sources'))
+        .where('email_normalized', '=', input.email.toLowerCase())
+        .where('failed_at', '>=', since)
+        .executeTakeFirst();
+      const sources = Number(row?.sources ?? 0);
+      return Number.isFinite(sources) ? sources : 0;
     },
 
     async recordFailedLogin(input) {

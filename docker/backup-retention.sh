@@ -89,7 +89,8 @@ remove_backup_set() {
     "$backup_dir/db-$stamp.dump" \
     "$backup_dir/attachments-$stamp.tar" \
     "$backup_dir/audit-archive-$stamp.tar" \
-    "$backup_dir/backup-$stamp.sha256"
+    "$backup_dir/backup-$stamp.sha256" \
+    "$backup_dir/backup-$stamp.meta"
 }
 
 remove_orphan_backup_file() {
@@ -109,6 +110,10 @@ remove_orphan_backup_file() {
     backup-*.sha256)
       stamp="${file_name#backup-}"
       stamp="${stamp%.sha256}"
+      ;;
+    backup-*.meta)
+      stamp="${file_name#backup-}"
+      stamp="${stamp%.meta}"
       ;;
     *)
       return
@@ -140,7 +145,7 @@ prune_backup_retention() {
     fi
   done
 
-  for path in "$backup_dir"/attachments-*.tar "$backup_dir"/audit-archive-*.tar "$backup_dir"/backup-*.sha256; do
+  for path in "$backup_dir"/attachments-*.tar "$backup_dir"/audit-archive-*.tar "$backup_dir"/backup-*.sha256 "$backup_dir"/backup-*.meta; do
     [ -e "$path" ] || continue
     remove_orphan_backup_file "$backup_dir" "$path"
   done

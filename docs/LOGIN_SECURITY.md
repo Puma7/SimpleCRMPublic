@@ -157,7 +157,53 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 - **E-Mail-MFA-Zustellung** reserviert konkurrierende Anforderungen pro Benutzer und haelt waehrend SMTP keine DB-Transaktion offen.
 - **Pending-E-Mail-MFA** gibt nur dem reservierenden Login ein Challenge-Token; parallele Anfragen koennen das Versuchsbudget nicht vervielfachen.
 - **Login-Failure-Counter** (Brute-Force) in einer Transaktion inkrementiert.
+- **Kontoweite Abwehr** gegen verteiltes Raten — siehe unten.
 - **INITIAL_SETUP_TOKEN** verhindert unbemerktes Owner-Takeover bei exponiertem Setup-Endpunkt.
+
+### Verteiltes Raten (Credential Stuffing)
+
+Die gestaffelte Sperre (30 s → 5 min → 1 h → 24 h) zählt je Paar aus
+**E-Mail und IP**. Wer aus vielen Adressen kommt — Botnet, Proxy-Pool — bekommt
+pro Adresse einen frischen Zähler. Es bliebe nur das IP-Limit von 20
+Login-Anfragen pro Minute.
+
+Deshalb prüft der Login zusätzlich, **von wie vielen verschiedenen Adressen** in
+den letzten 15 Minuten ein Fehlversuch gegen dieses Konto kam — *vor* der
+Passwortprüfung:
+
+| Adressen mit Fehlversuch (15 min) | Turnstile eingerichtet | Turnstile nicht eingerichtet |
+|---|---|---|
+| < 6 | normal | normal |
+| ≥ 6 | **CAPTCHA verpflichtend** | normal |
+| ≥ 20 | CAPTCHA verpflichtend | `429`, Fenster läuft ab |
+
+**Warum Adressen und nicht Versuche.** `auth_login_failures` führt je Paar aus
+E-Mail und IP *eine* Zeile mit einem kumulierten Zähler; `failed_at` ist nur der
+letzte Versuch dieses Paares. „Wie viele Versuche in den letzten 15 Minuten"
+lässt sich daraus nicht ableiten — ein über Monate auf 49 gelaufenes Paar würde
+nach einem einzigen neuen Versuch als 50 frische zählen. Eine Zeile im Fenster
+bedeutet dagegen genau eine überprüfbare Sache: von dieser Adresse kam gerade
+ein Fehlversuch.
+
+Das ist zugleich das passendere Maß, denn die Lücke entsteht durch **Breite**.
+Tiefe je Adresse fängt die Staffelung oben ab: ab dem vierten Versuch 24 Stunden.
+Ein Mensch scheitert nicht binnen einer Viertelstunde von sechs verschiedenen
+Anschlüssen aus — ein Botnet tut genau das.
+
+**Warum kein kontoweites Sperren.** Eine solche Sperre könnte jeder auslösen,
+der eine E-Mail-Adresse kennt — man könnte fremde Konten nach Belieben von der
+Anmeldung ausschließen. Ein CAPTCHA sperrt niemanden aus: der Angreifer zahlt
+für jeden Rateversuch, der rechtmäßige Nutzer klickt einmal und kommt durch.
+
+Die Eskalation greift **auch wenn der Workspace-Toggle für CAPTCHA aus ist** —
+sie braucht nur einen eingerichteten Anbieter. Die Login-Seite blendet das
+Widget dann auf `captcha_required` hin ein.
+
+**Ohne eingerichteten Turnstile** bleibt nur Bremsen, und Bremsen sperrt aus:
+ab **20 Adressen** im Fenster erhält das Konto 15 Minuten lang `429` — auch der
+rechtmäßige Nutzer. Das ist die schlechtere Hälfte des Kompromisses und der
+Grund für die Empfehlung: **richten Sie Turnstile ein.** Dann greift die
+CAPTCHA-Pflicht, und niemand kann fremde Konten lahmlegen.
 
 Details und Restrisiken: [THREAT_MODEL.md](THREAT_MODEL.md), Learnings: [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md).
 

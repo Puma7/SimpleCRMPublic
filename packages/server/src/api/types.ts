@@ -335,6 +335,48 @@ export type AuthApiPort = {
     email: string;
     ip: string;
   }): Promise<LoginPenalty | null>;
+  /**
+   * Anzahl VERSCHIEDENER Adressen, von denen im Zeitfenster ein Fehlversuch
+   * gegen dieses Konto kam.
+   *
+   * checkLoginLock zaehlt je (E-Mail, IP) — wer aus vielen Adressen kommt,
+   * bekommt jedes Mal einen frischen Zaehler, und die Eskalation greift nie.
+   * Genau das ist Credential Stuffing. Diese Zahl ist die fehlende Sicht auf
+   * das Konto als Ganzes: nicht wie oft, sondern von wie vielen Seiten.
+   */
+  countRecentLoginFailureSourcesForAccount?(input: {
+    email: string;
+    windowSeconds: number;
+  }): Promise<number>;
+  /**
+   * Diesen Versuch VOR der Zaehlung sichtbar machen.
+   *
+   * Ohne das laufen hunderte gleichzeitige Anfragen alle durch dieselbe
+   * Pruefung, bevor die erste ihren Fehlschlag notiert — ein synchronisierter
+   * Schwarm bekaeme seine Rateversuche also frei, gerade der Fall, gegen den
+   * die kontoweite Abwehr gedacht ist. Die Reservierung ist ein atomares
+   * UPSERT: wer danach zaehlt, sieht sich selbst und jeden, der vorher da war.
+   *
+   * Sie beruehrt Zaehler und Sperrzeit NICHT, nur den Zeitstempel — sonst
+   * wuerde ein blosser Anmeldeversuch die gestaffelte Sperre ausloesen und ein
+   * Doppelklick den rechtmaessigen Nutzer aussperren.
+   */
+  reserveLoginAttempt?(input: {
+    email: string;
+    ip: string;
+  }): Promise<void>;
+  /**
+   * Reservierungen wegraeumen, aus denen nie ein Fehlversuch wurde.
+   *
+   * Die Reservierung entsteht VOR der CAPTCHA-Pruefung — sonst waere sie fuer
+   * die Schwelle zu spaet. Eine abgewiesene Anfrage laesst damit eine Zeile
+   * zurueck, und wer unangemeldet mit wechselnden Adressen anklopft, erzeugt
+   * beliebig viele davon. Geloescht wurden sie bisher nur durch eine
+   * erfolgreiche Anmeldung genau dieses Paares, die es hier nie gibt.
+   */
+  pruneProvisionalLoginAttempts?(input: {
+    olderThanSeconds: number;
+  }): Promise<number>;
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   verifyPassword(password: string, passwordHash: string): Promise<boolean>;
   recordFailedLogin(input: {

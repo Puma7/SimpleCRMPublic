@@ -8,11 +8,53 @@ import {
 describe('server user groups API', () => {
   const admin = { userId: 'user-1', workspaceId: 'ws-1', role: 'owner' as const };
   const member = { userId: 'user-2', workspaceId: 'ws-1', role: 'user' as const };
+  // Die Lesezugriffe verlangen seit der Absicherung settings.view. Die
+  // Gruppenverwaltung liegt unter Einstellungen, und die Oberflaeche blendet
+  // diesen Bereich ohnehin nur mit dieser Berechtigung ein — ein Nutzer ohne
+  // sie hatte nie einen Weg dorthin, wohl aber Zugriff auf die API.
+  const settingsViewer = { ...member, capabilities: ['settings.view'] };
 
-  test('lists groups for any authenticated user', async () => {
+  test('lists groups for users who may see settings', async () => {
     const userGroups = groupPort();
     const api = createServerApi(ports({ userGroups }));
-    const res = await api.handle({ method: 'GET', path: '/api/v1/user-groups', principal: member });
+    const res = await api.handle({ method: 'GET', path: '/api/v1/user-groups', principal: settingsViewer });
+    expect(res.status).toBe(200);
+    expect((res.body as any).data.items[0].name).toBe('Support');
+  });
+
+  // Die drei Lesezugriffe ergeben zusammen die Rechte-Landkarte des Workspace:
+  // welche Gruppe welche Berechtigung haelt und wer darin sitzt. Sie standen
+  // jedem angemeldeten Konto offen, obwohl alle Schreibpfade Admin verlangen —
+  // fuer einen Angreifer mit irgendeinem Konto die Auskunft, welches Ziel sich
+  // lohnt. Einen Konsumenten ohne settings.view gab es dafuer nie.
+  test('keeps the permission map from users without settings access', async () => {
+    const userGroups = groupPort();
+    const api = createServerApi(ports({ userGroups }));
+    for (const path of [
+      '/api/v1/user-groups/5/members',
+      '/api/v1/user-groups/5/permissions',
+    ]) {
+      const res = await api.handle({ method: 'GET', path, principal: member });
+      expect({ path, status: res.status }).toEqual({ path, status: 403 });
+    }
+    expect(userGroups.listMembers).not.toHaveBeenCalled();
+    expect(userGroups.listPermissions).not.toHaveBeenCalled();
+  });
+
+  // Die blosse Liste bleibt offen: sie traegt nur Name und Anzahl und wird
+  // ausserhalb der Einstellungen gebraucht. Die Aufgaben-Zuweisung laedt sie
+  // zusammen mit der Nutzerliste in einem Promise.all — ein 403 darauf haette
+  // dort auch die Nutzerliste verworfen und beide Auswahlfelder geleert, bei
+  // einem Nutzer, der Aufgaben anlegen darf. crm.write ohne settings.view ist
+  // eine vorgesehene Kombination.
+  test('the plain list stays available for the task assignment picker', async () => {
+    const userGroups = groupPort();
+    const api = createServerApi(ports({ userGroups }));
+    const res = await api.handle({
+      method: 'GET',
+      path: '/api/v1/user-groups',
+      principal: { ...member, capabilities: ['crm.write'] },
+    });
     expect(res.status).toBe(200);
     expect((res.body as any).data.items[0].name).toBe('Support');
   });
@@ -59,12 +101,12 @@ describe('server user groups API', () => {
     expect(forbidden.status).toBe(403);
   });
 
-  test('listing members is available to non-admins and 404s for unknown groups', async () => {
+  test('listing members does not require admin and 404s for unknown groups', async () => {
     const userGroups = groupPort();
     userGroups.listMembers.mockResolvedValueOnce(null);
     const api = createServerApi(ports({ userGroups }));
 
-    const res = await api.handle({ method: 'GET', path: '/api/v1/user-groups/77/members', principal: member });
+    const res = await api.handle({ method: 'GET', path: '/api/v1/user-groups/77/members', principal: settingsViewer });
     expect(res.status).toBe(404);
     expect((res.body as any).error.code).toBe('user_group_not_found');
   });

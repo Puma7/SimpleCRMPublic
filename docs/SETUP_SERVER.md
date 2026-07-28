@@ -37,7 +37,19 @@ Set these in `docker/.env`:
 - `PUBLIC_BASE_URL`: public URL, for example `https://crm.example.com`. It is also the origin
   for optional e-mail pixel/click URLs, so production tracking requires stable HTTPS and must
   remain reachable by recipients after the message was sent.
-- `CORS_ALLOWED_ORIGINS`: optional comma-separated extra browser origins for server-client HTTP transport. `PUBLIC_BASE_URL` is allowed automatically. Add `null` only for trusted packaged desktop/file-origin clients that require it.
+- `CORS_ALLOWED_ORIGINS`: optional comma-separated extra browser origins for server-client HTTP transport. `PUBLIC_BASE_URL` is allowed automatically. Only exact origins are accepted — there is no wildcard.
+
+  **`null` is not an origin — avoid it.** It is what a browser sends when a document has no
+  origin to name: sandboxed iframes, `file://` documents, some redirects. It identifies nobody,
+  so *any* website can produce it by embedding a sandboxed iframe. Because the API answers
+  allowed origins with `Access-Control-Allow-Credentials: true`, listing `null` lets foreign
+  JavaScript make authenticated requests **and read the responses** — it is effectively a
+  wildcard for credentialed access, not a narrow exception for one desktop client.
+
+  Prefer giving the packaged client a real origin (a custom scheme or a loopback URL it serves
+  itself) and listing that. If a client genuinely cannot do without `null`, treat it as a
+  deliberate, documented risk: the server logs a `SECURITY:` warning at startup for as long as
+  the value is set.
 
 Invite SMTP variables are optional. If they are empty, invite creation can still return a manual link. E-mail MFA codes also use the invite SMTP configuration when enabled.
 
