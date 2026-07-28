@@ -3,6 +3,8 @@ import {
   MIN_PASSWORD_LENGTH,
 } from '@simplecrm/core';
 import {
+  ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
+  accountWideLoginDefense,
   calculateLoginPenalty,
   shouldResetFailureCounterAfterSuccess,
 } from '../auth';
@@ -165,7 +167,31 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
   const loginConfig = ports.loginSecurity
     ? await ports.loginSecurity.getLoginConfig()
     : null;
-  if (loginConfig?.captcha.enabled && ports.loginSecurity) {
+
+  // Die Sperre oben zaehlt je (E-Mail, IP) und sieht deshalb nicht, wenn
+  // dasselbe Konto gleichzeitig von hundert Adressen aus durchprobiert wird.
+  // Diese Zahl schliesst die Luecke. Sie steht bewusst VOR der Passwortpruefung:
+  // dahinter haette der Angreifer seine Antwort schon.
+  const accountFailures = ports.auth.countRecentLoginFailuresForAccount
+    ? await ports.auth.countRecentLoginFailuresForAccount({
+      email,
+      windowSeconds: ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
+    })
+    : 0;
+  // Anbieter eingerichtet genuegt — ob der Workspace das CAPTCHA eingeschaltet
+  // hat, ist fuer die Eskalation unerheblich; sie blendet es dann zusaetzlich
+  // ein (die Login-Seite reagiert auf captcha_required und zeigt das Widget).
+  const captchaAvailable = Boolean(ports.loginSecurity) && loginConfig?.captcha.provider === 'turnstile';
+  const accountDefense = accountWideLoginDefense(accountFailures, captchaAvailable);
+  if (accountDefense === 'throttle') {
+    return error(429, 'rate_limited', 'Zu viele Fehlversuche fuer dieses Konto', {
+      scope: 'account',
+      retryAfterSeconds: ACCOUNT_WIDE_FAILURE_WINDOW_SECONDS,
+    });
+  }
+
+  const captchaRequired = Boolean(loginConfig?.captcha.enabled) || accountDefense === 'captcha';
+  if (captchaRequired && ports.loginSecurity) {
     if (!(await ports.loginSecurity.assertCaptchaChallenge({ challenge: captchaChallenge, ip }))) {
       return error(403, 'captcha_required', 'CAPTCHA-Bestaetigung erforderlich');
     }

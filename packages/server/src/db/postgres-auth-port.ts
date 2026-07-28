@@ -498,6 +498,25 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       };
     },
 
+    // Summe der Fehlversuche fuer dieses Konto ueber alle Adressen im Fenster.
+    // Der Index auth_login_failures_email_idx (email_normalized, failed_at DESC)
+    // aus 0002 bedient genau diese Abfrage — er lag bisher ungenutzt da.
+    //
+    // Gezaehlt wird failed_attempts je Zeile, nicht die Zeilenzahl: eine Zeile
+    // steht fuer ein Paar (E-Mail, IP) und traegt dessen Zaehler. Wer zwanzigmal
+    // von derselben Adresse probiert, faellt sonst als eine einzige Zeile auf.
+    async countRecentLoginFailuresForAccount(input) {
+      const since = new Date(now().getTime() - input.windowSeconds * 1000);
+      const row = await options.db
+        .selectFrom('auth_login_failures')
+        .select((eb) => eb.fn.sum<string | number | null>('failed_attempts').as('total'))
+        .where('email_normalized', '=', input.email.toLowerCase())
+        .where('failed_at', '>=', since)
+        .executeTakeFirst();
+      const total = Number(row?.total ?? 0);
+      return Number.isFinite(total) ? total : 0;
+    },
+
     async recordFailedLogin(input) {
       return withCrossWorkspaceAuthTransaction(
         options.db,
