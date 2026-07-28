@@ -388,22 +388,36 @@ verify_backup_metadata() {
     # nicht-geheimer Fingerabdruck (den der Server schreiben muesste) oder eine
     # Probe-Entschluesselung koennte das beantworten.
     echo "$label: reminder — the secrets in this dump are encrypted with SIMPLECRM_MASTER_KEY (recorded key id: $key_ids)." >&2
-    fingerprints="$(backup_metadata_value "$meta_path" 'master_key_fingerprints' || printf 'unknown')"
-    case "$fingerprints" in
-      'unknown' | 'n/a' | 'none' | '')
-        # Aeltere Backups (vor Migration 0049) fuehren keinen Fingerabdruck.
-        echo "$label: this backup predates the master-key fingerprint, so a wrong .env cannot be detected here; restore it from the same system." >&2
-        ;;
-      *)
-        # Der Wert selbst ist nicht geheim und darf hier stehen: er ist ein HMAC
-        # ueber ein festes Etikett, aus dem sich der Schluessel nicht ableiten
-        # laesst. Geprueft wird er beim Start der API — dort liegt der
-        # Schluessel, hier nicht.
-        echo "$label: master key fingerprint recorded with this dump: $fingerprints" >&2
-        echo "$label: the API refuses to start if its SIMPLECRM_MASTER_KEY does not match this value." >&2
-        ;;
-    esac
   fi
+
+  # AUSSERHALB der key_ids-Bedingung: der Fingerabdruck gilt der Installation,
+  # nicht den einzelnen Secrets. Wurden alle Secrets regulaer geloescht, steht
+  # er trotzdem noch da und die API weist nach dem Restore weiterhin einen
+  # abweichenden Master-Key ab. Haenge man diese Ausgabe an 'es gibt Secrets',
+  # bliebe genau dieser zulaessige Zustand stumm — und der Betreiber erfuehre
+  # erst beim Startabbruch, welche .env er braucht.
+  fingerprints="$(backup_metadata_value "$meta_path" 'master_key_fingerprints' || printf 'unknown')"
+  case "$fingerprints" in
+    'unknown' | 'n/a' | '')
+      # Aeltere Backups (vor Migration 0049) fuehren keinen Fingerabdruck.
+      if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
+        echo "$label: this backup predates the master-key fingerprint, so a wrong .env cannot be detected here; restore it from the same system." >&2
+      fi
+      ;;
+    'none')
+      # Tabelle vorhanden, aber leer: die Installation ist nach dem Restore
+      # frei, sich mit dem ersten Start auf einen Schluessel festzulegen.
+      echo "$label: no master key fingerprint travelled with this dump; the API will record the key it starts with." >&2
+      ;;
+    *)
+      # Der Wert ist ein Pruefer, kein Geheimnis — aber auch nichts, was man
+      # herumreicht: er ist mit Absicht teuer abzuleiten (scrypt), damit sich
+      # geratene Schluessel nicht im Vorbeigehen daran testen lassen. Geprueft
+      # wird er beim Start der API; dort liegt der Schluessel, hier nicht.
+      echo "$label: master key fingerprint recorded with this dump: $fingerprints" >&2
+      echo "$label: the API refuses to start if its SIMPLECRM_MASTER_KEY does not match this value." >&2
+      ;;
+  esac
 
   [ "$empty" -eq 0 ]
 }

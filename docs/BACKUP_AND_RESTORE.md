@@ -83,9 +83,18 @@ reminder.
 
 The id alone says nothing — the server derives it without passing one, so it is
 `default` everywhere. **The fingerprint next to it does say something.** Since
-migration 0049 the server stores a non-secret fingerprint of the master key
-(an HMAC over a fixed label; the key cannot be derived from it) in the database,
-so it travels with the dump.
+migration 0049 the server stores a fingerprint of the master key in the
+database, so it travels with the dump. The key cannot be read out of it.
+
+**Treat that value as a key checker, not as public information.** It is derived
+with scrypt, deliberately expensive, and that is not decoration: against a
+*random* 32-byte key nothing about it matters, but against a key someone typed
+as a passphrase and base64-encoded, a cheap fingerprint would be exactly the
+offline oracle it is meant not to be — compute once per guess and compare, no
+access to any encrypted secret needed. At roughly 100 ms per candidate that
+turns a wordlist run of seconds into one of weeks. Generate the key with
+`openssl rand -base64 32`; the server refuses to start on a production
+configuration whose key decodes to printable text or to one repeated byte.
 
 Nothing in the backup path can check it — checking needs the key, and the key
 lives with the API. **The API does check it: it refuses to start when its

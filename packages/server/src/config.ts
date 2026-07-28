@@ -1,3 +1,5 @@
+import { MASTER_KEY_BYTES, masterKeyLooksGuessable } from './security/master-key';
+
 export type ServerEditionEnv = {
   DATABASE_URL?: string;
   SIMPLECRM_MASTER_KEY?: string;
@@ -190,6 +192,24 @@ export function assertNoKnownWeakProductionSecrets(
   if (isKnownWeakSecret(accessTokenSecret, KNOWN_WEAK_CI_SMOKE_ACCESS_TOKEN_SECRETS)) {
     throw new Error('ACCESS_TOKEN_SECRET uses the known weak CI smoke-test value');
   }
+  // Die Laengenpruefung in parseBase64MasterKey laesst eine base64-kodierte
+  // Passphrase durch — 32 Zeichen Text sind 32 Byte. Ein solcher Schluessel ist
+  // ratbar, und seit der Fingerabdruck in Backup-Metadaten und
+  // Restore-Ausgaben steht, gibt es dafuer auch etwas zum Vergleichen. Der
+  // Fingerabdruck ist deshalb absichtlich teuer abzuleiten — aber teuer machen
+  // ist Schadensbegrenzung, nicht Ersatz fuer einen zufaelligen Schluessel.
+  if (masterKey !== undefined && looksLikeTextMasterKey(masterKey)) {
+    throw new Error(
+      'SIMPLECRM_MASTER_KEY does not look like random key material — it decodes to printable text '
+      + 'or repeats a single byte. Generate it with `openssl rand -base64 32`.',
+    );
+  }
+}
+
+function looksLikeTextMasterKey(value: string): boolean {
+  const bytes = Buffer.from(value.trim(), 'base64');
+  if (bytes.length !== MASTER_KEY_BYTES) return false;
+  return masterKeyLooksGuessable(bytes);
 }
 
 function isKnownWeakSecret(value: string | undefined, knownWeakValues: readonly string[]): boolean {

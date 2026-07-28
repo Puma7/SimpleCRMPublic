@@ -887,18 +887,17 @@ export async function assertMasterKeyMatchesDatabase(
   }
 
   if (probe.kind === 'unusable') {
-    // Secrets vorhanden, aber keines unter dieser key_id und diesem Algorithmus:
-    // der konfigurierte Schluessel kann hier definitiv nichts lesen — die
-    // Entschluesselung prueft die key_id, bevor sie ueberhaupt anfaengt. Das ist
-    // derselbe Fehlzustand wie eine gescheiterte Probe und wird auch so
-    // behandelt. Nur zu warnen hiesse: API laeuft, schreibt neue Secrets mit dem
-    // konfigurierten Schluessel in dieselbe Tabelle, und weil nie ein
-    // Fingerabdruck hinterlegt wird, bleibt es bei der Warnung — dauerhaft zwei
-    // Schluessel in einer Datenbank.
+    // Es liegen Secrets unter einer anderen key_id oder einem anderen
+    // Algorithmus. Die kann der konfigurierte Schluessel definitiv nicht lesen —
+    // die Entschluesselung prueft die key_id, bevor sie ueberhaupt anfaengt.
+    // Auch wenn DANEBEN lesbare liegen, ist das kein Grund weiterzulaufen: der
+    // Fingerabdruck wuerde hinterlegt, kuenftige Starts verglichen nur noch ihn,
+    // und die unlesbaren Zeilen saehe nie wieder jemand an — waehrend readSecret
+    // im Betrieb ueber sie stolpert.
     throw new Error(
-      `This database holds secrets, but none of them was written with key id "${masterKey.keyId}" `
-      + `and algorithm ${SECRET_ENVELOPE_ALGORITHM}. Found instead: ${describeSecretKinds(probe.found)}. `
-      + `SIMPLECRM_MASTER_KEY cannot decrypt anything here. ${MASTER_KEY_RECOVERY_HINT}`,
+      `This database holds secrets that were not written with key id "${masterKey.keyId}" `
+      + `and algorithm ${SECRET_ENVELOPE_ALGORITHM}, namely: ${describeSecretKinds(probe.found)}. `
+      + `SIMPLECRM_MASTER_KEY cannot decrypt those. ${MASTER_KEY_RECOVERY_HINT}`,
     );
   }
   if (probe.kind === 'row' && !await secretIsReadableWith(probe.row, masterKey)) {
@@ -948,7 +947,14 @@ function describeSecretKinds(found: readonly SecretKind[]): string {
 }
 
 /**
- * Ein Secret, an dem sich der Schluessel proben laesst.
+ * Ein Secret, an dem sich der Schluessel proben laesst — und die Auskunft, ob
+ * daneben welche liegen, die er nicht lesen kann.
+ *
+ * Zuerst ALLE vorkommenden Schluessel-/Algorithmus-Kombinationen, dann erst
+ * eine Probezeile. Andersherum (erste passende Zeile gewinnt) wuerde eine
+ * gemischte Datenbank durchgehen: der Fingerabdruck wird hinterlegt, kuenftige
+ * Starts vergleichen nur noch ihn und sehen die uebrigen Zeilen nie wieder an —
+ * waehrend readSecret sie nach wie vor nicht entschluesseln kann.
  *
  * `secrets` hat FORCE ROW LEVEL SECURITY, eine gewoehnliche Abfrage saehe also
  * null Zeilen und die Datenbank faelschlich als leer. Deshalb dieselbe
@@ -966,24 +972,28 @@ async function findSecretProbe(
         SELECT set_config('app.role', 'system', true),
                set_config('app.cross_workspace_access', 'on', true)
       `.execute(trx);
-      if (keyId !== undefined) {
-        const row = await trx
-          .selectFrom('secrets')
-          .select(['workspace_id', 'kind', 'name', 'nonce', 'ciphertext'])
-          .where('key_id', '=', keyId)
-          .where('algorithm', '=', SECRET_ENVELOPE_ALGORITHM)
-          .limit(1)
-          .executeTakeFirst();
-        if (row) return { kind: 'row', row: row as SecretProbeRow } as const;
-      }
-      const found = await trx
+      const kinds = await trx
         .selectFrom('secrets')
         .select(['key_id', 'algorithm'])
         .distinct()
-        .limit(5)
+        .limit(6)
         .execute();
-      return found.length > 0
-        ? ({ kind: 'unusable', found } as const)
+      if (kinds.length === 0) return { kind: 'none' } as const;
+
+      const foreign = kinds.filter(
+        (entry) => entry.key_id !== keyId || entry.algorithm !== SECRET_ENVELOPE_ALGORITHM,
+      );
+      if (foreign.length > 0) return { kind: 'unusable', found: foreign } as const;
+
+      const row = await trx
+        .selectFrom('secrets')
+        .select(['workspace_id', 'kind', 'name', 'nonce', 'ciphertext'])
+        .where('key_id', '=', keyId as string)
+        .where('algorithm', '=', SECRET_ENVELOPE_ALGORITHM)
+        .limit(1)
+        .executeTakeFirst();
+      return row
+        ? ({ kind: 'row', row: row as SecretProbeRow } as const)
         : ({ kind: 'none' } as const);
     });
   } catch (error) {

@@ -2,10 +2,13 @@ import type { Kysely } from 'kysely';
 
 import { assertMasterKeyMatchesDatabase } from '../../packages/server/src/server';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
+import { randomBytes } from 'node:crypto';
+
 import {
   MASTER_KEY_FINGERPRINT_LABEL,
   masterKeyFingerprint,
   masterKeyFingerprintMatches,
+  masterKeyLooksGuessable,
   parseBase64MasterKey,
 } from '../../packages/server/src/security/master-key';
 import { encryptSecretValue } from '../../packages/server/src/security/secret-envelope';
@@ -37,7 +40,31 @@ describe('Master-Key-Fingerabdruck', () => {
     // ist oeffentlich.
     const { createHash } = require('node:crypto') as typeof import('node:crypto');
     expect(fingerprint).not.toBe(createHash('sha256').update(RICHTIG.bytes).digest('base64url').slice(0, 22));
-    expect(MASTER_KEY_FINGERPRINT_LABEL).toContain('v1');
+    expect(MASTER_KEY_FINGERPRINT_LABEL).toMatch(/-v\d+$/);
+  });
+
+  test('ist absichtlich teuer abzuleiten', () => {
+    // Die Begruendung "nicht geheim, weil HMAC" traegt nur bei einem wirklich
+    // zufaelligen Schluessel. Wer eine Passphrase base64-kodiert, dem waere der
+    // veroeffentlichte Wert genau das Orakel, das hier ausgeschlossen sein
+    // soll: je Kandidat einmal rechnen und vergleichen. Mit scrypt kostet ein
+    // Kandidat rund 100 ms statt einer Mikrosekunde — aus Sekunden werden
+    // Wochen. Gemessen wird grosszuegig, der Test soll die Absicht festhalten
+    // und nicht die Maschine benoten.
+    const started = process.hrtime.bigint();
+    masterKeyFingerprint(FALSCH);
+    const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(elapsedMs).toBeGreaterThan(10);
+  });
+
+  test('weist Schluessel ab, die nach Text statt nach Zufall aussehen', () => {
+    // 32 Zeichen Text sind 32 Byte — die Laengenpruefung allein laesst eine
+    // base64-kodierte Passphrase durch.
+    expect(masterKeyLooksGuessable(Buffer.from('correct-horse-battery-staple-1234'.slice(0, 32), 'utf8')))
+      .toBe(true);
+    expect(masterKeyLooksGuessable(Buffer.alloc(32, 7))).toBe(true);
+    expect(masterKeyLooksGuessable(RICHTIG.bytes)).toBe(true); // lauter gleiche Byte
+    expect(masterKeyLooksGuessable(randomBytes(32))).toBe(false);
   });
 
   test('vergleicht ohne Laengen- oder Inhaltsfalle', () => {
@@ -282,7 +309,21 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
     const fremd = { ...await secretRow(RICHTIG), key_id: 'anderer' };
     const { db, calls } = fakeDb([], { secrets: [fremd] });
     await expect(assertMasterKeyMatchesDatabase(db, RICHTIG))
-      .rejects.toThrow('none of them was written with key id "default"');
+      .rejects.toThrow('secrets that were not written with key id "default"');
+    expect(calls.inserted).toEqual([]);
+  });
+
+  test('auch wenn daneben lesbare Secrets liegen', async () => {
+    // Gemischt, etwa nach einer halb durchgefuehrten Rotation. Die erste
+    // passende Zeile gewinnen zu lassen hiesse: Fingerabdruck hinterlegt,
+    // kuenftige Starts vergleichen nur noch ihn, und die unlesbaren Zeilen
+    // sieht nie wieder jemand an — waehrend readSecret im Betrieb ueber sie
+    // stolpert.
+    const lesbar = await secretRow(RICHTIG);
+    const fremd = { ...await secretRow(RICHTIG), id: 's-2', key_id: 'ehemalig' };
+    const { db, calls } = fakeDb([], { secrets: [lesbar, fremd] });
+    await expect(assertMasterKeyMatchesDatabase(db, RICHTIG))
+      .rejects.toThrow('key id "ehemalig"');
     expect(calls.inserted).toEqual([]);
   });
 

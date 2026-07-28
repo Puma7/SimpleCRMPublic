@@ -29,7 +29,10 @@ Set these in `docker/.env`:
 
 - `PG_ADMIN_PASSWORD`: strong PostgreSQL admin password used only by bootstrap and maintenance profiles.
 - `PG_PASSWORD`: strong PostgreSQL password for the non-superuser `simplecrm_app` role used by API and migrations.
-- `MASTER_KEY`: Base64 value that decodes to exactly 32 bytes.
+- `MASTER_KEY`: Base64 value that decodes to exactly 32 bytes. **Generate it, do not
+  invent it** — a base64-encoded passphrase decodes to 32 bytes just as well and is
+  guessable, so the server refuses to start on a production configuration whose key
+  decodes to printable text or to one repeated byte.
 - `ACCESS_TOKEN_SECRET`: Base64 value that decodes to at least 32 bytes.
 - `INITIAL_SETUP_TOKEN`: **required** before the first owner account can be created. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. Pass as `X-Initial-Setup-Token` header or in the setup UI.
 - `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY`: optional Cloudflare Turnstile pair for login CAPTCHA (enable separately in workspace security settings).
