@@ -69,6 +69,20 @@ const PUBLIC_SURFACE: readonly string[] = [
 ];
 
 /**
+ * WebSocket-Routen laufen NICHT durch den Dispatcher.
+ *
+ * `/api/v1/events` wird direkt am Fastify-Adapter registriert und prueft den
+ * Principal in handleEventSocket. Ueber api.handle() kommt darauf nur ein 404,
+ * das dieser Test als "gibt es nicht" wertet — eine entfernte Anmeldepflicht
+ * bliebe hier also unsichtbar. Geprobt wird sie deshalb dort, wo sie
+ * stattfindet: tests/integration/api-auth-surface-websocket.test.ts.
+ *
+ * Diese Liste haelt beides zusammen: kommt eine WebSocket-Route hinzu, faellt
+ * der Test unten, und die neue Route muss in der Integrationsprobe auftauchen.
+ */
+const WEBSOCKET_ROUTES: readonly string[] = ['/api/v1/events'];
+
+/**
  * Jede Port-Eigenschaft existiert (kein `if (!ports.x) return 503`-Kurzschluss
  * verdeckt den Auth-Pfad), und jeder tatsaechliche Datenzugriff wirft erkennbar.
  * Nur so trennt der Test "Handler hat 401 geliefert" von "Handler war ohne
@@ -249,6 +263,14 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
     // muss sagen, ob es eine Route ist. Waere er eine, muesste er anders
     // geschrieben werden — sonst pruefte ihn niemand.
     expect(collectRoutePaths().interpolated).toEqual([...NON_ROUTE_INTERPOLATED_PATHS].sort());
+  });
+
+  test('die WebSocket-Routen sind die, die anderswo geprobt werden', () => {
+    const adapter = readFileSync(join(API_DIR, 'fastify-adapter.ts'), 'utf8');
+    const registered = [...adapter.matchAll(/app\.get\(\s*'([^']+)'\s*,\s*\{\s*websocket:\s*true/g)]
+      .map((match) => match[1])
+      .sort();
+    expect(registered).toEqual([...WEBSOCKET_ROUTES].sort());
   });
 
   test('jedes Routen-Regex laesst sich in Beispielpfade aufloesen', () => {

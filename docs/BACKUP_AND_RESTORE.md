@@ -106,7 +106,18 @@ precisely the case this is meant to catch: an old dump restored with the wrong
 reject the right one later. So when the table is empty but secrets exist, the
 key is tried against one of them: the envelope is AEAD-sealed, a foreign key
 fails authentication rather than returning garbage. Only a key that proves
-itself gets its fingerprint recorded.
+itself gets its fingerprint recorded. Secrets that carry a different key id are
+the same refusal: decryption checks the id before it starts, so that key cannot
+read anything here either — starting anyway would mean writing new secrets
+under a second key beside the unreadable ones.
+
+**There is no online re-keying.** Re-encrypting needs the old key, and if you
+had it this would not be a problem. So the error message names the path that
+actually works: restore the original `.env` — or, if the old key is gone for
+good, accept that the encrypted rows are lost, delete them together with the
+fingerprint row, and enter every credential again. Clearing
+`master_key_fingerprints` alone is not enough; the unreadable rows in `secrets`
+would refuse the next start just the same.
 
 The check tolerates exactly one failure: the table not existing yet, because
 migrations are a separate service and the API must not depend on the schema

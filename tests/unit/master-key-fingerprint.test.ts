@@ -99,6 +99,7 @@ function fakeDb(
     return {
       select() { return this; },
       selectAll() { return this; },
+      distinct() { return this; },
       limit() { return this; },
       where(column: string, _op: string, value: unknown) {
         filters.push([column, value]);
@@ -272,19 +273,27 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
       .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
   });
 
-  test('nicht probierbare Secrets: nichts hinterlegen, aber auch nicht blockieren', async () => {
-    // Fremde key_id (etwa mitten in einer Rotation): der Schluessel laesst sich
-    // an nichts pruefen. Einen ungeprueften Fingerabdruck einzutragen waere die
-    // schlechtere Wahl — er wuerde spaeter den richtigen Schluessel abweisen.
+  test('nicht probierbare Secrets brechen den Start ab', async () => {
+    // Fremde key_id: der konfigurierte Schluessel kann hier definitiv nichts
+    // lesen — die Entschluesselung prueft die key_id, bevor sie anfaengt. Nur zu
+    // warnen hiesse: API laeuft, schreibt neue Secrets mit dem konfigurierten
+    // Schluessel daneben, und weil nie ein Fingerabdruck entsteht, bleibt es bei
+    // der Warnung. Dauerhaft zwei Schluessel in einer Datenbank.
     const fremd = { ...await secretRow(RICHTIG), key_id: 'anderer' };
     const { db, calls } = fakeDb([], { secrets: [fremd] });
-    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
-      expect(calls.inserted).toEqual([]);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('trial-decrypted'));
-    } finally {
-      warn.mockRestore();
-    }
+    await expect(assertMasterKeyMatchesDatabase(db, RICHTIG))
+      .rejects.toThrow('none of them was written with key id "default"');
+    expect(calls.inserted).toEqual([]);
+  });
+
+  test('die Fehlermeldung nennt einen Weg, der auch funktioniert', async () => {
+    // Nur die Fingerabdruck-Zeile zu loeschen genuegt nicht: die alten Secrets
+    // liegen weiter da und weisen den naechsten Start erneut ab. Wer der
+    // Meldung folgt, muss danach wirklich starten koennen.
+    const { db } = fakeDb([], { secrets: [await secretRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
+      .rejects.toThrow(/DELETE FROM secrets/);
+    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
+      .rejects.toThrow(/alone is not enough/);
   });
 });

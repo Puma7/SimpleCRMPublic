@@ -787,12 +787,25 @@ function isMissingTableError(error: unknown): boolean {
     && (error as { code?: unknown }).code === PG_UNDEFINED_TABLE;
 }
 
+/**
+ * Der Weg zurueck, und zwar einer, der auch funktioniert.
+ *
+ * Nur die Fingerabdruck-Zeile zu loeschen genuegt nicht: die alten Secrets
+ * liegen weiter da und weisen den naechsten Start erneut ab. Ein Umschluesseln
+ * im Betrieb gibt es nicht — dafuer braeuchte man den alten Schluessel, und wenn
+ * man den haette, waere das hier kein Problem.
+ */
+const MASTER_KEY_RECOVERY_HINT =
+  'Restore the original docker/.env and the server starts again. If the old key is gone '
+  + 'for good, the encrypted rows are lost with it: delete them (DELETE FROM secrets) '
+  + 'together with the row in master_key_fingerprints, start with the new key and enter '
+  + 'every credential again. Clearing master_key_fingerprints alone is not enough — the '
+  + 'unreadable rows in secrets would refuse the next start just the same.';
+
 const MASTER_KEY_MISMATCH_MESSAGE =
   'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '
   + 'encrypted with a different key and cannot be decrypted with this one. This usually '
-  + 'means a dump was restored without its matching docker/.env. Restore the original '
-  + '.env, or — if the key really was replaced on purpose — clear the row in '
-  + 'master_key_fingerprints and re-enter every secret.';
+  + `means a dump was restored without its matching docker/.env. ${MASTER_KEY_RECOVERY_HINT}`;
 
 const MASTER_KEY_MISSING_MESSAGE =
   'SIMPLECRM_MASTER_KEY is not set, but this database already holds secrets encrypted '
@@ -874,15 +887,19 @@ export async function assertMasterKeyMatchesDatabase(
   }
 
   if (probe.kind === 'unusable') {
-    // Secrets vorhanden, aber keines mit dieser key_id und diesem Algorithmus:
-    // nicht probierbar. Dann lieber nichts hinterlegen als etwas Falsches — ein
-    // einmal eingetragener falscher Fingerabdruck wuerde spaeter den richtigen
-    // Schluessel abweisen.
-    console.warn(
-      '[master-key] this database holds secrets, but none of them can be trial-decrypted with '
-      + `key id "${masterKey.keyId}" (algorithm ${SECRET_ENVELOPE_ALGORITHM}); no fingerprint recorded`,
+    // Secrets vorhanden, aber keines unter dieser key_id und diesem Algorithmus:
+    // der konfigurierte Schluessel kann hier definitiv nichts lesen — die
+    // Entschluesselung prueft die key_id, bevor sie ueberhaupt anfaengt. Das ist
+    // derselbe Fehlzustand wie eine gescheiterte Probe und wird auch so
+    // behandelt. Nur zu warnen hiesse: API laeuft, schreibt neue Secrets mit dem
+    // konfigurierten Schluessel in dieselbe Tabelle, und weil nie ein
+    // Fingerabdruck hinterlegt wird, bleibt es bei der Warnung — dauerhaft zwei
+    // Schluessel in einer Datenbank.
+    throw new Error(
+      `This database holds secrets, but none of them was written with key id "${masterKey.keyId}" `
+      + `and algorithm ${SECRET_ENVELOPE_ALGORITHM}. Found instead: ${describeSecretKinds(probe.found)}. `
+      + `SIMPLECRM_MASTER_KEY cannot decrypt anything here. ${MASTER_KEY_RECOVERY_HINT}`,
     );
-    return;
   }
   if (probe.kind === 'row' && !await secretIsReadableWith(probe.row, masterKey)) {
     throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
@@ -917,10 +934,18 @@ type SecretProbeRow = Readonly<{
   ciphertext: Buffer | Uint8Array;
 }>;
 
+type SecretKind = Readonly<{ key_id: string; algorithm: string }>;
+
 type SecretProbe =
   | { kind: 'none' }
-  | { kind: 'unusable' }
+  | { kind: 'unusable'; found: readonly SecretKind[] }
   | { kind: 'row'; row: SecretProbeRow };
+
+/** Fuer die Fehlermeldung: was liegt statt des Erwarteten in der Tabelle? */
+function describeSecretKinds(found: readonly SecretKind[]): string {
+  if (found.length === 0) return 'unknown';
+  return found.map((entry) => `key id "${entry.key_id}" (${entry.algorithm})`).join(', ');
+}
 
 /**
  * Ein Secret, an dem sich der Schluessel proben laesst.
@@ -951,8 +976,15 @@ async function findSecretProbe(
           .executeTakeFirst();
         if (row) return { kind: 'row', row: row as SecretProbeRow } as const;
       }
-      const any = await trx.selectFrom('secrets').select('id').limit(1).executeTakeFirst();
-      return any ? ({ kind: 'unusable' } as const) : ({ kind: 'none' } as const);
+      const found = await trx
+        .selectFrom('secrets')
+        .select(['key_id', 'algorithm'])
+        .distinct()
+        .limit(5)
+        .execute();
+      return found.length > 0
+        ? ({ kind: 'unusable', found } as const)
+        : ({ kind: 'none' } as const);
     });
   } catch (error) {
     // Kein `secrets` = eine Datenbank vor 0002; dann gibt es auch nichts zu

@@ -2200,6 +2200,7 @@ describe('server edition repository boundaries', () => {
     // Secrets, die unlesbar werden koennten.
     const emptySelect: Record<string, unknown> = {
       select: () => emptySelect,
+      distinct: () => emptySelect,
       limit: () => emptySelect,
       where: () => emptySelect,
       execute: async () => [],
