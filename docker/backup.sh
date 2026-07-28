@@ -30,8 +30,15 @@ assert_backup_role_reads_all_rows "$DATABASE_URL"
 # verkleinert — deshalb prueft verify_backup_metadata bewusst nicht auf
 # Gleichheit (Begruendung dort).
 write_backup_metadata "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
+# Bis der Dump liegt, heisst die Datei .partial und ist damit fuer die
+# Aufraeumung eines parallel laufenden Backups unsichtbar (Begruendung in
+# backup-metadata.sh). Bricht dieser Lauf vorher ab, bleibt kein Rest liegen.
+trap 'rm -f "$BACKUP_DIR/$METADATA_FILE.partial"' EXIT INT TERM
 
 pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP"
+
+publish_backup_metadata "$BACKUP_DIR" "$STAMP"
+trap - EXIT INT TERM
 
 if [ -d "$ATTACHMENTS_DIR" ]; then
   tar -C "$ATTACHMENTS_DIR" -cf "$BACKUP_DIR/$ATTACHMENTS_ARCHIVE" .

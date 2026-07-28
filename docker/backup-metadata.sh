@@ -63,6 +63,30 @@ backup_metadata_path() {
   printf '%s/backup-%s.meta' "$1" "$2"
 }
 
+# Waehrend das Backup laeuft, traegt die Metadatei einen anderen Namen.
+#
+# Gezaehlt wird VOR dem Dump (Begruendung in backup.sh), die Datei entsteht also
+# zu einem Zeitpunkt, zu dem es db-<stamp>.dump noch nicht gibt. Genau daran
+# erkennt die Aufraeumung eine verwaiste Datei: laeuft parallel ein zweites
+# Backup und raeumt auf, loescht es diese Metadatei mitten im Entstehen. Das
+# erste Backup schriebe danach eine Pruefsummenliste ohne sie — und der Restore
+# haelte den Satz fuer ein altes Backup ohne Zaehlung und pruefte nichts.
+#
+# Der Suffix haelt sie aus beiden Suchmustern heraus (backup-*.meta trifft
+# nicht). Umbenannt wird erst, wenn der Dump liegt.
+backup_metadata_partial_path() {
+  printf '%s.partial' "$(backup_metadata_path "$1" "$2")"
+}
+
+# Die fertige Metadatei sichtbar machen. mv ist innerhalb eines Verzeichnisses
+# atomar: entweder sieht ein paralleler Lauf die vollstaendige Datei oder gar
+# keine, nie eine halbe.
+publish_backup_metadata() {
+  partial_path="$(backup_metadata_partial_path "$1" "$2")"
+  [ -f "$partial_path" ] || return 0
+  mv "$partial_path" "$(backup_metadata_path "$1" "$2")"
+}
+
 # Ist das ueberhaupt ein Tabellenname?
 #
 # Die Namen fuer die Restore-Pruefung kommen aus der .meta-Datei DES BACKUPS,
@@ -108,7 +132,7 @@ write_backup_metadata() {
   database_url="$1"
   backup_dir="$2"
   stamp="$3"
-  meta_path="$(backup_metadata_path "$backup_dir" "$stamp")"
+  meta_path="$(backup_metadata_partial_path "$backup_dir" "$stamp")"
 
   # Die Zaehlung zuerst und getrennt, damit ihr Scheitern sichtbar wird. Ein
   # `|| true` mitten in der Datei erzeugte sonst eine Metadatei GANZ OHNE
@@ -192,6 +216,26 @@ backup_metadata_is_listed() {
   meta_name="$2"
   [ -f "$manifest_path" ] || return 1
   awk -v name="$meta_name" '($2 == name || $2 == "*" name) { found = 1 } END { exit !found }' "$manifest_path"
+}
+
+# Laesst sich diese Sicherung ueberhaupt pruefen?
+#
+# Diese Frage ist VOR dem Restore beantwortbar — sie steht in der Metadatei. Sie
+# erst danach zu stellen war falsch herum: verify_backup_metadata laeuft nach
+# `pg_restore --clean` und nach dem Auspacken der Archive, also wenn die
+# Produktivdaten bereits ersetzt sind. Das Ergebnis war ein Abbruch mitten in
+# restore-compose.sh — Datenbank ausgetauscht, Migrationen nicht gelaufen, API
+# und Caddy aus. Der teuerste denkbare Zeitpunkt fuer die Erkenntnis, dass diese
+# Sicherung nichts belegt.
+#
+# Rueckgabe 0 = pruefbar (auch fuer aeltere Backups ohne Metadatei: dort gibt es
+# nichts zu pruefen und nie etwas zu pruefen gegeben).
+backup_metadata_is_verifiable() {
+  meta_path="$1"
+  [ -f "$meta_path" ] || return 0
+  recorded="$(backup_metadata_value "$meta_path" 'row_counts' || printf 'unknown')"
+  [ "$recorded" != 'failed' ] || return 1
+  grep -q '^rows_' "$meta_path"
 }
 
 backup_metadata_value() {

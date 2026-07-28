@@ -13,9 +13,18 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 - `backup-<stamp>.meta`: schema version, required master-key id, and row counts
   for **every table with row level security enabled** — derived from the catalog,
   not from a list in the script, so a new table is covered the moment it exists.
-  Covered by the same manifest. If the counts cannot be taken, the backup still
-  runs but records `row_counts=failed`, and a restore then refuses to report
-  itself as verified rather than silently checking nothing.
+  Covered by the same manifest. While the backup is still running the file is
+  named `backup-<stamp>.meta.partial` and is renamed once the dump exists — the
+  counts are taken *before* the dump, and a concurrent backup's retention pass
+  would otherwise delete a `.meta` with no matching dump as an orphan.
+
+If the counts cannot be taken, the backup still runs — the dump is the valuable
+part — but records `row_counts=failed`. **`restore.sh` then refuses to start**,
+before `pg_restore` touches anything, because such a backup cannot be checked
+for completeness and finding that out afterwards would leave the database
+replaced and the application down. If it is the only backup you have, set
+`RESTORE_ALLOW_UNVERIFIABLE=1` to accept an unverified restore deliberately; the
+run then completes and only warns.
 
 The restore and doctor scripts verify the manifest when it exists.
 

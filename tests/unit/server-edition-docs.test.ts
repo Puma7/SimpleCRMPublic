@@ -188,6 +188,27 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining("format('public.%I', :'tbl')"));
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_identifier "$2" ||'));
     expect(metadata).toEqual(expect.stringContaining('which is not a valid table name'));
+    // Waehrend das Backup laeuft, heisst die Metadatei .partial: sie entsteht
+    // VOR dem Dump, und die Aufraeumung eines parallel laufenden Backups haelt
+    // eine backup-*.meta ohne zugehoerigen Dump fuer eine Waise und loescht sie.
+    // Das erste Backup schriebe danach eine Pruefsummenliste ohne sie, und der
+    // Restore hielte den Satz fuer ein altes Backup ohne Zaehlung.
+    expect(metadata).toEqual(expect.stringContaining('backup_metadata_partial_path'));
+    expect(metadata).toMatch(/meta_path="\$\(backup_metadata_partial_path/);
+    expect(backup).toMatch(/write_backup_metadata[\s\S]*?pg_dump -Fc[\s\S]*?publish_backup_metadata/);
+    expect(backup).toEqual(expect.stringContaining("trap 'rm -f \"$BACKUP_DIR/$METADATA_FILE.partial\"'"));
+    // Und die Pruefbarkeit wird VOR dem Zerstoerenden entschieden: hinterher
+    // waeren die Produktivdaten schon ersetzt und der Abbruch liesse die
+    // Anwendung ausgeschaltet zurueck.
+    expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_verifiable()'));
+    expect(restore).toMatch(
+      /backup_metadata_is_verifiable "\$METADATA_PATH"[\s\S]*?exit 1[\s\S]*?pg_restore/,
+    );
+    expect(restore).toEqual(expect.stringContaining('RESTORE_ALLOW_UNVERIFIABLE'));
+    // Mit gesetztem Notfallschalter darf dieselbe Erkenntnis den Lauf nicht
+    // nachtraeglich scheitern lassen — sonst bleibt restore-compose.sh vor
+    // Migrationen und Neustart stehen, obwohl die Daten liegen.
+    expect(restore).toMatch(/verify_backup_metadata "\$METADATA_PATH" "\$DATABASE_URL" 'restore' \|\| true/);
     // Und eine im Manifest gelistete, aber fehlende Metadatei bricht ab; nur
     // Backups von vor dieser Aenderung duerfen ungeprueft durchlaufen.
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_listed()'));

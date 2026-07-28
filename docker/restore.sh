@@ -87,6 +87,26 @@ if [ -n "$AUDIT_ARCHIVE" ]; then
   validate_tar_archive "$AUDIT_ARCHIVE"
 fi
 
+# Letzte Gelegenheit, NICHTS kaputtzumachen.
+#
+# Ein Backup, dessen Zaehlung beim Erstellen gescheitert ist, traegt das selbst
+# ein. Diese Sicherung laesst sich nicht auf Vollstaendigkeit pruefen — und das
+# steht fest, bevor irgendetwas angefasst wird. Also hier abbrechen und nicht
+# erst hinterher, wenn die Produktivdaten schon ersetzt sind.
+#
+# Der Schalter ist fuer den Notfall gedacht, in dem das die einzige vorhandene
+# Sicherung ist: dann ist eine ungeprueft eingespielte besser als gar keine —
+# aber es muss eine bewusste Entscheidung sein.
+if [ -n "$METADATA_PATH" ] && ! backup_metadata_is_verifiable "$METADATA_PATH"; then
+  if [ "${RESTORE_ALLOW_UNVERIFIABLE:-}" = '1' ]; then
+    echo "restore: WARNING — this backup carries no usable row counts; restoring anyway because RESTORE_ALLOW_UNVERIFIABLE=1" >&2
+  else
+    echo "restore: refusing to restore — this backup recorded no usable row counts, so its completeness cannot be verified" >&2
+    echo "restore: nothing has been changed. Use a different backup, or set RESTORE_ALLOW_UNVERIFIABLE=1 to accept an unverifiable restore." >&2
+    exit 1
+  fi
+fi
+
 if [ -n "$PG_RESTORE_ROLE" ]; then
   pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$DATABASE_URL" "$DUMP_PATH"
 else
@@ -107,6 +127,17 @@ fi
 # Gegen die im Backup festgehaltenen Zeilenzahlen pruefen und benennen, welcher
 # Master-Key zu diesem Stand gehoert — ohne die passende .env bleiben alle
 # Secrets unlesbar, obwohl die Wiederherstellung technisch sauber war.
+#
+# Wer den Notfallschalter gesetzt hat, weiss bereits, dass diese Sicherung sich
+# nicht pruefen laesst — das war die Bedingung, unter der sie ueberhaupt bis
+# hierher kam. Dann darf dieselbe Erkenntnis das Skript nicht nachtraeglich
+# scheitern lassen: restore-compose.sh wuerde sonst vor Migrationen und
+# Neustart stehenbleiben und die Anwendung ausgeschaltet zuruecklassen, obwohl
+# die Daten liegen. Gemeldet wird es weiterhin, nur nicht mehr als Abbruch.
 if [ -n "$METADATA_PATH" ]; then
-  verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore'
+  if [ "${RESTORE_ALLOW_UNVERIFIABLE:-}" = '1' ]; then
+    verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore' || true
+  else
+    verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore'
+  fi
 fi
