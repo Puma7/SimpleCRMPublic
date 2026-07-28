@@ -174,7 +174,9 @@ import {
   type MailAclRolloutDiagnosticReporter,
 } from './mail-access/rollout-service';
 import {
+  createEmailTrackingCrypto,
   createPostgresEmailTrackingService,
+  emailTrackingLinkAssociatedData,
   startEmailTrackingRetentionTicker,
   type EmailTrackingService,
 } from './email-tracking';
@@ -907,8 +909,20 @@ export async function assertMasterKeyMatchesDatabase(
       + `SIMPLECRM_MASTER_KEY cannot decrypt those. ${MASTER_KEY_RECOVERY_HINT}`,
     );
   }
-  if (probe.kind === 'row' && !await secretIsReadableWith(probe.row, masterKey)) {
-    throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+  if (probe.kind === 'material') {
+    // JEDES Secret, nicht eines. Ein frueherer Start mit der falschen .env kann
+    // neue Secrets neben die alten geschrieben haben — alle unter key_id
+    // 'default', alle mit demselben Algorithmus, aber mit verschiedenem
+    // Schluesselmaterial. Eine Stichprobe von einer Zeile wuerde je nach
+    // Zufallstreffer den einen oder den anderen Schluessel segnen und den Rest
+    // unlesbar zuruecklassen. Es ist ein einmaliger Vorgang: sobald ein
+    // Fingerabdruck steht, kommt der Code hier nicht mehr vorbei.
+    for (const row of probe.secrets) {
+      if (!await secretIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
+    for (const row of probe.tracking) {
+      if (!trackingLinkIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
   }
 
   // Ab hier legt sich diese Installation auf den Schluessel fest. Der letzte
@@ -955,10 +969,36 @@ type SecretProbeRow = Readonly<{
 
 type SecretKind = Readonly<{ key_id: string; algorithm: string }>;
 
+type TrackingProbeRow = Readonly<{
+  workspace_id: string;
+  tracking_message_id: string;
+  id: string;
+  target_ciphertext: Buffer | Uint8Array;
+  target_nonce: Buffer | Uint8Array;
+  target_auth_tag: Buffer | Uint8Array;
+}>;
+
 type SecretProbe =
   | { kind: 'none' }
   | { kind: 'unusable'; found: readonly SecretKind[] }
-  | { kind: 'row'; row: SecretProbeRow };
+  | { kind: 'material'; secrets: readonly SecretProbeRow[]; tracking: readonly TrackingProbeRow[] };
+
+/**
+ * Wie viele Zeilen die einmalige Probe anfasst.
+ *
+ * `secrets` sind Postfach-Passwoerter, OAuth-Token, Provider-Schluessel —
+ * Groessenordnung Dutzende. Die werden VOLLSTAENDIG geprueft: eine einzelne
+ * Zeile zu proben genuegt nicht, weil ein frueherer Start mit der falschen .env
+ * neue Secrets neben die alten geschrieben haben kann, alle unter derselben
+ * key_id. Genau dieser Zustand ist der Anlass dieser Pruefung.
+ *
+ * Tracking-Links koennen dagegen sechsstellig werden; die zu jedem Start
+ * durchzurechnen waere nicht vertretbar. Dort eine Stichprobe von den aeltesten
+ * UND den juengsten Zeilen: ein Schluesselwechsel faellt zeitlich, und die
+ * Raender zeigen ihn. Das ist ausdruecklich eine Stichprobe, keine Garantie.
+ */
+const SECRET_PROBE_LIMIT = 1000;
+const TRACKING_PROBE_SAMPLE = 3;
 
 /** Fuer die Fehlermeldung: was liegt statt des Erwarteten in der Tabelle? */
 function describeSecretKinds(found: readonly SecretKind[]): string {
@@ -967,20 +1007,26 @@ function describeSecretKinds(found: readonly SecretKind[]): string {
 }
 
 /**
- * Ein Secret, an dem sich der Schluessel proben laesst — und die Auskunft, ob
- * daneben welche liegen, die er nicht lesen kann.
+ * Alles, woran sich der Schluessel proben laesst — und die Auskunft, ob etwas
+ * daliegt, das er ohnehin nicht lesen kann.
  *
- * Zuerst ALLE vorkommenden Schluessel-/Algorithmus-Kombinationen, dann erst
- * eine Probezeile. Andersherum (erste passende Zeile gewinnt) wuerde eine
- * gemischte Datenbank durchgehen: der Fingerabdruck wird hinterlegt, kuenftige
- * Starts vergleichen nur noch ihn und sehen die uebrigen Zeilen nie wieder an —
+ * Zuerst ALLE vorkommenden Schluessel-/Algorithmus-Kombinationen, dann erst die
+ * Probezeilen. Andersherum (erste passende Zeile gewinnt) wuerde eine gemischte
+ * Datenbank durchgehen: der Fingerabdruck wird hinterlegt, kuenftige Starts
+ * vergleichen nur noch ihn und sehen die uebrigen Zeilen nie wieder an —
  * waehrend readSecret sie nach wie vor nicht entschluesseln kann.
  *
- * `secrets` hat FORCE ROW LEVEL SECURITY, eine gewoehnliche Abfrage saehe also
- * null Zeilen und die Datenbank faelschlich als leer. Deshalb dieselbe
- * transaktionslokale Freigabe, die auch die Migrationen benutzen: Rolle
- * `system` plus `cross_workspace_access`. Gelesen wird nur das Envelope, nie
- * ein Klartext.
+ * Und nicht nur `secrets`: aus demselben Master-Key leitet
+ * createEmailTrackingCrypto Token-, Verschluesselungs- und Link-Hash-Schluessel
+ * ab. Eine Datenbank ohne Secrets, aber mit Tracking-Daten ist deshalb nicht
+ * frisch — ein fremder Schluessel entwertet dort bestehende Tokens und macht
+ * `email_tracking_links.target_ciphertext` unlesbar.
+ *
+ * Beide Tabellen haben FORCE ROW LEVEL SECURITY, eine gewoehnliche Abfrage
+ * saehe also null Zeilen und die Datenbank faelschlich als leer. Deshalb
+ * dieselbe transaktionslokale Freigabe, die auch die Migrationen benutzen:
+ * Rolle `system` plus `cross_workspace_access`. Gelesen werden nur Envelopes,
+ * nie ein Klartext.
  */
 async function findSecretProbe(
   db: Kysely<ServerDatabase>,
@@ -998,23 +1044,36 @@ async function findSecretProbe(
         .distinct()
         .limit(6)
         .execute();
-      if (kinds.length === 0) return { kind: 'none' } as const;
 
       const foreign = kinds.filter(
         (entry) => entry.key_id !== keyId || entry.algorithm !== SECRET_ENVELOPE_ALGORITHM,
       );
       if (foreign.length > 0) return { kind: 'unusable', found: foreign } as const;
 
-      const row = await trx
+      const secrets = kinds.length === 0 ? [] : await trx
         .selectFrom('secrets')
         .select(['workspace_id', 'kind', 'name', 'nonce', 'ciphertext'])
         .where('key_id', '=', keyId as string)
         .where('algorithm', '=', SECRET_ENVELOPE_ALGORITHM)
-        .limit(1)
-        .executeTakeFirst();
-      return row
-        ? ({ kind: 'row', row: row as SecretProbeRow } as const)
-        : ({ kind: 'none' } as const);
+        .limit(SECRET_PROBE_LIMIT)
+        .execute();
+
+      const trackingColumns = [
+        'workspace_id', 'tracking_message_id', 'id',
+        'target_ciphertext', 'target_nonce', 'target_auth_tag',
+      ] as const;
+      const [oldest, newest] = await Promise.all([
+        trx.selectFrom('email_tracking_links').select(trackingColumns)
+          .orderBy('created_at', 'asc').limit(TRACKING_PROBE_SAMPLE).execute(),
+        trx.selectFrom('email_tracking_links').select(trackingColumns)
+          .orderBy('created_at', 'desc').limit(TRACKING_PROBE_SAMPLE).execute(),
+      ]);
+      const tracking = [...oldest, ...newest].filter(
+        (row, index, all) => all.findIndex((other) => other.id === row.id) === index,
+      ) as unknown as TrackingProbeRow[];
+
+      if (secrets.length === 0 && tracking.length === 0) return { kind: 'none' } as const;
+      return { kind: 'material', secrets: secrets as SecretProbeRow[], tracking } as const;
     });
   } catch (error) {
     // Kein `secrets` = eine Datenbank vor 0002; dann gibt es auch nichts zu
@@ -1029,6 +1088,28 @@ async function findSecretProbe(
  * workspace/kind/name mit ein — ein fremder Schluessel scheitert an der
  * Authentifizierung, er liefert keinen Muell, sondern einen Fehler.
  */
+/**
+ * Dasselbe fuer das E-Mail-Tracking. Auch dessen Schluessel haengen am
+ * Master-Key (createEmailTrackingCrypto), und `target_ciphertext` ist
+ * AES-256-GCM mit workspace/tracking/link als assoziierten Daten — ein fremder
+ * Schluessel scheitert am Auth-Tag.
+ */
+function trackingLinkIsReadableWith(
+  row: TrackingProbeRow,
+  masterKey: MasterKeyMaterial,
+): boolean {
+  try {
+    createEmailTrackingCrypto(masterKey.bytes).openJson({
+      ciphertext: Buffer.from(row.target_ciphertext),
+      nonce: Buffer.from(row.target_nonce),
+      authTag: Buffer.from(row.target_auth_tag),
+    }, emailTrackingLinkAssociatedData(row.workspace_id, row.tracking_message_id, row.id));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function secretIsReadableWith(
   row: SecretProbeRow,
   masterKey: MasterKeyMaterial,

@@ -12,6 +12,10 @@ import {
   parseBase64MasterKey,
 } from '../../packages/server/src/security/master-key';
 import { encryptSecretValue } from '../../packages/server/src/security/secret-envelope';
+import {
+  createEmailTrackingCrypto,
+  emailTrackingLinkAssociatedData,
+} from '../../packages/server/src/email-tracking';
 
 // Feste, aber zufaellig AUSSEHENDE Schluessel: 32 verschiedene Bytewerte,
 // nicht druckbar. Buffer.alloc(32, 7) waere bequemer — genau solche Schluessel
@@ -92,11 +96,11 @@ type SecretRow = Record<string, unknown>;
 type FakeDbCalls = { inserted: StoredRow[]; selects: number };
 
 /** Ein echtes Envelope, damit die Probeentschluesselung etwas zu tun hat. */
-async function secretRow(key: typeof RICHTIG): Promise<SecretRow> {
-  const associatedData = { workspaceId: 'w-1', kind: 'imap', name: 'probe' };
+async function secretRow(key: typeof RICHTIG, name = 'probe'): Promise<SecretRow> {
+  const associatedData = { workspaceId: 'w-1', kind: 'imap', name };
   const envelope = await encryptSecretValue({ key, value: 'geheim', associatedData });
   return {
-    id: 's-1',
+    id: `s-${name}`,
     workspace_id: associatedData.workspaceId,
     kind: associatedData.kind,
     name: associatedData.name,
@@ -104,6 +108,22 @@ async function secretRow(key: typeof RICHTIG): Promise<SecretRow> {
     algorithm: envelope.algorithm,
     nonce: envelope.nonce,
     ciphertext: envelope.ciphertext,
+  };
+}
+
+/** Ebenso fuer das Tracking: dieselbe Versiegelung, die die Anwendung schreibt. */
+function trackingLinkRow(key: typeof RICHTIG, id = 'l-1'): Record<string, unknown> {
+  const sealed = createEmailTrackingCrypto(key.bytes).sealJson(
+    { url: 'https://example.com' },
+    emailTrackingLinkAssociatedData('w-1', 't-1', id),
+  );
+  return {
+    workspace_id: 'w-1',
+    tracking_message_id: 't-1',
+    id,
+    target_ciphertext: sealed.ciphertext,
+    target_nonce: sealed.nonce,
+    target_auth_tag: sealed.authTag,
   };
 }
 
@@ -123,6 +143,7 @@ function fakeDb(
     selectThrows?: unknown;
     insertLosesRace?: StoredRow;
     secrets?: SecretRow[];
+    trackingLinks?: Array<Record<string, unknown>>;
   } = {},
 ): { db: Kysely<ServerDatabase>; calls: FakeDbCalls } {
   const calls: FakeDbCalls = { inserted: [], selects: 0 };
@@ -138,6 +159,7 @@ function fakeDb(
       select() { return this; },
       selectAll() { return this; },
       distinct() { return this; },
+      orderBy() { return this; },
       limit() { return this; },
       where(column: string, _op: string, value: unknown) {
         filters.push([column, value]);
@@ -146,7 +168,9 @@ function fakeDb(
       async execute() {
         calls.selects += 1;
         if (options.selectThrows) throw options.selectThrows;
-        return table === 'secrets' ? matching() : rows;
+        if (table === 'secrets') return matching();
+        if (table === 'email_tracking_links') return options.trackingLinks ?? [];
+        return rows;
       },
       async executeTakeFirst() {
         calls.selects += 1;
@@ -344,6 +368,43 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
     await expect(assertMasterKeyMatchesDatabase(db, RICHTIG))
       .rejects.toThrow('secrets that were not written with key id "default"');
     expect(calls.inserted).toEqual([]);
+  });
+
+  test('dieselbe key_id, aber verschiedenes Schluesselmaterial', async () => {
+    // Der Zustand, den ein frueherer Start mit der falschen .env hinterlaesst:
+    // beide Zeilen tragen key_id 'default' und denselben Algorithmus, aber sie
+    // sind mit verschiedenen Schluesseln versiegelt. Die Metadaten sehen
+    // einheitlich aus — nur EINE Zeile zu proben wuerde je nach Reihenfolge den
+    // einen oder den anderen Schluessel segnen und den Rest unlesbar
+    // zuruecklassen.
+    const { db, calls } = fakeDb([], {
+      secrets: [await secretRow(RICHTIG, 'alt'), await secretRow(FALSCH, 'neu')],
+    });
+    await expect(assertMasterKeyMatchesDatabase(db, RICHTIG))
+      .rejects.toThrow('does not match this database');
+    expect(calls.inserted).toEqual([]);
+  });
+
+  test('Tracking-Daten zaehlen wie Secrets — auch ohne ein einziges Secret', async () => {
+    // createEmailTrackingCrypto leitet Token-, Verschluesselungs- und
+    // Link-Hash-Schluessel aus demselben Master-Key ab. Eine Datenbank ohne
+    // Secrets, aber mit Tracking-Daten ist deshalb nicht frisch: ein fremder
+    // Schluessel entwertet bestehende Tokens und macht die Zieladressen
+    // unlesbar.
+    const { db, calls } = fakeDb([], { trackingLinks: [trackingLinkRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
+      .rejects.toThrow('does not match this database');
+    expect(calls.inserted).toEqual([]);
+
+    const passend = fakeDb([], { trackingLinks: [trackingLinkRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(passend.db, RICHTIG)).resolves.toBeUndefined();
+    expect(passend.calls.inserted).toHaveLength(1);
+  });
+
+  test('ohne Schluessel bricht auch reines Tracking den Start ab', async () => {
+    const { db } = fakeDb([], { trackingLinks: [trackingLinkRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(db, undefined))
+      .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
   });
 
   test('auch wenn daneben lesbare Secrets liegen', async () => {

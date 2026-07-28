@@ -420,9 +420,18 @@ report_master_key_material() {
       fi
       ;;
     'none')
-      # Tabelle vorhanden, aber leer: die Installation ist nach dem Restore
-      # frei, sich mit dem ersten Start auf einen Schluessel festzulegen.
-      echo "$label: no master key fingerprint travelled with this dump; the API will record the key it starts with." >&2
+      # Tabelle vorhanden, aber leer — und das heisst zweierlei.
+      if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
+        # Es liegen Secrets da: die Tabelle ist nur noch nicht zurueckgefuellt
+        # (Backup aus dem Zustand direkt nach dem Upgrade auf 0049). Von freier
+        # Schluesselwahl kann keine Rede sein — die API probiert den Schluessel
+        # beim Start an einem vorhandenen Secret und bricht bei der falschen
+        # .env ab. Genau das hier zu behaupten waere die gefaehrlichste Auskunft
+        # von allen: sie klaenge nach Entwarnung.
+        echo "$label: no fingerprint travelled with this dump, but it contains encrypted secrets; the original .env is still required — the API trial-decrypts one of them at startup and refuses a key that cannot read it." >&2
+      else
+        echo "$label: no master key fingerprint travelled with this dump; the API will record the key it starts with." >&2
+      fi
       ;;
     *)
       # Der Wert ist ein Pruefer, kein Geheimnis — aber auch nichts, was man

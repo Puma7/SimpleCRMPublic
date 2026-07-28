@@ -2201,6 +2201,7 @@ describe('server edition repository boundaries', () => {
     const emptySelect: Record<string, unknown> = {
       select: () => emptySelect,
       distinct: () => emptySelect,
+      orderBy: () => emptySelect,
       limit: () => emptySelect,
       where: () => emptySelect,
       execute: async () => [],

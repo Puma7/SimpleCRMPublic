@@ -119,13 +119,28 @@ without a key.
 a backfill, and a dump taken before 0049 brings it along empty — which is
 precisely the case this is meant to catch: an old dump restored with the wrong
 `.env`. Taking that as "fresh" would record the wrong key as the truth and
-reject the right one later. So when the table is empty but secrets exist, the
-key is tried against one of them: the envelope is AEAD-sealed, a foreign key
-fails authentication rather than returning garbage. Only a key that proves
-itself gets its fingerprint recorded. Secrets that carry a different key id are
-the same refusal: decryption checks the id before it starts, so that key cannot
-read anything here either — starting anyway would mean writing new secrets
+reject the right one later. So when the table is empty but encrypted data
+exists, the key has to prove itself against that data before its fingerprint is
+recorded: the envelopes are AEAD-sealed, a foreign key fails authentication
+rather than returning garbage. Secrets that carry a different key id are the
+same refusal — decryption checks the id before it starts, so that key cannot
+read anything here either, and starting anyway would mean writing new secrets
 under a second key beside the unreadable ones.
+
+**Every secret, not a sample.** A server that once started with the wrong `.env`
+wrote new secrets beside the old ones, all under key id `default` and the same
+algorithm — the metadata looks uniform while the key material is not. Probing a
+single row would bless whichever key that row happened to use. This runs once
+per installation: as soon as a fingerprint exists, later starts compare that
+instead.
+
+**Email tracking counts as encrypted data too.** The tracking token, encryption
+and link-hash keys are derived from the same master key, so a database with no
+secrets but with tracking rows is not fresh either — a wrong key invalidates
+issued open/click tokens and makes the stored target URLs unreadable. Those
+tables can grow into the millions, so unlike `secrets` they are **sampled**: the
+oldest and newest few rows, because a key change falls somewhere in time and the
+edges show it. That is a sample, not a proof.
 
 **There is no online re-keying.** Re-encrypting needs the old key, and if you
 had it this would not be a problem. So the error message names the path that
