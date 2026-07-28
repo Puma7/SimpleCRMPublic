@@ -14,6 +14,7 @@ import {
 import { encryptSecretValue } from '../../packages/server/src/security/secret-envelope';
 import {
   createEmailTrackingCrypto,
+  emailTrackingEventAssociatedData,
   emailTrackingLinkAssociatedData,
 } from '../../packages/server/src/email-tracking';
 
@@ -127,6 +128,22 @@ function trackingLinkRow(key: typeof RICHTIG, id = 'l-1'): Record<string, unknow
   };
 }
 
+/** Und fuer ein Tracking-Ereignis mit Roh-Metadaten. */
+function trackingEventRow(key: typeof RICHTIG, dedupeKey = 'd-1'): Record<string, unknown> {
+  const sealed = createEmailTrackingCrypto(key.bytes).sealJson(
+    { ip: '203.0.113.9' },
+    emailTrackingEventAssociatedData('w-1', 't-1', dedupeKey),
+  );
+  return {
+    workspace_id: 'w-1',
+    tracking_message_id: 't-1',
+    dedupe_key: dedupeKey,
+    raw_metadata_ciphertext: sealed.ciphertext,
+    raw_metadata_nonce: sealed.nonce,
+    raw_metadata_auth_tag: sealed.authTag,
+  };
+}
+
 /**
  * Kysely-Ausschnitt, den assertMasterKeyMatchesDatabase tatsaechlich benutzt:
  * ein `select` ueber die Fingerabdruecke, ein `insert ... on conflict do
@@ -144,6 +161,7 @@ function fakeDb(
     insertLosesRace?: StoredRow;
     secrets?: SecretRow[];
     trackingLinks?: Array<Record<string, unknown>>;
+    trackingEvents?: Array<Record<string, unknown>>;
   } = {},
 ): { db: Kysely<ServerDatabase>; calls: FakeDbCalls } {
   const calls: FakeDbCalls = { inserted: [], selects: 0 };
@@ -153,7 +171,9 @@ function fakeDb(
   const selectBuilder = (table: string) => {
     const filters: Array<[string, unknown]> = [];
     const matching = () => secrets.filter(
-      (row) => filters.every(([column, value]) => row[column] === value),
+      (row) => filters
+        .filter(([column]) => column !== 'id')
+        .every(([column, value]) => row[column] === value),
     );
     return {
       select() { return this; },
@@ -168,8 +188,17 @@ function fakeDb(
       async execute() {
         calls.selects += 1;
         if (options.selectThrows) throw options.selectThrows;
-        if (table === 'secrets') return matching();
+        if (table === 'secrets') {
+          // Seitenweise: `id > after` filtert, damit die zweite Seite leer ist
+          // und die Schleife im Code terminiert.
+          const after = filters.find(([column]) => column === 'id')?.[1];
+          const page = matching();
+          return after === undefined || after === ''
+            ? page
+            : page.filter((row) => String(row.id) > String(after));
+        }
         if (table === 'email_tracking_links') return options.trackingLinks ?? [];
+        if (table === 'email_tracking_events') return options.trackingEvents ?? [];
         return rows;
       },
       async executeTakeFirst() {
@@ -182,15 +211,15 @@ function fakeDb(
     };
   };
 
-  const db = {
+  const db: Record<string, unknown> = {
     selectFrom(table: string) { return selectBuilder(table); },
     transaction() {
       return {
+        // Die Sperre und die RLS-Sitzung laufen ueber sql``; der kysely-Mock
+        // braucht dafuer nur einen Executor, der nichts zurueckgibt.
         async execute<T>(operation: (trx: unknown) => Promise<T>): Promise<T> {
           return operation({
-            selectFrom(table: string) { return selectBuilder(table); },
-            // Die RLS-Sitzung wird ueber sql`` gesetzt; der kysely-Mock braucht
-            // dafuer nur einen Executor, der nichts zurueckgibt.
+            ...db,
             getExecutor: () => ({ executeQuery: async () => ({ rows: [] }) }),
           });
         },
@@ -214,8 +243,8 @@ function fakeDb(
         },
       };
     },
-  } as unknown as Kysely<ServerDatabase>;
-  return { db, calls };
+  };
+  return { db: db as unknown as Kysely<ServerDatabase>, calls };
 }
 
 function missingTableError(): Error & { code: string } {
@@ -401,6 +430,21 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
     expect(passend.calls.inserted).toHaveLength(1);
   });
 
+  test('auch Tracking-EREIGNISSE zaehlen, ganz ohne Links', async () => {
+    // Eine Installation, die nur Oeffnungen mit Rohdatenerfassung sammelt, hat
+    // keinen einzigen Link. Alles Verschluesselte haengt dort an
+    // email_tracking_events.raw_metadata_*; mit fremdem Schluessel erschiene es
+    // hinterher dauerhaft als rawUnavailable.
+    const { db, calls } = fakeDb([], { trackingEvents: [trackingEventRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
+      .rejects.toThrow('does not match this database');
+    expect(calls.inserted).toEqual([]);
+
+    const passend = fakeDb([], { trackingEvents: [trackingEventRow(RICHTIG)] });
+    await expect(assertMasterKeyMatchesDatabase(passend.db, RICHTIG)).resolves.toBeUndefined();
+    expect(passend.calls.inserted).toHaveLength(1);
+  });
+
   test('ohne Schluessel bricht auch reines Tracking den Start ab', async () => {
     const { db } = fakeDb([], { trackingLinks: [trackingLinkRow(RICHTIG)] });
     await expect(assertMasterKeyMatchesDatabase(db, undefined))
@@ -422,13 +466,18 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
   });
 
   test('die Fehlermeldung nennt einen Weg, der auch funktioniert', async () => {
-    // Nur die Fingerabdruck-Zeile zu loeschen genuegt nicht: die alten Secrets
-    // liegen weiter da und weisen den naechsten Start erneut ab. Wer der
-    // Meldung folgt, muss danach wirklich starten koennen.
+    // Wer der Meldung folgt, muss danach wirklich starten koennen. Dazu gehoert
+    // jedes Stueck, das der naechste Start wieder pruefen wuerde: die Secrets,
+    // die Tracking-Links, die Roh-Metadaten der Ereignisse — und die
+    // Sitzungsfreigabe, ohne die das DELETE unter RLS nichts trifft.
     const { db } = fakeDb([], { secrets: [await secretRow(RICHTIG)] });
-    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
-      .rejects.toThrow(/DELETE FROM secrets/);
-    await expect(assertMasterKeyMatchesDatabase(db, FALSCH))
-      .rejects.toThrow(/alone is not enough/);
+    let message = '';
+    await assertMasterKeyMatchesDatabase(db, FALSCH).catch((error: Error) => {
+      message = error.message;
+    });
+    expect(message).toMatch(/DELETE FROM secrets/);
+    expect(message).toMatch(/DELETE FROM email_tracking_links/);
+    expect(message).toMatch(/raw_metadata_ciphertext = NULL/);
+    expect(message).toMatch(/set_config\('app\.role','system',true\)/);
   });
 });

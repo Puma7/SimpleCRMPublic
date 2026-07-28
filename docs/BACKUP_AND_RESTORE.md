@@ -127,20 +127,33 @@ same refusal — decryption checks the id before it starts, so that key cannot
 read anything here either, and starting anyway would mean writing new secrets
 under a second key beside the unreadable ones.
 
-**Every secret, not a sample.** A server that once started with the wrong `.env`
-wrote new secrets beside the old ones, all under key id `default` and the same
-algorithm — the metadata looks uniform while the key material is not. Probing a
-single row would bless whichever key that row happened to use. This runs once
-per installation: as soon as a fingerprint exists, later starts compare that
-instead.
+**Every secret, not a sample, and no upper bound.** A server that once started
+with the wrong `.env` wrote new secrets beside the old ones, all under key id
+`default` and the same algorithm — the metadata looks uniform while the key
+material is not. Probing a single row would bless whichever key that row
+happened to use, and stopping after the first N rows would do the same one level
+up: what lies beyond stays unchecked and is committed to anyway. The check pages
+through all of them. It runs once per installation: as soon as a fingerprint
+exists, later starts compare that instead.
 
 **Email tracking counts as encrypted data too.** The tracking token, encryption
 and link-hash keys are derived from the same master key, so a database with no
 secrets but with tracking rows is not fresh either — a wrong key invalidates
-issued open/click tokens and makes the stored target URLs unreadable. Those
+issued open/click tokens, makes stored target URLs unreadable, and turns the raw
+metadata of tracking events into a permanent `rawUnavailable`. Both
+`email_tracking_links` and the sealed columns of `email_tracking_events` are
+checked; an installation that only records opens has no links at all. Those
 tables can grow into the millions, so unlike `secrets` they are **sampled**: the
 oldest and newest few rows, because a key change falls somewhere in time and the
 edges show it. That is a sample, not a proof.
+
+**The check and the decision happen under one lock.** Without it, two replicas
+starting at once on a fresh database both see an empty table — and a replica
+whose `.env` has no key at all would keep running healthy, without secret or
+tracking crypto, while the other records its fingerprint. A conflict-safe insert
+does not help there: the keyless replica never writes anything. A Postgres
+advisory lock makes read and commit one step, so whoever comes second sees the
+first one's result.
 
 **There is no online re-keying.** Re-encrypting needs the old key, and if you
 had it this would not be a problem. So the error message names the path that
@@ -154,10 +167,19 @@ BEGIN;
 SELECT set_config('app.role', 'system', true),
        set_config('app.cross_workspace_access', 'on', true);
 DELETE FROM secrets;
+DELETE FROM email_tracking_links;
+UPDATE email_tracking_events
+   SET raw_metadata_ciphertext = NULL,
+       raw_metadata_nonce = NULL,
+       raw_metadata_auth_tag = NULL;
 DELETE FROM master_key_fingerprints;
 COMMIT;
 SQL
 ```
+
+The tracking rows belong in there. Their tokens and sealed target URLs hang on
+the same key, so leaving them behind makes the next start refuse for exactly the
+same reason the secrets would have.
 
 **The session context is not optional.** Row level security is forced on
 `secrets`, so a plain `DELETE FROM secrets` over the application connection

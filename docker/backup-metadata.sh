@@ -421,14 +421,30 @@ report_master_key_material() {
       ;;
     'none')
       # Tabelle vorhanden, aber leer — und das heisst zweierlei.
-      if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
-        # Es liegen Secrets da: die Tabelle ist nur noch nicht zurueckgefuellt
-        # (Backup aus dem Zustand direkt nach dem Upgrade auf 0049). Von freier
-        # Schluesselwahl kann keine Rede sein — die API probiert den Schluessel
-        # beim Start an einem vorhandenen Secret und bricht bei der falschen
-        # .env ab. Genau das hier zu behaupten waere die gefaehrlichste Auskunft
-        # von allen: sie klaenge nach Entwarnung.
-        echo "$label: no fingerprint travelled with this dump, but it contains encrypted secrets; the original .env is still required — the API trial-decrypts one of them at startup and refuses a key that cannot read it." >&2
+      #
+      # Nicht nur `secrets` haengt am Master-Key: aus ihm leitet die API auch
+      # die Tracking-Schluessel ab. Ein Backup ohne ein einziges Secret, aber
+      # mit Tracking-Daten braucht die urspruengliche .env genauso. Die
+      # Zeilenzahlen dafuer stehen ohnehin in dieser Datei — die Metadaten
+      # erfassen jede Tabelle mit RLS.
+      encrypted='no'
+      [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ] && encrypted='yes'
+      for tracking_table in email_tracking_links email_tracking_events; do
+        tracking_rows="$(backup_metadata_value "$meta_path" "rows_$tracking_table" || printf '0')"
+        case "$tracking_rows" in
+          '' | '0' | *[!0123456789]*) ;;
+          *) encrypted='yes' ;;
+        esac
+      done
+
+      if [ "$encrypted" = 'yes' ]; then
+        # Die Tabelle ist nur noch nicht zurueckgefuellt (Backup aus dem Zustand
+        # direkt nach dem Upgrade auf 0049). Von freier Schluesselwahl kann
+        # keine Rede sein — die API probiert den Schluessel beim Start an den
+        # vorhandenen Daten und bricht bei der falschen .env ab. Genau das hier
+        # zu behaupten waere die gefaehrlichste Auskunft von allen: sie klaenge
+        # nach Entwarnung.
+        echo "$label: no fingerprint travelled with this dump, but it contains data encrypted with the master key (secrets and/or e-mail tracking); the original .env is still required — the API trial-decrypts it at startup and refuses a key that cannot read it." >&2
       else
         echo "$label: no master key fingerprint travelled with this dump; the API will record the key it starts with." >&2
       fi

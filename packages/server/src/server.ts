@@ -176,6 +176,7 @@ import {
 import {
   createEmailTrackingCrypto,
   createPostgresEmailTrackingService,
+  emailTrackingEventAssociatedData,
   emailTrackingLinkAssociatedData,
   startEmailTrackingRetentionTicker,
   type EmailTrackingService,
@@ -807,9 +808,12 @@ const MASTER_KEY_RECOVERY_HINT =
   + 'so with "DELETE 0", which would leave exactly the state that refuses the next start. '
   + 'Run it with a session context instead — BEGIN; SELECT '
   + "set_config('app.role','system',true), set_config('app.cross_workspace_access','on',true); "
-  + 'DELETE FROM secrets; DELETE FROM master_key_fingerprints; COMMIT; — or connect as the '
-  + 'admin role, which bypasses RLS. Then start with the new key and enter every credential '
-  + 'again. Clearing master_key_fingerprints alone is not enough.';
+  + 'DELETE FROM secrets; DELETE FROM email_tracking_links; UPDATE email_tracking_events SET '
+  + 'raw_metadata_ciphertext = NULL, raw_metadata_nonce = NULL, raw_metadata_auth_tag = NULL; '
+  + 'DELETE FROM master_key_fingerprints; COMMIT; — or connect as the admin role, which '
+  + 'bypasses RLS. The tracking rows belong in there: their tokens and sealed target URLs hang '
+  + 'on the same key and would refuse the next start just like the secrets. Then start with the '
+  + 'new key and enter every credential again.';
 
 const MASTER_KEY_MISMATCH_MESSAGE =
   'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '
@@ -863,16 +867,41 @@ export async function assertMasterKeyMatchesDatabase(
   db: Kysely<ServerDatabase>,
   masterKey: MasterKeyMaterial | undefined,
 ): Promise<void> {
-  let stored: Array<{ key_id: string; fingerprint: string }>;
+  // Alles unter EINER Sperre, nicht nur der Einfuegevorgang.
+  //
+  // Ohne sie ist die Pruefung ein klassisches Pruefen-dann-Handeln: starten auf
+  // einer frischen Datenbank gleichzeitig eine Replik mit Schluessel und eine
+  // ohne, sehen beide eine leere Tabelle. Die schlusselose laeuft dauerhaft
+  // weiter — ohne Secret- und Tracking-Krypto und ohne jede Meldung —, waehrend
+  // die andere unmittelbar danach den Fingerabdruck eintraegt. Der
+  // konfliktfeste Insert half dort nicht: die schluessellose Replik schreibt ja
+  // gar nichts.
+  //
+  // Die Kennung ist eine feste Zahl; sie steht fuer "Master-Key dieser
+  // Datenbank" und sonst nichts. pg_advisory_xact_lock endet mit der
+  // Transaktion, auch wenn der Start scheitert.
   try {
-    stored = await db
-      .selectFrom('master_key_fingerprints')
-      .select(['key_id', 'fingerprint'])
-      .execute();
+    await db.transaction().execute(async (trx) => {
+      await sql`SELECT pg_advisory_xact_lock(${MASTER_KEY_ADVISORY_LOCK})`.execute(trx);
+      await assertMasterKeyMatchesDatabaseLocked(trx, masterKey);
+    });
   } catch (error) {
     if (isMissingTableError(error)) return;
     throw error;
   }
+}
+
+/** Ein Wert, der nur hier vorkommt — er benennt die Sperre, nicht mehr. */
+const MASTER_KEY_ADVISORY_LOCK = 4_915_231_049n;
+
+async function assertMasterKeyMatchesDatabaseLocked(
+  db: Kysely<ServerDatabase>,
+  masterKey: MasterKeyMaterial | undefined,
+): Promise<void> {
+  const stored = await db
+    .selectFrom('master_key_fingerprints')
+    .select(['key_id', 'fingerprint'])
+    .execute();
 
   const existing = masterKey
     ? stored.find((row) => row.key_id === masterKey.keyId)
@@ -922,6 +951,9 @@ export async function assertMasterKeyMatchesDatabase(
     }
     for (const row of probe.tracking) {
       if (!trackingLinkIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
+    for (const row of probe.trackingEvents) {
+      if (!trackingEventIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
     }
   }
 
@@ -978,26 +1010,42 @@ type TrackingProbeRow = Readonly<{
   target_auth_tag: Buffer | Uint8Array;
 }>;
 
+type TrackingEventProbeRow = Readonly<{
+  workspace_id: string;
+  tracking_message_id: string;
+  dedupe_key: string;
+  raw_metadata_ciphertext: Buffer | Uint8Array;
+  raw_metadata_nonce: Buffer | Uint8Array;
+  raw_metadata_auth_tag: Buffer | Uint8Array;
+}>;
+
 type SecretProbe =
   | { kind: 'none' }
   | { kind: 'unusable'; found: readonly SecretKind[] }
-  | { kind: 'material'; secrets: readonly SecretProbeRow[]; tracking: readonly TrackingProbeRow[] };
+  | {
+    kind: 'material';
+    secrets: readonly SecretProbeRow[];
+    tracking: readonly TrackingProbeRow[];
+    trackingEvents: readonly TrackingEventProbeRow[];
+  };
 
 /**
  * Wie viele Zeilen die einmalige Probe anfasst.
  *
  * `secrets` sind Postfach-Passwoerter, OAuth-Token, Provider-Schluessel —
- * Groessenordnung Dutzende. Die werden VOLLSTAENDIG geprueft: eine einzelne
- * Zeile zu proben genuegt nicht, weil ein frueherer Start mit der falschen .env
- * neue Secrets neben die alten geschrieben haben kann, alle unter derselben
- * key_id. Genau dieser Zustand ist der Anlass dieser Pruefung.
+ * Groessenordnung Dutzende. Die werden VOLLSTAENDIG geprueft, seitenweise und
+ * ohne Obergrenze: eine einzelne Zeile zu proben genuegt nicht, weil ein
+ * frueherer Start mit der falschen .env neue Secrets neben die alten
+ * geschrieben haben kann, alle unter derselben key_id. Eine Obergrenze waere
+ * dasselbe Versehen eine Ebene hoeher — was jenseits davon liegt, bliebe
+ * ungeprueft und trotzdem fuer immer festgeschrieben.
  *
- * Tracking-Links koennen dagegen sechsstellig werden; die zu jedem Start
+ * Tracking-Zeilen koennen dagegen sechsstellig werden; die zu jedem Erststart
  * durchzurechnen waere nicht vertretbar. Dort eine Stichprobe von den aeltesten
  * UND den juengsten Zeilen: ein Schluesselwechsel faellt zeitlich, und die
  * Raender zeigen ihn. Das ist ausdruecklich eine Stichprobe, keine Garantie.
  */
-const SECRET_PROBE_LIMIT = 1000;
+const SECRET_PROBE_PAGE = 500;
 const TRACKING_PROBE_SAMPLE = 3;
 
 /** Fuer die Fehlermeldung: was liegt statt des Erwarteten in der Tabelle? */
@@ -1019,68 +1067,125 @@ function describeSecretKinds(found: readonly SecretKind[]): string {
  * Und nicht nur `secrets`: aus demselben Master-Key leitet
  * createEmailTrackingCrypto Token-, Verschluesselungs- und Link-Hash-Schluessel
  * ab. Eine Datenbank ohne Secrets, aber mit Tracking-Daten ist deshalb nicht
- * frisch — ein fremder Schluessel entwertet dort bestehende Tokens und macht
- * `email_tracking_links.target_ciphertext` unlesbar.
+ * frisch — ein fremder Schluessel entwertet dort bestehende Tokens, macht
+ * `email_tracking_links.target_ciphertext` unlesbar und ebenso die
+ * Rohmetadaten in `email_tracking_events`, die danach nur noch als
+ * `rawUnavailable` erscheinen. Beide Tabellen gehoeren also in die Probe: eine
+ * Installation, die nur Oeffnungen mit Rohdatenerfassung sammelt, hat gar keine
+ * Links.
  *
- * Beide Tabellen haben FORCE ROW LEVEL SECURITY, eine gewoehnliche Abfrage
+ * Alle drei Tabellen haben FORCE ROW LEVEL SECURITY, eine gewoehnliche Abfrage
  * saehe also null Zeilen und die Datenbank faelschlich als leer. Deshalb
  * dieselbe transaktionslokale Freigabe, die auch die Migrationen benutzen:
  * Rolle `system` plus `cross_workspace_access`. Gelesen werden nur Envelopes,
  * nie ein Klartext.
+ *
+ * Laeuft in der Transaktion des Aufrufers — die haelt die Sperre, unter der
+ * Pruefen und Festlegen ein Vorgang sind.
  */
 async function findSecretProbe(
-  db: Kysely<ServerDatabase>,
+  trx: Kysely<ServerDatabase>,
   keyId: string | undefined,
 ): Promise<SecretProbe> {
-  try {
-    return await db.transaction().execute(async (trx) => {
-      await sql`
-        SELECT set_config('app.role', 'system', true),
-               set_config('app.cross_workspace_access', 'on', true)
-      `.execute(trx);
-      const kinds = await trx
-        .selectFrom('secrets')
-        .select(['key_id', 'algorithm'])
-        .distinct()
-        .limit(6)
-        .execute();
+  await sql`
+    SELECT set_config('app.role', 'system', true),
+           set_config('app.cross_workspace_access', 'on', true)
+  `.execute(trx);
 
-      const foreign = kinds.filter(
-        (entry) => entry.key_id !== keyId || entry.algorithm !== SECRET_ENVELOPE_ALGORITHM,
-      );
-      if (foreign.length > 0) return { kind: 'unusable', found: foreign } as const;
+  // Fehlt eine der Tabellen, ist die Datenbank aelter als die Migration, die
+  // sie anlegt — dann gibt es dort auch nichts zu schuetzen. Nur 42P01,
+  // alles andere fliegt weiter.
+  const tolerateMissing = async <T>(query: () => Promise<T[]>): Promise<T[]> => {
+    try {
+      return await query();
+    } catch (error) {
+      if (isMissingTableError(error)) return [];
+      throw error;
+    }
+  };
 
-      const secrets = kinds.length === 0 ? [] : await trx
-        .selectFrom('secrets')
-        .select(['workspace_id', 'kind', 'name', 'nonce', 'ciphertext'])
-        .where('key_id', '=', keyId as string)
-        .where('algorithm', '=', SECRET_ENVELOPE_ALGORITHM)
-        .limit(SECRET_PROBE_LIMIT)
-        .execute();
+  const kinds = await tolerateMissing(() => trx
+    .selectFrom('secrets')
+    .select(['key_id', 'algorithm'])
+    .distinct()
+    .limit(6)
+    .execute());
 
-      const trackingColumns = [
-        'workspace_id', 'tracking_message_id', 'id',
-        'target_ciphertext', 'target_nonce', 'target_auth_tag',
-      ] as const;
-      const [oldest, newest] = await Promise.all([
-        trx.selectFrom('email_tracking_links').select(trackingColumns)
-          .orderBy('created_at', 'asc').limit(TRACKING_PROBE_SAMPLE).execute(),
-        trx.selectFrom('email_tracking_links').select(trackingColumns)
-          .orderBy('created_at', 'desc').limit(TRACKING_PROBE_SAMPLE).execute(),
-      ]);
-      const tracking = [...oldest, ...newest].filter(
-        (row, index, all) => all.findIndex((other) => other.id === row.id) === index,
-      ) as unknown as TrackingProbeRow[];
+  const foreign = kinds.filter(
+    (entry) => entry.key_id !== keyId || entry.algorithm !== SECRET_ENVELOPE_ALGORITHM,
+  );
+  if (foreign.length > 0) return { kind: 'unusable', found: foreign };
 
-      if (secrets.length === 0 && tracking.length === 0) return { kind: 'none' } as const;
-      return { kind: 'material', secrets: secrets as SecretProbeRow[], tracking } as const;
-    });
-  } catch (error) {
-    // Kein `secrets` = eine Datenbank vor 0002; dann gibt es auch nichts zu
-    // schuetzen. Jeder andere Fehler geht durch, aus demselben Grund wie oben.
-    if (isMissingTableError(error)) return { kind: 'none' };
-    throw error;
+  // Seitenweise durch ALLE Secrets — die Festlegung gilt fuer immer, eine
+  // abgeschnittene Grundlage waere keine.
+  const secrets: SecretProbeRow[] = [];
+  if (kinds.length > 0) {
+    let after: string | undefined;
+    for (;;) {
+      const page = await tolerateMissing(() => {
+        const base = trx
+          .selectFrom('secrets')
+          .select(['id', 'workspace_id', 'kind', 'name', 'nonce', 'ciphertext'])
+          .where('key_id', '=', keyId as string)
+          .where('algorithm', '=', SECRET_ENVELOPE_ALGORITHM);
+        // Der Cursor kommt erst ab der zweiten Seite dazu: `id > ''` ist fuer
+        // eine uuid-Spalte kein leerer Anfang, sondern ein Syntaxfehler.
+        return (after === undefined ? base : base.where('id', '>', after))
+          .orderBy('id', 'asc')
+          .limit(SECRET_PROBE_PAGE)
+          .execute();
+      });
+      if (page.length === 0) break;
+      secrets.push(...(page as unknown as SecretProbeRow[]));
+      after = String((page[page.length - 1] as { id: string }).id);
+      if (page.length < SECRET_PROBE_PAGE) break;
+    }
   }
+
+  const linkColumns = [
+    'workspace_id', 'tracking_message_id', 'id',
+    'target_ciphertext', 'target_nonce', 'target_auth_tag',
+  ] as const;
+  const eventColumns = [
+    'workspace_id', 'tracking_message_id', 'dedupe_key',
+    'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag',
+  ] as const;
+  const edges = async <T extends { }>(
+    query: (direction: 'asc' | 'desc') => Promise<T[]>,
+  ): Promise<T[]> => {
+    const [oldest, newest] = await Promise.all([query('asc'), query('desc')]);
+    return [...oldest, ...newest];
+  };
+
+  const tracking = dedupeBy(
+    await edges((direction) => tolerateMissing(() => trx
+      .selectFrom('email_tracking_links').select(linkColumns)
+      .orderBy('created_at', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+    (row) => String(row.id),
+  ) as unknown as TrackingProbeRow[];
+
+  const trackingEvents = dedupeBy(
+    await edges((direction) => tolerateMissing(() => trx
+      .selectFrom('email_tracking_events').select(eventColumns)
+      .where('raw_metadata_ciphertext', 'is not', null)
+      .orderBy('created_at', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+    (row) => `${String(row.workspace_id)}:${String(row.dedupe_key)}`,
+  ) as unknown as TrackingEventProbeRow[];
+
+  if (secrets.length === 0 && tracking.length === 0 && trackingEvents.length === 0) {
+    return { kind: 'none' };
+  }
+  return { kind: 'material', secrets, tracking, trackingEvents };
+}
+
+function dedupeBy<T>(rows: readonly T[], key: (row: T) => string): T[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const id = key(row);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 /**
@@ -1104,6 +1209,27 @@ function trackingLinkIsReadableWith(
       nonce: Buffer.from(row.target_nonce),
       authTag: Buffer.from(row.target_auth_tag),
     }, emailTrackingLinkAssociatedData(row.workspace_id, row.tracking_message_id, row.id));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Und fuer die Rohmetadaten der Tracking-Ereignisse. Eine Installation, die nur
+ * Oeffnungen mit Rohdatenerfassung sammelt, hat keine Links — dort haengt alles
+ * Verschluesselte an dieser Tabelle.
+ */
+function trackingEventIsReadableWith(
+  row: TrackingEventProbeRow,
+  masterKey: MasterKeyMaterial,
+): boolean {
+  try {
+    createEmailTrackingCrypto(masterKey.bytes).openJson({
+      ciphertext: Buffer.from(row.raw_metadata_ciphertext),
+      nonce: Buffer.from(row.raw_metadata_nonce),
+      authTag: Buffer.from(row.raw_metadata_auth_tag),
+    }, emailTrackingEventAssociatedData(row.workspace_id, row.tracking_message_id, row.dedupe_key));
     return true;
   } catch {
     return false;
