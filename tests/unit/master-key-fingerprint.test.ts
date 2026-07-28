@@ -555,6 +555,7 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
     });
     expect(message).toMatch(/DELETE FROM secrets/);
     expect(message).toMatch(/DELETE FROM email_tracking_links/);
+    expect(message).toMatch(/DELETE FROM email_tracking_token_resolver/);
     expect(message).toMatch(/raw_metadata_ciphertext = NULL/);
     expect(message).toMatch(/set_config\('app\.role','system',true\)/);
   });

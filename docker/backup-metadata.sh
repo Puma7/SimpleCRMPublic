@@ -16,8 +16,8 @@
 #    sie lautet ueberall 'default'. Seit Migration 0049 steht deshalb zusaetzlich
 #    ein FINGERABDRUCK des Schluessels in der Datenbank (scrypt ueber ein festes
 #    Etikett plus einen zufaelligen Salt je Installation) und wandert mit dem
-#    Dump. Er wird hier nur
-#    angezeigt — pruefen kann ihn nur, wer den Schluessel hat, und das ist die
+#    Dump. Er wird hier nur angezeigt — pruefen kann ihn nur, wer den
+#    Schluessel hat, und das ist die
 #    API: sie verweigert den Start, wenn ihr SIMPLECRM_MASTER_KEY nicht zu der
 #    Datenbank passt, die sie gerade vorfindet.
 #
@@ -186,7 +186,10 @@ write_backup_metadata() {
     # Schluesselmaterial zu zaehlen behauptete eine .env-Abhaengigkeit, die die
     # Startpruefung selbst nicht sieht — sie schaut ausdruecklich nur auf
     # Ereignisse mit gefuellten raw_metadata_-Spalten. Deshalb hier derselbe
-    # Massstab wie dort.
+    # Massstab wie dort — und aus demselben Grund gehoeren die
+    # Resolver-Zeilen dazu: ihr token_hash haengt am Tracking-Schluessel, und
+    # die Startpruefung rechnet ihn nach. Eine Installation, die nur Oeffnungen
+    # zaehlt, hat gar nichts anderes.
     #
     # Die Zaehlungen laufen ueber query_to_xml und nicht als gewoehnliche
     # Unterabfragen: ein CASE schuetzt nicht vor dem Planen. Steht die Tabelle
@@ -197,6 +200,7 @@ write_backup_metadata() {
       SELECT CASE
         WHEN to_regclass('public.email_tracking_links') IS NULL
           OR to_regclass('public.email_tracking_events') IS NULL
+          OR to_regclass('public.email_tracking_token_resolver') IS NULL
         THEN 'n/a'
         ELSE ((xpath('/row/c/text()', query_to_xml(
                  'SELECT count(*) AS c FROM public.email_tracking_links',
@@ -204,6 +208,9 @@ write_backup_metadata() {
             + (xpath('/row/c/text()', query_to_xml(
                  'SELECT count(*) AS c FROM public.email_tracking_events
                   WHERE raw_metadata_ciphertext IS NOT NULL',
+                 false, true, '')))[1]::text::bigint
+            + (xpath('/row/c/text()', query_to_xml(
+                 'SELECT count(*) AS c FROM public.email_tracking_token_resolver',
                  false, true, '')))[1]::text::bigint)::text
       END" 2>/dev/null || printf 'unknown')"
     # Bewusst NICHT 'rows_...': die Pruefschleife liest jeden rows_-Eintrag als
@@ -429,7 +436,15 @@ verify_backup_metadata() {
 # anstandslos eintragen. Eine Warnung, die der Wirklichkeit widerspricht, ist
 # schlimmer als keine.
 backup_metadata_encrypted_state() {
-  if [ "$2" != 'none' ] && [ "$2" != 'n/a' ] && [ "$2" != 'unknown' ]; then
+  if [ "$2" = 'unknown' ]; then
+    # Die Secret-Abfrage ist beim Schreiben gescheitert. Dann ist ueber die
+    # Secrets nichts bekannt, und ein Tracking-Zaehler von 0 sagt darueber
+    # nichts aus — 'no' zu melden hiesse, aus einem fehlgeschlagenen Blick eine
+    # Entwarnung zu machen.
+    printf 'unknown'
+    return 0
+  fi
+  if [ "$2" != 'none' ] && [ "$2" != 'n/a' ]; then
     # Secrets sind eindeutig; was der Zaehler sagt, aendert daran nichts.
     printf 'yes'
     return 0
@@ -449,7 +464,10 @@ report_master_key_material() {
   label="${2:-restore}"
 
   key_ids="$(backup_metadata_value "$meta_path" 'secret_key_ids' || printf 'unknown')"
-  if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
+  # 'unknown' heisst: die Abfrage ist beim Schreiben gescheitert. Dann steht
+  # hier keine Erinnerung, die so tut, als waeren Secrets da — der Zweig
+  # darunter sagt stattdessen, dass es unbekannt ist.
+  if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ] && [ "$key_ids" != 'unknown' ]; then
     # ERINNERUNG, KEINE PRUEFUNG — und das muss so dastehen, damit sich niemand
     # darauf verlaesst: der Server vergibt die Kennung ueber
     # parseBase64MasterKey ohne Argument, sie lautet also in jeder Installation

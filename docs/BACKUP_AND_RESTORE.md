@@ -13,15 +13,17 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 - `backup-<stamp>.meta`: schema version, required master-key id, and row counts
   for **every table with row level security enabled** — derived from the catalog,
   not from a list in the script, so a new table is covered the moment it exists.
-  Plus `master_key_encrypted_rows`: how many rows outside `secrets` are sealed
-  with the master key. That is deliberately not the row count of
-  `email_tracking_events` — most events carry no sealed raw metadata, and
-  counting them would claim a dependency on the old `.env` that the startup
-  check itself does not see.
   Covered by the same manifest. While the backup is still running the file is
   named `backup-<stamp>.meta.partial` and is renamed once the dump exists — the
   counts are taken *before* the dump, and a concurrent backup's retention pass
   would otherwise delete a `.meta` with no matching dump as an orphan.
+- `master_key_encrypted_rows` inside that file: how many rows outside `secrets`
+  are bound to the master key — sealed tracking links, tracking events with
+  sealed raw metadata, and issued tracking tokens. Deliberately *not* the row
+  count of `email_tracking_events`: most events carry no sealed metadata, and
+  counting them would claim a dependency on the old `.env` that the startup
+  check itself does not see. The same yardstick on both sides, or the warning
+  contradicts the behaviour.
 
 If the counts cannot be taken, the backup still runs — the dump is the valuable
 part — but records `row_counts=failed`. **`restore.sh` then refuses to start**,
@@ -194,6 +196,7 @@ BEGIN;
 SELECT set_config('app.role', 'system', true),
        set_config('app.cross_workspace_access', 'on', true);
 DELETE FROM secrets;
+DELETE FROM email_tracking_token_resolver;
 DELETE FROM email_tracking_links;
 UPDATE email_tracking_events
    SET raw_metadata_ciphertext = NULL,
@@ -206,7 +209,9 @@ SQL
 
 The tracking rows belong in there. Their tokens and sealed target URLs hang on
 the same key, so leaving them behind makes the next start refuse for exactly the
-same reason the secrets would have.
+same reason the secrets would have. The resolver needs its own `DELETE`:
+open-tracking rows carry no `link_id`, so removing the links does not cascade to
+them.
 
 **The session context is not optional.** Row level security is forced on
 `secrets`, so a plain `DELETE FROM secrets` over the application connection
