@@ -13,12 +13,29 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 - `backup-<stamp>.meta`: schema version, required master-key id, and row counts
   for **every table with row level security enabled** — derived from the catalog,
   not from a list in the script, so a new table is covered the moment it exists.
-  Covered by the same manifest, so it cannot be edited without breaking checksum
-  verification. If the counts cannot be taken, the backup still runs but records
-  `rows_recorded=failed`, and a restore then refuses to report itself as
-  verified rather than silently checking nothing.
+  Covered by the same manifest. If the counts cannot be taken, the backup still
+  runs but records `row_counts=failed`, and a restore then refuses to report
+  itself as verified rather than silently checking nothing.
 
 The restore and doctor scripts verify the manifest when it exists.
+
+### What The Manifest Proves — And What It Does Not
+
+The manifest detects **accidental damage**: a truncated transfer, a bad disk, a
+half-written file. It is **not** proof of origin. It lies next to the files it
+describes, so anyone who can change a backup can recompute the hashes in the
+same step and the check passes. Treat it as a corruption check, not as
+protection against tampering.
+
+If you need that guarantee, the manifest has to be authenticated or stored
+apart from the backup — signed, or copied to storage the backup host cannot
+write to (append-only bucket, offline medium).
+
+Because of this, the restore path treats the metadata file as untrusted input:
+table names out of `backup-<stamp>.meta` are validated as identifiers and
+quoted by the server rather than pasted into SQL. `restore.sh` and
+`restore-drill.sh` connect as the admin role, so a manipulated backup must not
+be able to smuggle statements in through that file.
 
 ## What The Backup Does **Not** Contain
 
@@ -26,13 +43,28 @@ The restore and doctor scripts verify the manifest when it exists.
 working system.**
 
 Every secret in the database — mailbox passwords, OAuth tokens, AI provider keys
-— is encrypted with `SIMPLECRM_MASTER_KEY`, which lives only in `docker/.env`.
-Restore a dump on a host without that exact key and you get a complete database
-whose secrets nobody can decrypt. The same applies to `ACCESS_TOKEN_SECRET`
-(all sessions become invalid) and to `PG_PASSWORD` / `PG_ADMIN_PASSWORD`.
+— is encrypted with the master key. Restore a dump on a host without that exact
+key and you get a complete database whose secrets nobody can decrypt.
+
+Mind the two names for it: in `docker/.env` the variable is **`MASTER_KEY`**;
+Compose passes it to the API container as `SIMPLECRM_MASTER_KEY`
+(`SIMPLECRM_MASTER_KEY: ${MASTER_KEY}`). Writing `SIMPLECRM_MASTER_KEY` into
+`docker/.env` does nothing — `${MASTER_KEY}` stays empty and the API comes up
+without a key.
+
+`MASTER_KEY` is the one value that cannot be replaced. The other secrets in
+`docker/.env` are rotatable and only have to be internally consistent:
+
+- `PG_PASSWORD` / `PG_ADMIN_PASSWORD`: new passwords are fine as long as the
+  database roles and `docker/.env` carry the same ones. They protect access to
+  the data, they do not encrypt it.
+- `ACCESS_TOKEN_SECRET`: a new secret signs newly issued access tokens.
+  Existing browser sessions survive it — refresh tokens are hashed
+  independently of this secret, so a client simply refreshes once and continues.
+  Rotate it deliberately (after a suspected leak) rather than by accident.
 
 Keep a copy of `docker/.env` **outside** the backup volume — a password manager
-or an offline copy. Without it your backup is only half a backup.
+or an offline copy. Without the master key your backup is only half a backup.
 
 `backup-<stamp>.meta` records the `key_id` values the dump was encrypted with
 (never the key itself), and `restore.sh` and `doctor.sh` print them as a
