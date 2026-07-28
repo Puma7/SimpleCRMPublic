@@ -228,6 +228,26 @@ if someone really is writing right now, the start fails visibly instead of
 quietly walking past the row. Later starts never reach this point, so nothing
 blocks once a fingerprint exists.
 
+**The lock ends with the transaction; the requirement behind it does not.**
+A writer that was waiting proceeds the moment the check commits. An old replica
+holding a *different* key can therefore insert a secret one instant after the
+fingerprint was recorded, and that row is unreadable to everyone from then on.
+Nothing in the new binary can prevent this: no lock a starting process takes
+outlives its own transaction, and the old replica contains none of this code —
+it is not asking permission. Nor does a later start catch it. Once a matching
+fingerprint exists the check returns right there and never probes the secrets
+again (deliberately: every start would otherwise decrypt every secret). The row
+surfaces when something first tries to read it.
+
+So this is a **deployment requirement, not a runtime guarantee: replicas of the
+previous version must be stopped before the first start of the new one.** The
+Compose flow in this repository already does exactly that — `docker compose up
+-d` stops the old `api` container before it starts the new one, so there is no
+moment with both. Anyone running a rolling restart across versions by hand has
+to arrange the same. It is worth saying plainly rather than leaving it implied,
+because the failure it produces is silent: the start succeeds, the fingerprint
+is right, and a handful of credentials written in that second are simply gone.
+
 **The check and the decision happen under one lock.** Without it, two replicas
 starting at once on a fresh database both see an empty table — and a replica
 whose `.env` has no key at all would keep running healthy, without secret or

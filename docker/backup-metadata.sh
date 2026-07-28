@@ -62,6 +62,26 @@ BACKUP_METADATA_COUNT_SQL="
     AND c.relrowsecurity
   ORDER BY c.relname"
 
+# Die Fingerabdruecke der Datenbank — an ZWEI Stellen gebraucht (beim Schreiben
+# der Metadaten und beim Nachtragen nach dem Dump), deshalb einmal hier. Zwei
+# handgleiche Kopien waeren die Sorte Duplikat, die genau dann auseinanderlaeuft,
+# wenn es darauf ankommt.
+#
+# query_to_xml und nicht die naheliegende Unterabfrage: ein CASE schuetzt nicht
+# vor dem Planen. Steht die Tabelle direkt im SQL, scheitert die ganze Anweisung
+# schon beim Aufloesen des Namens, wenn es sie nicht gibt — der 'n/a'-Zweig
+# kaeme nie zum Zug, und die Datenbank ohne Migration 0049 waere von einer
+# unerreichbaren Datenbank ('unknown') nicht mehr zu unterscheiden. Derselbe
+# Grund wie bei den Zeilenzahlen weiter unten.
+BACKUP_METADATA_MASTER_KEY_SQL="
+  SELECT CASE WHEN to_regclass('public.master_key_fingerprints') IS NULL
+    THEN 'n/a'
+    ELSE coalesce((xpath('/row/c/text()', query_to_xml(
+           'SELECT string_agg(key_id || '':'' || fingerprint, '','' ORDER BY key_id) AS c
+              FROM public.master_key_fingerprints',
+           false, true, '')))[1]::text, 'none')
+  END"
+
 backup_metadata_path() {
   # $1 = Backup-Verzeichnis, $2 = Zeitstempel
   printf '%s/backup-%s.meta' "$1" "$2"
@@ -89,6 +109,41 @@ publish_backup_metadata() {
   partial_path="$(backup_metadata_partial_path "$1" "$2")"
   [ -f "$partial_path" ] || return 0
   mv "$partial_path" "$(backup_metadata_path "$1" "$2")"
+}
+
+# Den Fingerabdruck NACH dem Dump nachtragen.
+#
+# Die Zeilenzahlen entstehen absichtlich vor dem Dump (Begruendung in
+# backup.sh), und bei ihnen ist das Fenster harmlos: verify_backup_metadata
+# prueft ausdruecklich nicht auf Gleichheit. Beim Fingerabdruck ist es das
+# nicht. Legt der erste Start nach einem Upgrade ihn genau zwischen Metadaten
+# und pg_dump an, stuende 'none' in der Datei, waehrend der Dump die Zeile
+# enthaelt — Restore und Doctor versprechen dann freie Schluesselwahl, und die
+# wiederhergestellte API verweigert mit einer anderen .env den Start.
+#
+# Deshalb hier eine zweite Abfrage, wenn der Dump liegt. Ganz schliessen laesst
+# sich das Fenster damit nicht (dafuer braeuchte es einen exportierten
+# Snapshot fuer beide Seiten); es kippt nur in die harmlose Richtung: gemeldet
+# wird eher ein Fingerabdruck zu viel als einer zu wenig.
+refresh_backup_metadata_master_key() {
+  database_url="$1"
+  partial_path="$(backup_metadata_partial_path "$2" "$3")"
+  [ -f "$partial_path" ] || return 0
+
+  fingerprints="$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
+    "$BACKUP_METADATA_MASTER_KEY_SQL" 2>/dev/null || printf 'unknown')"
+
+  # Bewusst NUR diese eine Zeile ersetzen und die Datei sonst unangetastet
+  # lassen: die Zeilenzahlen sollen ihren Stand von VOR dem Dump behalten
+  # (Begruendung in backup.sh), und jede weitere Aenderung hier waere eine
+  # Fehlerquelle mehr. Die Pruefsumme entsteht ohnehin erst spaeter.
+  #
+  # Ueber eine Nebendatei und mv, nicht in place: bricht der Lauf mitten im
+  # Schreiben ab, ist entweder die alte oder die neue Datei da, nie eine halbe.
+  awk -v value="$fingerprints" '
+    /^master_key_fingerprints=/ { print "master_key_fingerprints=" value; next }
+    { print }
+  ' "$partial_path" > "$partial_path.new" && mv "$partial_path.new" "$partial_path"
 }
 
 # Ist das ueberhaupt ein Tabellenname?
@@ -166,19 +221,20 @@ write_backup_metadata() {
     printf 'secret_key_ids=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
       SELECT CASE WHEN to_regclass('public.secrets') IS NULL
         THEN 'n/a'
-        ELSE coalesce((SELECT string_agg(DISTINCT key_id, ',' ORDER BY key_id) FROM secrets), 'none')
+        ELSE coalesce((xpath('/row/c/text()', query_to_xml(
+               'SELECT string_agg(DISTINCT key_id, '','' ORDER BY key_id) AS c FROM public.secrets',
+               false, true, '')))[1]::text, 'none')
       END" 2>/dev/null || printf 'unknown')"
     # Der Fingerabdruck macht aus der Kennung eine Aussage. Er ist ein HMAC des
     # Master-Keys ueber ein festes Etikett — nicht geheim, aber eindeutig: zwei
     # verschiedene Schluessel ergeben zwei verschiedene Werte. Wer diesen Stand
     # wiederherstellt und die passende .env sucht, kann sie damit erkennen,
     # statt sie zu vermuten.
-    printf 'master_key_fingerprints=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
-      SELECT CASE WHEN to_regclass('public.master_key_fingerprints') IS NULL
-        THEN 'n/a'
-        ELSE coalesce((SELECT string_agg(key_id || ':' || fingerprint, ',' ORDER BY key_id)
-                       FROM master_key_fingerprints), 'none')
-      END" 2>/dev/null || printf 'unknown')"
+    # Er wird nach dem Dump noch einmal nachgetragen (refresh_backup_metadata_master_key):
+    # legt der erste Start nach einem Upgrade die Zeile genau zwischen hier und
+    # pg_dump an, stuende sonst 'none' in der Datei, waehrend der Dump sie hat.
+    printf 'master_key_fingerprints=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
+      "$BACKUP_METADATA_MASTER_KEY_SQL" 2>/dev/null || printf 'unknown')"
     # Wie viele Zeilen ausserhalb von `secrets` haengen am Master-Key?
     #
     # Die blosse Zeilenzahl von email_tracking_events taugt dafuer nicht: die

@@ -37,6 +37,11 @@ trap 'rm -f "$BACKUP_DIR/$METADATA_FILE.partial"' EXIT INT TERM
 
 pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP"
 
+# Den Fingerabdruck nach dem Dump nachtragen: legt der erste Start nach einem
+# Upgrade ihn zwischen Metadaten und Dump an, stuende sonst 'none' in der Datei,
+# waehrend der Dump die Zeile enthaelt (Begruendung in backup-metadata.sh).
+refresh_backup_metadata_master_key "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
+
 publish_backup_metadata "$BACKUP_DIR" "$STAMP"
 trap - EXIT INT TERM
 

@@ -375,6 +375,13 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
     const api = createServerApi(throwingPorts() as ServerApiPorts);
     const reachable = new Set<string>();
 
+    // Fehler, die NICHT vom Port-Proxy stammen. Sie stillschweigend als
+    // "geschuetzt" zu werten waere die gefaehrlichste Auslegung: ein Handler,
+    // der ohne Principal ueber einen leeren Body stolpert, saehe hier aus wie
+    // einer, der die Anmeldung verlangt — mit einem gueltigen Request kaeme er
+    // dagegen bis zu seinen Ports.
+    const unerwartet: string[] = [];
+
     for (const path of routePaths) {
       for (const method of METHODS) {
         let openToAnyone: boolean;
@@ -393,12 +400,19 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
         } catch (err) {
           // Ein Datenzugriff ohne Principal zaehlt als offen — auch dann, wenn
           // der Handler danach einen Fehler geliefert haette.
-          openToAnyone = err instanceof Error && err.message.startsWith('PORT_REACHED');
+          const reached = err instanceof Error && err.message.startsWith('PORT_REACHED');
+          if (!reached) {
+            unerwartet.push(`${method} ${path}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          openToAnyone = reached;
         }
         if (openToAnyone) reachable.add(`${method} ${canonicalize(path)}`);
       }
     }
 
+    // Erst die Fehler: bleibt einer stehen, ist die Aussage der Mengengleichheit
+    // darunter nicht mehr belastbar.
+    expect(unerwartet).toEqual([]);
     expect([...reachable].sort()).toEqual([...PUBLIC_SURFACE].sort());
   }, 120_000);
 });
