@@ -10,8 +10,29 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 - `attachments-<stamp>.tar`: optional attachment archive when `ATTACHMENTS_DIR` exists.
 - `audit-archive-<stamp>.tar`: optional audit archive when `AUDIT_ARCHIVE_DIR` exists.
 - `backup-<stamp>.sha256`: SHA-256 manifest for every file in the set.
+- `backup-<stamp>.meta`: schema version, required master-key id, and row counts
+  for the core tables. Covered by the same manifest, so it cannot be edited
+  without breaking checksum verification.
 
 The restore and doctor scripts verify the manifest when it exists.
+
+## What The Backup Does **Not** Contain
+
+**Your `.env` is not in the backup, and a dump alone cannot be restored into a
+working system.**
+
+Every secret in the database — mailbox passwords, OAuth tokens, AI provider keys
+— is encrypted with `SIMPLECRM_MASTER_KEY`, which lives only in `docker/.env`.
+Restore a dump on a host without that exact key and you get a complete database
+whose secrets nobody can decrypt. The same applies to `ACCESS_TOKEN_SECRET`
+(all sessions become invalid) and to `PG_PASSWORD` / `PG_ADMIN_PASSWORD`.
+
+Keep a copy of `docker/.env` **outside** the backup volume — a password manager
+or an offline copy. Without it your backup is only half a backup.
+
+`backup-<stamp>.meta` records the `key_id` values the dump was encrypted with
+(never the key itself). `restore.sh` and `doctor.sh` print them, so a key
+mismatch surfaces during a drill instead of during an incident.
 
 ## Run A One-Shot Backup
 
@@ -156,3 +177,29 @@ pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$D
 
 - Restore should be treated as an operator action; confirm you have the right backup before running it.
 - Production restore runbooks and live 100k-mail restore drills are not complete.
+
+## Rolling Back To An Earlier Backup
+
+`restore.sh` runs `pg_restore --clean --if-exists --no-owner` with
+`PG_RESTORE_ROLE=simplecrm_app`, so restored objects are owned by the
+application role again and later migrations keep working.
+
+Two things to know before you rely on it:
+
+**`--clean` only drops what the dump knows about.** Tables and columns created
+by migrations that ran *after* the dump was taken survive the restore, because
+they do not appear in the archive. At the same time `simplecrm_schema_migrations`
+comes back at the dump's state, so the migrate CLI will re-apply those
+migrations on the next update. Today's migrations are written with
+`IF NOT EXISTS` and tolerate that, but it is a property of those migrations, not
+a guarantee. **Roll back code and data together, not one without the other.**
+
+**The restore is verified, not just executed.** After `pg_restore` finishes,
+`restore.sh` compares the restored row counts against `backup-<stamp>.meta` and
+fails when they differ. That catches a dump that was taken with insufficient
+privileges — row level security is forced on nearly every table, so a dump taken
+by the wrong role restores cleanly while being silently incomplete.
+
+Do not skip the pre-update backup in `docker/update.sh`. The migration path is
+exercised on an empty database in CI; migrating **populated** production data is
+not, and the backup is the actual safety net.

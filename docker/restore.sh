@@ -3,6 +3,9 @@ set -eu
 
 : "${DATABASE_URL:?DATABASE_URL is required}"
 
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/backup-metadata.sh"
+
 DUMP_PATH="${1:-}"
 ATTACHMENTS_ARCHIVE="${2:-}"
 AUDIT_ARCHIVE="${3:-}"
@@ -46,11 +49,13 @@ validate_tar_archive() {
 DUMP_DIR="$(dirname "$DUMP_PATH")"
 DUMP_FILE="$(basename "$DUMP_PATH")"
 CHECKSUM_MANIFEST=""
+METADATA_PATH=""
 case "$DUMP_FILE" in
   db-*.dump)
     STAMP="${DUMP_FILE#db-}"
     STAMP="${STAMP%.dump}"
     CHECKSUM_MANIFEST="$DUMP_DIR/backup-$STAMP.sha256"
+    METADATA_PATH="$DUMP_DIR/backup-$STAMP.meta"
     ;;
 esac
 
@@ -61,6 +66,9 @@ if [ -n "$CHECKSUM_MANIFEST" ] && [ -f "$CHECKSUM_MANIFEST" ]; then
   fi
   if [ -n "$AUDIT_ARCHIVE" ]; then
     verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"
+  fi
+  if [ -n "$METADATA_PATH" ] && [ -f "$METADATA_PATH" ]; then
+    verify_backup_file "$METADATA_PATH" "$CHECKSUM_MANIFEST"
   fi
 else
   echo "warning: checksum manifest not found; restoring without backup hash verification" >&2
@@ -88,4 +96,12 @@ fi
 if [ -n "$AUDIT_ARCHIVE" ]; then
   mkdir -p "$AUDIT_ARCHIVE_DIR"
   tar -C "$AUDIT_ARCHIVE_DIR" --no-same-owner --no-same-permissions -xf "$AUDIT_ARCHIVE"
+fi
+
+# Ein durchgelaufenes pg_restore heisst nur "keine Fehler", nicht "vollstaendig".
+# Gegen die im Backup festgehaltenen Zeilenzahlen pruefen und benennen, welcher
+# Master-Key zu diesem Stand gehoert — ohne die passende .env bleiben alle
+# Secrets unlesbar, obwohl die Wiederherstellung technisch sauber war.
+if [ -n "$METADATA_PATH" ]; then
+  verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore'
 fi
