@@ -203,15 +203,37 @@ export default function LoginPage() {
   // Fehlversuche einlaufen. Der Site-Key steht in der Login-Konfiguration,
   // sobald ein Anbieter eingerichtet ist, unabhaengig von `enabled`.
   function reportAuthError(err: unknown) {
-    if (
-      err instanceof ServerAuthClientError
-      && err.code === "captcha_required"
-      && loginConfig?.captcha.siteKey
-    ) {
-      setCaptchaForced(true)
-      setCaptchaPassed(false)
+    if (err instanceof ServerAuthClientError && err.code === "captcha_required") {
+      if (loginConfig?.captcha.siteKey) {
+        setCaptchaForced(true)
+        setCaptchaPassed(false)
+      } else {
+        // Kein Site-Key bekannt — das heisst hier nicht "kein Anbieter",
+        // sondern meist: die Konfiguration liess sich beim Laden der Seite
+        // nicht holen, und der Ersatzwert traegt keinen. Der Server verlangt
+        // aber gerade eine Bestaetigung. Ohne Nachholen bliebe nur eine
+        // Fehlermeldung ohne Widget, und selbst nach zurueckgekehrter
+        // Verbindung haette der Nutzer nur das Neuladen der Seite.
+        void refreshLoginConfigForForcedCaptcha()
+      }
     }
     setError(formatAuthError(err, serverSetupMode))
+  }
+
+  async function refreshLoginConfigForForcedCaptcha() {
+    const serverAuth = getActiveServerAuthClient()
+    if (!serverAuth) return
+    try {
+      const config = await serverAuth.getLoginConfig()
+      setLoginConfig(config)
+      if (config.captcha.siteKey) {
+        setCaptchaForced(true)
+        setCaptchaPassed(false)
+      }
+    } catch {
+      // Immer noch nicht erreichbar. Die Fehlermeldung steht bereits, und ein
+      // Widget ohne Site-Key waere ohnehin keins.
+    }
   }
 
   async function handleCaptchaVerify(token: string) {

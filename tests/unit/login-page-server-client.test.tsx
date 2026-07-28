@@ -407,6 +407,55 @@ describe('LoginPage server-client mode', () => {
     expect(await screen.findByLabelText('E-Mail')).toBeInTheDocument();
   });
 
+  // Faellt /auth/login-config beim Laden der Seite aus, merkt sich die Seite
+  // einen Ersatzwert ohne Site-Key. Verlangt der Server spaeter wegen der
+  // kontoweiten Abwehr eine Bestaetigung, gaebe es ohne Nachholen nur eine
+  // Fehlermeldung und kein Widget — und selbst nach zurueckgekehrter
+  // Verbindung bliebe nur das Neuladen der Seite.
+  test('fetches the CAPTCHA config again when it was unavailable on load', async () => {
+    let loginConfigCalls = 0;
+    global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).includes('/auth/setup-state')) {
+        return Promise.resolve(jsonResponse({ data: { needsInitialSetup: false } }));
+      }
+      if (String(url).includes('/auth/login-config')) {
+        loginConfigCalls += 1;
+        // Der erste Versuch scheitert, der zweite liefert den Site-Key.
+        if (loginConfigCalls === 1) return Promise.reject(new Error('offline'));
+        return Promise.resolve(jsonResponse({
+          data: {
+            captcha: { enabled: false, provider: 'turnstile', siteKey: 'site-key' },
+            pinKeypad: { enabled: false },
+            mfa: { enabled: false, methods: [] },
+            user: null,
+          },
+        }));
+      }
+      if (String(url).includes('/auth/login') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse({
+          error: { code: 'captcha_required', message: 'CAPTCHA-Bestaetigung erforderlich' },
+        }, 403));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }) as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com' }));
+
+    render(<LoginPage />);
+    fireEvent.change(await screen.findByLabelText('E-Mail'), {
+      target: { value: 'owner@example.com' },
+    });
+    fireEvent.change(await screen.findByLabelText('Passwort'), {
+      target: { value: 'irgendwas' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Anmelden' }));
+
+    // Die Konfiguration wird nachgeholt und das Gate erscheint doch.
+    expect(
+      await screen.findByRole('button', { name: 'Andere E-Mail-Adresse verwenden' }),
+    ).toBeInTheDocument();
+    expect(loginConfigCalls).toBeGreaterThan(1);
+  });
+
   test('keeps a server-issued CAPTCHA continuation while showing the PIN keypad', async () => {
     window.sessionStorage.setItem(CAPTCHA_CHALLENGE_STORAGE_KEY, 'solved-once');
     global.fetch = jest.fn().mockImplementation((url: string, init?: RequestInit) => {
