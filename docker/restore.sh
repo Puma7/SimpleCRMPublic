@@ -97,8 +97,10 @@ fi
 # Der Schalter ist fuer den Notfall gedacht, in dem das die einzige vorhandene
 # Sicherung ist: dann ist eine ungeprueft eingespielte besser als gar keine —
 # aber es muss eine bewusste Entscheidung sein.
+UNVERIFIABLE_ACCEPTED=0
 if [ -n "$METADATA_PATH" ] && ! backup_metadata_is_verifiable "$METADATA_PATH"; then
   if [ "${RESTORE_ALLOW_UNVERIFIABLE:-}" = '1' ]; then
+    UNVERIFIABLE_ACCEPTED=1
     echo "restore: WARNING — this backup carries no usable row counts; restoring anyway because RESTORE_ALLOW_UNVERIFIABLE=1" >&2
   else
     echo "restore: refusing to restore — this backup recorded no usable row counts, so its completeness cannot be verified" >&2
@@ -134,8 +136,14 @@ fi
 # scheitern lassen: restore-compose.sh wuerde sonst vor Migrationen und
 # Neustart stehenbleiben und die Anwendung ausgeschaltet zuruecklassen, obwohl
 # die Daten liegen. Gemeldet wird es weiterhin, nur nicht mehr als Abbruch.
+# Gemildert wird NUR der Fall, den die Vorabpruefung selbst festgestellt hat.
+# Die blosse Variable genuegt nicht: sie bleibt gern in der Shell stehen, und
+# beim naechsten — diesmal pruefbaren — Backup wuerde sie sonst auch echte
+# Befunde schlucken: eine nach dem Restore fehlende Tabelle, eine gescheiterte
+# Abfrage, ein manipulierter Eintrag in der Metadatei. Ein pruefbares Backup
+# muss durchfallen duerfen.
 if [ -n "$METADATA_PATH" ]; then
-  if [ "${RESTORE_ALLOW_UNVERIFIABLE:-}" = '1' ]; then
+  if [ "$UNVERIFIABLE_ACCEPTED" = '1' ]; then
     verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore' || true
   else
     verify_backup_metadata "$METADATA_PATH" "$DATABASE_URL" 'restore'

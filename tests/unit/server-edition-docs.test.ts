@@ -220,6 +220,13 @@ describe('server edition AP-12 operator docs', () => {
     // nachtraeglich scheitern lassen — sonst bleibt restore-compose.sh vor
     // Migrationen und Neustart stehen, obwohl die Daten liegen.
     expect(restore).toMatch(/verify_backup_metadata "\$METADATA_PATH" "\$DATABASE_URL" 'restore' \|\| true/);
+    // Gemildert wird nur, was die Vorabpruefung selbst festgestellt hat. Die
+    // blosse Variable genuegt nicht — sie bleibt gern in der Shell stehen, und
+    // beim naechsten, diesmal pruefbaren Backup wuerde sie sonst auch echte
+    // Befunde schlucken (fehlende Tabelle, manipulierter Eintrag).
+    expect(restore).toEqual(expect.stringContaining('UNVERIFIABLE_ACCEPTED=0'));
+    expect(restore).toMatch(/if \[ "\$UNVERIFIABLE_ACCEPTED" = '1' \]; then/);
+    expect(restore).not.toMatch(/if \[ "\$\{RESTORE_ALLOW_UNVERIFIABLE:-\}" = '1' \]; then\s*\n\s*verify_backup_metadata/);
     // Und eine im Manifest gelistete, aber fehlende Metadatei bricht ab; nur
     // Backups von vor dieser Aenderung duerfen ungeprueft durchlaufen.
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_listed()'));
