@@ -108,10 +108,14 @@ describe('useEmailMessages — ACL reconcile', () => {
     expect(mockWorkspace.setSelectedMessage).not.toHaveBeenCalledWith(null);
   });
 
-  test('a row BEYOND the first page is checked too — and its selection cleared', async () => {
-    // Der Kern des Befunds: liegt die geoeffnete Nachricht hinter dem ersten
-    // PAGE_SIZE-Fenster, half ein Abgleich der ersten Seite gar nichts. Der
-    // Abgleich fragt deshalb den GESAMTEN geladenen Bereich neu ab.
+  test('the reconcile PAGINATES the loaded range — the transport caps each page at 100', async () => {
+    // Zwei Befunde in einem Test. Erstens: liegt die geoeffnete Nachricht
+    // hinter dem ersten Fenster, half ein Abgleich der ersten Seite gar nichts.
+    // Zweitens: ein groesseres `limit` mitzuschicken half auch nicht — der
+    // HTTP-Transport deckelt jede Listenabfrage auf 100 (limitValue), die
+    // gekappte Antwort waere faelschlich fuer den vollstaendigen Bereich
+    // gehalten worden und haette alle tieferen, weiterhin erlaubten Zeilen
+    // samt Auswahl verworfen.
     const many = Array.from({ length: 150 }, (_, index) => ({ id: index + 1 }));
     const { result, rerender } = renderHook(() => useEmailMessages());
     await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
@@ -126,23 +130,65 @@ describe('useEmailMessages — ACL reconcile', () => {
     (mockWorkspace.setSelectedMessage as jest.Mock).mockClear();
     mockInvokeRenderer.mockClear();
 
+    // Der Server liefert seitenweise und kennt 130 nicht mehr.
+    const visible = many.filter((m) => m.id !== 130);
+    mockInvokeRenderer.mockImplementation(async (channel: unknown, payload: any) => {
+      if (channel === IPCChannels.Email.ListMessagesByView) {
+        const offset = Number(payload.offset ?? 0);
+        const limit = Number(payload.limit ?? 100);
+        return visible.slice(offset, offset + limit);
+      }
+      return null;
+    });
+
+    await act(async () => {
+      await result.current.refreshList({ preserveSelection: true, dropMissing: true });
+    });
+
+    const listCalls = mockInvokeRenderer.mock.calls
+      .filter(([channel]) => channel === IPCChannels.Email.ListMessagesByView)
+      .map(([, payload]) => payload as { limit: number; offset: number });
+    // Zwei Seiten, jede innerhalb des Transport-Deckels.
+    expect(listCalls).toEqual([
+      expect.objectContaining({ limit: 100, offset: 0 }),
+      expect.objectContaining({ limit: 100, offset: 100 }),
+    ]);
+
+    // Alle 149 weiterhin erlaubten Zeilen bleiben — nur die entzogene faellt.
+    await waitFor(() => expect(result.current.messages).toHaveLength(149));
+    expect(result.current.messages.some((m) => m.id === 130)).toBe(false);
+    expect(result.current.messages.some((m) => m.id === 150)).toBe(true);
+    expect(mockWorkspace.setSelectedMessage).toHaveBeenCalledWith(null);
+  });
+
+  test('a normal refresh that SUPERSEDES a running reconcile inherits the obligation', async () => {
+    // Jeder nicht-anhaengende Load erhoeht loadGenerationRef und verwirft damit
+    // die Antwort eines laufenden Abgleichs. Liefe der Nachfolger dann im
+    // erhaltenden Modus, haengte er die inzwischen entzogene Zeile samt Auswahl
+    // wieder an — ein Mail-Ereignis oder ein Klick auf „Aktualisieren" waehrend
+    // einer langsamen ACL-Antwort genuegte dafuer.
+    const { result, rerender } = renderHook(() => useEmailMessages());
+    await loadInitial(rerender);
+
+    // Abgleich starten, aber NICHT antworten lassen.
     await act(async () => {
       void result.current.refreshList({ preserveSelection: true, dropMissing: true });
     });
     await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
+    listDeferreds.delete(1);
 
-    // Die Abfrage deckt alle 150 geladenen Zeilen ab, nicht nur die ersten 100.
-    const listCall = mockInvokeRenderer.mock.calls
-      .find(([channel]) => channel === IPCChannels.Email.ListMessagesByView);
-    expect((listCall?.[1] as { limit: number }).limit).toBe(150);
-
-    // 130 ist entzogen.
+    // Ein gewoehnlicher Refresh verdraengt ihn.
     await act(async () => {
-      listDeferreds.get(1)!(many.filter((m) => m.id !== 130) as unknown[]);
+      void result.current.refreshList({ preserveSelection: true });
+    });
+    await waitFor(() => expect(listDeferreds.has(1)).toBe(true));
+    await act(async () => {
+      listDeferreds.get(1)!([{ id: 1 }, { id: 3 }] as unknown[]);
     });
 
-    await waitFor(() => expect(result.current.messages).toHaveLength(149));
-    expect(result.current.messages.some((m) => m.id === 130)).toBe(false);
+    // Er hat die Pflicht geerbt: Zeile 2 faellt weg statt wieder angehaengt zu
+    // werden, und die Auswahl darauf wird geschlossen.
+    await waitFor(() => expect(result.current.messages.map((m) => m.id)).toEqual([1, 3]));
     expect(mockWorkspace.setSelectedMessage).toHaveBeenCalledWith(null);
   });
 

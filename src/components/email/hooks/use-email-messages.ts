@@ -85,6 +85,9 @@ export function useEmailMessages() {
   const messagesRef = useRef<EmailMessage[]>([])
   const offsetRef = useRef(0)
   const reconcileTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Ein ACL-Abgleich ist SCHULDIG, bis er einmal durchgelaufen ist: verdraengt
+  // ihn ein gewoehnlicher Ladevorgang, erbt dieser die Pflicht.
+  const pendingAclReconcileRef = useRef(false)
   // Ref statt Dependency: der Fehlerpfad des Abgleichs plant eine Wiederholung,
   // und loadMessages darf davon nicht seine Identitaet aendern (daran haengen
   // mehrere Reload-Effekte).
@@ -222,13 +225,36 @@ export function useEmailMessages() {
       // erste Seite: eine entzogene Nachricht — auch die gerade geoeffnete —
       // kann tiefer liegen, und was der Server nicht beurteilt hat, koennte der
       // Abgleich nur raten.
-      const reconcile = opts?.dropMissing === true && !append
-      const limit = reconcile ? aclReconcileLimit(messagesRef.current.length, PAGE_SIZE) : PAGE_SIZE
+      //
+      // Die Pflicht ueberlebt dabei einen VERDRAENGENDEN Ladevorgang. Jeder
+      // nicht-anhaengende Load erhoeht loadGenerationRef und verwirft damit die
+      // Antwort eines laufenden Abgleichs; ohne diese Uebernahme liefe der
+      // Nachfolger im erhaltenden Modus und haengte die inzwischen entzogene
+      // Zeile samt Auswahl wieder an. Ein Mail-Ereignis oder ein manueller
+      // Refresh waehrend einer langsamen ACL-Antwort genuegte dafuer.
+      const reconcile = !append && (opts?.dropMissing === true || pendingAclReconcileRef.current)
+      if (reconcile) pendingAclReconcileRef.current = true
+      // Der Abgleich holt den geladenen Bereich SEITENWEISE. Der HTTP-Transport
+      // deckelt jede Listenabfrage auf DEFAULT_LIST_LIMIT (limitValue in
+      // channel-http-registry) — ein groesseres `limit` kaeme still gekappt
+      // zurueck, und der Abgleich haette die gekappte Antwort fuer den
+      // vollstaendigen Bereich gehalten und alle tieferen, weiterhin erlaubten
+      // Zeilen samt Auswahl verworfen.
+      const reconcileRows = reconcile
+        ? aclReconcileLimit(messagesRef.current.length, PAGE_SIZE)
+        : PAGE_SIZE
       if (append) setLoadingMore(true)
       else if (!silent) setLoadingMessages(true)
       try {
-        let list: EmailMessage[]
+        let list: EmailMessage[] = []
         const doneFilter = view === "inbox" ? messageDoneFilter : undefined
+        // Der Abgleich laeuft ueber mehrere Seiten, jeder andere Ladevorgang
+        // ueber genau eine.
+        let pageOffset = offset
+        let lastPageFull = false
+        let searchHasMore = false
+        do {
+        let page: EmailMessage[]
         if (query.trim()) {
           const scopePrefs = searchScopeRef.current
           const broadSearch = scopePrefs.allFolders
@@ -245,8 +271,8 @@ export function useEmailMessages() {
           const res = await invokeRenderer(IPCChannels.Email.SearchMessages, {
             accountId: accountScope,
             query: query.trim(),
-            limit,
-            offset,
+            limit: PAGE_SIZE,
+            offset: pageOffset,
             view,
             categoryId: view === "inbox" ? catId : null,
             // Broad-Suche ignoriert den Erledigt-Filter — nicht mitsenden,
@@ -260,7 +286,7 @@ export function useEmailMessages() {
             hasMore?: boolean
           }
           if (generation !== loadGenerationRef.current) return
-          list = res.messages
+          page = res.messages
           if (!silent) {
             if (res.searchMode === "like") {
               toast.info("Erweiterte Suche (LIKE) — bei großen Postfächern kann das dauern.", {
@@ -276,21 +302,28 @@ export function useEmailMessages() {
               })
             }
           }
-          setHasMore(Boolean(res.hasMore))
+          searchHasMore = Boolean(res.hasMore)
         } else {
-          list = await invokeRenderer(IPCChannels.Email.ListMessagesByView, {
+          page = await invokeRenderer(IPCChannels.Email.ListMessagesByView, {
             accountId: accountScope,
             view,
-            limit,
-            offset,
+            limit: PAGE_SIZE,
+            offset: pageOffset,
             categoryId: view === "inbox" ? catId : null,
             sort,
             listFilter: listFilter === "all" ? undefined : listFilter,
             doneFilter,
           }) as EmailMessage[]
           if (generation !== loadGenerationRef.current) return
-          setHasMore(list.length >= limit)
         }
+          lastPageFull = page.length >= PAGE_SIZE
+          list = pageOffset === offset ? page : [...list, ...page]
+          pageOffset += page.length
+        } while (reconcile && lastPageFull && list.length < reconcileRows)
+        setHasMore(query.trim() ? searchHasMore : lastPageFull)
+        // Ab hier ist die Antwort da und wird angewendet — die Pflicht ist
+        // erfuellt. (Bei einem Fehler bleibt sie stehen, siehe catch.)
+        if (reconcile) pendingAclReconcileRef.current = false
         if (append) {
           setMessages((prev) => {
             const ids = new Set(prev.map((m) => m.id))
