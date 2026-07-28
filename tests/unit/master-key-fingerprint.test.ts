@@ -189,6 +189,8 @@ function fakeDb(
     trackingLinks?: Array<Record<string, unknown>>;
     trackingEvents?: Array<Record<string, unknown>>;
     trackingTokens?: Array<Record<string, unknown>>;
+    /** Ereignisse OHNE versiegelte Rohdaten — nur ueber die Zeilenzahl sichtbar. */
+    plainEvents?: number;
     fingerprintTableMissing?: boolean;
   } = {},
 ): { db: Kysely<ServerDatabase>; calls: FakeDbCalls } {
@@ -226,7 +228,12 @@ function fakeDb(
             : page.filter((row) => String(row.id) > String(after));
         }
         if (table === 'email_tracking_links') return options.trackingLinks ?? [];
-        if (table === 'email_tracking_events') return options.trackingEvents ?? [];
+        if (table === 'email_tracking_events') {
+          // Die Ex-post-Frage "gibt es ueberhaupt Ereignisse?" laeuft ueber den
+          // Query-Builder, die Suche nach versiegelten ueber rohes SQL.
+          const plain = Array.from({ length: options.plainEvents ?? 0 }, () => ({ id: 1 }));
+          return [...(options.trackingEvents ?? []), ...plain];
+        }
         if (table === 'email_tracking_token_resolver') return options.trackingTokens ?? [];
         if (table === 'master_key_fingerprints' && options.fingerprintTableMissing) {
           throw Object.assign(new Error('relation "master_key_fingerprints" does not exist'), { code: '42P01' });
@@ -252,7 +259,16 @@ function fakeDb(
         async execute<T>(operation: (trx: unknown) => Promise<T>): Promise<T> {
           return operation({
             ...db,
-            getExecutor: () => ({ executeQuery: async () => ({ rows: [] }) }),
+            getExecutor: () => ({
+              executeQuery: async (compiled: { sql: string }) => ({
+                // Die Ereignis-Probe laeuft als rohes SQL (Fenster ueber die
+                // juengsten Zeilen, dann Filter) — der Mock beantwortet sie
+                // anhand des Anweisungstexts.
+                rows: compiled.sql.includes('email_tracking_events')
+                  ? (options.trackingEvents ?? [])
+                  : [],
+              }),
+            }),
           });
         },
       };
@@ -528,6 +544,33 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
     });
     await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
     expect(calls.inserted).toEqual([]);
+  });
+
+  test('aufbewahrte Ereignisse ohne Rohdaten: laufen lassen, aber nichts hinterlegen', async () => {
+    // Die Aufbewahrung raeumt Rohdaten nach 7 Tagen und abgelaufene Resolver
+    // weg, die Ereignisse bleiben 365 Tage. Deren dedupe_key kann ein HMAC ueber
+    // den Tracking-Schluessel sein — nachrechnen laesst er sich nicht, die
+    // Eingabe kennt die Pruefung nicht. Abbrechen waere falsch (der Schluessel
+    // kann stimmen, beweisen laesst es sich in keine Richtung), festschreiben
+    // auch (ein ungeprueftes Ja wuerde den richtigen Schluessel spaeter
+    // abweisen).
+    const { db, calls } = fakeDb([], { plainEvents: 3 });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
+      expect(calls.inserted).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dedupe keys may be derived'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('aufbewahrte Ereignisse ohne Schluessel: Abbruch', async () => {
+    // Tracking gibt es nur mit Master-Key. Liegen Ereignisse da und ist keiner
+    // gesetzt, fehlt er.
+    const { db } = fakeDb([], { plainEvents: 3 });
+    await expect(assertMasterKeyMatchesDatabase(db, undefined))
+      .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
   });
 
   test('ohne Schluessel bricht auch reines Tracking den Start ab', async () => {

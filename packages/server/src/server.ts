@@ -952,6 +952,28 @@ async function assertMasterKeyMatchesDatabaseLocked(
     throw new Error(MASTER_KEY_MISSING_MESSAGE);
   }
 
+  if (probe.kind === 'unverifiable') {
+    // Es liegt schluesselgebundenes Material da, nur laesst es sich nicht
+    // nachrechnen (aufbewahrte Ereignisse mit HMAC-Dedupe-Schluessel, deren
+    // Eingabe niemand mehr kennt). Weder abbrechen noch festschreiben:
+    //
+    // Abbrechen hiesse, eine Installation auszusperren, deren Schluessel ganz
+    // richtig sein kann — beweisen laesst es sich hier in keine Richtung.
+    // Festschreiben hiesse, einen ungeprueften Schluessel zur Wahrheit zu
+    // machen und den richtigen spaeter abzuweisen. Also: laufen lassen, nichts
+    // hinterlegen, laut sagen. Sobald wieder etwas Pruefbares entsteht (ein
+    // Secret, ein Link, ein ausgestelltes Token), holt der naechste Start die
+    // Festlegung nach.
+    console.warn(
+      '[master-key] this database holds e-mail tracking events whose dedupe keys may be derived '
+      + 'from the master key, but nothing that can be verified against it (no secrets, no sealed '
+      + 'links, no sealed raw metadata, no issued tokens). Starting without recording a '
+      + 'fingerprint — if this is not the original SIMPLECRM_MASTER_KEY, re-delivered delivery '
+      + 'evidence will be stored twice.',
+    );
+    return;
+  }
+
   if (probe.kind === 'unusable') {
     // Es liegen Secrets unter einer anderen key_id oder einem anderen
     // Algorithmus. Die kann der konfigurierte Schluessel definitiv nicht lesen —
@@ -1096,6 +1118,7 @@ type TrackingTokenProbeRow = Readonly<{
 type SecretProbe =
   | { kind: 'none' }
   | { kind: 'unusable'; found: readonly SecretKind[] }
+  | { kind: 'unverifiable' }
   | {
     kind: 'material';
     secrets: readonly SecretProbeRow[];
@@ -1122,6 +1145,8 @@ type SecretProbe =
  */
 const SECRET_PROBE_PAGE = 500;
 const TRACKING_PROBE_SAMPLE = 3;
+/** Fenster ueber die juengsten Ereignisse, in dem nach versiegelten gesucht wird. */
+const TRACKING_EVENT_SCAN_WINDOW = 5000;
 
 /** Fuer die Fehlermeldung: was liegt statt des Erwarteten in der Tabelle? */
 function describeSecretKinds(found: readonly SecretKind[]): string {
@@ -1252,18 +1277,41 @@ async function findSecretProbe(
     return [...oldest, ...newest];
   };
 
+  // Sortiert wird ueber den PRIMAERSCHLUESSEL, nicht ueber created_at.
+  //
+  // `LIMIT 3` begrenzt das Ergebnis, nicht die Arbeit: auf created_at liegt in
+  // keiner dieser Tabellen ein Index (0027 legt fuer Links und Resolver gar
+  // keinen Zeitindex an, der Ereignisindex beginnt mit workspace_id). Postgres
+  // muesste also jede — moeglicherweise millionenschwere — Tabelle vollstaendig
+  // lesen und per Top-N sortieren, und das sechsmal, bevor die API ueberhaupt
+  // zu lauschen beginnt. Ueber den Primaerschluessel ist es ein
+  // Index-Scan von beiden Enden. Zeitlich geordnet ist das nur bei den
+  // Ereignissen (bigserial); bei Links und Resolver sind es zwei feste,
+  // beliebige Zeilen — als Stichprobe genuegt das, und nur darum geht es hier.
   const tracking = dedupeBy(
     await edges((direction) => tolerateMissing(() => trx
       .selectFrom('email_tracking_links').select(linkColumns)
-      .orderBy('created_at', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+      .orderBy('id', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
     (row) => String(row.id),
   ) as unknown as TrackingProbeRow[];
 
+  // Bei den Ereignissen kommt der Filter dazu, und der macht den Index-Scan
+  // wieder unbegrenzt: sind die Rohdaten laengst geloescht (Aufbewahrung
+  // standardmaessig 7 Tage), liefe die Suche durch die ganze Tabelle, ohne je
+  // etwas zu finden. Deshalb erst ein Fenster ueber die juengsten Zeilen und
+  // dann filtern — dort liegen die versiegelten, wenn es welche gibt.
   const trackingEvents = dedupeBy(
-    await edges((direction) => tolerateMissing(() => trx
-      .selectFrom('email_tracking_events').select(eventColumns)
-      .where('raw_metadata_ciphertext', 'is not', null)
-      .orderBy('created_at', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+    (await tolerateMissing(async () => (await sql<Record<string, unknown>>`
+      SELECT workspace_id, tracking_message_id, dedupe_key,
+             raw_metadata_ciphertext, raw_metadata_nonce, raw_metadata_auth_tag
+      FROM (
+        SELECT * FROM email_tracking_events
+        ORDER BY id DESC
+        LIMIT ${sql.lit(TRACKING_EVENT_SCAN_WINDOW)}
+      ) AS recent
+      WHERE raw_metadata_ciphertext IS NOT NULL
+      LIMIT ${sql.lit(TRACKING_PROBE_SAMPLE)}
+    `.execute(trx)).rows)),
     (row) => `${String(row.workspace_id)}:${String(row.dedupe_key)}`,
   ) as unknown as TrackingEventProbeRow[];
 
@@ -1278,17 +1326,30 @@ async function findSecretProbe(
     await edges((direction) => tolerateMissing(() => trx
       .selectFrom('email_tracking_token_resolver')
       .select(['token_hash', 'tracking_message_id', 'link_id', 'token_kind'])
-      .orderBy('created_at', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+      .orderBy('token_hash', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
     (row) => String(row.token_hash),
   ) as unknown as TrackingTokenProbeRow[];
 
-  if (secrets.length === 0
-    && tracking.length === 0
-    && trackingEvents.length === 0
-    && trackingTokens.length === 0) {
-    return { kind: 'none' };
+  if (secrets.length > 0
+    || tracking.length > 0
+    || trackingEvents.length > 0
+    || trackingTokens.length > 0) {
+    return { kind: 'material', secrets, tracking, trackingEvents, trackingTokens };
   }
-  return { kind: 'material', secrets, tracking, trackingEvents, trackingTokens };
+
+  // Nichts Nachpruefbares. Aber "nichts nachpruefbar" ist nicht "nichts da":
+  // die Aufbewahrung raeumt Rohdaten nach 7 Tagen und abgelaufene Resolver
+  // weg, die Ereignisse selbst bleiben 365 Tage. Deren dedupe_key kann ein
+  // HMAC ueber den Tracking-Schluessel sein (bei eingehender DSN-/MDN-Evidenz
+  // ist er das). Nachrechnen laesst er sich nicht — die Eingabe kennt diese
+  // Pruefung nicht —, aber als "leer" darf so eine Datenbank nicht gelten:
+  // mit dem falschen Schluessel entstuenden fuer dieselbe Evidenz andere
+  // Dedupe-Schluessel, und die Ereignisse verdoppelten sich.
+  const anyEvent = await tolerateMissing(() => trx
+    .selectFrom('email_tracking_events').select('id').limit(1).execute());
+  if (anyEvent.length > 0) return { kind: 'unverifiable' };
+
+  return { kind: 'none' };
 }
 
 function dedupeBy<T>(rows: readonly T[], key: (row: T) => string): T[] {

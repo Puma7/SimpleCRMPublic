@@ -165,10 +165,28 @@ millions, so unlike `secrets` they are **sampled**: the oldest and newest few
 rows, because a key change falls somewhere in time and the edges show it. That
 is a sample, not a proof.
 
-Two derived values are deliberately *not* checked: `target_url_hash` and the
-event `dedupe_key`. Both are keyed hashes of inputs the check does not have, so
-there is nothing to compare against. They never appear alone — whatever writes
-them writes a resolver row too — so the coverage above still catches the case.
+Two derived values cannot be checked: `target_url_hash` and the event
+`dedupe_key`. Both are keyed hashes of inputs the check does not have, so there
+is nothing to compare against. Usually they do not appear alone — whatever
+writes them writes a resolver row too — but retention breaks that pairing:
+sealed raw metadata is cleared after 7 days, expired resolver rows are deleted,
+and the events themselves stay for a year. A database in that state holds
+key-bound data and nothing verifiable.
+
+**That state neither starts nor refuses — it runs without recording.** Refusing
+would strand an installation whose key may well be correct, and nothing here can
+prove it either way; recording would make an unproven key the truth and reject
+the right one later. So the server starts, writes no fingerprint, and says so
+loudly. As soon as anything verifiable exists again — a secret, a link, an
+issued token — the next start records properly. Restore and doctor report the
+same state for such a backup instead of promising a free choice of key.
+
+**The samples are index-bound, not time-ordered.** No index covers `created_at`
+on these tables, so `ORDER BY created_at LIMIT 3` would read the whole table and
+sort it — six times, before the API starts listening. The probes order by
+primary key instead, and the event probe looks for sealed rows inside a window
+of the newest rows rather than filtering the entire table. Retention keeps
+sealed metadata recent, so that window is where they are.
 
 **A missing fingerprint table is not a free pass.** In the Compose flow the API
 waits for `migrate`, but a rolling deployment or another orchestrator can start

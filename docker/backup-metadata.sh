@@ -450,7 +450,18 @@ backup_metadata_encrypted_state() {
     return 0
   fi
   case "$(backup_metadata_value "$1" 'master_key_encrypted_rows' || printf 'unknown')" in
-    '0' | 'n/a') printf 'no' ;;
+    '0' | 'n/a')
+      # Nichts NACHPRUEFBARES. Aufbewahrte Tracking-Ereignisse sind damit aber
+      # nicht vom Tisch: ihr dedupe_key kann ein HMAC ueber den
+      # Tracking-Schluessel sein, und die Aufbewahrung laesst sie 365 Tage
+      # stehen, waehrend Rohdaten nach 7 Tagen und abgelaufene Resolver
+      # frueher verschwinden. Der Start behandelt genau diesen Zustand als
+      # "nicht festlegbar" — hier heisst er deshalb 'unknown' und nicht 'no'.
+      case "$(backup_metadata_value "$1" 'rows_email_tracking_events' || printf '0')" in
+        '' | '0' | *[!0123456789]*) printf 'no' ;;
+        *) printf 'retained' ;;
+      esac
+      ;;
     # Aeltere Backups fuehren den Zaehler nicht. Dann ist die Antwort "weiss
     # nicht" — und die wird auch so gesagt, statt eine der beiden Behauptungen
     # zu raten.
@@ -494,6 +505,9 @@ report_master_key_material() {
         'yes')
           echo "$label: this backup predates the master-key fingerprint, so a wrong .env cannot be detected here; it does contain data encrypted with the master key, so restore it from the same system." >&2
           ;;
+        'retained')
+          echo "$label: this backup predates the master-key fingerprint and holds no verifiable encrypted rows, but it does hold retained tracking events whose dedupe keys may be bound to the master key; restore it from the same system." >&2
+          ;;
         'unknown')
           echo "$label: this backup predates the master-key fingerprint and does not record how much is encrypted with the master key; if this installation used secrets or e-mail tracking, restore it from the same system." >&2
           ;;
@@ -514,7 +528,12 @@ report_master_key_material() {
       # Wirklichkeit widerspricht, ist schlimmer als keine.
       encrypted="$(backup_metadata_encrypted_state "$meta_path" "$key_ids")"
 
-      if [ "$encrypted" = 'unknown' ]; then
+      if [ "$encrypted" = 'retained' ]; then
+        # Nichts Nachpruefbares, aber aufbewahrte Ereignisse: genau der Zustand,
+        # in dem der Start weiterlaeuft, ohne einen Fingerabdruck zu
+        # hinterlegen. Die Auskunft sagt dasselbe.
+        echo "$label: no fingerprint travelled with this dump and nothing in it can be checked against a key, but it holds retained tracking events whose dedupe keys may be bound to the master key — the API will start without recording a fingerprint; with a different .env, re-delivered delivery evidence gets stored twice." >&2
+      elif [ "$encrypted" = 'unknown' ]; then
         echo "$label: no fingerprint travelled with this dump, and it does not record how many rows are encrypted with the master key; if this installation used e-mail tracking, the original .env is still required." >&2
       elif [ "$encrypted" = 'yes' ]; then
         # Die Tabelle ist nur noch nicht zurueckgefuellt (Backup aus dem Zustand

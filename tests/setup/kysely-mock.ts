@@ -58,5 +58,8 @@ export const sql = Object.assign(
     // Aufruf mit "sql.raw is not a function" und der Mock haette eine Luecke,
     // die nur in Tests existiert.
     raw: (statement: string) => createRawBuilder([statement] as unknown as TemplateStringsArray, []),
+    // sql.lit setzt einen Wert direkt in die Anweisung (fuer LIMIT, wo kein
+    // Parameter erlaubt ist). Im Mock genuegt dieselbe Roh-Form.
+    lit: (value: unknown) => createRawBuilder([String(value)] as unknown as TemplateStringsArray, []),
   },
 );
