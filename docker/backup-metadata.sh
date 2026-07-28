@@ -62,10 +62,11 @@ BACKUP_METADATA_COUNT_SQL="
     AND c.relrowsecurity
   ORDER BY c.relname"
 
-# Die Fingerabdruecke der Datenbank — an ZWEI Stellen gebraucht (beim Schreiben
-# der Metadaten und beim Nachtragen nach dem Dump), deshalb einmal hier. Zwei
-# handgleiche Kopien waeren die Sorte Duplikat, die genau dann auseinanderlaeuft,
-# wenn es darauf ankommt.
+# Die Fingerabdruecke der LAUFENDEN Datenbank. Das ist der vorlaeufige Wert:
+# er entsteht vor dem Dump und wird, sobald der Dump liest, durch den aus dem
+# Dump gelesenen ersetzt (refresh_backup_metadata_master_key). Stehen bleibt er
+# nur, wenn das Nachtragen ausfaellt — dann lieber eine Angabe aus derselben
+# Datenbank als gar keine.
 #
 # query_to_xml und nicht die naheliegende Unterabfrage: ein CASE schuetzt nicht
 # vor dem Planen. Steht die Tabelle direkt im SQL, scheitert die ganze Anweisung
@@ -111,27 +112,76 @@ publish_backup_metadata() {
   mv "$partial_path" "$(backup_metadata_path "$1" "$2")"
 }
 
-# Den Fingerabdruck NACH dem Dump nachtragen.
+# Den Fingerabdruck AUS DEM DUMP lesen — nicht aus der Datenbank.
 #
-# Die Zeilenzahlen entstehen absichtlich vor dem Dump (Begruendung in
-# backup.sh), und bei ihnen ist das Fenster harmlos: verify_backup_metadata
-# prueft ausdruecklich nicht auf Gleichheit. Beim Fingerabdruck ist es das
-# nicht. Legt der erste Start nach einem Upgrade ihn genau zwischen Metadaten
-# und pg_dump an, stuende 'none' in der Datei, waehrend der Dump die Zeile
-# enthaelt — Restore und Doctor versprechen dann freie Schluesselwahl, und die
-# wiederhergestellte API verweigert mit einer anderen .env den Start.
+# Die Zeile soll aussagen, welcher Schluessel zu DIESEM Dump gehoert. Jede
+# Abfrage der laufenden Datenbank beantwortet eine andere Frage ("welcher gilt
+# gerade") und geht daneben, sobald der erste Start nach einem Upgrade den
+# Fingerabdruck genau um den Dump herum anlegt. Fragt man vorher, steht 'none'
+# in der Datei, waehrend der Dump die Zeile hat: Restore und Doctor versprechen
+# freie Schluesselwahl, und die wiederhergestellte API verweigert mit einer
+# anderen .env den Start. Fragt man nachher, kehrt sich das Rennen nur um — die
+# Datei nennt einen Fingerabdruck, den der Dump nicht enthaelt, und ein Backup,
+# das sich einwandfrei einspielen liesse, gilt als nur mit der Original-.env
+# brauchbar. Beide Richtungen sind falsch, keine laesst sich durch die Wahl des
+# Zeitpunkts vermeiden.
 #
-# Deshalb hier eine zweite Abfrage, wenn der Dump liegt. Ganz schliessen laesst
-# sich das Fenster damit nicht (dafuer braeuchte es einen exportierten
-# Snapshot fuer beide Seiten); es kippt nur in die harmlose Richtung: gemeldet
-# wird eher ein Fingerabdruck zu viel als einer zu wenig.
-refresh_backup_metadata_master_key() {
-  database_url="$1"
-  partial_path="$(backup_metadata_partial_path "$2" "$3")"
-  [ -f "$partial_path" ] || return 0
+# Der Dump selbst kennt die Antwort dagegen genau: er IST der Snapshot. Also
+# wird er gefragt. Das braucht keinen exportierten Snapshot, keine offene
+# Parallelsitzung und kein Rennen — nur pg_restore auf eine Datei, die schon
+# fertig dasteht.
+#
+# Unterschieden wird dabei zwischen "Tabelle steht gar nicht im Dump" (vor
+# Migration 0049 — 'n/a') und "Tabelle steht drin, ist aber leer" ('none'):
+# das erste heisst "diese Sicherung weiss es nicht", das zweite "hier ist
+# nichts festgelegt". Sortiert wird nach key_id, damit zwei Sicherungen
+# desselben Standes dieselbe Zeile ergeben; die Reihenfolge im Dump ist die
+# des Heaps und damit beliebig.
+read_dump_master_key_fingerprints() {
+  dump_path="$1"
 
-  fingerprints="$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
-    "$BACKUP_METADATA_MASTER_KEY_SQL" 2>/dev/null || printf 'unknown')"
+  schema="$(pg_restore --schema-only --table=master_key_fingerprints -f - "$dump_path" 2>/dev/null)" \
+    || { printf 'unknown'; return 0; }
+  case "$schema" in
+    *'CREATE TABLE'*) ;;
+    *) printf 'n/a'; return 0 ;;
+  esac
+
+  rows="$(pg_restore --data-only --table=master_key_fingerprints -f - "$dump_path" 2>/dev/null)" \
+    || { printf 'unknown'; return 0; }
+
+  # Die Spaltenreihenfolge kommt aus dem COPY-Kopf und wird NICHT geraten: sie
+  # folgt der Reihenfolge im Dump, und die haengt daran, in welcher Reihenfolge
+  # spaetere Migrationen Spalten angehaengt haben.
+  printf '%s' "$rows" | awk '
+    /^COPY .*master_key_fingerprints .*FROM stdin;$/ {
+      head = $0
+      sub(/^[^(]*\(/, "", head)
+      sub(/\).*$/, "", head)
+      n = split(head, cols, /,/)
+      for (i = 1; i <= n; i++) {
+        gsub(/[" \t]/, "", cols[i])
+        idx[cols[i]] = i
+      }
+      copying = 1
+      next
+    }
+    copying && $0 == "\\." { copying = 0; next }
+    copying && idx["key_id"] && idx["fingerprint"] {
+      split($0, f, "\t")
+      print f[idx["key_id"]] ":" f[idx["fingerprint"]]
+    }
+  ' | LC_ALL=C sort | paste -sd, - | { read -r joined || joined=''; printf '%s' "${joined:-none}"; }
+}
+
+# ... und die gelesene Zeile in die Metadatei eintragen, sobald der Dump liegt.
+refresh_backup_metadata_master_key() {
+  partial_path="$(backup_metadata_partial_path "$1" "$2")"
+  [ -f "$partial_path" ] || return 0
+  dump_path="$1/db-$2.dump"
+  [ -f "$dump_path" ] || return 0
+
+  fingerprints="$(read_dump_master_key_fingerprints "$dump_path")"
 
   # Bewusst NUR diese eine Zeile ersetzen und die Datei sonst unangetastet
   # lassen: die Zeilenzahlen sollen ihren Stand von VOR dem Dump behalten

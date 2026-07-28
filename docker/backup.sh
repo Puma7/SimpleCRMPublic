@@ -37,10 +37,11 @@ trap 'rm -f "$BACKUP_DIR/$METADATA_FILE.partial"' EXIT INT TERM
 
 pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP"
 
-# Den Fingerabdruck nach dem Dump nachtragen: legt der erste Start nach einem
-# Upgrade ihn zwischen Metadaten und Dump an, stuende sonst 'none' in der Datei,
-# waehrend der Dump die Zeile enthaelt (Begruendung in backup-metadata.sh).
-refresh_backup_metadata_master_key "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
+# Den Fingerabdruck aus dem fertigen Dump nachtragen. Er soll sagen, welcher
+# Schluessel zu DIESEM Dump gehoert — das beantwortet keine Abfrage der
+# laufenden Datenbank, weder vor noch nach dem Snapshot, wohl aber der Dump
+# selbst (Begruendung in backup-metadata.sh).
+refresh_backup_metadata_master_key "$BACKUP_DIR" "$STAMP"
 
 publish_backup_metadata "$BACKUP_DIR" "$STAMP"
 trap - EXIT INT TERM
