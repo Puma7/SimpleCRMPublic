@@ -157,7 +157,39 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 - **E-Mail-MFA-Zustellung** reserviert konkurrierende Anforderungen pro Benutzer und haelt waehrend SMTP keine DB-Transaktion offen.
 - **Pending-E-Mail-MFA** gibt nur dem reservierenden Login ein Challenge-Token; parallele Anfragen koennen das Versuchsbudget nicht vervielfachen.
 - **Login-Failure-Counter** (Brute-Force) in einer Transaktion inkrementiert.
+- **Kontoweite Abwehr** gegen verteiltes Raten — siehe unten.
 - **INITIAL_SETUP_TOKEN** verhindert unbemerktes Owner-Takeover bei exponiertem Setup-Endpunkt.
+
+### Verteiltes Raten (Credential Stuffing)
+
+Die gestaffelte Sperre (30 s → 5 min → 1 h → 24 h, dauerhaft ab 50) zählt je
+Paar aus **E-Mail und IP**. Wer aus vielen Adressen kommt — Botnet, Proxy-Pool —
+bekommt pro Adresse einen frischen Zähler, und die dauerhafte Sperre greift nie.
+Es bliebe nur das IP-Limit von 20 Login-Anfragen pro Minute.
+
+Deshalb zählt der Login zusätzlich die Fehlversuche **für das Konto über alle
+Adressen** in den letzten 15 Minuten, und zwar *vor* der Passwortprüfung:
+
+| Fehlversuche (15 min, alle IPs) | Turnstile eingerichtet | Turnstile nicht eingerichtet |
+|---|---|---|
+| < 10 | normal | normal |
+| ≥ 10 | **CAPTCHA verpflichtend** | normal |
+| ≥ 50 | CAPTCHA verpflichtend | `429`, Fenster läuft ab |
+
+**Warum kein kontoweites Sperren.** Eine solche Sperre könnte jeder auslösen,
+der eine E-Mail-Adresse kennt — man könnte fremde Konten nach Belieben von der
+Anmeldung ausschließen. Ein CAPTCHA sperrt niemanden aus: der Angreifer zahlt
+für jeden Rateversuch, der rechtmäßige Nutzer klickt einmal und kommt durch.
+
+Die Eskalation greift **auch wenn der Workspace-Toggle für CAPTCHA aus ist** —
+sie braucht nur einen eingerichteten Anbieter. Die Login-Seite blendet das
+Widget dann auf `captcha_required` hin ein.
+
+**Ohne eingerichteten Turnstile** bleibt nur Bremsen, und Bremsen sperrt aus.
+Die Schwelle liegt dort deshalb bei 50 und das Fenster läuft nach 15 Minuten ab.
+Das ist die schlechtere Hälfte des Kompromisses: **richten Sie Turnstile ein**,
+dann ist der Login gegen verteiltes Raten geschützt, ohne dass ein Angreifer
+Konten lahmlegen kann.
 
 Details und Restrisiken: [THREAT_MODEL.md](THREAT_MODEL.md), Learnings: [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md).
 

@@ -281,6 +281,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   const accessTokenSigner = options.accessTokenSigner ?? accessTokenSignerFromEnv(env);
   const databaseUrl = options.databaseUrl ?? env.DATABASE_URL;
   const corsAllowedOrigins = parseCorsAllowedOrigins(env);
+  warnAboutNullCorsOrigin(corsAllowedOrigins);
   const attachmentsRoot = env.ATTACHMENTS_DIR?.trim() || '/app/data/attachments';
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
@@ -717,6 +718,27 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
 
 function reportMailAclRolloutDiagnostic(event: Parameters<MailAclRolloutDiagnosticReporter>[0]): void {
   console.warn(`[mail-acl-rollout] telemetry diagnostic: ${event.code}`);
+}
+
+/**
+ * `Origin: null` ist keine Herkunft, sondern deren Abwesenheit. Sandboxed
+ * iframes, `file://`-Dokumente und einige Weiterleitungen senden es — jede
+ * beliebige fremde Website kann diesen Wert also erzeugen. In der Allowlist
+ * steht er damit nicht fuer "unser Desktop-Client", sondern fuer "alle".
+ * Zusammen mit `Access-Control-Allow-Credentials: true` duerfte fremdes
+ * JavaScript dann angemeldete Anfragen stellen UND die Antworten lesen.
+ *
+ * Kein Abbruch: es gibt gepackte Clients, die ohne das nicht laufen, und diese
+ * Entscheidung gehoert dem Betreiber. Aber sie darf nicht unbemerkt bleiben.
+ */
+function warnAboutNullCorsOrigin(origins: readonly string[]): void {
+  if (!origins.includes('null')) return;
+  console.warn(
+    'SECURITY: CORS_ALLOWED_ORIGINS enthaelt "null". Dieser Wert ist keinem Absender zuzuordnen — '
+    + 'jede fremde Website kann ihn ueber ein sandboxed iframe erzeugen und damit angemeldete '
+    + 'Anfragen stellen und deren Antworten lesen. Nur setzen, wenn ein gepackter Client es '
+    + 'zwingend braucht; sonst die echte Origin des Clients eintragen.',
+  );
 }
 
 function accessTokenSignerFromEnv(env: ServerEditionEnv): AccessTokenSigner | undefined {

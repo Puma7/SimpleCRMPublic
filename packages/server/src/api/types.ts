@@ -335,6 +335,18 @@ export type AuthApiPort = {
     email: string;
     ip: string;
   }): Promise<LoginPenalty | null>;
+  /**
+   * Fehlversuche fuer dieses Konto ueber ALLE Adressen im Zeitfenster.
+   *
+   * checkLoginLock zaehlt je (E-Mail, IP) — wer aus vielen Adressen kommt,
+   * bekommt jedes Mal einen frischen Zaehler, und die Eskalation greift nie.
+   * Genau das ist Credential Stuffing. Diese Zahl ist die fehlende Sicht auf
+   * das Konto als Ganzes.
+   */
+  countRecentLoginFailuresForAccount?(input: {
+    email: string;
+    windowSeconds: number;
+  }): Promise<number>;
   findUserByEmail(email: string): Promise<AuthUserRecord | null>;
   verifyPassword(password: string, passwordHash: string): Promise<boolean>;
   recordFailedLogin(input: {

@@ -9,6 +9,7 @@ import {
   error,
   getStringField,
   positiveIntFromPath,
+  rejectUnlessSettingsView,
   requireAdmin,
   requirePrincipal,
 } from './http';
@@ -24,6 +25,19 @@ export async function handleUserGroupRoute(
 
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // Lesen ist hier NICHT harmlos: die Antworten sind zusammen die
+  // Rechte-Landkarte des Workspace — welche Gruppe welche Berechtigung haelt und
+  // wer darin sitzt. Fuer einen Angreifer mit irgendeinem Konto ist das die
+  // Auskunft, welches Ziel sich lohnt. Bisher genuegte dafuer ein beliebiges
+  // angemeldetes Konto; die Schreibpfade waren schon immer Admin-gebunden.
+  //
+  // settings.view und nicht requireAdmin: die Gruppenverwaltung liegt unter
+  // Einstellungen, und die Oberflaeche blendet diesen Bereich ohnehin nur mit
+  // settings.view ein (personalOnly in settings-panels.tsx). Admins halten die
+  // Berechtigung implizit. Die Schranke deckt sich damit genau mit dem, was die
+  // UI heute zeigt — sie nimmt nur denen den Zugriff, die ihn nie sehen sollten.
+  const deniedRead = rejectUnlessSettingsView(principal);
+  if (deniedRead) return deniedRead;
   if (!ports.userGroups) return error(503, 'user_groups_unavailable', 'Benutzergruppen-API nicht konfiguriert');
 
   if (req.path === '/api/v1/user-groups') {
