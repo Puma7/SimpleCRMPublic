@@ -133,6 +133,16 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).not.toEqual(expect.stringContaining('SIMPLECRM_MASTER_KEY='));
     // Fehlende Tabellen duerfen ein Backup nicht verhindern.
     expect(metadata).toEqual(expect.stringContaining("to_regclass('public.$2') IS NULL"));
+    // Die Tabellenliste kommt aus dem Katalog, nicht aus dieser Datei. Eine
+    // handgepflegte Liste war schon in der ersten Fassung unvollstaendig —
+    // ausgerechnet customers, deals, products und returns fehlten, also die
+    // Tabellen mit dem eigentlichen geschaeftlichen Wert. Ueber neunzig
+    // Tabellen tragen FORCE ROW LEVEL SECURITY; jede neue kaeme sonst still
+    // wieder abhanden.
+    expect(metadata).toEqual(expect.stringContaining('AND c.relrowsecurity'));
+    expect(metadata).not.toMatch(/BACKUP_METADATA_TABLES=/);
+    // Und geprueft wird ueber die Tabellen, die IM BACKUP stehen.
+    expect(metadata).toEqual(expect.stringContaining("awk -F= '/^rows_/"));
 
     // pg_restore meldet nur "keine Fehler". Erst der Abgleich der Zeilenzahlen
     // belegt Vollstaendigkeit — eine unter zu schwachen Rechten gezogene

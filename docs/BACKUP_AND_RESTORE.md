@@ -11,8 +11,10 @@ This document covers the current Docker backup, restore, restore-drill, and doct
 - `audit-archive-<stamp>.tar`: optional audit archive when `AUDIT_ARCHIVE_DIR` exists.
 - `backup-<stamp>.sha256`: SHA-256 manifest for every file in the set.
 - `backup-<stamp>.meta`: schema version, required master-key id, and row counts
-  for the core tables. Covered by the same manifest, so it cannot be edited
-  without breaking checksum verification.
+  for **every table with row level security enabled** — derived from the catalog,
+  not from a list in the script, so a new table is covered the moment it exists.
+  Covered by the same manifest, so it cannot be edited without breaking checksum
+  verification.
 
 The restore and doctor scripts verify the manifest when it exists.
 

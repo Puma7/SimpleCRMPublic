@@ -31,7 +31,27 @@
 # 3. Der Schemastand sagt, welcher Code zu diesem Dump gehoert. Beim
 #    Zurueckrollen ist das die Information, die man sonst raten muesste.
 
-BACKUP_METADATA_TABLES='workspaces users email_accounts email_messages secrets'
+# Welche Tabellen gezaehlt werden, steht NICHT hier, sondern kommt aus dem
+# Katalog: jede Tabelle mit aktivierter Row Level Security. Genau die sind dem
+# stillen Fehlerfall ausgesetzt, und genau die kommen laufend dazu — aktuell
+# ueber neunzig. Eine handgepflegte Liste waere schon beim naechsten
+# Schema-Zuwachs unvollstaendig, ohne dass es jemandem auffiele; ausgerechnet
+# die Kerntabellen der CRM (customers, deals, products, returns) fehlten in der
+# ersten Fassung dieser Datei.
+#
+# Kosten: ein count(*) je Tabelle. Das ist deutlich billiger als der pg_dump,
+# der unmittelbar danach ohnehin jede Zeile liest.
+BACKUP_METADATA_COUNT_SQL="
+  SELECT 'rows_' || c.relname || '=' ||
+         (xpath('/row/c/text()', query_to_xml(
+            format('SELECT count(*) AS c FROM %I.%I', n.nspname, c.relname),
+            false, true, '')))[1]::text
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relkind = 'r'
+    AND n.nspname = 'public'
+    AND c.relrowsecurity
+  ORDER BY c.relname"
 
 backup_metadata_path() {
   # $1 = Backup-Verzeichnis, $2 = Zeitstempel
@@ -66,9 +86,7 @@ write_backup_metadata() {
         THEN 'n/a'
         ELSE coalesce((SELECT string_agg(DISTINCT key_id, ',' ORDER BY key_id) FROM secrets), 'none')
       END" 2>/dev/null || printf 'unknown')"
-    for table in $BACKUP_METADATA_TABLES; do
-      printf 'rows_%s=%s\n' "$table" "$(backup_metadata_count "$database_url" "$table")"
-    done
+    psql "$database_url" -v ON_ERROR_STOP=1 -Atc "$BACKUP_METADATA_COUNT_SQL" 2>/dev/null || true
   } > "$meta_path"
 }
 
@@ -116,8 +134,11 @@ verify_backup_metadata() {
     return 0
   fi
 
+  # Ueber die Tabellen laufen, die IM BACKUP stehen — nicht ueber eine hier
+  # gepflegte Liste. Damit prueft ein Restore genau das, was seine Sicherung
+  # erfasst hat, auch wenn das Schema sich seither veraendert hat.
   empty=0
-  for table in $BACKUP_METADATA_TABLES; do
+  for table in $(awk -F= '/^rows_/ { sub(/^rows_/, "", $1); print $1 }' "$meta_path"); do
     expected="$(backup_metadata_value "$meta_path" "rows_$table" || printf 'n/a')"
     [ "$expected" = 'n/a' ] && continue
     actual="$(backup_metadata_count "$database_url" "$table")"
