@@ -159,6 +159,13 @@ describe('server edition AP-12 operator docs', () => {
     // jetzt selbst, dass sie unvollstaendig ist, und der Restore verweigert
     // daraufhin die Erfolgsmeldung.
     expect(metadata).toEqual(expect.stringContaining("row_counts='failed'"));
+    // Die Zeilen muessen per if geschrieben werden, nicht per `[ -n ] && ...`:
+    // der letzte Befehl bestimmt den Status der Klammergruppe, und bei leerer
+    // Zaehlung haette die Kurzschluss-Form write_backup_metadata scheitern
+    // lassen — `set -e` in backup.sh braeche dann VOR dem pg_dump ab, also
+    // genau umgekehrt zum beabsichtigten Weiterlaufen.
+    expect(metadata).toMatch(/if \[ -n "\$counts" \]; then\s*\n\s*printf '%s\\n' "\$counts"/);
+    expect(metadata).not.toMatch(/\[ -n "\$counts" \] && printf/);
     // Der Marker darf NICHT im rows_-Namensraum liegen: die Pruefschleife liest
     // jeden rows_-Eintrag als Tabellennamen und suchte sonst eine Tabelle
     // namens 'recorded' — genau daran ist der Restore-Drill in CI gescheitert.

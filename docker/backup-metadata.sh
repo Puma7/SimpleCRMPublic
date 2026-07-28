@@ -114,7 +114,14 @@ write_backup_metadata() {
     # Tabellennamen, ein Marker in dem Namensraum waere eine Tabelle namens
     # 'recorded' und die Pruefung suchte sie vergeblich.
     printf 'row_counts=%s\n' "$row_counts"
-    [ -n "$counts" ] && printf '%s\n' "$counts"
+    # Bewusst ein if statt `[ -n ... ] && ...`: der letzte Befehl bestimmt den
+    # Status der Klammergruppe. Bei leerer Zaehlung liefe die Kurzschluss-Form
+    # auf Status 1 hinaus, write_backup_metadata schluege fehl und `set -e` in
+    # backup.sh braeche VOR dem pg_dump ab — genau das Gegenteil des hier
+    # beabsichtigten Verhaltens.
+    if [ -n "$counts" ]; then
+      printf '%s\n' "$counts"
+    fi
   } > "$meta_path"
 }
 
