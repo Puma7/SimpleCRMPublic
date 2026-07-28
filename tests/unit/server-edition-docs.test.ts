@@ -152,7 +152,11 @@ describe('server edition AP-12 operator docs', () => {
     // Erfolg — die Verifikation waere lautlos verschwunden. Die Datei sagt
     // jetzt selbst, dass sie unvollstaendig ist, und der Restore verweigert
     // daraufhin die Erfolgsmeldung.
-    expect(metadata).toEqual(expect.stringContaining("rows_recorded='failed'"));
+    expect(metadata).toEqual(expect.stringContaining("row_counts='failed'"));
+    // Der Marker darf NICHT im rows_-Namensraum liegen: die Pruefschleife liest
+    // jeden rows_-Eintrag als Tabellennamen und suchte sonst eine Tabelle
+    // namens 'recorded' — genau daran ist der Restore-Drill in CI gescheitert.
+    expect(metadata).not.toMatch(/rows_recorded/);
     expect(metadata).toEqual(expect.stringContaining('this backup carries no row counts'));
     expect(metadata).not.toMatch(/BACKUP_METADATA_COUNT_SQL" 2>\/dev\/null \|\| true/);
     // Und eine im Manifest gelistete, aber fehlende Metadatei bricht ab; nur

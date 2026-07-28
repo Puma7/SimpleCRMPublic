@@ -92,9 +92,9 @@ write_backup_metadata() {
   # jeder Restore verweigert daraufhin die Erfolgsmeldung.
   if counts="$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "$BACKUP_METADATA_COUNT_SQL" 2>&1)" \
     && [ -n "$counts" ]; then
-    rows_recorded='ok'
+    row_counts='ok'
   else
-    rows_recorded='failed'
+    row_counts='failed'
     counts=''
     echo "warning: could not record row counts for this backup; a restore will refuse to report it as verified" >&2
   fi
@@ -110,7 +110,10 @@ write_backup_metadata() {
         THEN 'n/a'
         ELSE coalesce((SELECT string_agg(DISTINCT key_id, ',' ORDER BY key_id) FROM secrets), 'none')
       END" 2>/dev/null || printf 'unknown')"
-    printf 'rows_recorded=%s\n' "$rows_recorded"
+    # Bewusst NICHT 'rows_...': die Pruefschleife liest jeden rows_-Eintrag als
+    # Tabellennamen, ein Marker in dem Namensraum waere eine Tabelle namens
+    # 'recorded' und die Pruefung suchte sie vergeblich.
+    printf 'row_counts=%s\n' "$row_counts"
     [ -n "$counts" ] && printf '%s\n' "$counts"
   } > "$meta_path"
 }
@@ -177,7 +180,7 @@ verify_backup_metadata() {
   # statement_timeout) — die Datei sieht dann vollstaendig aus, enthaelt aber
   # nichts zu pruefen. Aeltere Backups ohne den Marker gelten als in Ordnung,
   # solange sie Zeilen fuehren.
-  recorded="$(backup_metadata_value "$meta_path" 'rows_recorded' || printf 'unknown')"
+  recorded="$(backup_metadata_value "$meta_path" 'row_counts' || printf 'unknown')"
   if [ "$recorded" = 'failed' ] || ! grep -q '^rows_' "$meta_path"; then
     echo "$label: this backup carries no row counts, so completeness cannot be verified" >&2
     return 1
