@@ -4,6 +4,7 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -59,8 +60,18 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     } catch {
       /* localStorage unavailable */
     }
-    if (typeof document !== "undefined") document.documentElement.lang = next
   }, [])
+
+  // Zweite Verteidigungslinie: Sprache am <html>-Element spiegeln — auch beim
+  // ERSTEN Rendern, nicht nur beim Wechsel. Die eigentliche Unterdrueckung
+  // haengt an translate="no" und <meta name="google" content="notranslate">
+  // in index.html (statisch, ab dem ersten Byte). Das kurze Fenster vor diesem
+  // Effect, in dem bei gespeicherter en noch de steht, ist bewusst unkritisch.
+  // useLayoutEffect oder ein Seiteneffekt in readStoredLanguage() waeren hier
+  // unnoetig — kein Crash-Pfad aus diesem Fenster ableitbar.
+  useEffect(() => {
+    if (typeof document !== "undefined") document.documentElement.lang = language
+  }, [language])
 
   const t = useCallback<TranslateFn>(
     (key, params) => translate(language, key, params),

@@ -1,9 +1,23 @@
 <!-- filepath: /Users/marius/Coding/simplecrmelectron/SimpleCRMElectron/simplecrmelectron/index.html -->
 <!doctype html>
-<html lang="en">
+<html lang="de" translate="no">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Erste Verteidigungslinie gegen maschinelle Browser-Uebersetzung (ab dem
+      ersten Byte, noch vor React). translate="no" am <html> plus dieses Meta-
+      Tag schalten die Uebersetzung aus; das lang-Spiegeln in I18nProvider ist
+      die zweite Linie gegen Chrome-Heuristiken.
+
+      Chrome & Co. ersetzen beim Uebersetzen Textknoten in-place durch
+      <font>-Elemente. React kennt danach seine eigenen Kinder nicht mehr und
+      wirft beim naechsten Unmount "Failed to execute 'removeChild' on 'Node'"
+      — die ErrorBoundary loest dann ganze Seitenbereiche ab. Die App bringt
+      ihre Sprachumschaltung selbst mit (LanguageToggle, de/en), eine
+      Fremduebersetzung ist also weder noetig noch gefahrlos.
+    -->
+    <meta name="google" content="notranslate" />
     <title>SimpleCRM</title>
   </head>
   <body>

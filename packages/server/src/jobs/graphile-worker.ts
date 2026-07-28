@@ -747,7 +747,10 @@ export function graphileJobKeyForJob(
       return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}${identity}`;
     }
   }
-  if (type === 'lock.cleanup' && workspaceKey) {
+  // Beide Wartungsjobs: hoechstens einer je Workspace darf warten. Der Ticker
+  // laeuft in jeder Server-Instanz; ohne Key stapelten sich bei mehreren
+  // Instanzen Duplikate, mit Key kollabieren sie ueber jobKeyMode 'replace'.
+  if ((type === 'lock.cleanup' || type === 'audit.retention') && workspaceKey) {
     return `${type}:${workspaceKey}`;
   }
   return undefined;

@@ -14605,6 +14605,10 @@ describe('server edition foundation', () => {
         wheres: [
           ['workspace_id', '=', WORKSPACE_A_ID],
           ['message_id', 'in', [41, 42]],
+          // Die Stale-Bedingung MUSS auch im DELETE stehen: unter READ COMMITTED
+          // kann der Besitzer zwischen SELECT und DELETE heartbeaten, und ein
+          // DELETE nur auf Workspace und ID entfernte die frisch erneuerte Sperre.
+          ['last_heartbeat_at', '<', new Date('2026-06-03T11:58:00.000Z')],
         ],
       },
       {
@@ -14631,6 +14635,7 @@ describe('server edition foundation', () => {
             'inbound_terminal_child_done:11:23:draft-1#edge-1:5',
             'inbound_terminal_child_done:11:23:draft-1#edge-2:5',
           ]],
+          ['last_updated', '<', new Date('2026-05-27T12:00:00.000Z')],
         ],
       },
       {
@@ -14667,6 +14672,75 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       olderThan: new Date('2026-05-04T12:00:00.000Z'),
       ids: [7, 8],
+    }]);
+  });
+
+  test('maintenance handlers requeue the next batch only when the current one filled up', async () => {
+    // Ohne Nachschieben deckelt der Takt den Durchsatz: je Lauf hoechstens
+    // `limit` Zeilen, bei taeglichem Takt also `limit` pro Tag. Ein Workspace
+    // mit hoeherer Ereignisrate oder Altbestand holte den Rueckstand nie auf.
+    const auditRows = makeAuditChainRows([
+      { id: 7, createdAt: '2026-05-01T12:00:00.000Z' },
+      { id: 8, createdAt: '2026-05-02T12:00:00.000Z' },
+      { id: 9, createdAt: '2026-05-03T12:00:00.000Z' },
+    ]);
+    const requeued: Array<{ type: string; workspaceId: string; runAfter?: Date }> = [];
+    const makeHandlers = (rows: Record<string, unknown[]>) => createMaintenanceJobHandlers({
+      db: makeMaintenanceDb(rows).db,
+      now: () => new Date('2026-06-03T12:00:00.000Z'),
+      requeue: {
+        async enqueue(input) {
+          requeued.push({
+            type: input.type,
+            workspaceId: input.workspaceId,
+            ...(input.runAfter ? { runAfter: input.runAfter } : {}),
+          });
+          return undefined;
+        },
+      },
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    // Volle Charge (limit 2, zwei geloeschte Sperren) => es liegt vermutlich mehr an.
+    await makeHandlers({
+      conversation_locks: [{ message_id: 41 }, { message_id: 42 }],
+      sync_info: [],
+    })['lock.cleanup']?.(makeQueuedJob({
+      id: 51,
+      type: 'lock.cleanup',
+      payload: { workspaceId: WORKSPACE_A_ID, staleSeconds: 120, limit: 2 },
+    }));
+    expect(requeued).toEqual([{
+      type: 'lock.cleanup',
+      workspaceId: WORKSPACE_A_ID,
+      // Kurze Pause statt sofort: abbauen, ohne die Datenbank zu fluten.
+      runAfter: new Date('2026-06-03T12:00:05.000Z'),
+    }]);
+
+    // Teilcharge => nichts nachschieben, sonst liefe der Takt endlos weiter.
+    requeued.length = 0;
+    await makeHandlers({
+      conversation_locks: [{ message_id: 41 }],
+      sync_info: [],
+    })['lock.cleanup']?.(makeQueuedJob({
+      id: 52,
+      type: 'lock.cleanup',
+      payload: { workspaceId: WORKSPACE_A_ID, staleSeconds: 120, limit: 2 },
+    }));
+    expect(requeued).toEqual([]);
+
+    // audit.retention: limit 2 liest 3 Zeilen, die Randzeile der Hash-Kette
+    // bleibt stehen — zwei Loeschungen sind die volle Charge.
+    requeued.length = 0;
+    await makeHandlers({ audit_events: auditRows })['audit.retention']?.(makeQueuedJob({
+      id: 53,
+      type: 'audit.retention',
+      payload: { workspaceId: WORKSPACE_A_ID, retentionDays: 30, limit: 2 },
+    }));
+    expect(requeued).toEqual([{
+      type: 'audit.retention',
+      workspaceId: WORKSPACE_A_ID,
+      runAfter: new Date('2026-06-03T12:00:05.000Z'),
     }]);
   });
 

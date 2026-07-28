@@ -3,6 +3,7 @@ export * from './scheduled-send-job-key';
 export * from './graphile-worker';
 export * from './job-worker-log';
 export * from './maintenance-handlers';
+export * from './maintenance-ticker';
 export * from './policy';
 export * from './postgres-job-queue-worker';
 export * from './production-handlers';

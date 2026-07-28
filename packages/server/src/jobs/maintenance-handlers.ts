@@ -36,7 +36,34 @@ export type MaintenanceJobHandlersOptions = Readonly<{
   now?: () => Date;
   auditArchive?: AuditRetentionArchivePort;
   applyWorkspaceSession?: WorkspaceSessionApplier;
+  /**
+   * Zum Nachschieben einer weiteren Charge, wenn eine voll geworden ist.
+   *
+   * Ohne das deckelt der Takt den Durchsatz: je Lauf werden hoechstens `limit`
+   * Zeilen geloescht, also bei taeglichem Takt hoechstens `limit` pro Tag. Ein
+   * Workspace, der jemals mehr Audit-Ereignisse pro Tag erzeugt hat (oder einen
+   * Altbestand mitbringt), holt den Rueckstand nie auf — die 365-Tage-Retention
+   * waere dann nur behauptet. Dasselbe gilt fuer die Abschlussmarker.
+   *
+   * Ein kuerzeres Intervall wuerde die Grenze nur verschieben; Nachschieben
+   * macht den Abbau unabhaengig von der Anfallrate. Es terminiert, weil nur
+   * nachgeschoben wird, wenn die Charge VOLL war, also nachweislich Fortschritt
+   * stattgefunden hat.
+   */
+  requeue?: MaintenanceRequeuePort;
 }>;
+
+export type MaintenanceRequeuePort = Readonly<{
+  enqueue(input: {
+    type: string;
+    workspaceId: string;
+    payload: JobPayload;
+    runAfter?: Date;
+  }): Promise<unknown>;
+}>;
+
+/** Kurze Pause zwischen zwei Chargen — abbauen, ohne die Datenbank zu fluten. */
+export const MAINTENANCE_REQUEUE_DELAY_MS = 5_000;
 
 export type MaintenanceCleanupPlan = Readonly<{
   workspaceId: string;
@@ -87,7 +114,7 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
   return {
     'lock.cleanup': async (job) => {
       const plan = buildLockCleanupPlan(job.payload, now());
-      await withWorkspaceTransaction(options.db, {
+      const batchWasFull = await withWorkspaceTransaction(options.db, {
         workspaceId: plan.workspaceId,
         role: 'system',
       }, async (db) => {
@@ -105,6 +132,14 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
             .deleteFrom('conversation_locks')
             .where('workspace_id', '=', plan.workspaceId)
             .where('message_id', 'in', messageIds)
+            // Stale-Bedingung ERNEUT pruefen. Die Transaktion allein schuetzt
+            // nicht: unter READ COMMITTED kann der Besitzer zwischen SELECT und
+            // DELETE erfolgreich heartbeaten, und ein DELETE nur auf Workspace
+            // und ID entfernte die frisch erneuerte Sperre — zwei Bearbeiter
+            // haetten dieselbe Nachricht offen. Mit dem Praedikat prueft
+            // Postgres die zwischenzeitlich aktualisierte Zeile erneut und
+            // laesst sie stehen.
+            .where('last_heartbeat_at', '<', plan.staleBefore)
             .executeTakeFirst();
         }
 
@@ -121,18 +156,27 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
           .orderBy('last_updated', 'asc')
           .limit(plan.limit)
           .execute();
-        if (staleMarkers.length === 0) return;
+        if (staleMarkers.length > 0) {
+          await db
+            .deleteFrom('sync_info')
+            .where('workspace_id', '=', plan.workspaceId)
+            .where('key', 'in', staleMarkers.map((row) => row.key))
+            // Analog zu den Sperren: das Alter gehoert auch ins DELETE. Marker
+            // werden zwar nur einmal geschrieben (ON CONFLICT DO NOTHING) und
+            // nie erneuert, aber ein Loeschen soll nicht davon abhaengen.
+            .where('last_updated', '<', plan.terminalMarkersBefore)
+            .executeTakeFirst();
+        }
 
-        await db
-          .deleteFrom('sync_info')
-          .where('workspace_id', '=', plan.workspaceId)
-          .where('key', 'in', staleMarkers.map((row) => row.key))
-          .executeTakeFirst();
+        // Voll heisst: es liegt vermutlich noch mehr an.
+        return messageIds.length >= plan.limit || staleMarkers.length >= plan.limit;
       }, { applySession: options.applyWorkspaceSession });
+
+      if (batchWasFull) await requeue(options, 'lock.cleanup', plan.workspaceId, job.payload, now());
     },
     'audit.retention': async (job) => {
       const plan = buildAuditRetentionPlan(job.payload, now());
-      await withWorkspaceTransaction(options.db, {
+      const batchWasFull = await withWorkspaceTransaction(options.db, {
         workspaceId: plan.workspaceId,
         role: 'system',
       }, async (db) => {
@@ -149,7 +193,7 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
         }
 
         const ids = auditRetentionDeletionIds(rows, plan.olderThan);
-        if (ids.length === 0) return;
+        if (ids.length === 0) return false;
 
         await options.auditArchive?.archive({
           workspaceId: plan.workspaceId,
@@ -162,9 +206,41 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
           .where('workspace_id', '=', plan.workspaceId)
           .where('id', 'in', ids)
           .executeTakeFirst();
+
+        // Es wurden `limit + 1` Zeilen gelesen und die Randzeile der Hash-Kette
+        // bleibt stehen — `limit` Loeschungen sind also die volle Charge.
+        return ids.length >= plan.limit;
       }, { applySession: options.applyWorkspaceSession });
+
+      if (batchWasFull) await requeue(options, 'audit.retention', plan.workspaceId, job.payload, now());
     },
   };
+}
+
+/**
+ * Naechste Charge desselben Wartungsjobs nachschieben.
+ *
+ * Bewusst NACH der Transaktion: ein Rollback soll keine Folgecharge hinterlassen.
+ * Ein Fehler beim Nachschieben darf den bereits erledigten Lauf nicht als
+ * gescheitert dastehen lassen — sonst wiederholte Graphile ihn und die
+ * naechste Charge kaeme ohnehin. Die Payload wird unveraendert weitergereicht,
+ * damit Betriebs-Ueberschreibungen (limit, Aufbewahrungsfenster) erhalten
+ * bleiben.
+ */
+async function requeue(
+  options: MaintenanceJobHandlersOptions,
+  type: 'lock.cleanup' | 'audit.retention',
+  workspaceId: string,
+  payload: JobPayload,
+  now: Date,
+): Promise<void> {
+  if (!options.requeue) return;
+  await options.requeue.enqueue({
+    type,
+    workspaceId,
+    payload,
+    runAfter: new Date(now.getTime() + MAINTENANCE_REQUEUE_DELAY_MS),
+  }).catch(() => undefined);
 }
 
 export function auditRetentionRowsByIds(

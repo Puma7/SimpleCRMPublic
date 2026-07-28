@@ -106,6 +106,7 @@ import {
   createWebhookJobHandlers,
   mergeJobHandlerRegistries,
   startGraphileWorkerRuntime,
+  startMaintenanceJobTicker,
   startPostgresJobQueueWorker,
   type GraphileQueuePort,
   type GraphileWorkerRuntime,
@@ -302,6 +303,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   let attachmentTextTicker: ReturnType<typeof startAttachmentTextBackfillTicker> | undefined;
   let bodyTextBackfillRun: ReturnType<typeof startBodyTextBackfillRun> | undefined;
   let emailTrackingRetentionTicker: ReturnType<typeof startEmailTrackingRetentionTicker> | undefined;
+  const maintenanceTickers: Array<{ stop(): void }> = [];
   let inboundSmtpService: InboundSmtpService | undefined;
   const ports = options.ports ?? await createDefaultServerPorts({
     databaseUrl,
@@ -377,6 +379,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     attachmentTextTicker?.stop();
     bodyTextBackfillRun?.stop();
     emailTrackingRetentionTicker?.stop();
+    for (const ticker of maintenanceTickers) ticker.stop();
     await inboundSmtpService?.stop().catch(() => undefined);
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
   });
@@ -438,6 +441,21 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
           service: { pruneWorkspace: ports.emailTracking.pruneWorkspace },
         });
       }
+      // Wartungsjobs takten. Ohne diese Ticker wurden lock.cleanup und
+      // audit.retention nie eingereiht — Handler und Policy gab es, nur keinen
+      // Ausloeser. Begruendung der Bauform in jobs/maintenance-ticker.
+      if (apiJobQueue) {
+        const maintenanceQueue = apiJobQueue;
+        const maintenanceLog = createJobWorkerLogger(serverLogStore);
+        for (const jobType of ['lock.cleanup', 'audit.retention'] as const) {
+          maintenanceTickers.push(startMaintenanceJobTicker({
+            db,
+            queue: maintenanceQueue,
+            jobType,
+            log: (message) => maintenanceLog({ level: 'warn', message }),
+          }));
+        }
+      }
       // After the email-tracking construction so the relay reuses its instance;
       // tracking stays optional — without PUBLIC_BASE_URL + master key the
       // relay still runs, it just sends untracked.
@@ -454,6 +472,7 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
     attachmentTextTicker?.stop();
     bodyTextBackfillRun?.stop();
     emailTrackingRetentionTicker?.stop();
+    for (const ticker of maintenanceTickers) ticker.stop();
     await inboundSmtpService?.stop().catch(() => undefined);
     await closeServerResources(jobWorker, postgresJobQueueWorker, db, eventNotifications, apiJobQueue);
     throw error;
@@ -953,6 +972,9 @@ function buildServerJobHandlers(input: {
         mergeJobHandlerRegistries(
           db ? createMaintenanceJobHandlers({
             db,
+            // Volle Charge => naechste nachschieben, sonst deckelt der Takt den
+            // Durchsatz auf `limit` Zeilen je Intervall (Begruendung dort).
+            ...(ports.jobQueue ? { requeue: ports.jobQueue } : {}),
             ...(auditArchiveRoot ? {
               auditArchive: createJsonlAuditRetentionArchivePort({ rootDir: auditArchiveRoot }),
             } : {}),
