@@ -942,13 +942,23 @@ async function assertMasterKeyMatchesDatabaseLocked(
     return;
   }
 
+  // Steht schon ein Fingerabdruck da und es ist kein Schluessel gesetzt, ist
+  // der Abbruch bereits entschieden — VOR der Probe. Sonst naehme diese
+  // Startvariante erst SHARE-Sperren auf vier Tabellen im Betrieb, laese den
+  // ganzen Secret-Bestand ein und koennte am lock_timeout von fuenf Sekunden
+  // mit einem Sperrfehler abbrechen. Der meldete dann irgendetwas ueber
+  // Sperren, waehrend die Ursache eine vergessene Umgebungsvariable ist.
+  if (!masterKey && (stored?.length ?? 0) > 0) {
+    throw new Error(MASTER_KEY_MISSING_MESSAGE);
+  }
+
   // Kein passender Eintrag. Bevor das als "frische Installation" durchgeht:
   // gibt es ueberhaupt Secrets? Nach einem Upgrade oder einem eingespielten
   // pre-0049-Dump ist die Tabelle leer und die Datenbank trotzdem voll.
   const probe = await findSecretProbe(db, masterKey?.keyId);
 
   if (!masterKey) {
-    if ((stored?.length ?? 0) === 0 && probe.kind === 'none') {
+    if (probe.kind === 'none') {
       // Nichts da, kein Schluessel gesetzt: die Installation ist frei, sich
       // spaeter festzulegen. Aber nicht stillschweigend — die Sperre
       // serialisiert nur diesen Blick, nicht die Zukunft. Startet gleich
@@ -981,7 +991,7 @@ async function assertMasterKeyMatchesDatabaseLocked(
     // Secret, ein Link, ein ausgestelltes Token), holt der naechste Start die
     // Festlegung nach.
     console.warn(
-      '[master-key] this database holds e-mail tracking events whose dedupe keys may be derived '
+      '[master-key] this database holds e-mail tracking events whose dedupe keys are derived '
       + 'from the master key, but nothing that can be verified against it (no secrets, no sealed '
       + 'links, no sealed raw metadata, no issued tokens). Starting without recording a '
       + 'fingerprint — if this is not the original SIMPLECRM_MASTER_KEY, re-delivered delivery '
@@ -1179,6 +1189,13 @@ const SECRET_PROBE_PAGE = 500;
 const TRACKING_PROBE_SAMPLE = 25;
 /** Fenster ueber die juengsten Ereignisse, in dem nach versiegelten gesucht wird. */
 const TRACKING_EVENT_SCAN_WINDOW = 5000;
+/**
+ * Ein dedupe_key, der am Master-Key haengt: crypto.dedupeHash liefert einen
+ * HMAC-SHA256 in Hex, also genau 64 Zeichen aus [0-9a-f]. Alle im Klartext
+ * gebildeten Formen ('queued:<id>', 'smtp_accepted:<id>', ...) enthalten einen
+ * Doppelpunkt und koennen diesem Muster nicht entsprechen.
+ */
+const KEY_DERIVED_DEDUPE_KEY_PATTERN = '^[0-9a-f]{64}$';
 
 /** Fuer die Fehlermeldung: was liegt statt des Erwarteten in der Tabelle? */
 function describeSecretKinds(found: readonly SecretKind[]): string {
@@ -1408,13 +1425,31 @@ async function findSecretProbe(
   // Nichts Nachpruefbares. Aber "nichts nachpruefbar" ist nicht "nichts da":
   // die Aufbewahrung raeumt Rohdaten nach 7 Tagen und abgelaufene Resolver
   // weg, die Ereignisse selbst bleiben 365 Tage. Deren dedupe_key kann ein
-  // HMAC ueber den Tracking-Schluessel sein (bei eingehender DSN-/MDN-Evidenz
-  // ist er das). Nachrechnen laesst er sich nicht — die Eingabe kennt diese
-  // Pruefung nicht —, aber als "leer" darf so eine Datenbank nicht gelten:
-  // mit dem falschen Schluessel entstuenden fuer dieselbe Evidenz andere
-  // Dedupe-Schluessel, und die Ereignisse verdoppelten sich.
+  // HMAC ueber den Tracking-Schluessel sein. Nachrechnen laesst er sich nicht
+  // — die Eingabe kennt diese Pruefung nicht —, aber als "leer" darf so eine
+  // Datenbank nicht gelten: mit dem falschen Schluessel entstuenden fuer
+  // dieselbe Evidenz andere Dedupe-Schluessel, und die Ereignisse
+  // verdoppelten sich.
+  //
+  // "Kann" ist dabei woertlich zu nehmen, und deshalb steht hier ein Filter.
+  // Die Lebenszyklus-Ereignisse schreiben ihren dedupe_key im Klartext
+  // ('queued:<id>', 'smtp_accepted:<id>', 'sending:<id>:<zeit>', ...); am
+  // Schluessel haengt er nur dort, wo crypto.dedupeHash ihn erzeugt — bei
+  // eingehender DSN-/MDN-Evidenz und bei Oeffnungen/Klicks. Das ist keine
+  // Schaetzung, sondern am Wertebereich ablesbar: dedupeHash ist ein
+  // HMAC-SHA256 in Hex, also genau 64 Zeichen aus [0-9a-f], waehrend jede
+  // Klartextform mindestens einen Doppelpunkt enthaelt.
+  //
+  // Ohne den Filter galt eine Installation, die nur Nachrichten VERSENDET und
+  // sonst nichts sammelt, dauerhaft als 'unverifiable'. Dann wuerde nie ein
+  // Fingerabdruck hinterlegt — und genau der Zustand, den diese Pruefung
+  // verhindern soll (zwei Repliken mit verschiedenen Schluesseln kommen beide
+  // durch und schreiben danach unvereinbare Secrets), bliebe fuer immer offen.
   const anyEvent = await tolerateMissing(() => trx
-    .selectFrom('email_tracking_events').select('id').limit(1).execute());
+    .selectFrom('email_tracking_events')
+    .select('id')
+    .where('dedupe_key', '~', KEY_DERIVED_DEDUPE_KEY_PATTERN)
+    .limit(1).execute());
   if (anyEvent.length > 0) return { kind: 'unverifiable' };
 
   return { kind: 'none' };

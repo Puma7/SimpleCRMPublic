@@ -144,9 +144,11 @@ publish_backup_metadata() {
 # Die Zeilenzahlen (rows_*) bleiben davon unberuehrt: sie entstehen weiter vor
 # dem Dump, und dort ist die Ungenauigkeit ausdruecklich eingeplant
 # (verify_backup_metadata prueft bewusst nicht auf Gleichheit, Begruendung ganz
-# oben). Nur rows_email_tracking_events wird mitgezogen, weil
-# backup_metadata_encrypted_state daran den Zustand 'retained' festmacht — und
-# das ist eine Aussage ueber den Schluessel, keine ueber die Vollstaendigkeit.
+# oben). Was der Zustand 'retained' braucht, steht deshalb in einem eigenen
+# Feld: master_key_retained_events. Die blosse Zeilenzahl von
+# email_tracking_events taugte dafuer ohnehin nicht — sie zaehlt auch die
+# Ereignisse, deren dedupe_key im Klartext gebildet wird und an denen kein
+# Schluessel haengt.
 
 # Steht die Tabelle im Dump? 0 = ja, 1 = nein, 2 = pg_restore selbst gescheitert.
 # Die drei werden auseinandergehalten, weil sie drei verschiedene Dinge heissen:
@@ -282,6 +284,34 @@ read_dump_master_key_encrypted_rows() {
   printf '%s' "$total"
 }
 
+# Wie viele aufbewahrte Ereignisse haengen am Schluessel, ohne nachpruefbar zu
+# sein?
+#
+# Nicht jeder dedupe_key tut das. Die Lebenszyklus-Ereignisse bilden ihn im
+# Klartext ('queued:<id>', 'smtp_accepted:<id>', ...); abgeleitet ist er nur
+# dort, wo crypto.dedupeHash ihn erzeugt — bei eingehender DSN-/MDN-Evidenz und
+# bei Oeffnungen/Klicks. Das ist am Wertebereich ablesbar und keine Schaetzung:
+# dedupeHash ist ein HMAC-SHA256 in Hex, also genau 64 Zeichen aus [0-9a-f],
+# waehrend jede Klartextform einen Doppelpunkt enthaelt. Genau dieselbe
+# Unterscheidung trifft die Startpruefung der API; eine Warnung, die von ihr
+# abweicht, waere schlimmer als keine.
+#
+# Die Laengenpruefung steht bewusst vor dem Muster statt als Intervall
+# /^[0-9a-f]{64}$/ darin: das awk in postgres:*-alpine ist busybox awk, und auf
+# Intervalle in regulaeren Ausdruecken soll sich hier nichts verlassen.
+read_dump_master_key_retained_events() {
+  status=0
+  dump_table_present "$1" 'email_tracking_events' || status=$?
+  case $status in
+    1) printf 'n/a'; return 0 ;;
+    2) printf 'unknown'; return 0 ;;
+  esac
+  dump_table_column "$1" 'email_tracking_events' 'dedupe_key' | awk '
+    length($0) == 64 && $0 ~ /^[0-9a-f]+$/ { n++ }
+    END { print n + 0 }
+  '
+}
+
 # Die gelesenen Angaben in die Metadatei eintragen, sobald der Dump liegt.
 refresh_backup_metadata_master_key() {
   partial_path="$(backup_metadata_partial_path "$1" "$2")"
@@ -292,12 +322,7 @@ refresh_backup_metadata_master_key() {
   fingerprints="$(read_dump_master_key_fingerprints "$dump_path")"
   key_ids="$(read_dump_secret_key_ids "$dump_path")"
   encrypted_rows="$(read_dump_master_key_encrypted_rows "$dump_path")"
-  # Fehlt die Tabelle im Dump, bleibt der vor dem Dump gezaehlte Wert stehen:
-  # 'n/a' als Zeilenzahl waere kein gueltiger Eintrag fuer die Pruefschleife.
-  tracking_events=''
-  if dump_table_present "$dump_path" 'email_tracking_events'; then
-    tracking_events="$(dump_table_row_count "$dump_path" 'email_tracking_events')"
-  fi
+  retained_events="$(read_dump_master_key_retained_events "$dump_path")"
 
   # Bewusst NUR diese Zeilen ersetzen und die Datei sonst unangetastet lassen:
   # die uebrigen Zeilenzahlen sollen ihren Stand von VOR dem Dump behalten
@@ -306,15 +331,25 @@ refresh_backup_metadata_master_key() {
   #
   # Ueber eine Nebendatei und mv, nicht in place: bricht der Lauf mitten im
   # Schreiben ab, ist entweder die alte oder die neue Datei da, nie eine halbe.
+  # Ersetzen, und was nicht dasteht, anhaengen. Das Anhaengen ist nicht
+  # Bequemlichkeit: scheitert die Zaehlung vor dem Dump, schreibt
+  # write_backup_metadata gar keine Zeilen — und ein fehlendes
+  # master_key_retained_events liest backup_metadata_encrypted_state als 0,
+  # also als "kein Schluesselmaterial". Genau dieses Backup ist aber das, dessen
+  # Wiederherstellung mit RESTORE_ALLOW_UNVERIFIABLE=1 fortgesetzt wird.
   awk -v fingerprints="$fingerprints" -v key_ids="$key_ids" \
-      -v encrypted_rows="$encrypted_rows" -v tracking_events="$tracking_events" '
-    /^master_key_fingerprints=/    { print "master_key_fingerprints=" fingerprints; next }
-    /^secret_key_ids=/             { print "secret_key_ids=" key_ids; next }
-    /^master_key_encrypted_rows=/  { print "master_key_encrypted_rows=" encrypted_rows; next }
-    /^rows_email_tracking_events=/ && tracking_events != "" {
-      print "rows_email_tracking_events=" tracking_events; next
-    }
+      -v encrypted_rows="$encrypted_rows" -v retained_events="$retained_events" '
+    /^master_key_fingerprints=/      { print "master_key_fingerprints=" fingerprints; seen_fp = 1; next }
+    /^secret_key_ids=/               { print "secret_key_ids=" key_ids; seen_ids = 1; next }
+    /^master_key_encrypted_rows=/    { print "master_key_encrypted_rows=" encrypted_rows; seen_rows = 1; next }
+    /^master_key_retained_events=/   { print "master_key_retained_events=" retained_events; seen_ret = 1; next }
     { print }
+    END {
+      if (!seen_ids)  print "secret_key_ids=" key_ids
+      if (!seen_fp)   print "master_key_fingerprints=" fingerprints
+      if (!seen_rows) print "master_key_encrypted_rows=" encrypted_rows
+      if (!seen_ret)  print "master_key_retained_events=" retained_events
+    }
   ' "$partial_path" > "$partial_path.new" && mv "$partial_path.new" "$partial_path"
 }
 
@@ -447,6 +482,18 @@ write_backup_metadata() {
     # Bewusst NICHT 'rows_...': die Pruefschleife liest jeden rows_-Eintrag als
     # Tabellennamen, ein Marker in dem Namensraum waere eine Tabelle namens
     # 'recorded' und die Pruefung suchte sie vergeblich.
+    # Aufbewahrte Ereignisse mit schluesselgebundenem dedupe_key. Warum nur
+    # diese und nicht die blosse Zeilenzahl: Begruendung bei
+    # read_dump_master_key_retained_events. Auch dieser Wert ist vorlaeufig und
+    # wird nach dem Dump ersetzt.
+    printf 'master_key_retained_events=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
+      SELECT CASE WHEN to_regclass('public.email_tracking_events') IS NULL
+        THEN 'n/a'
+        ELSE (xpath('/row/c/text()', query_to_xml(
+                'SELECT count(*) AS c FROM public.email_tracking_events
+                   WHERE dedupe_key ~ ''^[0-9a-f]{64}\$''',
+                false, true, '')))[1]::text
+      END" 2>/dev/null || printf 'unknown')"
     printf 'row_counts=%s\n' "$row_counts"
     # Bewusst ein if statt `[ -n ... ] && ...`: der letzte Befehl bestimmt den
     # Status der Klammergruppe. Bei leerer Zaehlung liefe die Kurzschluss-Form
@@ -693,8 +740,18 @@ backup_metadata_encrypted_state() {
       # stehen, waehrend Rohdaten nach 7 Tagen und abgelaufene Resolver
       # frueher verschwinden. Der Start behandelt genau diesen Zustand als
       # "nicht festlegbar" — hier heisst er deshalb 'unknown' und nicht 'no'.
-      case "$(backup_metadata_value "$1" 'rows_email_tracking_events' || printf '0')" in
-        '' | '0' | *[!0123456789]*) printf 'no' ;;
+      retained="$(backup_metadata_value "$1" 'master_key_retained_events' || printf '')"
+      # Aeltere Sicherungen fuehren das Feld nicht. Dann bleibt nur die
+      # Ereigniszahl — zu grob, weil sie auch die Ereignisse mit
+      # Klartext-dedupe_key zaehlt, an denen kein Schluessel haengt. Lieber
+      # einmal zu viel gewarnt als eine alte Sicherung stillschweigend
+      # entwarnt.
+      [ -n "$retained" ] \
+        || retained="$(backup_metadata_value "$1" 'rows_email_tracking_events' || printf '0')"
+      case "$retained" in
+        '' | '0' | 'n/a') printf 'no' ;;
+        # Weder Zahl noch bekannter Sonderwert: nicht raten.
+        *[!0123456789]*) printf 'unknown' ;;
         *) printf 'retained' ;;
       esac
       ;;

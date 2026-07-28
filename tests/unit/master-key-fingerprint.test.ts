@@ -189,8 +189,16 @@ function fakeDb(
     trackingLinks?: Array<Record<string, unknown>>;
     trackingEvents?: Array<Record<string, unknown>>;
     trackingTokens?: Array<Record<string, unknown>>;
-    /** Ereignisse OHNE versiegelte Rohdaten — nur ueber die Zeilenzahl sichtbar. */
+    /**
+     * Ereignisse OHNE versiegelte Rohdaten, deren dedupe_key im Klartext
+     * gebildet wird ('queued:<id>'). An denen haengt kein Schluessel.
+     */
     plainEvents?: number;
+    /**
+     * Dieselben, aber mit schluesselgebundenem dedupe_key: crypto.dedupeHash
+     * liefert einen HMAC-SHA256 in Hex, also 64 Zeichen aus [0-9a-f].
+     */
+    hashedEvents?: number;
     fingerprintTableMissing?: boolean;
   } = {},
 ): { db: Kysely<ServerDatabase>; calls: FakeDbCalls } {
@@ -229,10 +237,17 @@ function fakeDb(
         }
         if (table === 'email_tracking_links') return options.trackingLinks ?? [];
         if (table === 'email_tracking_events') {
-          // Die Ex-post-Frage "gibt es ueberhaupt Ereignisse?" laeuft ueber den
-          // Query-Builder, die Suche nach versiegelten ueber rohes SQL.
+          // Die Ex-post-Frage "gibt es aufbewahrte Ereignisse, an denen ein
+          // Schluessel haengt?" laeuft ueber den Query-Builder, die Suche nach
+          // versiegelten ueber rohes SQL. Der Filter auf dedupe_key wird hier
+          // nachgebildet, sonst pruefte der Test die Unterscheidung nicht mit,
+          // die er behauptet.
+          const keyDerivedOnly = filters.some(([column]) => column === 'dedupe_key');
+          const hashed = Array.from({ length: options.hashedEvents ?? 0 }, () => ({ id: 1 }));
           const plain = Array.from({ length: options.plainEvents ?? 0 }, () => ({ id: 1 }));
-          return [...(options.trackingEvents ?? []), ...plain];
+          return keyDerivedOnly
+            ? hashed
+            : [...(options.trackingEvents ?? []), ...hashed, ...plain];
         }
         if (table === 'email_tracking_token_resolver') return options.trackingTokens ?? [];
         if (table === 'master_key_fingerprints' && options.fingerprintTableMissing) {
@@ -554,12 +569,31 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
     // kann stimmen, beweisen laesst es sich in keine Richtung), festschreiben
     // auch (ein ungeprueftes Ja wuerde den richtigen Schluessel spaeter
     // abweisen).
-    const { db, calls } = fakeDb([], { plainEvents: 3 });
+    const { db, calls } = fakeDb([], { hashedEvents: 3 });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
       expect(calls.inserted).toEqual([]);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dedupe keys may be derived'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('dedupe keys are derived'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test('Ereignisse mit Klartext-dedupe_key blockieren die Festlegung NICHT', async () => {
+    // Eine Installation, die nur Nachrichten VERSENDET, hat Ereignisse — aber
+    // ihre dedupe_key entstehen im Klartext ('queued:<id>', 'smtp_accepted:<id>'),
+    // an ihnen haengt kein Schluessel. Wuerden sie wie schluesselgebundene
+    // behandelt, bliebe diese Datenbank auf Dauer 'unverifiable': nie ein
+    // Fingerabdruck, und damit genau der Zustand offen, den die Pruefung
+    // verhindern soll — zwei Repliken mit verschiedenen Schluesseln kommen
+    // beide durch und schreiben danach unvereinbare Secrets.
+    const { db, calls } = fakeDb([], { plainEvents: 5 });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await expect(assertMasterKeyMatchesDatabase(db, RICHTIG)).resolves.toBeUndefined();
+      expect(calls.inserted).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }
@@ -568,9 +602,24 @@ describe('leere Tabelle, aber die Datenbank ist es nicht', () => {
   test('aufbewahrte Ereignisse ohne Schluessel: Abbruch', async () => {
     // Tracking gibt es nur mit Master-Key. Liegen Ereignisse da und ist keiner
     // gesetzt, fehlt er.
-    const { db } = fakeDb([], { plainEvents: 3 });
+    const { db } = fakeDb([], { hashedEvents: 3 });
     await expect(assertMasterKeyMatchesDatabase(db, undefined))
       .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
+  });
+
+  test('fehlender Schluessel bei vorhandenem Fingerabdruck: Abbruch OHNE Probe', async () => {
+    // Der Abbruch steht schon anhand des Eintrags fest. Wuerde trotzdem
+    // geprobt, naehme dieser Start SHARE-Sperren auf vier Tabellen im Betrieb
+    // und koennte am lock_timeout scheitern — die Meldung spraeche dann von
+    // Sperren statt von der vergessenen Umgebungsvariable.
+    const { db, calls } = fakeDb([
+      { key_id: 'default', fingerprint: masterKeyFingerprint(RICHTIG, SALT), salt: SALT },
+    ]);
+    const selectsVorher = calls.selects;
+    await expect(assertMasterKeyMatchesDatabase(db, undefined))
+      .rejects.toThrow('SIMPLECRM_MASTER_KEY is not set');
+    // Genau eine Abfrage: das Lesen der Fingerabdruck-Tabelle.
+    expect(calls.selects - selectsVorher).toBe(1);
   });
 
   test('ohne Schluessel bricht auch reines Tracking den Start ab', async () => {

@@ -95,7 +95,7 @@ database, so it travels with the dump. The key cannot be read out of it.
 
 **The metadata reads every key statement out of the dump, not out of the
 database.** That covers all four of them: `master_key_fingerprints`,
-`secret_key_ids`, `master_key_encrypted_rows` and `rows_email_tracking_events`.
+`secret_key_ids`, `master_key_encrypted_rows` and `master_key_retained_events`.
 They are supposed to say which key *this dump* needs, and no query against the
 running database answers that. Ask before `pg_dump` and a secret or a tracking
 row written during the dump is missing from the file while sitting in the dump —
@@ -120,11 +120,19 @@ instead of scanning: on a dump of 4 million tracking rows (58 MB, `pg_dump`
 database consisting of nothing but tracking data. Reading is far cheaper than
 writing: no compression, nothing crossing a connection.
 
-The remaining `rows_*` counts stay as they are, taken just before the dump.
-Their inexactness is deliberate and documented (the completeness check is
-explicitly not an equality test). `rows_email_tracking_events` is the one
-exception, because `backup_metadata_encrypted_state` decides the `retained`
-verdict on it — that is a statement about the key, not about completeness.
+The `rows_*` counts stay as they are, taken just before the dump. Their
+inexactness is deliberate and documented (the completeness check is explicitly
+not an equality test). What the `retained` verdict needs therefore lives in its
+own field, `master_key_retained_events`, rather than being read off
+`rows_email_tracking_events` — the plain event count would be the wrong measure
+anyway, see below. Older backups that predate the field still fall back to the
+event count; over-warning on an old backup beats quietly clearing it.
+
+Those four fields are written back even when they were never written in the
+first place. If the pre-dump counting pass fails, the metadata file comes out
+without any of its `rows_*` lines, and a missing `master_key_retained_events`
+would read as `0` — "no key material" for exactly the backup whose restore is
+being pushed through with `RESTORE_ALLOW_UNVERIFIABLE=1`.
 
 **Treat that value as a key checker, not as public information.** It is derived
 with scrypt, deliberately expensive, and that is not decoration: against a
@@ -205,6 +213,21 @@ writes them writes a resolver row too — but retention breaks that pairing:
 sealed raw metadata is cleared after 7 days, expired resolver rows are deleted,
 and the events themselves stay for a year. A database in that state holds
 key-bound data and nothing verifiable.
+
+**Not every `dedupe_key` is key-bound, and the check says which.** The
+lifecycle events build theirs in plain text — `queued:<id>`,
+`smtp_accepted:<id>`, `sending:<id>:<time>` — and no key goes into them. It is
+derived only where `crypto.dedupeHash` produces it: for inbound DSN/MDN
+evidence and for opens and clicks. That is readable off the value range rather
+than guessed: `dedupeHash` is an HMAC-SHA256 in hex, exactly 64 characters from
+`[0-9a-f]`, while every plain-text form contains a colon. So both the startup
+check and `master_key_retained_events` filter on that pattern.
+
+Without the filter an installation that only *sends* mail and collects nothing
+else would count as unverifiable forever: no fingerprint would ever be
+recorded, and the very state this check exists to prevent — two replicas with
+different keys both starting and then writing incompatible secrets — would stay
+open permanently.
 
 **That state neither starts nor refuses — it runs without recording.** Refusing
 would strand an installation whose key may well be correct, and nothing here can
