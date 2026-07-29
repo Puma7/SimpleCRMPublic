@@ -9,6 +9,7 @@ import {
   type WorkspaceSessionApplier,
 } from '../db';
 import type { JobPayload } from './types';
+import { runMailSyncSchedule } from './mail-sync-scheduler';
 import type { JobHandlerRegistry } from './worker';
 
 export const DEFAULT_LOCK_CLEANUP_LIMIT = 500;
@@ -112,6 +113,24 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
   const now = options.now ?? (() => new Date());
 
   return {
+    // Taktgeber-Handler des periodischen Syncs: sucht die faelligen Konten und
+    // reiht ihre Sync-Jobs ein (Begruendung der Zweistufigkeit in
+    // mail-sync-scheduler.ts). Ohne Queue kann er nichts einreihen — dann
+    // waere ein stiller Erfolg die schlechteste Auskunft, weil niemand merkte,
+    // dass nie Post ankommt.
+    'mail.sync.schedule': async (job) => {
+      if (!options.requeue) throw new Error('mail sync scheduler requires a job queue');
+      await runMailSyncSchedule({
+        db: options.db,
+        queue: options.requeue,
+        workspaceId: job.workspaceId,
+        now: now(),
+        ...(options.applyWorkspaceSession
+          ? { applyWorkspaceSession: options.applyWorkspaceSession }
+          : {}),
+      });
+    },
+
     'lock.cleanup': async (job) => {
       const plan = buildLockCleanupPlan(job.payload, now());
       const batchWasFull = await withWorkspaceTransaction(options.db, {

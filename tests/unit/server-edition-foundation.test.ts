@@ -1988,6 +1988,7 @@ describe('server edition foundation', () => {
       'webhook.fire',
       'lock.cleanup',
       'audit.retention',
+      'mail.sync.schedule',
     ]);
     expect(assertValidJobType('mail.sync')).toBe('mail.sync');
     expect(assertServerJobType('mail.sync.imap')).toBe('mail.sync.imap');

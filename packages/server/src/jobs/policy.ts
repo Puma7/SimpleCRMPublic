@@ -47,6 +47,7 @@ export const SERVER_JOB_TYPES = [
   'webhook.fire',
   'lock.cleanup',
   'audit.retention',
+  'mail.sync.schedule',
 ] as const;
 
 export type ServerJobType = typeof SERVER_JOB_TYPES[number];
@@ -242,6 +243,18 @@ export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freez
   },
   {
     type: 'audit.retention',
+    kind: 'non_mail',
+    actorMode: 'service',
+    classification: 'system_maintenance',
+  },
+  // Der Taktgeber des periodischen Syncs. Er liest nur, welche Konten faellig
+  // sind, und reiht deren Sync-Jobs ein — die tragen ihre eigene Policy
+  // (mail.metadata.read) und werden dort geprueft. Deshalb 'non_mail':
+  // hier gibt es keine Nachricht und kein Konto, auf das sich eine
+  // Mail-Berechtigung beziehen liesse, und ein erfundener Bezug waere eine
+  // Pruefung, die nichts prueft.
+  {
+    type: 'mail.sync.schedule',
     kind: 'non_mail',
     actorMode: 'service',
     classification: 'system_maintenance',

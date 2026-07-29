@@ -467,10 +467,16 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
       // Wartungsjobs takten. Ohne diese Ticker wurden lock.cleanup und
       // audit.retention nie eingereiht — Handler und Policy gab es, nur keinen
       // Ausloeser. Begruendung der Bauform in jobs/maintenance-ticker.
+      //
+      // mail.sync.schedule haengt aus demselben Grund hier: ohne Taktgeber kam
+      // Post nur herein, wenn jemand auf Aktualisieren drueckte. Er reiht je
+      // Workspace einen Job ein, dessen Handler die faelligen Konten sucht —
+      // die Auswahl gehoert nicht in den Serverprozess (Begruendung in
+      // jobs/mail-sync-scheduler).
       if (apiJobQueue) {
         const maintenanceQueue = apiJobQueue;
         const maintenanceLog = createJobWorkerLogger(serverLogStore);
-        for (const jobType of ['lock.cleanup', 'audit.retention'] as const) {
+        for (const jobType of ['lock.cleanup', 'audit.retention', 'mail.sync.schedule'] as const) {
           maintenanceTickers.push(startMaintenanceJobTicker({
             db,
             queue: maintenanceQueue,
