@@ -21,6 +21,15 @@ const BULK_CATEGORY_ASSIGN_CONCURRENCY = 8
 
 type HandleSyncOptions = {
   onAfterSync?: (accountId: number) => void | Promise<void>
+  /**
+   * Filter fuer „Alle Konten". Die Kontenliste ist ueber den Mail-Scope
+   * gefiltert, und der laesst sich auch durch ein reines ORDNER-Grant
+   * erfuellen — das Abholen verlangt die Berechtigung aber auf dem KONTO.
+   * Ohne Filter liefe der Aufruf fuer so ein Konto ins 403, der aeussere
+   * Catch braeche die Schleife ab, und je nach Reihenfolge blieben sogar die
+   * erlaubten Konten unsynchronisiert.
+   */
+  canSyncAccount?: (accountId: number) => boolean
 }
 
 type LoadMessagesOpts = {
@@ -685,10 +694,13 @@ export function useEmailMessages() {
       if (selectedAccountId == null) return
       setSyncing(true)
       try {
-        const accountIds =
+        const listed =
           selectedAccountId === "all"
             ? ((await invokeRenderer(IPCChannels.Email.ListAccounts) as { id: number }[]).map((a) => a.id))
             : [selectedAccountId]
+        const accountIds = opts?.canSyncAccount
+          ? listed.filter((accountId) => opts.canSyncAccount!(accountId))
+          : listed
         let totalFetched = 0
         let completedCount = 0
         let queuedCount = 0

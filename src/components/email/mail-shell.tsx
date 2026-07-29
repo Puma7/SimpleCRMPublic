@@ -215,13 +215,20 @@ function MailShellInner() {
       const now = Date.now()
       if (now - lastImapSyncRef.current >= IMAP_SYNC_MIN_GAP_MS) {
         lastImapSyncRef.current = now
-        await handleSync({ onAfterSync: () => refreshList({ preserveSelection: true }) })
+        await handleSync({
+          onAfterSync: () => refreshList({ preserveSelection: true }),
+          // Dieselbe kontoscharfe Pruefung wie beim Knopf: bei „Alle Konten"
+          // sind sonst auch Konten dabei, die nur ueber ein Ordner-Grant
+          // sichtbar sind, und deren 403 wuerde die Schleife abbrechen.
+          canSyncAccount: (accountId) =>
+            hasMailPermissionForAccount("mail.metadata.read", accountId),
+        })
       } else {
         await refreshList({ preserveSelection: true })
       }
       invalidateMailMetrics()
     })()
-  }, [handleSync, refreshList, invalidateMailMetrics])
+  }, [handleSync, refreshList, invalidateMailMetrics, hasMailPermissionForAccount])
 
   const { messageTags, internalNotes, messageAttachments, reloadNotes, reloadTags } =
     useMessageMetadata()

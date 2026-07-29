@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 
 import type { ServerDatabase } from '../db/schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from '../db/workspace-context';
@@ -82,24 +82,20 @@ export async function runMailSyncSchedule(input: {
   const batchSize = Math.max(1, input.batchSize ?? DEFAULT_MAIL_SYNC_SCHEDULE_BATCH);
   const threshold = new Date(now.getTime() - intervalMs);
 
+  // Konten mit nicht unterstuetztem Protokoll werden schon in der ABFRAGE
+  // ausgeschlossen, nicht erst in der Schleife. Sie dort zu ueberspringen
+  // genuegte nicht: sie werden dabei (bewusst) nicht gestempelt, bleiben also
+  // dauerhaft faellig — und weil die aeltesten zuerst drankommen, stuenden sie
+  // fuer immer vorn und koennten den ganzen Stapel belegen. Ab 200 solcher
+  // Konten kaeme kein einziges IMAP-Konto mehr dran.
   const due = await withWorkspaceTransaction(
     input.db,
     { workspaceId: input.workspaceId, role: 'system' },
-    async (trx) => trx
-      .selectFrom('email_accounts')
-      .select(['id', 'protocol'])
-      .where('workspace_id', '=', input.workspaceId)
-      .where((eb) => eb.or([
-        eb('last_sync_started_at', 'is', null),
-        eb('last_sync_started_at', '<', threshold),
-      ]))
-      // Aelteste zuerst — deckt sich mit dem Index aus Migration 0051 und
-      // sorgt dafuer, dass unter der Stapelgrenze niemand dauerhaft hinten
-      // ansteht.
-      .orderBy('last_sync_started_at', 'asc')
-      .orderBy('id', 'asc')
-      .limit(batchSize + 1)
-      .execute() as Promise<DueAccountRow[]>,
+    async (trx) => dueAccountsQuery(trx, {
+      workspaceId: input.workspaceId,
+      threshold,
+      limit: batchSize + 1,
+    }).execute() as Promise<DueAccountRow[]>,
     { applySession: input.applyWorkspaceSession },
   );
 
@@ -108,10 +104,11 @@ export async function runMailSyncSchedule(input: {
 
   let enqueued = 0;
   for (const account of batch) {
+    // Die Abfrage laesst nur unterstuetzte Protokolle durch; bleibt hier
+    // trotzdem eines uebrig, ist die Zeile nach der Auswahl geaendert worden.
+    // Dann gilt dasselbe wie dort: nicht stempeln, sonst sieht der Scheduler
+    // das Konto als behandelt an und verdeckt, dass nichts passiert.
     const jobType = mailSyncJobTypeForProtocol(account.protocol);
-    // Konten ohne unterstuetztes Protokoll gar nicht erst stempeln: sonst
-    // sieht der Scheduler sie als „gerade behandelt" an und verdeckt, dass hier
-    // dauerhaft nichts passiert.
     if (!jobType) continue;
 
     const claimed = await withWorkspaceTransaction(
@@ -147,6 +144,41 @@ export async function runMailSyncSchedule(input: {
   }
 
   return { enqueued, hasMore };
+}
+
+/**
+ * Die Auswahlabfrage der faelligen Konten — herausgezogen, damit ein Test sie
+ * kompilieren und das erzeugte SQL pruefen kann.
+ *
+ * Zwei Eigenschaften sind nicht am Verhalten eines Mocks ablesbar, sondern nur
+ * am SQL: dass NULLS FIRST wirklich dasteht (Postgres sortiert bei ASC von
+ * sich aus NULLS LAST), und dass die Protokoll-Auswahl in der Abfrage steckt
+ * und nicht erst in der Schleife.
+ */
+export function dueAccountsQuery(
+  trx: Kysely<ServerDatabase>,
+  input: Readonly<{ workspaceId: string; threshold: Date; limit: number }>,
+) {
+  return trx
+    .selectFrom('email_accounts')
+    .select(['id', 'protocol'])
+    .where('workspace_id', '=', input.workspaceId)
+    .where((eb) => eb.or([
+      eb('last_sync_started_at', 'is', null),
+      eb('last_sync_started_at', '<', input.threshold),
+    ]))
+    .where((eb) => eb.or([
+      eb('protocol', 'is', null),
+      eb(sql<string>`lower(trim(${eb.ref('protocol')}))`, 'in', ['imap', 'pop3']),
+    ]))
+    // NIE GESYNCTE ZUERST. Postgres sortiert bei ASC von sich aus NULLS LAST —
+    // ein frisch angelegtes Konto stuende damit hinter allen ueberfaelligen und
+    // bekaeme seine erste Post zuletzt, entgegen dem Index aus Migration 0051.
+    // Gegen echtes Kysely 0.28 kompiliert ergibt das
+    // `order by "last_sync_started_at" asc nulls first`.
+    .orderBy('last_sync_started_at', (ob) => ob.asc().nullsFirst())
+    .orderBy('id', 'asc')
+    .limit(input.limit);
 }
 
 export function mailSyncJobTypeForProtocol(

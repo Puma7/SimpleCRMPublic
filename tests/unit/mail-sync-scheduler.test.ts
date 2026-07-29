@@ -36,11 +36,11 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
         where(arg: unknown) {
           if (typeof arg === 'function') {
             // Kysely reicht einen AUFRUFBAREN Ausdrucksbauer herein, der
-            // zusaetzlich .or traegt. Der Mock muss beides koennen, sonst
+            // zusaetzlich .or und .ref traegt. Der Mock muss das koennen, sonst
             // scheitert schon der Aufbau der Bedingung.
             const eb = Object.assign(
               (..._parts: unknown[]) => ({}),
-              { or: (parts: unknown[]) => parts },
+              { or: (parts: unknown[]) => parts, ref: (name: string) => name },
             );
             (arg as (builder: unknown) => unknown)(eb);
           }
@@ -49,13 +49,24 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
         orderBy() { return builder },
         limit(value: number) { state.limit = value; return builder },
         async execute() {
+          // Nie gesyncte Konten zuerst. Dass die Abfrage das wirklich
+          // verlangt (Postgres sortiert bei ASC von sich aus NULLS LAST),
+          // prueft der Test „verlangt NULLS FIRST" am kompilierten SQL — ein
+          // Mock kann rohes SQL nicht auswerten und wuerde hier sonst nur die
+          // eigene Erwartung bestaetigen.
+          const nullsRank = -Infinity;
           const due = accounts
             .filter((account) => account.last_sync_started_at === null
               || account.last_sync_started_at.getTime() < NOW.getTime() - DEFAULT_MAIL_SYNC_INTERVAL_MS)
+            .filter((account) => {
+              const normalized = String(account.protocol ?? 'imap').trim().toLowerCase() || 'imap';
+              return account.protocol === null || normalized === 'imap' || normalized === 'pop3';
+            })
             .sort((left, right) => {
-              const a = left.last_sync_started_at?.getTime() ?? -1;
-              const b = right.last_sync_started_at?.getTime() ?? -1;
-              return a - b || left.id - right.id;
+              const a = left.last_sync_started_at?.getTime() ?? nullsRank;
+              const b = right.last_sync_started_at?.getTime() ?? nullsRank;
+              if (a !== b) return a < b ? -1 : 1;
+              return left.id - right.id;
             });
           return due.slice(0, state.limit ?? due.length)
             .map((account) => ({ id: account.id, protocol: account.protocol }));
@@ -171,6 +182,29 @@ describe('periodischer Mail-Sync', () => {
 
     expect(enqueued.map((entry) => entry.accountId)).toEqual([2]);
     expect(result.enqueued).toBe(1);
+  });
+
+  test('ein nicht synchronisierbares Konto belegt keinen Platz im Stapel', async () => {
+    // Es wird schon in der Abfrage ausgeschlossen. Wuerde es nur in der
+    // Schleife uebersprungen, bliebe es ungestempelt und damit dauerhaft
+    // faellig — und weil die aeltesten zuerst drankommen, stuende es fuer immer
+    // vorn. Ab Stapelgroesse vieler solcher Konten kaeme kein IMAP-Konto mehr
+    // dran.
+    const accounts: Account[] = [
+      { id: 1, protocol: 'exchange-rpc', last_sync_started_at: null },
+      { id: 2, protocol: 'exchange-rpc', last_sync_started_at: null },
+      { id: 3, protocol: 'imap', last_sync_started_at: null },
+    ];
+    const { db } = fakeDb(accounts);
+    const { queue, enqueued } = fakeQueue();
+
+    const result = await runMailSyncSchedule({
+      db, queue, workspaceId: WORKSPACE, now: NOW, batchSize: 2, applyWorkspaceSession: async () => {},
+    });
+
+    expect(enqueued.map((entry) => entry.accountId)).toEqual([3]);
+    expect(result).toEqual({ enqueued: 1, hasMore: false });
+    expect(accounts[0]!.last_sync_started_at).toBeNull();
   });
 
   test('ein Konto mit unbekanntem Protokoll wird NICHT gestempelt', async () => {

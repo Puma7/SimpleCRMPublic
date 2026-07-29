@@ -550,7 +550,17 @@ export function graphileJobKeyForJob(
   const accountId = graphileKeyScalar(payload.accountId);
   const workspaceKey = graphileKeyScalar(workspaceId) ?? graphileKeyScalar(payload.workspaceId);
   if ((type === 'mail.sync.imap' || type === 'mail.sync.pop3') && accountId && workspaceKey) {
-    return `${type}:${workspaceKey}:${accountId}`;
+    // Ein Nachhol-Lauf (fullInbox) bekommt einen EIGENEN Schluessel.
+    //
+    // Mit demselben Schluessel wie ein gewoehnlicher Sync verschluckt
+    // jobKeyMode 'replace' ihn: reiht der Scheduler oder ein Klick danach
+    // einen normalen Lauf fuer dasselbe Konto ein, ersetzt dessen Payload den
+    // wartenden Nachhol-Auftrag samt `fullInbox: true`, und der Backfill
+    // passiert nie — ohne dass jemand einen Fehler saehe. Die Ausfuehrung
+    // bleibt trotzdem serialisiert: beide laufen ueber den Queue-Namen
+    // `account-<id>`, also nie gleichzeitig.
+    const suffix = payload.fullInbox === true ? ':full' : '';
+    return `${type}:${workspaceKey}:${accountId}${suffix}`;
   }
   if (type === 'mail.spam.score') {
     const messageId = graphileKeyScalar(payload.messageId);
@@ -747,10 +757,17 @@ export function graphileJobKeyForJob(
       return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}${identity}`;
     }
   }
-  // Beide Wartungsjobs: hoechstens einer je Workspace darf warten. Der Ticker
-  // laeuft in jeder Server-Instanz; ohne Key stapelten sich bei mehreren
-  // Instanzen Duplikate, mit Key kollabieren sie ueber jobKeyMode 'replace'.
-  if ((type === 'lock.cleanup' || type === 'audit.retention') && workspaceKey) {
+  // Alle getakteten Wartungsjobs: hoechstens einer je Workspace darf warten.
+  // Der Ticker laeuft in jeder Server-Instanz; ohne Key stapelten sich bei
+  // mehreren Instanzen Duplikate, mit Key kollabieren sie ueber jobKeyMode
+  // 'replace'. Wer hier einen Taktgeber-Jobtyp ergaenzt, ohne ihn
+  // einzutragen, bekommt genau diese Duplikate zurueck — bei
+  // mail.sync.schedule waere das je Instanz ein voller Durchlauf durch alle
+  // faelligen Konten.
+  if (
+    (type === 'lock.cleanup' || type === 'audit.retention' || type === 'mail.sync.schedule')
+    && workspaceKey
+  ) {
     return `${type}:${workspaceKey}`;
   }
   return undefined;

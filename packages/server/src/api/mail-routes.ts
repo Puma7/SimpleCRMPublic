@@ -481,17 +481,22 @@ async function handleEmailAccountSync(
   // hundert Anfragen samt Einreihung, und die 15-Sekunden-Sperre im Client
   // gilt je Browser-Tab — ueber viele Nutzer hinweg hilft sie gar nicht.
   //
-  // Ein Nachholen (fullInbox) umgeht die Abkuehlzeit: das ist ein bewusster
-  // einmaliger Vorgang, den ein gerade gelaufener Normal-Sync nicht ersetzt.
+  // Ein Nachholen (fullInbox) umgeht die WARTEZEIT, wird aber trotzdem
+  // gestempelt (minIntervalMs 0 beansprucht die Zeile bedingungslos). Ohne den
+  // Stempel bliebe das Konto faellig, und der naechste Scheduler-Takt reihte
+  // einen gewoehnlichen Sync hinterher — der teilt sich mit dem Nachhol-Lauf
+  // zwar nicht mehr den Job-Key (siehe graphileJobKeyForJob), wuerde aber
+  // dieselbe IMAP-Verbindung ein zweites Mal belegen, direkt nachdem jemand
+  // ausdruecklich einen vollstaendigen Abgleich angefordert hat.
   //
   // Der Erfolgsfall bleibt 202 mit `queued: false` statt eines Fehlers — fuer
   // den Nutzer IST die Frage beantwortet ("es wird gerade abgeholt"), und ein
   // roter Fehler fuer einen zweiten Klick waere schlicht falsch.
-  if (!fullInbox && ports.emailAccounts.claimSyncSlot) {
+  if (ports.emailAccounts.claimSyncSlot) {
     const slot = await ports.emailAccounts.claimSyncSlot({
       workspaceId: principal.workspaceId,
       id: accountId,
-      minIntervalMs: MAIL_SYNC_MIN_INTERVAL_MS,
+      minIntervalMs: fullInbox ? 0 : MAIL_SYNC_MIN_INTERVAL_MS,
     });
     if (!slot.claimed) {
       return data(202, {

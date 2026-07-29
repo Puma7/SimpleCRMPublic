@@ -120,15 +120,28 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
     // dass nie Post ankommt.
     'mail.sync.schedule': async (job) => {
       if (!options.requeue) throw new Error('mail sync scheduler requires a job queue');
-      await runMailSyncSchedule({
+      const at = now();
+      const result = await runMailSyncSchedule({
         db: options.db,
         queue: options.requeue,
         workspaceId: job.workspaceId,
-        now: now(),
+        now: at,
         ...(options.applyWorkspaceSession
           ? { applyWorkspaceSession: options.applyWorkspaceSession }
           : {}),
       });
+      // Volle Charge => naechste nachschieben, wie bei den anderen gebatchten
+      // Wartungsjobs. Ohne das deckelt der Minutentakt den Durchsatz auf die
+      // Stapelgroesse pro Minute: bei 200 je Lauf braeuchten 10.000 Konten
+      // allein zum Einreihen knapp eine Stunde, und das zugesagte
+      // Fuenf-Minuten-Intervall waere ab etwa 1.000 Konten nur noch behauptet.
+      //
+      // Es terminiert, weil nur nachgeschoben wird, wenn die Charge voll war —
+      // also nachweislich Konten gestempelt wurden und beim naechsten Lauf
+      // nicht mehr faellig sind.
+      if (result.hasMore) {
+        await requeue(options, 'mail.sync.schedule', job.workspaceId, job.payload, at);
+      }
     },
 
     'lock.cleanup': async (job) => {
@@ -248,7 +261,7 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
  */
 async function requeue(
   options: MaintenanceJobHandlersOptions,
-  type: 'lock.cleanup' | 'audit.retention',
+  type: 'lock.cleanup' | 'audit.retention' | 'mail.sync.schedule',
   workspaceId: string,
   payload: JobPayload,
   now: Date,
