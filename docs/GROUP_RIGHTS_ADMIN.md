@@ -53,12 +53,42 @@ sofort für alle Mitglieder, weil Capabilities pro Request aufgelöst werden.
 
 ## Rollout-Modus und Sichtbarkeitsfilter
 
-Der ACL-Rollout kennt `shadow` und `enforce`. Im **Shadow-Modus** entscheidet
-weiterhin die Legacy-ACL über den Konto-/Ordner-Zugriff — die neuen
-Sichtbarkeitsfilter (Zuweisung, Kategorie, Tag) greifen dort aber **bereits
-echt**, sonst wären konfigurierte Bindings wirkungslos und der Vergleich
-aussagelos. Wer in einer Shadow-Workspace einen Filter setzt, verändert also
-sofort die Sichtbarkeit für die betroffenen Nutzer.
+Der ACL-Rollout kennt `shadow` und `enforce`.
+
+**Im Shadow-Modus gewährt eine Delegation gar nichts.** Wer ein Postfach sehen
+darf, entscheidet dort weiterhin die Legacy-ACL (`user_account_access`); die
+Bindings können nur zusätzlich **einschränken**. Die Sichtbarkeitsfilter
+(Zuweisung, Kategorie, Tag) greifen dabei bereits echt — sonst wären
+konfigurierte Bindings wirkungslos und der Vergleich aussagelos. Wer in einem
+Shadow-Workspace einen Filter setzt, verändert also sofort die Sichtbarkeit.
+
+Das ist die wichtigste Falle des Modus: Eine vollständige Delegation lässt sich
+anlegen, speichern und in der Liste betrachten — und die betroffenen Benutzer
+haben trotzdem ein leeres Postfach, weil die Legacy-Seite sie nicht kennt. In
+der Server-Edition schreibt **nichts** in `user_account_access`; die Tabelle
+füllt sich nur beim Import aus einer SQLite-Desktop-Installation. Für einen
+Workspace ohne diesen Import ist die Legacy-Antwort deshalb konstant „nein".
+Das Delegations-Panel weist im Shadow-Modus ausdrücklich darauf hin, und
+`doctor.sh` meldet solche Workspaces als `mail_acl_shadow_without_legacy`.
+Migration `0050_mail_acl_shadow_without_legacy` räumt bestehende Fälle auf: sie
+setzt genau die Workspaces auf `enforce`, die im Shadow-Modus stehen und keine
+einzige Legacy-Zeile haben — dort ist der Vergleich beweisbar leer.
+
+### Umschalten auf `enforce`
+
+`POST /api/v1/email/acl-rollout/enforce` (Admin). Vorher `GET …/readiness`:
+
+- `ready: true` — der Wechsel geht ohne weitere Angaben durch.
+- `readyWithAcknowledgedWidening: true` — der Wechsel **erweitert** den Zugriff
+  gegenüber der Alt-ACL (`legacyDenyNewAllow > 0`). Das ist der Normalfall,
+  sobald überhaupt eine Delegation eingerichtet ist. Bestätigen mit
+  `{"acknowledgeWidening": true}` im Body; das Audit-Event hält die Bestätigung
+  samt Zähler fest.
+- `access_regressions_present` — der Wechsel würde jemandem Zugriff **nehmen**
+  (`legacyAllowNewDeny > 0`). Das bleibt gesperrt, auch mit Bestätigung: erst
+  die Delegation so ergänzen, dass niemand verliert.
+
+Der Wechsel ist einmalig; einen Weg zurück nach `shadow` gibt es nicht.
 
 ## Diagnose
 

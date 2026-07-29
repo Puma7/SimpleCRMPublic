@@ -379,6 +379,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0047_group_rights_and_mail_constraints',
   '0048_email_team_member_linked_user',
   '0049_master_key_fingerprint',
+  '0050_mail_acl_shadow_without_legacy',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';

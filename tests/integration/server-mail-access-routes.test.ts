@@ -4703,7 +4703,9 @@ describe('server mailbox ACL migration', () => {
 
       releases[1]!.resolve(undefined);
       await evaluations[1];
-      await expect(transition).resolves.toEqual({ ok: false, code: 'mismatches_present' });
+      // legacy erlaubt, die neue ACL verweigert: das ist die Richtung, in der
+      // jemand Zugriff VERLIERT — sie bleibt ein harter Riegel.
+      await expect(transition).resolves.toEqual({ ok: false, code: 'access_regressions_present' });
       await expect(adminState.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         mode: 'shadow',
         evaluated: 2n,
@@ -5203,18 +5205,59 @@ describe('server mailbox ACL migration', () => {
         code: 'no_observations',
       });
 
+      // Die beiden Abweichungsrichtungen werden getrennt behandelt. Der Wechsel
+      // ist einmalig, deshalb pruefen die gesperrten Faelle ueber getReadiness
+      // und nur der letzte Fall verbraucht ihn wirklich.
+      //
+      // Richtung 1 — jemand VERLIERT Zugriff: harter Riegel, auch mit
+      // Bestaetigung. Das hat niemand bestellt und faellt erst im Betrieb auf.
       await port.increment(WORKSPACE_A, { evaluated: 1n, legacyAllowNewDeny: 1n, legacyDenyNewAllow: 0n });
       await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({
         ok: false,
-        code: 'mismatches_present',
+        code: 'access_regressions_present',
+      });
+      await expect(port.transitionToEnforce({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+        acknowledgeWidening: true,
+      })).resolves.toEqual({ ok: false, code: 'access_regressions_present' });
+      await expect(port.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        ready: false,
+        readyWithAcknowledgedWidening: false,
       });
 
+      // Saubere Zaehler: bereit ohne jede Zusatzangabe.
       await port.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
       await port.increment(WORKSPACE_A, { evaluated: 3n, legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n });
-      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({ ok: true });
+      await expect(port.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        ready: true,
+        readyWithAcknowledgedWidening: false,
+      });
+
+      // Richtung 2 — jemand BEKOMMT Zugriff: genau das, was eine eingerichtete
+      // Delegation bezweckt, und der Zaehler springt bei jedem Zugriffsversuch
+      // eines Delegierten wieder an. Frueher war das derselbe harte Riegel, und
+      // ein Workspace, der die neue Delegation ueberhaupt benutzte, konnte den
+      // Shadow-Modus deshalb nie verlassen. Jetzt: ohne Bestaetigung gesperrt,
+      // mit Bestaetigung frei.
+      await port.increment(WORKSPACE_A, { evaluated: 0n, legacyAllowNewDeny: 0n, legacyDenyNewAllow: 1n });
+      await expect(port.transitionToEnforce({ workspaceId: WORKSPACE_A, actorUserId: USER_READ })).resolves.toEqual({
+        ok: false,
+        code: 'widening_unacknowledged',
+      });
+      await expect(port.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
+        ready: false,
+        readyWithAcknowledgedWidening: true,
+      });
+      await expect(port.transitionToEnforce({
+        workspaceId: WORKSPACE_A,
+        actorUserId: USER_READ,
+        acknowledgeWidening: true,
+      })).resolves.toEqual({ ok: true });
       await expect(port.getReadiness(WORKSPACE_A)).resolves.toMatchObject({
         mode: 'enforce',
         ready: false,
+        readyWithAcknowledgedWidening: false,
         enforced: true,
         evaluated: 3n,
       });

@@ -65,6 +65,12 @@ export interface MailAclRolloutStatePort {
   transitionToEnforce(input: {
     workspaceId: string;
     actorUserId: string;
+    /**
+     * Bestaetigt ausdruecklich, dass der Wechsel Zugriff ERWEITERN darf
+     * (legacyDenyNewAllow). Ohne das Flag bleibt es bei
+     * 'widening_unacknowledged'.
+     */
+    acknowledgeWidening?: boolean;
   }): Promise<MailAclRolloutTransitionResult>;
   resetShadowCounters(input: {
     workspaceId: string;

@@ -430,6 +430,7 @@ const EmailChannels = literal({
     ListMailDelegationBindings: 'email:list-mail-delegation-bindings',
   SaveMailDelegationBinding: 'email:save-mail-delegation-binding',
   DeleteMailDelegationBinding: 'email:delete-mail-delegation-binding',
+  GetMailAclRolloutReadiness: 'email:get-mail-acl-rollout-readiness',
 });
 
 export const IPCChannels = {
@@ -466,6 +467,7 @@ export const DesktopServerOnlyInvokeChannels = tuple(
     EmailChannels.ListMailDelegationBindings,
   EmailChannels.SaveMailDelegationBinding,
   EmailChannels.DeleteMailDelegationBinding,
+  EmailChannels.GetMailAclRolloutReadiness,
 );
 
 // Flattened invoke list for preload allow-listing

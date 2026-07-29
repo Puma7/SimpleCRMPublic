@@ -2190,15 +2190,104 @@ describe('mail ACL rollout central use', () => {
     })).resolves.toMatchObject({ status: 200 });
 
     expect(rollout.transitionToEnforce).toHaveBeenCalledTimes(2);
+    // acknowledgeWidening kommt aus dem Request-Body und ist ohne ihn false:
+    // eine Zugriffserweiterung wird nie stillschweigend mitbestaetigt.
     expect(rollout.transitionToEnforce).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_A,
       actorUserId: OWNER_A,
+      acknowledgeWidening: false,
     });
     expect(rollout.resetShadowCounters).toHaveBeenCalledWith({
       workspaceId: WORKSPACE_A,
       actorUserId: OWNER_A,
     });
     expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  test('enforce reicht die Erweiterungs-Bestaetigung nur als echten Boolean durch', async () => {
+    // Warum das Flag ueberhaupt existiert: legacyDenyNewAllow heisst, der
+    // Wechsel GIBT jemandem Zugriff — genau das, was eine eingerichtete
+    // Delegation bezweckt, und der Zaehler springt bei jedem Zugriffsversuch
+    // eines Delegierten wieder an. Frueher sperrte das hart, und ein Workspace,
+    // der die neue Delegation benutzte, kam nie aus dem Shadow-Modus heraus.
+    const transitionToEnforce = jest.fn(async (input: { acknowledgeWidening?: boolean }) => (
+      input.acknowledgeWidening === true
+        ? { ok: true as const }
+        : { ok: false as const, code: 'widening_unacknowledged' as const }
+    ));
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() { return { kind: 'all' }; },
+      }),
+      mailAclRollout: {
+        getReadiness: jest.fn(),
+        transitionToEnforce,
+        resetShadowCounters: jest.fn(),
+      },
+    } as unknown as ServerApiPorts);
+
+    const enforce = (body?: unknown) => api.handle({
+      method: 'POST',
+      path: '/api/v1/email/acl-rollout/enforce',
+      principal: principal('admin'),
+      ...(body === undefined ? {} : { body }),
+    });
+
+    // Ohne Body: nicht bestaetigt, und die Meldung nennt den Weg.
+    const withoutBody = await enforce();
+    expect(withoutBody).toMatchObject({
+      status: 409,
+      body: { error: { code: 'widening_unacknowledged' } },
+    });
+    expect(String((withoutBody.body as { error: { message: string } }).error.message))
+      .toContain('acknowledgeWidening');
+
+    // Wahrheitsartige Werte reichen NICHT. Eine Zugriffserweiterung soll nicht
+    // aus einem Formularfeld oder einem verirrten String folgen.
+    for (const body of [{ acknowledgeWidening: 'true' }, { acknowledgeWidening: 1 }, {}, [], null, 'true']) {
+      await expect(enforce(body)).resolves.toMatchObject({
+        status: 409,
+        body: { error: { code: 'widening_unacknowledged' } },
+      });
+    }
+
+    await expect(enforce({ acknowledgeWidening: true })).resolves.toMatchObject({ status: 200 });
+    expect(transitionToEnforce).toHaveBeenLastCalledWith({
+      workspaceId: WORKSPACE_A,
+      actorUserId: OWNER_A,
+      acknowledgeWidening: true,
+    });
+  });
+
+  test('enforce bleibt hart gesperrt, wenn der Wechsel Zugriff entziehen wuerde', async () => {
+    // Die andere Richtung: hier verliert jemand Zugriff, den er heute hat. Das
+    // hat niemand bestellt und faellt erst im Betrieb auf — die Bestaetigung
+    // darf daran nichts aendern.
+    const transitionToEnforce = jest.fn(async () => (
+      { ok: false as const, code: 'access_regressions_present' as const }
+    ));
+    const api = createServerApi({
+      ...makeCentralPorts({
+        async assertPermission() {},
+        async resolveScope() { return { kind: 'all' }; },
+      }),
+      mailAclRollout: {
+        getReadiness: jest.fn(),
+        transitionToEnforce,
+        resetShadowCounters: jest.fn(),
+      },
+    } as unknown as ServerApiPorts);
+
+    await expect(api.handle({
+      method: 'POST',
+      path: '/api/v1/email/acl-rollout/enforce',
+      principal: principal('admin'),
+      body: { acknowledgeWidening: true },
+    })).resolves.toMatchObject({
+      status: 409,
+      body: { error: { code: 'access_regressions_present' } },
+    });
   });
 });
 

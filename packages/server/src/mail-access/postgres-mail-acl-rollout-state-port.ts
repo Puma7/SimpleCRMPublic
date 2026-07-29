@@ -186,15 +186,18 @@ export function createPostgresMailAclRolloutStatePort(
     async getReadiness(workspaceId): Promise<MailAclRolloutReadiness> {
       const row = await readRow(workspaceId);
       const state = row ? mapState(row) : defaultEnforceState();
+      const transitionable = state.mode === 'shadow'
+        && state.telemetryHealthy
+        && state.inFlight === 0n
+        && state.evaluated > 0n
+        && state.legacyAllowNewDeny === 0n;
       return {
         workspaceId,
         ...state,
-        ready: state.mode === 'shadow'
-          && state.telemetryHealthy
-          && state.inFlight === 0n
-          && state.evaluated > 0n
-          && state.legacyAllowNewDeny === 0n
-          && state.legacyDenyNewAllow === 0n,
+        ready: transitionable && state.legacyDenyNewAllow === 0n,
+        // Dieselben Bedingungen, nur ohne den Erweiterungs-Zaehler: mit
+        // acknowledgeWidening geht der Wechsel dann durch.
+        readyWithAcknowledgedWidening: transitionable && state.legacyDenyNewAllow !== 0n,
         enforced: state.mode === 'enforce',
       };
     },
@@ -229,8 +232,29 @@ export function createPostgresMailAclRolloutStatePort(
           if (state.inFlight !== 0n) return { ok: false, code: 'evaluations_in_flight' } as const;
           if (!state.telemetryHealthy) return { ok: false, code: 'telemetry_unhealthy' } as const;
           if (state.evaluated === 0n) return { ok: false, code: 'no_observations' } as const;
-          if (state.legacyAllowNewDeny !== 0n || state.legacyDenyNewAllow !== 0n) {
-            return { ok: false, code: 'mismatches_present' } as const;
+          // Die beiden Abweichungsrichtungen sind NICHT dasselbe Risiko, und sie
+          // frueher gemeinsam zu sperren machte den Uebergang unerreichbar:
+          //
+          // legacyAllowNewDeny heisst, nach dem Wechsel VERLIERT jemand Zugriff,
+          // den er heute hat. Das hat niemand bestellt, es faellt erst im
+          // Betrieb auf, und es bleibt ein harter Riegel.
+          //
+          // legacyDenyNewAllow heisst, nach dem Wechsel BEKOMMT jemand den
+          // Zugriff, den ein Admin in der Delegation eingerichtet hat. Das ist
+          // kein Unfall, sondern der Zweck der Uebung — und der Zaehler springt
+          // bei jedem Zugriffsversuch eines Delegierten wieder an. Gemeinsam
+          // gesperrt konnte ein Workspace, der die neue Delegation ueberhaupt
+          // benutzt, den Shadow-Modus nie verlassen: das Tor verriegelte genau
+          // den Uebergang, den es freigeben soll.
+          //
+          // Erweiterung bleibt trotzdem bestaetigungspflichtig. Sie ist
+          // sicherheitsrelevant, sie steht mit Zahl in der Readiness-Ansicht,
+          // und das Audit-Event haelt fest, dass sie bewusst geschah.
+          if (state.legacyAllowNewDeny !== 0n) {
+            return { ok: false, code: 'access_regressions_present' } as const;
+          }
+          if (state.legacyDenyNewAllow !== 0n && input.acknowledgeWidening !== true) {
+            return { ok: false, code: 'widening_unacknowledged' } as const;
           }
           const updated = await sql<{ workspace_id: string }>`
             UPDATE mail_acl_rollout_state
@@ -247,7 +271,14 @@ export function createPostgresMailAclRolloutStatePort(
             action: 'mail_acl_rollout.enforced',
             entityType: 'mail_acl_rollout',
             entityId: input.workspaceId,
-            metadata: { mode: 'enforce' },
+            metadata: {
+              mode: 'enforce',
+              // Nicht nur DASS umgeschaltet wurde, sondern gegen welchen Befund:
+              // eine bestaetigte Erweiterung ist die Aussage, die spaeter jemand
+              // sucht, wenn er wissen will, warum ein Nutzer plotzlich mehr sieht.
+              acknowledgedWidening: state.legacyDenyNewAllow !== 0n,
+              legacyDenyNewAllow: state.legacyDenyNewAllow.toString(),
+            },
           });
           return { ok: true } as const;
         },
