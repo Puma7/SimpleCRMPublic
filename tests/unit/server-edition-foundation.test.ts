@@ -171,6 +171,7 @@ import {
   forceTakeoverConversationLockCommand,
   buildGraphileTaskList,
   buildGraphileWorkerPlan,
+  startGraphileWorkerRuntime,
   buildLockCleanupPlan,
   createGraphileQueuePort,
   createAuthInvitationMailerPort,
@@ -2212,8 +2213,16 @@ describe('server edition foundation', () => {
       },
     });
 
-    expect(plan.concurrentJobs).toBe(57);
-    expect(plan.taskTypes).toEqual(SERVER_JOB_TYPES);
+    // ZWEI Pools, nicht 57 in einem. Graphile begrenzt `concurrentJobs` global
+    // und kennt keine Grenze je Job-Typ; addiert man beide Zahlen, koennten
+    // alle Slots gleichzeitig Mail-Syncs ausfuehren (die Queues `account-<id>`
+    // serialisieren nur dasselbe Konto). Die Mail-Obergrenze waere dann keine.
+    expect(plan.mailConcurrentJobs).toBe(50);
+    expect(plan.concurrentJobs).toBe(7);
+    expect(plan.mailTaskTypes).toEqual(['mail.sync.imap', 'mail.sync.pop3']);
+    // Zusammen weiterhin genau die Menge aller Job-Typen — kein Typ faellt
+    // zwischen die beiden Worker und bliebe unbearbeitet liegen.
+    expect([...plan.mailTaskTypes, ...plan.taskTypes].sort()).toEqual([...SERVER_JOB_TYPES].sort());
     expect(graphileQueueNameForJob('mail.sync.imap', { accountId: 42 })).toBe('account-42');
     expect(graphileQueueNameForJob('mail.sync.imap', { accountId: '' })).toBeUndefined();
     expect(graphileQueueNameForJob('ai.reply_suggestion', {})).toBe('ai');
@@ -23928,6 +23937,42 @@ describe('server edition foundation', () => {
         },
       },
     ]);
+  });
+
+  test('die Mail-Obergrenze wird von einem eigenen Worker erzwungen, nicht nur eingerechnet', async () => {
+    // Der Befund: `JOB_WORKER_MAIL_CONCURRENCY` floss frueher nur in einen
+    // globalen Pool (`mail + ai`). Graphile begrenzt aber nur global und kennt
+    // keine Grenze je Job-Typ, und die Sync-Queues `account-<id>`
+    // serialisieren nur DASSELBE Konto. Bei Mail-Grenze 1 und AI-Concurrency 5
+    // konnten deshalb sechs Mail-Syncs gleichzeitig laufen — die dokumentierte
+    // Obergrenze war keine.
+    const started: Array<{ concurrentJobs: number; types: string[] }> = [];
+    const runtime = await startGraphileWorkerRuntime({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      handlers: {},
+      concurrency: { mailAccountCount: 10_000, mailConcurrency: 1, aiConcurrency: 5 },
+      async createWorker(options) {
+        started.push({
+          concurrentJobs: options.concurrentJobs,
+          types: Object.keys(options.taskList).sort(),
+        });
+        return { async stop() {}, promise: Promise.resolve() };
+      },
+    });
+
+    expect(started).toHaveLength(2);
+    const mailWorker = started.find((entry) => entry.types.includes('mail.sync.imap'));
+    const restWorker = started.find((entry) => !entry.types.includes('mail.sync.imap'));
+    // Der Mail-Worker bekommt GENAU einen Slot — nicht 1 + 5.
+    expect(mailWorker).toEqual({ concurrentJobs: 1, types: ['mail.sync.imap', 'mail.sync.pop3'] });
+    expect(restWorker?.concurrentJobs).toBe(5);
+    // Und die uebrigen Typen liegen wirklich beim anderen Worker, sonst bliebe
+    // ein Job-Typ unbearbeitet liegen.
+    expect(restWorker?.types).toContain('workflow.execute');
+    expect(restWorker?.types).not.toContain('mail.sync.pop3');
+
+    await runtime.stop();
+    await expect(runtime.promise).resolves.toBeUndefined();
   });
 
   test('server mail account sync cooldown: Vollimport haengt nicht am Takt des periodischen Syncs', async () => {

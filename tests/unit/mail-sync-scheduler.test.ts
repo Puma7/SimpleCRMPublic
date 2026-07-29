@@ -20,6 +20,7 @@ type Account = { id: number; protocol: string | null; last_sync_started_at: Date
  */
 function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<number> } = {}) {
   const claims: number[] = [];
+  const releases: number[] = [];
   const db = {
     transaction() {
       return {
@@ -70,20 +71,33 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
               return left.id - right.id;
             });
           return due.slice(0, state.limit ?? due.length)
-            .map((account) => ({ id: account.id, protocol: account.protocol }));
+            .map((account) => ({
+              id: account.id,
+              protocol: account.protocol,
+              last_sync_started_at: account.last_sync_started_at,
+            }));
         },
       };
       return builder
     },
     updateTable() {
       let targetId: number | undefined;
+      let setValue: Date | null | undefined;
+      // Aus `.where('last_sync_started_at', '=', X)` — nur die Ruecknahme
+      // benutzt das, um den EIGENEN Stempel zu treffen.
+      let expectedStamp: Date | undefined;
       const builder = {
-        set() { return builder },
-        where(column: unknown, _op?: unknown, value?: unknown) {
+        set(values: { last_sync_started_at: Date | null }) {
+          setValue = values.last_sync_started_at;
+          return builder
+        },
+        where(column: unknown, op?: unknown, value?: unknown) {
           if (column === 'id') targetId = value as number;
+          if (column === 'last_sync_started_at' && op === '=') expectedStamp = value as Date;
           return builder
         },
         returning() { return builder },
+        /** Der Anspruch: bedingtes UPDATE, das eine Zeile zurueckgibt oder nicht. */
         async executeTakeFirst() {
           if (targetId === undefined) return undefined;
           // Eine zweite Serverinstanz war schneller: das bedingte UPDATE trifft
@@ -95,11 +109,24 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
           claims.push(targetId);
           return { id: targetId };
         },
+        /** Die Ruecknahme nach einem Queue-Fehler. */
+        async execute() {
+          if (targetId === undefined) return [];
+          const account = accounts.find((entry) => entry.id === targetId);
+          if (!account) return [];
+          // Bedingt auf den eigenen Stempel: hat inzwischen jemand anders
+          // beansprucht, gehoert die Zeile ihm und bleibt unberuehrt.
+          if (expectedStamp !== undefined
+            && account.last_sync_started_at?.getTime() !== expectedStamp.getTime()) return [];
+          account.last_sync_started_at = setValue ?? null;
+          releases.push(targetId);
+          return [];
+        },
       };
       return builder
     },
   };
-  return { db: db as unknown as Kysely<ServerDatabase>, claims };
+  return { db: db as unknown as Kysely<ServerDatabase>, claims, releases };
 }
 
 function fakeQueue() {
@@ -167,16 +194,17 @@ describe('periodischer Mail-Sync', () => {
     expect(result).toMatchObject({ enqueued: 2, hasMore: true, failed: [] });
   });
 
-  test('zwei Instanzen: doppelt eingereiht ist harmlos, doppelt gestempelt nicht', async () => {
-    // Eingereiht wird VOR dem Stempeln. Takten zwei Serverinstanzen
-    // gleichzeitig, kann dasselbe Konto also zweimal eingereiht werden — das
-    // faengt der Job-Key ab (jobKeyMode 'replace' laesst hoechstens einen
-    // wartenden Lauf je Konto zu), und der Queue-Name serialisiert die
-    // Ausfuehrung ohnehin.
+  test('wer den Anspruch verliert, reiht gar nicht erst ein', async () => {
+    // Beansprucht wird VOR dem Einreihen. Zwischen Auswahl und Anspruch kann
+    // eine zweite Instanz takten — oder ein Nutzer einen Vollimport ausloesen,
+    // der beide Zeitspalten stempelt und seinen eigenen Job einreiht.
     //
-    // Die umgekehrte Reihenfolge waere die gefaehrliche: dann waere der Stempel
-    // gesetzt und das Konto galte fuer das volle Intervall als bedient, obwohl
-    // das Einreihen scheiterte.
+    // Andersherum (einreihen, dann stempeln) haette der Scheduler seinen
+    // gewoehnlichen Sync da laengst eingereiht und den verlorenen Anspruch erst
+    // danach bemerkt. Seit dem ':full'-Suffix teilen sich die beiden Jobs
+    // keinen Job-Key mehr, blieben also beide liegen und liefen ueber dieselbe
+    // Konto-Queue direkt nacheinander — genau der zweite Abruf, den das
+    // doppelte Stempeln des Vollimports verhindern soll.
     const { db, claims } = fakeDb(
       [
         { id: 1, protocol: 'imap', last_sync_started_at: null },
@@ -188,23 +216,25 @@ describe('periodischer Mail-Sync', () => {
 
     const result = await runMailSyncSchedule({ db, queue, workspaceId: WORKSPACE, now: NOW, applyWorkspaceSession: async () => {} });
 
-    expect(enqueued.map((entry) => entry.accountId)).toEqual([1, 2]);
-    // Nur Konto 2 hat den Stempel bekommen; bei Konto 1 war die andere Instanz
-    // schneller.
+    // Konto 1 gehoert dem anderen Anspruch — kein zweiter Job dafuer.
+    expect(enqueued.map((entry) => entry.accountId)).toEqual([2]);
     expect(claims).toEqual([2]);
-    expect(result.failed).toEqual([]);
+    expect(result).toMatchObject({ enqueued: 1, failed: [] });
   });
 
-  test('ein fehlgeschlagenes Einreihen reisst den Takt nicht mit', async () => {
+  test('ein fehlgeschlagenes Einreihen reisst den Takt nicht mit und gibt den Anspruch zurueck', async () => {
     // Ohne diese Isolation wuerde ein einzelner Verbindungshaenger den ganzen
     // Lauf abbrechen: die uebrigen faelligen Konten sind bereits ausgewaehlt
     // und wuerden in diesem Takt gar nicht mehr versucht.
+    //
+    // Und ohne die Ruecknahme bliebe der Stempel stehen: das Konto galte fuer
+    // das volle Intervall als bedient, obwohl nie ein Job entstand.
     const accounts: Account[] = [
       { id: 1, protocol: 'imap', last_sync_started_at: null },
       { id: 2, protocol: 'imap', last_sync_started_at: null },
       { id: 3, protocol: 'imap', last_sync_started_at: null },
     ];
-    const { db, claims } = fakeDb(accounts);
+    const { db, claims, releases } = fakeDb(accounts);
     const enqueued: number[] = [];
     const queue = {
       async enqueue(input: { payload: Record<string, unknown> }) {
@@ -220,10 +250,30 @@ describe('periodischer Mail-Sync', () => {
 
     expect(enqueued).toEqual([1, 3]);
     expect(result.enqueued).toBe(2);
-    // Konto 2 bleibt UNGESTEMPELT und damit im naechsten Takt wieder faellig.
-    expect(claims).toEqual([1, 3]);
+    // Konto 2 wurde beansprucht, der Anspruch aber wieder freigegeben — es ist
+    // im naechsten Takt erneut faellig.
+    expect(claims).toEqual([1, 2, 3]);
+    expect(releases).toEqual([2]);
     expect(accounts[1]!.last_sync_started_at).toBeNull();
     expect(result.failed.map((entry) => entry.accountId)).toEqual([2]);
+  });
+
+  test('die Ruecknahme stellt einen vorhandenen Zeitstempel wieder her, nicht null', async () => {
+    // Ein faelliges Konto hatte in aller Regel schon einen Stempel. Ihn beim
+    // Zuruecknehmen auf null zu setzen waere kein Rollback, sondern eine
+    // zweite Aenderung — das Konto saehe aus, als sei es nie synchronisiert
+    // worden, und stuende (NULLS FIRST) ploetzlich ganz vorn.
+    const previous = new Date(NOW.getTime() - 3_600_000);
+    const accounts: Account[] = [{ id: 1, protocol: 'imap', last_sync_started_at: previous }];
+    const { db, releases } = fakeDb(accounts);
+    const queue = { async enqueue() { throw new Error('queue unavailable') } };
+
+    await runMailSyncSchedule({
+      db, queue, workspaceId: WORKSPACE, now: NOW, applyWorkspaceSession: async () => {},
+    });
+
+    expect(releases).toEqual([1]);
+    expect(accounts[0]!.last_sync_started_at).toEqual(previous);
   });
 
   test('ein nicht synchronisierbares Konto belegt keinen Platz im Stapel', async () => {

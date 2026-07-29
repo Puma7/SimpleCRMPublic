@@ -63,7 +63,12 @@ export type MailSyncScheduleResult = Readonly<{
   failed: readonly { accountId: number; error: unknown }[];
 }>;
 
-type DueAccountRow = Readonly<{ id: number; protocol: string | null }>;
+type DueAccountRow = Readonly<{
+  id: number;
+  protocol: string | null;
+  /** Mitgelesen, um einen Anspruch nach einem Queue-Fehler genau zurueckzunehmen. */
+  last_sync_started_at: Date | string | null;
+}>;
 
 /**
  * Faellige Konten holen und ihre Syncs einreihen.
@@ -119,40 +124,21 @@ export async function runMailSyncSchedule(input: {
     const jobType = mailSyncJobTypeForProtocol(account.protocol);
     if (!jobType) continue;
 
-    // ERST einreihen, DANN stempeln — und nicht umgekehrt.
+    // ERST beanspruchen, DANN einreihen — und bei einem Fehlschlag zurueck.
     //
-    // Andersherum war der Zeitstempel schon committet, wenn das Einreihen
-    // scheiterte (Verbindungshaenger, erschoepfter Pool): das Konto galt dann
-    // fuer das volle Intervall als bedient, obwohl nie ein Job entstand. Genau
-    // die Sorte Zeitstempel-ohne-Erfolg, gegen die dieser Scheduler an anderer
-    // Stelle schon abgesichert ist.
+    // Die umgekehrte Reihenfolge (einreihen, dann stempeln) vermied zwar den
+    // Zeitstempel-ohne-Job, gab dafuer aber den Anspruch auf: zwischen Auswahl
+    // und Stempel kann ein Nutzer einen Vollimport ausloesen, der beide
+    // Zeitspalten setzt und seinen eigenen Job einreiht. Der Scheduler haette
+    // seinen gewoehnlichen Sync da laengst eingereiht und merkte den verlorenen
+    // Anspruch erst danach — beide Jobs blieben liegen (sie teilen sich seit
+    // dem ':full'-Suffix keinen Job-Key mehr) und liefen ueber dieselbe
+    // Konto-Queue direkt nacheinander. Genau den zweiten Abruf soll das
+    // doppelte Stempeln des Vollimports verhindern.
     //
-    // In dieser Reihenfolge ist die schlimmste Folge eines Fehlschlags, dass
-    // ein Konto zweimal eingereiht wird — und das faengt der Job-Key ab
-    // (jobKeyMode 'replace' laesst hoechstens einen wartenden Lauf je Konto
-    // zu), die Ausfuehrung serialisiert ohnehin der Queue-Name.
-    try {
-      await input.queue.enqueue({
-        workspaceId: input.workspaceId,
-        type: jobType,
-        // Kein actorUserId: dieser Lauf gehoert keinem Menschen. Der
-        // Dienst-Nachweis ist genau die Aussage, die die Job-Policy fuer den
-        // Sync erwartet, wenn kein Nutzer dahintersteht.
-        payload: buildTrustedServiceJobPayload({
-          workspaceId: input.workspaceId,
-          accountId: account.id,
-        }),
-      });
-    } catch (error) {
-      // Ein einzelnes Konto darf den Takt nicht mitreissen: die uebrigen
-      // faelligen sind bereits ausgewaehlt und wuerden sonst diesen Lauf gar
-      // nicht erst versucht. Ohne Stempel bleibt dieses Konto faellig und
-      // kommt im naechsten Takt wieder dran.
-      failed.push({ accountId: account.id, error });
-      continue;
-    }
-
-    await withWorkspaceTransaction(
+    // Das bedingte UPDATE ist der Anspruch: wer keine Zeile zurueckbekommt, war
+    // nicht der Erste und reiht gar nicht erst ein.
+    const claimed = await withWorkspaceTransaction(
       input.db,
       { workspaceId: input.workspaceId, role: 'system' },
       async (trx) => trx
@@ -168,6 +154,50 @@ export async function runMailSyncSchedule(input: {
         .executeTakeFirst(),
       { applySession: input.applyWorkspaceSession },
     );
+    // Eine zweite Instanz oder ein Vollimport war schneller. Deren Job deckt
+    // dieses Konto ab; ein zweiter waere genau der doppelte Abruf.
+    if (!claimed) continue;
+
+    try {
+      await input.queue.enqueue({
+        workspaceId: input.workspaceId,
+        type: jobType,
+        // Kein actorUserId: dieser Lauf gehoert keinem Menschen. Der
+        // Dienst-Nachweis ist genau die Aussage, die die Job-Policy fuer den
+        // Sync erwartet, wenn kein Nutzer dahintersteht.
+        payload: buildTrustedServiceJobPayload({
+          workspaceId: input.workspaceId,
+          accountId: account.id,
+        }),
+      });
+    } catch (error) {
+      // Anspruch zuruecknehmen, sonst galte das Konto fuer das volle Intervall
+      // als bedient, obwohl nie ein Job entstand — der Zeitstempel-ohne-Erfolg,
+      // gegen den dieser Scheduler an anderer Stelle schon abgesichert ist.
+      // Bedingt auf den eigenen Stempel: hat inzwischen jemand anders
+      // beansprucht, gehoert die Zeile ihm.
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .updateTable('email_accounts')
+          .set({
+            last_sync_started_at: account.last_sync_started_at === null
+              ? null
+              : new Date(String(account.last_sync_started_at)),
+          })
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', account.id)
+          .where('last_sync_started_at', '=', now)
+          .execute(),
+        { applySession: input.applyWorkspaceSession },
+      ).catch(() => undefined);
+      // Ein einzelnes Konto darf den Takt nicht mitreissen: die uebrigen
+      // faelligen sind bereits ausgewaehlt und wuerden sonst diesen Lauf gar
+      // nicht erst versucht.
+      failed.push({ accountId: account.id, error });
+      continue;
+    }
     enqueued += 1;
   }
 
@@ -189,7 +219,7 @@ export function dueAccountsQuery(
 ) {
   return trx
     .selectFrom('email_accounts')
-    .select(['id', 'protocol'])
+    .select(['id', 'protocol', 'last_sync_started_at'])
     .where('workspace_id', '=', input.workspaceId)
     .where((eb) => eb.or([
       eb('last_sync_started_at', 'is', null),
