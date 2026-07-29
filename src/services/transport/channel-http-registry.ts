@@ -1842,6 +1842,21 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
     path: `/api/v1/email/access/bindings/${positiveId(id, "mail delegation binding id")}`,
     transform: () => ({ success: true }),
   })],
+  [IPCChannels.Email.GetMailAclRolloutReadiness, () => ({
+    method: "GET",
+    path: "/api/v1/email/acl-rollout/readiness",
+    transform: (body) => {
+      const result = dataBody<Record<string, unknown>>(body)
+      // Bewusst schmal: die Oberflaeche braucht genau die Aussage "wirkt eine
+      // Delegation hier ueberhaupt". Die Zaehler bleiben der Admin-API
+      // vorbehalten, damit hier keine Halbwahrheit entsteht, wenn sich ihr
+      // Format aendert.
+      return {
+        mode: result.mode === "enforce" ? "enforce" as const : "shadow" as const,
+        delegationGrantsAccess: result.delegationGrantsAccess === true,
+      }
+    },
+  })],
   [IPCChannels.Email.CreateAccount, ([payload]) => {
     const input = objectPayload(payload, "email account payload")
     return {

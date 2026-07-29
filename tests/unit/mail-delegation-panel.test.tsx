@@ -279,6 +279,46 @@ describe('MailDelegationPanel', () => {
     expect(mockInvoke.mock.calls.length).toBeGreaterThan(before);
   });
 
+  test('warnt im Shadow-Modus, dass die Delegation hier nichts gewaehrt', async () => {
+    // Ohne diesen Hinweis richtet man eine vollstaendige Delegation ein, sieht
+    // sie gespeichert in der Liste stehen — und die Mitarbeiter haben trotzdem
+    // ein leeres Postfach, weil im Shadow-Modus weiterhin die Alt-ACL erlaubt.
+    mockInvoke.mockImplementation((channel: string, payload?: Record<string, unknown>) => {
+      if (channel === 'email:get-mail-acl-rollout-readiness') {
+        return Promise.resolve({ mode: 'shadow', delegationGrantsAccess: false });
+      }
+      return defaultInvoke(channel, payload);
+    });
+
+    render(<MailDelegationPanel />);
+
+    const hinweis = await screen.findByRole('status');
+    expect(hinweis.textContent).toContain('keinen Zugriff');
+    expect(hinweis.textContent).toContain('Shadow-Modus');
+    // Der Weg heraus muss dabeistehen, sonst ist der Hinweis eine Sackgasse.
+    expect(hinweis.textContent).toContain('acl-rollout/enforce');
+  });
+
+  test('zeigt den Hinweis nicht im enforce-Modus und nicht ohne Auskunft', async () => {
+    render(<MailDelegationPanel />);
+    expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('status')).toBeNull();
+
+    // Die Readiness-Route ist admin-only. Ein Delegationsverwalter ohne
+    // Admin-Rolle bekommt dort 403 — dann wird nichts behauptet, statt eine
+    // Warnung auf einer geratenen Annahme zu zeigen.
+    mockInvoke.mockImplementation((channel: string, payload?: Record<string, unknown>) => {
+      if (channel === 'email:get-mail-acl-rollout-readiness') {
+        return Promise.reject(new Error('forbidden'));
+      }
+      return defaultInvoke(channel, payload);
+    });
+    const { unmount } = render(<MailDelegationPanel />);
+    expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('status')).toBeNull();
+    unmount();
+  });
+
   test('unsubscribes and ignores an in-flight ACL refresh after unmount under StrictMode', async () => {
     const view = render(
       <React.StrictMode>
@@ -322,6 +362,9 @@ async function defaultInvoke(channel: string, payload?: Record<string, unknown>)
   }
   if (channel === 'email:save-mail-delegation-binding') return { success: true };
   if (channel === 'email:delete-mail-delegation-binding') return { success: true };
+  if (channel === 'email:get-mail-acl-rollout-readiness') {
+    return { mode: 'enforce', delegationGrantsAccess: true };
+  }
   throw new Error(`Unexpected channel ${channel}`);
 }
 

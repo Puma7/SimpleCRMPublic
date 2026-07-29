@@ -94,6 +94,67 @@ check_latest_backup() {
   echo "backup_row_counts=ok"
 }
 
+# Workspaces, deren Mail-Delegation nichts bewirkt.
+#
+# Im Shadow-Modus erlaubt weiterhin die Alt-ACL (`user_account_access`); die
+# neuen Bindings koennen dort nur einschraenken. Hat ein Workspace in dieser
+# Tabelle KEINE einzige Zeile, ist die Bedingung konstant falsch: jeder
+# Nicht-Admin sieht kein Konto und keine Nachricht, ganz gleich was in der
+# Delegation steht. Owner und Admin merken davon nichts, weil sie vor dieser
+# Logik abzweigen — deshalb faellt der Zustand ohne Hinweis nur den Mitarbeitern
+# auf, und zwar als "die Software ist kaputt".
+#
+# Migration 0050 raeumt genau das auf. Die Pruefung bleibt trotzdem: sie deckt
+# den Fall ab, dass ein Workspace nach dem Aufraeumen wieder in diesem Zustand
+# landet, und kostet eine Abfrage.
+#
+# ueber to_regclass abgesichert: aeltere Staende ohne die Tabellen sollen hier
+# keinen Abbruch ausloesen, sondern schweigen.
+#
+# Die Systemrolle wird ausdruecklich gesetzt, obwohl der Doctor heute als
+# POSTGRES_USER (Superuser) verbindet und Row Level Security ohnehin umgeht.
+# Ohne sie haenge das Ergebnis still an einer Eigenschaft der Verbindung: eine
+# Rolle ohne BYPASSRLS saehe nur die Zeilen ihres eigenen Workspace, zaehlte 0
+# und meldete Entwarnung — der schlechteste Ausgang fuer eine Pruefung, die
+# gerade den stummen Fall finden soll.
+#
+# Alles in EINER Anweisung, nicht in einer Transaktion aus mehreren: psql gibt
+# sonst auch die Statusmeldungen (BEGIN/COMMIT) und die set_config-Zeile aus,
+# und die Zahl liesse sich nur noch heraussuchen. `MATERIALIZED` erzwingt, dass
+# die Konfiguration VOR der Zaehlung ausgewertet wird, statt sich auf die
+# Planreihenfolge zu verlassen.
+check_mail_acl_rollout() {
+  blocked="$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "
+    WITH cfg AS MATERIALIZED (
+      SELECT set_config('app.role', 'system', true) AS role,
+             set_config('app.cross_workspace_access', 'on', true) AS cross_workspace
+    )
+    SELECT CASE
+      WHEN to_regclass('public.mail_acl_rollout_state') IS NULL
+        OR to_regclass('public.user_account_access') IS NULL
+      THEN 'n/a'
+      ELSE (xpath('/row/c/text()', query_to_xml(
+              'SELECT count(*) AS c
+                 FROM mail_acl_rollout_state AS rollout
+                WHERE rollout.mode = ''shadow''
+                  AND NOT EXISTS (SELECT 1 FROM user_account_access AS legacy
+                                  WHERE legacy.workspace_id = rollout.workspace_id)',
+              false, true, '')))[1]::text
+    END
+    FROM cfg" 2>/dev/null || printf 'unknown')"
+  [ -n "$blocked" ] || blocked='unknown'
+  echo "mail_acl_shadow_without_legacy=$blocked"
+  case "$blocked" in
+    'n/a' | 'unknown' | '0') ;;
+    *)
+      echo "warning: $blocked workspace(s) are in mail ACL shadow mode without any legacy" \
+        "access rows — mail delegation grants nothing there and non-admin users see an" \
+        "empty mailbox. Run the migrations, or switch those workspaces with" \
+        "POST /api/v1/email/acl-rollout/enforce." >&2
+      ;;
+  esac
+}
+
 pg_isready -d "$DATABASE_URL"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select 'database=' || current_database()"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select 'db_size=' || pg_size_pretty(pg_database_size(current_database()))"
@@ -102,4 +163,5 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select 'latest_migration=' || coal
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select 'ready_jobs=' || count(*) from job_queue where locked_at is null and run_after <= now()"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select 'queue_lag_seconds=' || coalesce(extract(epoch from max(now() - run_after))::integer, 0) from job_queue where locked_at is null and run_after <= now()"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "select 'stale_locks=' || count(*) from conversation_locks where last_heartbeat_at < now() - interval '2 minutes'"
+check_mail_acl_rollout
 check_latest_backup

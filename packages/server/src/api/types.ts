@@ -5038,6 +5038,7 @@ export type MailAclRolloutAdminApiPort = {
   transitionToEnforce(input: {
     workspaceId: string;
     actorUserId: string;
+    acknowledgeWidening?: boolean;
   }): Promise<MailAclRolloutTransitionResult>;
   resetShadowCounters(input: {
     workspaceId: string;

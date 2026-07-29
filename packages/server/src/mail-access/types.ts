@@ -216,7 +216,14 @@ export type MailAclRolloutState = MailAclRolloutCounters & Readonly<{
 
 export type MailAclRolloutReadiness = MailAclRolloutState & Readonly<{
   workspaceId: string;
+  /** Der Wechsel gelingt ohne weitere Angaben. */
   ready: boolean;
+  /**
+   * Der Wechsel gelingt, erweitert aber Zugriff und verlangt deshalb
+   * `acknowledgeWidening`. Getrennt von `ready`, damit die Oberflaeche den
+   * Unterschied benennen kann, statt beides als "geht nicht" zu zeigen.
+   */
+  readyWithAcknowledgedWidening: boolean;
   enforced: boolean;
 }>;
 
@@ -227,7 +234,15 @@ export type MailAclRolloutTransitionResult =
     code:
       | 'not_shadow'
       | 'no_observations'
-      | 'mismatches_present'
+      /** Die neue ACL wuerde jemandem Zugriff NEHMEN, den er heute hat. */
+      | 'access_regressions_present'
+      /**
+       * Die neue ACL wuerde jemandem Zugriff GEBEN, den Legacy nicht kennt —
+       * also genau das, was eine eingerichtete Delegation bezweckt. Kein harter
+       * Riegel, sondern eine Rueckfrage: mit `acknowledgeWidening` geht es
+       * weiter (Begruendung bei transitionToEnforce im Postgres-Port).
+       */
+      | 'widening_unacknowledged'
       | 'telemetry_unhealthy'
       | 'evaluations_in_flight';
   }>;

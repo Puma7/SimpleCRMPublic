@@ -121,6 +121,21 @@ export function MailDelegationPanel() {
   const [tagAllowText, setTagAllowText] = useState("")
   const [tagExcludeText, setTagExcludeText] = useState("")
   const [showFilters, setShowFilters] = useState(false)
+  /**
+   * Wirkt eine Delegation in diesem Workspace ueberhaupt?
+   *
+   * Im Shadow-Modus des ACL-Rollouts erlaubt weiterhin die Alt-ACL; Bindings
+   * koennen dort nur EINSCHRAENKEN. Wer das nicht weiss, richtet eine
+   * vollstaendige Delegation ein, sieht sie gespeichert in der Liste stehen —
+   * und die Mitarbeiter haben trotzdem ein leeres Postfach. Genau diesen
+   * stummen Zustand macht der Hinweis unten sichtbar.
+   *
+   * `null` heisst "unbekannt": die Readiness-Route ist admin-only, ein
+   * Delegationsverwalter ohne Admin-Rolle bekommt dort 403. Dann wird nichts
+   * behauptet, statt eine Warnung zu zeigen, die auf einer geratenen Annahme
+   * beruht.
+   */
+  const [delegationEffective, setDelegationEffective] = useState<boolean | null>(null)
 
   const mountedRef = useRef(true)
   const loadGenerationRef = useRef(0)
@@ -287,6 +302,22 @@ export function MailDelegationPanel() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const readiness = await invokeRenderer(IPCChannels.Email.GetMailAclRolloutReadiness)
+        if (!cancelled) setDelegationEffective(readiness.delegationGrantsAccess)
+      } catch {
+        // Bewusst stumm: fehlende Admin-Rechte oder eine aeltere Serverversion
+        // ohne die Route sind kein Fehler DIESES Panels. Ohne Auskunft bleibt
+        // der Hinweis aus, die Delegation selbst funktioniert unveraendert.
+        if (!cancelled) setDelegationEffective(null)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     const subscription = subscribeServerEvents({
@@ -499,6 +530,23 @@ export function MailDelegationPanel() {
         <h2 className="text-lg font-semibold tracking-tight">Mailbox-Delegation</h2>
         <p className="text-sm text-muted-foreground">Serverseitige Konten- und Ordnerrechte für Benutzer und Gruppen.</p>
       </div>
+
+      {delegationEffective === false ? (
+        <div
+          role="status"
+          className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/10 p-4 text-sm"
+        >
+          <p className="font-medium">Delegationen gewähren hier derzeit keinen Zugriff.</p>
+          <p className="text-muted-foreground">
+            Dieser Workspace steht im Shadow-Modus des ACL-Rollouts. Dort entscheidet weiterhin die
+            alte Kontoberechtigung darüber, wer ein Postfach sehen darf; die Bindings unten können
+            nur zusätzlich <em>einschränken</em>. Betroffene Benutzer sehen deshalb ein leeres
+            Postfach, obwohl die Delegation gespeichert ist. Ein Administrator schaltet den
+            Workspace mit <code>POST /api/v1/email/acl-rollout/enforce</code> um; danach wirkt
+            diese Seite wie konfiguriert.
+          </p>
+        </div>
+      ) : null}
 
       <div className="space-y-4 rounded-md border p-4">
         <div className="grid gap-3 sm:grid-cols-2">

@@ -33,23 +33,35 @@ export async function handleMailAclRolloutRoute(
   }
 
   if (req.method !== 'POST') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  // Nur der ausdrueckliche Boolean zaehlt. Ein 'true' aus einem Formular oder
+  // ein beliebiger wahrheitsartiger Wert soll eine Zugriffserweiterung nicht
+  // mitbestaetigen koennen — die Bestaetigung ist der ganze Zweck des Flags.
+  const acknowledgeWidening = isRecord(req.body) && req.body.acknowledgeWidening === true;
   const result = await ports.mailAclRollout.transitionToEnforce({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
+    acknowledgeWidening,
   });
   if (!result.ok) {
     const message = result.code === 'no_observations'
       ? 'Vor enforce ist mindestens eine Shadow-Beobachtung erforderlich'
-      : result.code === 'mismatches_present'
-        ? 'Enforce ist bei vorhandenen Shadow-Mismatches gesperrt'
-        : result.code === 'telemetry_unhealthy'
-          ? 'Enforce ist bei ungesunder Shadow-Telemetrie gesperrt'
-          : result.code === 'evaluations_in_flight'
-            ? 'Enforce ist bei offenen Shadow-Auswertungen gesperrt'
-          : 'Workspace ist nicht im Shadow-Modus';
+      : result.code === 'access_regressions_present'
+        ? 'Enforce ist gesperrt: die neue ACL wuerde bestehenden Zugriff entziehen'
+        : result.code === 'widening_unacknowledged'
+          ? 'Enforce erweitert den Zugriff gegenueber der Alt-ACL. '
+            + 'Wiederholen Sie den Aufruf mit {"acknowledgeWidening": true}, um das zu bestaetigen'
+          : result.code === 'telemetry_unhealthy'
+            ? 'Enforce ist bei ungesunder Shadow-Telemetrie gesperrt'
+            : result.code === 'evaluations_in_flight'
+              ? 'Enforce ist bei offenen Shadow-Auswertungen gesperrt'
+            : 'Workspace ist nicht im Shadow-Modus';
     return error(409, result.code, message);
   }
   return data(200, { ok: true });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function serializeReadiness(
@@ -69,7 +81,12 @@ function serializeReadiness(
     diagnosticCode: readiness.diagnosticCode,
     diagnosticAt: readiness.diagnosticAt,
     ready: readiness.ready,
+    readyWithAcknowledgedWidening: readiness.readyWithAcknowledgedWidening,
     enforced: readiness.enforced,
+    // Ausdruecklich mitgeliefert, weil die Oberflaeche sonst nicht sagen kann,
+    // WARUM eine Delegation gerade nichts bewirkt: im Shadow-Modus erlaubt
+    // weiterhin die Alt-ACL, die Bindings koennen nur einschraenken.
+    delegationGrantsAccess: readiness.mode === 'enforce',
     ...(readiness.diagnostic ? { diagnostic: readiness.diagnostic } : {}),
   };
 }
