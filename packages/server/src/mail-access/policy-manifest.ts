@@ -334,7 +334,10 @@ function buildMailRoutePolicyManifest(): MailRoutePolicyEntry[] {
     PATCH: permissionPolicy('mail.account.manage', accountPath()),
     DELETE: permissionPolicy('mail.account.manage', accountPath()),
   });
-  assign('/api/v1/email/accounts/:accountId/sync', { POST: permissionPolicy('mail.account.manage', accountPath()) });
+  // Abholen zaehlt als Lesen, nicht als Kontoverwaltung (Begruendung bei den
+  // Job-Policies in jobs/policy.ts). Der Sync-LOCK bleibt dagegen
+  // Verwaltungssache: ihn zu loeschen ist ein Reparatureingriff.
+  assign('/api/v1/email/accounts/:accountId/sync', { POST: permissionPolicy('mail.metadata.read', accountPath()) });
   assign('/api/v1/email/accounts/:accountId/sync-lock', { DELETE: permissionPolicy('mail.account.manage', accountPath()) });
   assign('/api/v1/email/accounts/:accountId/vacation-test', { POST: permissionPolicy('mail.send', accountPath()) });
   assign('/api/v1/email/accounts/:accountId/inbox-archive-recovery', {

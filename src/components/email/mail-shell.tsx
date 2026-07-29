@@ -16,6 +16,7 @@ import { MessageViewer } from "./message-viewer"
 import { MessageMetadataPanel } from "./message-metadata-panel"
 import { ComposeDialog } from "./compose-dialog"
 import { useEmailAccounts } from "./hooks/use-email-accounts"
+import { useAuth } from "@/components/auth/auth-context"
 import { useEmailMessages } from "./hooks/use-email-messages"
 import { useEmailCategories } from "./hooks/use-email-categories"
 import { useMessageMetadata } from "./hooks/use-message-metadata"
@@ -54,6 +55,7 @@ function MailShellInner() {
     bumpAccountsRevision,
     bumpMailMetricsRevision,
   } = useMailWorkspace()
+  const { hasMailPermissionForAccount } = useAuth()
 
   useEffect(() => {
     setMetadataPanelOpen(true)
@@ -192,6 +194,22 @@ function MailShellInner() {
   // server throttles too), so frequent clicks update the view without hammering
   // the mail server.
   const lastImapSyncRef = useRef(0)
+  // Abholen verlangt seit der Umstellung mail.metadata.read AUF DEM KONTO
+  // (jobs/policy.ts) — nicht mehr mail.account.manage. Der Knopf haengt
+  // trotzdem an einer Pruefung, und zwar an der kontoscharfen: die Kontenliste
+  // ist ueber den Mail-Scope gefiltert, und der laesst sich auch durch ein
+  // ORDNER-Grant erfuellen. Wer ein Konto nur ueber einen Ordner sieht, bekaeme
+  // beim Abholen ein 403 — die Selbstauskunft fuehrt in accountPermissions
+  // ausdruecklich nur Konto-Grants, prueft hier also dasselbe wie der Server.
+  //
+  // Bei "Alle Konten" genuegt eines, fuer das es reicht; der Sync laeuft dann
+  // ueber die Konten, die der Nutzer wirklich abholen darf.
+  const canSync = selectedAccountId != null && (
+    selectedAccountId === "all"
+      ? accounts.some((account) => hasMailPermissionForAccount("mail.metadata.read", account.id))
+      : hasMailPermissionForAccount("mail.metadata.read", selectedAccountId)
+  )
+
   const handleSyncWithCategories = useCallback(() => {
     void (async () => {
       const now = Date.now()
@@ -314,7 +332,7 @@ function MailShellInner() {
         onCompose={() => setComposeIntent({ mode: "new" })}
         onSync={handleSyncWithCategories}
         syncing={syncing}
-        canSync={selectedAccountId != null}
+        canSync={canSync}
         canCompose={
           selectedAccountId != null &&
           (selectedAccountId !== "all" || accounts.length > 0)

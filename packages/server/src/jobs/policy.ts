@@ -81,18 +81,32 @@ const optionalMessageJobResource = (whenAbsent: 'non_mail' | 'mail_scope' = 'non
 });
 
 export const SERVER_JOB_POLICIES: readonly ServerJobPolicyEntry[] = Object.freeze([
+  // Abholen ist eine LESE-Aktion, kein Verwaltungsvorgang.
+  //
+  // Frueher stand hier mail.account.manage — dieselbe Berechtigung wie Konto
+  // loeschen, SMTP-Zugangsdaten aendern und OAuth neu verbinden. Von den fuenf
+  // Profilen enthaelt sie nur 'manager'. Wer im Postfach arbeiten soll, konnte
+  // also keine neuen Nachrichten holen; und weil es im Serverbetrieb keinen
+  // periodischen Sync gibt (eingereiht wird nur ueber die Route und einen
+  // Workflow-Knoten), warteten alle anderen strukturell auf einen Admin.
+  //
+  // mail.metadata.read ist die passende Schranke: wer das Postfach sehen darf,
+  // darf es auch aktualisieren. Mehr Last als ein Lesevorgang entsteht dadurch
+  // nicht — Graphile serialisiert je Konto ueber den Queue-Namen
+  // 'account-<id>', und parallele Anfragen fallen ueber den jobKey zu einem
+  // einzigen wartenden Lauf zusammen.
   {
     type: 'mail.sync.imap',
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
-    permission: 'mail.account.manage',
+    permission: 'mail.metadata.read',
     resource: accountJobResource,
   },
   {
     type: 'mail.sync.pop3',
     kind: 'mail',
     actorMode: 'initiating_user_or_service',
-    permission: 'mail.account.manage',
+    permission: 'mail.metadata.read',
     resource: accountJobResource,
   },
   {
