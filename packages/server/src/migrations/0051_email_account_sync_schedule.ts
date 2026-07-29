@@ -26,6 +26,19 @@ import type { SqlMigration } from './types';
  *
  * Der Index deckt die Frage des Schedulers ab: welche Konten sind faellig.
  * NULLS FIRST, weil ein Konto ohne jeden Lauf zuerst drankommen soll.
+ *
+ * `last_full_inbox_started_at` ist bewusst eine ZWEITE Spalte und keine
+ * Wiederverwendung der ersten. Der Vollimport hat eine eigene, viel laengere
+ * Abkuehlzeit (15 Minuten statt 30 Sekunden), und beide an derselben Spalte zu
+ * messen hiesse, sie an einem Wert zu messen, den der periodische Sync alle
+ * fuenf Minuten neu setzt: der Vollimport-Zeitstempel laege dann dauerhaft
+ * innerhalb seines eigenen Fensters und ein Nachholen waere nie wieder
+ * ausloesbar — genau die Nachricht, die der Erst-Sync uebersprungen hat, kaeme
+ * damit nie. Zwei Fragen, zwei Spalten.
+ *
+ * Kein eigener Index: die Spalte wird immer zusammen mit einem konkreten Konto
+ * gelesen (Primaerschluessel), nie als Suchkriterium ueber alle Konten — nur
+ * der Scheduler sucht, und der fragt nach `last_sync_started_at`.
  */
 export const emailAccountSyncScheduleMigration: SqlMigration = {
   id: '0051_email_account_sync_schedule',
@@ -33,11 +46,14 @@ export const emailAccountSyncScheduleMigration: SqlMigration = {
   upSql: [
     `ALTER TABLE email_accounts
   ADD COLUMN IF NOT EXISTS last_sync_started_at timestamptz;`,
+    `ALTER TABLE email_accounts
+  ADD COLUMN IF NOT EXISTS last_full_inbox_started_at timestamptz;`,
     `CREATE INDEX IF NOT EXISTS email_accounts_sync_due_idx
   ON email_accounts (workspace_id, last_sync_started_at ASC NULLS FIRST);`,
   ],
   downSql: [
     'DROP INDEX IF EXISTS email_accounts_sync_due_idx;',
+    'ALTER TABLE email_accounts DROP COLUMN IF EXISTS last_full_inbox_started_at;',
     'ALTER TABLE email_accounts DROP COLUMN IF EXISTS last_sync_started_at;',
   ],
 };

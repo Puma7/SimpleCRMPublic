@@ -23930,6 +23930,136 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  test('server mail account sync cooldown: Vollimport haengt nicht am Takt des periodischen Syncs', async () => {
+    // Beide Abkuehlzeiten an derselben Spalte zu messen war ein Ausfall mit
+    // Ansage: der periodische Scheduler setzt `last_sync_started_at` alle fuenf
+    // Minuten neu, der Vollimport misst 15 Minuten — er laege damit dauerhaft
+    // innerhalb seines eigenen Fensters und waere nie wieder ausloesbar. Genau
+    // die alten Nachrichten, die der begrenzte Erst-Sync uebersprungen hat,
+    // kaemen dann nie.
+    const account = {
+      lastSyncStartedAt: null as Date | null,
+      lastFullInboxStartedAt: null as Date | null,
+    };
+    let now = new Date('2026-07-29T12:00:00.000Z');
+    const claimCalls: Array<{ kind?: string; minIntervalMs: number }> = [];
+    const queueCalls: unknown[] = [];
+
+    // Nachbau der Port-Regeln: welche Spalte zaehlt, und was gestempelt wird.
+    const emailAccounts = {
+      async list() { return { items: [] }; },
+      async get(input: { id: number }) {
+        return { ...makeEmailAccountRecord(input.id), protocol: 'imap' };
+      },
+      async claimSyncSlot(input: { minIntervalMs: number; kind?: 'sync' | 'full_inbox' }) {
+        claimCalls.push({ kind: input.kind, minIntervalMs: input.minIntervalMs });
+        const fullInbox = input.kind === 'full_inbox';
+        const threshold = new Date(now.getTime() - input.minIntervalMs);
+        const previous = { ...account };
+        const last = fullInbox ? account.lastFullInboxStartedAt : account.lastSyncStartedAt;
+        if (last !== null && last >= threshold) return { claimed: false, lastStartedAt: last };
+        account.lastSyncStartedAt = now;
+        if (fullInbox) account.lastFullInboxStartedAt = now;
+        return { claimed: true, lastStartedAt: now, claimedAt: now, previous };
+      },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailAccounts: emailAccounts as unknown as ServerApiPorts['emailAccounts'],
+      jobQueue: { async enqueue(input) { queueCalls.push(input); } },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: [] };
+    const sync = (body?: Record<string, unknown>) => api.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/7/sync',
+      ...(body ? { body } : {}),
+      principal,
+    });
+
+    // Der periodische Scheduler war gerade dran.
+    account.lastSyncStartedAt = new Date(now.getTime() - 60_000);
+
+    // DAS ist der Befund: trotz eines eine Minute alten Sync-Stempels muss der
+    // Vollimport durchgehen — er hat seine eigene Spalte und wurde nie angestossen.
+    const backfill = await sync({ fullInbox: true });
+    expect((backfill.body as any).data).toMatchObject({ queued: true, fullInbox: true });
+    expect(claimCalls.at(-1)).toEqual({ kind: 'full_inbox', minIntervalMs: 15 * 60_000 });
+
+    // Seine eigene Wartezeit greift danach sehr wohl.
+    expect((await sync({ fullInbox: true }) as any).body.data).toMatchObject({
+      queued: false,
+      reason: 'recently_synced',
+    });
+    // Und er hat auch den gewoehnlichen Sync mitgestempelt — sonst reichte der
+    // naechste Takt sofort einen zweiten Lauf auf derselben Verbindung hinterher.
+    expect((await sync() as any).body.data).toMatchObject({ queued: false });
+
+    // Nach 31 Sekunden ist die kurze Wartezeit um, die lange aber nicht: die
+    // beiden sind in BEIDE Richtungen unabhaengig.
+    now = new Date(now.getTime() + 31_000);
+    expect((await sync() as any).body.data).toMatchObject({ queued: true });
+    expect((await sync({ fullInbox: true }) as any).body.data).toMatchObject({ queued: false });
+
+    expect(queueCalls).toHaveLength(2);
+  });
+
+  test('server mail account sync releases the cooldown slot when enqueueing fails', async () => {
+    // Der Slot wird BEANSPRUCHT und nicht nur geprueft — eine reine Vorabfrage
+    // reservierte nichts, gleichzeitige Klicks laesen alle denselben alten
+    // Zeitstempel und reihten alle ein. Der Preis ist ein Stempel, der schon
+    // steht, wenn das Einreihen scheitert; ohne Ruecknahme bekaeme der Nutzer
+    // den Fehler und danach 30 Sekunden lang ein freundliches `queued: false`,
+    // das nach Erfolg aussieht, obwohl nie ein Job entstand.
+    const account = {
+      lastSyncStartedAt: null as Date | null,
+      lastFullInboxStartedAt: null as Date | null,
+    };
+    const now = new Date('2026-07-29T12:00:00.000Z');
+    let queueFails = true;
+    const releaseCalls: unknown[] = [];
+
+    const emailAccounts = {
+      async list() { return { items: [] }; },
+      async get(input: { id: number }) {
+        return { ...makeEmailAccountRecord(input.id), protocol: 'imap' };
+      },
+      async claimSyncSlot(input: { minIntervalMs: number }) {
+        const threshold = new Date(now.getTime() - input.minIntervalMs);
+        const previous = { ...account };
+        const last = account.lastSyncStartedAt;
+        if (last !== null && last >= threshold) return { claimed: false, lastStartedAt: last };
+        account.lastSyncStartedAt = now;
+        return { claimed: true, lastStartedAt: now, claimedAt: now, previous };
+      },
+      async releaseSyncSlot(input: { claimedAt: Date; previous: { lastSyncStartedAt: Date | null } }) {
+        releaseCalls.push(input);
+        // Nur zuruecknehmen, wenn der eigene Stempel noch dasteht.
+        if (account.lastSyncStartedAt?.getTime() !== input.claimedAt.getTime()) return;
+        account.lastSyncStartedAt = input.previous.lastSyncStartedAt;
+      },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailAccounts: emailAccounts as unknown as ServerApiPorts['emailAccounts'],
+      jobQueue: {
+        async enqueue() {
+          if (queueFails) throw new Error('queue unavailable');
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: [] };
+    const sync = () => api.handle({ method: 'POST', path: '/api/v1/email/accounts/7/sync', principal });
+
+    await sync().catch(() => undefined);
+    expect(releaseCalls).toHaveLength(1);
+    // Der Stempel ist zurueckgenommen — das Konto gilt NICHT als bedient.
+    expect(account.lastSyncStartedAt).toBeNull();
+
+    // Deshalb kommt der naechste Versuch sofort durch, statt in eine
+    // freundliche Luege zu laufen.
+    queueFails = false;
+    expect((await sync() as any).body.data).toMatchObject({ queued: true });
+    expect(account.lastSyncStartedAt).toEqual(now);
+  });
+
   test('server mail account sync-lock route releases stale account sync job locks', async () => {
     const releaseCalls: unknown[] = [];
     const auditEvents: CapturedAuditEvent[] = [];

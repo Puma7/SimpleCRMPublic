@@ -648,6 +648,12 @@ export type EmailAccountsTable = {
   read_receipt_trusted_domains: string | null;
   /** Anstoss des letzten Syncs — Grundlage fuer Scheduler und Abkuehlzeit (0051). */
   last_sync_started_at: TimestampColumn | null;
+  /**
+   * Anstoss des letzten Vollimports — eigene Abkuehlzeit, eigene Spalte (0051).
+   * Getrennt von `last_sync_started_at`, weil der periodische Sync die alle
+   * fuenf Minuten neu setzt und den Vollimport sonst dauerhaft aussperrte.
+   */
+  last_full_inbox_started_at: TimestampColumn | null;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
   created_at: TimestampColumn | null;

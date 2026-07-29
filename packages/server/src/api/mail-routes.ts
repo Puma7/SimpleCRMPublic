@@ -11,6 +11,7 @@ import type {
   EmailAccountMutationInput,
   EmailAccountMutationPortResult,
   EmailAccountRecord,
+  EmailAccountSyncSlotPrevious,
   EmailComposeDraftMutationResult,
   EmailComposeSendInput,
   EmailDiagnosticsReport,
@@ -497,29 +498,29 @@ async function handleEmailAccountSync(
   // hundert Anfragen samt Einreihung, und die 15-Sekunden-Sperre im Client
   // gilt je Browser-Tab — ueber viele Nutzer hinweg hilft sie gar nicht.
   //
-  // Ein Nachholen (fullInbox) umgeht die WARTEZEIT, wird aber trotzdem
-  // gestempelt (minIntervalMs 0 beansprucht die Zeile bedingungslos). Ohne den
-  // Stempel bliebe das Konto faellig, und der naechste Scheduler-Takt reihte
-  // einen gewoehnlichen Sync hinterher — der teilt sich mit dem Nachhol-Lauf
-  // zwar nicht mehr den Job-Key (siehe graphileJobKeyForJob), wuerde aber
-  // dieselbe IMAP-Verbindung ein zweites Mal belegen, direkt nachdem jemand
-  // ausdruecklich einen vollstaendigen Abgleich angefordert hat.
+  // Ein Nachholen (fullInbox) hat seine EIGENE, laengere Wartezeit an einer
+  // eigenen Spalte. An `last_sync_started_at` gemessen waere es nie wieder
+  // ausloesbar, sobald der periodische Scheduler laeuft: der setzt den Wert
+  // alle fuenf Minuten neu, also laege er dauerhaft innerhalb des
+  // 15-Minuten-Fensters. Gestempelt werden beim Nachholen trotzdem beide
+  // Spalten (Begruendung im Port).
   //
-  // Der Erfolgsfall bleibt 202 mit `queued: false` statt eines Fehlers — fuer
-  // den Nutzer IST die Frage beantwortet ("es wird gerade abgeholt"), und ein
-  // roter Fehler fuer einen zweiten Klick waere schlicht falsch.
-  // Nur PRUEFEN, ob die Wartezeit um ist — gestempelt wird erst nach dem
-  // erfolgreichen Einreihen (weiter unten). Andersherum waere der Stempel schon
-  // gesetzt, wenn das Einreihen scheitert: der Nutzer bekaeme einen Fehler,
-  // und jeder Versuch innerhalb der naechsten 30 Sekunden liefe in ein
-  // freundliches `queued: false` — was fuer ihn nach Erfolg aussieht, obwohl
-  // nie ein Job entstand.
+  // Der Abweisungsfall bleibt 202 mit `queued: false` statt eines Fehlers —
+  // fuer den Nutzer IST die Frage beantwortet ("es wird gerade abgeholt"), und
+  // ein roter Fehler fuer einen zweiten Klick waere schlicht falsch.
+  //
+  // BEANSPRUCHEND pruefen, nicht nur fragend: eine reine Vorab-Pruefung
+  // reserviert nichts. Gleichzeitige Klicks laesen alle denselben alten
+  // Zeitstempel und reihten alle ein — genau das Szenario, gegen das die
+  // Wartezeit gebaut ist. Der Preis dafuer ist, dass der Stempel schon steht,
+  // wenn das Einreihen gleich scheitert; deshalb wird er dann zurueckgenommen.
+  let claimedSlot: { claimedAt: Date; previous: EmailAccountSyncSlotPrevious } | null = null;
   if (ports.emailAccounts.claimSyncSlot) {
     const slot = await ports.emailAccounts.claimSyncSlot({
       workspaceId: principal.workspaceId,
       id: accountId,
       minIntervalMs: fullInbox ? MAIL_FULL_INBOX_MIN_INTERVAL_MS : MAIL_SYNC_MIN_INTERVAL_MS,
-      probeOnly: true,
+      kind: fullInbox ? 'full_inbox' : 'sync',
     });
     if (!slot.claimed) {
       return data(202, {
@@ -532,28 +533,38 @@ async function handleEmailAccountSync(
         lastSyncStartedAt: slot.lastStartedAt?.toISOString() ?? null,
       });
     }
+    if (slot.claimedAt && slot.previous) {
+      claimedSlot = { claimedAt: slot.claimedAt, previous: slot.previous };
+    }
   }
 
-  await ports.jobQueue.enqueue({
-    workspaceId: principal.workspaceId,
-    type: jobType,
-    payload: {
+  try {
+    await ports.jobQueue.enqueue({
       workspaceId: principal.workspaceId,
-      accountId,
-      actorUserId: principal.userId,
-      ...(fullInbox ? { fullInbox: true } : {}),
-    },
-  });
-
-  // Erst jetzt stempeln: der Job liegt in der Queue. Schlaegt das Stempeln
-  // fehl, ist die Folge lediglich, dass die Wartezeit fuer diesen einen Klick
-  // nicht greift — nicht, dass eine Anfrage als bedient gilt, die es nicht ist.
-  await ports.emailAccounts.claimSyncSlot?.({
-    workspaceId: principal.workspaceId,
-    id: accountId,
-    // Bedingungslos stempeln: die Wartezeit wurde oben bereits geprueft.
-    minIntervalMs: 0,
-  }).catch(() => undefined);
+      type: jobType,
+      payload: {
+        workspaceId: principal.workspaceId,
+        accountId,
+        actorUserId: principal.userId,
+        ...(fullInbox ? { fullInbox: true } : {}),
+      },
+    });
+  } catch (enqueueError) {
+    // Den Stempel zuruecknehmen, sonst gilt eine Anfrage als bedient, die es
+    // nicht ist: der Nutzer saehe den Fehler und bekaeme fuer jeden weiteren
+    // Versuch innerhalb der Wartezeit ein freundliches `queued: false`, obwohl
+    // nie ein Job entstand. Scheitert auch die Ruecknahme, bleibt es bei genau
+    // diesem alten Verhalten — schlimmer wird es dadurch nicht.
+    if (claimedSlot) {
+      await ports.emailAccounts.releaseSyncSlot?.({
+        workspaceId: principal.workspaceId,
+        id: accountId,
+        claimedAt: claimedSlot.claimedAt,
+        previous: claimedSlot.previous,
+      }).catch(() => undefined);
+    }
+    throw enqueueError;
+  }
 
   return data(202, {
     success: true,

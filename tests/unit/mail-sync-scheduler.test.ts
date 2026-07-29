@@ -3,6 +3,7 @@ import {
   mailSyncJobTypeForProtocol,
   runMailSyncSchedule,
 } from '../../packages/server/src/jobs/mail-sync-scheduler';
+import { createMaintenanceJobHandlers } from '../../packages/server/src/jobs/maintenance-handlers';
 import type { ServerDatabase } from '../../packages/server/src/db/schema';
 import type { Kysely } from 'kysely';
 
@@ -271,5 +272,83 @@ describe('periodischer Mail-Sync', () => {
     // Exakt wie im Sync-Handler: 'IMAP' oder ' imap ' sind dort KEIN imap.
     expect(mailSyncJobTypeForProtocol(' imap ')).toBeNull();
     expect(mailSyncJobTypeForProtocol('exchange')).toBeNull();
+  });
+});
+
+describe('Taktgeber-Handler des periodischen Syncs', () => {
+  /** Konten, die alle scheitern — der Vorrat schrumpft also nie. */
+  function unenqueueableAccounts(count: number): Account[] {
+    return Array.from({ length: count }, (_unused, index) => ({
+      id: index + 1,
+      protocol: 'imap',
+      last_sync_started_at: null,
+    }));
+  }
+
+  function handlerFor(accounts: Account[], queue: { enqueue(input: never): Promise<void> }) {
+    const requeued: string[] = [];
+    const { db } = fakeDb(accounts);
+    const handlers = createMaintenanceJobHandlers({
+      db,
+      now: () => NOW,
+      applyWorkspaceSession: async () => {},
+      requeue: {
+        async enqueue(input: { type: string }) {
+          // Die Sync-Jobs des Schedulers und das Nachschieben laufen ueber
+          // denselben Port; nur letzteres interessiert hier.
+          if (input.type === 'mail.sync.schedule') requeued.push(input.type);
+          else await queue.enqueue(input as never);
+        },
+      } as never,
+    });
+    return { handlers, requeued };
+  }
+
+  test('schiebt bei voller Charge nach', async () => {
+    const accounts = unenqueueableAccounts(3);
+    const { handlers, requeued } = handlerFor(accounts, { async enqueue() {} });
+
+    await handlers['mail.sync.schedule']!({
+      workspaceId: WORKSPACE,
+      payload: { workspaceId: WORKSPACE },
+    } as never);
+
+    // Stapelgrenze ist 200, drei Konten fuellen sie nicht — nichts nachzuschieben.
+    expect(requeued).toEqual([]);
+  });
+
+  test('schiebt NICHT nach, wenn keine einzige Einreihung durchkam', async () => {
+    // `hasMore` beschreibt nur die Groesse der urspruenglichen AUSWAHL, nicht
+    // den Erfolg. Scheitern alle Einreihungen, bliebe es wahr, waehrend kein
+    // Konto gestempelt wurde: die naechste Charge saehe dieselben Konten, und
+    // der Handler schoebe im Fuenf-Sekunden-Takt endlos nach — jedes Mal mit
+    // einer vollen Ladung fehlschlagender Versuche.
+    const accounts = unenqueueableAccounts(201);
+    const { handlers, requeued } = handlerFor(accounts, {
+      async enqueue() { throw new Error('queue unavailable'); },
+    });
+
+    await handlers['mail.sync.schedule']!({
+      workspaceId: WORKSPACE,
+      payload: { workspaceId: WORKSPACE },
+    } as never);
+
+    // Der Stapel WAR voll (201 faellige Konten bei Grenze 200), aber ohne
+    // Fortschritt darf nicht nachgeschoben werden. Der Minutentakt genuegt,
+    // und liegen bleibt nichts: ungestempelte Konten bleiben faellig.
+    expect(requeued).toEqual([]);
+    expect(accounts.every((account) => account.last_sync_started_at === null)).toBe(true);
+  });
+
+  test('schiebt bei voller Charge MIT Fortschritt nach', async () => {
+    const accounts = unenqueueableAccounts(201);
+    const { handlers, requeued } = handlerFor(accounts, { async enqueue() {} });
+
+    await handlers['mail.sync.schedule']!({
+      workspaceId: WORKSPACE,
+      payload: { workspaceId: WORKSPACE },
+    } as never);
+
+    expect(requeued).toEqual(['mail.sync.schedule']);
   });
 });

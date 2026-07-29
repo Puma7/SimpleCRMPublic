@@ -136,10 +136,19 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
       // allein zum Einreihen knapp eine Stunde, und das zugesagte
       // Fuenf-Minuten-Intervall waere ab etwa 1.000 Konten nur noch behauptet.
       //
-      // Es terminiert, weil nur nachgeschoben wird, wenn die Charge voll war —
-      // also nachweislich Konten gestempelt wurden und beim naechsten Lauf
-      // nicht mehr faellig sind.
-      if (result.hasMore) {
+      // `hasMore` ALLEIN genuegt als Bedingung nicht: es beschreibt nur die
+      // Groesse der urspruenglichen Auswahl, nicht den Erfolg. Schlagen alle
+      // Einreihungen fehl, bliebe es wahr, waehrend kein einziges Konto
+      // gestempelt wurde — die naechste Charge saehe dieselben Konten und der
+      // Handler schoebe im Fuenf-Sekunden-Takt endlos nach, jedes Mal mit einer
+      // vollen Ladung fehlschlagender Versuche.
+      //
+      // Mit `enqueued > 0` terminiert es nachweislich: nachgeschoben wird nur,
+      // wenn Konten gestempelt wurden und beim naechsten Lauf nicht mehr
+      // faellig sind — der Vorrat schrumpft also mit jeder Runde. Kommt kein
+      // Konto durch, genuegt der gewoehnliche Minutentakt; liegen bleibt
+      // nichts, weil ungestempelte Konten faellig bleiben.
+      if (result.hasMore && result.enqueued > 0) {
         await requeue(options, 'mail.sync.schedule', job.workspaceId, job.payload, at);
       }
       // Fehlgeschlagene Einreihungen sind nicht gestempelt und kommen im
