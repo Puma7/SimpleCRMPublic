@@ -48,6 +48,7 @@ import { groupRightsAndMailConstraintsMigration } from './0047_group_rights_and_
 import { emailTeamMemberLinkedUserMigration } from './0048_email_team_member_linked_user';
 import { masterKeyFingerprintMigration } from './0049_master_key_fingerprint';
 import { mailAclShadowWithoutLegacyMigration } from './0050_mail_acl_shadow_without_legacy';
+import { emailAccountSyncScheduleMigration } from './0051_email_account_sync_schedule';
 import { assertValidMigrationSet, joinMigrationSql } from './types';
 import type { SqlMigration } from './types';
 
@@ -102,6 +103,7 @@ export const serverMigrations: readonly SqlMigration[] = [
   emailTeamMemberLinkedUserMigration,
   masterKeyFingerprintMigration,
   mailAclShadowWithoutLegacyMigration,
+  emailAccountSyncScheduleMigration,
 ];
 
 assertValidMigrationSet(serverMigrations);

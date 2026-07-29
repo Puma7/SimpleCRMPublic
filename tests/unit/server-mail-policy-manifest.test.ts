@@ -187,6 +187,32 @@ describe('server mail policy manifest', () => {
     }
   });
 
+  test('classifies mail sync as a read, not as account administration', () => {
+    // Abholen ist aus Nutzersicht Lesen. Vorher stand hier mail.account.manage
+    // — dieselbe Berechtigung wie Konto loeschen und SMTP-Zugangsdaten aendern,
+    // enthalten nur im Profil 'manager'. Wer im Postfach arbeiten soll, konnte
+    // damit keine neuen Nachrichten holen, und weil es keinen periodischen
+    // Sync gibt, wartete er strukturell auf einen Admin.
+    expect(assertMailRoutePolicy('POST', '/api/v1/email/accounts/42/sync').policy).toEqual({
+      kind: 'permission',
+      permission: 'mail.metadata.read',
+      resource: { kind: 'account', accountId: { source: 'path', field: 'accountId' } },
+    });
+
+    for (const type of ['mail.sync.imap', 'mail.sync.pop3'] as const) {
+      expect(assertServerJobPolicy(type)).toMatchObject({
+        type,
+        kind: 'mail',
+        actorMode: 'initiating_user_or_service',
+        permission: 'mail.metadata.read',
+      });
+    }
+
+    // Die Sperre zu loeschen bleibt dagegen ein Reparatureingriff.
+    expect(assertMailRoutePolicy('DELETE', '/api/v1/email/accounts/42/sync-lock').policy)
+      .toMatchObject({ kind: 'permission', permission: 'mail.account.manage' });
+  });
+
   test('classifies ai.pick_canned as optional message content access', () => {
     expect(assertServerJobPolicy('ai.pick_canned')).toEqual({
       type: 'ai.pick_canned',

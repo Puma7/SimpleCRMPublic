@@ -72,14 +72,32 @@ export type GraphileQueuePort = Readonly<{
   migrate(): Promise<void>;
 }>;
 
+/**
+ * Die Job-Typen, die eine Verbindung zum Mailserver aufbauen.
+ *
+ * Nur sie laufen im eigenen, begrenzten Worker — sie sind es, wegen derer ein
+ * Betreiber `JOB_WORKER_MAIL_CONCURRENCY` ueberhaupt herunterdreht.
+ */
+export const MAIL_SYNC_WORKER_JOB_TYPES = [
+  'mail.sync.imap',
+  'mail.sync.pop3',
+] as const satisfies readonly ServerJobType[];
+
 export type GraphileWorkerPlan = Readonly<{
   connectionString: string;
+  /** Slots des Mail-Workers — hier ist die Mail-Obergrenze wirklich eine. */
+  mailConcurrentJobs: number;
+  /** Slots des uebrigen Workers (AI, Workflows, Wartung). */
   concurrentJobs: number;
+  mailTaskTypes: readonly ServerJobType[];
+  /** Alle Typen AUSSER den Mail-Syncs. */
   taskTypes: readonly ServerJobType[];
 }>;
 
 export type GraphileWorkerConcurrencyInput = Readonly<{
   mailAccountCount: number;
+  /** Obergrenze gleichzeitiger Mail-Syncs je Prozess (JOB_WORKER_MAIL_CONCURRENCY). */
+  mailConcurrency?: number;
   aiConcurrency?: number;
 }>;
 
@@ -141,11 +159,56 @@ export async function startGraphileWorkerRuntime(input: {
     mailResourceLookup: input.mailResourceLookup,
     auth: input.auth,
   });
-  return (input.createWorker ?? createDefaultGraphileWorkerRuntime)({
+  const factory = input.createWorker ?? createDefaultGraphileWorkerRuntime;
+  const subset = (types: readonly ServerJobType[]) => Object.fromEntries(
+    Object.entries(taskList).filter(([type]) => (types as readonly string[]).includes(type)),
+  );
+
+  // ZWEI Worker, nicht einer mit einem groesseren Pool.
+  //
+  // Graphile begrenzt `concurrentJobs` global und kennt keine Grenze je
+  // Job-Typ. Beide Zahlen in einen Pool zu addieren erzwang die Mail-Grenze
+  // deshalb nicht: die Sync-Jobs liegen auf je eigenen Queues (`account-<id>`),
+  // die nur DASSELBE Konto serialisieren. Bei Mail-Grenze 1 und
+  // AI-Concurrency 5 haette der Pool sechs Slots, und alle sechs koennten
+  // gleichzeitig Mail-Syncs ausfuehren — genau die Zahl, die der Betreiber
+  // ausgeschlossen zu haben glaubte, um seinen Mailserver zu schuetzen.
+  //
+  // Ein eigener Worker fuer die Sync-Typen macht die Obergrenze real. Die
+  // Aufteilung schuetzt zusaetzlich in die andere Richtung: ein Rueckstau
+  // haengender IMAP-Verbindungen kann keine Slots mehr belegen, die AI- und
+  // Workflow-Jobs brauchen.
+  // Nacheinander, nicht gleichzeitig: `run()` legt beim ersten Start das
+  // Graphile-Schema an. Zwei parallele Starts liefen in dieselbe Migration.
+  const mailRuntime = await factory({
     connectionString: plan.connectionString,
-    concurrentJobs: plan.concurrentJobs,
-    taskList,
+    concurrentJobs: plan.mailConcurrentJobs,
+    taskList: subset(plan.mailTaskTypes),
   });
+  let restRuntime: GraphileWorkerRuntime;
+  try {
+    restRuntime = await factory({
+      connectionString: plan.connectionString,
+      concurrentJobs: plan.concurrentJobs,
+      taskList: subset(plan.taskTypes),
+    });
+  } catch (error) {
+    // Sonst bliebe ein halber Worker laufen, den niemand mehr anhalten kann:
+    // der Aufrufer bekommt nur den Fehler und nie ein Handle darauf.
+    await mailRuntime.stop().catch(() => undefined);
+    throw error;
+  }
+  const runtimes = [mailRuntime, restRuntime];
+
+  return {
+    async stop() {
+      // allSettled: ein Worker, der beim Anhalten wirft, darf den anderen nicht
+      // laufen lassen — sonst haelt ein halb gestoppter Prozess den Port und die
+      // Verbindungen weiter.
+      await Promise.allSettled(runtimes.map((runtime) => runtime.stop()));
+    },
+    promise: Promise.all(runtimes.map((runtime) => runtime.promise)).then(() => undefined),
+  };
 }
 
 export function buildGraphileWorkerPlan(input: {
@@ -155,13 +218,20 @@ export function buildGraphileWorkerPlan(input: {
   if (!input.connectionString.trim()) {
     throw new Error('connectionString is required for Graphile Worker runtime');
   }
-  const mailConcurrency = calculateMailSyncPoolSize(input.concurrency.mailAccountCount);
+  const mailConcurrency = calculateMailSyncPoolSize(
+    input.concurrency.mailAccountCount,
+    input.concurrency.mailConcurrency,
+  );
   const aiConcurrency = normalizeAiJobConcurrency(input.concurrency.aiConcurrency);
 
   return {
     connectionString: input.connectionString,
-    concurrentJobs: Math.max(1, mailConcurrency + aiConcurrency),
-    taskTypes: SERVER_JOB_TYPES,
+    mailConcurrentJobs: Math.max(1, mailConcurrency),
+    concurrentJobs: Math.max(1, aiConcurrency),
+    mailTaskTypes: MAIL_SYNC_WORKER_JOB_TYPES,
+    taskTypes: SERVER_JOB_TYPES.filter(
+      (type) => !(MAIL_SYNC_WORKER_JOB_TYPES as readonly string[]).includes(type),
+    ),
   };
 }
 
@@ -550,7 +620,17 @@ export function graphileJobKeyForJob(
   const accountId = graphileKeyScalar(payload.accountId);
   const workspaceKey = graphileKeyScalar(workspaceId) ?? graphileKeyScalar(payload.workspaceId);
   if ((type === 'mail.sync.imap' || type === 'mail.sync.pop3') && accountId && workspaceKey) {
-    return `${type}:${workspaceKey}:${accountId}`;
+    // Ein Nachhol-Lauf (fullInbox) bekommt einen EIGENEN Schluessel.
+    //
+    // Mit demselben Schluessel wie ein gewoehnlicher Sync verschluckt
+    // jobKeyMode 'replace' ihn: reiht der Scheduler oder ein Klick danach
+    // einen normalen Lauf fuer dasselbe Konto ein, ersetzt dessen Payload den
+    // wartenden Nachhol-Auftrag samt `fullInbox: true`, und der Backfill
+    // passiert nie — ohne dass jemand einen Fehler saehe. Die Ausfuehrung
+    // bleibt trotzdem serialisiert: beide laufen ueber den Queue-Namen
+    // `account-<id>`, also nie gleichzeitig.
+    const suffix = payload.fullInbox === true ? ':full' : '';
+    return `${type}:${workspaceKey}:${accountId}${suffix}`;
   }
   if (type === 'mail.spam.score') {
     const messageId = graphileKeyScalar(payload.messageId);
@@ -747,10 +827,17 @@ export function graphileJobKeyForJob(
       return `${type}:${workspaceKey}:${workflowId}:message:${messageId}:resume:${resumeNodeId}${identity}`;
     }
   }
-  // Beide Wartungsjobs: hoechstens einer je Workspace darf warten. Der Ticker
-  // laeuft in jeder Server-Instanz; ohne Key stapelten sich bei mehreren
-  // Instanzen Duplikate, mit Key kollabieren sie ueber jobKeyMode 'replace'.
-  if ((type === 'lock.cleanup' || type === 'audit.retention') && workspaceKey) {
+  // Alle getakteten Wartungsjobs: hoechstens einer je Workspace darf warten.
+  // Der Ticker laeuft in jeder Server-Instanz; ohne Key stapelten sich bei
+  // mehreren Instanzen Duplikate, mit Key kollabieren sie ueber jobKeyMode
+  // 'replace'. Wer hier einen Taktgeber-Jobtyp ergaenzt, ohne ihn
+  // einzutragen, bekommt genau diese Duplikate zurueck — bei
+  // mail.sync.schedule waere das je Instanz ein voller Durchlauf durch alle
+  // faelligen Konten.
+  if (
+    (type === 'lock.cleanup' || type === 'audit.retention' || type === 'mail.sync.schedule')
+    && workspaceKey
+  ) {
     return `${type}:${workspaceKey}`;
   }
   return undefined;

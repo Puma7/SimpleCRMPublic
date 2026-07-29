@@ -5,6 +5,7 @@ import type { ServerDatabase } from '../db/schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from '../db/workspace-context';
 import { buildTrustedServiceJobPayload } from './policy';
 import type { EnqueueJobInput } from './types';
+import { DEFAULT_MAIL_SYNC_SCHEDULE_INTERVAL_MS } from './mail-sync-scheduler';
 
 /**
  * Taktgeber fuer die Wartungsjobs.
@@ -42,7 +43,7 @@ export const DEFAULT_AUDIT_RETENTION_INTERVAL_MS = 24 * 60 * 60_000;
 /** Nicht sofort beim Start: erst hochfahren lassen, dann aufraeumen. */
 export const DEFAULT_MAINTENANCE_INITIAL_DELAY_MS = 60_000;
 
-export type MaintenanceTickerJobType = 'lock.cleanup' | 'audit.retention';
+export type MaintenanceTickerJobType = 'lock.cleanup' | 'audit.retention' | 'mail.sync.schedule';
 
 export type MaintenanceTickerQueue = Readonly<{
   enqueue(input: EnqueueJobInput): Promise<unknown>;
@@ -107,9 +108,13 @@ export function startMaintenanceJobTicker(input: {
 }
 
 function defaultIntervalFor(jobType: MaintenanceTickerJobType): number {
-  return jobType === 'audit.retention'
-    ? DEFAULT_AUDIT_RETENTION_INTERVAL_MS
-    : DEFAULT_LOCK_CLEANUP_INTERVAL_MS;
+  if (jobType === 'audit.retention') return DEFAULT_AUDIT_RETENTION_INTERVAL_MS;
+  // Der Sync-Taktgeber sieht oft nach, tut aber selten etwas: faellig ist ein
+  // Konto erst nach seinem eigenen, laengeren Intervall
+  // (DEFAULT_MAIL_SYNC_INTERVAL_MS). Haeufiges Nachsehen macht die Verzoegerung
+  // vorhersehbar, statt sie auf ein ganzes Sync-Intervall aufzurunden.
+  if (jobType === 'mail.sync.schedule') return DEFAULT_MAIL_SYNC_SCHEDULE_INTERVAL_MS;
+  return DEFAULT_LOCK_CLEANUP_INTERVAL_MS;
 }
 
 async function listWorkspaceIds(

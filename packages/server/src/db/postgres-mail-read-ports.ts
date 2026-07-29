@@ -393,6 +393,90 @@ type EmailRemoteContentPolicyRow = Pick<EmailMessageRow, 'id' | 'from_json' | 'r
 
 export function createPostgresEmailAccountReadPort(options: PostgresEmailAccountReadPortOptions): EmailAccountApiPort {
   return {
+    async claimSyncSlot(input) {
+      const now = input.now ?? new Date();
+      const threshold = new Date(now.getTime() - Math.max(0, input.minIntervalMs));
+      const fullInbox = input.kind === 'full_inbox';
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          // Zeile sperren, dann entscheiden. Das bedingte UPDATE allein
+          // entschiede zwar genauso atomar, koennte aber den Zustand DAVOR nicht
+          // zurueckgeben — und ohne den laesst sich ein Stempel nach einem
+          // gescheiterten Einreihen nicht praezise zuruecknehmen.
+          //
+          // Die Sperre ist kurz und harmlos: sie umfasst zwei Anweisungen in
+          // einer eigenen Transaktion, nie das Einreihen. Zwei gleichzeitige
+          // Klicks serialisieren daran, und der zweite liest anschliessend den
+          // frischen Zeitstempel — er verliert also korrekt, statt wie bei einer
+          // reinen Vorab-Pruefung ebenfalls einzureihen.
+          const current = await trx
+            .selectFrom('email_accounts')
+            .select(['last_sync_started_at', 'last_full_inbox_started_at'])
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .forUpdate()
+            .executeTakeFirst();
+          if (!current) return { claimed: false, lastStartedAt: null };
+
+          const previous = {
+            lastSyncStartedAt: current.last_sync_started_at
+              ? new Date(String(current.last_sync_started_at))
+              : null,
+            lastFullInboxStartedAt: current.last_full_inbox_started_at
+              ? new Date(String(current.last_full_inbox_started_at))
+              : null,
+          };
+          // Die Art bestimmt, welche Spalte zaehlt. Der Vollimport an
+          // `last_sync_started_at` zu messen hiesse, ihn an einem Wert zu
+          // messen, den der periodische Scheduler alle fuenf Minuten neu setzt.
+          const last = fullInbox ? previous.lastFullInboxStartedAt : previous.lastSyncStartedAt;
+          if (last !== null && last >= threshold) {
+            return { claimed: false, lastStartedAt: last };
+          }
+
+          await trx
+            .updateTable('email_accounts')
+            .set(fullInbox
+              // Ein Vollimport stempelt beides: sonst reichte der naechste
+              // Scheduler-Takt einen gewoehnlichen Sync hinterher und belegte
+              // dieselbe IMAP-Verbindung ein zweites Mal, direkt nachdem jemand
+              // ausdruecklich einen vollstaendigen Abgleich angefordert hat.
+              ? { last_sync_started_at: now, last_full_inbox_started_at: now }
+              : { last_sync_started_at: now })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .execute();
+
+          return { claimed: true, lastStartedAt: now, claimedAt: now, previous };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
+    async releaseSyncSlot(input) {
+      await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .updateTable('email_accounts')
+          .set({
+            last_sync_started_at: input.previous.lastSyncStartedAt,
+            last_full_inbox_started_at: input.previous.lastFullInboxStartedAt,
+          })
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.id)
+          // NUR zuruecknehmen, wenn der eigene Stempel noch dasteht. Hat
+          // inzwischen ein anderer Aufruf den Slot beansprucht, gehoert ihm die
+          // Zeile — seinen Stempel zu ueberschreiben hiesse, seine Abkuehlzeit
+          // aufzuheben, obwohl sein Job in der Queue liegt.
+          .where('last_sync_started_at', '=', input.claimedAt)
+          .execute(),
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
     async list(input): Promise<EmailAccountListResult> {
       return withWorkspaceTransaction(
         options.db,

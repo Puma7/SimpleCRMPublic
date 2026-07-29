@@ -9,6 +9,7 @@ import {
   type WorkspaceSessionApplier,
 } from '../db';
 import type { JobPayload } from './types';
+import { runMailSyncSchedule } from './mail-sync-scheduler';
 import type { JobHandlerRegistry } from './worker';
 
 export const DEFAULT_LOCK_CLEANUP_LIMIT = 500;
@@ -112,6 +113,59 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
   const now = options.now ?? (() => new Date());
 
   return {
+    // Taktgeber-Handler des periodischen Syncs: sucht die faelligen Konten und
+    // reiht ihre Sync-Jobs ein (Begruendung der Zweistufigkeit in
+    // mail-sync-scheduler.ts). Ohne Queue kann er nichts einreihen — dann
+    // waere ein stiller Erfolg die schlechteste Auskunft, weil niemand merkte,
+    // dass nie Post ankommt.
+    'mail.sync.schedule': async (job) => {
+      if (!options.requeue) throw new Error('mail sync scheduler requires a job queue');
+      const at = now();
+      const result = await runMailSyncSchedule({
+        db: options.db,
+        queue: options.requeue,
+        workspaceId: job.workspaceId,
+        now: at,
+        ...(options.applyWorkspaceSession
+          ? { applyWorkspaceSession: options.applyWorkspaceSession }
+          : {}),
+      });
+      // Volle Charge => naechste nachschieben, wie bei den anderen gebatchten
+      // Wartungsjobs. Ohne das deckelt der Minutentakt den Durchsatz auf die
+      // Stapelgroesse pro Minute: bei 200 je Lauf braeuchten 10.000 Konten
+      // allein zum Einreihen knapp eine Stunde, und das zugesagte
+      // Fuenf-Minuten-Intervall waere ab etwa 1.000 Konten nur noch behauptet.
+      //
+      // `hasMore` ALLEIN genuegt als Bedingung nicht: es beschreibt nur die
+      // Groesse der urspruenglichen Auswahl, nicht den Erfolg. Schlagen alle
+      // Einreihungen fehl, bliebe es wahr, waehrend kein einziges Konto
+      // gestempelt wurde — die naechste Charge saehe dieselben Konten und der
+      // Handler schoebe im Fuenf-Sekunden-Takt endlos nach, jedes Mal mit einer
+      // vollen Ladung fehlschlagender Versuche.
+      //
+      // Mit `enqueued > 0` terminiert es nachweislich: nachgeschoben wird nur,
+      // wenn Konten gestempelt wurden und beim naechsten Lauf nicht mehr
+      // faellig sind — der Vorrat schrumpft also mit jeder Runde. Kommt kein
+      // Konto durch, genuegt der gewoehnliche Minutentakt; liegen bleibt
+      // nichts, weil ungestempelte Konten faellig bleiben.
+      if (result.hasMore && result.enqueued > 0) {
+        await requeue(options, 'mail.sync.schedule', job.workspaceId, job.payload, at);
+      }
+      // Fehlgeschlagene Einreihungen sind nicht gestempelt und kommen im
+      // naechsten Takt wieder. Der Job selbst darf deswegen NICHT scheitern —
+      // sonst risse ein einzelnes Konto den ganzen Takt mit. Sichtbar bleiben
+      // muessen sie trotzdem, sonst sieht ein dauerhaft klemmender Workspace
+      // aus wie einer, in dem nichts faellig ist.
+      if (result.failed.length > 0) {
+        const accountIds = result.failed.map((entry) => entry.accountId).join(', ');
+        console.warn(
+          `[mail-sync-schedule] could not enqueue ${result.failed.length} due account(s) `
+          + `in workspace ${job.workspaceId}: ${accountIds}. They stay due and are retried `
+          + 'on the next tick.',
+        );
+      }
+    },
+
     'lock.cleanup': async (job) => {
       const plan = buildLockCleanupPlan(job.payload, now());
       const batchWasFull = await withWorkspaceTransaction(options.db, {
@@ -229,7 +283,7 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
  */
 async function requeue(
   options: MaintenanceJobHandlersOptions,
-  type: 'lock.cleanup' | 'audit.retention',
+  type: 'lock.cleanup' | 'audit.retention' | 'mail.sync.schedule',
   workspaceId: string,
   payload: JobPayload,
   now: Date,

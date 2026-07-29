@@ -1913,7 +1913,77 @@ export type EmailAccountMutationPortResult =
   }
   | { ok: false; code: 'secret_port_unavailable' };
 
+/** Der Zustand der Abkuehl-Zeitstempel vor einem Claim. */
+export type EmailAccountSyncSlotPrevious = Readonly<{
+  lastSyncStartedAt: Date | null;
+  lastFullInboxStartedAt: Date | null;
+}>;
+
+export type EmailAccountSyncSlotClaim = Readonly<{
+  claimed: boolean;
+  /** Der fuer die gepruefte Art massgebliche letzte Anstoss. */
+  lastStartedAt: Date | null;
+  /**
+   * Nur im Erfolgsfall: was zum Zuruecknehmen noetig ist. Der Aufrufer haelt
+   * das, bis das Einreihen durch ist.
+   */
+  claimedAt?: Date;
+  previous?: EmailAccountSyncSlotPrevious;
+}>;
+
 export type EmailAccountApiPort = {
+  /**
+   * Abkuehlzeit fuer das Abholen: stempelt den Anstoss und meldet, OB dieser
+   * Aufruf den Zuschlag bekam.
+   *
+   * Bewusst BEANSPRUCHEND und nicht nur pruefend: eine reine Pruefung
+   * reserviert nichts. Bei gleichzeitigen Klicks laesen alle denselben alten
+   * Zeitstempel, alle bestuenden die Pruefung und alle reihten ein — genau das
+   * Mehrbenutzer-Szenario, gegen das die Abkuehlzeit gebaut ist, bliebe
+   * ungeschuetzt. Nur wer den Zuschlag bekommt, reiht ein; scheitert das
+   * Einreihen, nimmt `releaseSyncSlot` den Stempel wieder zurueck.
+   *
+   * Das schuetzt die API, nicht den Sync — der ist ueber den Graphile-Queue-
+   * Namen `account-<id>` und den Job-Key ohnehin je Konto serialisiert.
+   */
+  claimSyncSlot?(input: {
+    workspaceId: string;
+    id: number;
+    /** Kein neuer Lauf, wenn der letzte Anstoss juenger als dies ist. */
+    minIntervalMs: number;
+    /**
+     * WELCHE Abkuehlzeit gemeint ist — und damit, welche Spalte zaehlt.
+     *
+     * 'sync' misst an `last_sync_started_at`, 'full_inbox' an
+     * `last_full_inbox_started_at`. Beide an derselben Spalte zu messen war ein
+     * Fehler: der periodische Scheduler setzt `last_sync_started_at` alle fuenf
+     * Minuten neu, womit der Vollimport dauerhaft innerhalb seines eigenen
+     * 15-Minuten-Fensters laege und nie wieder ausloesbar waere.
+     *
+     * 'full_inbox' stempelt BEIDE Spalten: wer gerade einen vollstaendigen
+     * Abgleich angefordert hat, soll nicht im naechsten Takt zusaetzlich einen
+     * gewoehnlichen Sync auf derselben IMAP-Verbindung bekommen.
+     */
+    kind?: 'sync' | 'full_inbox';
+    now?: Date;
+  }): Promise<EmailAccountSyncSlotClaim>;
+  /**
+   * Einen beanspruchten Slot wieder freigeben, wenn das Einreihen danach
+   * scheiterte.
+   *
+   * Ohne das gaelte eine Anfrage als bedient, die es nicht ist: der Nutzer
+   * bekaeme einen Fehler, und jeder Versuch innerhalb der Wartezeit ein
+   * freundliches `queued: false`, das nach Erfolg aussieht, obwohl kein Job
+   * existiert.
+   */
+  releaseSyncSlot?(input: {
+    workspaceId: string;
+    id: number;
+    /** Der Zeitstempel, den dieser Claim geschrieben hat. */
+    claimedAt: Date;
+    /** Der Zustand davor, der wiederhergestellt werden soll. */
+    previous: EmailAccountSyncSlotPrevious;
+  }): Promise<void>;
   list(input: {
     workspaceId: string;
     mailScope?: MailSqlScope;

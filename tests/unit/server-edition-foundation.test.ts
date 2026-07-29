@@ -171,6 +171,7 @@ import {
   forceTakeoverConversationLockCommand,
   buildGraphileTaskList,
   buildGraphileWorkerPlan,
+  startGraphileWorkerRuntime,
   buildLockCleanupPlan,
   createGraphileQueuePort,
   createAuthInvitationMailerPort,
@@ -380,6 +381,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0048_email_team_member_linked_user',
   '0049_master_key_fingerprint',
   '0050_mail_acl_shadow_without_legacy',
+  '0051_email_account_sync_schedule',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
@@ -1340,6 +1342,7 @@ describe('server edition foundation', () => {
       jobWorker: {
         enabled: true,
         mailAccountCount: 12,
+        mailConcurrency: 50,
         aiConcurrency: 8,
         migrateOnStart: true,
       },
@@ -1347,9 +1350,17 @@ describe('server edition foundation', () => {
     expect(parseServerJobWorkerConfig({})).toEqual({
       enabled: false,
       mailAccountCount: 0,
+      mailConcurrency: 50,
       aiConcurrency: undefined,
       migrateOnStart: false,
     });
+    // Die Obergrenze der gleichzeitigen Mail-Syncs ist einstellbar — ohne
+    // diesen Weg waere calculateMailSyncPoolSize zwar parametrisiert, aber von
+    // niemandem zu erreichen.
+    expect(parseServerJobWorkerConfig({ JOB_WORKER_MAIL_CONCURRENCY: '120' }).mailConcurrency)
+      .toBe(120);
+    expect(() => parseServerJobWorkerConfig({ JOB_WORKER_MAIL_CONCURRENCY: '501' }))
+      .toThrow('JOB_WORKER_MAIL_CONCURRENCY');
     expect(() => parseServerJobWorkerConfig({ JOB_WORKER_ENABLED: 'maybe' })).toThrow('JOB_WORKER_ENABLED');
     expect(() => parseServerJobWorkerConfig({ JOB_WORKER_AI_CONCURRENCY: '101' })).toThrow('JOB_WORKER_AI_CONCURRENCY');
     expect(() => parseServerEditionConfig({
@@ -1987,6 +1998,7 @@ describe('server edition foundation', () => {
       'webhook.fire',
       'lock.cleanup',
       'audit.retention',
+      'mail.sync.schedule',
     ]);
     expect(assertValidJobType('mail.sync')).toBe('mail.sync');
     expect(assertServerJobType('mail.sync.imap')).toBe('mail.sync.imap');
@@ -2201,8 +2213,16 @@ describe('server edition foundation', () => {
       },
     });
 
-    expect(plan.concurrentJobs).toBe(57);
-    expect(plan.taskTypes).toEqual(SERVER_JOB_TYPES);
+    // ZWEI Pools, nicht 57 in einem. Graphile begrenzt `concurrentJobs` global
+    // und kennt keine Grenze je Job-Typ; addiert man beide Zahlen, koennten
+    // alle Slots gleichzeitig Mail-Syncs ausfuehren (die Queues `account-<id>`
+    // serialisieren nur dasselbe Konto). Die Mail-Obergrenze waere dann keine.
+    expect(plan.mailConcurrentJobs).toBe(50);
+    expect(plan.concurrentJobs).toBe(7);
+    expect(plan.mailTaskTypes).toEqual(['mail.sync.imap', 'mail.sync.pop3']);
+    // Zusammen weiterhin genau die Menge aller Job-Typen — kein Typ faellt
+    // zwischen die beiden Worker und bliebe unbearbeitet liegen.
+    expect([...plan.mailTaskTypes, ...plan.taskTypes].sort()).toEqual([...SERVER_JOB_TYPES].sort());
     expect(graphileQueueNameForJob('mail.sync.imap', { accountId: 42 })).toBe('account-42');
     expect(graphileQueueNameForJob('mail.sync.imap', { accountId: '' })).toBeUndefined();
     expect(graphileQueueNameForJob('ai.reply_suggestion', {})).toBe('ai');
@@ -23917,6 +23937,172 @@ describe('server edition foundation', () => {
         },
       },
     ]);
+  });
+
+  test('die Mail-Obergrenze wird von einem eigenen Worker erzwungen, nicht nur eingerechnet', async () => {
+    // Der Befund: `JOB_WORKER_MAIL_CONCURRENCY` floss frueher nur in einen
+    // globalen Pool (`mail + ai`). Graphile begrenzt aber nur global und kennt
+    // keine Grenze je Job-Typ, und die Sync-Queues `account-<id>`
+    // serialisieren nur DASSELBE Konto. Bei Mail-Grenze 1 und AI-Concurrency 5
+    // konnten deshalb sechs Mail-Syncs gleichzeitig laufen — die dokumentierte
+    // Obergrenze war keine.
+    const started: Array<{ concurrentJobs: number; types: string[] }> = [];
+    const runtime = await startGraphileWorkerRuntime({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      handlers: {},
+      concurrency: { mailAccountCount: 10_000, mailConcurrency: 1, aiConcurrency: 5 },
+      async createWorker(options) {
+        started.push({
+          concurrentJobs: options.concurrentJobs,
+          types: Object.keys(options.taskList).sort(),
+        });
+        return { async stop() {}, promise: Promise.resolve() };
+      },
+    });
+
+    expect(started).toHaveLength(2);
+    const mailWorker = started.find((entry) => entry.types.includes('mail.sync.imap'));
+    const restWorker = started.find((entry) => !entry.types.includes('mail.sync.imap'));
+    // Der Mail-Worker bekommt GENAU einen Slot — nicht 1 + 5.
+    expect(mailWorker).toEqual({ concurrentJobs: 1, types: ['mail.sync.imap', 'mail.sync.pop3'] });
+    expect(restWorker?.concurrentJobs).toBe(5);
+    // Und die uebrigen Typen liegen wirklich beim anderen Worker, sonst bliebe
+    // ein Job-Typ unbearbeitet liegen.
+    expect(restWorker?.types).toContain('workflow.execute');
+    expect(restWorker?.types).not.toContain('mail.sync.pop3');
+
+    await runtime.stop();
+    await expect(runtime.promise).resolves.toBeUndefined();
+  });
+
+  test('server mail account sync cooldown: Vollimport haengt nicht am Takt des periodischen Syncs', async () => {
+    // Beide Abkuehlzeiten an derselben Spalte zu messen war ein Ausfall mit
+    // Ansage: der periodische Scheduler setzt `last_sync_started_at` alle fuenf
+    // Minuten neu, der Vollimport misst 15 Minuten — er laege damit dauerhaft
+    // innerhalb seines eigenen Fensters und waere nie wieder ausloesbar. Genau
+    // die alten Nachrichten, die der begrenzte Erst-Sync uebersprungen hat,
+    // kaemen dann nie.
+    const account = {
+      lastSyncStartedAt: null as Date | null,
+      lastFullInboxStartedAt: null as Date | null,
+    };
+    let now = new Date('2026-07-29T12:00:00.000Z');
+    const claimCalls: Array<{ kind?: string; minIntervalMs: number }> = [];
+    const queueCalls: unknown[] = [];
+
+    // Nachbau der Port-Regeln: welche Spalte zaehlt, und was gestempelt wird.
+    const emailAccounts = {
+      async list() { return { items: [] }; },
+      async get(input: { id: number }) {
+        return { ...makeEmailAccountRecord(input.id), protocol: 'imap' };
+      },
+      async claimSyncSlot(input: { minIntervalMs: number; kind?: 'sync' | 'full_inbox' }) {
+        claimCalls.push({ kind: input.kind, minIntervalMs: input.minIntervalMs });
+        const fullInbox = input.kind === 'full_inbox';
+        const threshold = new Date(now.getTime() - input.minIntervalMs);
+        const previous = { ...account };
+        const last = fullInbox ? account.lastFullInboxStartedAt : account.lastSyncStartedAt;
+        if (last !== null && last >= threshold) return { claimed: false, lastStartedAt: last };
+        account.lastSyncStartedAt = now;
+        if (fullInbox) account.lastFullInboxStartedAt = now;
+        return { claimed: true, lastStartedAt: now, claimedAt: now, previous };
+      },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailAccounts: emailAccounts as unknown as ServerApiPorts['emailAccounts'],
+      jobQueue: { async enqueue(input) { queueCalls.push(input); } },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: [] };
+    const sync = (body?: Record<string, unknown>) => api.handle({
+      method: 'POST',
+      path: '/api/v1/email/accounts/7/sync',
+      ...(body ? { body } : {}),
+      principal,
+    });
+
+    // Der periodische Scheduler war gerade dran.
+    account.lastSyncStartedAt = new Date(now.getTime() - 60_000);
+
+    // DAS ist der Befund: trotz eines eine Minute alten Sync-Stempels muss der
+    // Vollimport durchgehen — er hat seine eigene Spalte und wurde nie angestossen.
+    const backfill = await sync({ fullInbox: true });
+    expect((backfill.body as any).data).toMatchObject({ queued: true, fullInbox: true });
+    expect(claimCalls.at(-1)).toEqual({ kind: 'full_inbox', minIntervalMs: 15 * 60_000 });
+
+    // Seine eigene Wartezeit greift danach sehr wohl.
+    expect((await sync({ fullInbox: true }) as any).body.data).toMatchObject({
+      queued: false,
+      reason: 'recently_synced',
+    });
+    // Und er hat auch den gewoehnlichen Sync mitgestempelt — sonst reichte der
+    // naechste Takt sofort einen zweiten Lauf auf derselben Verbindung hinterher.
+    expect((await sync() as any).body.data).toMatchObject({ queued: false });
+
+    // Nach 31 Sekunden ist die kurze Wartezeit um, die lange aber nicht: die
+    // beiden sind in BEIDE Richtungen unabhaengig.
+    now = new Date(now.getTime() + 31_000);
+    expect((await sync() as any).body.data).toMatchObject({ queued: true });
+    expect((await sync({ fullInbox: true }) as any).body.data).toMatchObject({ queued: false });
+
+    expect(queueCalls).toHaveLength(2);
+  });
+
+  test('server mail account sync releases the cooldown slot when enqueueing fails', async () => {
+    // Der Slot wird BEANSPRUCHT und nicht nur geprueft — eine reine Vorabfrage
+    // reservierte nichts, gleichzeitige Klicks laesen alle denselben alten
+    // Zeitstempel und reihten alle ein. Der Preis ist ein Stempel, der schon
+    // steht, wenn das Einreihen scheitert; ohne Ruecknahme bekaeme der Nutzer
+    // den Fehler und danach 30 Sekunden lang ein freundliches `queued: false`,
+    // das nach Erfolg aussieht, obwohl nie ein Job entstand.
+    const account = {
+      lastSyncStartedAt: null as Date | null,
+      lastFullInboxStartedAt: null as Date | null,
+    };
+    const now = new Date('2026-07-29T12:00:00.000Z');
+    let queueFails = true;
+    const releaseCalls: unknown[] = [];
+
+    const emailAccounts = {
+      async list() { return { items: [] }; },
+      async get(input: { id: number }) {
+        return { ...makeEmailAccountRecord(input.id), protocol: 'imap' };
+      },
+      async claimSyncSlot(input: { minIntervalMs: number }) {
+        const threshold = new Date(now.getTime() - input.minIntervalMs);
+        const previous = { ...account };
+        const last = account.lastSyncStartedAt;
+        if (last !== null && last >= threshold) return { claimed: false, lastStartedAt: last };
+        account.lastSyncStartedAt = now;
+        return { claimed: true, lastStartedAt: now, claimedAt: now, previous };
+      },
+      async releaseSyncSlot(input: { claimedAt: Date; previous: { lastSyncStartedAt: Date | null } }) {
+        releaseCalls.push(input);
+        // Nur zuruecknehmen, wenn der eigene Stempel noch dasteht.
+        if (account.lastSyncStartedAt?.getTime() !== input.claimedAt.getTime()) return;
+        account.lastSyncStartedAt = input.previous.lastSyncStartedAt;
+      },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      emailAccounts: emailAccounts as unknown as ServerApiPorts['emailAccounts'],
+      jobQueue: {
+        async enqueue() {
+          if (queueFails) throw new Error('queue unavailable');
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: [] };
+    const sync = () => api.handle({ method: 'POST', path: '/api/v1/email/accounts/7/sync', principal });
+
+    await sync().catch(() => undefined);
+    expect(releaseCalls).toHaveLength(1);
+    // Der Stempel ist zurueckgenommen — das Konto gilt NICHT als bedient.
+    expect(account.lastSyncStartedAt).toBeNull();
+
+    // Deshalb kommt der naechste Versuch sofort durch, statt in eine
+    // freundliche Luege zu laufen.
+    queueFails = false;
+    expect((await sync() as any).body.data).toMatchObject({ queued: true });
+    expect(account.lastSyncStartedAt).toEqual(now);
   });
 
   test('server mail account sync-lock route releases stale account sync job locks', async () => {

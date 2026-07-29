@@ -2288,6 +2288,9 @@ describe('server edition repository boundaries', () => {
       connectionString: 'postgres://simplecrm@postgres/simplecrm',
       concurrency: {
         mailAccountCount: 4,
+        // Voreinstellung aus JOB_WORKER_MAIL_CONCURRENCY: die Obergrenze
+        // gleichzeitiger Mail-Syncs ist einstellbar und wird durchgereicht.
+        mailConcurrency: 50,
         aiConcurrency: 3,
       },
     }));

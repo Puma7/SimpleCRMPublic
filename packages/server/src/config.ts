@@ -1,3 +1,7 @@
+import {
+  JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
+  JOB_MAIL_SYNC_MAX_CONCURRENCY,
+} from './jobs/policy';
 import { MASTER_KEY_BYTES, masterKeyLooksGuessable } from './security/master-key';
 
 export type ServerEditionEnv = {
@@ -23,6 +27,7 @@ export type ServerEditionEnv = {
   PORT?: string;
   JOB_WORKER_ENABLED?: string;
   JOB_WORKER_MAIL_ACCOUNT_COUNT?: string;
+  JOB_WORKER_MAIL_CONCURRENCY?: string;
   JOB_WORKER_AI_CONCURRENCY?: string;
   JOB_WORKER_MIGRATE_ON_START?: string;
   JOB_WEBHOOK_ALLOWLIST?: string;
@@ -75,6 +80,8 @@ export type EmailTrackingIpIntelligenceConfig = Readonly<{
 export type ServerJobWorkerConfig = {
   enabled: boolean;
   mailAccountCount: number;
+  /** Obergrenze gleichzeitiger Mail-Syncs je Worker-Prozess. */
+  mailConcurrency: number;
   aiConcurrency?: number;
   migrateOnStart: boolean;
   webhookAllowlist?: string;
@@ -328,6 +335,15 @@ export function parseServerJobWorkerConfig(env: ServerEditionEnv): ServerJobWork
     mailAccountCount: parseIntegerEnv(env.JOB_WORKER_MAIL_ACCOUNT_COUNT, 0, 'JOB_WORKER_MAIL_ACCOUNT_COUNT', {
       min: 0,
     }),
+    // Obergrenze gleichzeitiger Mail-Syncs je Prozess. Ohne diesen Weg waere
+    // calculateMailSyncPoolSize zwar parametrisiert, aber von niemandem
+    // einstellbar — ein Hebel, den es nur auf dem Papier gaebe.
+    mailConcurrency: parseIntegerEnv(
+      env.JOB_WORKER_MAIL_CONCURRENCY,
+      JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
+      'JOB_WORKER_MAIL_CONCURRENCY',
+      { min: 1, max: JOB_MAIL_SYNC_MAX_CONCURRENCY },
+    ),
     aiConcurrency: env.JOB_WORKER_AI_CONCURRENCY?.trim()
       ? parseIntegerEnv(env.JOB_WORKER_AI_CONCURRENCY, 5, 'JOB_WORKER_AI_CONCURRENCY', { min: 1, max: 100 })
       : undefined,

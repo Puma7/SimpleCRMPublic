@@ -11,6 +11,7 @@ import type {
   EmailAccountMutationInput,
   EmailAccountMutationPortResult,
   EmailAccountRecord,
+  EmailAccountSyncSlotPrevious,
   EmailComposeDraftMutationResult,
   EmailComposeSendInput,
   EmailDiagnosticsReport,
@@ -436,6 +437,33 @@ async function handleEmailAccountInboxArchiveRecovery(
   return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
 }
 
+/**
+ * Abkuehlzeit zwischen zwei manuell angestossenen Syncs desselben Kontos.
+ *
+ * 30 Sekunden: kurz genug, dass „ich habe gerade eine Mail bekommen, zeig sie
+ * mir" sich sofort anfuehlt, lang genug, dass ein Grossraumbuero den
+ * Mailserver nicht mit Verbindungsversuchen belegt. Der periodische Sync
+ * arbeitet unabhaengig davon weiter — der Knopf ist die Ausnahme, nicht der
+ * Zustellweg.
+ */
+const MAIL_SYNC_MIN_INTERVAL_MS = 30_000;
+
+/**
+ * Abkuehlzeit fuer den einmaligen Vollimport (`fullInbox`).
+ *
+ * Deutlich laenger als beim gewoehnlichen Abholen, weil er ungleich teurer ist:
+ * er liest das Postfach vollstaendig statt nur die Neuzugaenge. Seit das
+ * Abholen an mail.metadata.read haengt, kann ihn JEDER Lesende ausloesen —
+ * ohne eigene Grenze waere das ein Weg, den gerade eingefuehrten Lastschutz zu
+ * umgehen und beliebig viele mailboxweite Scans zu starten. Der eigene Job-Key
+ * verhindert nur wartende Duplikate, keinen neuen Vollscan, sobald der
+ * vorherige laeuft.
+ *
+ * Fuenfzehn Minuten: ein Nachholen ist ein Vorgang, den man einmal anstoesst
+ * und nicht im Minutentakt wiederholt.
+ */
+const MAIL_FULL_INBOX_MIN_INTERVAL_MS = 15 * 60_000;
+
 async function handleEmailAccountSync(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -464,16 +492,79 @@ async function handleEmailAccountSync(
     && typeof req.body === 'object' && req.body !== null
     && (req.body as { fullInbox?: unknown }).fullInbox === true;
 
-  await ports.jobQueue.enqueue({
-    workspaceId: principal.workspaceId,
-    type: jobType,
-    payload: {
+  // Abkuehlzeit. Der Sync selbst ist ueber den Graphile-Queue-Namen
+  // `account-<id>` und den Job-Key je Konto ohnehin serialisiert; ungeschuetzt
+  // ist die API. In einem Haus mit vielen Mitarbeitern sind hundert Klicks
+  // hundert Anfragen samt Einreihung, und die 15-Sekunden-Sperre im Client
+  // gilt je Browser-Tab — ueber viele Nutzer hinweg hilft sie gar nicht.
+  //
+  // Ein Nachholen (fullInbox) hat seine EIGENE, laengere Wartezeit an einer
+  // eigenen Spalte. An `last_sync_started_at` gemessen waere es nie wieder
+  // ausloesbar, sobald der periodische Scheduler laeuft: der setzt den Wert
+  // alle fuenf Minuten neu, also laege er dauerhaft innerhalb des
+  // 15-Minuten-Fensters. Gestempelt werden beim Nachholen trotzdem beide
+  // Spalten (Begruendung im Port).
+  //
+  // Der Abweisungsfall bleibt 202 mit `queued: false` statt eines Fehlers —
+  // fuer den Nutzer IST die Frage beantwortet ("es wird gerade abgeholt"), und
+  // ein roter Fehler fuer einen zweiten Klick waere schlicht falsch.
+  //
+  // BEANSPRUCHEND pruefen, nicht nur fragend: eine reine Vorab-Pruefung
+  // reserviert nichts. Gleichzeitige Klicks laesen alle denselben alten
+  // Zeitstempel und reihten alle ein — genau das Szenario, gegen das die
+  // Wartezeit gebaut ist. Der Preis dafuer ist, dass der Stempel schon steht,
+  // wenn das Einreihen gleich scheitert; deshalb wird er dann zurueckgenommen.
+  let claimedSlot: { claimedAt: Date; previous: EmailAccountSyncSlotPrevious } | null = null;
+  if (ports.emailAccounts.claimSyncSlot) {
+    const slot = await ports.emailAccounts.claimSyncSlot({
       workspaceId: principal.workspaceId,
-      accountId,
-      actorUserId: principal.userId,
-      ...(fullInbox ? { fullInbox: true } : {}),
-    },
-  });
+      id: accountId,
+      minIntervalMs: fullInbox ? MAIL_FULL_INBOX_MIN_INTERVAL_MS : MAIL_SYNC_MIN_INTERVAL_MS,
+      kind: fullInbox ? 'full_inbox' : 'sync',
+    });
+    if (!slot.claimed) {
+      return data(202, {
+        success: true,
+        queued: false,
+        accountId,
+        jobType,
+        fullInbox,
+        reason: 'recently_synced',
+        lastSyncStartedAt: slot.lastStartedAt?.toISOString() ?? null,
+      });
+    }
+    if (slot.claimedAt && slot.previous) {
+      claimedSlot = { claimedAt: slot.claimedAt, previous: slot.previous };
+    }
+  }
+
+  try {
+    await ports.jobQueue.enqueue({
+      workspaceId: principal.workspaceId,
+      type: jobType,
+      payload: {
+        workspaceId: principal.workspaceId,
+        accountId,
+        actorUserId: principal.userId,
+        ...(fullInbox ? { fullInbox: true } : {}),
+      },
+    });
+  } catch (enqueueError) {
+    // Den Stempel zuruecknehmen, sonst gilt eine Anfrage als bedient, die es
+    // nicht ist: der Nutzer saehe den Fehler und bekaeme fuer jeden weiteren
+    // Versuch innerhalb der Wartezeit ein freundliches `queued: false`, obwohl
+    // nie ein Job entstand. Scheitert auch die Ruecknahme, bleibt es bei genau
+    // diesem alten Verhalten — schlimmer wird es dadurch nicht.
+    if (claimedSlot) {
+      await ports.emailAccounts.releaseSyncSlot?.({
+        workspaceId: principal.workspaceId,
+        id: accountId,
+        claimedAt: claimedSlot.claimedAt,
+        previous: claimedSlot.previous,
+      }).catch(() => undefined);
+    }
+    throw enqueueError;
+  }
 
   return data(202, {
     success: true,
