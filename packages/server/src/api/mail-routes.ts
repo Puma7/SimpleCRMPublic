@@ -549,7 +549,7 @@ async function handleEmailAccountSync(
         ...(fullInbox ? { fullInbox: true } : {}),
       },
     });
-  } catch (enqueueError) {
+  } catch {
     // Den Stempel zuruecknehmen, sonst gilt eine Anfrage als bedient, die es
     // nicht ist: der Nutzer saehe den Fehler und bekaeme fuer jeden weiteren
     // Versuch innerhalb der Wartezeit ein freundliches `queued: false`, obwohl
@@ -563,7 +563,8 @@ async function handleEmailAccountSync(
         previous: claimedSlot.previous,
       }).catch(() => undefined);
     }
-    throw enqueueError;
+    // Einreihung ist voruebergehend nicht moeglich — kein Serverfehler, Wiederholen sinnvoll.
+    return error(503, 'mail_sync_enqueue_failed', 'Mail-Sync konnte nicht gestartet werden');
   }
 
   return data(202, {
