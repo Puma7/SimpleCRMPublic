@@ -40,7 +40,7 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
               { or: (parts: unknown[]) => parts },
             );
             (arg as (builder: unknown) => unknown)(eb);
-          } else if (column === 'id') {
+          } else if (arg === 'id') {
             state.targetId = value as number;
             state.singleLookup = true;
           }

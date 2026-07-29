@@ -6,8 +6,26 @@ import {
 const WORKSPACE = '11111111-1111-4111-8111-111111111111';
 const USER = '22222222-2222-4222-8222-222222222222';
 
+const releaseCalls: string[] = [];
+
 function makePorts(overrides: Partial<ServerApiPorts> = {}): ServerApiPorts {
   return {
+    mailAccess: {
+      async assertPermission() {
+        return undefined;
+      },
+      async resolveScope() {
+        return { kind: 'all' };
+      },
+    },
+    mailResourceLookup: {
+      async resolve(input) {
+        if (input.target.kind === 'account') {
+          return [{ type: 'account', accountId: String(input.target.id) }];
+        }
+        return [];
+      },
+    },
     emailAccounts: {
       async get() {
         return { id: 7, protocol: 'imap', name: 'Inbox' } as any;
@@ -34,8 +52,6 @@ function makePorts(overrides: Partial<ServerApiPorts> = {}): ServerApiPorts {
     ...overrides,
   } as ServerApiPorts;
 }
-
-const releaseCalls: string[] = [];
 
 describe('mail account sync route', () => {
   beforeEach(() => {
