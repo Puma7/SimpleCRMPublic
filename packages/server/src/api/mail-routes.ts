@@ -436,6 +436,17 @@ async function handleEmailAccountInboxArchiveRecovery(
   return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
 }
 
+/**
+ * Abkuehlzeit zwischen zwei manuell angestossenen Syncs desselben Kontos.
+ *
+ * 30 Sekunden: kurz genug, dass „ich habe gerade eine Mail bekommen, zeig sie
+ * mir" sich sofort anfuehlt, lang genug, dass ein Grossraumbuero den
+ * Mailserver nicht mit Verbindungsversuchen belegt. Der periodische Sync
+ * arbeitet unabhaengig davon weiter — der Knopf ist die Ausnahme, nicht der
+ * Zustellweg.
+ */
+const MAIL_SYNC_MIN_INTERVAL_MS = 30_000;
+
 async function handleEmailAccountSync(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -463,6 +474,37 @@ async function handleEmailAccountSync(
   const fullInbox = jobType === 'mail.sync.imap'
     && typeof req.body === 'object' && req.body !== null
     && (req.body as { fullInbox?: unknown }).fullInbox === true;
+
+  // Abkuehlzeit. Der Sync selbst ist ueber den Graphile-Queue-Namen
+  // `account-<id>` und den Job-Key je Konto ohnehin serialisiert; ungeschuetzt
+  // ist die API. In einem Haus mit vielen Mitarbeitern sind hundert Klicks
+  // hundert Anfragen samt Einreihung, und die 15-Sekunden-Sperre im Client
+  // gilt je Browser-Tab — ueber viele Nutzer hinweg hilft sie gar nicht.
+  //
+  // Ein Nachholen (fullInbox) umgeht die Abkuehlzeit: das ist ein bewusster
+  // einmaliger Vorgang, den ein gerade gelaufener Normal-Sync nicht ersetzt.
+  //
+  // Der Erfolgsfall bleibt 202 mit `queued: false` statt eines Fehlers — fuer
+  // den Nutzer IST die Frage beantwortet ("es wird gerade abgeholt"), und ein
+  // roter Fehler fuer einen zweiten Klick waere schlicht falsch.
+  if (!fullInbox && ports.emailAccounts.claimSyncSlot) {
+    const slot = await ports.emailAccounts.claimSyncSlot({
+      workspaceId: principal.workspaceId,
+      id: accountId,
+      minIntervalMs: MAIL_SYNC_MIN_INTERVAL_MS,
+    });
+    if (!slot.claimed) {
+      return data(202, {
+        success: true,
+        queued: false,
+        accountId,
+        jobType,
+        fullInbox,
+        reason: 'recently_synced',
+        lastSyncStartedAt: slot.lastStartedAt?.toISOString() ?? null,
+      });
+    }
+  }
 
   await ports.jobQueue.enqueue({
     workspaceId: principal.workspaceId,

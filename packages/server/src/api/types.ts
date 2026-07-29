@@ -1914,6 +1914,25 @@ export type EmailAccountMutationPortResult =
   | { ok: false; code: 'secret_port_unavailable' };
 
 export type EmailAccountApiPort = {
+  /**
+   * Abkuehlzeit fuer das Abholen: setzt `last_sync_started_at` auf jetzt und
+   * meldet, OB dieser Aufruf den Zuschlag bekam.
+   *
+   * Bewusst ein einziges bedingtes UPDATE statt Lesen-dann-Schreiben: bei
+   * hundert gleichzeitigen Klicks kaeme jede Pruefung zum selben Ergebnis und
+   * alle wuerden einreihen. So gewinnt genau einer, ohne Sperre und ohne
+   * zweite Abfrage.
+   *
+   * Das schuetzt die API, nicht den Sync — der ist ueber den Graphile-Queue-
+   * Namen `account-<id>` und den Job-Key ohnehin je Konto serialisiert.
+   */
+  claimSyncSlot?(input: {
+    workspaceId: string;
+    id: number;
+    /** Kein neuer Lauf, wenn der letzte Anstoss juenger als dies ist. */
+    minIntervalMs: number;
+    now?: Date;
+  }): Promise<{ claimed: boolean; lastStartedAt: Date | null }>;
   list(input: {
     workspaceId: string;
     mailScope?: MailSqlScope;

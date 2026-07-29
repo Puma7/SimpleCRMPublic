@@ -393,6 +393,46 @@ type EmailRemoteContentPolicyRow = Pick<EmailMessageRow, 'id' | 'from_json' | 'r
 
 export function createPostgresEmailAccountReadPort(options: PostgresEmailAccountReadPortOptions): EmailAccountApiPort {
   return {
+    async claimSyncSlot(input) {
+      const now = input.now ?? new Date();
+      const threshold = new Date(now.getTime() - Math.max(0, input.minIntervalMs));
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          // Ein bedingtes UPDATE entscheidet und stempelt in einem Schritt. Wer
+          // keine Zeile zurueckbekommt, war zu frueh dran; wer eine bekommt,
+          // hat den Zuschlag und reiht ein.
+          const claimed = await trx
+            .updateTable('email_accounts')
+            .set({ last_sync_started_at: now })
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .where((eb) => eb.or([
+              eb('last_sync_started_at', 'is', null),
+              eb('last_sync_started_at', '<', threshold),
+            ]))
+            .returning('last_sync_started_at')
+            .executeTakeFirst();
+          if (claimed) return { claimed: true, lastStartedAt: now };
+
+          const current = await trx
+            .selectFrom('email_accounts')
+            .select('last_sync_started_at')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .executeTakeFirst();
+          return {
+            claimed: false,
+            lastStartedAt: current?.last_sync_started_at
+              ? new Date(String(current.last_sync_started_at))
+              : null,
+          };
+        },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
     async list(input): Promise<EmailAccountListResult> {
       return withWorkspaceTransaction(
         options.db,

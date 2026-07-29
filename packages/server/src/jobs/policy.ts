@@ -333,11 +333,43 @@ export function calculateJobRetryDelaySeconds(nextAttempt: number): number {
   return Math.min(delay, JOB_RETRY_MAX_DELAY_SECONDS);
 }
 
-export function calculateMailSyncPoolSize(accountCount: number): number {
+/** Voreinstellung der Obergrenze gleichzeitiger Mail-Syncs je Worker-Prozess. */
+export const JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY = 50;
+/**
+ * Harte Grenze. Jeder gleichzeitige Sync ist eine IMAP-Verbindung und eine
+ * Datenbankverbindung; oberhalb davon ist nicht der Worker das Problem, sondern
+ * der Mailserver und der Verbindungspool.
+ */
+export const JOB_MAIL_SYNC_MAX_CONCURRENCY = 500;
+
+/**
+ * Wie viele Mail-Syncs ein Worker-Prozess gleichzeitig faehrt.
+ *
+ * Die Obergrenze ist konfigurierbar, weil sie bei vielen Konten der begrenzende
+ * Faktor wird: bei 10.000 Konten und rund fuenf Sekunden je Konto dauert eine
+ * volle Runde mit 50 gleichzeitigen Laeufen etwa 17 Minuten pro Prozess.
+ * Waagerecht skaliert wird ueber mehrere Worker — die Serialisierung je Konto
+ * haelt prozessuebergreifend, weil sie in der Datenbank sitzt (Graphile-Queue
+ * `account-<id>` plus die Advisory-Sperre). Wer stattdessen einen Prozess
+ * groesser fahren will, hebt diesen Wert.
+ */
+export function calculateMailSyncPoolSize(
+  accountCount: number,
+  maxConcurrency: number = JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
+): number {
   if (!Number.isInteger(accountCount) || accountCount < 0) {
     throw new Error('accountCount must be a non-negative integer');
   }
-  return Math.min(50, accountCount * 2);
+  if (
+    !Number.isInteger(maxConcurrency)
+    || maxConcurrency < 1
+    || maxConcurrency > JOB_MAIL_SYNC_MAX_CONCURRENCY
+  ) {
+    throw new Error(
+      `mail sync concurrency must be an integer between 1 and ${JOB_MAIL_SYNC_MAX_CONCURRENCY}`,
+    );
+  }
+  return Math.min(maxConcurrency, accountCount * 2);
 }
 
 export function normalizeAiJobConcurrency(value: number | undefined): number {

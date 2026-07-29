@@ -646,6 +646,8 @@ export type EmailAccountsTable = {
   default_remote_content_policy: string;
   respond_to_read_receipts: string;
   read_receipt_trusted_domains: string | null;
+  /** Anstoss des letzten Syncs — Grundlage fuer Scheduler und Abkuehlzeit (0051). */
+  last_sync_started_at: TimestampColumn | null;
   source_row: JsonColumn;
   imported_in_run_id: string | null;
   created_at: TimestampColumn | null;
