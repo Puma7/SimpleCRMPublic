@@ -482,6 +482,28 @@ async function finalizeEvaluation(
 ): Promise<MailAclRolloutTelemetryResult> {
   const result = await updateCounters(trx, workspaceId, delta, true);
   if (result) return result;
+
+  // Keine Shadow-Zeile getroffen. Das hat zwei sehr verschiedene Ursachen, und
+  // sie als eine zu behandeln erzeugt eine Stoerungsmeldung, die keine ist.
+  //
+  // Steht der Workspace inzwischen auf 'enforce', ist der Rollout waehrend
+  // DIESER Auswertung fertig geworden. Ihre Beobachtung wird dann nicht mehr
+  // gebraucht — der Vergleich ist beendet, und die Zaehler sind es auch. Das
+  // regulaere Umschalten kann hier nicht hereinlaufen (es haelt den
+  // Verwaltungs-Lock und wartet auf in_flight = 0), wohl aber Migration 0050:
+  // sie schaltet ohne diese Koordination um, weil sie eine bereits laufende
+  // API gar nicht abwarten kann. Als Fehler gewertet bliebe telemetry_healthy
+  // dauerhaft false — und niemand koennte es aufraeumen, weil
+  // resetShadowCounters ausdruecklich nur im Shadow-Modus arbeitet.
+  //
+  // Alles andere bleibt ein Fehler: eine fehlende Zeile (geloeschter
+  // Workspace) genauso wie eine Zeile, die noch im Shadow-Modus steht und
+  // trotzdem nicht passt (doppelte Finalisierung, in_flight bereits 0).
+  const current = await sql<{ mode: string }>`
+    SELECT mode FROM mail_acl_rollout_state WHERE workspace_id = ${workspaceId}::uuid
+  `.execute(trx);
+  if (current.rows[0]?.mode === 'enforce') return { healthy: true };
+
   await markTelemetryUnhealthy(trx, workspaceId, 'counter_update_zero_rows');
   return { healthy: false, code: 'counter_update_zero_rows' };
 }

@@ -5195,6 +5195,78 @@ describe('server mailbox ACL migration', () => {
     }
   });
 
+  test('an evaluation that outlives the rollout finishing reports no fault', async () => {
+    // Migration 0050 schaltet ohne den Verwaltungs-Lock um — sie kann eine
+    // bereits laufende API nicht abwarten. Eine Auswertung, die davor
+    // registriert wurde, finalisiert danach und findet keine Shadow-Zeile mehr.
+    //
+    // Das ist keine Stoerung, sondern der Rollout, der waehrenddessen fertig
+    // wurde. Als Fehler gewertet bliebe telemetry_healthy dauerhaft false, und
+    // niemand koennte es aufraeumen: resetShadowCounters arbeitet ausdruecklich
+    // nur im Shadow-Modus, und zurueck fuehrt kein Weg.
+    const db = createApplicationDb({ maxConnections: 4 });
+    const port = createPostgresMailAclRolloutStatePort({ db });
+    // Die Migrationsrolle ist NOBYPASSRLS, deshalb die Systemsitzung — sonst
+    // trifft das UPDATE keine Zeile und der Test prueft nichts.
+    const asSystem = async (statement: string) => {
+      await client.query("SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)");
+      try {
+        await client.query(statement);
+      } finally {
+        await client.query('RESET app.role; RESET app.cross_workspace_access');
+      }
+    };
+    try {
+      await asSystem(
+        `UPDATE mail_acl_rollout_state SET mode = 'shadow', in_flight = 0, evaluated = 0,
+           telemetry_healthy = true, diagnostic_code = NULL, diagnostic_at = NULL
+         WHERE workspace_id = '${WORKSPACE_B}'`,
+      );
+
+      const evaluation = await port.withSharedEvaluation(WORKSPACE_B, async () => {
+        // Mitten in der Auswertung: genau das, was Migration 0050 tut.
+        await asSystem(
+          `UPDATE mail_acl_rollout_state SET mode = 'enforce', in_flight = 0
+           WHERE workspace_id = '${WORKSPACE_B}' AND mode = 'shadow'`,
+        );
+        return { value: 'done' as const, delta: { evaluated: 1n } };
+      });
+
+      expect(evaluation.value).toBe('done');
+      expect(evaluation.telemetry).toEqual({ healthy: true });
+      await expect(port.getReadiness(WORKSPACE_B)).resolves.toMatchObject({
+        mode: 'enforce',
+        inFlight: 0n,
+        telemetryHealthy: true,
+        diagnosticCode: null,
+      });
+
+      // Die Gegenprobe: eine Zeile, die NOCH im Shadow-Modus steht und deren
+      // Latch trotzdem nicht passt, bleibt ein echter Fehler.
+      await asSystem(
+        `UPDATE mail_acl_rollout_state SET mode = 'shadow', in_flight = 0,
+           telemetry_healthy = true, diagnostic_code = NULL, diagnostic_at = NULL
+         WHERE workspace_id = '${WORKSPACE_B}'`,
+      );
+      const stolenLatch = await port.withSharedEvaluation(WORKSPACE_B, async () => {
+        await asSystem(
+          `UPDATE mail_acl_rollout_state SET in_flight = 0 WHERE workspace_id = '${WORKSPACE_B}'`,
+        );
+        return { value: 'done' as const, delta: { evaluated: 1n } };
+      });
+      expect(stolenLatch.telemetry).toEqual({ healthy: false, code: 'counter_update_zero_rows' });
+    } finally {
+      // Den Workspace nicht ungesund und im Shadow-Modus zuruecklassen: der
+      // Zustand waere fuer jeden spaeter ergaenzten Test eine Ueberraschung.
+      await asSystem(
+        `UPDATE mail_acl_rollout_state SET mode = 'enforce', in_flight = 0,
+           telemetry_healthy = true, diagnostic_code = NULL, diagnostic_at = NULL
+         WHERE workspace_id = '${WORKSPACE_B}'`,
+      ).catch(() => undefined);
+      await db.destroy();
+    }
+  });
+
   test('rollout transition is one-way, requires observations without mismatches, and reset is shadow-only', async () => {
     const db = createApplicationDb({ maxConnections: 4 });
     const port = createPostgresMailAclRolloutStatePort({ db });

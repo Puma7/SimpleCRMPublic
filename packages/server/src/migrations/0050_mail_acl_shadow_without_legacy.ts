@@ -36,6 +36,33 @@ import type { SqlMigration } from './types';
  * Die Zaehler werden mit zurueckgesetzt: sie beschreiben eine Beobachtung, die
  * nie eine war (gezaehlte "Abweichungen" gegen eine leere Legacy-Seite), und
  * blieben sonst als Diagnoserauschen in der Readiness-Ansicht stehen.
+ *
+ * Dazu gehoert auch `in_flight` und die Telemetrie-Diagnose. Das regulaere
+ * Umschalten haelt den Verwaltungs-Lock und wartet, bis keine Auswertung mehr
+ * laeuft; eine Migration kann das nicht — die alte API bedient waehrend des
+ * Deploys weiter Anfragen. Bliebe ein Zaehlerstand > 0 stehen, saehe die
+ * Readiness-Ansicht dauerhaft eine laufende Auswertung, die es nicht gibt, und
+ * aufraeumen koennte es niemand: resetShadowCounters arbeitet ausdruecklich nur
+ * im Shadow-Modus, und zurueck fuehrt kein Weg. Dasselbe gilt fuer eine
+ * Diagnose aus der Shadow-Phase: sie beschreibt einen Vergleich, den es fuer
+ * diesen Workspace nicht mehr gibt.
+ *
+ * Die Auswertungen, die im Moment der Migration noch laufen, faengt sie damit
+ * nicht ab — die finalisieren erst danach. Dass die ins Leere laufen und dabei
+ * keine Stoerung melden, ist Sache von finalizeEvaluation (Begruendung dort).
+ * Und sie laufen wirklich: docker/update.sh migriert in Schritt 4 und stoppt
+ * die alte API erst in Schritt 5. Waehrend dieser Migration bedient sie also
+ * Anfragen.
+ *
+ * Den Verwaltungs-Lock von transitionToEnforce nimmt diese Migration bewusst
+ * NICHT. Er wuerde warten, bis keine Auswertung mehr laeuft — und genau das
+ * darf eine Migration nicht: haengt eine Auswertung (langsame Abfrage,
+ * steckengebliebene Verbindung), blockiert der Lock unbegrenzt und das Update
+ * kommt nie durch. Ein Deploy, der an einer laufenden API haengenbleibt, ist
+ * der teurere Fehler. Korrekt ist das Ergebnis auch ohne ihn: die Zeile steht
+ * nach der Migration stimmig da, und die Nachzuegler melden keine Stoerung.
+ * Neue Auswertungen koennen ohnehin nicht mehr dazukommen — registerEvaluation
+ * setzt gar keinen Zaehler mehr, sobald der Modus nicht 'shadow' ist.
  */
 export const mailAclShadowWithoutLegacyMigration: SqlMigration = {
   id: '0050_mail_acl_shadow_without_legacy',
@@ -50,8 +77,12 @@ SET
   legacy_allow_new_deny = 0,
   legacy_deny_new_allow = 0,
   not_comparable = 0,
+  in_flight = 0,
   observation_started_at = NULL,
   observation_updated_at = NULL,
+  telemetry_healthy = true,
+  diagnostic_code = NULL,
+  diagnostic_at = NULL,
   updated_at = now()
 WHERE rollout.mode = 'shadow'
   AND NOT EXISTS (
