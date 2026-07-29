@@ -64,6 +64,7 @@ import {
   type WorkflowRunStepRecord,
   type WorkflowVersionRecord,
 } from '../../packages/server/src';
+import { createServerLogStore } from '../../packages/server/src/diagnostics/server-log-store';
 
 function collectFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -2193,7 +2194,30 @@ describe('server edition repository boundaries', () => {
       secret: Buffer.alloc(32, 11),
     };
     const destroyed = jest.fn(async () => undefined);
-    const fakeDb = { destroy: destroyed } as unknown as Kysely<ServerDatabase>;
+    // Seit der Master-Key-Pruefung liest der Start die Fingerabdruck-Tabelle und
+    // — weil eine leere Tabelle nach einem Upgrade nichts beweist — auch
+    // `secrets`, letzteres in einer Transaktion mit gelockerter RLS-Sitzung.
+    // Beides leer = frische Installation: kein Schluessel hinterlegt, keine
+    // Secrets, die unlesbar werden koennten.
+    const emptySelect: Record<string, unknown> = {
+      select: () => emptySelect,
+      distinct: () => emptySelect,
+      orderBy: () => emptySelect,
+      limit: () => emptySelect,
+      where: () => emptySelect,
+      execute: async () => [],
+      executeTakeFirst: async () => undefined,
+    };
+    const fakeDb = {
+      destroy: destroyed,
+      selectFrom: () => emptySelect,
+      transaction: () => ({
+        execute: async (operation: (trx: unknown) => Promise<unknown>) => operation({
+          selectFrom: () => emptySelect,
+          getExecutor: () => ({ executeQuery: async () => ({ rows: [] }) }),
+        }),
+      }),
+    } as unknown as Kysely<ServerDatabase>;
     const createDatabase = jest.fn(async () => fakeDb);
     const closedNotifications = jest.fn(async () => undefined);
     const createEventNotifications = jest.fn(async () => ({
@@ -2277,6 +2301,33 @@ describe('server edition repository boundaries', () => {
     expect(stopped).toHaveBeenCalledTimes(1);
     expect(closedNotifications).toHaveBeenCalledTimes(1);
     expect(destroyed).toHaveBeenCalledTimes(1);
+  });
+
+  test('die Warnung zum ratbaren Master-Key landet im Server-Log', async () => {
+    // Bei einer bestehenden Installation mit textartigem Schluessel ist diese
+    // Warnung das EINZIGE Signal — die Datenbankpruefung darf den weiterhin
+    // benoetigten alten Schluessel ja nicht ablehnen. Sie lief frueher vor der
+    // Log-Erfassung und landete damit weder im SERVER_LOG_FILE noch in der
+    // Diagnose-API: ein Signal, das nirgends nachlesbar ist, ist keines.
+    const serverLogStore = createServerLogStore();
+    const app = await startServer({
+      host: '127.0.0.1',
+      port: 0,
+      serverLogStore,
+      env: {
+        // 32 druckbare Zeichen — genau der Fall, den die Laengenpruefung allein
+        // durchlaesst.
+        SIMPLECRM_MASTER_KEY: Buffer.from('passphrase-die-32-zeichen-lang!!', 'utf8').toString('base64'),
+        ACCESS_TOKEN_SECRET: Buffer.alloc(32, 3).toString('base64'),
+      },
+    });
+    try {
+      const warnungen = serverLogStore.recent({ level: 'warn' });
+      expect(warnungen.some((entry) => entry.message.includes('does not look like random key material')))
+        .toBe(true);
+    } finally {
+      await app.close();
+    }
   });
 
   test('startServer fails closed for incomplete production configuration', async () => {

@@ -17,6 +17,13 @@ This document covers the current Docker backup, restore, restore-drill, and doct
   named `backup-<stamp>.meta.partial` and is renamed once the dump exists — the
   counts are taken *before* the dump, and a concurrent backup's retention pass
   would otherwise delete a `.meta` with no matching dump as an orphan.
+- `master_key_encrypted_rows` inside that file: how many rows outside `secrets`
+  are bound to the master key — sealed tracking links, tracking events with
+  sealed raw metadata, and issued tracking tokens. Deliberately *not* the row
+  count of `email_tracking_events`: most events carry no sealed metadata, and
+  counting them would claim a dependency on the old `.env` that the startup
+  check itself does not see. The same yardstick on both sides, or the warning
+  contradicts the behaviour.
 
 If the counts cannot be taken, the backup still runs — the dump is the valuable
 part — but records `row_counts=failed`. **`restore.sh` then refuses to start**,
@@ -81,12 +88,282 @@ or an offline copy. Without the master key your backup is only half a backup.
 (never the key itself), and `restore.sh` and `doctor.sh` print them as a
 reminder.
 
-**Treat that as a reminder, not a check.** The server derives the id without
-passing one, so it is `default` in every installation — a wrong key carries the
-same id as the right one. Whether your `.env` matches cannot be decided from the
-backup; only a non-secret key fingerprint written by the server, or a canary
-decryption, could answer that. Until then the safeguard is procedural: keep the
-`.env` with the backup set.
+The id alone says nothing — the server derives it without passing one, so it is
+`default` everywhere. **The fingerprint next to it does say something.** Since
+migration 0049 the server stores a fingerprint of the master key in the
+database, so it travels with the dump. The key cannot be read out of it.
+
+**The metadata reads every key statement out of the dump, not out of the
+database.** That covers all four of them: `master_key_fingerprints`,
+`secret_key_ids`, `master_key_encrypted_rows` and `master_key_retained_events`.
+They are supposed to say which key *this dump* needs, and no query against the
+running database answers that. Ask before `pg_dump` and a secret or a tracking
+row written during the dump is missing from the file while sitting in the dump —
+restore and doctor promise a free choice of key, and the restored API then
+either refuses to start with a different `.env` or comes up unverified and
+stores re-delivered evidence twice. Ask afterwards and the race merely turns
+around: the file names key material the dump does not contain, and a backup that
+would restore perfectly well is written off as unusable without the original
+`.env`. Both directions are wrong and neither can be fixed by picking a better
+moment. In a rolling upgrade an old replica really does still write in that
+window; this is not a theoretical race.
+
+The dump itself, on the other hand, knows exactly — it *is* the snapshot. So
+once the dump is on disk, `backup.sh` reads those four values back out of it
+with `pg_restore --table=...`. No exported snapshot, no second session held open
+alongside the dump, no race. `n/a` means the table is not in the dump at all
+(taken before migration 0049), `none` that it is in the dump and empty.
+
+The custom format carries a table of contents with offsets, so `--table` seeks
+instead of scanning: on a dump of 4 million tracking rows (58 MB, `pg_dump`
+7.0 s) reading all four values back costs 2.8 s — and that is the worst case, a
+database consisting of nothing but tracking data. Reading is far cheaper than
+writing: no compression, nothing crossing a connection.
+
+The `rows_*` counts stay as they are, taken just before the dump. Their
+inexactness is deliberate and documented (the completeness check is explicitly
+not an equality test). What the `retained` verdict needs therefore lives in its
+own field, `master_key_retained_events`, rather than being read off
+`rows_email_tracking_events` — the plain event count would be the wrong measure
+anyway, see below. Older backups that predate the field still fall back to the
+event count; over-warning on an old backup beats quietly clearing it.
+
+Those four fields are written back even when they were never written in the
+first place. If the pre-dump counting pass fails, the metadata file comes out
+without any of its `rows_*` lines, and a missing `master_key_retained_events`
+would read as `0` — "no key material" for exactly the backup whose restore is
+being pushed through with `RESTORE_ALLOW_UNVERIFIABLE=1`.
+
+**Treat that value as a key checker, not as public information.** It is derived
+with scrypt, deliberately expensive, and that is not decoration: against a
+*random* 32-byte key nothing about it matters, but against a key someone typed
+as a passphrase and base64-encoded, a cheap fingerprint would be exactly the
+offline oracle it is meant not to be — compute once per guess and compare, no
+access to any encrypted secret needed. At roughly 100 ms per candidate that
+turns a wordlist run of seconds into one of weeks. Generate the key with
+`openssl rand -base64 32`.
+
+It is also **salted per installation** — the salt is random, generated when the
+fingerprint is first recorded, and stored beside it. With only a fixed label as
+salt the value would be global: the same key would produce the same published
+fingerprint everywhere, so one computation could be held against any number of
+other installations' backup metadata, and key reuse across installations would
+be visible at a glance. With its own salt, every computation buys exactly one
+installation.
+
+A key that decodes to text-like or repetitive bytes is refused **while the
+database still holds no secrets** — that is the last moment replacing it costs
+nothing. An installation that already runs on such a key only gets a warning:
+refusing there would strand it, because starting with the old key would be
+forbidden and starting with a new one would make every stored credential
+unreadable. The check is a tripwire against the accident, not a security
+boundary; entropy cannot be measured from 32 bytes.
+
+Nothing in the backup path can check it — checking needs the key, and the key
+lives with the API. **The API does check it: it refuses to start when its
+`SIMPLECRM_MASTER_KEY` does not match the database it finds.** A dump restored
+with the wrong `.env` therefore fails immediately and visibly, instead of
+surfacing weeks later as a mailbox that stopped syncing.
+
+A **missing** key is the same mistake the other way round and is refused too:
+if this database was already run with a key, starting without one would mean
+working on secrets nobody can read. Only a database with neither a fingerprint
+nor a single stored secret counts as a fresh installation and still starts
+without a key.
+
+**An empty fingerprint table proves nothing.** Migration 0049 creates it without
+a backfill, and a dump taken before 0049 brings it along empty — which is
+precisely the case this is meant to catch: an old dump restored with the wrong
+`.env`. Taking that as "fresh" would record the wrong key as the truth and
+reject the right one later. So when the table is empty but encrypted data
+exists, the key has to prove itself against that data before its fingerprint is
+recorded: the envelopes are AEAD-sealed, a foreign key fails authentication
+rather than returning garbage. Secrets that carry a different key id are the
+same refusal — decryption checks the id before it starts, so that key cannot
+read anything here either, and starting anyway would mean writing new secrets
+under a second key beside the unreadable ones.
+
+**Every secret, not a sample, and no upper bound.** A server that once started
+with the wrong `.env` wrote new secrets beside the old ones, all under key id
+`default` and the same algorithm — the metadata looks uniform while the key
+material is not. Probing a single row would bless whichever key that row
+happened to use, and stopping after the first N rows would do the same one level
+up: what lies beyond stays unchecked and is committed to anyway. The check pages
+through all of them. It runs once per installation: as soon as a fingerprint
+exists, later starts compare that instead.
+
+**Email tracking counts as encrypted data too.** The tracking token, encryption
+and link-hash keys are derived from the same master key, so a database with no
+secrets but with tracking rows is not fresh either — a wrong key invalidates
+issued open/click tokens, makes stored target URLs unreadable, and turns the raw
+metadata of tracking events into a permanent `rawUnavailable`. Three tables are
+checked, and it takes all three to cover the field: `email_tracking_links`, the
+sealed columns of `email_tracking_events`, and `email_tracking_token_resolver`.
+An installation that only counts opens and stores no raw metadata has neither
+links nor sealed events — but one resolver row per tracked message, and its
+`token_hash` is recomputable from the key. Those tables can grow into the
+millions, so unlike `secrets` they are **sampled**: the oldest and newest few
+rows, because a key change falls somewhere in time and the edges show it. That
+is a sample, not a proof.
+
+Two derived values cannot be checked: `target_url_hash` and the event
+`dedupe_key`. Both are keyed hashes of inputs the check does not have, so there
+is nothing to compare against. Usually they do not appear alone — whatever
+writes them writes a resolver row too — but retention breaks that pairing:
+sealed raw metadata is cleared after 7 days, expired resolver rows are deleted,
+and the events themselves stay for a year. A database in that state holds
+key-bound data and nothing verifiable.
+
+**Not every `dedupe_key` is key-bound, and the check says which.** The
+lifecycle events build theirs in plain text — `queued:<id>`,
+`smtp_accepted:<id>`, `sending:<id>:<time>` — and no key goes into them. It is
+derived only where `crypto.dedupeHash` produces it: for inbound DSN/MDN
+evidence and for opens and clicks. That is readable off the value range rather
+than guessed: `dedupeHash` is an HMAC-SHA256 in hex, exactly 64 characters from
+`[0-9a-f]`, while every plain-text form contains a colon. So both the startup
+check and `master_key_retained_events` filter on that pattern.
+
+Without the filter an installation that only *sends* mail and collects nothing
+else would count as unverifiable forever: no fingerprint would ever be
+recorded, and the very state this check exists to prevent — two replicas with
+different keys both starting and then writing incompatible secrets — would stay
+open permanently.
+
+**That state neither starts nor refuses — it runs without recording.** Refusing
+would strand an installation whose key may well be correct, and nothing here can
+prove it either way; recording would make an unproven key the truth and reject
+the right one later. So the server starts, writes no fingerprint, and says so
+loudly. As soon as anything verifiable exists again — a secret, a link, an
+issued token — the next start records properly. Restore and doctor report the
+same state for such a backup instead of promising a free choice of key.
+
+**The samples are index-bound, not time-ordered.** No index covers `created_at`
+on these tables, so ordering by it would read the whole table and sort it — six
+times, before the API starts listening. The probes order by primary key instead,
+and the event probe looks for sealed rows inside a window of the newest rows
+rather than filtering the entire table. Retention keeps sealed metadata recent,
+so that window is where they are.
+
+**And they are samples, not proof — deliberately.** For events the primary key
+is time-ordered, so both ends really are old and new. For links (random uuid)
+and the resolver (hash) they are two arbitrary but stable points. A pre-0049
+database whose tracking rows come from two different master keys can therefore
+pass if the drawn rows all happen to belong to the configured one, and the
+fingerprint is then recorded for good. That risk is accepted **here and not for
+secrets**: an unreadable tracking row costs the pixels and click targets of a
+past campaign, an unreadable secret costs credentials. Where credentials are at
+stake the check is exhaustive; where evidence is at stake it draws 25 rows per
+end and table, which costs nothing over the index and catches a key change in
+all but contrived cases. Verifying every tracking row would mean decrypting
+millions of them before the API answers its first request.
+
+**A missing fingerprint table is not a free pass.** In the Compose flow the API
+waits for `migrate`, but a rolling deployment or another orchestrator can start
+it before migration 0049. The probe runs anyway; only *recording* the
+fingerprint waits for the table. Otherwise a wrong `.env` would slip through
+exactly that window and write data under a second key.
+
+If the database is **also empty** in that window, the API refuses to start at
+all. There is nothing to probe and nothing to record, so two servers with
+different keys would both come through and then write secrets under the same key
+id with different key material — a state that only surfaces at the next start,
+with half the secrets unreadable. Refusing costs nothing here: without
+migrations there is no schema, so the API could not serve anything anyway.
+
+**Writes are locked out while the check runs.** The advisory lock
+serialises startups, not the normal write path — that one does not take it. In a
+rolling deployment an old replica keeps serving requests, and under `READ
+COMMITTED` every page of the check sees its own snapshot, so a secret inserted
+after the last page (or with a smaller uuid than the cursor) would slip past
+unchecked and the fingerprint would be recorded anyway. The one-time check
+therefore takes `LOCK TABLE ... IN SHARE MODE` on `secrets` **and the three
+tracking tables**: reads continue, writes wait. Taking a lock costs nothing
+regardless of table size, and without it the same old replica could push links,
+tokens or events in beside the samples. With a `lock_timeout` of five seconds —
+if someone really is writing right now, the start fails visibly instead of
+quietly walking past the row. Later starts never reach this point, so nothing
+blocks once a fingerprint exists.
+
+**The lock ends with the transaction; the requirement behind it does not.**
+A writer that was waiting proceeds the moment the check commits. An old replica
+holding a *different* key can therefore insert a secret one instant after the
+fingerprint was recorded, and that row is unreadable to everyone from then on.
+Nothing in the new binary can prevent this: no lock a starting process takes
+outlives its own transaction, and the old replica contains none of this code —
+it is not asking permission. Nor does a later start catch it. Once a matching
+fingerprint exists the check returns right there and never probes the secrets
+again (deliberately: every start would otherwise decrypt every secret). The row
+surfaces when something first tries to read it.
+
+So this is a **deployment requirement, not a runtime guarantee: replicas of the
+previous version must be stopped before the first start of the new one.** The
+Compose flow in this repository already does exactly that — `docker compose up
+-d` stops the old `api` container before it starts the new one, so there is no
+moment with both. Anyone running a rolling restart across versions by hand has
+to arrange the same. It is worth saying plainly rather than leaving it implied,
+because the failure it produces is silent: the start succeeds, the fingerprint
+is right, and a handful of credentials written in that second are simply gone.
+
+**The check and the decision happen under one lock.** Without it, two replicas
+starting at once on a fresh database both see an empty table — and a replica
+whose `.env` has no key at all would keep running healthy, without secret or
+tracking crypto, while the other records its fingerprint. A conflict-safe insert
+does not help there: the keyless replica never writes anything. A Postgres
+advisory lock makes read and commit one step, so whoever comes second sees the
+first one's result.
+
+One case stays open by nature: a **keyless** replica that wins the lock on an
+empty database finds nothing to compare and nothing to record, so it starts and
+releases the lock — a keyed replica can then claim the database while the first
+keeps running without secret and tracking crypto until it is restarted. Nothing
+in the database can prevent that (the keyless process has no key to write), so
+it is said out loud instead: that start logs a warning naming exactly this
+outcome.
+
+**There is no online re-keying.** Re-encrypting needs the old key, and if you
+had it this would not be a problem. So the error message names the path that
+actually works: restore the original `.env` — or, if the old key is gone for
+good, accept that the encrypted rows are lost and remove them together with the
+fingerprint row:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+BEGIN;
+SELECT set_config('app.role', 'system', true),
+       set_config('app.cross_workspace_access', 'on', true);
+DELETE FROM secrets;
+DELETE FROM email_tracking_messages;  -- cascades to links, events, token resolver
+DELETE FROM master_key_fingerprints;
+COMMIT;
+SQL
+```
+
+The tracking rows belong in there. Sealed target URLs, issued tokens and the
+HMAC dedupe keys of retained events all hang on the old key, and deleting the
+tracking *messages* is what clears all three — links, events and the token
+resolver cascade from them.
+
+Leaving the events behind is the subtle one. They would not make the next start
+refuse; they would make it *undecided* — key-bound data that cannot be verified,
+so the server runs on without recording a fingerprint. In a multi-replica
+deployment two replicas could then settle on different new keys and write
+secrets under incompatible material.
+
+**The session context is not optional.** Row level security is forced on
+`secrets`, so a plain `DELETE FROM secrets` over the application connection
+matches no row at all and reports `DELETE 0` — while the delete from the
+RLS-free fingerprint table succeeds. That combination produces exactly the state
+the next start refuses. Connecting as the admin role works too; it bypasses RLS.
+Then start with the new key and enter every credential again.
+
+The check tolerates exactly one failure: the table not existing yet, because
+migrations are a separate service and the API must not depend on the schema
+already being current. Every other database error — connection lost, rotated
+`PG_PASSWORD`, `too many clients` — aborts the start. A check that could not run
+must not look like a check that passed.
+
+Backups taken before 0049 carry no fingerprint; `restore.sh` says so explicitly
+rather than implying a check it cannot perform.
 
 ## Run A One-Shot Backup
 

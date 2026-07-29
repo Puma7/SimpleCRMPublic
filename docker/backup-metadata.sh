@@ -12,10 +12,14 @@
 #    Secrets niemand mehr. Die Metadaten halten die verwendeten key_id fest
 #    (nicht den Schluessel) und erinnern beim Restore daran.
 #
-#    Das ist ausdruecklich nur eine Erinnerung: der Server vergibt die Kennung
-#    ohne Argument, sie lautet also ueberall 'default'. Ein falscher Schluessel
-#    ist daran NICHT zu erkennen. Wer das wirklich pruefen will, braucht einen
-#    nicht-geheimen Fingerabdruck des Schluessels, den der Server hinterlegt.
+#    Die Kennung allein sagt dabei nichts: der Server vergibt sie ohne Argument,
+#    sie lautet ueberall 'default'. Seit Migration 0049 steht deshalb zusaetzlich
+#    ein FINGERABDRUCK des Schluessels in der Datenbank (scrypt ueber ein festes
+#    Etikett plus einen zufaelligen Salt je Installation) und wandert mit dem
+#    Dump. Er wird hier nur angezeigt — pruefen kann ihn nur, wer den
+#    Schluessel hat, und das ist die
+#    API: sie verweigert den Start, wenn ihr SIMPLECRM_MASTER_KEY nicht zu der
+#    Datenbank passt, die sie gerade vorfindet.
 #
 # 2. `pg_restore` meldet Erfolg, sobald es durchgelaufen ist — nicht, ob die
 #    Daten vollstaendig sind. Ein Dump, der wegen fehlender Leserechte halb
@@ -58,6 +62,27 @@ BACKUP_METADATA_COUNT_SQL="
     AND c.relrowsecurity
   ORDER BY c.relname"
 
+# Die Fingerabdruecke der LAUFENDEN Datenbank. Das ist der vorlaeufige Wert:
+# er entsteht vor dem Dump und wird, sobald der Dump liest, durch den aus dem
+# Dump gelesenen ersetzt (refresh_backup_metadata_master_key). Stehen bleibt er
+# nur, wenn das Nachtragen ausfaellt — dann lieber eine Angabe aus derselben
+# Datenbank als gar keine.
+#
+# query_to_xml und nicht die naheliegende Unterabfrage: ein CASE schuetzt nicht
+# vor dem Planen. Steht die Tabelle direkt im SQL, scheitert die ganze Anweisung
+# schon beim Aufloesen des Namens, wenn es sie nicht gibt — der 'n/a'-Zweig
+# kaeme nie zum Zug, und die Datenbank ohne Migration 0049 waere von einer
+# unerreichbaren Datenbank ('unknown') nicht mehr zu unterscheiden. Derselbe
+# Grund wie bei den Zeilenzahlen weiter unten.
+BACKUP_METADATA_MASTER_KEY_SQL="
+  SELECT CASE WHEN to_regclass('public.master_key_fingerprints') IS NULL
+    THEN 'n/a'
+    ELSE coalesce((xpath('/row/c/text()', query_to_xml(
+           'SELECT string_agg(key_id || '':'' || fingerprint, '','' ORDER BY key_id) AS c
+              FROM public.master_key_fingerprints',
+           false, true, '')))[1]::text, 'none')
+  END"
+
 backup_metadata_path() {
   # $1 = Backup-Verzeichnis, $2 = Zeitstempel
   printf '%s/backup-%s.meta' "$1" "$2"
@@ -85,6 +110,247 @@ publish_backup_metadata() {
   partial_path="$(backup_metadata_partial_path "$1" "$2")"
   [ -f "$partial_path" ] || return 0
   mv "$partial_path" "$(backup_metadata_path "$1" "$2")"
+}
+
+# Alles, was ueber den Master-Key ausgesagt wird, AUS DEM DUMP lesen — nicht
+# aus der Datenbank.
+#
+# Diese Angaben sollen sagen, welchen Schluessel DIESER Dump braucht. Jede
+# Abfrage der laufenden Datenbank beantwortet eine andere Frage ("was gilt
+# gerade") und geht daneben, sobald sich um den Dump herum etwas aendert — bei
+# einem Rolling Upgrade schreibt eine alte Replik durchaus noch ein Secret oder
+# ein Tracking-Ereignis zwischen Zaehlung und Snapshot. Fragt man vor dem Dump,
+# meldet die Datei Leerstand, waehrend der Dump die Zeile hat: Restore und
+# Doctor versprechen freie Schluesselwahl, und die wiederhergestellte API
+# verweigert mit einer anderen .env den Start oder laeuft ungeprueft an und
+# speichert erneut zugestellte Evidenz doppelt. Fragt man nach dem Dump, kehrt
+# sich das Rennen nur um — die Datei nennt Schluesselmaterial, das der Dump
+# nicht enthaelt, und ein einwandfrei einspielbares Backup gilt als nur mit der
+# Original-.env brauchbar. Beide Richtungen sind falsch, und keine laesst sich
+# durch die Wahl des Zeitpunkts vermeiden.
+#
+# Der Dump selbst kennt die Antwort dagegen genau: er IST der Snapshot. Also
+# wird er gefragt. Das braucht keinen exportierten Snapshot, keine ueber die
+# Dump-Laufzeit offen gehaltene Parallelsitzung und kein Rennen — nur
+# pg_restore auf eine Datei, die fertig dasteht.
+#
+# Und es ist billig. Das Custom-Format hat ein Inhaltsverzeichnis mit
+# Offsets, `--table` springt also hin, statt das Archiv zu durchsuchen.
+# Gemessen an einem Dump mit 4 Mio. Tracking-Zeilen (58 MB, pg_dump 7,0 s):
+# Secrets 0,05 s, 2 Mio. Links 1,2 s, 2 Mio. Ereignisse 0,2 s. Lesen ist um ein
+# Vielfaches guenstiger als Schreiben — es faellt keine Kompression an und
+# nichts geht ueber eine Verbindung.
+#
+# Die Zeilenzahlen (rows_*) bleiben davon unberuehrt: sie entstehen weiter vor
+# dem Dump, und dort ist die Ungenauigkeit ausdruecklich eingeplant
+# (verify_backup_metadata prueft bewusst nicht auf Gleichheit, Begruendung ganz
+# oben). Was der Zustand 'retained' braucht, steht deshalb in einem eigenen
+# Feld: master_key_retained_events. Die blosse Zeilenzahl von
+# email_tracking_events taugte dafuer ohnehin nicht — sie zaehlt auch die
+# Ereignisse, deren dedupe_key im Klartext gebildet wird und an denen kein
+# Schluessel haengt.
+
+# Steht die Tabelle im Dump? 0 = ja, 1 = nein, 2 = pg_restore selbst gescheitert.
+# Die drei werden auseinandergehalten, weil sie drei verschiedene Dinge heissen:
+# "vor der Migration gesichert", "gibt es nicht" und "wir wissen es nicht".
+dump_table_present() {
+  schema="$(pg_restore --schema-only --table="$2" -f - "$1" 2>/dev/null)" || return 2
+  case "$schema" in
+    *'CREATE TABLE'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Eine Spalte einer Tabelle aus dem Dump, eine Zeile je Datensatz.
+#
+# Die Spaltenreihenfolge kommt aus dem COPY-Kopf und wird NICHT geraten: sie
+# folgt der Reihenfolge im Dump, und die haengt daran, in welcher Reihenfolge
+# spaetere Migrationen Spalten angehaengt haben. NULL steht im Textformat als
+# \N da, und weil COPY Zeilenumbrueche in den Daten als \n schreibt, ist jeder
+# Datensatz genau eine Zeile.
+dump_table_column() {
+  pg_restore --data-only --table="$2" -f - "$1" 2>/dev/null | awk -v want="$3" '
+    /^COPY .* FROM stdin;$/ {
+      head = $0
+      sub(/^[^(]*\(/, "", head)
+      sub(/\).*$/, "", head)
+      n = split(head, cols, /,/)
+      col = 0
+      for (i = 1; i <= n; i++) {
+        gsub(/[" \t]/, "", cols[i])
+        if (cols[i] == want) col = i
+      }
+      copying = 1
+      next
+    }
+    copying && $0 == "\\." { copying = 0; next }
+    copying && col { split($0, f, "\t"); print f[col] }
+  '
+}
+
+# Zwei Spalten als 'a:b', sortiert. Sortiert, damit zwei Sicherungen desselben
+# Standes dieselbe Zeile ergeben — die Reihenfolge im Dump ist die des Heaps
+# und damit beliebig.
+dump_table_pairs() {
+  pg_restore --data-only --table="$2" -f - "$1" 2>/dev/null | awk -v a="$3" -v b="$4" '
+    /^COPY .* FROM stdin;$/ {
+      head = $0
+      sub(/^[^(]*\(/, "", head)
+      sub(/\).*$/, "", head)
+      n = split(head, cols, /,/)
+      for (i = 1; i <= n; i++) { gsub(/[" \t]/, "", cols[i]); idx[cols[i]] = i }
+      copying = 1
+      next
+    }
+    copying && $0 == "\\." { copying = 0; next }
+    copying && idx[a] && idx[b] { split($0, f, "\t"); print f[idx[a]] ":" f[idx[b]] }
+  ' | LC_ALL=C sort
+}
+
+# Zeilen einer Tabelle im Dump zaehlen. Optional nur die, deren Spalte $3 nicht
+# NULL ist.
+dump_table_row_count() {
+  pg_restore --data-only --table="$2" -f - "$1" 2>/dev/null | awk -v want="${3:-}" '
+    /^COPY .* FROM stdin;$/ {
+      head = $0
+      sub(/^[^(]*\(/, "", head)
+      sub(/\).*$/, "", head)
+      n = split(head, cols, /,/)
+      col = 0
+      for (i = 1; i <= n; i++) { gsub(/[" \t]/, "", cols[i]); if (cols[i] == want) col = i }
+      copying = 1
+      next
+    }
+    copying && $0 == "\\." { copying = 0; next }
+    copying {
+      if (want == "") { n_rows++; next }
+      if (!col) next
+      split($0, f, "\t")
+      if (f[col] != "\\N") n_rows++
+    }
+    END { print n_rows + 0 }
+  '
+}
+
+# Leere Liste zu 'none' machen, sonst mit Komma verbinden.
+backup_metadata_join_or_none() {
+  LC_ALL=C sort -u | paste -sd, - | { read -r joined || joined=''; printf '%s' "${joined:-none}"; }
+}
+
+read_dump_master_key_fingerprints() {
+  # `|| status=$?` und nicht der blosse Aufruf: unter `set -e` (backup.sh) risse
+  # ein Rueckgabewert != 0 ausserhalb einer Bedingung das ganze Backup ab.
+  status=0
+  dump_table_present "$1" 'master_key_fingerprints' || status=$?
+  case $status in
+    1) printf 'n/a'; return 0 ;;
+    2) printf 'unknown'; return 0 ;;
+  esac
+  dump_table_pairs "$1" 'master_key_fingerprints' 'key_id' 'fingerprint' \
+    | backup_metadata_join_or_none
+}
+
+read_dump_secret_key_ids() {
+  status=0
+  dump_table_present "$1" 'secrets' || status=$?
+  case $status in
+    1) printf 'n/a'; return 0 ;;
+    2) printf 'unknown'; return 0 ;;
+  esac
+  dump_table_column "$1" 'secrets' 'key_id' | backup_metadata_join_or_none
+}
+
+# Wie viele Zeilen ausserhalb von `secrets` haengen am Master-Key?
+#
+# Derselbe Massstab wie in der Startpruefung der API: Links, Ereignisse MIT
+# versiegelten Rohmetadaten (die grosse Mehrheit hat keine, und sie
+# mitzuzaehlen behauptete eine .env-Abhaengigkeit, die die Startpruefung gar
+# nicht sieht) und die Resolver-Zeilen, deren token_hash am Tracking-Schluessel
+# haengt.
+read_dump_master_key_encrypted_rows() {
+  total=0
+  for spec in 'email_tracking_links|' 'email_tracking_events|raw_metadata_ciphertext' \
+              'email_tracking_token_resolver|'; do
+    table="${spec%%|*}"
+    column="${spec#*|}"
+    status=0
+    dump_table_present "$1" "$table" || status=$?
+    case $status in
+      1) printf 'n/a'; return 0 ;;
+      2) printf 'unknown'; return 0 ;;
+    esac
+    total=$((total + $(dump_table_row_count "$1" "$table" "$column")))
+  done
+  printf '%s' "$total"
+}
+
+# Wie viele aufbewahrte Ereignisse haengen am Schluessel, ohne nachpruefbar zu
+# sein?
+#
+# Nicht jeder dedupe_key tut das. Die Lebenszyklus-Ereignisse bilden ihn im
+# Klartext ('queued:<id>', 'smtp_accepted:<id>', ...); abgeleitet ist er nur
+# dort, wo crypto.dedupeHash ihn erzeugt — bei eingehender DSN-/MDN-Evidenz und
+# bei Oeffnungen/Klicks. Das ist am Wertebereich ablesbar und keine Schaetzung:
+# dedupeHash ist ein HMAC-SHA256 in Hex, also genau 64 Zeichen aus [0-9a-f],
+# waehrend jede Klartextform einen Doppelpunkt enthaelt. Genau dieselbe
+# Unterscheidung trifft die Startpruefung der API; eine Warnung, die von ihr
+# abweicht, waere schlimmer als keine.
+#
+# Die Laengenpruefung steht bewusst vor dem Muster statt als Intervall
+# /^[0-9a-f]{64}$/ darin: das awk in postgres:*-alpine ist busybox awk, und auf
+# Intervalle in regulaeren Ausdruecken soll sich hier nichts verlassen.
+read_dump_master_key_retained_events() {
+  status=0
+  dump_table_present "$1" 'email_tracking_events' || status=$?
+  case $status in
+    1) printf 'n/a'; return 0 ;;
+    2) printf 'unknown'; return 0 ;;
+  esac
+  dump_table_column "$1" 'email_tracking_events' 'dedupe_key' | awk '
+    length($0) == 64 && $0 ~ /^[0-9a-f]+$/ { n++ }
+    END { print n + 0 }
+  '
+}
+
+# Die gelesenen Angaben in die Metadatei eintragen, sobald der Dump liegt.
+refresh_backup_metadata_master_key() {
+  partial_path="$(backup_metadata_partial_path "$1" "$2")"
+  [ -f "$partial_path" ] || return 0
+  dump_path="$1/db-$2.dump"
+  [ -f "$dump_path" ] || return 0
+
+  fingerprints="$(read_dump_master_key_fingerprints "$dump_path")"
+  key_ids="$(read_dump_secret_key_ids "$dump_path")"
+  encrypted_rows="$(read_dump_master_key_encrypted_rows "$dump_path")"
+  retained_events="$(read_dump_master_key_retained_events "$dump_path")"
+
+  # Bewusst NUR diese Zeilen ersetzen und die Datei sonst unangetastet lassen:
+  # die uebrigen Zeilenzahlen sollen ihren Stand von VOR dem Dump behalten
+  # (Begruendung oben), und jede weitere Aenderung hier waere eine Fehlerquelle
+  # mehr. Die Pruefsumme entsteht ohnehin erst spaeter.
+  #
+  # Ueber eine Nebendatei und mv, nicht in place: bricht der Lauf mitten im
+  # Schreiben ab, ist entweder die alte oder die neue Datei da, nie eine halbe.
+  # Ersetzen, und was nicht dasteht, anhaengen. Das Anhaengen ist nicht
+  # Bequemlichkeit: scheitert die Zaehlung vor dem Dump, schreibt
+  # write_backup_metadata gar keine Zeilen — und ein fehlendes
+  # master_key_retained_events liest backup_metadata_encrypted_state als 0,
+  # also als "kein Schluesselmaterial". Genau dieses Backup ist aber das, dessen
+  # Wiederherstellung mit RESTORE_ALLOW_UNVERIFIABLE=1 fortgesetzt wird.
+  awk -v fingerprints="$fingerprints" -v key_ids="$key_ids" \
+      -v encrypted_rows="$encrypted_rows" -v retained_events="$retained_events" '
+    /^master_key_fingerprints=/      { print "master_key_fingerprints=" fingerprints; seen_fp = 1; next }
+    /^secret_key_ids=/               { print "secret_key_ids=" key_ids; seen_ids = 1; next }
+    /^master_key_encrypted_rows=/    { print "master_key_encrypted_rows=" encrypted_rows; seen_rows = 1; next }
+    /^master_key_retained_events=/   { print "master_key_retained_events=" retained_events; seen_ret = 1; next }
+    { print }
+    END {
+      if (!seen_ids)  print "secret_key_ids=" key_ids
+      if (!seen_fp)   print "master_key_fingerprints=" fingerprints
+      if (!seen_rows) print "master_key_encrypted_rows=" encrypted_rows
+      if (!seen_ret)  print "master_key_retained_events=" retained_events
+    }
+  ' "$partial_path" > "$partial_path.new" && mv "$partial_path.new" "$partial_path"
 }
 
 # Ist das ueberhaupt ein Tabellenname?
@@ -159,14 +425,75 @@ write_backup_metadata() {
       "SELECT coalesce(max(id), 'none') FROM simplecrm_schema_migrations" 2>/dev/null || printf 'unknown')"
     # NUR die Schluessel-KENNUNG, niemals der Schluessel. Sie steht als
     # Klartextspalte neben dem Chiffrat und verraet nichts ueber dessen Inhalt.
+    #
+    # Alle drei Schluessel-Angaben hier sind VORLAEUFIG: sie entstehen vor dem
+    # Dump und werden danach durch die aus dem Dump gelesenen ersetzt
+    # (refresh_backup_metadata_master_key, Begruendung dort). Stehen bleiben sie
+    # nur, wenn das Nachtragen ausfaellt — dann lieber eine Angabe aus derselben
+    # Datenbank als gar keine.
     printf 'secret_key_ids=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
       SELECT CASE WHEN to_regclass('public.secrets') IS NULL
         THEN 'n/a'
-        ELSE coalesce((SELECT string_agg(DISTINCT key_id, ',' ORDER BY key_id) FROM secrets), 'none')
+        ELSE coalesce((xpath('/row/c/text()', query_to_xml(
+               'SELECT string_agg(DISTINCT key_id, '','' ORDER BY key_id) AS c FROM public.secrets',
+               false, true, '')))[1]::text, 'none')
+      END" 2>/dev/null || printf 'unknown')"
+    # Der Fingerabdruck macht aus der Kennung eine Aussage. Er ist ein HMAC des
+    # Master-Keys ueber ein festes Etikett — nicht geheim, aber eindeutig: zwei
+    # verschiedene Schluessel ergeben zwei verschiedene Werte. Wer diesen Stand
+    # wiederherstellt und die passende .env sucht, kann sie damit erkennen,
+    # statt sie zu vermuten.
+    printf 'master_key_fingerprints=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc \
+      "$BACKUP_METADATA_MASTER_KEY_SQL" 2>/dev/null || printf 'unknown')"
+    # Wie viele Zeilen ausserhalb von `secrets` haengen am Master-Key?
+    #
+    # Die blosse Zeilenzahl von email_tracking_events taugt dafuer nicht: die
+    # meisten Ereignisse tragen gar keine versiegelten Rohmetadaten, und sie als
+    # Schluesselmaterial zu zaehlen behauptete eine .env-Abhaengigkeit, die die
+    # Startpruefung selbst nicht sieht — sie schaut ausdruecklich nur auf
+    # Ereignisse mit gefuellten raw_metadata_-Spalten. Deshalb hier derselbe
+    # Massstab wie dort — und aus demselben Grund gehoeren die
+    # Resolver-Zeilen dazu: ihr token_hash haengt am Tracking-Schluessel, und
+    # die Startpruefung rechnet ihn nach. Eine Installation, die nur Oeffnungen
+    # zaehlt, hat gar nichts anderes.
+    #
+    # Die Zaehlungen laufen ueber query_to_xml und nicht als gewoehnliche
+    # Unterabfragen: ein CASE schuetzt nicht vor dem Planen. Steht die Tabelle
+    # direkt im SQL, scheitert die ganze Anweisung schon beim Aufloesen des
+    # Namens, wenn es sie nicht gibt — der 'n/a'-Zweig kaeme nie zum Zug.
+    # Derselbe Grund wie bei den Zeilenzahlen weiter oben.
+    printf 'master_key_encrypted_rows=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
+      SELECT CASE
+        WHEN to_regclass('public.email_tracking_links') IS NULL
+          OR to_regclass('public.email_tracking_events') IS NULL
+          OR to_regclass('public.email_tracking_token_resolver') IS NULL
+        THEN 'n/a'
+        ELSE ((xpath('/row/c/text()', query_to_xml(
+                 'SELECT count(*) AS c FROM public.email_tracking_links',
+                 false, true, '')))[1]::text::bigint
+            + (xpath('/row/c/text()', query_to_xml(
+                 'SELECT count(*) AS c FROM public.email_tracking_events
+                  WHERE raw_metadata_ciphertext IS NOT NULL',
+                 false, true, '')))[1]::text::bigint
+            + (xpath('/row/c/text()', query_to_xml(
+                 'SELECT count(*) AS c FROM public.email_tracking_token_resolver',
+                 false, true, '')))[1]::text::bigint)::text
       END" 2>/dev/null || printf 'unknown')"
     # Bewusst NICHT 'rows_...': die Pruefschleife liest jeden rows_-Eintrag als
     # Tabellennamen, ein Marker in dem Namensraum waere eine Tabelle namens
     # 'recorded' und die Pruefung suchte sie vergeblich.
+    # Aufbewahrte Ereignisse mit schluesselgebundenem dedupe_key. Warum nur
+    # diese und nicht die blosse Zeilenzahl: Begruendung bei
+    # read_dump_master_key_retained_events. Auch dieser Wert ist vorlaeufig und
+    # wird nach dem Dump ersetzt.
+    printf 'master_key_retained_events=%s\n' "$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "
+      SELECT CASE WHEN to_regclass('public.email_tracking_events') IS NULL
+        THEN 'n/a'
+        ELSE (xpath('/row/c/text()', query_to_xml(
+                'SELECT count(*) AS c FROM public.email_tracking_events
+                   WHERE dedupe_key ~ ''^[0-9a-f]{64}\$''',
+                false, true, '')))[1]::text
+      END" 2>/dev/null || printf 'unknown')"
     printf 'row_counts=%s\n' "$row_counts"
     # Bewusst ein if statt `[ -n ... ] && ...`: der letzte Befehl bestimmt den
     # Status der Klammergruppe. Bei leerer Zaehlung liefe die Kurzschluss-Form
@@ -309,6 +636,11 @@ verify_backup_metadata() {
   recorded="$(backup_metadata_value "$meta_path" 'row_counts' || printf 'unknown')"
   if [ "$recorded" = 'failed' ] || ! grep -q '^rows_' "$meta_path"; then
     echo "$label: this backup carries no row counts, so completeness cannot be verified" >&2
+    # Die Schluessel-Auskunft haengt nicht an der Zaehlung — und gerade hier
+    # wird sie gebraucht: mit RESTORE_ALLOW_UNVERIFIABLE=1 laeuft der Restore
+    # trotz dieses Rueckwegs weiter, und ohne diesen Aufruf erfuehre der
+    # Betreiber von der noetigen .env erst beim Startabbruch der API.
+    report_master_key_material "$meta_path" "$label"
     return 1
   fi
 
@@ -364,18 +696,157 @@ verify_backup_metadata() {
     fi
   done
 
+  report_master_key_material "$meta_path" "$label"
+
+  [ "$empty" -eq 0 ]
+}
+
+# Was sagt dieses Backup ueber den Schluessel, den es zum Lesen braucht?
+#
+# Eigene Funktion, weil BEIDE Wege sie brauchen: restore.sh ueber
+# verify_backup_metadata und doctor.sh direkt. Doctor ruft
+# verify_backup_metadata nicht auf (er prueft nur, OB sich das Backup
+# ueberhaupt verifizieren liesse) — haenge man diese Ausgabe dort hinein,
+# bliebe doctor genau bei dem Backup stumm, dessen Restore spaeter am
+# Schluessel scheitert.
+# Haengt an diesem Backup ueberhaupt etwas am Master-Key? 'yes', 'no' oder
+# 'unknown'.
+#
+# Gezaehlt wird master_key_encrypted_rows und NICHT die Zeilenzahl von
+# email_tracking_events: die meisten Ereignisse tragen keine versiegelten
+# Rohmetadaten, und sie mitzuzaehlen behauptete eine .env-Abhaengigkeit, die die
+# Startpruefung gar nicht sieht — sie wuerde dort einen neuen Schluessel
+# anstandslos eintragen. Eine Warnung, die der Wirklichkeit widerspricht, ist
+# schlimmer als keine.
+backup_metadata_encrypted_state() {
+  if [ "$2" = 'unknown' ]; then
+    # Die Secret-Abfrage ist beim Schreiben gescheitert. Dann ist ueber die
+    # Secrets nichts bekannt, und ein Tracking-Zaehler von 0 sagt darueber
+    # nichts aus — 'no' zu melden hiesse, aus einem fehlgeschlagenen Blick eine
+    # Entwarnung zu machen.
+    printf 'unknown'
+    return 0
+  fi
+  if [ "$2" != 'none' ] && [ "$2" != 'n/a' ]; then
+    # Secrets sind eindeutig; was der Zaehler sagt, aendert daran nichts.
+    printf 'yes'
+    return 0
+  fi
+  case "$(backup_metadata_value "$1" 'master_key_encrypted_rows' || printf 'unknown')" in
+    '0' | 'n/a')
+      # Nichts NACHPRUEFBARES. Aufbewahrte Tracking-Ereignisse sind damit aber
+      # nicht vom Tisch: ihr dedupe_key kann ein HMAC ueber den
+      # Tracking-Schluessel sein, und die Aufbewahrung laesst sie 365 Tage
+      # stehen, waehrend Rohdaten nach 7 Tagen und abgelaufene Resolver
+      # frueher verschwinden. Der Start behandelt genau diesen Zustand als
+      # "nicht festlegbar" — hier heisst er deshalb 'unknown' und nicht 'no'.
+      retained="$(backup_metadata_value "$1" 'master_key_retained_events' || printf '')"
+      # Aeltere Sicherungen fuehren das Feld nicht. Dann bleibt nur die
+      # Ereigniszahl — zu grob, weil sie auch die Ereignisse mit
+      # Klartext-dedupe_key zaehlt, an denen kein Schluessel haengt. Lieber
+      # einmal zu viel gewarnt als eine alte Sicherung stillschweigend
+      # entwarnt.
+      [ -n "$retained" ] \
+        || retained="$(backup_metadata_value "$1" 'rows_email_tracking_events' || printf '0')"
+      case "$retained" in
+        '' | '0' | 'n/a') printf 'no' ;;
+        # Weder Zahl noch bekannter Sonderwert: nicht raten.
+        *[!0123456789]*) printf 'unknown' ;;
+        *) printf 'retained' ;;
+      esac
+      ;;
+    # Aeltere Backups fuehren den Zaehler nicht. Dann ist die Antwort "weiss
+    # nicht" — und die wird auch so gesagt, statt eine der beiden Behauptungen
+    # zu raten.
+    '' | *[!0123456789]*) printf 'unknown' ;;
+    *) printf 'yes' ;;
+  esac
+}
+
+report_master_key_material() {
+  meta_path="$1"
+  label="${2:-restore}"
+
   key_ids="$(backup_metadata_value "$meta_path" 'secret_key_ids' || printf 'unknown')"
-  if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ]; then
+  # 'unknown' heisst: die Abfrage ist beim Schreiben gescheitert. Dann steht
+  # hier keine Erinnerung, die so tut, als waeren Secrets da — der Zweig
+  # darunter sagt stattdessen, dass es unbekannt ist.
+  if [ "$key_ids" != 'none' ] && [ "$key_ids" != 'n/a' ] && [ "$key_ids" != 'unknown' ]; then
     # ERINNERUNG, KEINE PRUEFUNG — und das muss so dastehen, damit sich niemand
     # darauf verlaesst: der Server vergibt die Kennung ueber
     # parseBase64MasterKey ohne Argument, sie lautet also in jeder Installation
     # 'default'. Ein falscher Schluessel traegt damit dieselbe Kennung wie der
-    # richtige; ob die .env passt, laesst sich hier nicht feststellen. Erst ein
-    # nicht-geheimer Fingerabdruck (den der Server schreiben muesste) oder eine
-    # Probe-Entschluesselung koennte das beantworten.
+    # richtige; ob die .env passt, laesst sich hier nicht feststellen.
     echo "$label: reminder — the secrets in this dump are encrypted with SIMPLECRM_MASTER_KEY (recorded key id: $key_ids)." >&2
-    echo "$label: that id is NOT proof of a matching key; restore the .env from the same system or the secrets stay unreadable." >&2
   fi
 
-  [ "$empty" -eq 0 ]
+  # AUSSERHALB der key_ids-Bedingung: der Fingerabdruck gilt der Installation,
+  # nicht den einzelnen Secrets. Wurden alle Secrets regulaer geloescht, steht
+  # er trotzdem noch da und die API weist nach dem Restore weiterhin einen
+  # abweichenden Master-Key ab. Haenge man diese Ausgabe an 'es gibt Secrets',
+  # bliebe genau dieser zulaessige Zustand stumm — und der Betreiber erfuehre
+  # erst beim Startabbruch, welche .env er braucht.
+  fingerprints="$(backup_metadata_value "$meta_path" 'master_key_fingerprints' || printf 'unknown')"
+  case "$fingerprints" in
+    'unknown' | 'n/a' | '')
+      # Keine Fingerabdruck-Tabelle. Das ist nicht nur "altes Backup": der
+      # backup-scheduler haengt in docker-compose.yml an postgres und NICHT am
+      # migrate-Dienst, sein Start-Backup kann also vor Migration 0049 laufen.
+      # Auch dieser Stand braucht die urspruengliche .env, wenn etwas darin
+      # verschluesselt ist — und das steht nicht nur in secret_key_ids.
+      case "$(backup_metadata_encrypted_state "$meta_path" "$key_ids")" in
+        'yes')
+          echo "$label: this backup predates the master-key fingerprint, so a wrong .env cannot be detected here; it does contain data encrypted with the master key, so restore it from the same system." >&2
+          ;;
+        'retained')
+          echo "$label: this backup predates the master-key fingerprint and holds no verifiable encrypted rows, but it does hold retained tracking events whose dedupe keys may be bound to the master key; restore it from the same system." >&2
+          ;;
+        'unknown')
+          echo "$label: this backup predates the master-key fingerprint and does not record how much is encrypted with the master key; if this installation used secrets or e-mail tracking, restore it from the same system." >&2
+          ;;
+      esac
+      ;;
+    'none')
+      # Tabelle vorhanden, aber leer — und das heisst zweierlei.
+      #
+      # Nicht nur `secrets` haengt am Master-Key: aus ihm leitet die API auch
+      # die Tracking-Schluessel ab. Ein Backup ohne ein einziges Secret, aber
+      # mit versiegelten Tracking-Daten braucht die urspruengliche .env genauso.
+      #
+      # Gezaehlt wird dafuer master_key_encrypted_rows und NICHT die Zeilenzahl
+      # von email_tracking_events: die meisten Ereignisse tragen keine
+      # versiegelten Rohmetadaten, und sie mitzuzaehlen behauptete eine
+      # .env-Abhaengigkeit, die die Startpruefung gar nicht sieht — sie wuerde
+      # dort einen neuen Schluessel anstandslos eintragen. Eine Warnung, die der
+      # Wirklichkeit widerspricht, ist schlimmer als keine.
+      encrypted="$(backup_metadata_encrypted_state "$meta_path" "$key_ids")"
+
+      if [ "$encrypted" = 'retained' ]; then
+        # Nichts Nachpruefbares, aber aufbewahrte Ereignisse: genau der Zustand,
+        # in dem der Start weiterlaeuft, ohne einen Fingerabdruck zu
+        # hinterlegen. Die Auskunft sagt dasselbe.
+        echo "$label: no fingerprint travelled with this dump and nothing in it can be checked against a key, but it holds retained tracking events whose dedupe keys may be bound to the master key — the API will start without recording a fingerprint; with a different .env, re-delivered delivery evidence gets stored twice." >&2
+      elif [ "$encrypted" = 'unknown' ]; then
+        echo "$label: no fingerprint travelled with this dump, and it does not record how many rows are encrypted with the master key; if this installation used e-mail tracking, the original .env is still required." >&2
+      elif [ "$encrypted" = 'yes' ]; then
+        # Die Tabelle ist nur noch nicht zurueckgefuellt (Backup aus dem Zustand
+        # direkt nach dem Upgrade auf 0049). Von freier Schluesselwahl kann
+        # keine Rede sein — die API probiert den Schluessel beim Start an den
+        # vorhandenen Daten und bricht bei der falschen .env ab. Genau das hier
+        # zu behaupten waere die gefaehrlichste Auskunft von allen: sie klaenge
+        # nach Entwarnung.
+        echo "$label: no fingerprint travelled with this dump, but it contains data encrypted with the master key (secrets and/or e-mail tracking); the original .env is still required — the API trial-decrypts it at startup and refuses a key that cannot read it." >&2
+      else
+        echo "$label: no master key fingerprint travelled with this dump; the API will record the key it starts with." >&2
+      fi
+      ;;
+    *)
+      # Der Wert ist ein Pruefer, kein Geheimnis — aber auch nichts, was man
+      # herumreicht: er ist mit Absicht teuer abzuleiten (scrypt), damit sich
+      # geratene Schluessel nicht im Vorbeigehen daran testen lassen. Geprueft
+      # wird er beim Start der API; dort liegt der Schluessel, hier nicht.
+      echo "$label: master key fingerprint recorded with this dump: $fingerprints" >&2
+      echo "$label: the API refuses to start if its SIMPLECRM_MASTER_KEY does not match this value." >&2
+      ;;
+  esac
 }

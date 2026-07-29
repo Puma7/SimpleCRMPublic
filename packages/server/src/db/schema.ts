@@ -6,6 +6,7 @@ export type TimestampColumn = ColumnType<Date, Date | string | undefined, Date |
 export type ServerDatabase = {
   workspaces: WorkspacesTable;
   secrets: SecretsTable;
+  master_key_fingerprints: MasterKeyFingerprintsTable;
   audit_events: AuditEventsTable;
   server_events: ServerEventsTable;
   users: UsersTable;
@@ -164,6 +165,14 @@ export type SecretsTable = {
   algorithm: string;
   created_at: TimestampColumn;
   updated_at: TimestampColumn;
+};
+
+export type MasterKeyFingerprintsTable = {
+  key_id: string;
+  fingerprint: string;
+  salt: string;
+  created_at: ColumnType<Date, Date | string | undefined, never>;
+  updated_at: ColumnType<Date, Date | string | undefined, Date | string>;
 };
 
 export type AuditEventsTable = {

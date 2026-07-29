@@ -10,6 +10,7 @@ import {
 } from './api';
 import {
   assertNoKnownWeakProductionSecrets,
+  MASTER_KEY_LOOKS_GUESSABLE_MESSAGE,
   parseCorsAllowedOrigins,
   parseAuthInvitationMailConfig,
   parseEmailTrackingIpIntelligenceConfig,
@@ -126,7 +127,14 @@ import {
 } from './diagnostics/server-log-capture';
 import {
   accessTokenSignerFromBase64,
+  decryptSecretValue,
+  masterKeyFingerprint,
+  masterKeyFingerprintMatches,
+  masterKeyLooksGuessable,
+  newMasterKeyFingerprintSalt,
   parseBase64MasterKey,
+  SECRET_ENVELOPE_ALGORITHM,
+  type MasterKeyMaterial,
   type AccessTokenSigner,
 } from './security';
 import { createAuthInvitationMailerPort } from './auth-invitation-mailer';
@@ -167,7 +175,10 @@ import {
   type MailAclRolloutDiagnosticReporter,
 } from './mail-access/rollout-service';
 import {
+  createEmailTrackingCrypto,
   createPostgresEmailTrackingService,
+  emailTrackingEventAssociatedData,
+  emailTrackingLinkAssociatedData,
   startEmailTrackingRetentionTicker,
   type EmailTrackingService,
 } from './email-tracking';
@@ -276,13 +287,11 @@ export function createAppServer(
 
 export async function startServer(options: ServerListenOptions = {}): Promise<FastifyInstance> {
   const env = options.env ?? process.env;
-  assertNoKnownWeakProductionSecrets(env, env.SIMPLECRM_MASTER_KEY, env.ACCESS_TOKEN_SECRET);
   const port = options.port ?? parsePort(env.PORT ?? '3000');
   const host = options.host ?? env.HOST ?? '0.0.0.0';
   const accessTokenSigner = options.accessTokenSigner ?? accessTokenSignerFromEnv(env);
   const databaseUrl = options.databaseUrl ?? env.DATABASE_URL;
   const corsAllowedOrigins = parseCorsAllowedOrigins(env);
-  warnAboutNullCorsOrigin(corsAllowedOrigins);
   const attachmentsRoot = env.ATTACHMENTS_DIR?.trim() || '/app/data/attachments';
   const auditArchiveRoot = env.AUDIT_ARCHIVE_DIR?.trim();
   const authInvitationMail = parseAuthInvitationMailConfig(env);
@@ -295,6 +304,17 @@ export async function startServer(options: ServerListenOptions = {}): Promise<Fa
   });
   const captureLogs = options.logger !== false;
   if (captureLogs) installConsoleLogCapture(serverLogStore);
+
+  // ERST JETZT die Startwarnungen. Vorher standen sie weiter oben und liefen
+  // ins Leere: die Erfassung war noch nicht installiert, also landeten sie auf
+  // dem momentanen stderr und weder im SERVER_LOG_FILE noch in der
+  // Diagnose-API. Bei einer bestehenden Installation mit textartigem
+  // Master-Key ist diese Warnung das EINZIGE Signal — die Datenbankpruefung
+  // darf den weiterhin benoetigten alten Schluessel ja nicht ablehnen. Ein
+  // Signal, das nirgends nachlesbar ist, ist keines.
+  assertNoKnownWeakProductionSecrets(env, env.SIMPLECRM_MASTER_KEY, env.ACCESS_TOKEN_SECRET);
+  warnAboutNullCorsOrigin(corsAllowedOrigins);
+
   let db: Kysely<ServerDatabase> | undefined;
   let secrets: PostgresSecretPort | undefined;
   let apiJobQueue: GraphileQueuePort | undefined;
@@ -772,6 +792,771 @@ function startProvisionalLoginAttemptCleanup(ports: ServerApiPorts): { stop(): v
   return { stop() { clearInterval(timer); } };
 }
 
+/** PostgreSQL: undefined_table. Der einzige Fehler, den die Pruefung unten aushaelt. */
+const PG_UNDEFINED_TABLE = '42P01';
+
+function isMissingTableError(error: unknown): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && (error as { code?: unknown }).code === PG_UNDEFINED_TABLE;
+}
+
+/**
+ * Der Weg zurueck, und zwar einer, der auch funktioniert.
+ *
+ * Nur die Fingerabdruck-Zeile zu loeschen genuegt nicht: die alten Secrets
+ * liegen weiter da und weisen den naechsten Start erneut ab. Ein Umschluesseln
+ * im Betrieb gibt es nicht — dafuer braeuchte man den alten Schluessel, und wenn
+ * man den haette, waere das hier kein Problem.
+ */
+const MASTER_KEY_RECOVERY_HINT =
+  'Restore the original docker/.env and the server starts again. If the old key is gone '
+  + 'for good, the encrypted rows are lost with it and have to go, together with the row '
+  + 'in master_key_fingerprints. Mind that row level security is FORCED on secrets: a '
+  + 'plain "DELETE FROM secrets" over the application connection matches nothing and says '
+  + 'so with "DELETE 0", which would leave exactly the state that refuses the next start. '
+  + 'Run it with a session context instead — BEGIN; SELECT '
+  + "set_config('app.role','system',true), set_config('app.cross_workspace_access','on',true); "
+  + 'DELETE FROM secrets; DELETE FROM email_tracking_messages; DELETE FROM '
+  + 'master_key_fingerprints; COMMIT; — or connect as the admin role, which bypasses RLS. '
+  + 'Deleting the tracking messages cascades to links, events and the token resolver, and all '
+  + 'three have to go: sealed target URLs, issued tokens and the HMAC dedupe keys of retained '
+  + 'events all hang on the old key. Leaving the events behind is the subtle one — the next '
+  + 'start would find key-bound data it cannot verify, run on without recording a fingerprint, '
+  + 'and two replicas could then settle on different keys. Then start with the new key and '
+  + 'enter every credential again.';
+
+const MASTER_KEY_MISMATCH_MESSAGE =
+  'SIMPLECRM_MASTER_KEY does not match this database. Every secret stored here was '
+  + 'encrypted with a different key and cannot be decrypted with this one. This usually '
+  + `means a dump was restored without its matching docker/.env. ${MASTER_KEY_RECOVERY_HINT}`;
+
+const MASTER_KEY_MISSING_MESSAGE =
+  'SIMPLECRM_MASTER_KEY is not set, but this database already holds secrets encrypted '
+  + 'with a master key. Starting without it would leave every stored credential '
+  + 'unreadable while new ones are written unencrypted-by-omission. Restore the '
+  + 'matching docker/.env — the fingerprints of the keys this database was used with '
+  + 'are in master_key_fingerprints.';
+
+/**
+ * Gehoert dieser Master-Key zu dieser Datenbank?
+ *
+ * Alle Secrets darin sind mit ihm verschluesselt, er selbst steht nur in der
+ * .env. Wird ein Dump mit der falschen .env eingespielt, ist die Datenbank
+ * vollstaendig und trotzdem unbrauchbar — und das fiel bisher erst auf, wenn
+ * das erste Postfach nicht mehr synchronisierte, also mitten im Betrieb und
+ * ohne erkennbaren Zusammenhang zur Wiederherstellung.
+ *
+ * Beim ersten Start mit einem Schluessel wird sein Fingerabdruck hinterlegt,
+ * danach verglichen. Abbruch bei Abweichung, nicht Warnung: weiterzulaufen
+ * hiesse, mit unlesbaren Secrets zu arbeiten und dabei neue mit dem falschen
+ * Schluessel zu schreiben — aus einem behebbaren Konfigurationsfehler wuerde
+ * ein Datenschaden.
+ *
+ * Ein FEHLENDER Schluessel ist derselbe Fehler, nur andersherum: wurde diese
+ * Datenbank schon mit einem Schluessel betrieben, hiesse ohne ihn
+ * weiterzulaufen wieder, auf unlesbaren Secrets zu arbeiten.
+ *
+ * Eine LEERE Tabelle beweist dabei gar nichts. Migration 0049 legt sie ohne
+ * Backfill an, und ein Dump von vorher bringt sie leer mit — also genau in dem
+ * Fall, um den es hier geht: pre-0049-Dump mit der falschen .env eingespielt.
+ * Ohne weitere Pruefung wuerde der falsche Schluessel dann als Wahrheit
+ * hinterlegt und der richtige spaeter abgewiesen. Sind Secrets vorhanden, wird
+ * der Schluessel deshalb an einem davon geprobt: das Envelope ist AEAD-versiegelt
+ * (XChaCha20-Poly1305 ueber workspace/kind/name), ein fremder Schluessel scheitert
+ * an der Authentifizierung. Erst wenn er sich bewaehrt hat, wird sein
+ * Fingerabdruck angelegt.
+ *
+ * Fehlt die TABELLE (Migration 0049 noch nicht gelaufen), passiert nichts: die
+ * Migrationen sind ein eigener Dienst, der Start darf nicht daran haengen, dass
+ * ein Schema schon aktuell ist. Toleriert wird dafuer ausschliesslich der
+ * Postgres-Code 42P01. Jeder andere Fehler — Verbindungsabbruch, rotiertes
+ * PG_PASSWORD, `too many clients` — wird durchgereicht, sonst saehe ein
+ * gescheiterter Start aus wie eine bestandene Pruefung.
+ */
+export async function assertMasterKeyMatchesDatabase(
+  db: Kysely<ServerDatabase>,
+  masterKey: MasterKeyMaterial | undefined,
+): Promise<void> {
+  // Alles unter EINER Sperre, nicht nur der Einfuegevorgang.
+  //
+  // Ohne sie ist die Pruefung ein klassisches Pruefen-dann-Handeln: starten auf
+  // einer frischen Datenbank gleichzeitig eine Replik mit Schluessel und eine
+  // ohne, sehen beide eine leere Tabelle. Die schlusselose laeuft dauerhaft
+  // weiter — ohne Secret- und Tracking-Krypto und ohne jede Meldung —, waehrend
+  // die andere unmittelbar danach den Fingerabdruck eintraegt. Der
+  // konfliktfeste Insert half dort nicht: die schluessellose Replik schreibt ja
+  // gar nichts.
+  //
+  // Die Kennung ist eine feste Zahl; sie steht fuer "Master-Key dieser
+  // Datenbank" und sonst nichts. pg_advisory_xact_lock endet mit der
+  // Transaktion, auch wenn der Start scheitert.
+  await db.transaction().execute(async (trx) => {
+    await sql`SELECT pg_advisory_xact_lock(${MASTER_KEY_ADVISORY_LOCK})`.execute(trx);
+    await assertMasterKeyMatchesDatabaseLocked(trx, masterKey);
+  });
+}
+
+/** Ein Wert, der nur hier vorkommt — er benennt die Sperre, nicht mehr. */
+const MASTER_KEY_ADVISORY_LOCK = 4_915_231_049n;
+
+async function assertMasterKeyMatchesDatabaseLocked(
+  db: Kysely<ServerDatabase>,
+  masterKey: MasterKeyMaterial | undefined,
+): Promise<void> {
+  // Fehlt die Tabelle, ist Migration 0049 noch nicht gelaufen. Frueher hiess
+  // das: Pruefung beendet, Start frei. Das ist zu viel — im Compose-Ablauf
+  // wartet die API zwar auf `migrate`, aber ein Rolling Deployment oder ein
+  // anderer Orchestrator startet sie auch mal davor, und dann liefe eine
+  // falsche .env genau in dem Fenster durch und schriebe Daten unter einem
+  // zweiten Schluessel. Uebersprungen wird deshalb nur das SPEICHERN; geprobt
+  // wird trotzdem.
+  //
+  // Der SAVEPOINT ist nicht Zierde: alles laeuft in einer Transaktion, und ein
+  // Fehler reisst sie ab. Ohne ihn scheiterte jede weitere Anweisung mit
+  // "current transaction is aborted" — aus der Toleranz waere eine Startsperre
+  // geworden.
+  let stored: Array<{ key_id: string; fingerprint: string; salt: string }> | undefined;
+  await sql`SAVEPOINT master_key_fingerprints_read`.execute(db);
+  try {
+    stored = await db
+      .selectFrom('master_key_fingerprints')
+      .select(['key_id', 'fingerprint', 'salt'])
+      .execute();
+    await sql`RELEASE SAVEPOINT master_key_fingerprints_read`.execute(db);
+  } catch (error) {
+    await sql`ROLLBACK TO SAVEPOINT master_key_fingerprints_read`.execute(db);
+    if (!isMissingTableError(error)) throw error;
+    stored = undefined;
+  }
+
+  const existing = masterKey
+    ? stored?.find((row) => row.key_id === masterKey.keyId)
+    : undefined;
+  if (masterKey && existing) {
+    const fingerprintOfConfiguredKey = masterKeyFingerprint(masterKey, existing.salt);
+    if (!masterKeyFingerprintMatches(existing.fingerprint, fingerprintOfConfiguredKey)) {
+      throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
+    return;
+  }
+
+  // Steht schon ein Fingerabdruck da und es ist kein Schluessel gesetzt, ist
+  // der Abbruch bereits entschieden — VOR der Probe. Sonst naehme diese
+  // Startvariante erst SHARE-Sperren auf vier Tabellen im Betrieb, laese den
+  // ganzen Secret-Bestand ein und koennte am lock_timeout von fuenf Sekunden
+  // mit einem Sperrfehler abbrechen. Der meldete dann irgendetwas ueber
+  // Sperren, waehrend die Ursache eine vergessene Umgebungsvariable ist.
+  if (!masterKey && (stored?.length ?? 0) > 0) {
+    throw new Error(MASTER_KEY_MISSING_MESSAGE);
+  }
+
+  // Kein passender Eintrag. Bevor das als "frische Installation" durchgeht:
+  // gibt es ueberhaupt Secrets? Nach einem Upgrade oder einem eingespielten
+  // pre-0049-Dump ist die Tabelle leer und die Datenbank trotzdem voll.
+  const probe = await findSecretProbe(db, masterKey?.keyId);
+
+  if (!masterKey) {
+    if (probe.kind === 'none') {
+      // Nichts da, kein Schluessel gesetzt: die Installation ist frei, sich
+      // spaeter festzulegen. Aber nicht stillschweigend — die Sperre
+      // serialisiert nur diesen Blick, nicht die Zukunft. Startet gleich
+      // darauf eine zweite Replik MIT Schluessel, traegt die ihren
+      // Fingerabdruck ein, waehrend diese hier ohne Secret- und
+      // Tracking-Krypto weiterlaeuft, bis jemand sie neu startet. Verhindern
+      // laesst sich das hier nicht (es gibt nichts zu vergleichen und nichts
+      // zu hinterlegen), benennen schon.
+      console.warn(
+        '[master-key] starting without SIMPLECRM_MASTER_KEY against a database that holds no '
+        + 'secrets and no fingerprint yet. Secret and e-mail-tracking features stay unavailable '
+        + 'in this process. If another replica starts with a key, it will claim this database '
+        + 'and this process will keep running without crypto until it is restarted.',
+      );
+      return;
+    }
+    throw new Error(MASTER_KEY_MISSING_MESSAGE);
+  }
+
+  if (probe.kind === 'unverifiable') {
+    // Es liegt schluesselgebundenes Material da, nur laesst es sich nicht
+    // nachrechnen (aufbewahrte Ereignisse mit HMAC-Dedupe-Schluessel, deren
+    // Eingabe niemand mehr kennt). Weder abbrechen noch festschreiben:
+    //
+    // Abbrechen hiesse, eine Installation auszusperren, deren Schluessel ganz
+    // richtig sein kann — beweisen laesst es sich hier in keine Richtung.
+    // Festschreiben hiesse, einen ungeprueften Schluessel zur Wahrheit zu
+    // machen und den richtigen spaeter abzuweisen. Also: laufen lassen, nichts
+    // hinterlegen, laut sagen. Sobald wieder etwas Pruefbares entsteht (ein
+    // Secret, ein Link, ein ausgestelltes Token), holt der naechste Start die
+    // Festlegung nach.
+    console.warn(
+      '[master-key] this database holds e-mail tracking events whose dedupe keys are derived '
+      + 'from the master key, but nothing that can be verified against it (no secrets, no sealed '
+      + 'links, no sealed raw metadata, no issued tokens). Starting without recording a '
+      + 'fingerprint — if this is not the original SIMPLECRM_MASTER_KEY, re-delivered delivery '
+      + 'evidence will be stored twice.',
+    );
+    return;
+  }
+
+  if (probe.kind === 'unusable') {
+    // Es liegen Secrets unter einer anderen key_id oder einem anderen
+    // Algorithmus. Die kann der konfigurierte Schluessel definitiv nicht lesen —
+    // die Entschluesselung prueft die key_id, bevor sie ueberhaupt anfaengt.
+    // Auch wenn DANEBEN lesbare liegen, ist das kein Grund weiterzulaufen: der
+    // Fingerabdruck wuerde hinterlegt, kuenftige Starts verglichen nur noch ihn,
+    // und die unlesbaren Zeilen saehe nie wieder jemand an — waehrend readSecret
+    // im Betrieb ueber sie stolpert.
+    throw new Error(
+      `This database holds secrets that were not written with key id "${masterKey.keyId}" `
+      + `and algorithm ${SECRET_ENVELOPE_ALGORITHM}, namely: ${describeSecretKinds(probe.found)}. `
+      + `SIMPLECRM_MASTER_KEY cannot decrypt those. ${MASTER_KEY_RECOVERY_HINT}`,
+    );
+  }
+  if (probe.kind === 'material') {
+    // JEDES Secret, nicht eines. Ein frueherer Start mit der falschen .env kann
+    // neue Secrets neben die alten geschrieben haben — alle unter key_id
+    // 'default', alle mit demselben Algorithmus, aber mit verschiedenem
+    // Schluesselmaterial. Eine Stichprobe von einer Zeile wuerde je nach
+    // Zufallstreffer den einen oder den anderen Schluessel segnen und den Rest
+    // unlesbar zuruecklassen. Es ist ein einmaliger Vorgang: sobald ein
+    // Fingerabdruck steht, kommt der Code hier nicht mehr vorbei.
+    for (const row of probe.secrets) {
+      if (!await secretIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
+    for (const row of probe.tracking) {
+      if (!trackingLinkIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
+    for (const row of probe.trackingEvents) {
+      if (!trackingEventIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
+    for (const row of probe.trackingTokens) {
+      if (!trackingTokenIsReadableWith(row, masterKey)) throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+    }
+  }
+
+  if (stored === undefined) {
+    // Geprobt wurde; hinterlegen geht ohne die Tabelle nicht. Solange etwas da
+    // war, das der Schluessel lesen konnte, ist das in Ordnung: die
+    // Festlegung holt der naechste Start nach der Migration nach.
+    if (probe.kind !== 'none') return;
+
+    // Ist die Datenbank aber LEER, ist dieser Zustand nicht abzusichern. Zwei
+    // Replikate mit verschiedenen Schluesseln kaemen hier nacheinander durch —
+    // es gibt weder etwas zu proben noch etwas zu hinterlegen, und die Sperre
+    // endet mit der Transaktion. Danach schrieben beide Secrets unter derselben
+    // key_id mit verschiedenem Schluesselmaterial; auffallen wuerde es erst beim
+    // naechsten Start, und dann waere die Haelfte unlesbar.
+    //
+    // Der Abbruch kostet hier fast nichts: ohne Migrationen gibt es kein
+    // Schema, die API koennte ohnehin nichts ausliefern. Im Compose-Ablauf
+    // wartet sie auf `migrate` und sieht diesen Zweig nie.
+    throw new Error(
+      'This database has no master_key_fingerprints table yet, so migration 0049 has not run. '
+      + 'The database is also empty, which means the key this server starts with cannot be '
+      + 'recorded — two servers with different keys would both come through here and write '
+      + 'secrets under the same key id with different key material. Run the migrations first, '
+      + 'then start the API (the Compose flow does this via the `migrate` service).',
+    );
+  }
+
+  // Ab hier legt sich diese Installation auf den Schluessel fest. Der letzte
+  // Moment, in dem ein ratbarer Schluessel noch folgenlos ersetzt werden kann:
+  // es gibt weder einen Eintrag noch ein Secret, das dabei unlesbar wuerde.
+  // Nur DESHALB steht die Weigerung hier und nicht in der Konfiguration —
+  // dort traefe sie auch eine bestehende Installation, die mit ihrem alten
+  // Schluessel nirgendwo mehr hinkaeme.
+  if (stored.length === 0 && probe.kind === 'none' && masterKeyLooksGuessable(masterKey.bytes)) {
+    throw new Error(
+      `${MASTER_KEY_LOOKS_GUESSABLE_MESSAGE} This database is still empty of secrets, so `
+      + 'replacing the key now costs nothing — later it would cost every stored credential.',
+    );
+  }
+
+  // Ein eigener Zufallssalt je Installation. Mit einem festen Etikett als Salt
+  // ergaebe derselbe Schluessel ueberall denselben veroeffentlichten Wert:
+  // einmal rechnen, gegen beliebig viele fremde Backup-Metadaten halten — und
+  // nebenbei sieht man, wo derselbe Schluessel zweimal benutzt wurde. Genau die
+  // Tabellen-Wiederverwendung, die weiter oben fuer einen blossen Hash
+  // ausgeschlossen wird.
+  const salt = newMasterKeyFingerprintSalt();
+  const fingerprint = masterKeyFingerprint(masterKey, salt);
+  await db
+    .insertInto('master_key_fingerprints')
+    .values({ key_id: masterKey.keyId, fingerprint, salt })
+    .onConflict((oc) => oc.column('key_id').doNothing())
+    .execute();
+
+  // Der Konflikt-Zweig schreibt nichts — und genau dann ist der hinterlegte
+  // Wert ein fremder: zwei Instanzen starten gleichzeitig, die andere war
+  // zuerst da. Ohne dieses Nachlesen waere ausgerechnet der Fall ungeprueft
+  // durchgegangen, fuer den die Pruefung da ist. Verglichen wird mit DEM Salt,
+  // der in der Datenbank steht, nicht mit dem eigenen.
+  const after = await db
+    .selectFrom('master_key_fingerprints')
+    .select(['fingerprint', 'salt'])
+    .where('key_id', '=', masterKey.keyId)
+    .executeTakeFirst();
+  if (after && !masterKeyFingerprintMatches(
+    after.fingerprint,
+    masterKeyFingerprint(masterKey, after.salt),
+  )) {
+    throw new Error(MASTER_KEY_MISMATCH_MESSAGE);
+  }
+}
+
+type SecretProbeRow = Readonly<{
+  workspace_id: string;
+  kind: string;
+  name: string;
+  nonce: Buffer | Uint8Array;
+  ciphertext: Buffer | Uint8Array;
+}>;
+
+type SecretKind = Readonly<{ key_id: string; algorithm: string }>;
+
+type TrackingProbeRow = Readonly<{
+  workspace_id: string;
+  tracking_message_id: string;
+  id: string;
+  target_ciphertext: Buffer | Uint8Array;
+  target_nonce: Buffer | Uint8Array;
+  target_auth_tag: Buffer | Uint8Array;
+}>;
+
+type TrackingEventProbeRow = Readonly<{
+  workspace_id: string;
+  tracking_message_id: string;
+  dedupe_key: string;
+  raw_metadata_ciphertext: Buffer | Uint8Array;
+  raw_metadata_nonce: Buffer | Uint8Array;
+  raw_metadata_auth_tag: Buffer | Uint8Array;
+}>;
+
+type TrackingTokenProbeRow = Readonly<{
+  token_hash: string;
+  tracking_message_id: string;
+  link_id: string | null;
+  token_kind: string;
+}>;
+
+type SecretProbe =
+  | { kind: 'none' }
+  | { kind: 'unusable'; found: readonly SecretKind[] }
+  | { kind: 'unverifiable' }
+  | {
+    kind: 'material';
+    secrets: readonly SecretProbeRow[];
+    tracking: readonly TrackingProbeRow[];
+    trackingEvents: readonly TrackingEventProbeRow[];
+    trackingTokens: readonly TrackingTokenProbeRow[];
+  };
+
+/**
+ * Wie viele Zeilen die einmalige Probe anfasst.
+ *
+ * `secrets` sind Postfach-Passwoerter, OAuth-Token, Provider-Schluessel —
+ * Groessenordnung Dutzende. Die werden VOLLSTAENDIG geprueft, seitenweise und
+ * ohne Obergrenze: eine einzelne Zeile zu proben genuegt nicht, weil ein
+ * frueherer Start mit der falschen .env neue Secrets neben die alten
+ * geschrieben haben kann, alle unter derselben key_id. Eine Obergrenze waere
+ * dasselbe Versehen eine Ebene hoeher — was jenseits davon liegt, bliebe
+ * ungeprueft und trotzdem fuer immer festgeschrieben.
+ *
+ * Tracking-Zeilen koennen dagegen sechsstellig werden; die zu jedem Erststart
+ * durchzurechnen waere nicht vertretbar — und teuer zu proben auch nicht: schon
+ * das blosse Sortieren nach created_at war ein Vollscan je Tabelle (dafuer gibt
+ * es dort keinen Index). Deshalb eine Stichprobe von beiden Enden des
+ * PRIMAERSCHLUESSELS.
+ *
+ * Was diese Stichprobe NICHT ist: ein Beweis. Bei den Ereignissen ist der
+ * Schluessel (bigserial) zeitlich geordnet, die Enden sind also alt und neu.
+ * Bei Links (zufaellige uuid) und Resolver (Hash) sind es zwei beliebige,
+ * bloss stabile Punkte — eine pre-0049-Datenbank mit Tracking-Zeilen aus zwei
+ * Schluesselgenerationen kann hier durchkommen, wenn die gezogenen Zeilen
+ * zufaellig alle zur konfigurierten gehoeren.
+ *
+ * Diese Restunschaerfe wird bewusst getragen, und zwar hier und nicht bei den
+ * Secrets: ein unlesbarer Tracking-Bestand kostet Zaehlpixel und Klick-Ziele
+ * einer vergangenen Kampagne, ein unlesbares Secret kostet Zugangsdaten. Wo es
+ * um Zugangsdaten geht, wird vollstaendig geprueft; wo es um Belege geht,
+ * genuegt eine Stichprobe, die gross genug ist, um einen Schluesselwechsel
+ * praktisch immer zu treffen — 25 Zeilen je Ende und Tabelle kosten ueber den
+ * Index nichts.
+ */
+const SECRET_PROBE_PAGE = 500;
+const TRACKING_PROBE_SAMPLE = 25;
+/** Fenster ueber die juengsten Ereignisse, in dem nach versiegelten gesucht wird. */
+const TRACKING_EVENT_SCAN_WINDOW = 5000;
+/**
+ * Ein dedupe_key, der am Master-Key haengt: crypto.dedupeHash liefert einen
+ * HMAC-SHA256 in Hex, also genau 64 Zeichen aus [0-9a-f]. Alle im Klartext
+ * gebildeten Formen ('queued:<id>', 'smtp_accepted:<id>', ...) enthalten einen
+ * Doppelpunkt und koennen diesem Muster nicht entsprechen.
+ */
+const KEY_DERIVED_DEDUPE_KEY_PATTERN = '^[0-9a-f]{64}$';
+
+/** Fuer die Fehlermeldung: was liegt statt des Erwarteten in der Tabelle? */
+function describeSecretKinds(found: readonly SecretKind[]): string {
+  if (found.length === 0) return 'unknown';
+  return found.map((entry) => `key id "${entry.key_id}" (${entry.algorithm})`).join(', ');
+}
+
+/**
+ * Alles, woran sich der Schluessel proben laesst — und die Auskunft, ob etwas
+ * daliegt, das er ohnehin nicht lesen kann.
+ *
+ * Zuerst ALLE vorkommenden Schluessel-/Algorithmus-Kombinationen, dann erst die
+ * Probezeilen. Andersherum (erste passende Zeile gewinnt) wuerde eine gemischte
+ * Datenbank durchgehen: der Fingerabdruck wird hinterlegt, kuenftige Starts
+ * vergleichen nur noch ihn und sehen die uebrigen Zeilen nie wieder an —
+ * waehrend readSecret sie nach wie vor nicht entschluesseln kann.
+ *
+ * Und nicht nur `secrets`: aus demselben Master-Key leitet
+ * createEmailTrackingCrypto Token-, Verschluesselungs- und Link-Hash-Schluessel
+ * ab. Eine Datenbank ohne Secrets, aber mit Tracking-Daten ist deshalb nicht
+ * frisch — ein fremder Schluessel entwertet dort bestehende Tokens, macht
+ * `email_tracking_links.target_ciphertext` unlesbar und ebenso die
+ * Rohmetadaten in `email_tracking_events`, die danach nur noch als
+ * `rawUnavailable` erscheinen. Beide Tabellen gehoeren also in die Probe: eine
+ * Installation, die nur Oeffnungen mit Rohdatenerfassung sammelt, hat gar keine
+ * Links.
+ *
+ * Alle drei Tabellen haben FORCE ROW LEVEL SECURITY, eine gewoehnliche Abfrage
+ * saehe also null Zeilen und die Datenbank faelschlich als leer. Deshalb
+ * dieselbe transaktionslokale Freigabe, die auch die Migrationen benutzen:
+ * Rolle `system` plus `cross_workspace_access`. Gelesen werden nur Envelopes,
+ * nie ein Klartext.
+ *
+ * Laeuft in der Transaktion des Aufrufers — die haelt die Sperre, unter der
+ * Pruefen und Festlegen ein Vorgang sind.
+ */
+async function findSecretProbe(
+  trx: Kysely<ServerDatabase>,
+  keyId: string | undefined,
+): Promise<SecretProbe> {
+  await sql`
+    SELECT set_config('app.role', 'system', true),
+           set_config('app.cross_workspace_access', 'on', true)
+  `.execute(trx);
+
+  // Fehlt eine der Tabellen, ist die Datenbank aelter als die Migration, die
+  // sie anlegt — dann gibt es dort auch nichts zu schuetzen. Nur 42P01, alles
+  // andere fliegt weiter.
+  //
+  // Und zwar mit SAVEPOINT: seit alles unter einer Sperre in EINER Transaktion
+  // laeuft, reisst ein Fehler die ganze Transaktion ab. Ein blosses try/catch
+  // faengt zwar den Fehler, aber jede weitere Anweisung scheitert danach mit
+  // "current transaction is aborted" — die Toleranz waere zur Startsperre
+  // geworden. Aufgefallen ist das erst gegen eine echte Datenbank; ein Stub
+  // haette nichts davon gemerkt.
+  let savepoint = 0;
+  const tolerateMissing = async <T>(query: () => Promise<T[]>): Promise<T[]> => {
+    savepoint += 1;
+    const name = `master_key_probe_${savepoint}`;
+    await sql.raw(`SAVEPOINT ${name}`).execute(trx);
+    try {
+      const rows = await query();
+      await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx);
+      return rows;
+    } catch (error) {
+      await sql.raw(`ROLLBACK TO SAVEPOINT ${name}`).execute(trx);
+      if (isMissingTableError(error)) return [];
+      throw error;
+    }
+  };
+
+  // Schreibsperre auf allem, was gleich geprueft wird.
+  //
+  // Die Advisory-Sperre serialisiert nur Startvorgaenge, nicht den normalen
+  // Schreibpfad — der nimmt sie nicht. Bei einem Rolling Deployment bedient
+  // eine alte Replik weiter Anfragen, und unter READ COMMITTED sieht jede
+  // Seite dieser Pruefung ihren eigenen Snapshot: eine Zeile, die nach der
+  // Probe dazukommt, bliebe ungeprueft — und der Fingerabdruck wuerde trotzdem
+  // festgeschrieben. SHARE erlaubt weiter jedes Lesen und blockiert nur
+  // Schreibvorgaenge, fuer die Dauer dieser einmaligen Pruefung.
+  //
+  // Auch die Tracking-Tabellen, obwohl dort nur gestichprobt wird: eine Sperre
+  // zu nehmen kostet unabhaengig von der Tabellengroesse nichts, und ohne sie
+  // koennte dieselbe alte Replik waehrend der Probe Links, Tokens oder
+  // Ereignisse mit einem anderen Schluessel nachschieben. Was die Stichprobe
+  // nicht leisten kann, bleibt davon unberuehrt (siehe TRACKING_PROBE_SAMPLE) —
+  // aber wenigstens laeuft ihr nichts mehr unter den Haenden weg.
+  //
+  // lock_timeout, damit ein langlaufender Schreiber den Start nicht endlos
+  // haengen laesst. Laeuft er ab, faellt der Start mit dem Postgres-Fehler aus
+  // — und das ist richtig so: dann schreibt gerade jemand anders, und genau
+  // dagegen wird hier gesperrt.
+  await sql`SET LOCAL lock_timeout = '5s'`.execute(trx);
+  for (const table of [
+    'secrets',
+    'email_tracking_links',
+    'email_tracking_events',
+    'email_tracking_token_resolver',
+  ]) {
+    await tolerateMissing(async () => {
+      await sql.raw(`LOCK TABLE ${table} IN SHARE MODE`).execute(trx);
+      return [];
+    });
+  }
+
+  const kinds = await tolerateMissing(() => trx
+    .selectFrom('secrets')
+    .select(['key_id', 'algorithm'])
+    .distinct()
+    .limit(6)
+    .execute());
+
+  const foreign = kinds.filter(
+    (entry) => entry.key_id !== keyId || entry.algorithm !== SECRET_ENVELOPE_ALGORITHM,
+  );
+  if (foreign.length > 0) return { kind: 'unusable', found: foreign };
+
+  // Seitenweise durch ALLE Secrets — die Festlegung gilt fuer immer, eine
+  // abgeschnittene Grundlage waere keine.
+  const secrets: SecretProbeRow[] = [];
+  if (kinds.length > 0) {
+    let after: string | undefined;
+    for (;;) {
+      const page = await tolerateMissing(() => {
+        const base = trx
+          .selectFrom('secrets')
+          .select(['id', 'workspace_id', 'kind', 'name', 'nonce', 'ciphertext'])
+          .where('key_id', '=', keyId as string)
+          .where('algorithm', '=', SECRET_ENVELOPE_ALGORITHM);
+        // Der Cursor kommt erst ab der zweiten Seite dazu: `id > ''` ist fuer
+        // eine uuid-Spalte kein leerer Anfang, sondern ein Syntaxfehler.
+        return (after === undefined ? base : base.where('id', '>', after))
+          .orderBy('id', 'asc')
+          .limit(SECRET_PROBE_PAGE)
+          .execute();
+      });
+      if (page.length === 0) break;
+      secrets.push(...(page as unknown as SecretProbeRow[]));
+      after = String((page[page.length - 1] as { id: string }).id);
+      if (page.length < SECRET_PROBE_PAGE) break;
+    }
+  }
+
+  const linkColumns = [
+    'workspace_id', 'tracking_message_id', 'id',
+    'target_ciphertext', 'target_nonce', 'target_auth_tag',
+  ] as const;
+  const eventColumns = [
+    'workspace_id', 'tracking_message_id', 'dedupe_key',
+    'raw_metadata_ciphertext', 'raw_metadata_nonce', 'raw_metadata_auth_tag',
+  ] as const;
+  // Nacheinander, nicht mit Promise.all: die beiden Abfragen laufen auf
+  // derselben Verbindung und setzen je einen SAVEPOINT. Verschraenkt gaebe das
+  // SAVEPOINT a, SAVEPOINT b, RELEASE a — und mit a verschwindet b, weil ein
+  // aeusserer Savepoint die inneren mitnimmt. Nebenlaeufigkeit gaebe es hier
+  // ohnehin keine: eine Verbindung fuehrt eine Anweisung nach der anderen aus.
+  const bothEnds = async <T extends { }>(
+    query: (direction: 'asc' | 'desc') => Promise<T[]>,
+  ): Promise<T[]> => {
+    const ascending = await query('asc');
+    const descending = await query('desc');
+    return [...ascending, ...descending];
+  };
+
+  // Sortiert wird ueber den PRIMAERSCHLUESSEL, nicht ueber created_at.
+  //
+  // Das Ergebnis-LIMIT begrenzt nicht die Arbeit: auf created_at liegt in
+  // keiner dieser Tabellen ein Index (0027 legt fuer Links und Resolver gar
+  // keinen Zeitindex an, der Ereignisindex beginnt mit workspace_id). Postgres
+  // muesste also jede — moeglicherweise millionenschwere — Tabelle vollstaendig
+  // lesen und per Top-N sortieren, und das sechsmal, bevor die API ueberhaupt
+  // zu lauschen beginnt. Ueber den Primaerschluessel ist es ein
+  // Index-Scan von beiden Enden. Zeitlich geordnet ist das nur bei den
+  // Ereignissen (bigserial); bei Links (zufaellige uuid) und Resolver (Hash)
+  // sind es zwei beliebige, bloss stabile Punkte. Die Stichprobe ist damit
+  // ausdruecklich kein Beweis — die Abwaegung dazu steht bei
+  // TRACKING_PROBE_SAMPLE.
+  const tracking = dedupeBy(
+    await bothEnds((direction) => tolerateMissing(() => trx
+      .selectFrom('email_tracking_links').select(linkColumns)
+      .orderBy('id', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+    (row) => String(row.id),
+  ) as unknown as TrackingProbeRow[];
+
+  // Bei den Ereignissen kommt der Filter dazu, und der macht den Index-Scan
+  // wieder unbegrenzt: sind die Rohdaten laengst geloescht (Aufbewahrung
+  // standardmaessig 7 Tage), liefe die Suche durch die ganze Tabelle, ohne je
+  // etwas zu finden. Deshalb erst ein Fenster ueber die juengsten Zeilen und
+  // dann filtern — dort liegen die versiegelten, wenn es welche gibt.
+  const trackingEvents = dedupeBy(
+    (await tolerateMissing(async () => (await sql<Record<string, unknown>>`
+      SELECT workspace_id, tracking_message_id, dedupe_key,
+             raw_metadata_ciphertext, raw_metadata_nonce, raw_metadata_auth_tag
+      FROM (
+        SELECT * FROM email_tracking_events
+        ORDER BY id DESC
+        LIMIT ${sql.lit(TRACKING_EVENT_SCAN_WINDOW)}
+      ) AS recent
+      WHERE raw_metadata_ciphertext IS NOT NULL
+      LIMIT ${sql.lit(TRACKING_PROBE_SAMPLE)}
+    `.execute(trx)).rows)),
+    (row) => `${String(row.workspace_id)}:${String(row.dedupe_key)}`,
+  ) as unknown as TrackingEventProbeRow[];
+
+  // Der Resolver ist die letzte Stelle, an der ein Master-Key Spuren
+  // hinterlaesst: `token_hash` ist der SHA-256 eines HMAC ueber den
+  // Tracking-Schluessel. Eine Installation, die nur Oeffnungen zaehlt und keine
+  // Rohdaten sammelt, hat weder Links noch versiegelte Ereignisse — aber fuer
+  // jede getrackte Nachricht eine Resolver-Zeile. Ohne sie saehe diese
+  // Datenbank leer aus, und ein falscher Schluessel machte jedes ausgestellte
+  // Zaehlpixel unaufloesbar.
+  const trackingTokens = dedupeBy(
+    await bothEnds((direction) => tolerateMissing(() => trx
+      .selectFrom('email_tracking_token_resolver')
+      .select(['token_hash', 'tracking_message_id', 'link_id', 'token_kind'])
+      .orderBy('token_hash', direction).limit(TRACKING_PROBE_SAMPLE).execute())),
+    (row) => String(row.token_hash),
+  ) as unknown as TrackingTokenProbeRow[];
+
+  if (secrets.length > 0
+    || tracking.length > 0
+    || trackingEvents.length > 0
+    || trackingTokens.length > 0) {
+    return { kind: 'material', secrets, tracking, trackingEvents, trackingTokens };
+  }
+
+  // Nichts Nachpruefbares. Aber "nichts nachpruefbar" ist nicht "nichts da":
+  // die Aufbewahrung raeumt Rohdaten nach 7 Tagen und abgelaufene Resolver
+  // weg, die Ereignisse selbst bleiben 365 Tage. Deren dedupe_key kann ein
+  // HMAC ueber den Tracking-Schluessel sein. Nachrechnen laesst er sich nicht
+  // — die Eingabe kennt diese Pruefung nicht —, aber als "leer" darf so eine
+  // Datenbank nicht gelten: mit dem falschen Schluessel entstuenden fuer
+  // dieselbe Evidenz andere Dedupe-Schluessel, und die Ereignisse
+  // verdoppelten sich.
+  //
+  // "Kann" ist dabei woertlich zu nehmen, und deshalb steht hier ein Filter.
+  // Die Lebenszyklus-Ereignisse schreiben ihren dedupe_key im Klartext
+  // ('queued:<id>', 'smtp_accepted:<id>', 'sending:<id>:<zeit>', ...); am
+  // Schluessel haengt er nur dort, wo crypto.dedupeHash ihn erzeugt — bei
+  // eingehender DSN-/MDN-Evidenz und bei Oeffnungen/Klicks. Das ist keine
+  // Schaetzung, sondern am Wertebereich ablesbar: dedupeHash ist ein
+  // HMAC-SHA256 in Hex, also genau 64 Zeichen aus [0-9a-f], waehrend jede
+  // Klartextform mindestens einen Doppelpunkt enthaelt.
+  //
+  // Ohne den Filter galt eine Installation, die nur Nachrichten VERSENDET und
+  // sonst nichts sammelt, dauerhaft als 'unverifiable'. Dann wuerde nie ein
+  // Fingerabdruck hinterlegt — und genau der Zustand, den diese Pruefung
+  // verhindern soll (zwei Repliken mit verschiedenen Schluesseln kommen beide
+  // durch und schreiben danach unvereinbare Secrets), bliebe fuer immer offen.
+  const anyEvent = await tolerateMissing(() => trx
+    .selectFrom('email_tracking_events')
+    .select('id')
+    .where('dedupe_key', '~', KEY_DERIVED_DEDUPE_KEY_PATTERN)
+    .limit(1).execute());
+  if (anyEvent.length > 0) return { kind: 'unverifiable' };
+
+  return { kind: 'none' };
+}
+
+function dedupeBy<T>(rows: readonly T[], key: (row: T) => string): T[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const id = key(row);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+/**
+ * Probeentschluesselung. Das Envelope ist AEAD-versiegelt und bindet
+ * workspace/kind/name mit ein — ein fremder Schluessel scheitert an der
+ * Authentifizierung, er liefert keinen Muell, sondern einen Fehler.
+ */
+/**
+ * Dasselbe fuer das E-Mail-Tracking. Auch dessen Schluessel haengen am
+ * Master-Key (createEmailTrackingCrypto), und `target_ciphertext` ist
+ * AES-256-GCM mit workspace/tracking/link als assoziierten Daten — ein fremder
+ * Schluessel scheitert am Auth-Tag.
+ */
+function trackingLinkIsReadableWith(
+  row: TrackingProbeRow,
+  masterKey: MasterKeyMaterial,
+): boolean {
+  try {
+    createEmailTrackingCrypto(masterKey.bytes).openJson({
+      ciphertext: Buffer.from(row.target_ciphertext),
+      nonce: Buffer.from(row.target_nonce),
+      authTag: Buffer.from(row.target_auth_tag),
+    }, emailTrackingLinkAssociatedData(row.workspace_id, row.tracking_message_id, row.id));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Und fuer die Rohmetadaten der Tracking-Ereignisse. Eine Installation, die nur
+ * Oeffnungen mit Rohdatenerfassung sammelt, hat keine Links — dort haengt alles
+ * Verschluesselte an dieser Tabelle.
+ */
+function trackingEventIsReadableWith(
+  row: TrackingEventProbeRow,
+  masterKey: MasterKeyMaterial,
+): boolean {
+  try {
+    createEmailTrackingCrypto(masterKey.bytes).openJson({
+      ciphertext: Buffer.from(row.raw_metadata_ciphertext),
+      nonce: Buffer.from(row.raw_metadata_nonce),
+      authTag: Buffer.from(row.raw_metadata_auth_tag),
+    }, emailTrackingEventAssociatedData(row.workspace_id, row.tracking_message_id, row.dedupe_key));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Und fuer die ausgestellten Tokens. Hier gibt es nichts zu entschluesseln —
+ * der Hash wird nachgerechnet: token(kind, id) haengt am Tracking-Schluessel,
+ * und der haengt am Master-Key. Stimmt er ueberein, war es derselbe Schluessel.
+ */
+function trackingTokenIsReadableWith(
+  row: TrackingTokenProbeRow,
+  masterKey: MasterKeyMaterial,
+): boolean {
+  const purpose = row.token_kind === 'open' ? 'open' : 'click';
+  const id = purpose === 'open' ? row.tracking_message_id : row.link_id;
+  // Eine Zeile ohne die Kennung, aus der ihr Token entstanden ist, laesst sich
+  // nicht nachrechnen. Sie darf den Start nicht aufhalten — die anderen Proben
+  // greifen weiterhin.
+  if (!id) return true;
+  try {
+    const crypto = createEmailTrackingCrypto(masterKey.bytes);
+    return crypto.tokenHash(crypto.token(purpose, id)) === row.token_hash;
+  } catch {
+    return false;
+  }
+}
+
+async function secretIsReadableWith(
+  row: SecretProbeRow,
+  masterKey: MasterKeyMaterial,
+): Promise<boolean> {
+  try {
+    await decryptSecretValue({
+      key: masterKey,
+      envelope: {
+        algorithm: SECRET_ENVELOPE_ALGORITHM,
+        keyId: masterKey.keyId,
+        nonce: Buffer.from(row.nonce),
+        ciphertext: Buffer.from(row.ciphertext),
+      },
+      associatedData: { workspaceId: row.workspace_id, kind: row.kind, name: row.name },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function accessTokenSignerFromEnv(env: ServerEditionEnv): AccessTokenSigner | undefined {
   const secret = env.ACCESS_TOKEN_SECRET;
   if (!secret) return undefined;
@@ -803,17 +1588,30 @@ async function createDefaultServerPorts(input: {
   if (!input.accessTokenSigner) {
     throw new Error('ACCESS_TOKEN_SECRET is required when DATABASE_URL is configured');
   }
+  // Vor der Datenbank: ein unbrauchbarer Schluessel soll scheitern, bevor
+  // irgendeine Verbindung offen ist.
+  const masterKey = input.masterKey?.trim()
+    ? parseBase64MasterKey(input.masterKey)
+    : undefined;
   const db = await (input.createDatabase ?? createPostgresDatabase)({
     databaseUrl: input.databaseUrl,
   });
+  // Und vor dem Benachrichtigungskanal: der haelt eine dauerhafte
+  // LISTEN-Verbindung offen. Bricht die Pruefung danach ab, kaeme startServer
+  // nie bis zum Aufraeumen, der Einstiegspunkt setzt nur process.exitCode — und
+  // das offene Socket haelt Node am Leben. Der Container haenge dann, statt zu
+  // beenden und von `restart: unless-stopped` neu gestartet zu werden.
+  try {
+    await assertMasterKeyMatchesDatabase(db, masterKey);
+  } catch (error) {
+    await db.destroy().catch(() => undefined);
+    throw error;
+  }
   const eventNotifications = await (
     input.createEventNotifications ?? createPostgresServerEventNotificationChannel
   )({
     databaseUrl: input.databaseUrl,
   });
-  const masterKey = input.masterKey?.trim()
-    ? parseBase64MasterKey(input.masterKey)
-    : undefined;
   const secrets = masterKey
     ? createPostgresSecretPort({
       db,
