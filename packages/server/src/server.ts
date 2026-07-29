@@ -1661,6 +1661,7 @@ async function startConfiguredJobWorker(input: {
   const config: ServerJobWorkerConfig = {
     enabled: input.options?.enabled ?? envConfig.enabled,
     mailAccountCount: input.options?.mailAccountCount ?? envConfig.mailAccountCount,
+    mailConcurrency: input.options?.mailConcurrency ?? envConfig.mailConcurrency,
     aiConcurrency: input.options?.aiConcurrency ?? envConfig.aiConcurrency,
     migrateOnStart: input.options?.migrateOnStart ?? envConfig.migrateOnStart,
   };
@@ -1686,6 +1687,7 @@ async function startConfiguredJobWorker(input: {
     handlers: input.handlers,
     concurrency: {
       mailAccountCount: config.mailAccountCount,
+      mailConcurrency: config.mailConcurrency,
       aiConcurrency: config.aiConcurrency,
     },
     mailAccess: input.mailAccess,

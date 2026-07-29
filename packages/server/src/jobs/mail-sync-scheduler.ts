@@ -1,4 +1,4 @@
-import { sql, type Kysely } from 'kysely';
+import type { Kysely } from 'kysely';
 
 import type { ServerDatabase } from '../db/schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from '../db/workspace-context';
@@ -54,6 +54,13 @@ export type MailSyncScheduleResult = Readonly<{
    * Zaehlabfrage; fuer den Takt genuegt „es liegt noch etwas an".
    */
   hasMore: boolean;
+  /**
+   * Konten, deren Einreihung fehlschlug. Sie sind NICHT gestempelt und im
+   * naechsten Takt wieder faellig. Bewusst zurueckgegeben statt verschluckt:
+   * ein Takt, in dem nichts eingereiht wurde, soll sich von einem
+   * unterscheiden, in dem nichts faellig war.
+   */
+  failed: readonly { accountId: number; error: unknown }[];
 }>;
 
 type DueAccountRow = Readonly<{ id: number; protocol: string | null }>;
@@ -103,6 +110,7 @@ export async function runMailSyncSchedule(input: {
   const hasMore = due.length > batch.length;
 
   let enqueued = 0;
+  const failed: Array<{ accountId: number; error: unknown }> = [];
   for (const account of batch) {
     // Die Abfrage laesst nur unterstuetzte Protokolle durch; bleibt hier
     // trotzdem eines uebrig, ist die Zeile nach der Auswahl geaendert worden.
@@ -111,7 +119,40 @@ export async function runMailSyncSchedule(input: {
     const jobType = mailSyncJobTypeForProtocol(account.protocol);
     if (!jobType) continue;
 
-    const claimed = await withWorkspaceTransaction(
+    // ERST einreihen, DANN stempeln — und nicht umgekehrt.
+    //
+    // Andersherum war der Zeitstempel schon committet, wenn das Einreihen
+    // scheiterte (Verbindungshaenger, erschoepfter Pool): das Konto galt dann
+    // fuer das volle Intervall als bedient, obwohl nie ein Job entstand. Genau
+    // die Sorte Zeitstempel-ohne-Erfolg, gegen die dieser Scheduler an anderer
+    // Stelle schon abgesichert ist.
+    //
+    // In dieser Reihenfolge ist die schlimmste Folge eines Fehlschlags, dass
+    // ein Konto zweimal eingereiht wird — und das faengt der Job-Key ab
+    // (jobKeyMode 'replace' laesst hoechstens einen wartenden Lauf je Konto
+    // zu), die Ausfuehrung serialisiert ohnehin der Queue-Name.
+    try {
+      await input.queue.enqueue({
+        workspaceId: input.workspaceId,
+        type: jobType,
+        // Kein actorUserId: dieser Lauf gehoert keinem Menschen. Der
+        // Dienst-Nachweis ist genau die Aussage, die die Job-Policy fuer den
+        // Sync erwartet, wenn kein Nutzer dahintersteht.
+        payload: buildTrustedServiceJobPayload({
+          workspaceId: input.workspaceId,
+          accountId: account.id,
+        }),
+      });
+    } catch (error) {
+      // Ein einzelnes Konto darf den Takt nicht mitreissen: die uebrigen
+      // faelligen sind bereits ausgewaehlt und wuerden sonst diesen Lauf gar
+      // nicht erst versucht. Ohne Stempel bleibt dieses Konto faellig und
+      // kommt im naechsten Takt wieder dran.
+      failed.push({ accountId: account.id, error });
+      continue;
+    }
+
+    await withWorkspaceTransaction(
       input.db,
       { workspaceId: input.workspaceId, role: 'system' },
       async (trx) => trx
@@ -127,23 +168,10 @@ export async function runMailSyncSchedule(input: {
         .executeTakeFirst(),
       { applySession: input.applyWorkspaceSession },
     );
-    if (!claimed) continue;
-
-    await input.queue.enqueue({
-      workspaceId: input.workspaceId,
-      type: jobType,
-      // Kein actorUserId: dieser Lauf gehoert keinem Menschen. Der
-      // Dienst-Nachweis ist genau die Aussage, die die Job-Policy fuer den
-      // Sync erwartet, wenn kein Nutzer dahintersteht.
-      payload: buildTrustedServiceJobPayload({
-        workspaceId: input.workspaceId,
-        accountId: account.id,
-      }),
-    });
     enqueued += 1;
   }
 
-  return { enqueued, hasMore };
+  return { enqueued, hasMore, failed };
 }
 
 /**
@@ -167,9 +195,17 @@ export function dueAccountsQuery(
       eb('last_sync_started_at', 'is', null),
       eb('last_sync_started_at', '<', input.threshold),
     ]))
+    // EXAKT vergleichen, nicht lower(trim(...)).
+    //
+    // Der Sync-Handler prueft `(account.protocol || 'imap') !== input.protocol`
+    // und wirft bei Abweichung (mail-sync.ts). Ein importiertes Konto mit
+    // 'IMAP' oder ' imap ' — der Import uebernimmt den Rohwert, die Spalte hat
+    // keinen Constraint — waere hier also synchronisierbar, dort aber nicht:
+    // gestempelt wuerde es trotzdem und erzeugte alle fuenf Minuten einen neuen
+    // fehlschlagenden Job. Lieber dieselbe Strenge wie der Handler.
     .where((eb) => eb.or([
       eb('protocol', 'is', null),
-      eb(sql<string>`lower(trim(${eb.ref('protocol')}))`, 'in', ['imap', 'pop3']),
+      eb('protocol', 'in', ['imap', 'pop3']),
     ]))
     // NIE GESYNCTE ZUERST. Postgres sortiert bei ASC von sich aus NULLS LAST —
     // ein frisch angelegtes Konto stuende damit hinter allen ueberfaelligen und
@@ -181,11 +217,16 @@ export function dueAccountsQuery(
     .limit(input.limit);
 }
 
+/**
+ * Deckungsgleich mit der Pruefung im Sync-Handler: dort gilt
+ * `(account.protocol || 'imap')` und ein EXAKTER Vergleich. Wer hier grosszuegig
+ * normalisiert, reiht Jobs ein, die der Handler zuverlaessig ablehnt.
+ */
 export function mailSyncJobTypeForProtocol(
   protocol: string | null | undefined,
 ): 'mail.sync.imap' | 'mail.sync.pop3' | null {
-  const normalized = String(protocol ?? 'imap').trim().toLowerCase() || 'imap';
-  if (normalized === 'imap') return 'mail.sync.imap';
-  if (normalized === 'pop3') return 'mail.sync.pop3';
+  const effective = protocol === null || protocol === undefined || protocol === '' ? 'imap' : protocol;
+  if (effective === 'imap') return 'mail.sync.imap';
+  if (effective === 'pop3') return 'mail.sync.pop3';
   return null;
 }

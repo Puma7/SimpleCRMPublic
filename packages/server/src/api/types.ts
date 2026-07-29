@@ -1931,6 +1931,16 @@ export type EmailAccountApiPort = {
     id: number;
     /** Kein neuer Lauf, wenn der letzte Anstoss juenger als dies ist. */
     minIntervalMs: number;
+    /**
+     * Nur pruefen, nicht stempeln.
+     *
+     * Die Route fragt zuerst mit `probeOnly`, reiht dann ein und stempelt erst
+     * danach. Andersherum waere der Stempel gesetzt, wenn das Einreihen
+     * scheitert — jeder Folgeversuch innerhalb der Wartezeit bekaeme dann ein
+     * freundliches `queued: false`, das nach Erfolg aussieht, obwohl kein Job
+     * existiert.
+     */
+    probeOnly?: boolean;
     now?: Date;
   }): Promise<{ claimed: boolean; lastStartedAt: Date | null }>;
   list(input: {

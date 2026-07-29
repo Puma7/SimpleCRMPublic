@@ -400,6 +400,19 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          if (input.probeOnly === true) {
+            // Nur die Frage, ohne Nebenwirkung: darf jetzt eingereiht werden?
+            const current = await trx
+              .selectFrom('email_accounts')
+              .select('last_sync_started_at')
+              .where('workspace_id', '=', input.workspaceId)
+              .where('id', '=', input.id)
+              .executeTakeFirst();
+            const last = current?.last_sync_started_at
+              ? new Date(String(current.last_sync_started_at))
+              : null;
+            return { claimed: last === null || last < threshold, lastStartedAt: last };
+          }
           // Ein bedingtes UPDATE entscheidet und stempelt in einem Schritt. Wer
           // keine Zeile zurueckbekommt, war zu frueh dran; wer eine bekommt,
           // hat den Zuschlag und reiht ein.

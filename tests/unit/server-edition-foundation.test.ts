@@ -1341,6 +1341,7 @@ describe('server edition foundation', () => {
       jobWorker: {
         enabled: true,
         mailAccountCount: 12,
+        mailConcurrency: 50,
         aiConcurrency: 8,
         migrateOnStart: true,
       },
@@ -1348,9 +1349,17 @@ describe('server edition foundation', () => {
     expect(parseServerJobWorkerConfig({})).toEqual({
       enabled: false,
       mailAccountCount: 0,
+      mailConcurrency: 50,
       aiConcurrency: undefined,
       migrateOnStart: false,
     });
+    // Die Obergrenze der gleichzeitigen Mail-Syncs ist einstellbar — ohne
+    // diesen Weg waere calculateMailSyncPoolSize zwar parametrisiert, aber von
+    // niemandem zu erreichen.
+    expect(parseServerJobWorkerConfig({ JOB_WORKER_MAIL_CONCURRENCY: '120' }).mailConcurrency)
+      .toBe(120);
+    expect(() => parseServerJobWorkerConfig({ JOB_WORKER_MAIL_CONCURRENCY: '501' }))
+      .toThrow('JOB_WORKER_MAIL_CONCURRENCY');
     expect(() => parseServerJobWorkerConfig({ JOB_WORKER_ENABLED: 'maybe' })).toThrow('JOB_WORKER_ENABLED');
     expect(() => parseServerJobWorkerConfig({ JOB_WORKER_AI_CONCURRENCY: '101' })).toThrow('JOB_WORKER_AI_CONCURRENCY');
     expect(() => parseServerEditionConfig({

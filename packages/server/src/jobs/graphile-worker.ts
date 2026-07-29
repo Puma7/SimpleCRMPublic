@@ -80,6 +80,8 @@ export type GraphileWorkerPlan = Readonly<{
 
 export type GraphileWorkerConcurrencyInput = Readonly<{
   mailAccountCount: number;
+  /** Obergrenze gleichzeitiger Mail-Syncs je Prozess (JOB_WORKER_MAIL_CONCURRENCY). */
+  mailConcurrency?: number;
   aiConcurrency?: number;
 }>;
 
@@ -155,7 +157,10 @@ export function buildGraphileWorkerPlan(input: {
   if (!input.connectionString.trim()) {
     throw new Error('connectionString is required for Graphile Worker runtime');
   }
-  const mailConcurrency = calculateMailSyncPoolSize(input.concurrency.mailAccountCount);
+  const mailConcurrency = calculateMailSyncPoolSize(
+    input.concurrency.mailAccountCount,
+    input.concurrency.mailConcurrency,
+  );
   const aiConcurrency = normalizeAiJobConcurrency(input.concurrency.aiConcurrency);
 
   return {

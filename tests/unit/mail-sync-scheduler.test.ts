@@ -134,7 +134,7 @@ describe('periodischer Mail-Sync', () => {
       { type: 'mail.sync.pop3', accountId: 3, hasActor: false },
     ]);
     expect(claims).toEqual([1, 3]);
-    expect(result).toEqual({ enqueued: 2, hasMore: false });
+    expect(result).toMatchObject({ enqueued: 2, hasMore: false, failed: [] });
   });
 
   test('kein actorUserId: der Lauf gehoert keinem Menschen', async () => {
@@ -163,13 +163,20 @@ describe('periodischer Mail-Sync', () => {
     expect(enqueued.map((entry) => entry.accountId)).toEqual([1, 2]);
     // hasMore statt einer Anzahl: die Abfrage holt nur eine Zeile mehr als den
     // Stapel, eine "Anzahl wartender Konten" waere damit immer 1.
-    expect(result).toEqual({ enqueued: 2, hasMore: true });
+    expect(result).toMatchObject({ enqueued: 2, hasMore: true, failed: [] });
   });
 
-  test('verliert das bedingte UPDATE, wird nicht eingereiht', async () => {
-    // Zwei Serverinstanzen takten gleichzeitig. Der Zuschlag faellt im UPDATE,
-    // nicht in der Auswahl — sonst holten beide dasselbe Konto ab.
-    const { db } = fakeDb(
+  test('zwei Instanzen: doppelt eingereiht ist harmlos, doppelt gestempelt nicht', async () => {
+    // Eingereiht wird VOR dem Stempeln. Takten zwei Serverinstanzen
+    // gleichzeitig, kann dasselbe Konto also zweimal eingereiht werden — das
+    // faengt der Job-Key ab (jobKeyMode 'replace' laesst hoechstens einen
+    // wartenden Lauf je Konto zu), und der Queue-Name serialisiert die
+    // Ausfuehrung ohnehin.
+    //
+    // Die umgekehrte Reihenfolge waere die gefaehrliche: dann waere der Stempel
+    // gesetzt und das Konto galte fuer das volle Intervall als bedient, obwohl
+    // das Einreihen scheiterte.
+    const { db, claims } = fakeDb(
       [
         { id: 1, protocol: 'imap', last_sync_started_at: null },
         { id: 2, protocol: 'imap', last_sync_started_at: null },
@@ -180,8 +187,42 @@ describe('periodischer Mail-Sync', () => {
 
     const result = await runMailSyncSchedule({ db, queue, workspaceId: WORKSPACE, now: NOW, applyWorkspaceSession: async () => {} });
 
-    expect(enqueued.map((entry) => entry.accountId)).toEqual([2]);
-    expect(result.enqueued).toBe(1);
+    expect(enqueued.map((entry) => entry.accountId)).toEqual([1, 2]);
+    // Nur Konto 2 hat den Stempel bekommen; bei Konto 1 war die andere Instanz
+    // schneller.
+    expect(claims).toEqual([2]);
+    expect(result.failed).toEqual([]);
+  });
+
+  test('ein fehlgeschlagenes Einreihen reisst den Takt nicht mit', async () => {
+    // Ohne diese Isolation wuerde ein einzelner Verbindungshaenger den ganzen
+    // Lauf abbrechen: die uebrigen faelligen Konten sind bereits ausgewaehlt
+    // und wuerden in diesem Takt gar nicht mehr versucht.
+    const accounts: Account[] = [
+      { id: 1, protocol: 'imap', last_sync_started_at: null },
+      { id: 2, protocol: 'imap', last_sync_started_at: null },
+      { id: 3, protocol: 'imap', last_sync_started_at: null },
+    ];
+    const { db, claims } = fakeDb(accounts);
+    const enqueued: number[] = [];
+    const queue = {
+      async enqueue(input: { payload: Record<string, unknown> }) {
+        const accountId = Number(input.payload.accountId);
+        if (accountId === 2) throw new Error('queue unavailable');
+        enqueued.push(accountId);
+      },
+    };
+
+    const result = await runMailSyncSchedule({
+      db, queue, workspaceId: WORKSPACE, now: NOW, applyWorkspaceSession: async () => {},
+    });
+
+    expect(enqueued).toEqual([1, 3]);
+    expect(result.enqueued).toBe(2);
+    // Konto 2 bleibt UNGESTEMPELT und damit im naechsten Takt wieder faellig.
+    expect(claims).toEqual([1, 3]);
+    expect(accounts[1]!.last_sync_started_at).toBeNull();
+    expect(result.failed.map((entry) => entry.accountId)).toEqual([2]);
   });
 
   test('ein nicht synchronisierbares Konto belegt keinen Platz im Stapel', async () => {
@@ -203,7 +244,7 @@ describe('periodischer Mail-Sync', () => {
     });
 
     expect(enqueued.map((entry) => entry.accountId)).toEqual([3]);
-    expect(result).toEqual({ enqueued: 1, hasMore: false });
+    expect(result).toMatchObject({ enqueued: 1, hasMore: false, failed: [] });
     expect(accounts[0]!.last_sync_started_at).toBeNull();
   });
 
@@ -224,9 +265,11 @@ describe('periodischer Mail-Sync', () => {
 
   test('Protokollzuordnung faellt auf IMAP zurueck, lehnt aber Unbekanntes ab', () => {
     expect(mailSyncJobTypeForProtocol('imap')).toBe('mail.sync.imap');
-    expect(mailSyncJobTypeForProtocol('POP3')).toBe('mail.sync.pop3');
+    expect(mailSyncJobTypeForProtocol('POP3')).toBeNull();
     expect(mailSyncJobTypeForProtocol(null)).toBe('mail.sync.imap');
     expect(mailSyncJobTypeForProtocol('')).toBe('mail.sync.imap');
+    // Exakt wie im Sync-Handler: 'IMAP' oder ' imap ' sind dort KEIN imap.
+    expect(mailSyncJobTypeForProtocol(' imap ')).toBeNull();
     expect(mailSyncJobTypeForProtocol('exchange')).toBeNull();
   });
 });

@@ -447,6 +447,22 @@ async function handleEmailAccountInboxArchiveRecovery(
  */
 const MAIL_SYNC_MIN_INTERVAL_MS = 30_000;
 
+/**
+ * Abkuehlzeit fuer den einmaligen Vollimport (`fullInbox`).
+ *
+ * Deutlich laenger als beim gewoehnlichen Abholen, weil er ungleich teurer ist:
+ * er liest das Postfach vollstaendig statt nur die Neuzugaenge. Seit das
+ * Abholen an mail.metadata.read haengt, kann ihn JEDER Lesende ausloesen —
+ * ohne eigene Grenze waere das ein Weg, den gerade eingefuehrten Lastschutz zu
+ * umgehen und beliebig viele mailboxweite Scans zu starten. Der eigene Job-Key
+ * verhindert nur wartende Duplikate, keinen neuen Vollscan, sobald der
+ * vorherige laeuft.
+ *
+ * Fuenfzehn Minuten: ein Nachholen ist ein Vorgang, den man einmal anstoesst
+ * und nicht im Minutentakt wiederholt.
+ */
+const MAIL_FULL_INBOX_MIN_INTERVAL_MS = 15 * 60_000;
+
 async function handleEmailAccountSync(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -492,11 +508,18 @@ async function handleEmailAccountSync(
   // Der Erfolgsfall bleibt 202 mit `queued: false` statt eines Fehlers — fuer
   // den Nutzer IST die Frage beantwortet ("es wird gerade abgeholt"), und ein
   // roter Fehler fuer einen zweiten Klick waere schlicht falsch.
+  // Nur PRUEFEN, ob die Wartezeit um ist — gestempelt wird erst nach dem
+  // erfolgreichen Einreihen (weiter unten). Andersherum waere der Stempel schon
+  // gesetzt, wenn das Einreihen scheitert: der Nutzer bekaeme einen Fehler,
+  // und jeder Versuch innerhalb der naechsten 30 Sekunden liefe in ein
+  // freundliches `queued: false` — was fuer ihn nach Erfolg aussieht, obwohl
+  // nie ein Job entstand.
   if (ports.emailAccounts.claimSyncSlot) {
     const slot = await ports.emailAccounts.claimSyncSlot({
       workspaceId: principal.workspaceId,
       id: accountId,
-      minIntervalMs: fullInbox ? 0 : MAIL_SYNC_MIN_INTERVAL_MS,
+      minIntervalMs: fullInbox ? MAIL_FULL_INBOX_MIN_INTERVAL_MS : MAIL_SYNC_MIN_INTERVAL_MS,
+      probeOnly: true,
     });
     if (!slot.claimed) {
       return data(202, {
@@ -521,6 +544,16 @@ async function handleEmailAccountSync(
       ...(fullInbox ? { fullInbox: true } : {}),
     },
   });
+
+  // Erst jetzt stempeln: der Job liegt in der Queue. Schlaegt das Stempeln
+  // fehl, ist die Folge lediglich, dass die Wartezeit fuer diesen einen Klick
+  // nicht greift — nicht, dass eine Anfrage als bedient gilt, die es nicht ist.
+  await ports.emailAccounts.claimSyncSlot?.({
+    workspaceId: principal.workspaceId,
+    id: accountId,
+    // Bedingungslos stempeln: die Wartezeit wurde oben bereits geprueft.
+    minIntervalMs: 0,
+  }).catch(() => undefined);
 
   return data(202, {
     success: true,

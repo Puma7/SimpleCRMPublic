@@ -142,6 +142,19 @@ export function createMaintenanceJobHandlers(options: MaintenanceJobHandlersOpti
       if (result.hasMore) {
         await requeue(options, 'mail.sync.schedule', job.workspaceId, job.payload, at);
       }
+      // Fehlgeschlagene Einreihungen sind nicht gestempelt und kommen im
+      // naechsten Takt wieder. Der Job selbst darf deswegen NICHT scheitern —
+      // sonst risse ein einzelnes Konto den ganzen Takt mit. Sichtbar bleiben
+      // muessen sie trotzdem, sonst sieht ein dauerhaft klemmender Workspace
+      // aus wie einer, in dem nichts faellig ist.
+      if (result.failed.length > 0) {
+        const accountIds = result.failed.map((entry) => entry.accountId).join(', ');
+        console.warn(
+          `[mail-sync-schedule] could not enqueue ${result.failed.length} due account(s) `
+          + `in workspace ${job.workspaceId}: ${accountIds}. They stay due and are retried `
+          + 'on the next tick.',
+        );
+      }
     },
 
     'lock.cleanup': async (job) => {
