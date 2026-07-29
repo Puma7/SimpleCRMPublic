@@ -1932,7 +1932,17 @@ export type EmailAccountApiPort = {
     /** Kein neuer Lauf, wenn der letzte Anstoss juenger als dies ist. */
     minIntervalMs: number;
     now?: Date;
-  }): Promise<{ claimed: boolean; lastStartedAt: Date | null }>;
+  }): Promise<{
+    claimed: boolean;
+    lastStartedAt: Date | null;
+    /** Wert vor dem Claim — fuer Rollback, wenn das Einreihen danach scheitert. */
+    previousStartedAt?: Date | null;
+  }>;
+  releaseSyncSlot?(input: {
+    workspaceId: string;
+    id: number;
+    lastSyncStartedAt: Date | null;
+  }): Promise<void>;
   list(input: {
     workspaceId: string;
     mailScope?: MailSqlScope;

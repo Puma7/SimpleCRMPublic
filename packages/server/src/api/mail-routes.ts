@@ -504,18 +504,51 @@ async function handleEmailAccountSync(
         lastSyncStartedAt: slot.lastStartedAt?.toISOString() ?? null,
       });
     }
+
+    try {
+      await ports.jobQueue.enqueue({
+        workspaceId: principal.workspaceId,
+        type: jobType,
+        payload: {
+          workspaceId: principal.workspaceId,
+          accountId,
+          actorUserId: principal.userId,
+        },
+      });
+    } catch {
+      if (ports.emailAccounts.releaseSyncSlot) {
+        await ports.emailAccounts.releaseSyncSlot({
+          workspaceId: principal.workspaceId,
+          id: accountId,
+          lastSyncStartedAt: slot.previousStartedAt ?? null,
+        });
+      }
+      return error(503, 'mail_sync_enqueue_failed', 'Mail-Sync konnte nicht gestartet werden');
+    }
+
+    return data(202, {
+      success: true,
+      queued: true,
+      accountId,
+      jobType,
+      fullInbox,
+    });
   }
 
-  await ports.jobQueue.enqueue({
-    workspaceId: principal.workspaceId,
-    type: jobType,
-    payload: {
+  try {
+    await ports.jobQueue.enqueue({
       workspaceId: principal.workspaceId,
-      accountId,
-      actorUserId: principal.userId,
-      ...(fullInbox ? { fullInbox: true } : {}),
-    },
-  });
+      type: jobType,
+      payload: {
+        workspaceId: principal.workspaceId,
+        accountId,
+        actorUserId: principal.userId,
+        ...(fullInbox ? { fullInbox: true } : {}),
+      },
+    });
+  } catch {
+    return error(503, 'mail_sync_enqueue_failed', 'Mail-Sync konnte nicht gestartet werden');
+  }
 
   return data(202, {
     success: true,

@@ -117,36 +117,74 @@ export async function runMailSyncSchedule(input: {
     const claimed = await withWorkspaceTransaction(
       input.db,
       { workspaceId: input.workspaceId, role: 'system' },
-      async (trx) => trx
-        .updateTable('email_accounts')
-        .set({ last_sync_started_at: now })
-        .where('workspace_id', '=', input.workspaceId)
-        .where('id', '=', account.id)
-        .where((eb) => eb.or([
-          eb('last_sync_started_at', 'is', null),
-          eb('last_sync_started_at', '<', threshold),
-        ]))
-        .returning('id')
-        .executeTakeFirst(),
+      async (trx) => {
+        const current = await trx
+          .selectFrom('email_accounts')
+          .select('last_sync_started_at')
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', account.id)
+          .executeTakeFirst();
+        const previousStartedAt = current?.last_sync_started_at
+          ? new Date(String(current.last_sync_started_at))
+          : null;
+
+        const updated = await trx
+          .updateTable('email_accounts')
+          .set({ last_sync_started_at: now })
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', account.id)
+          .where((eb) => eb.or([
+            eb('last_sync_started_at', 'is', null),
+            eb('last_sync_started_at', '<', threshold),
+          ]))
+          .returning('id')
+          .executeTakeFirst();
+        if (!updated) return null;
+        return { previousStartedAt };
+      },
       { applySession: input.applyWorkspaceSession },
     );
     if (!claimed) continue;
 
-    await input.queue.enqueue({
-      workspaceId: input.workspaceId,
-      type: jobType,
-      // Kein actorUserId: dieser Lauf gehoert keinem Menschen. Der
-      // Dienst-Nachweis ist genau die Aussage, die die Job-Policy fuer den
-      // Sync erwartet, wenn kein Nutzer dahintersteht.
-      payload: buildTrustedServiceJobPayload({
+    try {
+      await input.queue.enqueue({
         workspaceId: input.workspaceId,
-        accountId: account.id,
-      }),
-    });
-    enqueued += 1;
+        type: jobType,
+        // Kein actorUserId: dieser Lauf gehoert keinem Menschen. Der
+        // Dienst-Nachweis ist genau die Aussage, die die Job-Policy fuer den
+        // Sync erwartet, wenn kein Nutzer dahintersteht.
+        payload: buildTrustedServiceJobPayload({
+          workspaceId: input.workspaceId,
+          accountId: account.id,
+        }),
+      });
+      enqueued += 1;
+    } catch (error) {
+      // Claim ist bereits gesetzt; ein transienter Enqueue-Fehler darf weder
+      // die restlichen faelligen Konten im Batch mitreißen noch das Konto fuer
+      // ein ganzes Intervall als „gerade behandelt" stehen lassen.
+      await withWorkspaceTransaction(
+        input.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .updateTable('email_accounts')
+          .set({ last_sync_started_at: claimed.previousStartedAt })
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', account.id)
+          .execute(),
+        { applySession: input.applyWorkspaceSession },
+      );
+      console.error(
+        `[mail-sync-schedule] enqueue failed for account ${account.id}: ${errorMessage(error)}`,
+      );
+    }
   }
 
   return { enqueued, hasMore };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function mailSyncJobTypeForProtocol(

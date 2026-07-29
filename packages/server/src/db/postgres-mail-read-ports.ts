@@ -400,6 +400,16 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
+          const current = await trx
+            .selectFrom('email_accounts')
+            .select('last_sync_started_at')
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', input.id)
+            .executeTakeFirst();
+          const previousStartedAt = current?.last_sync_started_at
+            ? new Date(String(current.last_sync_started_at))
+            : null;
+
           // Ein bedingtes UPDATE entscheidet und stempelt in einem Schritt. Wer
           // keine Zeile zurueckbekommt, war zu frueh dran; wer eine bekommt,
           // hat den Zuschlag und reiht ein.
@@ -414,21 +424,29 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
             ]))
             .returning('last_sync_started_at')
             .executeTakeFirst();
-          if (claimed) return { claimed: true, lastStartedAt: now };
+          if (claimed) {
+            return { claimed: true, lastStartedAt: now, previousStartedAt };
+          }
 
-          const current = await trx
-            .selectFrom('email_accounts')
-            .select('last_sync_started_at')
-            .where('workspace_id', '=', input.workspaceId)
-            .where('id', '=', input.id)
-            .executeTakeFirst();
           return {
             claimed: false,
-            lastStartedAt: current?.last_sync_started_at
-              ? new Date(String(current.last_sync_started_at))
-              : null,
+            lastStartedAt: previousStartedAt,
           };
         },
+        { applySession: options.applyWorkspaceSession },
+      );
+    },
+
+    async releaseSyncSlot(input) {
+      await withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => trx
+          .updateTable('email_accounts')
+          .set({ last_sync_started_at: input.lastSyncStartedAt })
+          .where('workspace_id', '=', input.workspaceId)
+          .where('id', '=', input.id)
+          .execute(),
         { applySession: options.applyWorkspaceSession },
       );
     },

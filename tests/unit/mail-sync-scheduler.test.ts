@@ -30,24 +30,31 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
   };
   const trx = {
     selectFrom() {
-      const state: { threshold?: Date; limit?: number } = {};
+      const state: { threshold?: Date; limit?: number; targetId?: number; singleLookup?: boolean } = {};
       const builder = {
         select() { return builder },
-        where(arg: unknown) {
+        where(arg: unknown, column?: unknown, value?: unknown) {
           if (typeof arg === 'function') {
-            // Kysely reicht einen AUFRUFBAREN Ausdrucksbauer herein, der
-            // zusaetzlich .or traegt. Der Mock muss beides koennen, sonst
-            // scheitert schon der Aufbau der Bedingung.
             const eb = Object.assign(
               (..._parts: unknown[]) => ({}),
               { or: (parts: unknown[]) => parts },
             );
             (arg as (builder: unknown) => unknown)(eb);
+          } else if (column === 'id') {
+            state.targetId = value as number;
+            state.singleLookup = true;
           }
           return builder
         },
         orderBy() { return builder },
         limit(value: number) { state.limit = value; return builder },
+        async executeTakeFirst() {
+          if (state.singleLookup && state.targetId !== undefined) {
+            const account = accounts.find((entry) => entry.id === state.targetId);
+            return account ? { last_sync_started_at: account.last_sync_started_at } : undefined;
+          }
+          return undefined;
+        },
         async execute() {
           const due = accounts
             .filter((account) => account.last_sync_started_at === null
@@ -65,8 +72,12 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
     },
     updateTable() {
       let targetId: number | undefined;
+      let rollbackTo: Date | null | undefined;
       const builder = {
-        set() { return builder },
+        set(values: { last_sync_started_at?: Date | null }) {
+          if ('last_sync_started_at' in values) rollbackTo = values.last_sync_started_at ?? null;
+          return builder
+        },
         where(column: unknown, _op?: unknown, value?: unknown) {
           if (column === 'id') targetId = value as number;
           return builder
@@ -83,6 +94,12 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
           claims.push(targetId);
           return { id: targetId };
         },
+        async execute() {
+          if (targetId === undefined) return;
+          const account = accounts.find((entry) => entry.id === targetId);
+          if (!account) return;
+          account.last_sync_started_at = rollbackTo ?? null;
+        },
       };
       return builder
     },
@@ -90,15 +107,19 @@ function fakeDb(accounts: Account[], options: { claimedBySomeoneElse?: Set<numbe
   return { db: db as unknown as Kysely<ServerDatabase>, claims };
 }
 
-function fakeQueue() {
+function fakeQueue(failForAccountIds: Set<number> = new Set()) {
   const enqueued: Array<{ type: string; accountId: unknown; hasActor: boolean }> = [];
   return {
     enqueued,
     queue: {
       async enqueue(input: { type: string; payload: Record<string, unknown> }) {
+        const accountId = input.payload.accountId as number;
+        if (failForAccountIds.has(accountId)) {
+          throw new Error('enqueue failed');
+        }
         enqueued.push({
           type: input.type,
-          accountId: input.payload.accountId,
+          accountId,
           hasActor: 'actorUserId' in input.payload,
         });
       },
@@ -186,6 +207,25 @@ describe('periodischer Mail-Sync', () => {
     expect(claims).toEqual([]);
     expect(accounts[0]!.last_sync_started_at).toBeNull();
     expect(result.enqueued).toBe(0);
+  });
+
+  test('ein Enqueue-Fehler reiht die restlichen Konten weiter ein und rollt den Claim zurueck', async () => {
+    const previousSync = new Date(NOW.getTime() - 3_600_000);
+    const accounts: Account[] = [
+      { id: 1, protocol: 'imap', last_sync_started_at: previousSync },
+      { id: 2, protocol: 'imap', last_sync_started_at: null },
+    ];
+    const { db } = fakeDb(accounts);
+    const { queue, enqueued } = fakeQueue(new Set([1]));
+
+    const result = await runMailSyncSchedule({
+      db, queue, workspaceId: WORKSPACE, now: NOW, applyWorkspaceSession: async () => {},
+    });
+
+    expect(enqueued.map((entry) => entry.accountId)).toEqual([2]);
+    expect(accounts[0]!.last_sync_started_at).toEqual(previousSync);
+    expect(accounts[1]!.last_sync_started_at).toEqual(NOW);
+    expect(result).toEqual({ enqueued: 1, hasMore: false });
   });
 
   test('Protokollzuordnung faellt auf IMAP zurueck, lehnt aber Unbekanntes ab', () => {
