@@ -839,7 +839,19 @@ export function graphileJobKeyForJob(
       const resumeNodeId = resumeContext && typeof resumeContext === 'object'
         ? graphileKeyScalar(resumeContext.resumeNodeId)
         : undefined;
-      if (!resumeNodeId) return `${type}:${workspaceKey}:${workflowId}:message:${messageId}`;
+      if (!resumeNodeId) {
+        // Ein manueller Live-Lauf oder ein Backfill teilte sich sonst den Key mit
+        // dem wartenden Inbound-Kettenjob; 'replace' ersetzte dessen Payload samt
+        // Kettenkontext, und die nachrangigen Inbound-Workflows liefen nie.
+        // Eigene Suffixe trennen die Herkunft; Doppellaeufe derselben Herkunft
+        // dedupliziert der Key weiterhin.
+        const backfill = resumeContext && typeof resumeContext === 'object'
+          && resumeContext.workflowBackfill === true;
+        const originSuffix = backfill
+          ? ':backfill'
+          : payload.triggerName === 'manual' ? ':manual' : '';
+        return `${type}:${workspaceKey}:${workflowId}:message:${messageId}${originSuffix}`;
+      }
       // Dieselbe Ausfuehrungs-Identitaet wie bei den Kindjobs: Fan-out-Lauf und
       // Zweig. Ohne sie (nur Payloads von vor diesen Stempeln) lieber gar kein
       // Key — ein doppelter Lauf ist Arbeit, ein verschluckter haengt.

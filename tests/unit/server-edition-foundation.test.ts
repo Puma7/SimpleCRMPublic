@@ -2482,6 +2482,39 @@ describe('server edition foundation', () => {
     expect(graphileQueueNameForJob('mail.sync.imap', { accountId: 42 }, 'workspace-a')).toBe('account-42');
   });
 
+  // F-A8-02: Ein manueller Live-Lauf oder Backfill ersetzte per jobKeyMode 'replace' den wartenden Inbound-Kettenjob.
+  test('graphile workflow.execute keys keep manual and backfill runs apart from the inbound chain job', () => {
+    const inboundKey = graphileJobKeyForJob('workflow.execute', {
+      workspaceId: 'workspace-a',
+      workflowId: 23,
+      messageId: 11,
+      triggerName: 'inbound',
+      context: { skipIfMessageSpamOrReview: true, inboundWorkflowChain: { workflowIds: [23, 24], index: 0 } },
+    }, 'workspace-a');
+    const manualKey = graphileJobKeyForJob('workflow.execute', {
+      workspaceId: 'workspace-a',
+      workflowId: 23,
+      messageId: 11,
+      triggerName: 'manual',
+      context: {},
+    }, 'workspace-a');
+    const backfillKey = graphileJobKeyForJob('workflow.execute', {
+      workspaceId: 'workspace-a',
+      workflowId: 23,
+      messageId: 11,
+      triggerName: 'inbound',
+      context: { workflowBackfill: true, forceWorkflowReapply: true },
+    }, 'workspace-a');
+
+    // The inbound first run keeps its message-wide dedupe key.
+    expect(inboundKey).toBe('workflow.execute:workspace-a:23:message:11');
+    expect(manualKey).toEqual(expect.any(String));
+    expect(backfillKey).toEqual(expect.any(String));
+    expect(manualKey).not.toBe(inboundKey);
+    expect(backfillKey).not.toBe(inboundKey);
+    expect(backfillKey).not.toBe(manualKey);
+  });
+
   test('graphile queue port enqueues validated server jobs through worker utils', async () => {
     const added: Array<{ identifier: string; payload: Record<string, unknown>; spec: unknown }> = [];
     const removed: string[] = [];
