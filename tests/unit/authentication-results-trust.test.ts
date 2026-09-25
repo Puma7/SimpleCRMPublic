@@ -58,10 +58,9 @@ describe('Authentication-Results trust (authserv-id)', () => {
     expect(isTrustedAuthservId('example.com', null)).toBe(false);
   });
 
-  test('selects the topmost trusted field and ignores ARC and untrusted fields', () => {
+  test('selects the topmost field when trusted and ignores ARC', () => {
     const headers = [
       'ARC-Authentication-Results: i=1; mx.example.com; spf=pass',
-      'Authentication-Results: filter.local; dkim=none',
       'Authentication-Results: mx.example.com;',
       '\tspf=fail smtp.mailfrom=x.example',
       'Authentication-Results: example.com; spf=pass',
@@ -71,5 +70,31 @@ describe('Authentication-Results trust (authserv-id)', () => {
     expect(selectTrustedAuthenticationResults(headers, 'other.example')).toBeNull();
     expect(selectTrustedAuthenticationResults(headers, null)).toBeNull();
     expect(selectTrustedAuthenticationResults(null, 'example.com')).toBeNull();
+  });
+
+  // C-A75: Lag oben ein Feld mit fremder authserv-id, wurde ein tieferes, vom Absender eingeschleustes Feld mit passender id gewaehlt.
+  test('uses only the topmost field and never falls back to a lower one (RFC 8601 section 5, G8)', () => {
+    const gmail = [
+      'Authentication-Results: mx.google.com; dmarc=fail header.from=kunde.de',
+      'Received: from attacker.example (attacker.example [192.0.2.1]) by mx.google.com',
+      'Authentication-Results: gmail.com; spf=pass; dkim=pass; dmarc=pass',
+      'From: chef@kunde.de',
+    ].join('\r\n');
+    expect(selectTrustedAuthenticationResults(gmail, 'gmail.com')).toBeNull();
+    expect(selectTrustedAuthenticationResults(gmail, 'google.com')).toBe('mx.google.com; dmarc=fail header.from=kunde.de');
+
+    // A local filter field on top (or one without authserv-id, as Microsoft 365
+    // writes it) hides the trusted field below it as well.
+    const filterOnTop = [
+      'Authentication-Results: filter.local; dkim=none',
+      'Authentication-Results: mx.example.com; spf=fail smtp.mailfrom=x.example',
+      'Subject: x',
+    ].join('\r\n');
+    expect(selectTrustedAuthenticationResults(filterOnTop, 'example.com')).toBeNull();
+    const withoutId = [
+      'Authentication-Results: spf=pass (sender IP is 192.0.2.1) smtp.mailfrom=kunde.de; dmarc=pass',
+      'Authentication-Results: example.com; spf=pass; dkim=pass; dmarc=pass',
+    ].join('\r\n');
+    expect(selectTrustedAuthenticationResults(withoutId, 'example.com')).toBeNull();
   });
 });

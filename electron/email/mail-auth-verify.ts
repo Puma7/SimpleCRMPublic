@@ -115,10 +115,10 @@ function liveCheckUnreliable(label: AuthResultLabel): boolean {
 
 /**
  * Parse the receiving MTA's Authentication-Results into SPF/DKIM/DMARC/ARC labels.
- * RFC 8601 §5: any sender can add such fields, so only the topmost field whose
- * authserv-id is trusted for the account counts (default: domain of the
- * incoming server, see @simplecrm/core authentication-results). Lower fields and
- * ARC-Authentication-Results (no ARC chain validation) never supply keys.
+ * RFC 8601 §5: any sender can add such fields, so only the topmost field counts
+ * and only when its authserv-id is trusted for the account (default: domain of
+ * the incoming server, see @simplecrm/core authentication-results). Lower fields
+ * and ARC-Authentication-Results (no ARC chain validation) never supply keys.
  */
 export function parseAuthenticationResultsLabels(
   rawHeaders: string | null,

@@ -3,6 +3,10 @@ jest.mock('mailauth', () => ({
 }));
 
 import { authenticate } from 'mailauth';
+import { simpleParser } from 'mailparser';
+import { incomingMailHost, resolveTrustedAuthservId } from '@simplecrm/core';
+import { rawHeadersFromParsed } from '../../electron/email/email-parse-utils';
+import { rfc822SourceToStorageB64 } from '../../electron/email/mail-eml-build';
 import {
   isAuthFailure,
   parseAuthenticationResultsAdvisory,
@@ -209,5 +213,64 @@ describe('mail-auth-verify', () => {
       expect(parseAuthenticationResultsLabels(hdr, 'provider.example')).toBeNull();
       expect(parseAuthenticationResultsAdvisory(hdr, 'provider.example')).toBeNull();
     });
+  });
+
+  // C-A75: Setzte der Provider eine abweichende authserv-id (Gmail: mx.google.com statt gmail.com), wurde ein tieferes, vom Absender eingeschleustes Feld mit der Standard-id gewaehlt.
+  describe('real mail parsed like the IMAP sync: only the topmost field counts (G8)', () => {
+    const rawMail = [
+      'Delivered-To: kunde@gmail.com',
+      'Received: by 2002:a05:6a10:1234 with SMTP id abc;',
+      '        Thu, 25 Sep 2026 08:00:00 -0700 (PDT)',
+      'Authentication-Results: mx.google.com;',
+      '       spf=fail (google.com: domain of chef@kunde.de does not designate 192.0.2.1 as permitted sender) smtp.mailfrom=chef@kunde.de;',
+      '       dmarc=fail (p=REJECT sp=REJECT dis=NONE) header.from=kunde.de',
+      'Received: from attacker.example (attacker.example [192.0.2.1]) by mx.google.com',
+      'Authentication-Results: gmail.com; spf=pass smtp.mailfrom=kunde.de;',
+      '\tdkim=pass header.d=kunde.de; dmarc=pass header.from=kunde.de',
+      'From: Chef <chef@kunde.de>',
+      'To: kunde@gmail.com',
+      'Subject: Neue Bankverbindung',
+      'Message-ID: <g8@attacker.example>',
+      'Date: Thu, 25 Sep 2026 08:00:00 -0700',
+      '',
+      'Bitte ab sofort auf das neue Konto ueberweisen.',
+      '',
+    ].join('\r\n');
+
+    async function verifyParsed(stored: 'rawHeaders' | 'rawRfc822', trustedAuthservId: string | null) {
+      const source = Buffer.from(rawMail);
+      const parsed = await simpleParser(source);
+      (authenticate as jest.Mock).mockRejectedValue(new Error('Mailauth Timeout'));
+      return verifyMailAuthentication({
+        rawRfc822B64: stored === 'rawRfc822' ? rfc822SourceToStorageB64(source) : null,
+        rawHeaders: stored === 'rawHeaders' ? rawHeadersFromParsed(parsed) : null,
+        bodyText: parsed.text ?? null,
+        bodyHtml: null,
+        trustedAuthservId,
+      });
+    }
+
+    test.each(['rawHeaders', 'rawRfc822'] as const)(
+      'a spoofed lower field with the default authserv-id does not replace a failed live check (%s)',
+      async (stored) => {
+        const trusted = resolveTrustedAuthservId({
+          incomingHost: incomingMailHost({ protocol: 'imap', imapHost: 'imap.gmail.com' }),
+        });
+        expect(trusted).toBe('gmail.com');
+
+        const r = await verifyParsed(stored, trusted);
+
+        expect(r).toMatchObject({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown' });
+      },
+    );
+
+    test.each(['rawHeaders', 'rawRfc822'] as const)(
+      'the topmost field is the one the receiving server prepended (%s)',
+      async (stored) => {
+        const r = await verifyParsed(stored, 'mx.google.com');
+
+        expect(r).toMatchObject({ spf: 'fail', dkim: 'unknown', dmarc: 'fail' });
+      },
+    );
   });
 });

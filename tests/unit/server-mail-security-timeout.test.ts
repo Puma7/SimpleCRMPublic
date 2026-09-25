@@ -1,3 +1,8 @@
+/**
+ * @jest-environment node
+ */
+import { resolveTrustedAuthservId } from '../../packages/core/src/email/authentication-results';
+import { parseMailSource } from '../../packages/server/src/mail-parse';
 import { runStoredMailSecurityChecks, verifyMailAuthentication } from '../../packages/server/src/mail-security-check';
 
 describe('server mail security provider timeouts', () => {
@@ -129,9 +134,10 @@ describe('server mail auth header fallback', () => {
       expect(result).toMatchObject({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown' });
     });
 
-    test('uses the topmost trusted field, also below a local filter field and for subdomains', async () => {
+    // G8: the topmost field must itself be trusted; a local filter field above
+    // it now hides it (see the next test), so this case starts with the MTA field.
+    test('uses the topmost field when trusted, also for subdomains', async () => {
       const rawHeaders = [
-        'Authentication-Results: spamfilter.local; dkim=none',
         'Authentication-Results: mx01.kunde.de 1;',
         ' spf=fail smtp.mailfrom=attacker.example; dkim=fail; dmarc=fail',
         'Authentication-Results: kunde.de; spf=pass; dkim=pass; dmarc=pass',
@@ -152,6 +158,76 @@ describe('server mail auth header fallback', () => {
       });
 
       expect(result.auth).toMatchObject({ spf: 'fail', dkim: 'fail', dmarc: 'fail' });
+    });
+
+    test('ignores a trusted field below an untrusted topmost one (G8)', async () => {
+      const rawHeaders = [
+        'Authentication-Results: spamfilter.local; dkim=none',
+        'Authentication-Results: mx01.kunde.de; spf=pass; dkim=pass; dmarc=pass',
+        'From: chef@kunde.de',
+      ].join('\r\n');
+
+      const result = await verifyMailAuthentication({
+        rawHeaders,
+        bodyText: 'x',
+        bodyHtml: null,
+        mailauthTimeoutMs: 5,
+        mailauthAuthenticate: neverSettles as any,
+        trustedAuthservId: 'kunde.de',
+      });
+
+      expect(result).toMatchObject({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', error: 'Mailauth Timeout' });
+    });
+  });
+
+  // C-A75: Setzte der Provider eine abweichende authserv-id (Gmail: mx.google.com statt gmail.com), wurde ein tieferes, vom Absender eingeschleustes Feld mit der Standard-id gewaehlt.
+  describe('real mail parsed by mail-parse: only the topmost field counts (G8)', () => {
+    const rawMail = [
+      'Delivered-To: kunde@gmail.com',
+      'Received: by 2002:a05:6a10:1234 with SMTP id abc;',
+      '        Thu, 25 Sep 2026 08:00:00 -0700 (PDT)',
+      'Authentication-Results: mx.google.com;',
+      '       spf=fail (google.com: domain of chef@kunde.de does not designate 192.0.2.1 as permitted sender) smtp.mailfrom=chef@kunde.de;',
+      '       dmarc=fail (p=REJECT sp=REJECT dis=NONE) header.from=kunde.de',
+      'Received: from attacker.example (attacker.example [192.0.2.1]) by mx.google.com',
+      'Authentication-Results: gmail.com; spf=pass smtp.mailfrom=kunde.de;',
+      '\tdkim=pass header.d=kunde.de; dmarc=pass header.from=kunde.de',
+      'From: Chef <chef@kunde.de>',
+      'To: kunde@gmail.com',
+      'Subject: Neue Bankverbindung',
+      'Message-ID: <g8@attacker.example>',
+      'Date: Thu, 25 Sep 2026 08:00:00 -0700',
+      '',
+      'Bitte ab sofort auf das neue Konto ueberweisen.',
+      '',
+    ].join('\r\n');
+
+    async function verifyParsed(trustedAuthservId: string | null) {
+      const parsed = await parseMailSource(Buffer.from(rawMail));
+      return verifyMailAuthentication({
+        rawRfc822B64: parsed.rawRfc822B64,
+        rawHeaders: parsed.rawHeaders,
+        bodyText: parsed.bodyText,
+        bodyHtml: parsed.bodyHtml,
+        mailauthTimeoutMs: 5,
+        mailauthAuthenticate: neverSettles as any,
+        trustedAuthservId,
+      });
+    }
+
+    test('a spoofed lower field with the default authserv-id does not replace a failed live check', async () => {
+      const trusted = resolveTrustedAuthservId({ incomingHost: 'imap.gmail.com' });
+      expect(trusted).toBe('gmail.com');
+
+      const result = await verifyParsed(trusted);
+
+      expect(result).toMatchObject({ spf: 'unknown', dkim: 'unknown', dmarc: 'unknown', error: 'Mailauth Timeout' });
+    });
+
+    test('the topmost field is the one the receiving server prepended', async () => {
+      const result = await verifyParsed('mx.google.com');
+
+      expect(result).toMatchObject({ spf: 'fail', dkim: 'unknown', dmarc: 'fail' });
     });
   });
 });

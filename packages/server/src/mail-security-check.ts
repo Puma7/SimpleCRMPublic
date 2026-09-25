@@ -426,9 +426,9 @@ function parseAuthenticationResultsLabels(
   trustedAuthservId: string | null,
 ): Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> | null {
   // RFC 8601 §5: any sender can add Authentication-Results, so only the topmost
-  // field carrying the account's trusted authserv-id counts. Other fields and
-  // ARC-Authentication-Results (no ARC chain validation here) never supply or
-  // fill in keys.
+  // field counts, and only when it carries the account's trusted authserv-id.
+  // Lower fields and ARC-Authentication-Results (no ARC chain validation here)
+  // never supply or fill in keys.
   const block = selectTrustedAuthenticationResults(rawHeaders, trustedAuthservId);
   if (!block) return null;
 

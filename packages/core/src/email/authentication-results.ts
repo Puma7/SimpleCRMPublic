@@ -16,8 +16,10 @@
  *
  * An authserv-id is trusted when it equals that value or is a subdomain of it.
  * Only `Authentication-Results:` fields count; `ARC-Authentication-Results:` is
- * ignored because the ARC chain is not validated here. The topmost trusted field
- * wins (the receiving side prepends), later ones never fill in missing keys.
+ * ignored because the ARC chain is not validated here. Only the topmost field is
+ * read (the receiving side prepends its own, everything below may come from the
+ * sender): when its authserv-id is not trusted the result is unknown. Lower
+ * fields are never used as a fallback, not even to fill in missing keys.
  */
 
 const HOSTNAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
@@ -117,14 +119,18 @@ export function extractAuthenticationResultsFields(rawHeaders: string | null): s
   return fields;
 }
 
-/** Topmost `Authentication-Results` field body whose authserv-id is trusted, or null. */
+/**
+ * Body of the topmost `Authentication-Results` field when its authserv-id is
+ * trusted, otherwise null. A trusted field further down is ignored: with a
+ * provider whose authserv-id differs from the trusted one (e.g. Gmail's
+ * `mx.google.com` vs. the default `gmail.com`) it would be one the sender added.
+ */
 export function selectTrustedAuthenticationResults(
   rawHeaders: string | null,
   trustedAuthservId: string | null,
 ): string | null {
   if (!trustedAuthservId) return null;
-  for (const field of extractAuthenticationResultsFields(rawHeaders)) {
-    if (isTrustedAuthservId(authservIdOfAuthenticationResults(field), trustedAuthservId)) return field;
-  }
-  return null;
+  const topmost = extractAuthenticationResultsFields(rawHeaders)[0];
+  if (!topmost) return null;
+  return isTrustedAuthservId(authservIdOfAuthenticationResults(topmost), trustedAuthservId) ? topmost : null;
 }
