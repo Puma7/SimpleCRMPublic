@@ -107,7 +107,6 @@ describe('server mail policy manifest', () => {
     };
     const accepted = [
       ['GET', '/api/v1/workflow-delayed-jobs'],
-      ['POST', '/api/v1/workflow-delayed-jobs'],
       ['GET', '/api/v1/workflow-delayed-jobs/87'],
       ['PATCH', '/api/v1/workflow-delayed-jobs/87'],
       ['DELETE', '/api/v1/workflow-delayed-jobs/87'],
@@ -127,6 +126,18 @@ describe('server mail policy manifest', () => {
       path: '/api/v1/workflow-delayed-jobs/87',
       principal,
     }, {} as ServerApiPorts)).resolves.toMatchObject({ status: 405 });
+    // F-A8-05 (E29): Anlegen per POST ist kein Vertrag mehr und traegt deshalb
+    // auch keine Mail-Policy (sonst verriete 404/405 die Existenz einer Nachricht).
+    await expect(handleWorkflowReadRoute({
+      method: 'POST',
+      path: '/api/v1/workflow-delayed-jobs',
+      principal: { ...principal, role: 'admin' as const },
+      body: { workflowId: 1, messageId: 1, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' },
+    }, {} as ServerApiPorts)).resolves.toMatchObject({ status: 405 });
+    expect(WORKFLOW_MAIL_ROUTE_REGISTRATIONS.some(({ registration }) => (
+      registration.methods.includes('POST')
+      && registration.pattern.test('/api/v1/workflow-delayed-jobs')
+    ))).toBe(false);
   });
 
   test('preserves method fallthrough for method-specific metadata upsert branches', async () => {
@@ -422,7 +433,6 @@ describe('server mail policy manifest', () => {
       ['GET', '/api/v1/workflow-forward-dedup/83', 'mail.content.read', { kind: 'mail_scope' }],
       ['GET', '/api/v1/workflow-delayed-jobs', 'mail.content.read', { kind: 'mail_scope' }],
       ['GET', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
-      ['POST', '/api/v1/workflow-delayed-jobs', 'mail.content.read', optionalMessageBody({ allowNull: true })],
       ['PATCH', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
       ['DELETE', '/api/v1/workflow-delayed-jobs/84', 'mail.content.read', { kind: 'mail_scope' }],
     ] as const;

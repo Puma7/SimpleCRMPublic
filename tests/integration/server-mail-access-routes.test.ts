@@ -3881,14 +3881,16 @@ describe('server mailbox ACL migration', () => {
           method: 'POST', path: '/api/v1/workflow-delayed-jobs', principal: user,
           body: { ...createBody, messageId },
         });
-        expect(malformed.status).toBe(404);
+        expect(malformed.status).toBe(405);
       }
 
-      expect(allowedCreate.status).toBe(201);
-      expect(hiddenCreate.status).toBe(404);
-      expect(crossWorkspaceCreate.status).toBe(404);
-      expect(absentCreate.status).toBe(201);
-      expect(nullCreate.status).toBe(201);
+      // F-A8-05 (E29): Anlegen ist kein API-Vertrag mehr. Jeder POST endet mit
+      // 405, unabhaengig von der Nachricht (kein Existenz-Orakel ueber 404/405).
+      expect(allowedCreate.status).toBe(405);
+      expect(hiddenCreate.status).toBe(405);
+      expect(crossWorkspaceCreate.status).toBe(405);
+      expect(absentCreate.status).toBe(405);
+      expect(nullCreate.status).toBe(405);
 
       const allowedPatch = await api.handle({
         method: 'PATCH', path: '/api/v1/workflow-delayed-jobs/7801', principal: user,

@@ -1786,11 +1786,8 @@ async function assertSupplementalHttpPermissions(
 }
 
 function isScopedWorkflowDelayedJobMutation(method: string, canonicalPath: string): boolean {
-  return (method === 'POST' && canonicalPath === '/api/v1/workflow-delayed-jobs')
-    || (
-      (method === 'PATCH' || method === 'DELETE')
-      && canonicalPath === '/api/v1/workflow-delayed-jobs/:id'
-    );
+  return (method === 'PATCH' || method === 'DELETE')
+    && canonicalPath === '/api/v1/workflow-delayed-jobs/:id';
 }
 
 function selectorValue(

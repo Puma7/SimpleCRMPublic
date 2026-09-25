@@ -18519,6 +18519,8 @@ describe('server edition foundation', () => {
     expect((spec.body as any).paths['/email/settings/security'].patch.summary).toContain('security');
     expect((spec.body as any).paths['/email/gdpr-export'].get.summary).toContain('GDPR export');
     expect((spec.body as any).paths['/email/gdpr-export'].post).toBeUndefined();
+    // F-A8-05 (E29): Delayed Jobs lassen sich nicht per API anlegen.
+    expect((spec.body as any).paths['/workflow-delayed-jobs'].post).toBeUndefined();
     expect((spec.body as any).paths['/email/messages/{id}/seen'].patch.summary).toContain('seen');
     expect((spec.body as any).paths['/workflow-versions'].post.summary).toContain('workflow version');
     expect((spec.body as any).paths['/pgp/identities'].post.summary).toContain('PGP identity');
@@ -38559,6 +38561,9 @@ describe('server edition foundation', () => {
     // Delayed-job PATCH/DELETE now require the workflows.manage capability.
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
+    // F-A8-05 (E29): Ein per API angelegter Delayed Job bekam keine
+    // job_queue-Fortsetzung und blieb fuer immer pending, die API meldete aber
+    // 201. Anlegen ist kein Vertrag mehr: 405, der Port wird nie aufgerufen.
     const created = await api.handle({
       method: 'POST',
       path: '/api/v1/workflow-delayed-jobs',
@@ -38572,28 +38577,12 @@ describe('server edition foundation', () => {
       },
       principal,
     });
-    expect(created.status).toBe(201);
-    expect((created.body as any).data).toMatchObject({
-      id: 87,
-      sourceSqliteId: -87,
-      workflowId: 23,
-      messageId: 11,
-      resumeNodeId: 'wait-1',
-      status: 'pending',
+    expect(created.status).toBe(405);
+    expect((created.body as any).error).toMatchObject({
+      code: 'method_not_allowed',
+      message: expect.stringContaining('Verzoegerung'),
     });
-    expect((created.body as any).data.context).toBeUndefined();
-    expect(createCalls).toEqual([{
-      workspaceId: WORKSPACE_A_ID,
-      actorUserId: USER_A_ID,
-      values: {
-        workflowId: 23,
-        messageId: 11,
-        resumeNodeId: 'wait-1',
-        executeAt: '2026-06-03T12:00:00.000Z',
-        context: { secret: 'delayed-context-secret' },
-        status: 'pending',
-      },
-    }]);
+    expect(createCalls).toEqual([]);
 
     const updated = await api.handle({
       method: 'PATCH',
@@ -38631,13 +38620,12 @@ describe('server edition foundation', () => {
     expect((deleted.body as any).data.delayedJob.context).toBeUndefined();
     expect(deleteCalls).toEqual([{ workspaceId: WORKSPACE_A_ID, actorUserId: USER_A_ID, id: 87 }]);
 
+    // Das abgelehnte Anlegen (405) hinterlaesst weder Audit noch Event.
     expect(auditEvents.map((event) => event.action)).toEqual([
-      'workflow_delayed_job.created',
       'workflow_delayed_job.updated',
       'workflow_delayed_job.deleted',
     ]);
     expect(events.map((event) => [event.type, event.workspaceId, event.entityType, event.entityId])).toEqual([
-      ['workflow_delayed_job.created', WORKSPACE_A_ID, 'workflow_delayed_job', '87'],
       ['workflow_delayed_job.updated', WORKSPACE_A_ID, 'workflow_delayed_job', '87'],
       ['workflow_delayed_job.deleted', WORKSPACE_A_ID, 'workflow_delayed_job', '87'],
     ]);
@@ -38649,8 +38637,8 @@ describe('server edition foundation', () => {
       messageId: 11,
       messageSourceSqliteId: 11,
       resumeNodeId: 'wait-1',
-      executeAt: '2026-06-03T12:00:00.000Z',
-      status: 'pending',
+      executeAt: '2026-06-04T12:00:00.000Z',
+      status: 'cancelled',
     });
     expect(JSON.stringify(auditEvents)).not.toContain('delayed-context-secret');
     expect(JSON.stringify(events)).not.toContain('delayed-context-secret');
@@ -38770,26 +38758,27 @@ describe('server edition foundation', () => {
     // grant it here to exercise the payload-validation paths below.
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['workflows.manage'] };
 
-    const unavailable = await readOnlyApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 23, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' },
-      principal,
-    });
-    expect(unavailable.status).toBe(503);
+    // F-A8-05 (E29): Anlegen per POST ist unabhaengig vom Payload und von der
+    // Port-Konfiguration immer 405 (frueher 503/400/404/201 je nach Eingabe).
+    for (const [api, body] of [
+      [readOnlyApi, { workflowId: 23, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' }],
+      [writableApi, []],
+      [writableApi, { workspaceId: WORKSPACE_B_ID, workflowId: 0, executeAt: 'not-a-date', status: 123 }],
+      [writableApi, { workflowId: 99, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' }],
+    ] as const) {
+      const rejected = await api.handle({
+        method: 'POST',
+        path: '/api/v1/workflow-delayed-jobs',
+        body,
+        principal,
+      });
+      expect(rejected.status).toBe(405);
+    }
 
-    const invalidPayload = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: [],
-      principal,
-    });
-    expect(invalidPayload.status).toBe(400);
-    expect((invalidPayload.body as any).error.code).toBe('invalid_workflow_delayed_job_payload');
-
+    // Die Feldpruefung des gemeinsamen Parsers bleibt fuer PATCH abgedeckt.
     const unsafePayload = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
+      method: 'PATCH',
+      path: '/api/v1/workflow-delayed-jobs/87',
       body: {
         workspaceId: WORKSPACE_B_ID,
         workflowId: 0,
@@ -38810,32 +38799,6 @@ describe('server edition foundation', () => {
       { field: 'context', message: 'context muss ein JSON-Objekt oder Array sein' },
       { field: 'status', message: 'status muss ein String sein' },
     ]));
-
-    const missingRequired = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 23 },
-      principal,
-    });
-    expect(missingRequired.status).toBe(400);
-
-    const missingWorkflow = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 99, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' },
-      principal,
-    });
-    expect(missingWorkflow.status).toBe(404);
-    expect((missingWorkflow.body as any).error.code).toBe('workflow_not_found');
-
-    const missingMessage = await writableApi.handle({
-      method: 'POST',
-      path: '/api/v1/workflow-delayed-jobs',
-      body: { workflowId: 23, messageId: 99, executeAt: '2026-06-03T12:00:00.000Z', status: 'pending' },
-      principal,
-    });
-    expect(missingMessage.status).toBe(404);
-    expect((missingMessage.body as any).error.code).toBe('email_message_not_found');
 
     const invalidId = await writableApi.handle({
       method: 'PATCH',

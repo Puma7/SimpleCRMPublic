@@ -989,7 +989,7 @@ function knowledgeChunkMutationError(code: 'knowledge_base_not_found'): ApiRespo
 }
 
 async function handleDelayedJobList(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
-  if (req.method === 'POST') return handleDelayedJobCreate(req, ports);
+  if (req.method === 'POST') return handleDelayedJobCreate(req);
   if (req.method !== 'GET') return methodNotAllowed();
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
@@ -1031,42 +1031,17 @@ async function handleDelayedJobGet(
   return item ? data(200, sanitizeDelayedJob(item, include)) : error(404, 'workflow_delayed_job_not_found', 'Workflow delayed job nicht gefunden');
 }
 
-async function handleDelayedJobCreate(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
+async function handleDelayedJobCreate(req: ApiRequest): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
-  // Creating a delayed job forges queued workflow.execute runtime state (a
-  // workflow-management operation), just like the update/delete handlers below.
-  // A delayed job may carry no messageId, so the route policy resolves non_mail
-  // and the mail ACL cannot gate it — enforce the capability here.
-  if (!requireCapability(principal, 'workflows.manage')) {
-    return error(403, 'forbidden', 'Workflow-Berechtigung erforderlich');
-  }
-  if (!ports.workflowDelayedJobs?.create) return unavailable('workflow_delayed_jobs_unavailable', 'Workflow delayed job API nicht konfiguriert');
-
-  const parsed = parseDelayedJobMutationBody(req.body, {
-    requireAtLeastOneField: true,
-    requireWorkflowId: true,
-    requireExecuteAt: true,
-    requireStatus: true,
-  });
-  if (!parsed.ok) return parsed.response;
-
-  const result = await ports.workflowDelayedJobs.create({
-    workspaceId: principal.workspaceId,
-    actorUserId: principal.userId,
-    values: parsed.values,
-  });
-  if (!result.ok) return delayedJobMutationError(result.code);
-
-  await auditDelayedJob(ports, principal, 'workflow_delayed_job.created', result.job, {
-    workflowId: result.job.workflowId,
-    messageId: result.job.messageId,
-    status: result.job.status,
-    executeAt: result.job.executeAt,
-    hasContext: parsed.values.context !== undefined && parsed.values.context !== null,
-  });
-  await publishDelayedJob(ports, principal.workspaceId, 'workflow_delayed_job.created', result.job, principal.userId);
-  return data(201, sanitizeDelayedJob(result.job, false));
+  // Ein Delayed Job braucht die workflow.execute-Fortsetzung samt Provenienz,
+  // die nur logic.delay im laufenden Workflow anlegt. Per API angelegt blieb er
+  // fuer immer pending, obwohl die Antwort 201 lautete.
+  return error(
+    405,
+    'method_not_allowed',
+    'Verzoegerte Workflow-Jobs entstehen nur durch eine Verzoegerung im Workflow und koennen nicht per API angelegt werden',
+  );
 }
 
 async function handleDelayedJobUpdate(

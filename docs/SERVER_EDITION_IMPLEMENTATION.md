@@ -243,7 +243,7 @@ Implemented foundation:
   - `GET /api/v1/workflows/by-source/:sourceSqliteId/versions`
   - `POST /api/v1/workflows/by-source/:sourceSqliteId/versions/snapshot`
   - `GET /api/v1/workflow-delayed-jobs`
-  - `POST /api/v1/workflow-delayed-jobs`
+  - `POST /api/v1/workflow-delayed-jobs` antwortet mit `405 method_not_allowed`: Delayed Jobs entstehen nur durch `logic.delay` im Workflow-Lauf (ein per API angelegter Job bekaeme keine Fortsetzung und bliebe pending).
   - `GET /api/v1/workflow-delayed-jobs/:id`
   - `PATCH /api/v1/workflow-delayed-jobs/:id`
   - `DELETE /api/v1/workflow-delayed-jobs/:id`

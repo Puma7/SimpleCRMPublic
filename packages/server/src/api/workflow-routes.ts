@@ -95,7 +95,8 @@ export const WORKFLOW_MAIL_ROUTE_REGISTRATIONS: readonly WorkflowMailRouteRegist
   workflowMailRoute('/api/v1/workflow-message-applied/:id', ['GET'], /^\/api\/v1\/workflow-message-applied\/([^/]+)$/),
   workflowMailRoute('/api/v1/workflow-forward-dedup', ['GET'], /^\/api\/v1\/workflow-forward-dedup$/),
   workflowMailRoute('/api/v1/workflow-forward-dedup/:id', ['GET'], /^\/api\/v1\/workflow-forward-dedup\/([^/]+)$/),
-  workflowMailRoute('/api/v1/workflow-delayed-jobs', ['GET', 'POST'], /^\/api\/v1\/workflow-delayed-jobs$/),
+  // POST antwortet ohne Mail-Policy mit 405 (F-A8-05): kein Nachrichtenbezug, kein Existenz-Orakel.
+  workflowMailRoute('/api/v1/workflow-delayed-jobs', ['GET'], /^\/api\/v1\/workflow-delayed-jobs$/),
   workflowMailRoute('/api/v1/workflow-delayed-jobs/:id', ['GET', 'PATCH', 'DELETE'], /^\/api\/v1\/workflow-delayed-jobs\/([^/]+)$/),
 ]);
 

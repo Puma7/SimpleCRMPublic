@@ -572,8 +572,8 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         delete: { summary: 'Delete workflow knowledge chunk' },
       },
       '/workflow-delayed-jobs': {
-        get: { summary: 'List workflow delayed jobs' },
-        post: { summary: 'Create workflow delayed job' },
+        // POST answers 405: delayed jobs are only created by logic.delay in a run.
+        get: { summary: 'List workflow delayed jobs (created by logic.delay only; POST returns 405)' },
       },
       '/workflow-delayed-jobs/{id}': {
         get: { summary: 'Get workflow delayed job' },

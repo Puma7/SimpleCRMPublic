@@ -462,7 +462,6 @@ function assignWorkflowMailPolicies(assign: AssignRoutePolicy): void {
   }
   assign('/api/v1/workflow-delayed-jobs', {
     GET: permissionPolicy('mail.content.read', mailScope()),
-    POST: permissionPolicy('mail.content.read', optionalMessageBody('messageId', { allowNull: true })),
   });
   assign('/api/v1/workflow-delayed-jobs/:id', {
     GET: permissionPolicy('mail.content.read', mailScope()),
