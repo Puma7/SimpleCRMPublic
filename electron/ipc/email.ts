@@ -315,7 +315,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           throw err;
         }
       },
-      { logger },
+      // Kontoverwaltung wie mail.account.manage auf dem Server: nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -400,7 +401,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -408,7 +409,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteAccount, async (_event: IpcMainInvokeEvent, id: number) => {
       await deleteEmailAccountRecord(id);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(

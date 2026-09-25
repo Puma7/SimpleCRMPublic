@@ -41,7 +41,27 @@ jest.mock('../../electron/sync-info-store', () => ({
   },
 }));
 
+// Ohne requireActual: email-store haengt zirkulaer an email-message-features.
+jest.mock('../../electron/email/email-store', () => ({
+  createEmailAccountRecord: jest.fn(() => ({ id: 7 })),
+  updateEmailAccountRecord: jest.fn(),
+  deleteEmailAccountRecord: jest.fn(async () => undefined),
+  getEmailAccountById: jest.fn(() => ({ id: 7, keytar_account_key: 'email-7', smtp_keytar_account_key: null })),
+}));
+
+jest.mock('../../electron/email/email-keytar', () => ({
+  ...jest.requireActual('../../electron/email/email-keytar'),
+  saveEmailPassword: jest.fn(async () => undefined),
+  deleteEmailPassword: jest.fn(async () => undefined),
+}));
+
 import { IPCChannels } from '../../shared/ipc/channels';
+import {
+  createEmailAccountRecord,
+  deleteEmailAccountRecord,
+  updateEmailAccountRecord,
+} from '../../electron/email/email-store';
+import { saveEmailPassword } from '../../electron/email/email-keytar';
 import { clearAllSessions, createSession, type SessionRole } from '../../electron/auth/session-store';
 import { registerEmailHandlers } from '../../electron/ipc/email';
 
@@ -144,5 +164,46 @@ describe('OAuth-App- und Webhook-Secrets (E15)', () => {
 
     await invoke(IPCChannels.Email.SetGoogleOAuthApp, admin, { clientId: 'google-neu', clientSecret: 'google-neu-geheim' });
     expect(mockSyncInfo.get('email_google_oauth_client_secret')).toBe('google-neu-geheim');
+  });
+});
+
+describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
+  const createPayload = {
+    displayName: 'Support',
+    emailAddress: 'support@example.com',
+    imapHost: 'imap.example.com',
+    imapPort: 993,
+    imapTls: true,
+    imapUsername: 'support@example.com',
+    imapPassword: 'geheim',
+  };
+  const accountCalls = [
+    [IPCChannels.Email.CreateAccount, createPayload],
+    [IPCChannels.Email.UpdateAccount, { id: 7, displayName: 'Umbenannt', imapPassword: 'neu' }],
+    [IPCChannels.Email.DeleteAccount, 7],
+  ] as const;
+
+  beforeEach(() => {
+    jest.mocked(createEmailAccountRecord).mockClear();
+    jest.mocked(updateEmailAccountRecord).mockClear();
+    jest.mocked(deleteEmailAccountRecord).mockClear();
+    jest.mocked(saveEmailPassword).mockClear();
+  });
+
+  // F-A7-03: Konto bearbeiten und loeschen liefen mit Stufe "ro"; wer ein Postfach nur lesen durfte, konnte es loeschen.
+  test.each(accountCalls)('%s verlangt Owner oder Admin, auch mit Konto-Freigabe', async (channel, payload) => {
+    for (const role of ['agent', 'viewer'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).rejects.toThrow('Keine Berechtigung');
+    }
+    expect(createEmailAccountRecord).not.toHaveBeenCalled();
+    expect(updateEmailAccountRecord).not.toHaveBeenCalled();
+    expect(deleteEmailAccountRecord).not.toHaveBeenCalled();
+    expect(saveEmailPassword).not.toHaveBeenCalled();
+  });
+
+  test.each(accountCalls)('%s bleibt fuer Owner und Admin moeglich', async (channel, payload) => {
+    for (const role of ['owner', 'admin'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).resolves.toMatchObject({ success: true });
+    }
   });
 });
