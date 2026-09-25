@@ -641,7 +641,8 @@ describe('workflow.subflow', () => {
       message: c.message,
       outbound: null,
       dryRun: false,
-      initialVariables: { 'ai.class': 'support' },
+      // F-A9-07: Die Subflow-Tiefe reist wie beim Server in den Kind-Lauf mit.
+      initialVariables: { 'ai.class': 'support', __subflow_depth: 1 },
     });
     expect(r).toMatchObject({ status: 'ok', variables: { 'subflow.status': 'ok' } });
   });

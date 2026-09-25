@@ -6,6 +6,11 @@ import { workflowDirectionForTrigger } from '../workflow-trigger-utils';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
 
+/** Obergrenze verschachtelter Subflows (Parität Server: workflow-execution.ts). */
+const MAX_SUBFLOW_DEPTH = 8;
+/** Reservierte Variable mit der aktuellen Subflow-Tiefe, reist in den Kind-Lauf mit. */
+const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
+
 export function registerWorkflowMetaNodes(register: Reg): void {
   register({
     type: 'workflow.subflow',
@@ -18,6 +23,17 @@ export function registerWorkflowMetaNodes(register: Reg): void {
       if (!subId || subId === ctx.workflowId) {
         return { status: 'error', message: 'Ungültige Subflow-ID' };
       }
+      // Die Selbstreferenz-Prüfung fängt keinen indirekten Kreis (A → B → A);
+      // ohne Tiefenlimit riefen sich beide synchron und endlos gegenseitig auf.
+      const rawDepth = ctx.variables[SUBFLOW_DEPTH_VARIABLE];
+      const depth =
+        typeof rawDepth === 'number' && Number.isInteger(rawDepth) && rawDepth >= 0 ? rawDepth : 0;
+      if (depth >= MAX_SUBFLOW_DEPTH) {
+        return {
+          status: 'error',
+          message: `Subflow-Tiefe ${MAX_SUBFLOW_DEPTH} überschritten (mögliche Rekursion) — Subflow nicht ausgeführt`,
+        };
+      }
       const sub = getWorkflowById(subId);
       if (!sub?.enabled) return { status: 'error', message: 'Subflow nicht gefunden oder inaktiv' };
       if (ctx.dryRun) return { status: 'ok', message: `dry-run subflow ${subId}` };
@@ -29,7 +45,7 @@ export function registerWorkflowMetaNodes(register: Reg): void {
         message: ctx.message,
         outbound: ctx.outbound,
         dryRun: false,
-        initialVariables: { ...ctx.variables },
+        initialVariables: { ...ctx.variables, [SUBFLOW_DEPTH_VARIABLE]: depth + 1 },
       });
       return {
         status: r.status === 'error' ? 'error' : 'ok',
