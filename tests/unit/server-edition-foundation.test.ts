@@ -4867,6 +4867,97 @@ describe('server edition foundation', () => {
     }));
   });
 
+  // F-D1-01: with a continuation, pick 0 enqueued nothing, so the deferred parent
+  // run and every lower-priority inbound workflow for the message hung forever.
+  test('postgres AI pick-canned port resumes the workflow with ai.canned.no_match when no template fits', async () => {
+    const now = new Date('2026-06-03T12:40:00.000Z');
+    const { db, rows } = makeAiReplySuggestionDb({
+      messages: [{
+        id: 60,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 600,
+        account_id: 7,
+        subject: 'Wo bleibt mein Paket',
+        from_json: {
+          value: [
+            { address: 'kunde@example.com' },
+            { address: 'unerwartet@example.com' },
+          ],
+        },
+        to_json: { value: [{ address: 'support@example.com' }] },
+        cc_json: null,
+        snippet: 'Wo bleibt mein Paket?',
+        body_text: 'Wo bleibt mein Paket?',
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      profiles: [{
+        id: 21,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 21,
+        label: 'OpenAI',
+        provider: 'openai',
+        base_url: 'https://api.openai.test/v1',
+        model: 'gpt-test',
+        embedding_model: null,
+        legacy_keytar_account: null,
+        secret_id: 'secret-21',
+        is_default: true,
+        sort_order: 1,
+        source_row: {},
+        imported_in_run_id: null,
+        created_at: now,
+        updated_at: now,
+      }],
+      accounts: [{
+        id: 7,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 7,
+      }],
+      folders: [{
+        id: 70,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 700,
+        account_id: 7,
+        path: 'INBOX',
+      }],
+      cannedResponses: [
+        { id: 101, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1010, title: 'Versandstatus', body: 'Status zu {{subject}}: unterwegs.', sort_order: 0 },
+        { id: 102, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 1020, title: 'Retoure', body: 'Retoure-Infos.', sort_order: 1 },
+      ],
+    });
+    const chatInputs: any[] = [];
+    const secrets = { async readSecret() { return Buffer.from('sk-test'); } } as any;
+    const port = createPostgresAiPickCannedPort({
+      db,
+      secrets,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+      async chatCompletion(input) {
+        chatInputs.push(input);
+        return '0';
+      },
+    });
+
+    await port.pickCanned({
+      workspaceId: WORKSPACE_A_ID,
+      messageId: 60,
+      profileId: 21,
+      createDraft: true,
+      continuation: { workflowId: 30, triggerName: 'inbound', resumeNodeId: 'next-1', eventVariables: { 'message.id': 60 } },
+    });
+
+    const resumed = rows.jobs.filter((job) => job.type === 'workflow.execute');
+    expect(resumed).toHaveLength(1);
+    expect((resumed[0]?.payload as any).context.resumeNodeId).toBe('next-1');
+    expect((resumed[0]?.payload as any).context.eventVariables).toMatchObject({
+      'message.id': 60,
+      'ai.canned.pick': 0,
+      'ai.canned.no_match': true,
+    });
+    expect(rows.messages).not.toContainEqual(expect.objectContaining({ folder_kind: 'draft' }));
+  });
+
   test('postgres AI review port resumes on OK and blocks outbound on BLOCK', async () => {
     const now = new Date('2026-06-03T12:35:00.000Z');
     const { db, rows } = makeAiReplySuggestionDb({

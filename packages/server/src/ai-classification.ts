@@ -1106,19 +1106,18 @@ export function createPostgresAiPickCannedPort(
         }
 
         // When the model returns "0 = no canned template fits", draftBody stays
-        // null. If a continuation is queued in that state, downstream nodes such
-        // as email.send_draft would error out (no draft.id). Surface a clear
-        // no-match flag in the continuation variables so the workflow can branch
-        // or skip; do NOT enqueue a continuation that lacks a draft when the
-        // node was configured to create one.
+        // null. Surface a clear no-match flag in the continuation variables so
+        // the workflow can branch on it (desktop does the same synchronously).
+        // The continuation must still be queued: the parent run ended as
+        // deferred and only the resumed run advances the join barrier and the
+        // inbound priority chain. Skipping it left the message's remaining
+        // inbound workflows hanging forever. A downstream node that needs
+        // draft.id (email.send_draft) fails with a regular error instead.
         if (input.createDraft && draftBody === null) {
           continuationVariables['ai.canned.no_match'] = true;
         }
         const willCreateDraft = input.createDraft && draftBody !== null;
-        // Skip the continuation when createDraft was requested but no draft was
-        // produced — downstream nodes that depend on draft.id would error out.
-        const shouldEnqueueContinuation = !!input.continuation
-          && (willCreateDraft || !input.createDraft);
+        const shouldEnqueueContinuation = !!input.continuation;
 
         // Analog zu ai.agent: ohne passenden Baustein (pick 0) oder mit
         // createDraft:false ist der Job erfolgreich zu Ende gelaufen, nur eben
