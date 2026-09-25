@@ -35,7 +35,9 @@ describe('event websocket across an access-token refresh', () => {
         async revokeRefreshToken() { return false; },
         async resolveAccessTokenPrincipal({ principal }: { principal: AuthenticatedPrincipal }) {
           if (!principal.sessionId || revokedSessions.has(principal.sessionId) || user.disabledAt) return null;
-          return { ...principal, role: user.role };
+          // Like the Postgres port, the re-resolved principal carries the group capabilities;
+          // crm.read lets the deal.updated probe through the event filter (C-A19-Folge).
+          return { ...principal, role: user.role, capabilities: ['crm.read'] };
         },
         async getUser() {
           return { id: USER_ID, role: user.role, disabledAt: user.disabledAt };

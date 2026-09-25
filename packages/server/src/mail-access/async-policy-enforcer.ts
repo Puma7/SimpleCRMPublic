@@ -1110,6 +1110,9 @@ export async function filterMailEventForPrincipal(
   // to { id } plus safe relation keys so live refresh still works without
   // leaking field content over WS.
   if (shouldReduceCrmEventPayload(event)) {
+    // Every CRM read route sits behind crm.read (central dispatcher check for the
+    // CRM root segments, crm-route-inventory.ts); owners/admins hold it implicitly.
+    if (!requireCapability(context.principal, 'crm.read')) return null;
     return {
       ...event,
       payload: reduceCrmEventPayload(event.payload),

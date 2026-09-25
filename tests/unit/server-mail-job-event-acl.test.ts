@@ -25,6 +25,22 @@ import {
   publishDemotionAclInvalidationIfNeeded,
 } from '../../packages/server/src/api/fastify-adapter';
 
+// Event families with the CRM id-only reduction; their REST reads sit behind crm.read.
+const CRM_EVENT_FAMILIES = [
+  'activity_log',
+  'calendar_event',
+  'custom_field',
+  'custom_field_value',
+  'customer',
+  'deal',
+  'deal_product',
+  'jtl_order',
+  'jtl_reference',
+  'product',
+  'saved_view',
+  'task',
+] as const;
+
 describe('server mail job and event ACL', () => {
   test('graphile task-list surfaces revoked mail authorization as a job failure before handler invocation', async () => {
     const calls: string[] = [];
@@ -1478,8 +1494,10 @@ describe('server mail job and event ACL', () => {
 
   test('event filter accepts canonical non-mail, denies unknown runtime types, and allows negative account-signature source ids', async () => {
     const ports = makePolicyPorts();
+    // CRM invalidations need crm.read like the CRM read routes (C-A19-Folge); this
+    // test covers their payload reduction, so the principal holds it.
     const context = {
-      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const, capabilities: ['crm.read'] },
       ports,
     };
 
@@ -2174,35 +2192,93 @@ describe('server mail job and event ACL', () => {
       .not.toMatch(/n8n Produktion|Mahnlauf|vor Umbau|Preisliste|rabatte\.md/);
   });
 
+  // C-A19-Folge: CRM-Invalidierungen (id und Relationsschluessel) gingen live und per Replay auch an Nutzer ohne crm.read, obwohl jede CRM-Leseroute crm.read verlangt.
+  test('delivers reduced CRM events only with crm.read, like the CRM read routes, live and on replay', async () => {
+    const ports = makePolicyPorts();
+    const plainUser: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' };
+    // Other module rights do not open CRM data (e.g. a mail/workflow-only user).
+    const otherModules: AuthenticatedPrincipal = {
+      ...plainUser,
+      userId: 'user-b',
+      capabilities: ['workflows.manage', 'settings.manage', 'tracking.view', 'users.manage'],
+    };
+    const crmReader: AuthenticatedPrincipal = { ...plainUser, userId: 'user-c', capabilities: ['crm.read'] };
+    // Stored grants may carry only the highest module level; crm.write implies crm.read.
+    const crmWriter: AuthenticatedPrincipal = { ...plainUser, userId: 'user-d', capabilities: ['crm.write'] };
+    const admin: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' };
+    const owner: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'owner-a', role: 'owner' };
+
+    const crmEvents: Array<[ServerEvent, Record<string, unknown>]> = [
+      [event({ type: 'customer.updated', entityType: 'customer', entityId: '7', payload: { id: 7, name: 'Geheim GmbH', email: 'geheim@example.com' } }), { id: 7 }],
+      [event({ type: 'product.created', entityType: 'product', entityId: '2', payload: { id: 2, name: 'Sonderpreis-Artikel', price: 9 } }), { id: 2 }],
+      [event({ type: 'deal.updated', entityType: 'deal', entityId: '9', payload: { id: 9, name: 'Geheimdeal', value: 99999, customerId: 7 } }), { id: 9, customerId: 7 }],
+      [event({ type: 'deal_product.deleted', entityType: 'deal_product', entityId: '3', payload: { id: 3, dealId: 9, quantity: 4 } }), { id: 3, dealId: 9 }],
+      [event({ type: 'task.updated', entityType: 'task', entityId: '51', payload: { id: 51, title: 'Private Aufgabe', customerId: 7 } }), { id: 51, customerId: 7 }],
+      [event({ type: 'calendar_event.created', entityType: 'calendar_event', entityId: '61', payload: { id: 61, title: 'Vertraulicher Termin' } }), { id: 61 }],
+      [event({ type: 'custom_field.created', entityType: 'custom_field', entityId: '4', payload: { id: 4, label: 'Bonitaet' } }), { id: 4 }],
+      [event({ type: 'custom_field_value.updated', entityType: 'custom_field_value', entityId: '5', payload: { id: 5, customerId: 7, value: 'schlecht' } }), { id: 5, customerId: 7 }],
+      [event({ type: 'saved_view.updated', entityType: 'saved_view', entityId: '6', payload: { id: 6, name: 'Mahnkandidaten' } }), { id: 6 }],
+      [event({ type: 'activity_log.created', entityType: 'activity_log', entityId: '12', payload: { id: 12, title: 'Notiz', customerId: 7, dealId: 9 } }), { id: 12, customerId: 7, dealId: 9 }],
+      [event({ type: 'jtl_reference.updated', entityType: 'jtl_reference', entityId: '8', payload: { id: 8, name: 'Firma intern', resource: 'firmen' } }), { id: 8, resource: 'firmen' }],
+      [event({ type: 'jtl_order.created', entityType: 'jtl_order', entityId: '10', payload: { id: 10, orderNumber: 'A-1', customerId: 7 } }), { id: 10, customerId: 7 }],
+    ];
+    expect(crmEvents.map(([evt]) => evt.entityType).sort()).toEqual([...CRM_EVENT_FAMILIES].sort());
+
+    for (const [evt, reducedPayload] of crmEvents) {
+      for (const principal of [plainUser, otherModules]) {
+        await expect(filterMailEventForPrincipal(evt, { principal, ports })).resolves.toBeNull();
+      }
+      for (const principal of [crmReader, crmWriter, admin, owner]) {
+        await expect(filterMailEventForPrincipal(evt, { principal, ports })).resolves.toEqual({ ...evt, payload: reducedPayload });
+      }
+    }
+
+    // Live delivery and replay run through the same filter.
+    const rawEvents = crmEvents.map(([evt]) => evt);
+    const denied = await filterLiveAndReplay(rawEvents, { principal: plainUser, ports });
+    expect(denied).toEqual({ live: [], replay: [] });
+    const allowed = await filterLiveAndReplay(rawEvents, { principal: crmReader, ports });
+    expect(allowed.live).toEqual(allowed.replay);
+    expect(allowed.live.map((visible) => visible.payload)).toEqual(crmEvents.map(([, reducedPayload]) => reducedPayload));
+  });
+
   // C-A19: Jeder Ereignistyp ohne Mail-Policy und ohne CRM-Reduktion ging ungeprueft durch; neue Typen rutschten so still an alle Abonnenten.
   test('inventories a read policy for every server event type: mail policy, CRM reduction, or explicit non-mail policy', async () => {
     const ports = makePolicyPorts();
     const plainUser: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' };
+    const crmReader: AuthenticatedPrincipal = { ...plainUser, capabilities: ['crm.read'] };
     const mailPolicyTypes = new Set<string>(MAIL_EVENT_POLICY_MANIFEST.map(({ type }) => type));
     const familyOf = (type: string) => type.slice(0, type.indexOf('.'));
     const crmReducedFamilies = new Set<string>();
     const uncovered: string[] = [];
+    const crmTypesWithoutReadGate: string[] = [];
 
     for (const type of SERVER_EVENT_TYPES) {
       const family = familyOf(type);
       // email_acl.changed has its own subject / owner-admin / delegation-manager branch.
       if (type === 'email_acl.changed') continue;
       if (mailPolicyTypes.has(type)) continue;
-      const reduced = await filterMailEventForPrincipal(event({
+      const probe = event({
         type,
         entityType: family,
         entityId: '1',
         payload: { id: 1, secret: 'crm-field' },
-      }), { principal: plainUser, ports });
+      });
+      const reduced = await filterMailEventForPrincipal(probe, { principal: crmReader, ports });
       if (reduced !== null && JSON.stringify(reduced.payload) === JSON.stringify({ id: 1 })) {
         crmReducedFamilies.add(family);
+        // C-A19-Folge: the id-only reduction is no read gate; every CRM read route requires crm.read.
+        if (await filterMailEventForPrincipal(probe, { principal: plainUser, ports }) !== null) {
+          crmTypesWithoutReadGate.push(type);
+        }
         continue;
       }
       if (!Object.prototype.hasOwnProperty.call(NON_MAIL_EVENT_READ_POLICY, family)) uncovered.push(type);
     }
 
     expect(uncovered).toEqual([]);
-    expect(crmReducedFamilies.size).toBeGreaterThan(0);
+    expect(crmTypesWithoutReadGate).toEqual([]);
+    expect([...crmReducedFamilies].sort()).toEqual([...CRM_EVENT_FAMILIES].sort());
     // CRM families keep their id-only reduction and are not filtered a second time.
     const policyFamilies = Object.keys(NON_MAIL_EVENT_READ_POLICY);
     expect(policyFamilies.filter((family) => crmReducedFamilies.has(family))).toEqual([]);
