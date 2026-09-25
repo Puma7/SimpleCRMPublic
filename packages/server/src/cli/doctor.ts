@@ -323,20 +323,27 @@ function checkBackgroundWorker(env: NodeJS.ProcessEnv): DoctorCheck {
   };
 }
 
-function checkTrustProxy(env: NodeJS.ProcessEnv): DoctorCheck {
+export function checkTrustProxy(env: NodeJS.ProcessEnv): DoctorCheck {
   const value = env.TRUST_PROXY?.trim();
   if (!value) {
     return {
       name: 'trust_proxy',
       status: 'warn',
-      message: 'TRUST_PROXY is unset; per-IP rate limits use the direct socket address (set to 1 behind Caddy)',
+      message: 'TRUST_PROXY is unset; per-IP rate limits use the direct socket address (set to uniquelocal behind Caddy)',
     };
   }
   if (value === 'false' || value === '0') {
     return {
       name: 'trust_proxy',
       status: 'warn',
-      message: `TRUST_PROXY=${value}; per-IP rate limits use the direct socket address (set to 1 behind Caddy)`,
+      message: `TRUST_PROXY=${value}; per-IP rate limits use the direct socket address (set to uniquelocal behind Caddy)`,
+    };
+  }
+  if (/^\d+$/.test(value)) {
+    return {
+      name: 'trust_proxy',
+      status: 'fail',
+      message: `TRUST_PROXY=${value} is a hop count, which fastify ignores; every client shares Caddy's rate-limit bucket (set to uniquelocal behind Caddy)`,
     };
   }
   return {

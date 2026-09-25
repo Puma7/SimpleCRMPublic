@@ -36,10 +36,11 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       CI: ${CI:-}
       BACKUP_DIR: ${BACKUP_DIR:-}
-      # Trust exactly the one Caddy hop in front of the API so rate limiting sees
-      # the real client IP (not Caddy's). The API is only reachable via Caddy on
-      # the internal network, so a client cannot inject extra XFF hops.
-      TRUST_PROXY: ${TRUST_PROXY:-1}
+      # Trust the Caddy container on the private compose network so rate limiting
+      # sees the real client IP (not Caddy's). The API port is not published and
+      # Caddy overwrites X-Forwarded-For, so a client cannot inject extra hops.
+      # Hop counts (e.g. 1) are ignored by fastify >= 5.12 and must not be used.
+      TRUST_PROXY: ${TRUST_PROXY:-uniquelocal}
       AUTH_INVITE_FROM: ${AUTH_INVITE_FROM:-}
       AUTH_INVITE_SMTP_HOST: ${AUTH_INVITE_SMTP_HOST:-}
       AUTH_INVITE_SMTP_PORT: ${AUTH_INVITE_SMTP_PORT:-587}

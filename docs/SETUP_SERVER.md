@@ -147,8 +147,9 @@ needed for the served app).
 
 Caddy deliberately excludes `/t/*` from access logs because those paths contain opaque
 bearer-like tracking tokens. Keep this rule when replacing the bundled proxy. Configure
-`TRUST_PROXY` only for known proxy hops; IP-based classification and abuse limits use the
-resolved client IP. After setup, e-mail tracking remains disabled until an owner/admin records
+`TRUST_PROXY` only for known proxy addresses (the bundled stack uses `uniquelocal`, the private
+compose network Caddy runs on; hop counts such as `1` are not supported since fastify 5.12);
+IP-based classification and abuse limits use the resolved client IP. After setup, e-mail tracking remains disabled until an owner/admin records
 the legal basis, HTTPS privacy notice and retention choices under the e-mail settings. See
 [EMAIL_EVIDENCE_TRACKING.md](EMAIL_EVIDENCE_TRACKING.md).
 
