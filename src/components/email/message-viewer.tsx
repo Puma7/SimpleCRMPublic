@@ -271,7 +271,13 @@ export function MessageViewer(props: Props) {
   // einen echten Versand — Doppelklick darf keinen zweiten Aufruf auslösen.
   const [approvalBusy, setApprovalBusy] = useState(false)
   const [htmlView, setHtmlView] = useState(false)
-  const [loadRemoteImages, setLoadRemoteImages] = useState(false)
+  // Remote-Freigabe gilt nur fuer die Nachricht, fuer die sie erteilt wurde: eine
+  // spaete Policy-Antwort oder ein abgeschlossenes "Absender erlauben" darf keine
+  // inzwischen ausgewaehlte andere Nachricht freischalten.
+  const [remoteAllowedForId, setRemoteAllowedForId] = useState<number | null>(null)
+  const loadRemoteImages =
+    selectedMessage?.id != null && remoteAllowedForId === selectedMessage.id
+  const selectedMessageIdRef = useRef<number | null>(selectedMessage?.id ?? null)
   const [readReceiptRequested, setReadReceiptRequested] = useState(false)
   const [readReceiptRespond, setReadReceiptRespond] = useState<string>("never")
   const [workflowRunDetailId, setWorkflowRunDetailId] = useState<number | null>(null)
@@ -356,8 +362,9 @@ export function MessageViewer(props: Props) {
   }, [])
 
   useEffect(() => {
+    selectedMessageIdRef.current = selectedMessage?.id ?? null
     setHtmlView(false)
-    setLoadRemoteImages(false)
+    setRemoteAllowedForId(null)
     setReadReceiptRequested(false)
     setDecryptedPlain(null)
     setThreadAliasHint(null)
@@ -381,21 +388,23 @@ export function MessageViewer(props: Props) {
   useEffect(() => {
     if (!selectedMessage?.id) return
     const messageId = selectedMessage.id
+    // Antworten fuer eine inzwischen abgewaehlte Nachricht verwerfen.
+    let cancelled = false
     void (async () => {
       try {
         const policy = await invokeRenderer(IPCChannels.Email.GetRemoteContentPolicy, {
           messageId,
         })
+        if (cancelled) return
         if (policy && typeof policy === "object" && "allowRemote" in policy) {
-          setLoadRemoteImages((prev) => {
-            if (selectedMessage?.id !== messageId) return prev
-            return Boolean((policy as { allowRemote: boolean }).allowRemote)
-          })
+          setRemoteAllowedForId(
+            (policy as { allowRemote: boolean }).allowRemote ? messageId : null,
+          )
         }
         const rr = await invokeRenderer(IPCChannels.Email.GetReadReceiptState, { messageId })
+        if (cancelled) return
         if (rr && typeof rr === "object" && "success" in rr && (rr as { success: boolean }).success) {
           const s = rr as unknown as { requested: boolean; respond: string }
-          if (selectedMessage?.id !== messageId) return
           setReadReceiptRequested(Boolean(s.requested))
           setReadReceiptRespond(s.respond)
         }
@@ -403,6 +412,9 @@ export function MessageViewer(props: Props) {
         /* ignore */
       }
     })()
+    return () => {
+      cancelled = true
+    }
   }, [selectedMessage?.id])
 
   const sanitizedHtml = useMemo(() => {
@@ -1350,7 +1362,7 @@ export function MessageViewer(props: Props) {
                       className="h-8 gap-1.5 text-xs"
                       onClick={() => {
                         setHtmlView((v) => {
-                          if (v) setLoadRemoteImages(false)
+                          if (v) setRemoteAllowedForId(null)
                           return !v
                         })
                       }}
@@ -1534,7 +1546,7 @@ export function MessageViewer(props: Props) {
                           size="sm"
                           variant="outline"
                           className="h-7 text-xs"
-                          onClick={() => setLoadRemoteImages(true)}
+                          onClick={() => setRemoteAllowedForId(selectedMessage.id)}
                         >
                           Einmal laden
                         </Button>
@@ -1545,12 +1557,14 @@ export function MessageViewer(props: Props) {
                           className="h-7 text-xs"
                           onClick={async () => {
                             if (!selectedMessage) return
+                            const messageId = selectedMessage.id
                             await invokeRenderer(IPCChannels.Email.SetRemoteContentPolicy, {
-                              messageId: selectedMessage.id,
+                              messageId,
                               policy: "allowed_sender",
                               rememberSender: true,
                             })
-                            setLoadRemoteImages(true)
+                            if (selectedMessageIdRef.current !== messageId) return
+                            setRemoteAllowedForId(messageId)
                           }}
                         >
                           Absender erlauben
