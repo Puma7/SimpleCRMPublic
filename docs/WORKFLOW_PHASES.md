@@ -90,6 +90,7 @@ Manuell empfohlen: Vorlage pro Trigger aktivieren → Lauf-Historie; „Jetzt au
 - HTTP-Allowlist: `sync_info` Key `workflow_http_allowlist` (kommaseparierte Hosts).
 - `draft_created` nur bei neuem Entwurf, nicht bei jedem Update.
 - Externe Outbound-Webhook-Subscriptions bleiben API-Roadmap; der interne Trigger `webhook.incoming` ist angebunden.
+- Server, asynchrone Knoten (KI, HTTP, Weiterleitung, DMARC, Verzögerung, Subflow): Job-Payload und Fortsetzung tragen `body_text` höchstens mit 48 000 Zeichen (`combined_text` aus dem gekürzten Text neu gebaut, `body_truncated = 'true'`). Der synchrone Teil vor der Pause sieht den vollen Text; Bedingungen nach der Fortsetzung sehen nur den Anfang (F-D1-05).
 
 *Bewusst nicht geplant (vgl. Vision Kap. 9):* Omni-Channel, Multi-User-Kollaboration am Graph, freie Shell-Befehle.
 

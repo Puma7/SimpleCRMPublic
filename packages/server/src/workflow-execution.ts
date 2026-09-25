@@ -3181,7 +3181,7 @@ async function scheduleAiClassificationJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3250,7 +3250,7 @@ async function scheduleAiReviewJob(
     direction: context.direction,
     ...workflowJobProvenance(context),
     blockKeyword: blockKeyword.value,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (parseMode) payload.parseMode = parseMode;
@@ -3281,7 +3281,7 @@ async function scheduleAiReviewJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3343,7 +3343,7 @@ async function scheduleAiTransformTextJob(
     workspaceId: context.workspaceId,
     targetVariable: targetVariable.value,
     ...workflowJobProvenance(context),
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
@@ -3357,7 +3357,7 @@ async function scheduleAiTransformTextJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3536,7 +3536,7 @@ async function scheduleAiAgentJob(
       triggerName: context.trigger,
     }),
     createDraft,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
@@ -3557,7 +3557,7 @@ async function scheduleAiAgentJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3616,7 +3616,7 @@ async function scheduleAiDraftReplyJob(
     messageId: context.messageId,
     runId: context.runId,
     ...workflowJobProvenance(context),
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
     // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
     // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
@@ -3649,7 +3649,7 @@ async function scheduleAiDraftReplyJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3724,7 +3724,7 @@ async function scheduleAiReviewDraftJob(
     // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
     // Kindjob schliesst Kette und Marker selbst ab.
     ...(deferAnchor ? {} : terminalStamp),
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
     portResumeTargets: Object.fromEntries(
       Object.entries(portResumeTargets).filter(([, target]) => Boolean(target)),
@@ -3753,7 +3753,7 @@ async function scheduleAiReviewDraftJob(
       // Prefer success path; hold-only graphs temporarily park the hold id here
       // as a deferral anchor — the job handler must not use it for SEND.
       resumeNodeId: deferAnchor,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3826,7 +3826,7 @@ async function scheduleAiPickCannedJob(
       triggerName: context.trigger,
     }),
     createDraft,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (context.messageId !== null) payload.messageId = context.messageId;
@@ -3838,7 +3838,7 @@ async function scheduleAiPickCannedJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -3948,7 +3948,7 @@ async function scheduleWorkflowHttpRequestJob(
     ...workflowJobProvenance(context),
     url: url.value,
     timeoutMs: timeoutMs.value,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (method.value === 'POST') {
@@ -3979,7 +3979,7 @@ async function scheduleWorkflowHttpRequestJob(
       ...(!resumeNodeId && errorResumeNodeId
         ? { completeOnSuccess: true, terminalNodeId: payload.terminalNodeId as string }
         : {}),
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -4040,7 +4040,7 @@ async function scheduleWorkflowForwardCopyJob(
     to: to.value,
     includeAttachments: config.includeAttachments === true,
     runOutboundReview: config.runOutboundReview === true,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
   };
   if (resumeNodeId) {
@@ -4050,7 +4050,7 @@ async function scheduleWorkflowForwardCopyJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -4118,7 +4118,7 @@ async function scheduleWorkflowDmarcIngestJob(
       workflowId: context.workflowId,
       triggerName: context.trigger,
       resumeNodeId,
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
@@ -5516,7 +5516,7 @@ function workflowDelayContext(
 ): Record<string, unknown> {
   return {
     resumeNodeId,
-    eventStrings: context.strings,
+    eventStrings: boundedContinuationStrings(context.strings),
     eventVariables: context.variables,
     ...inboundChainFieldsFromContext(context),
   };
@@ -6336,7 +6336,7 @@ async function enqueueWorkflowSubflow(
     ...workflowJobProvenance(context),
     triggerName: normalizeWorkflowTrigger(subflow.trigger_name),
     context: {
-      eventStrings: context.strings,
+      eventStrings: boundedContinuationStrings(context.strings),
       eventVariables: { ...context.variables, [SUBFLOW_DEPTH_VARIABLE]: subflowDepth + 1 },
       subflowParent: {
         workflowId: context.workflowId,
@@ -8145,10 +8145,39 @@ function serverCreatedWorkflowActivityLogSourceSqliteId(
 }
 
 const MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH = 128 * 1024;
+const MAX_CONTINUATION_BODY_TEXT_LENGTH = 48_000;
+
+/**
+ * Mailtext fuer Job-Payloads und Fortsetzungen kuerzen. body_text steht dort
+ * zweimal (auch in combined_text); ungekuerzt scheiterte jeder deferierte
+ * Knoten ab etwa 64 KB an der Kontextgrenze. Die KI-Jobs kuerzen fuer den
+ * Prompt ohnehin weiter; der synchrone Teil des Laufs behaelt den vollen Text.
+ * Nur Knoten nach der Fortsetzung sehen den gekuerzten Text (body_truncated).
+ */
+function boundedContinuationStrings(strings: WorkflowStringContext): WorkflowStringContext {
+  const body = strings.body_text ?? '';
+  if (body.length <= MAX_CONTINUATION_BODY_TEXT_LENGTH) return strings;
+  let cut = MAX_CONTINUATION_BODY_TEXT_LENGTH;
+  // Kein halbes Surrogatpaar stehen lassen: jsonb lehnt ein einzelnes \ud83d ab.
+  const last = body.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  const boundedBody = body.slice(0, cut);
+  // combined_text aus denselben Teilen neu bauen, nur mit gekuerztem Body.
+  const combined = strings.combined_text ?? '';
+  const bodyAt = combined.indexOf(body);
+  return {
+    ...strings,
+    body_text: boundedBody,
+    combined_text: bodyAt < 0
+      ? combined
+      : `${combined.slice(0, bodyAt)}${boundedBody}${combined.slice(bodyAt + body.length)}`,
+    body_truncated: 'true',
+  };
+}
 
 function workflowContinuationContextError(context: ServerWorkflowContext): string | null {
   if (
-    JSON.stringify(context.strings).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
+    JSON.stringify(boundedContinuationStrings(context.strings)).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
     || JSON.stringify(context.variables).length > MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH
   ) {
     return `Continuation-Kontext ueberschreitet ${MAX_WORKFLOW_CONTINUATION_CONTEXT_JSON_LENGTH} JSON-Zeichen`;
