@@ -121,6 +121,11 @@ describe('scheduled-send claim recovery', () => {
       for (let attempt = 0; attempt < 500 && sent.length === 0; attempt += 1) {
         await new Promise((resolveDone) => setTimeout(resolveDone, 20));
       }
+      // The claim is released after the sender returns, in the same tick run;
+      // wait for that instead of racing it.
+      for (let attempt = 0; attempt < 250 && (await claimRow(draftId)).length > 0; attempt += 1) {
+        await new Promise((resolveDone) => setTimeout(resolveDone, 20));
+      }
     } finally {
       runtime.stop();
       warnSpy.mockRestore();
