@@ -220,7 +220,7 @@ git stash pop
 | How you run SimpleCRM | How to get the latest version |
 |----------------------|-------------------------------|
 | **Git clone** (`pnpm run electron:dev` / `electron:start`) | `git pull origin main` + `pnpm install` (this section) |
-| **Windows installer** from `dist-build\` | Use **Update** in the app (status bar / update UI). That uses `electron-updater` and GitHub releases published via `pnpm run electron:publish`. Dev folders are not updated that way. |
+| **Windows installer** from `dist-build\` | Use **Update** in the app (status bar / update UI). That uses `electron-updater` and the GitHub releases published by the tag workflow (see [RELEASE.md](RELEASE.md)). Dev folders are not updated that way. |
 
 To ship a new installer after pulling `main`:
 

@@ -33,7 +33,7 @@
     "electron:dev": "node scripts/run-with-electron-native.mjs electron:dev:runtime",
     "electron:dev:runtime": "npm run electron:compile && concurrently \"cross-env NODE_ENV=development vite build --watch\" \"npm run electron:compile:watch\" \"npm run electron:dev:main:runtime\" \"cross-env NODE_ENV=development VITE_DEV_CACHE=1 vite --port 5173 --host --clearScreen false\" --names \"ElectronBundle,ElectronTS,ElectronMain,Vite\" --kill-others-on-exit",
     "electron:build": "node scripts/run-with-electron-native.mjs electron:build:runtime",
-    "electron:build:runtime": "npm run build && cross-env DEBUG=electron-builder* NODE_ENV=production electron-builder",
+    "electron:build:runtime": "npm run build && cross-env DEBUG=electron-builder* NODE_ENV=production electron-builder --publish never",
     "electron:publish": "node scripts/run-with-electron-native.mjs electron:publish:runtime",
     "electron:publish:runtime": "npm run build && cross-env DEBUG=electron-builder* NODE_ENV=production electron-builder --publish always",
     "electron:start": "node scripts/run-with-electron-native.mjs electron:start:runtime",

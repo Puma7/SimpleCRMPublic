@@ -98,8 +98,9 @@ describe('server edition repository boundaries', () => {
   test('CI installs the pinned pnpm release through the stable setup action', () => {
     const ci = readFileSync(join(__dirname, '..', '..', '.github', 'workflows', 'ci.yml'), 'utf8');
 
-    expect(ci).toContain('uses: pnpm/action-setup@v5');
-    expect(ci).not.toContain('uses: pnpm/action-setup@v6');
+    // Per Commit-SHA gepinnt (F-A12-04); die Version steht im Kommentar.
+    expect(ci).toMatch(/uses: pnpm\/action-setup@[0-9a-f]{40} # v5\./);
+    expect(ci).not.toMatch(/uses: pnpm\/action-setup@\S+ # v6\./);
   });
 
   test('pnpm permits the embedded PostgreSQL build used by Linux CI', () => {
