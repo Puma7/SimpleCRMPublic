@@ -86,7 +86,11 @@ einzige Legacy-Zeile haben — dort ist der Vergleich beweisbar leer.
   samt Zähler fest.
 - `access_regressions_present` — der Wechsel würde jemandem Zugriff **nehmen**
   (`legacyAllowNewDeny > 0`). Das bleibt gesperrt, auch mit Bestätigung: erst
-  die Delegation so ergänzen, dass niemand verliert.
+  die Delegation so ergänzen, dass niemand verliert. Sichtbarkeitsfilter, die
+  im Shadow-Modus schon greifen, zählen nicht dazu — ihre Wirkung ändert der
+  Wechsel nicht. Ein gefiltertes Ordner- oder Nachrichten-Binding neben
+  Legacy-Vollzugriff zählt dagegen: den Rest des Kontos gibt es danach nicht
+  mehr.
 
 Der Wechsel ist einmalig; einen Weg zurück nach `shadow` gibt es nicht.
 

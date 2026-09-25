@@ -268,7 +268,7 @@ describe('MailAccessRolloutService', () => {
     }]);
   });
 
-  test('shadow counts constrained account grants as narrower than legacy full accounts', async () => {
+  test('shadow enforces constrained account grants without counting them as a regression', async () => {
     const fixture = createRolloutFixture({
       mode: 'shadow',
       newGrants: [{
@@ -296,10 +296,12 @@ describe('MailAccessRolloutService', () => {
       resource: messageResource(),
     })).rejects.toBeInstanceOf(MailAccessDeniedError);
 
+    // Die Ablehnung gilt schon im Shadow-Modus; der Wechsel auf enforce nimmt
+    // hier niemandem etwas, das zaehlt also nicht als Regression.
     expect(fixture.increments).toEqual([{
       workspaceId: WORKSPACE_A,
       evaluated: 1n,
-      legacyAllowNewDeny: 1n,
+      legacyAllowNewDeny: 0n,
       legacyDenyNewAllow: 0n,
     }]);
   });
@@ -460,9 +462,96 @@ describe('MailAccessRolloutService', () => {
     expect(fixture.increments).toEqual([{
       workspaceId: WORKSPACE_A,
       evaluated: 1n,
-      legacyAllowNewDeny: 1n,
+      legacyAllowNewDeny: 0n,
       legacyDenyNewAllow: 0n,
     }]);
+  });
+
+  // F-D2-03: Ein im Shadow-Modus bereits wirkender Sichtbarkeitsfilter zaehlte als legacyAllowNewDeny und sperrte den Wechsel auf enforce dauerhaft.
+  test('shadow counts only access that the enforce switch would actually remove', async () => {
+    const constraints = {
+      assignmentMode: 'assigned_to_me' as const,
+      categoryAllowIds: [],
+      categoryExcludeIds: [],
+      tagAllowValues: [],
+      tagExcludeValues: [],
+    };
+    const actorContext = async () => ({ userId: USER_A, groupMemberUserIds: [USER_A] });
+
+    // Gefiltertes KONTO-Binding auf ein Legacy-Konto: der Shadow-Scope ist
+    // bereits der Enforce-Scope, und die Nachricht ist schon heute gesperrt.
+    // Zaehlte das als Regression, liesse jeder Listenaufruf des Nutzers
+    // legacyAllowNewDeny wieder steigen — enforce bliebe dauerhaft gesperrt.
+    const filtered = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 1,
+        resourceType: 'account',
+        accountId: ACCOUNT_A,
+        folderId: null,
+        messageId: null,
+        constraints,
+      }],
+    });
+    filtered.newPort.resolveScopeActorContext = actorContext;
+    filtered.newPort.resolveMessageVisibilityFacts = async () => ({
+      assignedToUserId: 'someone-else',
+      assignedTo: null,
+      categoryIds: [],
+      tags: [],
+    });
+
+    await filtered.service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+    });
+    await expect(filtered.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.content.read',
+      resource: messageResource(),
+    })).rejects.toBeInstanceOf(MailAccessDeniedError);
+
+    expect(filtered.increments).toEqual([
+      { workspaceId: WORKSPACE_A, evaluated: 1n, legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n },
+      { workspaceId: WORKSPACE_A, evaluated: 1n, legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n },
+    ]);
+
+    // Gegenprobe: gefiltertes ORDNER-Binding neben Legacy-Vollzugriff. Den
+    // Legacy-Rest des Kontos gibt es nach dem Wechsel nicht mehr — das bleibt
+    // eine echte Regression, im Scope wie fuer eine Nachricht ausserhalb.
+    const folderOnly = createRolloutFixture({
+      mode: 'shadow',
+      legacyReadAccounts: [ACCOUNT_A],
+      newGrants: [{
+        bindingId: 2,
+        resourceType: 'folder',
+        accountId: ACCOUNT_A,
+        folderId: FOLDER_A,
+        messageId: null,
+        constraints,
+      }],
+    });
+    folderOnly.newPort.resolveScopeActorContext = actorContext;
+
+    await folderOnly.service.resolveScope({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.metadata.read',
+    });
+    await expect(folderOnly.service.assertPermission({
+      workspaceId: WORKSPACE_A,
+      actor: USER_ACTOR,
+      permission: 'mail.content.read',
+      resource: messageResource(ACCOUNT_A, FOLDER_A + 1),
+    })).resolves.toBeUndefined();
+
+    expect(folderOnly.increments).toEqual([
+      { workspaceId: WORKSPACE_A, evaluated: 1n, legacyAllowNewDeny: 1n, legacyDenyNewAllow: 0n },
+      { workspaceId: WORKSPACE_A, evaluated: 1n, legacyAllowNewDeny: 1n, legacyDenyNewAllow: 0n },
+    ]);
   });
 
   test('shadow resolveScope attaches constraint clauses for constrained new grants', async () => {

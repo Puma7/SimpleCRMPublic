@@ -157,7 +157,11 @@ export class MailAccessRolloutService implements MailAccessService {
         value: allowed ? allowedDecision() : deniedDecision(),
         delta: {
           evaluated: 1n,
-          legacyAllowNewDeny: legacyAllowed && !newDecision.allowed ? 1n : 0n,
+          // Gemessen an der im Shadow tatsaechlich angewandten Entscheidung: ein
+          // Filter, der hier schon sperrt, sperrt nach enforce genauso — der
+          // Wechsel nimmt dann niemandem etwas. Gegen die rohe Legacy-Antwort
+          // gezaehlt, sperrte jeder wirksame Filter den Wechsel dauerhaft.
+          legacyAllowNewDeny: allowed && !newDecision.allowed ? 1n : 0n,
           legacyDenyNewAllow: !legacyAllowed && newDecision.allowed ? 1n : 0n,
         },
       };
@@ -473,11 +477,14 @@ function compareLegacyAccountScopeToNewGrants(
       : { legacyAllowNewDeny: 0n, legacyDenyNewAllow: 0n };
   }
 
-  // Constrained account grants are narrower than legacy full-account scope and
-  // must not count as parity with unconstrained legacy account access.
+  // Every account grant counts as parity, constrained or not: for such an
+  // account buildShadowScopeWithConstraints adds no legacy remainder, so the
+  // shadow scope already equals the enforce scope and the switch removes
+  // nothing. Constrained folder/message grants without an account grant keep
+  // counting — their legacy remainder is lost after enforce.
   const newFullAccounts = new Set(
     newGrants
-      .filter((grant) => grant.resourceType === 'account' && !hasMailBindingConstraints(grant.constraints))
+      .filter((grant) => grant.resourceType === 'account')
       .map((grant) => grant.accountId),
   );
   const newTouchedAccounts = new Set(newGrants.map((grant) => grant.accountId));
