@@ -9,7 +9,10 @@ import {
   type WorkflowDmarcIngestJobPlan,
 } from '../../packages/server/src/dmarc-ingest';
 import type { DmarcStorePort } from '../../packages/server/src/db/postgres-dmarc-port';
-import { MAX_DECOMPRESSED_BYTES } from '../../packages/server/src/dmarc/parse-aggregate-report';
+import {
+  MAX_DECOMPRESSED_BYTES,
+  MAX_DMARC_RECORDS_PER_REPORT,
+} from '../../packages/server/src/dmarc/parse-aggregate-report';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 
@@ -113,8 +116,10 @@ describe('createPostgresWorkflowDmarcIngestPort', () => {
 
   // F-A3b-03: spreading a report with more than ~125k records into push() threw a RangeError after the
   // report was already persisted, so it was logged as "skipped" and its records never reached dmarc.* vars.
+  // Seit E13 (F-A3b-01) sind hoechstens MAX_DMARC_RECORDS_PER_REPORT Records je Report erlaubt; gezaehlt
+  // wird deshalb der groesste zulaessige Report.
   test('counts every record of a very large report without a RangeError', async () => {
-    const recordCount = 200_000;
+    const recordCount = MAX_DMARC_RECORDS_PER_REPORT;
     const header = REPORT_XML.slice(0, REPORT_XML.indexOf('<record>'));
     const record = '<record><row><count>1</count></row></record>';
     const xml = `${header}${record.repeat(recordCount)}</feedback>`;
@@ -138,6 +143,46 @@ describe('createPostgresWorkflowDmarcIngestPort', () => {
       expect(eventVars(jobs[0])['dmarc.report_count']).toBe(1);
       expect(eventVars(jobs[0])['dmarc.record_count']).toBe(recordCount);
       expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('skipping report attachment'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // F-A3b-01: Ein einzelner Report mit bis zu 450.000 Records wurde vollstaendig geparst (rund 7,8 s synchron) und eingefuegt.
+  test('skips and logs a report with more than MAX_DMARC_RECORDS_PER_REPORT records, the rest still ingests (E13)', async () => {
+    const header = REPORT_XML.slice(0, REPORT_XML.indexOf('<record>'));
+    const record = '<record><row><count>1</count></row></record>';
+    const oversized = `${header.replace('G-1', 'G-BIG')}${record.repeat(MAX_DMARC_RECORDS_PER_REPORT + 1)}</feedback>`;
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const port = createPostgresWorkflowDmarcIngestPort({
+        db: makeFakeDb({
+          attachments: [
+            { filename_display: 'huge.xml.gz', storage_path: 'huge.xml.gz' },
+            { filename_display: 'report.xml', storage_path: 'report.xml' },
+          ],
+          jobInserts,
+        }),
+        attachmentsRoot: '/tmp/att',
+        readAttachmentFile: async (path) => (basename(path) === 'huge.xml.gz'
+          ? gzipSync(Buffer.from(oversized, 'utf8'))
+          : Buffer.from(REPORT_XML, 'utf8')),
+        store,
+        applyWorkspaceSession: async () => undefined,
+      });
+
+      const started = Date.now();
+      await port.ingest({ workspaceId: WS, workflowId: 5, messageId: 43, continuation: CONTINUATION });
+      expect(Date.now() - started).toBeLessThan(1_500);
+
+      expect(store.persistReport).toHaveBeenCalledTimes(1);
+      expect((store.persistReport as jest.Mock).mock.calls[0][0].report.reportId).toBe('G-1');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/huge\.xml\.gz.*100001.*100000/));
+      const vars = eventVars(jobInserts.filter((j) => j.table === 'job_queue')[0]);
+      expect(vars['dmarc.report_count']).toBe(1);
+      expect(vars['dmarc.record_count']).toBe(2);
     } finally {
       warn.mockRestore();
     }

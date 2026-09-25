@@ -3,8 +3,10 @@ import { readFile } from 'node:fs/promises';
 import type { Kysely } from 'kysely';
 
 import {
+  countDmarcRecordTags,
   decompressReportAttachment,
   MAX_DECOMPRESSED_BYTES,
+  MAX_DMARC_RECORDS_PER_REPORT,
   parseDmarcXml,
   summarizeDmarcRecords,
   type DmarcRecordRow,
@@ -191,7 +193,17 @@ async function ingestAttachments(args: {
     // that throws (e.g. a value the DB rejects) so the remaining reports still
     // ingest and the summary/continuation stay accurate.
     try {
-      const report = parseDmarcXml(xml.toString('utf8'));
+      const xmlText = xml.toString('utf8');
+      // Vor dem Parse zaehlen: ein Report mit zu vielen Records wird nicht erst
+      // sekundenlang synchron geparst und eingefuegt (F-A3b-01).
+      const recordTags = countDmarcRecordTags(xmlText);
+      if (recordTags > MAX_DMARC_RECORDS_PER_REPORT) {
+        console.warn(
+          `workflow.dmarc_ingest: skipping report attachment "${attachment.filename}": ${recordTags} records exceed the limit of ${MAX_DMARC_RECORDS_PER_REPORT}`,
+        );
+        continue;
+      }
+      const report = parseDmarcXml(xmlText);
       if (!report) continue;
 
       const persisted = await store.persistReport({
