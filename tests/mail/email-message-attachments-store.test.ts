@@ -220,6 +220,21 @@ describe('email-message-attachments-store', () => {
     expect(fs.existsSync(f)).toBe(false);
   });
 
+  // F-A7b-15: safeFilename ersetzte Umlaute/Unicode durch '_' (Anzeige, Speichern-Dialog, Weiterleitung).
+  test('persistParsedAttachments keeps umlauts in the stored and displayed name, but not path parts', async () => {
+    stmt.all.mockReturnValue([]);
+    await persistParsedAttachments(31, [
+      { filename: 'Prüfbericht_Größe.pdf', content: Buffer.from('a') },
+      { filename: '../../evil.txt', content: Buffer.from('b') },
+    ]);
+    const insertCalls = stmt.run.mock.calls.filter((args) => args[0] === 31 && typeof args[1] === 'string');
+    expect(insertCalls.map((args) => [args[1], args[4]])).toEqual([
+      ['Prüfbericht_Größe.pdf', '31/Prüfbericht_Größe.pdf'],
+      ['evil.txt', '31/evil.txt'],
+    ]);
+    expect(fs.existsSync(path.join(userData, 'email-attachments', '31', 'Prüfbericht_Größe.pdf'))).toBe(true);
+  });
+
   // F-A7b-07: Die Ordner heissen nach der Message-ID; Konto 2 loeschen entfernte den Ordner von Nachricht 2 eines anderen Kontos.
   test('purgeAttachmentFilesForAccount leaves the folder of a foreign message whose id equals the account id', async () => {
     const root = path.join(userData, 'email-attachments');

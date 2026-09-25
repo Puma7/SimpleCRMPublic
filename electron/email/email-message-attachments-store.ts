@@ -5,6 +5,7 @@ import { app } from 'electron';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { resolveStoredAttachmentPath, toStoredAttachmentPath } from './attachment-storage-path';
+import { sanitizeAttachmentFilename } from '@simplecrm/core';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -24,8 +25,9 @@ function attachmentsRoot(): string {
   return root;
 }
 
+/** Display and on-disk name: keeps umlauts/Unicode, drops path parts and control characters. */
 function safeFilename(name: string): string {
-  return name.replace(/[^a-zA-Z0-9._\-+ ]/g, '_').slice(0, 180) || 'attachment';
+  return sanitizeAttachmentFilename(name);
 }
 
 /**

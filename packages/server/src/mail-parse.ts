@@ -7,7 +7,6 @@
  * (parseMailSource etc. via the packages/server/src barrel) is unchanged.
  */
 import { createHash } from 'node:crypto';
-import path from 'node:path';
 
 import {
   addressJson,
@@ -16,6 +15,7 @@ import {
   parseAttachmentsMeta,
   plainTextFromHtml,
   rawHeadersFromParsed,
+  sanitizeAttachmentFilename as sanitizeUnicodeAttachmentFilename,
   snippetFromParsed,
 } from '@simplecrm/core';
 
@@ -63,15 +63,9 @@ export function sourceToBuffer(source: Buffer | Uint8Array | string): Buffer {
   return Buffer.from(source.buffer, source.byteOffset, source.byteLength);
 }
 
+/** Keeps Unicode names (umlauts, CJK) and their real extension; see @simplecrm/core. */
 export function sanitizeAttachmentFilename(input: string): string {
-  const basename = path.basename(input).trim();
-  if (!basename || basename === '.' || basename === '..') return 'attachment';
-  const sanitized = basename
-    .replace(/[\r\n\0]+/g, '_')
-    .replace(/[^A-Za-z0-9._-]+/g, '_')
-    .replace(/^_+/, '')
-    .slice(0, 180);
-  return sanitized || 'attachment';
+  return sanitizeUnicodeAttachmentFilename(input);
 }
 
 /** Validates JSON text and returns it as a string suitable for jsonb columns.

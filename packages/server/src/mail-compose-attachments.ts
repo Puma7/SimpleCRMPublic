@@ -5,6 +5,8 @@ import path from 'node:path';
 
 import type { Kysely } from 'kysely';
 
+import { sanitizeAttachmentFilename as sanitizeUnicodeAttachmentFilename } from '@simplecrm/core';
+
 import type { EmailComposeAttachmentUploadApiPort, EmailComposeAttachmentUploadResult } from './api';
 import {
   composeDraftAttachmentPathsFromStored,
@@ -214,12 +216,7 @@ async function storeDraftAttachment(
 function sanitizeAttachmentFilename(input: string): string {
   const basename = path.basename(input).trim();
   if (!basename || basename === '.' || basename === '..') return '';
-  const sanitized = basename
-    .replace(/[\r\n\0]+/g, '_')
-    .replace(/[^A-Za-z0-9._-]+/g, '_')
-    .replace(/^_+/, '')
-    .slice(0, 180);
-  return sanitized || 'attachment';
+  return sanitizeUnicodeAttachmentFilename(basename);
 }
 
 function isValidBase64(value: string): boolean {
