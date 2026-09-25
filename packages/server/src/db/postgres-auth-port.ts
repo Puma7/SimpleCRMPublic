@@ -202,11 +202,10 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
           if (!input.id) {
             if (!input.password) return { ok: false as const, code: 'password_required' as const };
-            // Only admins may create privileged accounts; delegated user
-            // managers (users.manage) can create ordinary users only.
-            if (isForbiddenUserMutation(input.actorIsAdmin, input.role)) {
-              return { ok: false as const, code: 'role_change_forbidden' as const };
-            }
+            // Only admins may create privileged accounts, only owners an owner;
+            // delegated user managers (users.manage) can create ordinary users only.
+            const createDenial = isForbiddenUserMutation(input.actorRole, input.role);
+            if (createDenial) return { ok: false as const, code: createDenial };
             const created = await trx
               .insertInto('users')
               .values({
@@ -239,10 +238,10 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
           // Delegated user managers may edit ordinary users only — never change
           // a role, and never mutate an existing admin/owner account (e.g. reset
-          // its password or disable an owner).
-          if (isForbiddenUserMutation(input.actorIsAdmin, input.role, existing.role)) {
-            return { ok: false as const, code: 'role_change_forbidden' as const };
-          }
+          // its password or disable an owner). Admins may not touch owner
+          // accounts or grant the owner role (G3).
+          const updateDenial = isForbiddenUserMutation(input.actorRole, input.role, existing.role);
+          if (updateDenial) return { ok: false as const, code: updateDenial };
           if (await delegatedTargetIsMorePrivileged(trx, input, existing.id)) {
             return { ok: false as const, code: 'target_more_privileged' as const };
           }
@@ -302,10 +301,10 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           if (!existing) return { ok: false as const, code: 'not_found' as const };
           // Delegated user managers (users.manage but not admin) may only delete
           // ordinary users — never an admin/owner account, whose deletion would
-          // revoke that principal's sessions. Mirrors the saveUser guard.
-          if (isForbiddenUserMutation(input.actorIsAdmin, existing.role, existing.role)) {
-            return { ok: false as const, code: 'role_change_forbidden' as const };
-          }
+          // revoke that principal's sessions; admins never an owner account.
+          // Mirrors the saveUser guard.
+          const deleteDenial = isForbiddenUserMutation(input.actorRole, existing.role, existing.role);
+          if (deleteDenial) return { ok: false as const, code: deleteDenial };
           if (await delegatedTargetIsMorePrivileged(trx, input, existing.id)) {
             return { ok: false as const, code: 'target_more_privileged' as const };
           }
@@ -1089,12 +1088,12 @@ async function delegatedTargetIsMorePrivileged(
   input: Readonly<{
     workspaceId: string;
     actorUserId: string;
-    actorIsAdmin: boolean;
+    actorRole: 'owner' | 'admin' | 'user';
     actorCapabilities?: readonly string[];
   }>,
   targetId: string,
 ): Promise<boolean> {
-  if (input.actorIsAdmin || targetId === input.actorUserId) return false;
+  if (input.actorRole !== 'user' || targetId === input.actorUserId) return false;
   const permissionRows = await trx
     .selectFrom('user_group_members')
     .innerJoin('user_group_permissions', (join) => join

@@ -16,7 +16,7 @@
 | Workflows | `workflows.view` → `run` → `edit` → `manage` | Support+ nur ausführen; Backoffice bearbeiten |
 | Einstellungen | `settings.view` → `settings.manage` | Support: keines; Admin-Delegierte: manage |
 | Tracking | `tracking.view` | Evidenz/Tracking |
-| Benutzer | `users.manage` | Nur Ordinary-User (kein Owner/Admin), die nicht mehr Rechte haben als der Delegierte (siehe unten) |
+| Benutzer | `users.manage` | Nur Ordinary-User (kein Owner/Admin), die nicht mehr Rechte haben als der Delegierte (siehe unten); Owner-Konten nur durch Owner |
 
 Höhere Stufe impliziert niedrigere (Expand beim Auth in `expandUserGroupCapabilities`).
 
@@ -60,6 +60,21 @@ Benutzer bleibt unverändert. Die Prüfung läuft in derselben Transaktion wie d
 Schreibzugriff (`postgres-auth-port.ts`, reine Regel `isTargetMorePrivileged` in
 `packages/server/src/api/capabilities.ts`). Solche Konten bearbeitet ein
 Owner/Admin.
+
+### Owner-Konten (nur Owner)
+
+Nur ein Owner vergibt oder entzieht die Rolle `owner` und ändert oder löscht ein
+Owner-Konto: Rolle, Aktiv-Status, Passwort, E-Mail, Anzeige- und öffentlicher
+Name, Login-PIN, 2FA (Authenticator einrichten, E-Mail-2FA, 2FA abschalten).
+Auch eine Einladung mit Rolle `owner` darf nur ein Owner erstellen. Admins
+verwalten alle übrigen Konten weiter, auch andere Admins. Sonst antwortet der
+Server mit **403 `owner_management_requires_owner`** (Regel
+`isForbiddenUserMutation`). Grund: Ein Admin könnte sich sonst selbst zum Owner
+machen oder ein Owner-Konto übernehmen und damit den Owner-only-Komplett-Reset
+erreichen (G3, revidiert F-A2b-05). Ein Owner darf sich selbst herabstufen,
+solange ein anderer aktiver Owner bleibt (`last_owner_required`). Das
+Erst-Setup (`POST /api/v1/auth/initial-setup`) ist davon nicht betroffen. Die
+Benutzerverwaltung blendet die Aktionen an Owner-Zeilen für Nicht-Owner aus.
 
 ## Vorlagen
 

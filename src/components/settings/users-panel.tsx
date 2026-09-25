@@ -63,6 +63,10 @@ export function UsersPanel() {
   // und bearbeiten, aber weder einladen noch fremde 2FA umstellen — solche
   // Knoepfe waeren garantierte 403er und bleiben deshalb aus.
   const isAdmin = currentUser?.role === "owner" || currentUser?.role === "admin"
+  // G3: Owner-Konten aendern nur Owner (Server owner_management_requires_owner,
+  // Desktop saveLocalAuthUser/deleteLocalAuthUser). Fuer alle anderen waeren die
+  // Knoepfe an einer Owner-Zeile garantierte Ablehnungen.
+  const canChangeUser = (u: UserRow) => u.role !== "owner" || currentUser?.role === "owner"
 
   const strength = useMemo(() => evaluatePassword(password), [password])
 
@@ -245,42 +249,26 @@ export function UsersPanel() {
                   {u.is_active ? "aktiv" : "inaktiv"}
                 </span>
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  // Block self-deactivation: disabling your own account fails the
-                  // next authenticated request (server) or blocks the next login
-                  // (standalone) and can lock the operator out.
-                  disabled={rowBusy === u.id || (currentUser?.id === u.id && Boolean(u.is_active))}
-                  title={
-                    currentUser?.id === u.id && u.is_active
-                      ? "Sie können Ihr eigenes Konto nicht deaktivieren"
-                      : undefined
-                  }
-                  onClick={() => void applyUserUpdate(u, { isActive: !u.is_active })}
-                >
-                  {u.is_active ? "Deaktivieren" : "Reaktivieren"}
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  disabled={rowBusy === u.id}
-                  onClick={() => {
-                    setPwEditId(pwEditId === u.id ? null : u.id)
-                    setPwValue("")
-                  }}
-                >
-                  Passwort neu setzen
-                </Button>
-                {/* Public name is a server-edition concept: the local Electron
-                    auth store has no public_name column, so a desktop save would
-                    silently revert. Hide the control outside server mode. */}
-                {serverClientMode ? (
+              {canChangeUser(u) ? (
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs"
+                    // Block self-deactivation: disabling your own account fails the
+                    // next authenticated request (server) or blocks the next login
+                    // (standalone) and can lock the operator out.
+                    disabled={rowBusy === u.id || (currentUser?.id === u.id && Boolean(u.is_active))}
+                    title={
+                      currentUser?.id === u.id && u.is_active
+                        ? "Sie können Ihr eigenes Konto nicht deaktivieren"
+                        : undefined
+                    }
+                    onClick={() => void applyUserUpdate(u, { isActive: !u.is_active })}
+                  >
+                    {u.is_active ? "Deaktivieren" : "Reaktivieren"}
+                  </Button>
                   <Button
                     type="button"
                     size="sm"
@@ -288,25 +276,45 @@ export function UsersPanel() {
                     className="h-7 text-xs"
                     disabled={rowBusy === u.id}
                     onClick={() => {
-                      setPnEditId(pnEditId === u.id ? null : u.id)
-                      setPnValue(u.public_name ?? "")
+                      setPwEditId(pwEditId === u.id ? null : u.id)
+                      setPwValue("")
                     }}
                   >
-                    Öffentl. Name
+                    Passwort neu setzen
                   </Button>
-                ) : null}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs text-destructive hover:text-destructive"
-                  disabled={rowBusy === u.id || currentUser?.id === u.id}
-                  title={currentUser?.id === u.id ? "Sie können Ihr eigenes Konto nicht löschen" : undefined}
-                  onClick={() => void deleteUser(u)}
-                >
-                  Löschen
-                </Button>
-              </div>
+                  {/* Public name is a server-edition concept: the local Electron
+                      auth store has no public_name column, so a desktop save would
+                      silently revert. Hide the control outside server mode. */}
+                  {serverClientMode ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 text-xs"
+                      disabled={rowBusy === u.id}
+                      onClick={() => {
+                        setPnEditId(pnEditId === u.id ? null : u.id)
+                        setPnValue(u.public_name ?? "")
+                      }}
+                    >
+                      Öffentl. Name
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 text-xs text-destructive hover:text-destructive"
+                    disabled={rowBusy === u.id || currentUser?.id === u.id}
+                    title={currentUser?.id === u.id ? "Sie können Ihr eigenes Konto nicht löschen" : undefined}
+                    onClick={() => void deleteUser(u)}
+                  >
+                    Löschen
+                  </Button>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">Nur Owner können Owner-Konten ändern.</p>
+              )}
               {pwEditId === u.id ? (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Input
@@ -383,6 +391,7 @@ export function UsersPanel() {
                   user={u}
                   disabled={busy}
                   canManageMfa={isAdmin || currentUser?.id === u.id}
+                  readOnly={!canChangeUser(u)}
                   onChanged={() => void load()}
                 />
               ) : null}
@@ -509,6 +518,8 @@ function UserSecurityActions(props: {
   disabled?: boolean
   /** Admin oder der Nutzer selbst — nur dann lassen die 2FA-Endpunkte zu. */
   canManageMfa?: boolean
+  /** Nur Status anzeigen, keine PIN-/2FA-Aktionen (Owner-Konto fuer Nicht-Owner, G3). */
+  readOnly?: boolean
   onChanged: () => void
 }) {
   const [error, setError] = useState<string | null>(null)
@@ -653,78 +664,80 @@ function UserSecurityActions(props: {
       <p className="text-xs text-muted-foreground">
         Login-Sicherheit: {securityBits.length > 0 ? securityBits.join(", ") : "keine Zusatzfaktoren"}
       </p>
-      <div className="flex flex-wrap gap-2">
-        {props.user.login_pin_enabled ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => void saveLoginPin(null)}
-          >
-            PIN entfernen
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => {
-              setPinValue("")
-              setPinOpen(true)
-            }}
-          >
-            Login-PIN setzen
-          </Button>
-        )}
-        {props.user.login_pin_enabled ? (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => {
-              setPinValue("")
-              setPinOpen(true)
-            }}
-          >
-            PIN aendern
-          </Button>
-        ) : null}
-        {props.canManageMfa === false ? null : !props.user.mfa_enabled ? (
-          <>
+      {props.readOnly ? null : (
+        <div className="flex flex-wrap gap-2">
+          {props.user.login_pin_enabled ? (
             <Button
               type="button"
               size="sm"
               variant="outline"
               disabled={props.disabled || busy}
-              onClick={() => void beginTotp()}
+              onClick={() => void saveLoginPin(null)}
             >
-              Authenticator einrichten
+              PIN entfernen
             </Button>
+          ) : (
             <Button
               type="button"
               size="sm"
               variant="outline"
               disabled={props.disabled || busy}
-              onClick={() => openStepUp("email")}
+              onClick={() => {
+                setPinValue("")
+                setPinOpen(true)
+              }}
             >
-              E-Mail-2FA aktivieren
+              Login-PIN setzen
             </Button>
-          </>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={props.disabled || busy}
-            onClick={() => openStepUp("disable")}
-          >
-            2FA deaktivieren
-          </Button>
-        )}
-      </div>
+          )}
+          {props.user.login_pin_enabled ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={props.disabled || busy}
+              onClick={() => {
+                setPinValue("")
+                setPinOpen(true)
+              }}
+            >
+              PIN aendern
+            </Button>
+          ) : null}
+          {props.canManageMfa === false ? null : !props.user.mfa_enabled ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={props.disabled || busy}
+                onClick={() => void beginTotp()}
+              >
+                Authenticator einrichten
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={props.disabled || busy}
+                onClick={() => openStepUp("email")}
+              >
+                E-Mail-2FA aktivieren
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={props.disabled || busy}
+              onClick={() => openStepUp("disable")}
+            >
+              2FA deaktivieren
+            </Button>
+          )}
+        </div>
+      )}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       <Dialog open={pinOpen} onOpenChange={setPinOpen}>
         <DialogContent>

@@ -1,4 +1,10 @@
-import type { ApiRequest, ApiResponse, AuthSecurityWorkspaceSettings, ServerApiPorts } from './types';
+import type {
+  ApiRequest,
+  ApiResponse,
+  AuthenticatedPrincipal,
+  AuthSecurityWorkspaceSettings,
+  ServerApiPorts,
+} from './types';
 import {
   data,
   error,
@@ -8,6 +14,8 @@ import {
 } from './http';
 import { authSessionData } from './auth-session-cookie';
 import { verifyStepUpAuthentication } from './password-check-lockout';
+import { isForbiddenUserMutation } from './capabilities';
+import { ownerManagementRequiresOwnerError } from './auth-routes';
 
 export async function handleAuthSecurityRoute(
   req: ApiRequest,
@@ -184,6 +192,8 @@ async function handleTotpSetup(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity || !ports.auth.findUserByEmail) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
@@ -211,6 +221,8 @@ async function handleTotpConfirm(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
@@ -242,6 +254,8 @@ async function handleEnableEmailMfa(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
@@ -272,6 +286,8 @@ async function handleDisableMfa(
   if (!requireAdmin(principal) && principal.userId !== userId) {
     return error(403, 'forbidden', 'Adminrechte erforderlich');
   }
+  const ownerOnly = await rejectOwnerAccountChange(ports, principal, userId);
+  if (ownerOnly) return ownerOnly;
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
@@ -283,6 +299,24 @@ async function handleDisableMfa(
   });
   await recordMfaChange(ports, principal, userId, 'auth.mfa_disabled', stepUp.method);
   return data(200, { enabled: false });
+}
+
+// G3: Only an owner changes the second factor of another owner. Otherwise an admin
+// could switch it off or enroll an own authenticator for the owner account.
+async function rejectOwnerAccountChange(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+  userId: string,
+): Promise<ApiResponse | null> {
+  if (principal.role === 'owner' || principal.userId === userId) return null;
+  if (!ports.auth.getUser) {
+    return error(503, 'auth_users_unavailable', 'Benutzerverwaltung ist nicht konfiguriert');
+  }
+  const target = await ports.auth.getUser({ workspaceId: principal.workspaceId, userId });
+  if (!target) return null;
+  return isForbiddenUserMutation(principal.role, target.role, target.role)
+    ? ownerManagementRequiresOwnerError()
+    : null;
 }
 
 async function recordMfaChange(

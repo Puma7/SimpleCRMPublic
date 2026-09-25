@@ -95,26 +95,51 @@ describe('user group capabilities', () => {
   });
 
   test('delegated user managers may only create/edit ordinary users', () => {
-    expect(isForbiddenUserMutation(true, 'owner')).toBe(false);
-    expect(isForbiddenUserMutation(true, 'admin', 'owner')).toBe(false);
-    expect(isForbiddenUserMutation(false, 'user')).toBe(false);
-    expect(isForbiddenUserMutation(false, 'user', 'user')).toBe(false);
-    expect(isForbiddenUserMutation(false, 'owner')).toBe(true);
-    expect(isForbiddenUserMutation(false, 'admin')).toBe(true);
-    expect(isForbiddenUserMutation(false, 'owner', 'user')).toBe(true);
-    expect(isForbiddenUserMutation(false, 'admin', 'admin')).toBe(true);
-    expect(isForbiddenUserMutation(false, 'owner', 'owner')).toBe(true);
-    expect(isForbiddenUserMutation(false, 'user', 'admin')).toBe(true);
+    expect(isForbiddenUserMutation('user', 'user')).toBeNull();
+    expect(isForbiddenUserMutation('user', 'user', 'user')).toBeNull();
+    expect(isForbiddenUserMutation('user', 'owner')).toBe('role_change_forbidden');
+    expect(isForbiddenUserMutation('user', 'admin')).toBe('role_change_forbidden');
+    expect(isForbiddenUserMutation('user', 'owner', 'user')).toBe('role_change_forbidden');
+    expect(isForbiddenUserMutation('user', 'admin', 'admin')).toBe('role_change_forbidden');
+    expect(isForbiddenUserMutation('user', 'owner', 'owner')).toBe('role_change_forbidden');
+    expect(isForbiddenUserMutation('user', 'user', 'admin')).toBe('role_change_forbidden');
+  });
+
+  // C-A72 (G3): Ein Admin durfte die Owner-Rolle vergeben und Owner-Konten aendern. Frueher hielt
+  // dieser Test `isForbiddenUserMutation(true, 'owner') === false` als gewollt fest (F-A2b-05 BY-DESIGN);
+  // mit G3 vergeben und entziehen nur Owner die Owner-Rolle und aendern Owner-Konten.
+  test('only owners assign or revoke the owner role and change owner accounts', () => {
+    expect(isForbiddenUserMutation('admin', 'owner')).toBe('owner_management_requires_owner');
+    expect(isForbiddenUserMutation('admin', 'owner', 'admin')).toBe('owner_management_requires_owner');
+    expect(isForbiddenUserMutation('admin', 'owner', 'user')).toBe('owner_management_requires_owner');
+    expect(isForbiddenUserMutation('admin', 'admin', 'owner')).toBe('owner_management_requires_owner');
+    expect(isForbiddenUserMutation('admin', 'owner', 'owner')).toBe('owner_management_requires_owner');
+
+    expect(isForbiddenUserMutation('owner', 'owner')).toBeNull();
+    expect(isForbiddenUserMutation('owner', 'owner', 'user')).toBeNull();
+    expect(isForbiddenUserMutation('owner', 'admin', 'owner')).toBeNull();
+    expect(isForbiddenUserMutation('owner', 'owner', 'owner')).toBeNull();
+  });
+
+  test('admins keep managing every account that is not an owner', () => {
+    expect(isForbiddenUserMutation('admin', 'admin')).toBeNull();
+    expect(isForbiddenUserMutation('admin', 'user')).toBeNull();
+    expect(isForbiddenUserMutation('admin', 'admin', 'admin')).toBeNull();
+    expect(isForbiddenUserMutation('admin', 'user', 'admin')).toBeNull();
+    expect(isForbiddenUserMutation('admin', 'admin', 'user')).toBeNull();
   });
 
   test('delegated deletes may only target ordinary users', () => {
-    const forbiddenForNonAdmin = (targetRole: 'owner' | 'admin' | 'user') =>
-      isForbiddenUserMutation(false, targetRole, targetRole);
-    expect(isForbiddenUserMutation(true, 'owner', 'owner')).toBe(false);
-    expect(isForbiddenUserMutation(true, 'admin', 'admin')).toBe(false);
-    expect(forbiddenForNonAdmin('user')).toBe(false);
-    expect(forbiddenForNonAdmin('admin')).toBe(true);
-    expect(forbiddenForNonAdmin('owner')).toBe(true);
+    const deleteDenial = (actorRole: 'owner' | 'admin' | 'user', targetRole: 'owner' | 'admin' | 'user') =>
+      isForbiddenUserMutation(actorRole, targetRole, targetRole);
+    expect(deleteDenial('owner', 'owner')).toBeNull();
+    expect(deleteDenial('owner', 'admin')).toBeNull();
+    expect(deleteDenial('admin', 'admin')).toBeNull();
+    expect(deleteDenial('admin', 'user')).toBeNull();
+    expect(deleteDenial('admin', 'owner')).toBe('owner_management_requires_owner');
+    expect(deleteDenial('user', 'user')).toBeNull();
+    expect(deleteDenial('user', 'admin')).toBe('role_change_forbidden');
+    expect(deleteDenial('user', 'owner')).toBe('role_change_forbidden');
   });
 
   // F-A2b-06: users.manage delegates could reset 'user' accounts that hold more

@@ -173,8 +173,11 @@ export type AuthInvitationRecord = {
 export type AuthUserSaveInput = {
   workspaceId: string;
   actorUserId: string;
-  /** Only owners/admins may assign or change roles; delegated managers cannot. */
-  actorIsAdmin: boolean;
+  /**
+   * Only owners/admins may assign or change roles; delegated managers cannot.
+   * Only owners may assign the owner role or change owner accounts (isForbiddenUserMutation).
+   */
+  actorRole: AuthenticatedPrincipal['role'];
   /** Expanded group capabilities of a delegated manager (see isTargetMorePrivileged). */
   actorCapabilities?: readonly string[];
   /** Session of the acting admin; kept alive when an admin resets its own password. */
@@ -196,7 +199,7 @@ export type AuthUserSaveResult =
   | {
     ok: false;
     code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' | 'role_change_forbidden'
-      | 'target_more_privileged';
+      | 'owner_management_requires_owner' | 'target_more_privileged';
   };
 
 export type AuthInvitationCreateInput = {
@@ -333,12 +336,16 @@ export type AuthApiPort = {
   deleteUser?(input: {
     workspaceId: string;
     actorUserId: string;
-    actorIsAdmin: boolean;
+    actorRole: AuthenticatedPrincipal['role'];
     actorCapabilities?: readonly string[];
     id: string;
   }): Promise<
     | { ok: true }
-    | { ok: false; code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' | 'target_more_privileged' }
+    | {
+      ok: false;
+      code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' | 'owner_management_requires_owner'
+        | 'target_more_privileged';
+    }
   >;
   changePassword?(input: {
     workspaceId: string;

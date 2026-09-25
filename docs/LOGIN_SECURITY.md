@@ -138,6 +138,8 @@ PIN-Eingabe wird nach E-Mail-Wechsel zurückgesetzt.
 
 **Step-up:** Body-Feld `currentPassword` (Passwort des Aufrufers) oder `currentMfaCode` (aktueller Code seines Authenticators, einmal verwendbar). Fehlt beides: `403 reauth_required`; falsch: `403 reauth_failed`. Fehlversuche laufen in die (E-Mail, IP)-Staffelung des Logins, die Pfade liegen im Rate-Limit `auth-strict`. Audit: `auth.mfa_disabled`, `auth.mfa_totp_enabled`, `auth.mfa_email_enabled`, `auth.mfa_reauth_failed`.
 
+**Owner-Konten:** PIN und 2FA eines Owner-Kontos ändert außer dem Owner selbst nur ein anderer Owner; ein Admin bekommt `403 owner_management_requires_owner` (G3, siehe [GROUP_RIGHTS_MATRIX.md](GROUP_RIGHTS_MATRIX.md#owner-konten-nur-owner)).
+
 OpenAPI: `/api/v1/openapi.json` (Server-Modus).
 
 ---

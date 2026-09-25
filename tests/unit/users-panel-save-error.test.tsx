@@ -8,8 +8,9 @@ jest.mock('@/services/transport', () => ({
 }));
 jest.mock('sonner', () => ({ toast: { success: jest.fn(), error: jest.fn() } }));
 
+// G3: Owner-Zeilen bearbeitet nur ein Owner; vorher handelte hier ein Admin am Owner-Konto.
 jest.mock('@/components/auth/auth-context', () => ({
-  useAuth: () => ({ user: { id: 'me', role: 'admin' }, refresh: jest.fn() }),
+  useAuth: () => ({ user: { id: 'me', role: 'owner' }, refresh: jest.fn() }),
 }));
 
 import { UsersPanel } from '@/components/settings/users-panel';
@@ -20,7 +21,7 @@ import { UsersPanel } from '@/components/settings/users-panel';
  */
 describe('users panel save errors (Desktop)', () => {
   const rows = [
-    { id: 'me', username: 'admin', display_name: 'Admin', role: 'admin', is_active: 1 },
+    { id: 'me', username: 'owner2', display_name: 'Owner 2', role: 'owner', is_active: 1 },
     { id: 'owner', username: 'owner', display_name: 'Owner', role: 'owner', is_active: 1 },
   ];
   let saveResult: { success: boolean; error?: string };

@@ -86,22 +86,32 @@ export function normalizeStoredUserGroupPermissions(
 
 type UserRole = 'owner' | 'admin' | 'user';
 
+/** Why a user mutation is refused (see isForbiddenUserMutation). */
+export type UserMutationDenial = 'role_change_forbidden' | 'owner_management_requires_owner';
+
 /**
  * Privileged user management is admin-only. A delegated user manager
  * (users.manage but not admin) may only create and edit ordinary `user`
  * accounts: they must never assign a privileged role, and must never mutate an
  * existing admin/owner account (e.g. reset its password or disable an owner).
- * `existingRole` is undefined when creating a new user.
+ * Only an owner may assign or revoke the owner role or change an existing owner
+ * account (G3): otherwise an admin could promote itself or take over an owner
+ * and reach the owner-only hard reset. Admins keep managing every other account.
+ * `existingRole` is undefined when creating a new user. Returns null when the
+ * mutation is allowed.
  */
 export function isForbiddenUserMutation(
-  actorIsAdmin: boolean,
+  actorRole: UserRole,
   requestedRole: UserRole,
   existingRole?: UserRole,
-): boolean {
-  if (actorIsAdmin) return false;
-  if (requestedRole !== 'user') return true;
-  if (existingRole !== undefined && existingRole !== 'user') return true;
-  return false;
+): UserMutationDenial | null {
+  if (actorRole === 'owner') return null;
+  if (actorRole === 'admin') {
+    return requestedRole === 'owner' || existingRole === 'owner' ? 'owner_management_requires_owner' : null;
+  }
+  if (requestedRole !== 'user') return 'role_change_forbidden';
+  if (existingRole !== undefined && existingRole !== 'user') return 'role_change_forbidden';
+  return null;
 }
 
 /**

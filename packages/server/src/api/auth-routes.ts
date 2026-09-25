@@ -9,6 +9,7 @@ import {
   shouldResetFailureCounterAfterSuccess,
 } from '../auth';
 import type { ApiRequest, ApiResponse, ServerApiPorts } from './types';
+import { isForbiddenUserMutation } from './capabilities';
 import {
   data,
   error,
@@ -413,7 +414,7 @@ async function handleSaveUser(
   const result = await ports.auth.saveUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    actorIsAdmin: requireAdmin(principal),
+    actorRole: principal.role,
     actorCapabilities: principal.capabilities ?? [],
     ...(principal.sessionId ? { actorSessionId: principal.sessionId } : {}),
     ...saveValues,
@@ -423,6 +424,7 @@ async function handleSaveUser(
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
     if (result.code === 'password_required') return error(400, 'validation_error', 'Passwort ist fuer neue Benutzer erforderlich');
     if (result.code === 'role_change_forbidden') return error(403, 'forbidden', 'Nur Owner/Admins dürfen Rollen vergeben oder ändern');
+    if (result.code === 'owner_management_requires_owner') return ownerManagementRequiresOwnerError();
     if (result.code === 'target_more_privileged') return targetMorePrivilegedError();
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
@@ -490,6 +492,15 @@ async function handleSaveUser(
   return data(parsed.values.id ? 200 : 201, publicAdminUser(savedUser));
 }
 
+/** G3: shared with the 2FA routes, which also change an account. */
+export function ownerManagementRequiresOwnerError(): ApiResponse {
+  return error(
+    403,
+    'owner_management_requires_owner',
+    'Nur Owner dürfen die Owner-Rolle vergeben oder entziehen und Owner-Konten ändern oder löschen.',
+  );
+}
+
 function targetMorePrivilegedError(): ApiResponse {
   return error(
     403,
@@ -530,7 +541,7 @@ async function handleDeleteUser(
   const result = await ports.auth.deleteUser({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    actorIsAdmin: requireAdmin(principal),
+    actorRole: principal.role,
     actorCapabilities: principal.capabilities ?? [],
     id,
   });
@@ -539,6 +550,7 @@ async function handleDeleteUser(
     if (result.code === 'role_change_forbidden') {
       return error(403, 'forbidden', 'Nur Administratoren dürfen privilegierte Konten löschen');
     }
+    if (result.code === 'owner_management_requires_owner') return ownerManagementRequiresOwnerError();
     if (result.code === 'target_more_privileged') return targetMorePrivilegedError();
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
@@ -666,6 +678,8 @@ async function handleCreateInvitation(req: ApiRequest, ports: ServerApiPorts): P
 
   const parsed = parseInvitationCreateBody(req.body);
   if ('response' in parsed) return parsed.response;
+  // An accepted owner invitation grants the owner role, which only an owner may do (G3).
+  if (isForbiddenUserMutation(principal.role, parsed.values.role)) return ownerManagementRequiresOwnerError();
 
   const result = await ports.auth.createInvitation({
     workspaceId: principal.workspaceId,
