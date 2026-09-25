@@ -1548,6 +1548,48 @@ describe('server mailbox ACL migration', () => {
     ]);
   });
 
+  // F-A2a-04: a method missing from the PGP route inventory skipped the mail
+  // enforcer but still reached the by-source handlers, whose workspace-wide
+  // lookup answered 404 or 405 depending on whether a foreign key existed.
+  test('rejects PGP by-source methods outside the inventory before any lookup', async () => {
+    let lookups = 0;
+    const foreignIdentity = { id: 5, sourceSqliteId: 5, userId: USER_FOLDER };
+    const api = createServerApi(makeHttpPorts({
+      overrides: {
+        pgpIdentities: {
+          async list() {
+            lookups += 1;
+            return { items: [foreignIdentity], nextCursor: null };
+          },
+          async get() { return null; },
+        },
+        pgpPeerKeys: {
+          async list() {
+            lookups += 1;
+            return { items: [{ id: 5, sourceSqliteId: 5 }], nextCursor: null };
+          },
+          async get() { return null; },
+        },
+      } as unknown as Partial<ServerApiPorts>,
+    }));
+    const principal = makePrincipal();
+    const requests = [
+      { method: 'GET' as const, path: '/api/v1/pgp/identities/by-source/5/private-key/passphrase' },
+      { method: 'GET' as const, path: '/api/v1/pgp/identities/by-source/999/private-key/passphrase' },
+      { method: 'POST' as const, path: '/api/v1/pgp/peer-keys/by-source/5' },
+      { method: 'POST' as const, path: '/api/v1/pgp/peer-keys/by-source/999' },
+      { method: 'POST' as const, path: '/api/v1/pgp/identities/by-source/5' },
+    ];
+
+    const statuses: number[] = [];
+    for (const request of requests) {
+      statuses.push((await api.handle({ ...request, body: {}, principal })).status);
+    }
+
+    expect(statuses).toEqual([405, 405, 405, 405, 405]);
+    expect(lookups).toBe(0);
+  });
+
   test('injects the content scope into triage mutations so restricted callers get redacted rows', async () => {
     const observedContentScopes: Array<MailSqlScope | undefined> = [];
     const overrides: Partial<ServerApiPorts> = {

@@ -133,7 +133,13 @@ export async function handlePgpReadRoute(
 ): Promise<ApiResponse | null> {
   for (const { registration, handler } of PGP_MAIL_ROUTE_REGISTRATIONS) {
     const match = registration.pattern.exec(req.path);
-    if (match) return handler(req, ports, match.slice(1));
+    if (!match) continue;
+    // Only inventoried methods pass the mail enforcer in server-api.ts; any other
+    // method must stop here, before a handler runs an unscoped lookup.
+    if (!(registration.methods as readonly string[]).includes(req.method)) {
+      return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+    }
+    return handler(req, ports, match.slice(1));
   }
 
   return null;
