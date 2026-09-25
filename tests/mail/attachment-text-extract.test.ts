@@ -153,6 +153,11 @@ describe('attachment text extraction', () => {
     `;
     const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
       cwd: path.resolve(__dirname, '../..'),
+      env: {
+        ...process.env,
+        // Match Jest's source aliases; a fresh checkout has no core/dist yet.
+        TSX_TSCONFIG_PATH: path.resolve(__dirname, '../setup/tsconfig.node-runtime.json'),
+      },
       input: buildMiniPdf('Suchtext PDF Inhalt'),
       encoding: 'utf8',
       timeout: 15_000,

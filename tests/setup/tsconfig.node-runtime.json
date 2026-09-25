@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@/*": ["../../src/*"],
+      "@shared/*": ["../../shared/*"],
+      "@simplecrm/core": ["../../packages/core/src/index.ts"],
+      "@simplecrm/core/*": ["../../packages/core/src/*"]
+    }
+  }
+}

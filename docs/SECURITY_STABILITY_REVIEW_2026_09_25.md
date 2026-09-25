@@ -41,6 +41,14 @@ Es wurde weder eine entfernte Ausnutzbarkeit behauptet noch eine Warnung unterdr
 
 ## Prüfdeckung
 
+Aktueller lokaler Nachweis: 346 Unit-/Integrationssuiten mit 3.458 Tests und
+einem Snapshot bestanden. Die allgemeine Abdeckungsprüfung besteht mit
+93,03 % Anweisungen/Zeilen, 91,59 % Zweigen und 98,24 % Funktionen.
+Die Mail-Prüfung besteht mit 197 Suiten/1.296 Tests ohne übersprungenen PDF-Test
+und unverändertem Ratchet (92,45 % Zeilen, 81,49 % Zweige, 94,30 % Funktionen).
+62 Desktop-Ablauftests sind bestanden. Die frische Linux-CI wird separat
+gegen den jeweiligen aktuellen PR-Commit geprüft.
+
 Die Tabelle beschreibt Nachweisarten, keine Behauptung einer lückenlosen Prüfung
 jeder möglichen Eingabekombination. Bestehende Tests werden nicht als neu
 entdeckte oder neu behobene Fehler gezählt.
@@ -67,6 +75,12 @@ isolierter Docker-Datenbank; Caddy/Compose wurde separat geprüft.
 Der SQLite-Test verwendete die tatsächlichen Initialisierungen mit einer
 isolierten Electron-Pfadabfrage. Betriebssystem-Installer und ältere Releases
 sind damit nicht pauschal abgenommen.
+
+Der PDF-Unterprozess verwendet dieselben Core-Quellaliase wie Jest über
+`tests/setup/tsconfig.node-runtime.json`. Ein gezielter Lauf ohne
+`packages/core/dist` bestätigt, dass die Prüfung auch vor dem ersten Build
+funktioniert; ein bereits vorhandener lokaler Build darf kein Testerfordernis
+verdecken.
 
 ## Reproduzierbare Prüfbefehle
 
