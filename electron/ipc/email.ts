@@ -403,7 +403,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const };
       },
-      { logger, requireRole: ['owner', 'admin'] },
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -411,7 +411,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteAccount, async (_event: IpcMainInvokeEvent, id: number) => {
       await deleteEmailAccountRecord(id);
       return { success: true as const };
-    }, { logger, requireRole: ['owner', 'admin'] }),
+    }, { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
@@ -524,7 +524,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         logger.error('[IPC] email:sync-account', e);
         return { success: false as const, error: message };
       }
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -541,14 +541,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return listMessagesForFolder(folder.id, { limit: payload.limit, offset: payload.offset });
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return getEmailMessageById(messageId) ?? null;
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -556,7 +556,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListWorkflows,
       async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
         listAllWorkflows(accountOverrideScopeFromPayload(payload)),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -677,7 +677,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const, allowed: result.allowed, reason: result.reason };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -698,7 +698,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await runDraftCreatedWorkflowsForMessage(id);
         return { success: true as const, id };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -724,7 +724,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         // Moving the draft (composer "Von" switch) places it in the target account:
         // require the same access there as CreateComposeDraft. The IPC gate already
         // checked the draft's current account (ipc-account-scope).
-        if (payload.accountId !== undefined && !canAccessEmailAccount(event, payload.accountId, 'ro')) {
+        if (payload.accountId !== undefined && !canAccessEmailAccount(event, payload.accountId, 'rw')) {
           throw new Error('Kein Zugriff auf dieses Konto');
         }
         const toJson =
@@ -762,14 +762,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListMessageTags, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return listTagsForMessage(messageId);
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -779,7 +779,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         addMessageTag(payload.messageId, payload.tag);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -790,7 +790,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         removeMessageTag(payload.messageId, payload.tag);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -811,7 +811,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -839,7 +839,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           doneFilter: payload.doneFilter,
         }, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -865,7 +865,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           doneFilter: payload.doneFilter,
         }, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -916,7 +916,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         );
         return { messages: rows, searchMode, hasMore };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -927,7 +927,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageSnoozedUntil(payload.messageId, payload.until);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -988,7 +988,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1005,7 +1005,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           lastError: s.lastError,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1017,7 +1017,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         clearScheduledSendDraftMeta(messageId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1031,7 +1031,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setDraftScheduledSendAt(messageId, new Date().toISOString());
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1043,7 +1043,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const s = getComposeDraftRecoveryState(draftMessageId);
         return { success: true as const, ...s };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1056,7 +1056,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.ok) return { success: true as const };
         return { success: false as const, error: r.error };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1068,7 +1068,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.ok) return { success: true as const, path: r.path };
         return { success: false as const, error: r.error };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1103,7 +1103,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         clearEmailAccountSyncLock(accountId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1133,7 +1133,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         dismissUidValidityResetNotice(payload.noticeId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1144,7 +1144,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const { getLatestWorkflowRunForMessage } = await import('../workflow/run-steps.js');
         return getLatestWorkflowRunForMessage(payload.messageId);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1223,7 +1223,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         dismissImapAuthNotice(payload.accountId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1330,7 +1330,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           access,
         );
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1532,14 +1532,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.GetMessageCategory, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return { categoryId: getMessageCategoryId(messageId) };
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   // M:N category assignments (drag-drop adds, ×-chip removes, multi-select dialog).
@@ -1555,7 +1555,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           categoryId,
         }));
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
   disposers.push(
@@ -1578,7 +1578,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { added: false, alreadyAssigned: true };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
   disposers.push(
@@ -1588,7 +1588,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { messageId: number; categoryId: number },
       ) => removeMessageCategoryAssignment(payload.messageId, payload.categoryId),
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
   disposers.push(
@@ -1601,7 +1601,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageCategoriesExact(payload.messageId, payload.categoryIds ?? []);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1612,7 +1612,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return listCategoryCountsForMailScope(accountId, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1623,7 +1623,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const access = accountId === 'all' ? mailScopeSessionFromEvent(event) : undefined;
         return getMailFolderCountsForScope(accountId, access);
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1634,7 +1634,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         addInternalNote(payload.messageId, payload.body);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1652,7 +1652,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1660,13 +1660,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteInternalNote, async (_event: IpcMainInvokeEvent, noteId: number) => {
       deleteInternalNote(noteId);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListInternalNotes, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return listInternalNotes(messageId);
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -1674,7 +1674,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListCannedResponses,
       async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
         listCannedResponses(accountOverrideScopeFromPayload(payload)),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1702,7 +1702,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const id = createCannedResponse(payload.title, payload.body, scopeOpts);
         return { success: true as const, id };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1710,7 +1710,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteCannedResponse, async (_event: IpcMainInvokeEvent, id: number) => {
       deleteCannedResponse(id);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -1718,7 +1718,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       IPCChannels.Email.ListAiPrompts,
       async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
         listAiPrompts(accountOverrideScopeFromPayload(payload)),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1760,7 +1760,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const, id };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1768,7 +1768,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.DeleteAiPrompt, async (_event: IpcMainInvokeEvent, id: number) => {
       deleteAiPrompt(id);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -1783,7 +1783,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           ? ({ success: true as const } as const)
           : ({ success: false as const, error: 'Verschieben nicht möglich' } as const);
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -1957,7 +1957,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload: { accountId: number; teamMemberId?: string }) => {
         return { html: getComposeSignatureHtml(payload.accountId, payload.teamMemberId) };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -1977,7 +1977,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         saveAccountSignature(payload.accountId, payload.signatureHtml);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2067,7 +2067,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.GetReplySuggestion,
       async (_event: IpcMainInvokeEvent, messageId: number) => getReplySuggestion(messageId),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2084,7 +2084,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2134,7 +2134,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return generateAndStoreReplySuggestion(payload.messageId, opts);
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2145,14 +2145,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageCustomerId(payload.messageId, payload.customerId);
         return { success: true as const };
       },
-      { logger }),
+      { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.SoftDeleteMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       setMessageSoftDeleted(messageId, true);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -2172,7 +2172,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2197,7 +2197,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2223,7 +2223,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2249,7 +2249,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2267,7 +2267,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2292,7 +2292,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2310,7 +2310,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2318,7 +2318,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(IPCChannels.Email.RestoreMessage, async (_event: IpcMainInvokeEvent, messageId: number) => {
       setMessageSoftDeleted(messageId, false);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -2328,7 +2328,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageArchived(payload.messageId, payload.archived);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2342,7 +2342,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const, ...preview };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2362,7 +2362,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         );
         return { success: true as const, restored: result.restored };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2386,7 +2386,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           fromJson: row.from_json ?? null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2423,7 +2423,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (_event: IpcMainInvokeEvent, payload?: number | 'all') => {
         return listSpamListEntries(payload ?? 'all');
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2438,7 +2438,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2451,7 +2451,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2482,7 +2482,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           spamDecidedAt: row.spam_decided_at ?? null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2506,7 +2506,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           spamDecisionSource: r.spam?.source ?? updated?.spam_decision_source ?? null,
         };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2571,7 +2571,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      // Bewusst 'ro': Gelesen markieren ist kosmetisch; alle anderen Mutationen verlangen 'rw'.
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2587,7 +2588,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageDoneLocal(payload.messageId, payload.done);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2598,7 +2599,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageSpam(payload.messageId, payload.spam, { train: true, source: 'manual' });
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2615,7 +2616,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         });
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2699,7 +2700,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setMessageAssignedTo(payload.messageId, payload.teamMemberId);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2769,7 +2770,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -2875,7 +2876,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListMessageAttachments, async (_event: IpcMainInvokeEvent, messageId: number) => {
       return listAttachmentsForMessage(messageId);
-    }, { logger }),
+    }, { logger, accountAccess: 'ro' }),
   );
 
   disposers.push(
@@ -2896,7 +2897,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await fs.promises.copyFile(row.storage_path, filePath);
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2922,7 +2923,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (err) return { success: false as const, error: err };
         return { success: true as const };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2936,7 +2937,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           data: getEmailReportingSnapshot(accountId, access),
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -2988,7 +2989,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return consumeAllowedOnceRemoteContentLocal(payload.messageId);
       },
-      { logger, requireAuth: true, requireRealSession: true },
+      { logger, accountAccess: 'ro', requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -3006,7 +3007,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       ) => {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
+        if (!canAccessEmailAccount(event, row.account_id, 'rw')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         let remember: { scope: 'sender' | 'domain'; value: string } | undefined;
@@ -3028,7 +3029,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         setLocalRemoteContentPolicy(payload.messageId, payload.policy, remember);
         return { success: true as const };
       },
-      { logger, requireAuth: true, requireRealSession: true },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -3049,7 +3050,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           trustedDomains: settings.trustedDomains,
         };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -3059,7 +3060,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       async (event: IpcMainInvokeEvent, payload: { messageId: number; action: 'send' | 'decline' }) => {
         const row = getEmailMessageById(payload.messageId);
         if (!row) return { success: false as const, error: 'Nachricht nicht gefunden' };
-        if (!canAccessEmailAccount(event, row.account_id, 'ro')) {
+        if (!canAccessEmailAccount(event, row.account_id, 'rw')) {
           return { success: false as const, error: 'Kein Zugriff' };
         }
         if (payload.action === 'send') {
@@ -3088,7 +3089,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         logLocalReadReceiptDeclined(payload.messageId);
         return { success: true as const };
       },
-      { logger, requireAuth: true, requireRealSession: true },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true },
     ),
   );
 
@@ -3127,7 +3128,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!r.ok) return { success: false as const, error: r.error };
         return { success: true as const };
       },
-      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -3141,7 +3142,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (!r.ok) return { success: false as const, error: r.error };
         return { success: true as const, threadId: r.threadId };
       },
-      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+      { logger, accountAccess: 'rw', requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -3175,7 +3176,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           access,
         );
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -3211,7 +3212,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 

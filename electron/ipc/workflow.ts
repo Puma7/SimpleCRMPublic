@@ -56,7 +56,7 @@ export function registerWorkflowHandlers(options: {
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId: number; dryRun?: boolean },
       ) => testWorkflowOnMessage(payload.workflowId, payload.messageId, true),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -67,7 +67,7 @@ export function registerWorkflowHandlers(options: {
         _event: IpcMainInvokeEvent,
         payload: { workflowId: number; messageId?: number | null; dryRun?: boolean },
       ) => executeWorkflowNow(payload.workflowId, payload),
-      { logger, requireRole: ['owner', 'admin'] },
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -102,7 +102,7 @@ export function registerWorkflowHandlers(options: {
     registerIpcHandler(
       IPCChannels.Email.GetWorkflowRunLog,
       async (_event: IpcMainInvokeEvent, runId: number) => getWorkflowRunLog(runId),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -110,7 +110,7 @@ export function registerWorkflowHandlers(options: {
     registerIpcHandler(
       IPCChannels.Email.ListWorkflowRunSteps,
       async (_event: IpcMainInvokeEvent, runId: number) => listWorkflowRunSteps(runId),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -326,7 +326,7 @@ export function registerWorkflowHandlers(options: {
       IPCChannels.Email.ListKnowledgeBases,
       async (_event: IpcMainInvokeEvent, payload?: AccountOverrideScopePayload) =>
         listKnowledgeBases(accountOverrideScopeFromPayload(payload)),
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -352,7 +352,7 @@ export function registerWorkflowHandlers(options: {
       },
       // G1: Wissensbasen speisen die KI-Knoten der Workflows; schreiben nur
       // Owner/Admin (Server: workflows.manage). Lesen bleibt offen.
-      { logger, requireRole: ['owner', 'admin'] },
+      { logger, requireRole: ['owner', 'admin'], accountAccess: 'rw' },
     ),
   );
 
@@ -393,7 +393,7 @@ export function registerWorkflowHandlers(options: {
         updateKnowledgeBase(payload.id, patch);
         return { success: true as const };
       },
-      { logger, requireRole: ['owner', 'admin'] },
+      { logger, requireRole: ['owner', 'admin'], accountAccess: 'rw' },
     ),
   );
 
@@ -401,7 +401,7 @@ export function registerWorkflowHandlers(options: {
     registerIpcHandler(IPCChannels.Email.DeleteKnowledgeBase, async (_event: IpcMainInvokeEvent, id: number) => {
       deleteKnowledgeBase(id);
       return { success: true as const };
-    }, { logger, requireRole: ['owner', 'admin'] }),
+    }, { logger, requireRole: ['owner', 'admin'], accountAccess: 'rw' }),
   );
 
   disposers.push(
@@ -414,7 +414,7 @@ export function registerWorkflowHandlers(options: {
         const id = addTextChunk(payload.knowledgeBaseId, payload.title, payload.content);
         return { success: true as const, id };
       },
-      { logger, requireRole: ['owner', 'admin'] },
+      { logger, requireRole: ['owner', 'admin'], accountAccess: 'rw' },
     ),
   );
 
@@ -426,7 +426,7 @@ export function registerWorkflowHandlers(options: {
         if (!doc) return { success: false as const, error: 'Wissensbasis nicht gefunden' };
         return { success: true as const, content: doc.content, fileName: doc.fileName };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -447,7 +447,7 @@ export function registerWorkflowHandlers(options: {
           };
         }
       },
-      { logger, requireRole: ['owner', 'admin'] },
+      { logger, requireRole: ['owner', 'admin'], accountAccess: 'rw' },
     ),
   );
 
@@ -465,7 +465,7 @@ export function registerWorkflowHandlers(options: {
         fs.writeFileSync(r.filePath, doc.content, 'utf8');
         return { success: true as const, path: r.filePath };
       },
-      { logger },
+      { logger, accountAccess: 'ro' },
     ),
   );
 
@@ -481,7 +481,7 @@ export function registerWorkflowHandlers(options: {
         const id = importFileToKnowledgeBase(payload.knowledgeBaseId, r.filePaths[0]);
         return { success: true as const, id };
       },
-      { logger, requireRole: ['owner', 'admin'] },
+      { logger, requireRole: ['owner', 'admin'], accountAccess: 'rw' },
     ),
   );
 

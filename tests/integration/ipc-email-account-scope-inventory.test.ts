@@ -177,3 +177,84 @@ describe('Inventar: Mail-IPC-Kanaele mit Objekt-ID', () => {
     expect(problems).toEqual([]);
   });
 });
+
+/**
+ * Kanaele, die ein Konto nur lesen (Stufe 'ro'). Jeder andere kontobezogene
+ * Kanal veraendert etwas und muss 'rw' verlangen. Wer hier einen Kanal ergaenzt,
+ * entscheidet bewusst, dass eine Lese-Freigabe genuegt.
+ */
+const READ_ONLY_CHANNELS = new Set<string>([
+  IPCChannels.Email.ListMessages,
+  IPCChannels.Email.GetMessage,
+  IPCChannels.Email.ListWorkflows,
+  IPCChannels.Email.ListMessageTags,
+  IPCChannels.Email.ListMessagesByView,
+  IPCChannels.Email.ListMessageIdsByView,
+  IPCChannels.Email.SearchMessages,
+  IPCChannels.Email.ListConversationMessages,
+  IPCChannels.Email.GetScheduledSendDraftState,
+  IPCChannels.Email.GetComposeDraftRecoveryState,
+  IPCChannels.Email.ExportMessageEml,
+  IPCChannels.Email.GetAccountMailSettings,
+  IPCChannels.Email.GetLatestWorkflowRunForMessage,
+  IPCChannels.Email.GetMessageCategory,
+  IPCChannels.Email.ListMessageCategories,
+  IPCChannels.Email.CategoryCounts,
+  IPCChannels.Email.MailFolderCounts,
+  IPCChannels.Email.ListInternalNotes,
+  IPCChannels.Email.ListCannedResponses,
+  IPCChannels.Email.ListAiPrompts,
+  IPCChannels.Email.GetReplySuggestion,
+  IPCChannels.Email.GetComposeSignature,
+  IPCChannels.Email.PreviewRestoreInboxFromArchive,
+  IPCChannels.Email.GetMessageRawHeaders,
+  IPCChannels.Email.GetMessageSecurity,
+  IPCChannels.Email.ListSpamListEntries,
+  IPCChannels.Email.ListMessageAttachments,
+  IPCChannels.Email.SaveAttachmentToDisk,
+  IPCChannels.Email.OpenAttachmentPath,
+  IPCChannels.Email.EmailReporting,
+  // Verbraucht nur eine vom Nutzer erteilte Einmal-Freigabe beim Anzeigen.
+  IPCChannels.Email.GetRemoteContentPolicy,
+  IPCChannels.Email.GetReadReceiptState,
+  IPCChannels.Email.ListThreadsByView,
+  // Gelesen-Markierung ist bewusst mit Lese-Freigabe erlaubt (kosmetisch).
+  IPCChannels.Email.SetMessageSeen,
+  // Abruf vom Server aktualisiert nur das lokale Abbild des Postfachs.
+  IPCChannels.Email.SyncAccount,
+  // Erzwungener Dry-Run.
+  IPCChannels.Email.TestWorkflowOnMessage,
+  IPCChannels.Email.ListKnowledgeBases,
+  IPCChannels.Email.GetKnowledgeBaseDocument,
+  IPCChannels.Email.ExportKnowledgeBaseDocument,
+  IPCChannels.Email.GetWorkflowRunLog,
+  IPCChannels.Email.ListWorkflowRunSteps,
+]);
+
+describe('Klassifizierung: jede kontobezogene Registrierung hat eine explizite Stufe', () => {
+  function accountScopedChannels(): string[] {
+    return emailChannels.filter((channel) => {
+      if (!mockRegistrations.has(channel)) return false;
+      if (EMAIL_SKIP_ACCOUNT_SCOPE.has(channel) || EMAIL_GLOBAL_OBJECT_CHANNELS.has(channel)) return false;
+      const schema = getPayloadSchema(channel as never);
+      const samples = isUntyped(schema) ? UNTYPED_SAMPLES[channel] ?? [] : idSamples(schema);
+      return samples.some((payload) => resolveWith(true, channel, payload).kind === 'accounts');
+    });
+  }
+
+  // C-A2/C-A27/C-A44/C-A52: Ohne explizite Stufe galt register.ts' Default 'ro' auch fuer Mutationen.
+  test('Lese-Kanaele verlangen ro, alle anderen rw', () => {
+    const wrong: string[] = [];
+    for (const channel of accountScopedChannels()) {
+      const level = mockRegistrations.get(channel)?.accountAccess;
+      const expected = READ_ONLY_CHANNELS.has(channel) ? 'ro' : 'rw';
+      if (level !== expected) wrong.push(`${channel}: ${String(level)} statt ${expected}`);
+    }
+    expect(wrong).toEqual([]);
+  });
+
+  test('die Lese-Liste enthaelt nur kontobezogene Kanaele', () => {
+    const scoped = new Set(accountScopedChannels());
+    expect([...READ_ONLY_CHANNELS].filter((channel) => !scoped.has(channel))).toEqual([]);
+  });
+});
