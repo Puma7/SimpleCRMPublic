@@ -32,6 +32,7 @@ import {
   resetRendererTransportForTests,
   verifyServerPgpAttachment,
   uploadServerComposeAttachment,
+  copyServerComposeAttachment,
   buildServerAuthSession,
   saveServerAuthSession,
 } from '@/services/transport';
@@ -4387,6 +4388,46 @@ describe('renderer transport', () => {
           contentBase64: 'aW52b2ljZSBkYXRh',
           contentType: 'application/pdf',
         }),
+      }),
+    );
+  });
+
+  // F-A6-05: Weiterleiten kopiert gespeicherte Anhaenge per Anhang-ID in den Entwurf, ohne serverseitige Pfade zu kennen.
+  test('copies a stored attachment into a server-client draft by attachment id', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        data: {
+          success: true,
+          path: 'workspace-a/compose-drafts/44/abc-invoice.pdf',
+          filename: 'invoice.pdf',
+          sizeBytes: 12,
+        },
+      }),
+    });
+    Object.defineProperty(globalThis, 'fetch', {
+      configurable: true,
+      value: fetchImpl,
+    });
+    configureRendererTransportFromDeployConfig({
+      mode: 'server-client',
+      server: { baseUrl: 'https://crm.example.com/' },
+    });
+
+    await expect(copyServerComposeAttachment({
+      draftMessageId: 44,
+      sourceAttachmentId: 701,
+    })).resolves.toEqual({
+      path: 'workspace-a/compose-drafts/44/abc-invoice.pdf',
+      filename: 'invoice.pdf',
+      sizeBytes: 12,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/44/compose-attachments',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ sourceAttachmentId: 701 }),
       }),
     );
   });

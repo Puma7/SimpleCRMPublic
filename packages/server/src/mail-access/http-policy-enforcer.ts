@@ -1622,6 +1622,43 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  // Forwarding copies a stored attachment (sourceAttachmentId) into the draft's own
+  // upload folder. The base policy only covers the draft (mail.draft.edit), and the
+  // send path later accepts that draft-local copy without another attachment check,
+  // so authorize the source exactly like downloading it: mail.attachment.read on its
+  // message, plus mail.attachment.suspicious_download for a risky filename (fail
+  // closed when the filename cannot be classified).
+  if (
+    req.method === 'POST'
+    && canonicalPath === '/api/v1/email/messages/:messageId/compose-attachments'
+    && isBodyObject(req.body)
+    && Object.prototype.hasOwnProperty.call(req.body, 'sourceAttachmentId')
+  ) {
+    const sourceAttachmentId = requirePositiveInt(bodyField(req.body, 'sourceAttachmentId'));
+    const owners = await ports.mailResourceLookup!.resolve({
+      workspaceId,
+      target: { kind: 'attachment', id: sourceAttachmentId },
+    });
+    if (owners.length !== 1) throw new MailAccessDeniedError();
+    await ports.mailAccess!.assertPermission({
+      workspaceId,
+      actor,
+      permission: 'mail.attachment.read',
+      resource: owners[0]!,
+    });
+    const source = ports.emailAttachments
+      ? await ports.emailAttachments.get({ workspaceId, id: sourceAttachmentId })
+      : null;
+    if (!source || isPotentiallyDangerousAttachment(source.filename)) {
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.attachment.suspicious_download',
+        resource: owners[0]!,
+      });
+    }
+  }
+
   // Verifying a detached signature loads a SECOND attachment (signatureAttachmentId)
   // whose bytes reveal whether an otherwise-inaccessible file is a valid PGP
   // signature (and its fingerprint). The base policy only authorizes the path

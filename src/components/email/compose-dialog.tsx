@@ -38,6 +38,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import {
+  copyServerComposeAttachment,
   getRendererTransport,
   invokeRenderer,
   uploadServerComposeAttachment,
@@ -163,6 +164,28 @@ export function handleSubjectTabToEditor(
 }
 
 const MAX_SERVER_CLIENT_ATTACHMENT_BYTES = 25 * 1024 * 1024
+
+/**
+ * Forwarding in server-client mode: attachment lists carry no storage paths, so
+ * each source attachment is copied into the draft by id. Attachments the server
+ * refuses (missing, no permission, draft limit) are reported by name instead of
+ * being dropped silently.
+ */
+export async function forwardServerComposeAttachments(
+  attachments: readonly { id: number; filename_display: string }[],
+  copy: (attachmentId: number) => Promise<{ path: string }>,
+): Promise<{ paths: string[]; failedFilenames: string[] }> {
+  const paths: string[] = []
+  const failedFilenames: string[] = []
+  for (const attachment of attachments) {
+    try {
+      paths.push((await copy(attachment.id)).path)
+    } catch {
+      failedFilenames.push(attachment.filename_display || `Anhang ${attachment.id}`)
+    }
+  }
+  return { paths, failedFilenames }
+}
 
 /**
  * Uploads files one by one. The server rejects uploads beyond the per-draft
@@ -686,8 +709,21 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             const atts = await invokeRenderer(
               IPCChannels.Email.ListMessageAttachments,
               sourceMsg.id,
-            ) as { storage_path: string; filename_display: string }[]
-            forwardPaths = atts.map((a) => a.storage_path).filter(Boolean)
+            ) as { id: number; storage_path?: string; filename_display: string }[]
+            if (serverClientMode) {
+              const draftMessageId = res.id
+              const forwarded = await forwardServerComposeAttachments(atts, (sourceAttachmentId) =>
+                copyServerComposeAttachment({ draftMessageId, sourceAttachmentId }),
+              )
+              forwardPaths = forwarded.paths
+              if (forwarded.failedFilenames.length > 0) {
+                toast.warning(
+                  `Nicht übernommene Anhänge: ${forwarded.failedFilenames.join(", ")}`,
+                )
+              }
+            } else {
+              forwardPaths = atts.map((a) => a.storage_path ?? "").filter(Boolean)
+            }
           }
           setAttachmentPaths(forwardPaths)
           await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {

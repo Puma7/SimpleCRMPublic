@@ -2146,6 +2146,81 @@ describe('server mailbox ACL migration', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  // F-A6-05: Weiterleiten in der Server-Edition verlor alle Anhaenge; der Server kopiert sie jetzt per
+  // Anhang-ID in den Entwurf und prueft dabei dieselben Rechte wie beim Herunterladen.
+  test('forwarding a stored attachment into a draft requires the download grants on the source attachment', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    let sourceFilename = 'invoice.pdf';
+    const copyStoredAttachment = jest.fn(async () => ({
+      ok: true as const,
+      path: `${WORKSPACE_A}/compose-drafts/${MESSAGE_A}/ab12-${sourceFilename}`,
+      filename: sourceFilename,
+      sizeBytes: 12,
+    }));
+    const upload = jest.fn();
+    const getAttachment = jest.fn(async ({ id }: { id: number }) => ({
+      id,
+      sourceSqliteId: id,
+      messageSourceSqliteId: MESSAGE_A,
+      messageId: MESSAGE_A,
+      filename: sourceFilename,
+      contentType: 'application/octet-stream',
+      sizeBytes: 12,
+      contentSha256: null,
+      updatedAt: '2026-07-19T12:00:00.000Z',
+    }));
+    const account = [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+    const editOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.edit', account],
+    ]);
+    const withRead = new Map(editOnly);
+    withRead.set('mail.attachment.read', account);
+    const withSuspicious = new Map(withRead);
+    withSuspicious.set('mail.attachment.suspicious_download', account);
+    const forward = (grants: typeof editOnly) => createServerApi(makeHttpPorts({
+      grants,
+      overrides: {
+        emailMessages: { get: getMessage },
+        emailAttachments: { get: getAttachment, listForMessage: async () => ({ items: [] }) },
+        emailComposeAttachments: { upload, copyStoredAttachment },
+      } as Partial<ServerApiPorts>,
+    })).handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/compose-attachments`,
+      principal: makePrincipal(),
+      body: { sourceAttachmentId: 701 },
+    });
+
+    const denied = await forward(editOnly);
+    expect(denied.status).toBe(404);
+    expect(copyStoredAttachment).not.toHaveBeenCalled();
+
+    const allowed = await forward(withRead);
+    expect(allowed.status).toBe(200);
+    expect((allowed.body as any).data).toEqual({
+      success: true,
+      path: `${WORKSPACE_A}/compose-drafts/${MESSAGE_A}/ab12-invoice.pdf`,
+      filename: 'invoice.pdf',
+      sizeBytes: 12,
+    });
+    expect(copyStoredAttachment).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE_A,
+      draftMessageId: MESSAGE_A,
+      sourceAttachmentId: 701,
+    });
+
+    // The copy is later sent as a draft-local file, so a risky filename needs the
+    // suspicious-download grant here, exactly like downloading it.
+    sourceFilename = 'tool.exe';
+    const riskyDenied = await forward(withRead);
+    expect(riskyDenied.status).toBe(404);
+    expect(copyStoredAttachment).toHaveBeenCalledTimes(1);
+    const riskyAllowed = await forward(withSuspicious);
+    expect(riskyAllowed.status).toBe(200);
+    expect(copyStoredAttachment).toHaveBeenCalledTimes(2);
+    expect(upload).not.toHaveBeenCalled();
+  });
+
   test('requires mail.draft.edit to send (send rewrites the stored draft)', async () => {
     const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
     const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A }));

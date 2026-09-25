@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Kysely } from 'kysely';
@@ -176,6 +176,46 @@ describe('server compose draft attachments: per-draft quota and cleanup', () => 
     expect(existsSync(draftDir(7005))).toBe(false);
     expect(existsSync(draftDir(7006))).toBe(false);
     expect(existsSync(draftDir(7007))).toBe(true);
+  });
+
+  // F-A6-05: Weiterleiten verlor in der Server-Edition alle Anhaenge, weil der Client keine
+  // storage_path mehr bekommt; der Server kopiert den gespeicherten Anhang per ID in den Entwurf.
+  test('forwarding copies a stored attachment into the draft uploads by attachment id', async () => {
+    await insertDraft(7009);
+    await postgres.admin.query(`
+      INSERT INTO email_messages (
+        id, workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+        account_id, folder_id, uid, subject, body_text, folder_kind
+      ) VALUES (7109, $1, 7109, $2, $3, $2, $3, 55, 'Rechnung', 'Anbei', 'inbox')
+    `, [WORKSPACE_ID, ACCOUNT_ID, FOLDER_ID]);
+    const sourcePath = `${WORKSPACE_ID}/mail-sync/7109/9f00-rechnung.pdf`;
+    mkdirSync(join(attachmentsRoot, WORKSPACE_ID, 'mail-sync', '7109'), { recursive: true });
+    writeFileSync(join(attachmentsRoot, sourcePath), 'pdf bytes');
+    await postgres.admin.query(`
+      INSERT INTO email_message_attachments (
+        id, workspace_id, source_sqlite_id, message_source_sqlite_id, message_id,
+        filename_display, content_type, size_bytes, storage_path
+      ) VALUES (7201, $1, 7201, 7109, 7109, 'Rechnung März.pdf', 'application/pdf', 9, $2)
+    `, [WORKSPACE_ID, sourcePath]);
+    const port = createPostgresEmailComposeAttachmentUploadPort({ db, attachmentsRoot });
+
+    const copied = await port.copyStoredAttachment!({
+      workspaceId: WORKSPACE_ID,
+      draftMessageId: 7009,
+      sourceAttachmentId: 7201,
+    });
+    const missing = await port.copyStoredAttachment!({
+      workspaceId: WORKSPACE_ID,
+      draftMessageId: 7009,
+      sourceAttachmentId: 999_999,
+    });
+
+    expect(copied).toMatchObject({ ok: true, filename: 'Rechnung_M_rz.pdf', sizeBytes: 9 });
+    if (!copied.ok) throw new Error(copied.error);
+    expect(copied.path.startsWith(`${WORKSPACE_ID}/compose-drafts/7009/`)).toBe(true);
+    expect(readFileSync(join(attachmentsRoot, copied.path), 'utf8')).toBe('pdf bytes');
+    expect(existsSync(join(attachmentsRoot, sourcePath))).toBe(true);
+    expect(missing).toMatchObject({ ok: false, reason: 'source_not_found' });
   });
 
   test('sending a draft removes its upload directory after the draft is marked sent', async () => {

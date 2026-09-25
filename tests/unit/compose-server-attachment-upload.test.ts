@@ -2,7 +2,7 @@ jest.mock('quill', () => ({ __esModule: true, default: class MockQuill {} }));
 jest.mock('quill/dist/quill.snow.css', () => ({}));
 jest.mock('@/styles/compose-quill.css', () => ({}));
 
-import { uploadServerComposeFiles } from '../../src/components/email/compose-dialog';
+import { forwardServerComposeAttachments, uploadServerComposeFiles } from '../../src/components/email/compose-dialog';
 
 function fakeFile(name: string, size: number): File {
   return { name, size, type: 'application/octet-stream' } as File;
@@ -44,5 +44,30 @@ describe('uploadServerComposeFiles', () => {
 
     expect(result).toEqual({ uploadedPaths: ['ws/compose-drafts/44/klein.txt'], error: null });
     expect(onTooLarge).toHaveBeenCalledWith(expect.objectContaining({ name: 'gross.bin' }));
+  });
+});
+
+describe('forwardServerComposeAttachments', () => {
+  // F-A6-05: In der Server-Edition liefert die Anhangliste keine storage_path; Weiterleiten verlor so still alle Anhaenge.
+  it('copies every source attachment by id and reports the ones the server refused', async () => {
+    const copy = jest.fn(async (attachmentId: number) => {
+      if (attachmentId === 802) throw new Error('Anhang nicht gefunden');
+      return { path: `ws/compose-drafts/99/${attachmentId}.pdf` };
+    });
+
+    const result = await forwardServerComposeAttachments(
+      [
+        { id: 801, filename_display: 'rechnung.pdf', storage_path: undefined },
+        { id: 802, filename_display: 'weg.pdf', storage_path: undefined },
+        { id: 803, filename_display: 'lieferschein.pdf', storage_path: undefined },
+      ],
+      copy,
+    );
+
+    expect(copy.mock.calls.map(([id]) => id)).toEqual([801, 802, 803]);
+    expect(result).toEqual({
+      paths: ['ws/compose-drafts/99/801.pdf', 'ws/compose-drafts/99/803.pdf'],
+      failedFilenames: ['weg.pdf'],
+    });
   });
 });

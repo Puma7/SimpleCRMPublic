@@ -2574,7 +2574,7 @@ export type EmailComposeAttachmentUploadResult =
   }
   | {
     ok: false;
-    reason: 'not_found' | 'not_local_draft' | 'invalid_content' | 'quota_exceeded' | 'write_failed';
+    reason: 'not_found' | 'not_local_draft' | 'invalid_content' | 'quota_exceeded' | 'source_not_found' | 'write_failed';
     error: string;
   };
 
@@ -2585,6 +2585,12 @@ export type EmailComposeAttachmentUploadApiPort = {
     filename: string;
     contentBase64: string;
     contentType?: string;
+  }): Promise<EmailComposeAttachmentUploadResult>;
+  /** Copies a stored message attachment into the draft's uploads (forwarding without exposing storage paths). */
+  copyStoredAttachment?(input: {
+    workspaceId: string;
+    draftMessageId: number;
+    sourceAttachmentId: number;
   }): Promise<EmailComposeAttachmentUploadResult>;
 };
 

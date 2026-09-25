@@ -12,6 +12,7 @@ import type {
   EmailAccountMutationPortResult,
   EmailAccountRecord,
   EmailAccountSyncSlotPrevious,
+  EmailComposeAttachmentUploadResult,
   EmailComposeDraftMutationResult,
   EmailComposeSendInput,
   EmailDiagnosticsReport,
@@ -1110,17 +1111,33 @@ async function handleComposeAttachmentUpload(
   if (!ports.emailComposeAttachments) {
     return error(503, 'email_compose_attachment_upload_unavailable', 'Email compose-attachment API nicht konfiguriert');
   }
-  const parsed = parseComposeAttachmentUploadBody(req.body);
-  if (!parsed.ok) return parsed.response;
-  const result = await ports.emailComposeAttachments.upload({
-    workspaceId: principal.workspaceId,
-    draftMessageId,
-    filename: parsed.filename,
-    contentBase64: parsed.contentBase64,
-    ...(parsed.contentType === undefined ? {} : { contentType: parsed.contentType }),
-  });
+  let result: EmailComposeAttachmentUploadResult;
+  if (isPlainObject(req.body) && Object.prototype.hasOwnProperty.call(req.body, 'sourceAttachmentId')) {
+    // Forwarding variant: copy a stored attachment (authorized by the policy layer) into the draft.
+    const parsedCopy = parseComposeAttachmentCopyBody(req.body);
+    if (!parsedCopy.ok) return parsedCopy.response;
+    if (!ports.emailComposeAttachments.copyStoredAttachment) {
+      return error(503, 'email_compose_attachment_copy_unavailable', 'Email compose-attachment copy API nicht konfiguriert');
+    }
+    result = await ports.emailComposeAttachments.copyStoredAttachment({
+      workspaceId: principal.workspaceId,
+      draftMessageId,
+      sourceAttachmentId: parsedCopy.sourceAttachmentId,
+    });
+  } else {
+    const parsed = parseComposeAttachmentUploadBody(req.body);
+    if (!parsed.ok) return parsed.response;
+    result = await ports.emailComposeAttachments.upload({
+      workspaceId: principal.workspaceId,
+      draftMessageId,
+      filename: parsed.filename,
+      contentBase64: parsed.contentBase64,
+      ...(parsed.contentType === undefined ? {} : { contentType: parsed.contentType }),
+    });
+  }
   if (!result.ok) {
     if (result.reason === 'not_found') return error(404, 'compose_draft_not_found', result.error);
+    if (result.reason === 'source_not_found') return error(404, 'compose_attachment_source_not_found', result.error);
     if (result.reason === 'not_local_draft') return error(409, 'compose_draft_not_local', result.error);
     if (result.reason === 'quota_exceeded') return error(413, 'compose_attachment_quota_exceeded', result.error);
     if (result.reason === 'write_failed') return error(500, 'compose_attachment_write_failed', result.error);
@@ -4205,6 +4222,26 @@ function parseComposeSendBody(body: unknown): EmailComposeSendParseResult {
       ...values,
     },
   };
+}
+
+function parseComposeAttachmentCopyBody(
+  body: Record<string, unknown>,
+): { ok: true; sourceAttachmentId: number } | { ok: false; response: ApiResponse<ApiErrorBody> } {
+  const errors: Array<{ field: string; message: string }> = [];
+  for (const key of Object.keys(body)) {
+    if (key !== 'sourceAttachmentId') errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+  }
+  const sourceAttachmentId = positiveIntFromValue(body.sourceAttachmentId);
+  if (sourceAttachmentId === null) {
+    errors.push({ field: 'sourceAttachmentId', message: 'sourceAttachmentId muss eine positive Ganzzahl sein' });
+  }
+  if (errors.length > 0 || sourceAttachmentId === null) {
+    return {
+      ok: false,
+      response: error(400, 'validation_error', 'Compose-attachment payload ist ungueltig', { fields: errors }),
+    };
+  }
+  return { ok: true, sourceAttachmentId };
 }
 
 function parseComposeAttachmentUploadBody(body: unknown): EmailComposeAttachmentUploadParseResult {

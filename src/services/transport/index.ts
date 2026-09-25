@@ -2,6 +2,7 @@ export {
   RendererTransportError,
   configureRendererTransport,
   configureRendererTransportFromDeployConfig,
+  copyServerComposeAttachment,
   createHttpRendererTransport,
   createIpcRendererTransport,
   decryptServerPgpAttachment,
