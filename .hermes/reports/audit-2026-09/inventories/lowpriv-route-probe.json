@@ -1,0 +1,4592 @@
+[
+ {
+  "method": "GET",
+  "path": "/api/v1/activity-log",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/activity-log",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/activity-log",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/activity-log",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/activity-log/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/activity-log/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/activity-log/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/activity-log/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/ai/profiles",
+  "outcome": "port",
+  "detail": "PORT_REACHED:aiProfiles.list"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/ai/profiles",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/ai/profiles/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:aiProfiles.get"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/ai/profiles/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/ai/profiles/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/ai/prompts",
+  "outcome": "port",
+  "detail": "PORT_REACHED:aiPrompts.list"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/ai/prompts",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/ai/prompts/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:aiPrompts.get"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/ai/prompts/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/ai/prompts/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/ai/prompts/reorder",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/ai/transform-text",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/audit-chain/verify",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/audit-log",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/capabilities",
+  "outcome": "status:200",
+  "detail": ""
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/captcha-verify",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/change-password",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/csrf",
+  "outcome": "status:401",
+  "detail": "refresh_cookie_required"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/initial-setup",
+  "outcome": "port",
+  "detail": "PORT_REACHED:initialSetupToken.trim"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/invitations",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/invitations/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:auth.getInvitationByToken"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/invitations/1/accept",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/login",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/login-config",
+  "outcome": "port",
+  "detail": "PORT_REACHED:loginSecurity.getLoginConfig"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/logout",
+  "outcome": "status:200",
+  "detail": ""
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/mfa/verify",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/refresh",
+  "outcome": "status:401",
+  "detail": "refresh_cookie_required"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/security-settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/auth/security-settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/setup-state",
+  "outcome": "port",
+  "detail": "PORT_REACHED:auth.getInitialSetupState"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/auth/users",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/users",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/auth/users/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/auth/users/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/auth/users/1/mfa",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/users/1/mfa/email",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/users/1/mfa/totp/confirm",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/auth/users/1/mfa/totp/setup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/automation/api-keys",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/automation/api-keys",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/automation/api-keys/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/automation/api-keys/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/automation/api-keys/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/automation/api-keys/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/calendar-entries",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/calendar-entries",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/calendar-entries",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/calendar-entries",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/calendar-entries/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/calendar-entries/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/calendar-entries/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/calendar-entries/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/customers/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/customers/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/customers/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/customers/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/customers/1/custom-field-values/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/customers/1/custom-field-values/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/customers/1/custom-field-values/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/customers/1/custom-field-values/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/dashboard",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/dashboard",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/dashboard",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/dashboard",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/dashboard/recent-customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/dashboard/recent-customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/dashboard/recent-customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/dashboard/recent-customers",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/dashboard/stats",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/dashboard/stats",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/dashboard/stats",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/dashboard/stats",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/dashboard/upcoming-tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/dashboard/upcoming-tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/dashboard/upcoming-tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/dashboard/upcoming-tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/deal-products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/deal-products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/deal-products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/deal-products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/deals/1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/deals/1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/deals/1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/deals/1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/deals/1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/deals/1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/deals/1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/deals/1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/deals/1/products/by-product/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/deals/1/products/by-product/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/deals/1/products/by-product/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/deals/1/products/by-product/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/deals/1/stage",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/deals/1/stage",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/deals/1/stage",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/deals/1/stage",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/deals/1/tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/deals/1/tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/deals/1/tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/deals/1/tasks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/diagnostics/server-logs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/diagnostics/server-logs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/diagnostics/server-logs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/diagnostics/server-logs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/diagnostics/server-logs/clear",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/diagnostics/server-logs/clear",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/diagnostics/server-logs/clear",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/diagnostics/server-logs/clear",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/diagnostics/server-logs/self-test",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/diagnostics/server-logs/self-test",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/diagnostics/server-logs/self-test",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/diagnostics/server-logs/self-test",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/access/bindings",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailDelegation.listBindings"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/access/bindings",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/access/bindings/1",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/access/bindings/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailDelegation.deleteBinding"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/access/explain",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/access/resources",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/access/self",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveSelfPermissions"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/access/subjects",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/account-signatures",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/account-signatures/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/account-signatures/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/account-signatures/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/account-signatures/by-account/1/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/accounts",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/accounts/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/accounts/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/accounts/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/accounts/1/inbox-archive-recovery",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts/1/inbox-archive-recovery",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts/1/sync",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/accounts/1/sync-lock",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts/1/vacation-test",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts/:accountId",
+  "outcome": "status:400",
+  "detail": "invalid_email_account_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/accounts/:accountId/inbox-archive-recovery",
+  "outcome": "status:400",
+  "detail": "invalid_email_account_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/accounts/:accountId/inbox-archive-recovery",
+  "outcome": "status:400",
+  "detail": "invalid_email_account_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts/test-imap",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts/test-pop3",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/accounts/test-smtp",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/acl-rollout/enforce",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/acl-rollout/enforce",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/acl-rollout/enforce",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/acl-rollout/enforce",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/acl-rollout/readiness",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/acl-rollout/readiness",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/acl-rollout/readiness",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/acl-rollout/readiness",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/acl-rollout/reset-counters",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/acl-rollout/reset-counters",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/acl-rollout/reset-counters",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/acl-rollout/reset-counters",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/attachments/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/attachments/1/content",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/canned-responses",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/canned-responses",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/canned-responses/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/canned-responses/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/canned-responses/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/categories",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/categories",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/categories/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/categories/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/categories/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/categories/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/categories/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/categories/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/categories/reorder",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/categories/reorder",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/categories/reorder",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/categories/reorder",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/category-counts",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/diagnostics",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/dmarc/stats",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/folder-counts",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/folders",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/folders/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/gdpr-export",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/internal-notes",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/internal-notes/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/internal-notes/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/internal-notes/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/message-categories",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/message-categories/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/message-categories/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/actions",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/approve-draft-send",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/archive",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/assignment",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/attachments",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/categories",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/categories",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/compose-attachments",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/compose-draft",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/compose-draft-recovery-state",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/customer-link",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/dismiss-draft-approval",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/done",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/internal-notes",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/internal-notes",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/1/local-draft",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/move",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/post-process/retry",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/raw-headers",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/read-receipt-response",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/read-receipt-state",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/remote-content-policy",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/remote-content-policy/consume",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/reply-draft",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/reply-suggestion",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/reply-suggestion/ensure",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/restore",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/scheduled-send",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/1/scheduled-send-failure",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/scheduled-send-state",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/scheduled-send/retry",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/security",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/security/check",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/seen",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/snooze",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/soft-delete",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/spam-decision",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/spam-status",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/tags",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/tags",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/1/tags",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/tracking",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/1/tracking",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/tracking/events/1/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/tracking/events/1/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/tracking/events/1/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/1/tracking/events/1/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/tracking/reclassify",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/tracking/revoke",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/1/workflow-runs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/1/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/1/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/1/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/:messageId/tracking",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/:messageId/tracking",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/:messageId/tracking",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/:messageId/tracking/events/:eventId/ip-insight",
+  "outcome": "port",
+  "detail": "PORT_REACHED:audit.record"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/:messageId/tracking/reclassify",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/:messageId/tracking/reclassify",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/:messageId/tracking/reclassify",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/:messageId/tracking/reclassify",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/:messageId/tracking/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/:messageId/tracking/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/:messageId/tracking/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/:messageId/tracking/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_message_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/:messageId/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/messages/:messageId/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/messages/:messageId/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/messages/backfill-customer-links",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/messages/conversation",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/notices/imap-auth",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/notices/uid-validity",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/notices/uid-validity",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/oauth/google/app",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/oauth/google/app",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/oauth/google/authorize-url",
+  "outcome": "status:400",
+  "detail": "validation_error"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/oauth/google/finish",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/read-receipts",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/read-receipts/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/relays",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/relays",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/relays/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/relays/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/relays/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/relays/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/relays/1/accounts",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/relays/1/accounts",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/relays/1/accounts",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/relays/1/accounts",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/relays/1/accounts/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/relays/1/accounts/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/relays/1/accounts/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/relays/1/accounts/1",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/relays/1/credentials",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/relays/1/credentials",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/relays/1/credentials",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/relays/1/credentials",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/relays/1/credentials/1/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/relays/1/credentials/1/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/relays/1/credentials/1/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/relays/1/credentials/1/revoke",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/relays/1/submissions",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/relays/1/submissions",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/relays/1/submissions",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/relays/1/submissions",
+  "outcome": "status:400",
+  "detail": "invalid_relay_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/remote-content-allowlist",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/remote-content-allowlist",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/remote-content-allowlist/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/remote-content-allowlist/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/remote-content-allowlist/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/remote-content-allowlist/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/remote-content-allowlist/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/remote-content-allowlist/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/reporting",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/settings/misc",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/settings/misc",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/settings/reply-suggestion",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/settings/reply-suggestion",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/settings/security",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/settings/security",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/settings/security/test-rspamd",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/settings/snooze",
+  "outcome": "port",
+  "detail": "PORT_REACHED:syncInfo.getMany"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/settings/snooze",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/tags",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/tags/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/tags/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/team-members",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/team-members",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/team-members/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/team-members/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/team-members/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/team-members/1/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/team-members/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/team-members/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/team-members/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/team-members/:teamMemberId/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/thread-alias-warnings",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/thread-aliases",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/thread-aliases",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/thread-aliases/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/thread-aliases/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/thread-aliases/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/thread-edges",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/thread-edges/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/email/thread-edges/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/threads",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/threads/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/threads/1/messages",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/threads/:threadId/messages",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/threads/backfill",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/threads/backfill",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/threads/merge",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/threads/merge",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/threads/split-message",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/tracking/settings",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/email/tracking/settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/email/user-signatures",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/email/user-signatures/by-account/1/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/follow-up",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/follow-up",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/follow-up",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/follow-up",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/follow-up/items",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/follow-up/items",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/follow-up/items",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/follow-up/items",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/follow-up/queue-counts",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/follow-up/queue-counts",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/follow-up/queue-counts",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/follow-up/queue-counts",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/follow-up/tasks/1/snooze",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/follow-up/tasks/1/snooze",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/follow-up/tasks/1/snooze",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/follow-up/tasks/1/snooze",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/health",
+  "outcome": "status:200",
+  "detail": ""
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/health/ready",
+  "outcome": "status:503",
+  "detail": "database_unavailable"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/jtl/firmen",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/jtl/firmen",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/jtl/firmen",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/jtl/firmen",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/jtl/firmen/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/jtl/firmen/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/jtl/firmen/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/jtl/firmen/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/jtl/orders",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/jtl/orders",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/jtl/orders",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/jtl/orders",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/jtl/sync/run",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/jtl/sync/run",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/jtl/sync/run",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/jtl/sync/run",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/jtl/sync/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/jtl/sync/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/jtl/sync/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/jtl/sync/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/locks/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/locks/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/locks/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/locks/1/heartbeat",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/locks/1/takeover",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/maintenance",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/maintenance",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/maintenance",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/maintenance",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/maintenance/doctor",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/maintenance/doctor",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/maintenance/doctor",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/maintenance/doctor",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/maintenance/migrations/apply",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/maintenance/migrations/apply",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/maintenance/migrations/apply",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/maintenance/migrations/apply",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/maintenance/migrations/check",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/maintenance/migrations/check",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/maintenance/migrations/check",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/maintenance/migrations/check",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/maintenance/reset/execute",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/maintenance/reset/execute",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/maintenance/reset/execute",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/maintenance/reset/execute",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/maintenance/reset/preview",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/maintenance/reset/preview",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/maintenance/reset/preview",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/maintenance/reset/preview",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/maintenance/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/maintenance/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/maintenance/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/maintenance/status",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/mssql/password",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/mssql/settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/mssql/settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/mssql/settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/mssql/settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/mssql/test-connection",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/mssql/test-connection",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/mssql/test-connection",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/mssql/test-connection",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/openapi.json",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/attachments/1/decrypt",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/attachments/1/verify",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/1/private-key/passphrase",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/:id",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/:identityId/private-key/passphrase",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/:identityId/private-key/passphrase",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/:identityId/private-key/passphrase",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/:identityId/private-key/passphrase",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:pgpIdentities.list"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/by-source/1/private-key/passphrase",
+  "outcome": "port",
+  "detail": "PORT_REACHED:pgpIdentities.list"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/by-source/1/private-key/passphrase",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/by-source/1/private-key/passphrase",
+  "outcome": "port",
+  "detail": "PORT_REACHED:pgpIdentities.list"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/by-source/1/private-key/passphrase",
+  "outcome": "port",
+  "detail": "PORT_REACHED:pgpIdentities.list"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_source_sqlite_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_source_sqlite_id"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_source_sqlite_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/by-source/:sourceId/private-key/passphrase",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_identity_source_sqlite_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/identities/generate",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/identities/generate",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/identities/generate",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/identities/generate",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/messages/1/decrypt",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/messages/1/detect",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/messages/1/verify",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/messages/encrypt",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/messages/sign",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/peer-keys",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/peer-keys",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/peer-keys/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/peer-keys/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/peer-keys/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/peer-keys/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/peer-keys/:id",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_peer_key_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/peer-keys/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/peer-keys/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/peer-keys/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/peer-keys/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:pgpPeerKeys.list"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/peer-keys/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/peer-keys/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/peer-keys/by-source/:sourceId",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/peer-keys/by-source/:sourceId",
+  "outcome": "status:400",
+  "detail": "invalid_pgp_peer_key_source_sqlite_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/peer-keys/by-source/:sourceId",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/peer-keys/by-source/:sourceId",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/peer-keys/import",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/pgp/peer-keys/import",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/pgp/peer-keys/import",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/pgp/peer-keys/import",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/pgp/recipient-key-status",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/portal/returns/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:returnsPortalSettings.resolveByToken"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/portal/returns/1/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:returnsPortalSettings.resolveByToken"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/products",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/products/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/return-reasons",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/return-reasons",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/return-reasons",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/return-reasons",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/returns",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/returns",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/returns",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/returns",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/returns/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/returns/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/returns/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/returns/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/returns/analytics",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/returns/analytics",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/returns/analytics",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/returns/analytics",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/returns/jtl-order-lookup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/returns/jtl-order-lookup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/returns/jtl-order-lookup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/returns/jtl-order-lookup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/returns/portal-settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/returns/portal-settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/returns/portal-settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/returns/portal-settings",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/decisions",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/decisions/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/spam/decisions/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/spam/decisions/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/spam/decisions/:id",
+  "outcome": "status:400",
+  "detail": "invalid_spam_decision_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/feature-stats",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/feature-stats/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/feature-stats/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/learning-events",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/learning-events/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailResourceLookup.resolve"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/spam/learning-events/:id",
+  "outcome": "status:400",
+  "detail": "invalid_spam_learning_event_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/spam/learning-events/:id",
+  "outcome": "status:400",
+  "detail": "invalid_spam_learning_event_id"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/spam/learning-events/:id",
+  "outcome": "status:400",
+  "detail": "invalid_spam_learning_event_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/list-entries",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/spam/list-entries",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/list-entries/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/spam/list-entries/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/spam/list-entries/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/list-entries/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/spam/list-entries/:id",
+  "outcome": "status:400",
+  "detail": "invalid_spam_list_entry_id"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/spam/list-entries/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/spam/list-entries/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/spam/list-entries/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/spam/list-entries/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/spam/list-entries/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/spam/list-entries/upsert",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/sync-info/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/sync-info/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/sync-info/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/sync-info/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/sync-info/:key",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/sync-info/:key",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/sync-info/:key",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/sync-info/:key",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/tasks/1/toggle",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/tasks/1/toggle",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/tasks/1/toggle",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/tasks/1/toggle",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/user-groups",
+  "outcome": "port",
+  "detail": "PORT_REACHED:userGroups.list"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/user-groups",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/user-groups/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/user-groups/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/user-groups/1/members",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/user-groups/1/members",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/user-groups/1/members",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/user-groups/1/members",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/user-groups/1/members/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/user-groups/1/members/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/user-groups/1/members/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/user-groups/1/members/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/user-groups/1/permissions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/user-groups/1/permissions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/webhooks/incoming",
+  "outcome": "port",
+  "detail": "PORT_REACHED:syncInfo.getMany"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-delayed-jobs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-delayed-jobs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-delayed-jobs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-delayed-jobs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-delayed-jobs/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-delayed-jobs/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-delayed-jobs/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-delayed-jobs/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-delayed-jobs/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-delayed-jobs/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-delayed-jobs/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-delayed-jobs/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-forward-dedup",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-forward-dedup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-forward-dedup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-forward-dedup",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-forward-dedup/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-forward-dedup/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-forward-dedup/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-forward-dedup/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-forward-dedup/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-forward-dedup/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-forward-dedup/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-forward-dedup/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-knowledge-bases",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-knowledge-bases",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-knowledge-bases",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-knowledge-bases",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-knowledge-bases/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-knowledge-bases/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-knowledge-bases/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-knowledge-bases/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-knowledge-chunks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-knowledge-chunks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-knowledge-chunks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-knowledge-chunks",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-knowledge-chunks/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-knowledge-chunks/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-knowledge-chunks/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-knowledge-chunks/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-message-applied",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-message-applied",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-message-applied",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-message-applied",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-message-applied/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-message-applied/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-message-applied/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-message-applied/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-message-applied/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-message-applied/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-message-applied/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-message-applied/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-run-steps",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-run-steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-run-steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-run-steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-run-steps/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-run-steps/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-run-steps/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-run-steps/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-run-steps/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-run-steps/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-run-steps/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-run-steps/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/1/steps",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/1/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/1/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/1/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/:id",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/:id",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/:id/steps",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/:id/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/:id/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/:id/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/by-source/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/by-source/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/by-source/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/by-source/1/steps",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/by-source/1/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/by-source/1/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/by-source/1/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId/steps",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-runs/by-source/:sourceId/steps",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-versions/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-versions/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-versions/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-versions/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow-versions/by-source/1/restore",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflow-versions/by-source/1/restore",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow-versions/by-source/1/restore",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflow-versions/by-source/1/restore",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow/node-catalog",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow/plugins",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow/settings/automation",
+  "outcome": "port",
+  "detail": "PORT_REACHED:syncInfo.getMany"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflow/settings/automation",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflow/templates",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/1",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/1/execute",
+  "outcome": "port",
+  "detail": "PORT_REACHED:workflows.get"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/1/runs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/1/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/1/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/1/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/:id/execute",
+  "outcome": "status:400",
+  "detail": "invalid_workflow_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/:id/runs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/:id/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/:id/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/:id/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:workflows.list"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:workflows.list"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:workflows.list"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/by-source/1",
+  "outcome": "port",
+  "detail": "PORT_REACHED:workflows.list"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/by-source/1/execute",
+  "outcome": "port",
+  "detail": "PORT_REACHED:workflows.list"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/by-source/1/runs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/by-source/1/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/by-source/1/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/by-source/1/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/by-source/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/by-source/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/by-source/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/by-source/1/versions",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/by-source/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/by-source/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/by-source/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/by-source/1/versions/snapshot",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/by-source/:sourceId/execute",
+  "outcome": "status:400",
+  "detail": "invalid_workflow_source_sqlite_id"
+ },
+ {
+  "method": "GET",
+  "path": "/api/v1/workflows/by-source/:sourceId/runs",
+  "outcome": "port",
+  "detail": "PORT_REACHED:mailAccess.resolveScope"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/by-source/:sourceId/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "PATCH",
+  "path": "/api/v1/workflows/by-source/:sourceId/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "DELETE",
+  "path": "/api/v1/workflows/by-source/:sourceId/runs",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/compile-graph",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/inbound/backfill",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "POST",
+  "path": "/api/v1/workflows/webhook/incoming",
+  "outcome": "port",
+  "detail": "PORT_REACHED:syncInfo.getMany"
+ },
+ {
+  "method": "GET",
+  "path": "/health",
+  "outcome": "status:200",
+  "detail": ""
+ },
+ {
+  "method": "GET",
+  "path": "/health/ready",
+  "outcome": "status:503",
+  "detail": "database_unavailable"
+ },
+ {
+  "method": "GET",
+  "path": "/openapi.json",
+  "outcome": "status:403",
+  "detail": "forbidden"
+ },
+ {
+  "method": "GET",
+  "path": "/t/o/:token.gif",
+  "outcome": "status:200",
+  "detail": ""
+ }
+]
