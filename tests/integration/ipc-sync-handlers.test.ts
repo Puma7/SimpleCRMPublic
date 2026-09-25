@@ -93,17 +93,36 @@ describe('registerSyncHandlers', () => {
       sqliteMocks.getSyncInfo.mockReturnValue('2026-03-01');
 
       const handler = handlers.get(IPCChannels.Sync.GetInfo);
-      const result = await handler({}, 'lastCustomerSync');
+      const result = await handler({}, 'lastSyncTimestamp');
       expect(result).toBe('2026-03-01');
-      expect(sqliteMocks.getSyncInfo).toHaveBeenCalledWith('lastCustomerSync');
+      expect(sqliteMocks.getSyncInfo).toHaveBeenCalledWith('lastSyncTimestamp');
     });
 
     test('returns null when service throws', async () => {
       sqliteMocks.getSyncInfo.mockImplementation(() => { throw new Error('Key missing'); });
 
       const handler = handlers.get(IPCChannels.Sync.GetInfo);
-      const result = await handler({}, 'badKey');
+      const result = await handler({}, 'lastSyncStatus');
       expect(result).toBeNull();
+      expect(sqliteMocks.getSyncInfo).toHaveBeenCalledWith('lastSyncStatus');
+    });
+
+    // F-A7-08: Sync.GetInfo lieferte jeden sync_info-Schluessel (u. a. OAuth-Client-Secrets) an jeden angemeldeten Nutzer.
+    test('never returns sync_info keys outside the sync status allowlist', async () => {
+      sqliteMocks.getSyncInfo.mockReturnValue('s3cret');
+
+      const handler = handlers.get(IPCChannels.Sync.GetInfo);
+      for (const key of [
+        'email_google_oauth_client_secret',
+        'email_ms_oauth_client_secret',
+        'email_webhook_secret',
+        'workflow_http_allowlist',
+        'auth_login_failures_v1',
+        'mssql_settings_v1',
+      ]) {
+        await expect(handler({}, key)).resolves.toBeNull();
+      }
+      expect(sqliteMocks.getSyncInfo).not.toHaveBeenCalled();
     });
   });
 
