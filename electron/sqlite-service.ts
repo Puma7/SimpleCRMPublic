@@ -2319,8 +2319,15 @@ export function createProduct(productData: Omit<Product, 'id' | 'dateCreated' | 
 }
 
 // For updating products manually within the app
+// Keys are interpolated as column names into the UPDATE statement (payload from IPC).
+const PRODUCT_UPDATABLE_COLUMNS = new Set(['name', 'sku', 'description', 'price', 'isActive', 'lastModifiedLocally']);
+
 export function updateProduct(id: number, productData: Partial<Omit<Product, 'id' | 'dateCreated' | 'lastModified' | 'lastSynced' | 'jtl_kArtikel' | 'jtl_dateCreated'>>): Database.RunResult {
     const now = new Date().toISOString();
+    const unknownKey = Object.keys(productData).find(key => !PRODUCT_UPDATABLE_COLUMNS.has(key));
+    if (unknownKey !== undefined) {
+        throw new Error(`Unbekanntes Produktfeld: ${unknownKey.slice(0, 64)}`);
+    }
     let updateFields = Object.keys(productData)
                            .map(key => `${key} = @${key}`)
                            .join(', ');
@@ -2639,6 +2646,12 @@ export function createCalendarEvent(eventData: any): Database.RunResult {
     }
 }
 
+// Keys are interpolated as column names into the UPDATE statement.
+const CALENDAR_EVENT_UPDATABLE_COLUMNS = new Set([
+    'title', 'description', 'start_date', 'end_date', 'all_day', 'color_code',
+    'event_type', 'recurrence_rule', 'task_id',
+]);
+
 export function updateCalendarEvent(id: number, eventData: Partial<Omit<CalendarEventData, 'id'>>): Database.RunResult {
     console.log('Updating calendar event with data:', id, eventData);
     try {
@@ -2675,6 +2688,10 @@ export function updateCalendarEvent(id: number, eventData: Partial<Omit<Calendar
         console.log('Sanitized data for SQLite update:', cleanData);
 
         const keysToUpdate = Object.keys(eventData);
+        const unknownKey = keysToUpdate.find(key => !CALENDAR_EVENT_UPDATABLE_COLUMNS.has(key));
+        if (unknownKey !== undefined) {
+            throw new Error(`Unbekanntes Terminfeld: ${unknownKey.slice(0, 64)}`);
+        }
         let updateFields = keysToUpdate
                                .map(key => `${key} = @${key}`)
                                .join(', ');
