@@ -54,7 +54,10 @@ export function pickEdge(
   // inbound workflows to archive every message when only a "ja" branch was wired.
   if (port === 'no') return edges.find((edge) => edgeIsNo(edge));
   if (port === 'done') return edges.find((edge) => edgeIsDone(edge)) ?? undefined;
-  if (port === 'each') return edges.find((edge) => edgeIsEach(edge)) ?? edges[0];
+  // Der Fallback darf nie die Fertig-Kante sein, sonst läuft „Fertig“ je Eintrag.
+  if (port === 'each') {
+    return edges.find((edge) => edgeIsEach(edge)) ?? edges.find((edge) => !edgeIsDone(edge));
+  }
 
   return edges.find((edge) => edgeIsDefault(edge));
 }
