@@ -152,22 +152,23 @@ Jeder Eintrag lässt sich im Register (`findings.md`) mit Commit und Testdatei n
 
 ## 5. Abnahme
 
-Auf dem Branch-Stand nach der letzten Integration, einschließlich Freigabeliste Teil 2:
+Auf dem Branch-Stand nach der letzten Integration (Freigabeliste Teil 3 und Codex-Abgleich vollständig):
 
 | Gate | Ergebnis |
 |---|---|
 | `pnpm run lint` (eslint, 0 Warnungen) | grün |
 | `pnpm run typecheck` (core, server, desktop, web, electron) | grün |
 | `check:typescript-toolchain` | grün |
-| Jest Unit-Projekt | 3490 von 3490 grün, dazu der Base64-Test |
-| Jest Integration als Nicht-root (Embedded Postgres) | 691 von 693; die 2 roten Tests (`sqlite-task-calendar-atomic`) scheitern nur am Schreibrecht des Testnutzers im root-eigenen Checkout, als root 19 von 19 grün |
-| Mail-Suite mit Coverage-Ratchet | 1412 grün, 1 übersprungen (bestehender PDF-Skip), Schwelle erfüllt |
-| Server-Coverage-Ratchet | erfüllt |
-| UI-Coverage-Ratchet | erfüllt (48,3 / 64,6 / 36,9 / 48,3) |
-| `pnpm run build` | grün |
-| CI auf dem PR (build-and-test, server-compose-smoke, electron-e2e) | vor Teil 2 vollständig grün. Die Electron-E2E-Tests und der Compose-Smoke-Test mit Backup- und Restore-Probe liefen auf GitHub. |
+| Jest Unit-Projekt | 3745 von 3745 grün |
+| Jest Integration als Nicht-root (Embedded Postgres) | 925 von 925 grün |
+| Mail-Suite mit Coverage-Ratchet | 1550 von 1550 grün, Schwelle erfüllt |
+| Server-Coverage-Ratchet | erfüllt (71,1 / 73,1 / 70,0 / 71,1) |
+| UI-Coverage-Ratchet | erfüllt (50,6 / 67,1 / 38,0 / 50,6) |
+| `pnpm run build` | grün (Server-`dist` und `dist-electron` enthalten die DOCX-Worker-Module) |
+| CI auf dem PR (build-and-test, server-compose-smoke, electron-e2e) | vollständig grün auf `7ccfd52` (nach Merge von #192 und G1–G4, G8–G11); Stand danach siehe PR |
 
 In der CI aufgefallen und behoben:
+- **DOCX-Worker unter Jest (G7):** Die CI baut `packages/core/dist` vor den Tests nicht; der per tsx gestartete Worker sah die Test-Umgebung nicht (Jest-`process.env` ist eine Sandbox-Kopie). Der Worker bekommt die Umgebung jetzt ausdrücklich mit; lokal ohne `dist` reproduziert.
 - **Electron-E2E:** Zwei Aufräum-Tests kannten den neuen Rückfragedialog beim Löschen von Kunden noch nicht (F-A10-10).
 - **Stack-Überlauf bei Base64:** Die Base64-Regex für große Uploads warf auf GitHub „Maximum call stack size exceeded“, nachdem im selben Prozess das V8-Flag aus E1 aktiv war. Sie ist durch eine Schleife ersetzt.
   - Lokal ließ sich das mit Node 24.21 nicht nachstellen.
