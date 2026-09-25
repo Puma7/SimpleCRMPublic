@@ -31,7 +31,7 @@ Voraussetzungen:
 - `MASTER_KEY` mit 32 Byte Schlüsselmaterial.
 - Korrekte `PUBLIC_BASE_URL`; produktiv ausschließlich HTTPS.
 - Reverse-Proxy-Routing für `/t/*` zum API-Prozess.
-- Vertrauenswürdige Proxy-Konfiguration (`TRUST_PROXY=1` im mitgelieferten Docker-Setup).
+- Vertrauenswürdige Proxy-Konfiguration (`TRUST_PROXY=uniquelocal` im mitgelieferten Docker-Setup; Hop-Zahlen wie `1` ignoriert Fastify seit 5.12).
 - Rechtsgrundlage, HTTPS-Datenschutzhinweis und aktive Admin-Bestätigung in
   **Einstellungen -> E-Mail -> Nachverfolgung**.
 
