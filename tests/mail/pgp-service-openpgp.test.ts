@@ -18,9 +18,12 @@ jest.mock('../../electron/email/email-keytar', () => ({
   deletePgpPrivateKey: jest.fn(),
 }));
 
-import { createEmailMessagesTable, createPgpPeerKeysTable } from '../../electron/database-schema';
+import { createEmailMessagesTable, createPgpIdentitiesTable, createPgpPeerKeysTable } from '../../electron/database-schema';
+import { getPgpPrivateKey } from '../../electron/email/email-keytar';
+import { MAX_INBOUND_RFC822_BYTES } from '../../packages/core/src/email/inbound-message-size';
 import {
   checkRecipientKeys,
+  decryptMessageBody,
   importPublicKeyArmored,
   verifySignedMessage,
 } from '../../electron/pgp/pgp-service';
@@ -29,6 +32,7 @@ let bob: { publicKey: string; privateKey: string };
 
 beforeAll(async () => {
   db.exec(createPgpPeerKeysTable);
+  db.exec(createPgpIdentitiesTable);
   db.exec(createEmailMessagesTable);
   db.exec('ALTER TABLE email_messages ADD COLUMN pgp_status TEXT');
   db.exec('ALTER TABLE email_messages ADD COLUMN pgp_signer_fingerprint TEXT');
@@ -103,4 +107,54 @@ describe('desktop PGP with real openpgp', () => {
     expect(result.valid).toBe(false);
     expect(result.status).toBe('signed_invalid');
   });
+});
+
+describe('desktop PGP decryption decompression limit', () => {
+  const PASSPHRASE = 'richtig pferd batterie';
+  let me: { privateKey: string; publicKey: openpgp.PublicKey };
+
+  beforeAll(async () => {
+    const generated = await openpgp.generateKey({
+      type: 'ecc',
+      userIDs: [{ name: 'Ich', email: 'ich@example.com' }],
+      passphrase: PASSPHRASE,
+      format: 'armored',
+    });
+    me = { privateKey: generated.privateKey, publicKey: await openpgp.readKey({ armoredKey: generated.publicKey }) };
+    db.prepare(
+      `INSERT INTO pgp_identities (user_id, email, fingerprint, public_key_armor, has_private_key, keytar_private_key_handle, is_primary)
+       VALUES ('local-owner', 'ich@example.com', ?, ?, 1, 'pgp-priv-test', 1)`,
+    ).run(me.publicKey.getFingerprint(), me.publicKey.armor());
+    (getPgpPrivateKey as jest.Mock).mockResolvedValue(me.privateKey);
+  });
+
+  async function insertEncrypted(text: string): Promise<number> {
+    const armored = String(await openpgp.encrypt({
+      message: await openpgp.createMessage({ text }),
+      encryptionKeys: me.publicKey,
+      config: { preferredCompressionAlgorithm: openpgp.enums.compression.zlib },
+    }));
+    return Number(
+      db.prepare(
+        `INSERT INTO email_messages (account_id, folder_id, uid, subject, body_text, date_received)
+         VALUES (1, 1, 2, 'enc', ?, '2026-01-01T00:00:00Z')`,
+      ).run(armored).lastInsertRowid,
+    );
+  }
+
+  test('decrypts an ordinary compressed message', async () => {
+    const id = await insertEncrypted('Hallo verschluesselte Welt');
+    await expect(decryptMessageBody(id, PASSPHRASE, 'local-owner')).resolves.toEqual({
+      text: 'Hallo verschluesselte Welt',
+      status: 'decrypted',
+    });
+  });
+
+  // F-A13A14-05 (Desktop-Paritaet): openpgp.decrypt lief ohne maxDecompressedMessageSize; ein kleines Chiffrat entpackte sich im Hauptprozess zu beliebig grossem Klartext.
+  test('rejects a compressed message that expands beyond the plaintext limit', async () => {
+    const id = await insertEncrypted('a'.repeat(MAX_INBOUND_RFC822_BYTES + 1024 * 1024));
+    const stored = db.prepare('SELECT body_text FROM email_messages WHERE id = ?').get(id) as { body_text: string };
+    expect(stored.body_text.length).toBeLessThan(1024 * 1024);
+    await expect(decryptMessageBody(id, PASSPHRASE, 'local-owner')).rejects.toThrow();
+  }, 120_000);
 });

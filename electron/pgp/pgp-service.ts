@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { MAX_INBOUND_RFC822_BYTES } from '@simplecrm/core';
 import { getDb } from '../sqlite-service';
 import { PGP_IDENTITIES_TABLE, PGP_PEER_KEYS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { LOCAL_OWNER_USER_ID } from '../mail-roadmap-migrations';
@@ -19,6 +20,13 @@ function loadOpenPgp(): Promise<OpenPgpModule> {
   openPgpPromise ??= import('openpgp');
   return openPgpPromise;
 }
+
+/**
+ * openpgp inflates compressed data packets without limit by default, so a small
+ * ciphertext could expand to gigabytes in the main process. No decrypted
+ * plaintext needs to be larger than the largest inbound mail we accept.
+ */
+const PGP_DECRYPT_CONFIG = { maxDecompressedMessageSize: MAX_INBOUND_RFC822_BYTES };
 
 /** Keys trusted for outbound encryption (manual import counts as explicit trust). */
 const ENCRYPT_TRUST_LEVELS = "('verified', 'tofu', 'imported')";
@@ -172,6 +180,7 @@ export async function decryptMessageBody(
   const { data } = await openpgp.decrypt({
     message,
     decryptionKeys: decryptedKey,
+    config: PGP_DECRYPT_CONFIG,
   });
   const text = typeof data === 'string' ? data : new TextDecoder().decode(data as Uint8Array);
   return { text, status: 'decrypted' };
