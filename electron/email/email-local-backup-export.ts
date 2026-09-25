@@ -40,6 +40,20 @@ function dirSizeBytes(dir: string): number {
   return total;
 }
 
+/**
+ * Consistent copy of the live database. It runs in WAL mode, so a plain file
+ * copy misses every transaction that has not been checkpointed yet; the online
+ * backup API of a second connection reads main file plus WAL.
+ */
+async function snapshotDatabase(dbPath: string, targetPath: string): Promise<void> {
+  const source = new Database(dbPath, { fileMustExist: true });
+  try {
+    await source.backup(targetPath);
+  } finally {
+    source.close();
+  }
+}
+
 /** Write backup ZIP to a fixed path (no dialog). Used for pre-restore safety copies. */
 export async function exportLocalMailBackupToPath(
   filePath: string,
@@ -59,11 +73,18 @@ export async function exportLocalMailBackupToPath(
     };
   }
 
+  const tempDbPath = path.join(os.tmpdir(), `simplecrm-mail-backup-${randomUUID()}.sqlite`);
+  try {
+    await snapshotDatabase(dbPath, tempDbPath);
+  } catch (e) {
+    fs.rmSync(tempDbPath, { force: true });
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+
   const { ZipArchive } = await loadArchiver();
   return new Promise((resolve) => {
     const out = createWriteStream(filePath);
     const archive = new ZipArchive({ zlib: { level: 6 } });
-    const tempDbPath = path.join(os.tmpdir(), `simplecrm-mail-backup-${randomUUID()}.sqlite`);
 
     const fail = (err: Error | string) => {
       try {
@@ -98,7 +119,6 @@ export async function exportLocalMailBackupToPath(
     archive.pipe(out);
 
     try {
-      fs.copyFileSync(dbPath, tempDbPath);
       const copyDb = new Database(tempDbPath);
       redactOneTimeSetupTokenInDatabase(copyDb);
       copyDb.close();
