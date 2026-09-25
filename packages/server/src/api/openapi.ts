@@ -206,7 +206,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/email/accounts/test-pop3': { post: { summary: 'Test POP3 connection' } },
       '/email/accounts/test-smtp': { post: { summary: 'Test SMTP connection' } },
       '/email/accounts/{id}/sync': { post: { summary: 'Queue account sync' } },
-      '/email/accounts/{id}/sync-lock': { delete: { summary: 'Release stale account sync job locks' } },
+      '/email/accounts/{id}/sync-lock': { delete: { summary: 'Release stale account sync job locks (legacy job queue only; with Graphile: 503, orphaned locks are released by the worker)' } },
       '/email/accounts/{id}/vacation-test': { post: { summary: 'Test vacation responder' } },
       '/email/accounts/{id}/inbox-archive-recovery': {
         get: { summary: 'Preview inbox archive recovery' },

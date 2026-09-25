@@ -591,7 +591,14 @@ async function handleEmailAccountSyncLockClear(
   if (accountId === null) return error(400, 'invalid_email_account_id', 'email account id muss eine positive Ganzzahl sein');
   if (!ports.emailAccounts) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
   if (!ports.jobQueue?.releaseAccountSyncLocks) {
-    return error(503, 'job_queue_lock_release_unavailable', 'Job queue lock release API nicht konfiguriert');
+    // Production runs mail syncs on the Graphile queue, which has no manual
+    // release; it frees an orphaned account-<id> queue lock on its own.
+    return error(
+      503,
+      'job_queue_lock_release_unavailable',
+      'Manuelles Loesen der Sync-Sperre wird von dieser Job-Queue nicht unterstuetzt; '
+        + 'verwaiste Sperren gibt der Worker selbst frei (spaetestens nach 4 Stunden, beim geordneten Neustart sofort).',
+    );
   }
 
   const account = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id: accountId });

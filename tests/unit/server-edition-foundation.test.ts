@@ -25162,6 +25162,39 @@ describe('server edition foundation', () => {
     expect((unavailable.body as any).error.code).toBe('job_queue_lock_release_unavailable');
   });
 
+  // F-D3-03: Mit der produktiven Graphile-Queue antwortete "Sync-Sperre loesen" immer 503 "nicht konfiguriert", obwohl die Funktion dort gar nicht existiert.
+  test('server sync-lock route says honestly that the Graphile queue releases orphaned locks itself', async () => {
+    const graphileQueue = await createGraphileQueuePort({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      createUtils: async () => ({
+        async addJob() {
+          throw new Error('not used');
+        },
+        async release() {},
+      }),
+    });
+    const response = await createServerApi(makeServerApiPorts({
+      emailAccounts: {
+        async list() {
+          return { items: [] };
+        },
+        async get() {
+          return makeEmailAccountRecord(7);
+        },
+      },
+      jobQueue: graphileQueue,
+    })).handle({
+      method: 'DELETE',
+      path: '/api/v1/email/accounts/7/sync-lock',
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'owner' as const },
+    });
+
+    expect(response.status).toBe(503);
+    expect((response.body as any).error.code).toBe('job_queue_lock_release_unavailable');
+    expect((response.body as any).error.message).toContain('nicht unterstuetzt');
+    expect((response.body as any).error.message).toContain('4 Stunden');
+  });
+
   test('server vacation auto-reply test route calls workspace-scoped sender and logs success', async () => {
     const senderCalls: unknown[] = [];
     const activityCalls: unknown[] = [];
