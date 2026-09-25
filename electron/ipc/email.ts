@@ -1985,17 +1985,22 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const prompts = listAiPrompts();
         const p = prompts.find((x) => x.id === payload.promptId);
         if (!p) return { success: false as const, error: 'Prompt nicht gefunden' };
-        let user = p.user_template.replace(/\{\{text\}\}/g, payload.text);
         let cust: EmailAiCustomerTemplateContext | null = null;
         if (payload.customerId) {
           cust = getEmailAiCustomerTemplateContext(payload.customerId);
         }
+        const values: Record<string, string> = { text: payload.text };
         if (cust) {
-          user = user
-            .replace(/\{\{customer\.name\}\}/g, cust.name ?? '')
-            .replace(/\{\{customer\.firstName\}\}/g, cust.firstName ?? '')
-            .replace(/\{\{customer\.email\}\}/g, cust.email ?? '');
+          values['customer.name'] = cust.name ?? '';
+          values['customer.firstName'] = cust.firstName ?? '';
+          values['customer.email'] = cust.email ?? '';
         }
+        // Single pass with a callback: the compose text is inserted literally ($-patterns
+        // stay text) and is never rescanned, so placeholders inside it cannot expand.
+        const user = p.user_template.replace(
+          /\{\{(text|customer\.name|customer\.firstName|customer\.email)\}\}/g,
+          (match, key: string) => (Object.prototype.hasOwnProperty.call(values, key) ? values[key]! : match),
+        );
         try {
           const profileId = resolvePromptProfileId(p);
           const out = await runChatCompletion(
