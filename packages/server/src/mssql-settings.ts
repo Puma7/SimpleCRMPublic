@@ -244,10 +244,31 @@ export async function resolveMssqlSettingsForConnection(input: {
   if (!password) {
     const secret = await input.secrets?.readSecret(mssqlPasswordSecretIdentifier(input.workspaceId));
     password = secret?.toString('utf8');
+    // The stored password belongs to the stored server. Caller-supplied
+    // settings may only borrow it for that same endpoint; otherwise the test
+    // would hand the write-only secret to any host the caller names.
+    if (password && input.settings !== undefined) {
+      const stored = await loadMssqlSettings(input.db, input.workspaceId, input.applyWorkspaceSession);
+      if (!stored || mssqlEndpointKey(stored) !== mssqlEndpointKey(base)) {
+        return {
+          ok: false,
+          error: 'Zugangsdaten bei Serverwechsel neu eingeben: MSSQL-Passwort erforderlich (Server oder Port geaendert)',
+        };
+      }
+    }
   }
   if (!password) return { ok: false, error: 'MSSQL-Passwort ist nicht konfiguriert' };
 
   return { ok: true, settings: { ...base, password } };
+}
+
+function mssqlEndpointKey(settings: MssqlSettings): string {
+  const config = buildConnectionConfig(settings);
+  return [
+    config.server.trim().toLowerCase(),
+    config.port ?? '',
+    config.options.instanceName?.trim().toLowerCase() ?? '',
+  ].join('|');
 }
 
 async function loadMssqlSettings(

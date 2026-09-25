@@ -10513,6 +10513,80 @@ describe('server edition foundation', () => {
     });
   });
 
+  // F-A13A14-11: the connection test combined caller-supplied server/port with
+  // the stored MSSQL password, so the stored secret could be sent to any host.
+  test('postgres MSSQL connection test only uses the stored password for the stored server and port', async () => {
+    const { db } = makeWorkflowExecutionDb({ syncInfo: [] });
+    let secretValue: Buffer | null = null;
+    const connectCalls: Array<{ server: string; port?: number; password: string }> = [];
+    const port = createPostgresMssqlSettingsPort({
+      db,
+      applyWorkspaceSession: async () => undefined,
+      secrets: {
+        async writeSecret(input) {
+          secretValue = Buffer.isBuffer(input.value) ? input.value : Buffer.from(input.value);
+          return {
+            id: 'secret-1',
+            workspaceId: input.workspaceId,
+            kind: input.kind,
+            name: input.name,
+            keyId: 'test',
+            algorithm: 'test',
+            updatedAt: '2026-07-04T11:00:00.000Z',
+          };
+        },
+        async readSecret() {
+          return secretValue;
+        },
+        async deleteSecret() {
+          return false;
+        },
+        async rotateSecret() {
+          return null;
+        },
+      },
+      connect: async (config) => {
+        connectCalls.push(config);
+        return {
+          request: () => ({ query: async () => ({ recordset: [{ ok: 1 }], rowsAffected: [1] }) }),
+          close: async () => undefined,
+        };
+      },
+    });
+    await expect(port.saveSettings({
+      workspaceId: WORKSPACE_A_ID,
+      settings: { server: 'sql.local', database: 'JTL', user: 'crm', port: 1433, password: 'secret' },
+    })).resolves.toEqual({ success: true });
+
+    for (const redirected of [
+      { server: 'attacker.example', database: 'JTL', user: 'crm', port: 1433 },
+      { server: 'sql.local', database: 'JTL', user: 'crm', port: 1500, password: '' },
+      { server: 'sql.local,1444', database: 'JTL', user: 'crm' },
+      { server: 'sql.local\\OTHER', database: 'JTL', user: 'crm' },
+    ]) {
+      await expect(port.testConnection({ workspaceId: WORKSPACE_A_ID, settings: redirected })).resolves.toEqual({
+        success: false,
+        error: expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'),
+      });
+    }
+    expect(connectCalls).toEqual([]);
+
+    // Same endpoint (host case, other database/user) keeps using the stored password.
+    await expect(port.testConnection({
+      workspaceId: WORKSPACE_A_ID,
+      settings: { server: 'SQL.local', database: 'JTL2', user: 'crm-readonly', port: 1433 },
+    })).resolves.toMatchObject({ success: true });
+    // An explicit password may target any host (admin-only ad-hoc test).
+    await expect(port.testConnection({
+      workspaceId: WORKSPACE_A_ID,
+      settings: { server: 'other.example', database: 'JTL', user: 'crm', password: 'typed' },
+    })).resolves.toMatchObject({ success: true });
+    expect(connectCalls).toEqual([
+      expect.objectContaining({ server: 'SQL.local', port: 1433, password: 'secret' }),
+      expect.objectContaining({ server: 'other.example', password: 'typed' }),
+    ]);
+  });
+
   test('postgres JTL order port resolves workspace customer and executes parameterized JTL order SQL', async () => {
     const { db, rows } = makeWorkflowExecutionDb({
       customers: [{
