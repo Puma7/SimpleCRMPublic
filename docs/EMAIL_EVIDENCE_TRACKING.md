@@ -39,6 +39,9 @@ Jede materielle Änderung der Tracking-Konfiguration verlangt in UI und API eine
 Deaktivieren widerruft bestehende Tokens. Das Deaktivieren nur einer Signalart widerruft die
 zugehörigen Pixel- beziehungsweise Klick-Tokens.
 
+Das Tracking-Häkchen im Compose-Dialog erscheint nur bei aktivierter Richtlinie; ein
+`trackingOverride: true` wird serverseitig ignoriert, solange die Richtlinie deaktiviert ist.
+
 ## Datenfluss
 
 ```mermaid

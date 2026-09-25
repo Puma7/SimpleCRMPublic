@@ -149,6 +149,21 @@ type Props = {
   onSent: (opts?: { preserveSelection?: boolean }) => void | Promise<void>
 }
 
+/**
+ * The per-message tracking choice only exists inside an admin-enabled policy
+ * with at least one signal; the server ignores the override otherwise, so the
+ * checkbox stays hidden instead of suggesting tracking that won't happen.
+ */
+export function composeTrackingChoice(policy: {
+  enabled?: boolean
+  trackOpens?: boolean
+  trackLinks?: boolean
+  defaultTrackNewMessages?: boolean
+}): { available: boolean; defaultOn: boolean } {
+  const available = Boolean(policy.enabled && (policy.trackOpens || policy.trackLinks))
+  return { available, defaultOn: available && policy.defaultTrackNewMessages !== false }
+}
+
 export function handleSubjectTabToEditor(
   event: Pick<KeyboardEvent, "key" | "shiftKey" | "ctrlKey" | "metaKey" | "altKey" | "preventDefault">,
   editor: Pick<ComposeQuillEditorHandle, "focus"> | null,
@@ -1144,8 +1159,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   )
 
   // Load the workspace tracking policy to seed the per-message checkbox
-  // (server edition only). Default checked when tracking is enabled, has a
-  // signal configured, and defaults new messages to tracked.
+  // (server edition only). Shown only when tracking is enabled with a signal
+  // configured; default checked when it also defaults new messages to tracked.
   useEffect(() => {
     if (!serverClientMode) return
     let cancelled = false
@@ -1158,11 +1173,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           defaultTrackNewMessages?: boolean
         } | null
         if (cancelled || !policy) return
-        const defaultOn = Boolean(
-          policy.enabled
-          && (policy.trackOpens || policy.trackLinks)
-          && policy.defaultTrackNewMessages !== false,
-        )
+        const { available, defaultOn } = composeTrackingChoice(policy)
         trackingDefaultRef.current = defaultOn
         // Re-seed from the *current* policy: on first load, and whenever a new
         // (non-draft) compose opens — so an admin's tracking-settings change is
@@ -1173,7 +1184,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           if (isOpen && composeIntent?.mode !== "draft") return defaultOn
           return current
         })
-        setTrackingConfigured(true)
+        setTrackingConfigured(available)
       } catch {
         // Tracking settings unavailable — leave the checkbox hidden.
       }

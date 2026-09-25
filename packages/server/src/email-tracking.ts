@@ -570,12 +570,12 @@ export function createPostgresEmailTrackingService(
           // Recovery resends re-instrument the exact message they prepared
           // before, so they keep their own decision. For fresh sends: an
           // explicit false suppresses; an explicit true forces tracking even
-          // when the workspace default is off (user's per-message choice);
-          // undefined follows the policy default (gated by
-          // defaultTrackNewMessages). PGP/oversized exclusions already returned
-          // above and always win.
+          // when the "default off for new messages" toggle is set, but never
+          // while the admin policy itself is disabled; undefined follows the
+          // policy default (gated by defaultTrackNewMessages). PGP/oversized
+          // exclusions already returned above and always win.
           const effectivePolicy = resolveOutboundTrackingPolicy(policy, override);
-          if (!input.recovery && override !== true
+          if (!input.recovery
             && (!effectivePolicy.enabled || (!effectivePolicy.trackOpens && !effectivePolicy.trackLinks))) {
             return { html: input.html, trackingMessageId: null, warning: null };
           }
@@ -1250,22 +1250,23 @@ function mapPolicyRow(row: PolicyRowLike): NormalizedEmailTrackingPolicy {
 
 /**
  * Applies the per-message override to the workspace policy for one outbound
- * send. true forces tracking on (turning on both signals if the policy has
- * none configured); false and the "default off for new messages" toggle both
- * disable it; undefined without that toggle follows the policy unchanged.
+ * send. The override only chooses within an admin-enabled policy: legal basis,
+ * privacy notice and compliance acknowledgement are enforced when the policy
+ * is enabled, so a disabled policy (or one without any signal) never tracks.
+ * Within an enabled policy, true tracks with the configured signals even when
+ * new messages default to untracked; false and the "default off for new
+ * messages" toggle both disable it; undefined without that toggle follows the
+ * policy unchanged.
  */
 export function resolveOutboundTrackingPolicy(
   policy: NormalizedEmailTrackingPolicy,
   override: boolean | null | undefined,
 ): NormalizedEmailTrackingPolicy {
+  if (!policy.enabled || (!policy.trackOpens && !policy.trackLinks)) {
+    return { ...policy, enabled: false };
+  }
   if (override === true) {
-    const nothingGranular = !policy.trackOpens && !policy.trackLinks;
-    return {
-      ...policy,
-      enabled: true,
-      trackOpens: nothingGranular ? true : policy.trackOpens,
-      trackLinks: nothingGranular ? true : policy.trackLinks,
-    };
+    return policy;
   }
   if (override === false) {
     return { ...policy, enabled: false };

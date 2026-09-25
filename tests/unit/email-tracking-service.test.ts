@@ -398,15 +398,23 @@ describe('email tracking service security helpers', () => {
       ...overrides,
     });
 
-    // Explicit true instruments even when the workspace default is off, and
-    // turns on both signals when the policy configured none.
-    expect(resolveOutboundTrackingPolicy(basePolicy(), true)).toMatchObject({
-      enabled: true,
+    // F-A3a-02: an explicit true must never switch tracking on while the
+    // admin policy is disabled (no legal basis / compliance acknowledgement).
+    expect(resolveOutboundTrackingPolicy(basePolicy(), true)).toMatchObject({ enabled: false });
+    expect(resolveOutboundTrackingPolicy(basePolicy({ trackOpens: true }), true)).toMatchObject({ enabled: false });
+    expect(resolveOutboundTrackingPolicy(basePolicy({
       trackOpens: true,
       trackLinks: true,
-    });
-    // Explicit true respects a narrower configured signal set.
-    expect(resolveOutboundTrackingPolicy(basePolicy({ trackOpens: true }), true)).toMatchObject({
+      legalBasis: 'legitimate_interest',
+      privacyNoticeUrl: 'https://example.test/privacy',
+      complianceAcknowledgedAt: '2026-01-01T00:00:00.000Z',
+    }), true)).toMatchObject({ enabled: false });
+    // Within an enabled policy, explicit true overrides the "default off for
+    // new messages" toggle and keeps the configured signal set.
+    expect(resolveOutboundTrackingPolicy(
+      basePolicy({ enabled: true, trackOpens: true, defaultTrackNewMessages: false }),
+      true,
+    )).toMatchObject({
       enabled: true,
       trackOpens: true,
       trackLinks: false,
@@ -433,6 +441,30 @@ describe('email tracking service security helpers', () => {
       basePolicy({ enabled: true, trackLinks: true, defaultTrackNewMessages: false }),
       null,
     )).toMatchObject({ enabled: false });
+  });
+
+  // F-A3a-02: trackingOverride:true instrumented mails although the admin policy had tracking disabled.
+  test('ignores a per-message tracking override while the workspace policy is disabled', async () => {
+    const { db, state } = disabledPolicyOutboundDatabase();
+    const service = createPostgresEmailTrackingService({
+      db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      now: () => new Date('2026-07-14T12:00:00.000Z'),
+    });
+    const html = '<p>Hallo <a href="https://customer.example/invoice/7">Rechnung</a></p>';
+
+    await expect(service.prepareOutbound({
+      workspaceId: '11111111-1111-4111-8111-111111111111',
+      messageId: 17,
+      accountId: 3,
+      messageIdHeader: '<override-17@crm.example>',
+      recipientCount: 1,
+      html,
+      pgpProtected: false,
+      trackingOverride: true,
+    })).resolves.toEqual({ html, trackingMessageId: null, warning: null });
+    expect(state.insertedTables).toEqual([]);
   });
 
   test('the real revoke and public-open chain cannot reactivate revoked tracking', async () => {
@@ -1701,6 +1733,59 @@ describe('email tracking service security helpers', () => {
     expect(state.classificationLookupEventIdBatches.flat()).not.toContain('100000');
   });
 });
+
+function disabledPolicyOutboundDatabase(): {
+  db: Kysely<ServerDatabase>;
+  state: { insertedTables: string[] };
+} {
+  const state = { insertedTables: [] as string[] };
+  const fixtures: Record<string, unknown> = {
+    email_tracking_policies: {
+      enabled: false,
+      track_opens: false,
+      track_links: false,
+      default_track_new_messages: true,
+      collect_derived_metadata: false,
+      collect_raw_metadata: false,
+      ip_insights_enabled: false,
+      raw_metadata_retention_days: 7,
+      event_retention_days: 365,
+      token_ttl_days: 730,
+      legal_basis: null,
+      privacy_notice_url: null,
+      compliance_acknowledged_at: null,
+      updated_at: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    email_messages: { id: 17, account_id: 3 },
+  };
+  const db = {
+    transaction() {
+      return { execute: async <T>(operation: (trx: unknown) => Promise<T>) => operation(db) };
+    },
+    getExecutor() {
+      return { executeQuery: async () => ({ rows: [] }) };
+    },
+    selectFrom(table: string) {
+      return new TrackingRetrySelect(fixtures[table]);
+    },
+    updateTable() {
+      return new TrackingRetryMutation();
+    },
+    insertInto(table: string) {
+      state.insertedTables.push(table);
+      const insert = {
+        values: () => insert,
+        onConflict: () => insert,
+        execute: async () => undefined,
+      };
+      return insert;
+    },
+    deleteFrom() {
+      return new TrackingRetryMutation();
+    },
+  } as unknown as Kysely<ServerDatabase>;
+  return { db, state };
+}
 
 function trackingRetryMismatchDatabase(existingTargetHash: string): {
   db: Kysely<ServerDatabase>;

@@ -33,10 +33,42 @@ jest.mock('quill/dist/quill.snow.css', () => ({}));
 jest.mock('@/styles/compose-quill.css', () => ({}));
 
 import {
+  composeTrackingChoice,
   handleSubjectTabToEditor,
   hydrateComposeFieldsFromDraftMessage,
 } from '../../src/components/email/compose-dialog';
 import type { EmailMessage } from '../../src/components/email/types';
+
+// F-A3a-02: the tracking checkbox appeared (and sent trackingOverride) although the admin policy had tracking disabled.
+describe('compose per-message tracking checkbox', () => {
+  it('stays hidden while the workspace tracking policy is disabled', () => {
+    expect(composeTrackingChoice({ enabled: false, trackOpens: false, trackLinks: false })).toEqual({
+      available: false,
+      defaultOn: false,
+    });
+    expect(composeTrackingChoice({
+      enabled: false,
+      trackOpens: true,
+      trackLinks: true,
+      defaultTrackNewMessages: true,
+    })).toEqual({ available: false, defaultOn: false });
+    expect(composeTrackingChoice({ enabled: true, trackOpens: false, trackLinks: false })).toEqual({
+      available: false,
+      defaultOn: false,
+    });
+  });
+
+  it('is offered inside an enabled policy and seeds from the new-message default', () => {
+    expect(composeTrackingChoice({ enabled: true, trackOpens: true, defaultTrackNewMessages: true })).toEqual({
+      available: true,
+      defaultOn: true,
+    });
+    expect(composeTrackingChoice({ enabled: true, trackLinks: true, defaultTrackNewMessages: false })).toEqual({
+      available: true,
+      defaultOn: false,
+    });
+  });
+});
 
 describe('compose subject tab routing', () => {
   it('moves plain Tab focus from subject to the message editor', () => {
