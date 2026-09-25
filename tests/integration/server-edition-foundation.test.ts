@@ -2006,6 +2006,9 @@ describe('server edition repository boundaries', () => {
           },
         },
         syncInfo: {
+          async claimIfExpired() {
+            return true;
+          },
           async getMany(input) {
             syncGetCalls.push(input);
             return [];

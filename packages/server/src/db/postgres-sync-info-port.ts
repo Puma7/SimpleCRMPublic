@@ -1,4 +1,4 @@
-import type { Kysely, Selectable } from 'kysely';
+import { sql, type Kysely, type Selectable } from 'kysely';
 import {
   AUTH_SECURITY_SYNC_KEYS,
   DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS,
@@ -127,6 +127,44 @@ export function createPostgresSyncInfoPort(options: PostgresSyncInfoPortOptions)
             .where('key', 'in', keys)
             .executeTakeFirst();
           return Number(result.numDeletedRows ?? 0);
+        },
+      );
+    },
+    async claimIfExpired(input) {
+      const key = normalizeSyncInfoKey(input.key);
+      if (!key) return false;
+      const updatedAt = now();
+      return withWorkspaceTransaction(
+        options.db,
+        { workspaceId: input.workspaceId, role: 'system' },
+        async (trx) => {
+          // One statement: concurrent callers serialise on the (workspace_id,
+          // key) primary key, so exactly one of them inserts or refreshes an
+          // expired claim and the others see no returned row. A value that is
+          // not an epoch-ms number never blocks a claim.
+          const claimed = await trx
+            .insertInto('sync_info')
+            .values({
+              workspace_id: input.workspaceId,
+              key,
+              value: String(input.nowMs),
+              last_updated: updatedAt,
+              source_row: {},
+              imported_in_run_id: null,
+              updated_at: updatedAt,
+            })
+            .onConflict((oc) => oc.columns(['workspace_id', 'key'])
+              .doUpdateSet({
+                value: (eb) => eb.ref('excluded.value'),
+                last_updated: updatedAt,
+                updated_at: updatedAt,
+              })
+              .where(sql<boolean>`sync_info.value IS NULL
+                OR sync_info.value !~ '^[0-9]{1,15}$'
+                OR sync_info.value::bigint <= ${input.nowMs - input.ttlMs}`))
+            .returning('key')
+            .executeTakeFirst();
+          return claimed !== undefined;
         },
       );
     },

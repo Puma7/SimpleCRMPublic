@@ -36867,11 +36867,20 @@ describe('server edition foundation', () => {
     ]);
     const syncGetCalls: unknown[] = [];
     const syncSetCalls: unknown[] = [];
+    const syncClaimCalls: unknown[] = [];
     const workflowListCalls: unknown[] = [];
     const queueCalls: unknown[] = [];
     const operationLog: string[] = [];
     const api = createServerApi(makeServerApiPorts({
       syncInfo: {
+        async claimIfExpired(input) {
+          operationLog.push('dedupe');
+          syncClaimCalls.push(input);
+          const claimedAt = Number(syncStore.get(input.key));
+          if (!Number.isNaN(claimedAt) && input.nowMs - claimedAt < input.ttlMs) return false;
+          syncStore.set(input.key, String(input.nowMs));
+          return true;
+        },
         async getMany(input) {
           syncGetCalls.push(input);
           return input.keys
@@ -36944,16 +36953,14 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       keys: ['email_webhook_secret', expect.stringMatching(/^webhook_dedup:/)],
     });
-    expect(syncSetCalls).toHaveLength(1);
-    expect(syncSetCalls[0]).toEqual({
+    // F-A3b-07: the dedup marker is claimed atomically instead of written via setMany afterwards.
+    expect(syncSetCalls).toEqual([]);
+    expect(syncClaimCalls).toEqual([{
       workspaceId: WORKSPACE_A_ID,
-      values: expect.any(Object),
-    });
-    const dedupeValues = (syncSetCalls[0] as any).values as Record<string, string>;
-    const dedupeKeys = Object.keys(dedupeValues);
-    expect(dedupeKeys).toHaveLength(1);
-    expect(dedupeKeys[0]).toMatch(/^webhook_dedup:/);
-    expect(dedupeValues[dedupeKeys[0]]).toEqual(expect.any(String));
+      key: expect.stringMatching(/^webhook_dedup:/),
+      nowMs: expect.any(Number),
+      ttlMs: 5 * 60 * 1000,
+    }]);
     expect(queueCalls).toEqual([
       {
         workspaceId: WORKSPACE_A_ID,
@@ -36989,7 +36996,9 @@ describe('server edition foundation', () => {
         },
       },
     ]);
-    expect(operationLog).toEqual(['enqueue:31', 'enqueue:32', 'dedupe']);
+    // F-A3b-07: claimed BEFORE the enqueue loop, so a concurrent identical delivery is deduplicated
+    // (a failed enqueue releases the claim again, see the next test).
+    expect(operationLog).toEqual(['dedupe', 'enqueue:31', 'enqueue:32']);
 
     const deduped = await api.handle({
       method: 'POST',
@@ -37083,6 +37092,11 @@ describe('server edition foundation', () => {
     const queueCalls: unknown[] = [];
     const api = createServerApi(makeServerApiPorts({
       syncInfo: {
+        async claimIfExpired(input) {
+          if (syncStore.has(input.key)) return false;
+          syncStore.set(input.key, String(input.nowMs));
+          return true;
+        },
         async getMany(input) {
           return input.keys
             .filter((key) => syncStore.has(key))
@@ -37106,8 +37120,12 @@ describe('server edition foundation', () => {
             updatedAt: '2026-06-04T10:01:00.000Z',
           }));
         },
-        async deleteMany() {
-          return 0;
+        async deleteMany(input) {
+          let deleted = 0;
+          for (const key of input.keys) {
+            if (syncStore.delete(key)) deleted += 1;
+          }
+          return deleted;
         },
       },
       workflows: {

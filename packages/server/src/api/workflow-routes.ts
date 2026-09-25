@@ -671,39 +671,54 @@ async function handleWebhookIncomingRoute(
   if (!Number.isNaN(dedupeAt) && nowMs - dedupeAt < WEBHOOK_DEDUP_MS) {
     return data(200, { success: true, fired: 0, deduplicated: true });
   }
-  let fired = 0;
-  let cursor: number | undefined;
-  do {
-    const result = await ports.workflows.list({
-      workspaceId: principal.workspaceId,
-      triggerName: 'webhook.incoming',
-      enabled: true,
-      limit: MAX_LIMIT,
-      ...(cursor === undefined ? {} : { cursor }),
-    });
-    for (const workflow of result.items) {
-      if (!workflow.enabled || workflow.triggerName !== 'webhook.incoming') continue;
-      await ports.jobQueue.enqueue({
-        workspaceId: principal.workspaceId,
-        type: 'workflow.execute',
-        payload: {
-          workspaceId: principal.workspaceId,
-          workflowId: workflow.id,
-          triggerName: 'webhook.incoming',
-          actorUserId: principal.userId,
-          context: buildWebhookWorkflowContext(bodyJson),
-        },
-      });
-      fired += 1;
-      if (fired >= MAX_WEBHOOK_WORKFLOWS) break;
-    }
-    cursor = result.nextCursor ?? undefined;
-  } while (cursor !== undefined && fired < MAX_WEBHOOK_WORKFLOWS);
-
-  await ports.syncInfo.setMany({
+  // Claim atomically BEFORE enqueueing. A check-then-set written after the
+  // loop let two identical concurrent deliveries (sender retry on timeout)
+  // both see no marker and enqueue every workflow twice.
+  const claimed = await ports.syncInfo.claimIfExpired({
     workspaceId: principal.workspaceId,
-    values: { [dedupeKey]: String(Date.now()) },
+    key: dedupeKey,
+    nowMs,
+    ttlMs: WEBHOOK_DEDUP_MS,
   });
+  if (!claimed) {
+    return data(200, { success: true, fired: 0, deduplicated: true });
+  }
+  let fired = 0;
+  try {
+    let cursor: number | undefined;
+    do {
+      const result = await ports.workflows.list({
+        workspaceId: principal.workspaceId,
+        triggerName: 'webhook.incoming',
+        enabled: true,
+        limit: MAX_LIMIT,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      for (const workflow of result.items) {
+        if (!workflow.enabled || workflow.triggerName !== 'webhook.incoming') continue;
+        await ports.jobQueue.enqueue({
+          workspaceId: principal.workspaceId,
+          type: 'workflow.execute',
+          payload: {
+            workspaceId: principal.workspaceId,
+            workflowId: workflow.id,
+            triggerName: 'webhook.incoming',
+            actorUserId: principal.userId,
+            context: buildWebhookWorkflowContext(bodyJson),
+          },
+        });
+        fired += 1;
+        if (fired >= MAX_WEBHOOK_WORKFLOWS) break;
+      }
+      cursor = result.nextCursor ?? undefined;
+    } while (cursor !== undefined && fired < MAX_WEBHOOK_WORKFLOWS);
+  } catch (caught) {
+    // Release the claim so the sender's retry is not swallowed as a duplicate
+    // of a delivery that never (fully) reached the queue.
+    await ports.syncInfo.deleteMany({ workspaceId: principal.workspaceId, keys: [dedupeKey] })
+      .catch(() => undefined);
+    throw caught;
+  }
 
   return data(202, {
     success: true,

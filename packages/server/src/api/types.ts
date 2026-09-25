@@ -667,6 +667,17 @@ export type SyncInfoApiPort = {
     workspaceId: string;
     keys: readonly string[];
   }): Promise<number>;
+  /**
+   * Atomically claims `key` (value = nowMs) unless it already holds a claim
+   * newer than `ttlMs`. Resolves true only for the caller that now owns it;
+   * concurrent callers for the same key get exactly one winner.
+   */
+  claimIfExpired(input: {
+    workspaceId: string;
+    key: string;
+    nowMs: number;
+    ttlMs: number;
+  }): Promise<boolean>;
 };
 
 export type AuditApiPort = {
