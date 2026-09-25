@@ -255,4 +255,78 @@ describe('ComposeDialog: Verfasser-Inhalt bleibt bei Fehlern erhalten', () => {
     expect(screen.getByLabelText('Betreff')).toHaveValue('Angebot Mai');
     expect(channelCalls('email:create-compose-draft')).toHaveLength(1);
   });
+
+  // F-A11a-02: Parallele Uploads bildeten die Pfadliste aus demselben veralteten Stand und verwarfen einen Anhang.
+  test('zwei parallel hochgeladene Anhaenge bleiben beide im Entwurf', async () => {
+    await renderReadyCompose();
+    const uploadA = deferred<{ path: string }>();
+    const uploadB = deferred<{ path: string }>();
+    mockUpload
+      .mockImplementationOnce(() => uploadA.promise)
+      .mockImplementationOnce(() => uploadB.promise);
+
+    dropFiles([new File(['a'], 'a.pdf', { type: 'application/pdf' })]);
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(1));
+    dropFiles([new File(['b'], 'b.pdf', { type: 'application/pdf' })]);
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(2));
+
+    await act(async () => uploadA.resolve({ path: 'ws/compose-drafts/42/a.pdf' }));
+    await act(async () => uploadB.resolve({ path: 'ws/compose-drafts/42/b.pdf' }));
+
+    await waitFor(() => {
+      const attachmentUpdates = channelCalls('email:update-compose-draft')
+        .map(([, payload]) => payload as { draftAttachmentPaths?: string[] })
+        .filter((payload) => payload.draftAttachmentPaths !== undefined);
+      expect(attachmentUpdates.at(-1)?.draftAttachmentPaths).toEqual([
+        'ws/compose-drafts/42/a.pdf',
+        'ws/compose-drafts/42/b.pdf',
+      ]);
+    });
+  });
+
+  // F-A11a-02: Senden war waehrend eines laufenden Uploads moeglich, die Mail ging ohne den Anhang raus.
+  test('Senden ist gesperrt, solange ein Anhang hochgeladen wird', async () => {
+    await renderReadyCompose();
+    fireEvent.change(screen.getByPlaceholderText('empfänger@example.com'), { target: { value: 'kunde@firma.de' } });
+    const uploadA = deferred<{ path: string }>();
+    mockUpload.mockImplementationOnce(() => uploadA.promise);
+
+    dropFiles([new File(['a'], 'a.pdf', { type: 'application/pdf' })]);
+    await waitFor(() => expect(mockUpload).toHaveBeenCalledTimes(1));
+
+    expect(screen.getByRole('button', { name: 'Senden' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Später senden' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Senden' }));
+    expect(channelCalls('email:send-compose')).toHaveLength(0);
+
+    await act(async () => uploadA.resolve({ path: 'ws/compose-drafts/42/a.pdf' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Senden' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Senden' }));
+
+    await waitFor(() => expect(channelCalls('email:send-compose')).toHaveLength(1));
+    expect(channelCalls('email:send-compose')[0]![1]).toEqual(expect.objectContaining({
+      attachmentPaths: ['ws/compose-drafts/42/a.pdf'],
+    }));
+  });
+
+  // F-A11a-02: Scheiterte im selben Stapel eine spaetere Datei, fehlte die bereits hochgeladene im Entwurf.
+  test('bereits hochgeladene Dateien bleiben erhalten, wenn eine spaetere im Stapel scheitert', async () => {
+    await renderReadyCompose();
+    mockUpload
+      .mockResolvedValueOnce({ path: 'ws/compose-drafts/42/a.pdf' })
+      .mockRejectedValueOnce(new Error('Upload abgebrochen'));
+
+    dropFiles([
+      new File(['a'], 'a.pdf', { type: 'application/pdf' }),
+      new File(['b'], 'b.pdf', { type: 'application/pdf' }),
+    ]);
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith('Upload abgebrochen'));
+    await waitFor(() => {
+      const attachmentUpdates = channelCalls('email:update-compose-draft')
+        .map(([, payload]) => payload as { draftAttachmentPaths?: string[] })
+        .filter((payload) => payload.draftAttachmentPaths !== undefined);
+      expect(attachmentUpdates.at(-1)?.draftAttachmentPaths).toEqual(['ws/compose-drafts/42/a.pdf']);
+    });
+  });
 });

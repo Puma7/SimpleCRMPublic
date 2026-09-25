@@ -316,6 +316,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const closingRef = useRef(false)
   const editorRef = useRef<ComposeQuillEditorHandle>(null)
   const serverAttachmentInputRef = useRef<HTMLInputElement>(null)
+  // Latest attachment list for async uploads: a parallel upload may finish
+  // after this render, so merging into the closure value would drop its file.
+  const attachmentPathsRef = useRef<string[]>([])
+  useEffect(() => {
+    attachmentPathsRef.current = attachmentPaths
+  }, [attachmentPaths])
+  const serverUploadsInFlightRef = useRef(0)
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const signatureRequestRef = useRef(0)
   /** Bumped to re-run draft bootstrap (e.g. „Von“-Konto gewechselt) without stale-effect cancel. */
@@ -1114,30 +1121,42 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const handleServerAttachmentFiles = useCallback(
     async (files: FileList | readonly File[] | null) => {
       if (!serverClientMode || draftId == null || !files?.length) return
+      serverUploadsInFlightRef.current += 1
       setUploadingAttachment(true)
+      const uploadedPaths: string[] = []
       try {
-        const uploadedPaths: string[] = []
+        let uploadError: unknown = null
         for (const file of Array.from(files)) {
           if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
             toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
             continue
           }
-          const contentBase64 = await fileToBase64(file)
-          const uploaded = await uploadServerComposeAttachment({
-            draftMessageId: draftId,
-            filename: file.name || "attachment",
-            contentBase64,
-            contentType: file.type || undefined,
-          })
-          uploadedPaths.push(uploaded.path)
+          try {
+            const contentBase64 = await fileToBase64(file)
+            const uploaded = await uploadServerComposeAttachment({
+              draftMessageId: draftId,
+              filename: file.name || "attachment",
+              contentBase64,
+              contentType: file.type || undefined,
+            })
+            uploadedPaths.push(uploaded.path)
+          } catch (e) {
+            // Already uploaded files of this batch are still recorded below.
+            uploadError = e
+            break
+          }
         }
+        if (uploadedPaths.length > 0) {
+          const nextPaths = [...new Set([...attachmentPathsRef.current, ...uploadedPaths])]
+          attachmentPathsRef.current = nextPaths
+          setAttachmentPaths(nextPaths)
+          await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+            messageId: draftId,
+            draftAttachmentPaths: nextPaths,
+          })
+        }
+        if (uploadError) throw uploadError
         if (uploadedPaths.length === 0) return
-        const nextPaths = [...new Set([...attachmentPaths, ...uploadedPaths])]
-        setAttachmentPaths(nextPaths)
-        await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
-          messageId: draftId,
-          draftAttachmentPaths: nextPaths,
-        })
         toast.success(
           uploadedPaths.length === 1
             ? "Anhang hochgeladen"
@@ -1147,11 +1166,12 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
         logError("compose-dialog: upload server attachment", e)
         toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hochgeladen werden.")
       } finally {
-        setUploadingAttachment(false)
+        serverUploadsInFlightRef.current -= 1
+        if (serverUploadsInFlightRef.current === 0) setUploadingAttachment(false)
         if (serverAttachmentInputRef.current) serverAttachmentInputRef.current.value = ""
       }
     },
-    [attachmentPaths, draftId, serverClientMode],
+    [draftId, serverClientMode],
   )
 
   const handleDroppedAttachmentFiles = useCallback(
@@ -1365,6 +1385,10 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
 
   const handleSend = async () => {
     if (draftId == null || composeAccountId == null) return
+    if (serverUploadsInFlightRef.current > 0) {
+      toast.info("Anhang wird noch hochgeladen — bitte kurz warten.")
+      return
+    }
     const toCheck = validateRecipientField(to, "An")
     if (!toCheck.ok) {
       toast.error(toCheck.error)
@@ -2206,7 +2230,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               <Button
                 type="button"
                 variant="outline"
-                disabled={!scheduledSendAt || draftId == null}
+                disabled={!scheduledSendAt || draftId == null || uploadingAttachment}
                 onClick={() => {
                   if (!draftId || !scheduledSendAt) return
                   void (async () => {
@@ -2237,7 +2261,13 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
               <Button
                 type="button"
                 onClick={() => void handleSend()}
-                disabled={sending || draftId == null || draftBootstrapping || composeAccountId == null}
+                disabled={
+                  sending ||
+                  draftId == null ||
+                  draftBootstrapping ||
+                  composeAccountId == null ||
+                  uploadingAttachment
+                }
               >
                 {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Senden
