@@ -1492,6 +1492,19 @@ async function handleEmailAccountUpdate(
   if (!ports.emailAccounts?.update) return error(503, 'email_accounts_unavailable', 'Email account API nicht konfiguriert');
   const parsed = parseEmailAccountMutationBody(req.body);
   if (!parsed.ok) return parsed.response;
+  if (EMAIL_ACCOUNT_ENDPOINT_FIELDS.some((field) => parsed.values[field] !== undefined)) {
+    const current = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id });
+    if (!current) return error(404, 'email_account_not_found', 'Email account nicht gefunden');
+    const missing = missingCredentialsForEndpointChange(current, parsed.values);
+    if (missing.length > 0) {
+      return error(
+        400,
+        'email_account_credentials_required',
+        `Zugangsdaten bei Serverwechsel neu eingeben: ${missing.map((entry) => entry.message).join('; ')}`,
+        { fields: missing },
+      );
+    }
+  }
 
   const result = await ports.emailAccounts.update({
     workspaceId: principal.workspaceId,
@@ -1573,6 +1586,114 @@ async function handleEmailAccountDelete(
     emailAddress: result.account.emailAddress,
   });
   return data(200, { success: true, deleted: true, account: sanitizeEmailAccount(result.account) });
+}
+
+const EMAIL_ACCOUNT_ENDPOINT_FIELDS = [
+  'imapHost',
+  'imapPort',
+  'imapTls',
+  'smtpHost',
+  'smtpPort',
+  'smtpTls',
+  'pop3Host',
+  'pop3Port',
+  'pop3Tls',
+] as const satisfies readonly (keyof EmailAccountMutationInput)[];
+
+type EmailAccountEndpointSettings = Pick<EmailAccountRecord,
+  | 'imapHost'
+  | 'imapPort'
+  | 'imapTls'
+  | 'smtpHost'
+  | 'smtpPort'
+  | 'smtpTls'
+  | 'smtpUseImapAuth'
+  | 'pop3Host'
+  | 'pop3Port'
+  | 'pop3Tls'>;
+
+type MailEndpoint = Readonly<{ host: string; port: number; tls: boolean }>;
+
+type MissingEndpointCredential = {
+  field: 'imapPassword' | 'smtpPassword';
+  protocols: Array<'imap' | 'pop3' | 'smtp'>;
+  message: string;
+};
+
+// Stored secrets are bound to the account id only, not to the server they were
+// entered for: sync, send and the stored-account connection test present them to
+// whatever host/port/TLS the row names. Redirecting an endpoint without the
+// credential would hand the stored password (or the OAuth access token) to the
+// new server, which lets a delegated account manager harvest a mailbox password
+// they never knew. Every protocol whose effective endpoint changes therefore
+// needs the credential it logs in with in the same request. The effective values
+// mirror mail-sync/mail-compose-send (POP3 falls back to the IMAP host, NULL
+// ports to 995/587), so re-sending unchanged values is not a change. A fresh
+// IMAP password also covers OAuth accounts: the IMAP secret takes precedence over
+// the OAuth token in every resolver, so the token never reaches the new host.
+function missingCredentialsForEndpointChange(
+  current: EmailAccountEndpointSettings,
+  values: EmailAccountMutationInput,
+): MissingEndpointCredential[] {
+  const next: EmailAccountEndpointSettings = {
+    imapHost: values.imapHost ?? current.imapHost,
+    imapPort: values.imapPort ?? current.imapPort,
+    imapTls: values.imapTls ?? current.imapTls,
+    smtpHost: values.smtpHost === undefined ? current.smtpHost : values.smtpHost,
+    smtpPort: values.smtpPort === undefined ? current.smtpPort : values.smtpPort,
+    smtpTls: values.smtpTls ?? current.smtpTls,
+    smtpUseImapAuth: values.smtpUseImapAuth ?? current.smtpUseImapAuth,
+    pop3Host: values.pop3Host === undefined ? current.pop3Host : values.pop3Host,
+    pop3Port: values.pop3Port === undefined ? current.pop3Port : values.pop3Port,
+    pop3Tls: values.pop3Tls ?? current.pop3Tls,
+  };
+  const fresh = {
+    imapPassword: typeof values.imapPassword === 'string' && values.imapPassword.length > 0,
+    smtpPassword: typeof values.smtpPassword === 'string' && values.smtpPassword.length > 0,
+  };
+  // IMAP and POP3 log in with the IMAP secret (or OAuth); SMTP with the IMAP
+  // secret when it reuses the IMAP login, otherwise with its own SMTP secret.
+  const checks = [
+    { protocol: 'imap', endpoint: imapEndpoint, credential: 'imapPassword' },
+    { protocol: 'pop3', endpoint: pop3Endpoint, credential: 'imapPassword' },
+    { protocol: 'smtp', endpoint: smtpEndpoint, credential: next.smtpUseImapAuth ? 'imapPassword' : 'smtpPassword' },
+  ] as const;
+  const missing = new Map<MissingEndpointCredential['field'], MissingEndpointCredential['protocols']>();
+  for (const check of checks) {
+    const after = check.endpoint(next);
+    // An emptied host disables the protocol; no credential goes anywhere.
+    if (!after.host || fresh[check.credential] || sameMailEndpoint(check.endpoint(current), after)) continue;
+    missing.set(check.credential, [...(missing.get(check.credential) ?? []), check.protocol]);
+  }
+  return [...missing].map(([field, protocols]) => ({
+    field,
+    protocols,
+    message: `${field === 'imapPassword' ? 'IMAP-Passwort' : 'SMTP-Passwort'} erforderlich (${
+      protocols.map((protocol) => `${protocol.toUpperCase()}-Server`).join(', ')
+    } geaendert)`,
+  }));
+}
+
+function imapEndpoint(account: EmailAccountEndpointSettings): MailEndpoint {
+  return { host: account.imapHost.trim(), port: account.imapPort, tls: account.imapTls };
+}
+
+function pop3Endpoint(account: EmailAccountEndpointSettings): MailEndpoint {
+  return {
+    host: account.pop3Host?.trim() || account.imapHost.trim(),
+    port: account.pop3Port ?? 995,
+    tls: account.pop3Tls,
+  };
+}
+
+function smtpEndpoint(account: EmailAccountEndpointSettings): MailEndpoint {
+  return { host: account.smtpHost?.trim() ?? '', port: account.smtpPort ?? 587, tls: account.smtpTls };
+}
+
+function sameMailEndpoint(left: MailEndpoint, right: MailEndpoint): boolean {
+  return left.host.toLowerCase() === right.host.toLowerCase()
+    && left.port === right.port
+    && left.tls === right.tls;
 }
 
 function emailAccountMutationError(result: Extract<EmailAccountMutationPortResult, { ok: false }>): ApiResponse {

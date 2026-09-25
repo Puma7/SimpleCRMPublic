@@ -198,6 +198,11 @@ export const invokeIpc = <T,>(channel: string, ...args: unknown[]): Promise<T> =
   return invoke(channel, ...args) as Promise<T>
 }
 
+/** Comparable key for a mail server endpoint; host case and whitespace do not count. */
+export function mailEndpointKey(host: string, port: number, tls: boolean): string {
+  return `${host.trim().toLowerCase()}|${port}|${tls ? 1 : 0}`
+}
+
 export function stripHtmlToText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")

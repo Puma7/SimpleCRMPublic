@@ -8,6 +8,7 @@ import { KnowledgePanel } from '@/components/email/settings/knowledge-panel';
 import { MailSecurityPanel } from '@/components/email/settings/mail-security-panel';
 import { MiscPanel, SnoozePanel } from '@/components/email/settings/misc-panel';
 import { ArchiveRecoverySection } from '@/components/email/settings/archive-recovery-section';
+import { SmtpPanel } from '@/components/email/settings/smtp-panel';
 import {
   configureRendererTransport,
   createHttpRendererTransport,
@@ -26,6 +27,16 @@ jest.mock('sonner', () => ({
 const mockUseAuth = jest.fn(() => ({ user: { id: 'admin-1', role: 'admin' }, loading: false }));
 jest.mock('@/components/auth/auth-context', () => ({
   useAuth: () => mockUseAuth(),
+}));
+
+const mockMailWorkspace = {
+  settingsAccountId: null,
+  setSettingsAccountId: jest.fn(),
+  accountsRevision: 0,
+  bumpAccountsRevision: jest.fn(),
+};
+jest.mock('@/components/email/workspace-context', () => ({
+  useMailWorkspace: () => mockMailWorkspace,
 }));
 
 jest.mock('@/components/email/settings/knowledge-markdown-editor', () => ({
@@ -191,7 +202,7 @@ describe('mail settings server-client UI', () => {
     render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
 
     fireEvent.change(await screen.findByLabelText('IMAP-Server'), { target: { value: 'imap.neu.example' } });
-    fireEvent.change(screen.getByLabelText('Passwort'), { target: { value: 'geheim' } });
+    fireEvent.change(screen.getByLabelText(/^Passwort/), { target: { value: 'geheim' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'IMAP testen' }));
     });
@@ -229,6 +240,107 @@ describe('mail settings server-client UI', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent(/Passwort eingeben/);
     expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('test-pop3'))).toBe(false);
+  });
+
+  // F-A2a-01: the server now rejects an endpoint change without a fresh
+  // password; the edit form has to ask for it instead of silently saving.
+  test('account form requires the password once host, port or TLS change', async () => {
+    const fetchImpl = jest.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => (
+      jsonResponse({ data: { success: true } })
+    ));
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+    const passwordInput = await screen.findByLabelText(/^Passwort/);
+    expect(passwordInput).not.toBeRequired();
+
+    fireEvent.change(screen.getByLabelText('IMAP-Server'), { target: { value: 'imap.other.example' } });
+    expect(passwordInput).toBeRequired();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+    });
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'));
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    fireEvent.change(passwordInput, { target: { value: 'fresh-secret' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
+    const patch = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({
+      imapHost: 'imap.other.example',
+      imapPassword: 'fresh-secret',
+    });
+  });
+
+  test('account form shows the server rejection for a missing credential', async () => {
+    const fetchImpl = jest.fn(async () => jsonResponse({
+      error: {
+        code: 'email_account_credentials_required',
+        message: 'Zugangsdaten bei Serverwechsel neu eingeben: IMAP-Passwort erforderlich (POP3-Server geaendert)',
+        details: { fields: [{ field: 'imapPassword', protocols: ['pop3'] }] },
+      },
+    }, 400));
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+    fireEvent.change(await screen.findByLabelText(/Anzeigename/i), { target: { value: 'Neuer Name' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+    });
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      'Zugangsdaten bei Serverwechsel neu eingeben: IMAP-Passwort erforderlich (POP3-Server geaendert)',
+    ));
+  });
+
+  test('SMTP panel asks for the IMAP password when the server changes with IMAP login', async () => {
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return jsonResponse({ data: { success: true } });
+      if (String(input).endsWith('/api/v1/email/accounts')) {
+        return jsonResponse({ data: { items: [smtpAccountRecord()] } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    const { container } = render(<SmtpPanel embeddedAccountId={1} />);
+
+    const hostInput = await screen.findByDisplayValue('smtp.example.com');
+    const passwordInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+    expect(passwordInput).not.toBeRequired();
+
+    fireEvent.change(hostInput, { target: { value: 'smtp.other.example' } });
+    expect(passwordInput).toBeRequired();
+    expect(screen.getByLabelText(/^IMAP-Passwort/)).toBe(passwordInput);
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+    });
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'));
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+
+    fireEvent.change(passwordInput, { target: { value: 'imap-secret' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SMTP gespeichert.'));
+    const patch = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    const body = JSON.parse(String(patch?.[1]?.body));
+    expect(body).toMatchObject({ smtpHost: 'smtp.other.example', imapPassword: 'imap-secret' });
+    expect(body).not.toHaveProperty('smtpPassword');
   });
 
   test('export panel does not fall back to local IPC when HTTP transport has no server URL', async () => {
@@ -600,6 +712,28 @@ function emailAccountRecord() {
     displayName: 'Server Mail',
     emailAddress: 'mail@example.com',
     protocol: 'imap',
+  };
+}
+
+function smtpAccountRecord() {
+  return {
+    id: 1,
+    sourceSqliteId: 1,
+    displayName: 'Kontakt',
+    emailAddress: 'kontakt@example.com',
+    protocol: 'imap',
+    imapHost: 'imap.example.com',
+    imapPort: 993,
+    imapTls: true,
+    imapUsername: 'kontakt@example.com',
+    smtpHost: 'smtp.example.com',
+    smtpPort: 587,
+    smtpTls: true,
+    smtpUsername: null,
+    smtpUseImapAuth: true,
+    pop3Host: null,
+    pop3Port: 995,
+    pop3Tls: true,
   };
 }
 

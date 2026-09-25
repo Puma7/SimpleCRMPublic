@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
-import { hasLocalIpc, type EmailAccount } from "../types"
+import { hasLocalIpc, mailEndpointKey, type EmailAccount } from "../types"
 
 type Props = {
   onCreated: () => void
@@ -45,6 +45,19 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
   const [saving, setSaving] = useState(false)
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
+  // The server refuses an IMAP/POP3 endpoint change (host, port, TLS) without the
+  // password, so the stored one is never sent to a different server. Ask for it
+  // before saving instead of letting the update fail.
+  const credentialsRequired = serverClientMode && editAccount != null && (
+    mailEndpointKey(imapHost, parseInt(imapPort, 10) || 993, imapTls)
+      !== mailEndpointKey(editAccount.imap_host, editAccount.imap_port, Boolean(editAccount.imap_tls))
+    || mailEndpointKey(pop3Host.trim() || imapHost, parseInt(pop3Port, 10) || 995, pop3Tls)
+      !== mailEndpointKey(
+        editAccount.pop3_host?.trim() || editAccount.imap_host,
+        editAccount.pop3_port ?? 995,
+        editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls),
+      )
+  )
 
   const lastInitializedAccountIdRef = useRef<number | null>(null)
 
@@ -218,6 +231,10 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           ? "Bitte Pflichtfelder ausfüllen. Passwort nur bei Änderung."
           : "Bitte alle Felder inkl. Passwort ausfüllen.",
       )
+      return
+    }
+    if (credentialsRequired && !imapPassword) {
+      toast.error("Zugangsdaten bei Serverwechsel neu eingeben: Bitte das Passwort eingeben.")
       return
     }
     setSaving(true)
@@ -429,14 +446,24 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="acc-pass">Passwort</Label>
+          <Label htmlFor="acc-pass">
+            {credentialsRequired ? "Passwort (erforderlich, Server geändert)" : "Passwort"}
+          </Label>
           <Input
             id="acc-pass"
             type="password"
             value={imapPassword}
             onChange={(e) => setImapPassword(e.target.value)}
+            required={credentialsRequired}
+            aria-invalid={credentialsRequired && !imapPassword ? true : undefined}
             placeholder={isEdit ? "Leer = gespeichertes Passwort beim Test" : undefined}
           />
+          {credentialsRequired ? (
+            <p className="text-[11px] text-muted-foreground">
+              Server, Port oder TLS geändert: Das gespeicherte Passwort wird nicht an einen
+              anderen Server gesendet. Bitte erneut eingeben.
+            </p>
+          ) : null}
         </div>
       </div>
 

@@ -11,7 +11,7 @@ import { Switch } from "@/components/ui/switch"
 import { invokeRenderer } from "@/services/transport"
 import { isServerClientMode } from "@/lib/runtime-mode"
 import { guessSmtpHostFromImapHost } from "@shared/mail-host-hints"
-import { type EmailAccount } from "../types"
+import { mailEndpointKey, type EmailAccount } from "../types"
 import { useMailWorkspace } from "../workspace-context"
 
 type SmtpPanelProps = {
@@ -45,6 +45,14 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const [testing, setTesting] = useState(false)
   const [importingInbox, setImportingInbox] = useState(false)
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
+  const storedAccount = accounts.find((x) => x.id === accId)
+  // The server refuses an SMTP endpoint change (host, port, TLS) without the
+  // password SMTP logs in with, so the stored one never reaches a different
+  // server. With "wie IMAP" that is the IMAP password.
+  const credentialsRequired = isServerClientMode() && storedAccount != null && smtpHost.trim() !== ""
+    && mailEndpointKey(smtpHost, parseInt(smtpPort, 10) || 587, smtpTls)
+      !== mailEndpointKey(storedAccount.smtp_host ?? "", storedAccount.smtp_port ?? 587, (storedAccount.smtp_tls ?? 1) === 1)
+  const requiredPasswordLabel = smtpImapAuth ? "IMAP-Passwort" : "SMTP-Passwort"
 
   const load = useCallback(async () => {
     try {
@@ -87,6 +95,10 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       toast.error("Bitte SMTP-Host eintragen (z. B. smtp.ionos.de).")
       return
     }
+    if (credentialsRequired && !smtpPass) {
+      toast.error(`Zugangsdaten bei Serverwechsel neu eingeben: Bitte das ${requiredPasswordLabel} eingeben.`)
+      return
+    }
     setSaving(true)
     try {
       await invokeRenderer(IPCChannels.Email.UpdateAccount, {
@@ -96,7 +108,9 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         smtpTls,
         smtpUsername: smtpUser.trim() || null,
         smtpUseImapAuth: smtpImapAuth,
-        smtpPassword: smtpPass || undefined,
+        ...(credentialsRequired && smtpImapAuth
+          ? { imapPassword: smtpPass }
+          : { smtpPassword: smtpPass || undefined }),
         sentFolderPath: sentFolder.trim() || null,
         syncSpamFolderPath: spamFolder.trim() || null,
         syncArchiveFolderPath: archiveFolder.trim() || null,
@@ -232,13 +246,26 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
             </div>
           ) : null}
           <div className="space-y-1.5">
-            <Label>SMTP-Passwort (leer = unverändert)</Label>
+            <Label htmlFor="smtp-pass">
+              {credentialsRequired
+                ? `${requiredPasswordLabel} (erforderlich, Server geändert)`
+                : "SMTP-Passwort (leer = unverändert)"}
+            </Label>
             <Input
+              id="smtp-pass"
               type="password"
               value={smtpPass}
               onChange={(e) => setSmtpPass(e.target.value)}
               autoComplete="new-password"
+              required={credentialsRequired}
+              aria-invalid={credentialsRequired && !smtpPass ? true : undefined}
             />
+            {credentialsRequired ? (
+              <p className="text-xs text-muted-foreground">
+                Server, Port oder TLS geändert: Das gespeicherte Passwort wird nicht an einen
+                anderen Server gesendet. Bitte erneut eingeben.
+              </p>
+            ) : null}
           </div>
           <div className="space-y-1.5">
             <Label>IMAP Sent-Ordner (für Kopie nach Versand)</Label>
