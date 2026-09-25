@@ -131,6 +131,39 @@ describe('email-pop3-sync', () => {
     expect(mockRetr).toHaveBeenCalledWith(1);
   });
 
+  // F-A7b-04: Der Erst-Sync eines POP3-Postfachs (unbegrenzt) lief komplett durch
+  // Inbound-Workflows, KI-Vorschläge und Abwesenheitsantworten.
+  test('marks mail as historical while no UIDL of the mailbox is known yet', async () => {
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    mockUidl.mockResolvedValue([['1', 'uidl-old-1'], ['2', 'uidl-old-2']]);
+
+    await syncInboxPop3(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ historical: true }),
+    );
+  });
+
+  test('treats new mail as live inbound once the mailbox was synced before', async () => {
+    const { getFolderByAccountAndPath } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    // Leeres Postfach, aber schon synchronisiert: die UIDL-Liste ist gespeichert.
+    (getFolderByAccountAndPath as jest.Mock).mockReturnValueOnce({ ...mockFolder, pop3_uidl_str: '[]' });
+    mockUidl.mockResolvedValue([['1', 'uidl-new']]);
+
+    await syncInboxPop3(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ historical: false }),
+    );
+  });
+
   test('testPop3Connection returns error on failure', async () => {
     mockUidl.mockRejectedValueOnce(new Error('auth failed'));
     const r = await testPop3Connection(

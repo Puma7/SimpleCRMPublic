@@ -192,6 +192,44 @@ describe('email-imap-sync', () => {
     expect(client.search).toHaveBeenCalledWith({ all: true }, { uid: true });
   });
 
+  // F-A7b-04: Der Erst-Sync eines neuen Ordners lieferte bis zu 2000 Bestandsmails als
+  // neu eingegangen an Workflows, KI-Vorschläge und Abwesenheitsantworten.
+  test('syncInboxImap marks mail of a never-synced folder as historical', async () => {
+    const { getFolderByAccountAndPath, insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    (getFolderByAccountAndPath as jest.Mock).mockReturnValueOnce(undefined);
+    client.search.mockResolvedValueOnce([1, 2, 3]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValue({ id: 99, isNew: true });
+
+    await syncInboxImap(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ runInboundWorkflows: true, historical: true }),
+    );
+  });
+
+  test('syncInboxImap treats new mail of an empty but synced folder as live inbound', async () => {
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    Object.assign(mockFolder, { last_uid: 0, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([1]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValue({ id: 99, isNew: true });
+
+    await syncInboxImap(1);
+
+    expect(processNewMessagesAfterSync).toHaveBeenCalledWith(
+      1,
+      expect.any(Array),
+      10,
+      expect.objectContaining({ runInboundWorkflows: true, historical: false }),
+    );
+  });
+
   // F-A5-06 (Desktop-Paritaet): "UID n+1:*" liefert nach RFC 3501 immer die hoechste UID, auch wenn sie <= n ist; sie wurde bei jedem Poll neu geholt.
   test('syncInboxImap does not refetch the already synced highest uid', async () => {
     (mockFolder as { last_uid: number; uidvalidity: number; uidvalidity_str: string }).last_uid = 7;

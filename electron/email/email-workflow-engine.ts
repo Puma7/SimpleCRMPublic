@@ -334,6 +334,8 @@ export type InboundWorkflowRunOpts = {
   row?: import('./email-store.js').EmailMessageRow;
   inboundWorkflows?: ReturnType<typeof listWorkflowsByTrigger>;
   appliedWorkflowIds?: Set<number>;
+  /** Bestandsmail aus dem Erst-Sync: nur Sicherheits-/Spam-Prüfung, keine Automatik. */
+  historical?: boolean;
 };
 
 export async function runInboundWorkflowsForMessage(
@@ -347,6 +349,8 @@ export async function runInboundWorkflowsForMessage(
   const { runMailSecurityPipeline } = await import('./mail-security-pipeline.js');
   const security = await runMailSecurityPipeline(messageId, row);
   if (security.preWorkflow.skippedWorkflows) return;
+  // F-A7b-04: Keine Workflows, Antwortvorschläge oder Abwesenheitsantworten für die Historie.
+  if (opts?.historical) return;
 
   const freshRow = getEmailMessageById(messageId) ?? row;
 

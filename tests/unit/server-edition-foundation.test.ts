@@ -4147,6 +4147,118 @@ describe('server edition foundation', () => {
     expect(quitCalled).toBe(true);
   });
 
+  // F-A7b-04: Der Erst-Sync eines Kontos meldete bis zu 2000 Bestandsmails als
+  // neu eingegangen; Inbound-Workflows, KI-Vorschlaege und Abwesenheitsantworten
+  // liefen fuer die ganze Historie.
+  test('server mail sync reports mail from a never-synced IMAP folder as historical', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastSyncedAt: null })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, messageIds: [501, 502, 503, 504] });
+    let serverUids = [1, 2, 3];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        if (query.all) return serverUids;
+        if (query.uid === '4:*') return serverUids.filter((uid) => uid >= 4);
+        return [];
+      },
+      async fetchOne(uid: string) {
+        return { source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`), flags: new Set<string>(), threadId: null };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      imapClientFactory: () => client as any,
+    });
+    const plan = { workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap' as const };
+
+    await expect(port.sync(plan)).resolves.toEqual({
+      inboundMessageIds: [],
+      historicalMessageIds: [501, 502, 503],
+    });
+
+    // Der naechste Sync liefert wieder echten Eingang.
+    serverUids = [1, 2, 3, 4];
+    await expect(port.sync(plan)).resolves.toEqual({ inboundMessageIds: [504] });
+  });
+
+  test('server mail sync treats the first mail of an empty but synced IMAP folder as inbound', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({
+        id: 71,
+        path: 'INBOX',
+        lastUid: 0,
+        uidvalidity: 22,
+        uidvalidityStr: '22',
+        lastSyncedAt: new Date('2026-07-05T10:00:00.000Z'),
+      })],
+    ]);
+    const store = makeServerMailSyncStore({ account, folders, messageIds: [601] });
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) { return query.all ? [1] : []; },
+      async fetchOne(uid: string) {
+        return { source: Buffer.from(`Subject: ${uid}\r\n\r\nBody`), flags: new Set<string>(), threadId: null };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      imapClientFactory: () => client as any,
+    });
+
+    await expect(port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'imap' }))
+      .resolves.toEqual({ inboundMessageIds: [601] });
+  });
+
+  test('server mail sync reports mail of a POP3 mailbox without known UIDLs as historical', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({
+      protocol: 'pop3',
+      pop3Host: 'pop3.example.com',
+      pop3Port: 995,
+      pop3Tls: true,
+    });
+    const store = makeServerMailSyncStore({
+      account,
+      folders: new Map([['INBOX', makeServerMailSyncFolder({ id: 81, path: 'INBOX', lastSyncedAt: null })]]),
+      pop3Known: new Map(),
+      messageIds: [2101, 2102],
+    });
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8')),
+      pop3ClientFactory() {
+        return {
+          async connect() { return undefined; },
+          async uidl() { return [[1, 'old-1'], [2, 'old-2']] as [number, string][]; },
+          async retr(messageNumber: number) { return Buffer.from(`Subject: POP3 ${messageNumber}\r\n\r\nBody`); },
+          async quit() { return undefined; },
+        };
+      },
+    });
+
+    await expect(port.sync({ workspaceId: WORKSPACE_A_ID, accountId: 7, protocol: 'pop3' }))
+      .resolves.toEqual({ inboundMessageIds: [], historicalMessageIds: [2101, 2102] });
+  });
+
   test('server mail sync remembers oversized POP3 UIDLs without suppressing transient failures', async () => {
     const account = makeServerMailSyncAccount({ protocol: 'pop3' });
     const syncInfo = new Map<string, string | null>();
@@ -5983,6 +6095,37 @@ describe('server edition foundation', () => {
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);
     expect(enqueued.filter((item) => (item as any).type === 'mail.vacation.auto_reply')
       .map((item) => (item as any).payload.messageId)).toEqual([42, 43]);
+  });
+
+  // F-A7b-04: Bestandsmails aus dem Erst-Sync bekommen Spam-Scoring, aber keine
+  // Inbound-Workflows, keine Antwortvorschlaege und keine Abwesenheitsantwort.
+  test('mail sync post-process scores historical messages without automation', async () => {
+    const enqueued: unknown[] = [];
+    const postProcess = createPostgresMailSyncPostProcessor({
+      db: {} as any,
+      applyWorkspaceSession: async () => undefined,
+      jobQueue: {
+        async enqueue(input) {
+          enqueued.push(input);
+          return undefined;
+        },
+      },
+    });
+
+    await postProcess.afterSync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap',
+      syncStartedAt: new Date('2026-07-04T09:00:00.000Z'),
+      syncFinishedAt: new Date('2026-07-04T09:01:00.000Z'),
+      result: { inboundMessageIds: [43], historicalMessageIds: [45, 46, 45] },
+    });
+
+    const byType = (type: string) => enqueued.filter((item) => (item as any).type === type);
+    expect(byType('mail.spam.score').map((item) => [(item as any).payload.messageId, (item as any).payload.enqueueInboundWorkflows]))
+      .toEqual([[43, true], [45, false], [46, false]]);
+    expect(byType('ai.reply_suggestion').map((item) => (item as any).payload.messageId)).toEqual([43]);
+    expect(byType('mail.vacation.auto_reply').map((item) => (item as any).payload.messageId)).toEqual([43]);
   });
 
   test('postgres workflow inbound backfill port clears applied markers and enqueues workflow jobs', async () => {

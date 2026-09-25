@@ -51,6 +51,8 @@ export type MailSyncJobResult = Readonly<{
   inboundMessageIds?: readonly number[];
   replySuggestionMessageIds?: readonly number[];
   automatedEvidenceMessageIds?: readonly number[];
+  /** Bestandsmails aus dem Erst-Sync eines Ordners: nur Spam-Scoring, keine Automatik. */
+  historicalMessageIds?: readonly number[];
 }>;
 
 export type ScheduledSendJobPlan = Readonly<{

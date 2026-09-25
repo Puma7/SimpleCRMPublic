@@ -77,6 +77,18 @@ describe('processNewMessagesAfterSync', () => {
     expect(mockMarkDone).toHaveBeenCalledWith(5);
   });
 
+  // F-A7b-04: Der Erst-Sync reichte Bestandsmails ohne Kennzeichen an die Inbound-Workflows weiter.
+  test('passes the historical flag of a first sync to the inbound run', async () => {
+    await processNewMessagesAfterSync(
+      1,
+      [{ localMsgId: 5, parsedAttachments: undefined, threading: { messageIdHeader: null, inReplyTo: null, referencesHeader: null, subject: null } }],
+      undefined,
+      { historical: true },
+    );
+    expect(mockRunInbound).toHaveBeenCalledWith(5, expect.objectContaining({ historical: true }));
+    expect(mockMarkDone).toHaveBeenCalledWith(5);
+  });
+
   test('merges pending folder messages', async () => {
     mockPending.mockReturnValue([
       {

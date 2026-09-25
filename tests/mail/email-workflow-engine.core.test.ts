@@ -580,6 +580,23 @@ describe('email-workflow-engine core', () => {
       expect(mockMaybeSendVacationAutoReply).toHaveBeenCalled();
     });
 
+    // F-A7b-04: Bestandsmails aus dem Erst-Sync liefen durch alle Inbound-Workflows,
+    // bekamen KI-Antwortvorschläge und Abwesenheitsantworten.
+    test('historical messages get the security pipeline but no workflows or post-steps', async () => {
+      const row = inboundRow({ account_id: 7 });
+      const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };
+      mockListWorkflowsByTrigger.mockReturnValue([wf]);
+      mockGetEmailMessageById.mockReturnValue(row);
+
+      await runInboundWorkflowsForMessage(row.id, { row, appliedWorkflowIds: new Set(), historical: true });
+
+      expect(mockRunMailSecurityPipeline).toHaveBeenCalledWith(row.id, row);
+      expect(mockExecuteWorkflowForTrigger).not.toHaveBeenCalled();
+      expect(mockTryClaimInboundWorkflowForMessage).not.toHaveBeenCalled();
+      expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
+      expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
+    });
+
     test('skips post-steps when an inbound workflow defers on delay', async () => {
       const row = inboundRow();
       const wf = { id: 3, name: 'In', trigger: 'inbound', enabled: 1 };

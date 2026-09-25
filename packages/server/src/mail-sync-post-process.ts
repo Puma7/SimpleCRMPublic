@@ -30,9 +30,14 @@ export function createPostgresMailSyncPostProcessor(
   return {
     async afterSync(input) {
       const suppressed = new Set(uniquePositiveIds(input.result?.automatedEvidenceMessageIds ?? []));
+      // F-A7b-04: Bestand aus dem Erst-Sync: Spam-Scoring ja, sonst keine Automatik.
+      const historical = new Set(uniquePositiveIds(input.result?.historicalMessageIds ?? []));
       const postSyncMessageIds = (await resolvePostSyncMessageIds(options, { ...input, limit }))
-        .filter((messageId) => !suppressed.has(messageId));
-      const spamScoringMessageIds = inboundSpamScoringMessageIds(input.result);
+        .filter((messageId) => !suppressed.has(messageId) && !historical.has(messageId));
+      const spamScoringMessageIds = uniquePositiveIds([
+        ...inboundSpamScoringMessageIds(input.result),
+        ...historical,
+      ]);
 
       for (const messageId of spamScoringMessageIds) {
         await options.jobQueue.enqueue({
@@ -43,7 +48,7 @@ export function createPostgresMailSyncPostProcessor(
             messageId,
             applyStatus: true,
             runSecurityCheck: true,
-            enqueueInboundWorkflows: !suppressed.has(messageId),
+            enqueueInboundWorkflows: !suppressed.has(messageId) && !historical.has(messageId),
           }),
           maxAttempts: 3,
         });

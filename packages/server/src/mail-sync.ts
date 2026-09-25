@@ -141,6 +141,8 @@ export type ServerMailSyncFolder = Readonly<{
   uidvalidityStr: string | null;
   lastUid: number;
   pop3UidlStr: string | null;
+  /** Letzter abgeschlossener Sync; null = nie synchronisiert, fehlt = unbekannt. */
+  lastSyncedAt?: Date | string | null;
 }>;
 
 
@@ -419,6 +421,7 @@ async function syncImapAccount(input: {
   });
 
   const inboundMessageIds: number[] = [];
+  const historicalMessageIds: number[] = [];
   const automatedEvidenceMessageIds: number[] = [];
   try {
     await client.connect();
@@ -434,6 +437,7 @@ async function syncImapAccount(input: {
         const result = await syncImapFolder({ ...input, client, spec });
         if (spec.runPostSync) {
           inboundMessageIds.push(...result.newMessageIds);
+          historicalMessageIds.push(...result.historicalMessageIds);
           automatedEvidenceMessageIds.push(...result.automatedEvidenceMessageIds);
         }
       } catch (error) {
@@ -445,10 +449,26 @@ async function syncImapAccount(input: {
   }
 
   const automatedIds = uniquePositiveIds(automatedEvidenceMessageIds);
+  const historicalIds = uniquePositiveIds(historicalMessageIds);
   return {
     inboundMessageIds: uniquePositiveIds(inboundMessageIds),
+    ...(historicalIds.length > 0 ? { historicalMessageIds: historicalIds } : {}),
     ...(automatedIds.length > 0 ? { automatedEvidenceMessageIds: automatedIds } : {}),
   };
+}
+
+/**
+ * F-A7b-04: Ein Ordner, der vor diesem Lauf nie synchronisiert wurde, liefert
+ * nur Bestand (neues Konto bzw. neuer Ordner). Nur wenn der Store den Zeitpunkt
+ * kennt (lastSyncedAt === null) und auch sonst kein Sync-Stand existiert; ein
+ * leeres, schon synchronisiertes Postfach hat uidvalidity bzw. einen Zeitstempel.
+ */
+function mailSyncFolderNeverSynced(folder: ServerMailSyncFolder): boolean {
+  return folder.lastSyncedAt === null
+    && folder.lastUid === 0
+    && folder.uidvalidity === null
+    && folder.uidvalidityStr === null
+    && folder.pop3UidlStr === null;
 }
 
 async function syncImapFolder(input: {
@@ -461,12 +481,14 @@ async function syncImapFolder(input: {
   spec: ImapFolderSyncSpec;
   now: () => Date;
   inboundEvidence?: Pick<EmailTrackingService, 'recordInboundEvidence'>;
-}): Promise<{ newMessageIds: number[]; automatedEvidenceMessageIds: number[] }> {
+}): Promise<{ newMessageIds: number[]; historicalMessageIds: number[]; automatedEvidenceMessageIds: number[] }> {
   let folder = await input.store.getOrCreateFolder({
     workspaceId: input.plan.workspaceId,
     account: input.account,
     path: input.spec.path,
   });
+  // Vor einem moeglichen UIDVALIDITY-Reset bestimmen: der Reset selbst bleibt unveraendert.
+  const historical = mailSyncFolderNeverSynced(folder);
   let lastUid = folder.lastUid;
   let uidValidityNum: number | null | undefined;
   let uidValidityStr: string | null | undefined;
@@ -721,7 +743,8 @@ async function syncImapFolder(input: {
   });
 
   return {
-    newMessageIds: fullInbox ? [] : newMessageIds,
+    newMessageIds: fullInbox || historical ? [] : newMessageIds,
+    historicalMessageIds: !fullInbox && historical ? newMessageIds : [],
     automatedEvidenceMessageIds,
   };
 }
@@ -779,6 +802,8 @@ async function syncPop3Account(input: {
     workspaceId: input.plan.workspaceId,
     folderId: folder.id,
   }));
+  // F-A7b-04: noch keine UIDLs bekannt und nie synchronisiert: alles ist Bestand.
+  const historical = known.size === 0 && mailSyncFolderNeverSynced(folder);
   const context: ServerMailSyncUpsertContext = {
     pop3UidlToId: known,
     nextPop3Uid: await input.store.allocateNextPop3Uid({
@@ -859,8 +884,10 @@ async function syncPop3Account(input: {
   }
 
   const automatedIds = uniquePositiveIds(automatedEvidenceMessageIds);
+  const newIds = uniquePositiveIds(inboundMessageIds);
   return {
-    inboundMessageIds: uniquePositiveIds(inboundMessageIds),
+    inboundMessageIds: historical ? [] : newIds,
+    ...(historical && newIds.length > 0 ? { historicalMessageIds: newIds } : {}),
     ...(automatedIds.length > 0 ? { automatedEvidenceMessageIds: automatedIds } : {}),
   };
 }
@@ -2545,6 +2572,7 @@ function mapMailSyncFolder(row: Pick<EmailFolderRow,
   | 'uidvalidity_str'
   | 'last_uid'
   | 'pop3_uidl_str'
+  | 'last_synced_at'
 >): ServerMailSyncFolder {
   return {
     id: Number(row.id),
@@ -2556,6 +2584,7 @@ function mapMailSyncFolder(row: Pick<EmailFolderRow,
     uidvalidityStr: row.uidvalidity_str,
     lastUid: Number(row.last_uid),
     pop3UidlStr: row.pop3_uidl_str,
+    lastSyncedAt: row.last_synced_at ?? null,
   };
 }
 

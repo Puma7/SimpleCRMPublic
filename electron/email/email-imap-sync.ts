@@ -84,6 +84,11 @@ async function syncFolderImapInternal(
   let folderRow = getFolderByAccountAndPath(accountId, folderPath);
   let lastUid = folderRow?.last_uid ?? 0;
   let fetched = 0;
+  // F-A7b-04: Ein nie synchronisierter Ordner (kein UIDVALIDITY, last_uid 0)
+  // liefert nur Bestand. last_synced_at taugt auf dem Desktop nicht, es wird
+  // schon beim Anlegen des Ordners gesetzt. Ein UIDVALIDITY-Reset bleibt Live-Eingang.
+  const historical = !folderRow
+    || (folderRow.last_uid === 0 && folderRow.uidvalidity == null && !folderRow.uidvalidity_str);
 
   const lock = await client.getMailboxLock(folderPath);
   try {
@@ -266,6 +271,7 @@ async function syncFolderImapInternal(
       try {
         await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id, {
           runInboundWorkflows: spec.runInboundWorkflows,
+          historical,
         });
       } catch (postErr) {
         console.error(

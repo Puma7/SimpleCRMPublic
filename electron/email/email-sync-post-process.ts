@@ -33,9 +33,10 @@ export async function processNewMessagesAfterSync(
   accountId: number,
   items: SyncNewMessageItem[],
   folderId?: number,
-  opts?: { runInboundWorkflows?: boolean },
+  opts?: { runInboundWorkflows?: boolean; historical?: boolean },
 ): Promise<void> {
   const runInboundWorkflows = opts?.runInboundWorkflows !== false;
+  const historical = opts?.historical === true;
   const merged = [...items];
   if (folderId != null) {
     const pending = listMessagesPendingPostProcess(folderId);
@@ -116,6 +117,7 @@ export async function processNewMessagesAfterSync(
         await runInboundWorkflowsForMessage(item.localMsgId, {
           row,
           appliedWorkflowIds,
+          historical,
         });
         markMessagePostProcessDone(item.localMsgId);
       } catch (e) {

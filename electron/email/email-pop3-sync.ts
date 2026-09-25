@@ -98,6 +98,9 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
   const oversizedUidlKey = `email_pop3_oversized_uidls:${accountId}:${folderRow.id}`;
   const oversizedUidls = parseLegacyPop3UidlStr(getSyncInfo(oversizedUidlKey));
   const known = loadPop3UidlsForFolder(folderRow.id);
+  // F-A7b-04: Noch keine UIDL bekannt und nie eine UIDL-Liste gespeichert: der
+  // Erst-Sync liefert nur Bestand (ein leeres Postfach speichert "[]").
+  const historical = known.size === 0 && !folderRow.pop3_uidl_str && folderRow.last_uid === 0;
   const upsertCtx = createPop3UpsertContext(folderRow.id, accountId);
   const newAfterSync: SyncNewMessageItem[] = [];
 
@@ -192,7 +195,7 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
   }
 
   try {
-    await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id);
+    await processNewMessagesAfterSync(accountId, newAfterSync, folderRow.id, { historical });
   } catch (postErr) {
     console.error(
       `[pop3-sync] post-process failed account ${accountId} folder ${folderRow.id}:`,
