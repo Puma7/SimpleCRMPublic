@@ -1,4 +1,4 @@
-import { runStoredMailSecurityChecks } from '../../packages/server/src/mail-security-check';
+import { runStoredMailSecurityChecks, verifyMailAuthentication } from '../../packages/server/src/mail-security-check';
 
 describe('server mail security provider timeouts', () => {
   test('returns from a mailauth provider that never settles', async () => {
@@ -22,5 +22,72 @@ describe('server mail security provider timeouts', () => {
       arc: 'unknown',
       error: 'Mailauth Timeout',
     });
+  });
+});
+
+describe('server mail auth header fallback', () => {
+  const neverSettles = async () => new Promise<never>(() => undefined);
+
+  // F-A5-12: Der Fallback uebernahm SPF/DKIM/DMARC aus jedem (ARC-)Authentication-Results-Header, auch aus einem vom Absender eingeschleusten unterhalb des Provider-Headers.
+  test('ignores sender-injected Authentication-Results below the receiving server header', async () => {
+    const rawHeaders = [
+      'Return-Path: <x@attacker.example>',
+      'Authentication-Results: mx.provider.example; spf=none smtp.mailfrom=attacker.example',
+      'Received: from attacker.example (attacker.example [192.0.2.1]) by mx.provider.example',
+      'Authentication-Results: evil.example; spf=pass; dkim=pass; dmarc=pass',
+      'From: chef@kunde.de',
+      'Subject: Neue Bankverbindung',
+    ].join('\r\n');
+
+    const result = await verifyMailAuthentication({
+      rawHeaders,
+      bodyText: 'x',
+      bodyHtml: null,
+      mailauthTimeoutMs: 5,
+      mailauthAuthenticate: neverSettles as any,
+    });
+
+    expect(result.spf).toBe('none');
+    expect(result.dkim).not.toBe('pass');
+    expect(result.dmarc).not.toBe('pass');
+  });
+
+  test('ignores unvalidated ARC-Authentication-Results', async () => {
+    const rawHeaders = [
+      'ARC-Authentication-Results: i=1; evil.example; spf=pass; dkim=pass; dmarc=pass',
+      'From: chef@kunde.de',
+      'Subject: Neue Bankverbindung',
+    ].join('\r\n');
+
+    const result = await verifyMailAuthentication({
+      rawHeaders,
+      bodyText: 'x',
+      bodyHtml: null,
+      mailauthTimeoutMs: 5,
+      mailauthAuthenticate: neverSettles as any,
+    });
+
+    expect(result.spf).not.toBe('pass');
+    expect(result.dkim).not.toBe('pass');
+    expect(result.dmarc).not.toBe('pass');
+  });
+
+  test('still uses the topmost Authentication-Results of the receiving server', async () => {
+    const rawHeaders = [
+      'Authentication-Results: mx.google.com;',
+      ' spf=pass smtp.mailfrom=gmail.com; dkim=pass header.d=gmail.com; dmarc=pass',
+      'From: friend@gmail.com',
+    ].join('\r\n');
+
+    const result = await verifyMailAuthentication({
+      rawHeaders,
+      bodyText: 'x',
+      bodyHtml: null,
+      mailauthTimeoutMs: 5,
+      mailauthAuthenticate: neverSettles as any,
+    });
+
+    expect(result).toMatchObject({ spf: 'pass', dkim: 'pass', dmarc: 'pass' });
+    expect(result.error).toMatch(/Authentication-Results/);
   });
 });

@@ -417,9 +417,9 @@ function parseAuthenticationResultsLabels(rawHeaders: string | null): Partial<Re
   const blocks: string[] = [];
   let current: string | null = null;
   for (const line of lines) {
-    if (/^(?:ARC-)?Authentication-Results:/i.test(line)) {
+    if (/^Authentication-Results:/i.test(line)) {
       if (current) blocks.push(current.trim());
-      current = line.replace(/^(?:ARC-)?Authentication-Results:\s*/i, '');
+      current = line.replace(/^Authentication-Results:\s*/i, '');
     } else if (current !== null && /^[ \t]/.test(line)) {
       current += ` ${line.trim()}`;
     } else {
@@ -428,19 +428,17 @@ function parseAuthenticationResultsLabels(rawHeaders: string | null): Partial<Re
     }
   }
   if (current) blocks.push(current.trim());
-  if (blocks.length === 0) return null;
+  // RFC 8601 §5: only the topmost field was prepended by the receiving MTA.
+  // Lower fields and ARC-Authentication-Results (no ARC chain validation here)
+  // can be injected by the sender, so they must never supply or fill in keys.
+  const block = blocks[0];
+  if (!block) return null;
 
   const parsed: Partial<Record<'spf' | 'dkim' | 'dmarc' | 'arc', AuthResultLabel>> = {};
-  for (const block of blocks) {
-    for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
-      const match = block.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
-      if (!match?.[1]) continue;
-      const label = normalizeResult(match[1]);
-      const previous = parsed[key];
-      if (!previous || (liveCheckUnreliable(previous) && !liveCheckUnreliable(label))) {
-        parsed[key] = label;
-      }
-    }
+  for (const key of ['spf', 'dkim', 'dmarc', 'arc'] as const) {
+    const match = block.match(new RegExp(`\\b${key}\\s*=\\s*([a-z]+)`, 'i'));
+    if (!match?.[1]) continue;
+    parsed[key] = normalizeResult(match[1]);
   }
   return Object.keys(parsed).length > 0 ? parsed : null;
 }
