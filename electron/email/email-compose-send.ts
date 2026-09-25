@@ -18,6 +18,7 @@ import {
   getComposeMarkReplyParentDone,
   setComposeMarkReplyParentDone,
 } from './compose-reply-done';
+import { SmtpDeliveryAmbiguousError } from './email-smtp-errors';
 import { evaluateOutboundWorkflows } from './email-workflow-engine';
 import { buildComposeRfc822, estimateComposeRfc822Bytes } from './mail-rfc822-compose';
 import { ensureTicketInSubject, extractKnownTicketFromSubject, getOrCreateThreadForTicket, createTicketCodeForAccount } from './email-ticket';
@@ -343,7 +344,7 @@ export async function sendComposeDraft(input: {
   pgpUserId?: string;
 }): Promise<
   | { ok: true; warning?: string; recoveredSentAppend?: boolean }
-  | { ok: false; error: string; workflowRunId?: number | null }
+  | { ok: false; error: string; workflowRunId?: number | null; deliveryAmbiguous?: true }
 > {
   const draft = getEmailMessageById(input.draftMessageId);
   if (!draft || draft.uid >= 0) {
@@ -589,7 +590,13 @@ export async function sendComposeDraft(input: {
         ...(autoSubmitted ? { headers: { 'Auto-Submitted': 'auto-replied' } } : {}),
       });
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      return {
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+        // Failure after the complete message body: the server may have
+        // accepted it, so callers must not resend automatically.
+        ...(e instanceof SmtpDeliveryAmbiguousError ? { deliveryAmbiguous: true as const } : {}),
+      };
     }
     markSmtpCommitted(input.draftMessageId);
     // Erfolgreich versendet — ein evtl. offener Freigabe-Zustand ist erledigt.

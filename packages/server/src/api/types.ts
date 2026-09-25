@@ -2522,7 +2522,8 @@ export type EmailComposeSendResult =
      * the delivery outcome is unknown and callers holding a durable send
      * reservation must keep it. Absent/false for failures that provably
      * happened before any delivery attempt (validation, auth, host, pre-DATA
-     * SMTP stages).
+     * SMTP stages) or that the server explicitly rejected (4xx/5xx reply to
+     * the message).
      */
     deliveryAmbiguous?: boolean;
   };

@@ -1,4 +1,5 @@
 import { sendComposeDraft } from '../../electron/email/email-compose-send';
+import { SmtpDeliveryAmbiguousError } from '../../electron/email/email-smtp-errors';
 
 const mockGetMessage = jest.fn();
 const mockUpdateDraft = jest.fn();
@@ -293,6 +294,51 @@ describe('sendComposeDraft', () => {
       }),
     ).resolves.toEqual({ ok: false, error: expect.stringContaining('chef@firma') });
     expect(mockSendSmtp).not.toHaveBeenCalled();
+  });
+
+  // F-A5-02: Ein SMTP-Fehler nach vollstaendig uebertragener Nachricht war nicht als unklarer Zustellstatus erkennbar.
+  it('flags SMTP failures after the message body as ambiguous delivery', async () => {
+    mockGetMessage.mockImplementation((id: number) => {
+      if (id === 5) {
+        return {
+          id: 5,
+          uid: 100,
+          account_id: 1,
+          ticket_code: 'T-1',
+          thread_id: 'th',
+          message_id: '<parent@x>',
+          references_header: null,
+        };
+      }
+      return {
+        id: 10,
+        uid: -1,
+        account_id: 1,
+        folder_kind: 'draft',
+        body_html: null,
+        message_id: null,
+      };
+    });
+    const input = {
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Re: Angebot',
+      bodyText: 'Body',
+      to: 'kunde@firma.de',
+      inReplyToMessageId: 5,
+    };
+    mockSendSmtp.mockRejectedValueOnce(new SmtpDeliveryAmbiguousError('Connection closed unexpectedly'));
+    await expect(sendComposeDraft(input)).resolves.toEqual({
+      ok: false,
+      error: 'Connection closed unexpectedly',
+      deliveryAmbiguous: true,
+    });
+
+    mockSendSmtp.mockRejectedValueOnce(new Error('Message failed: 554 5.7.1 rejected'));
+    await expect(sendComposeDraft(input)).resolves.toEqual({
+      ok: false,
+      error: 'Message failed: 554 5.7.1 rejected',
+    });
   });
 
   it('rejects parallel send while lock is held', async () => {

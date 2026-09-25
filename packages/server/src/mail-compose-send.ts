@@ -45,7 +45,12 @@ import type {
   ServerImapSentCopyAppendInput,
   ServerImapSentCopyAppendResult,
 } from './mail-imap-append';
-import { sendSmtpMessage, SmtpPreDataSendError, type ServerSmtpSendInput } from './mail-smtp-send';
+import {
+  sendSmtpMessage,
+  SmtpDataRejectedError,
+  SmtpPreDataSendError,
+  type ServerSmtpSendInput,
+} from './mail-smtp-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
 import type { EmailTrackingService } from './email-tracking';
 import { outboundReviewApprovedKey, persistManualOutboundApproval } from './mail-outbound-approval-store';
@@ -617,9 +622,12 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           return {
             ok: false,
             error: error instanceof Error ? error.message : String(error),
-            // Pre-DATA failures provably delivered nothing; anything else
-            // after smtpSend started is an unknown outcome.
-            ...(error instanceof SmtpPreDataSendError ? {} : { deliveryAmbiguous: true }),
+            // Pre-DATA failures and an explicit 4xx/5xx reply to the message
+            // provably delivered nothing; anything else after smtpSend started
+            // (timeout, connection loss after the body) is an unknown outcome.
+            ...(error instanceof SmtpPreDataSendError || error instanceof SmtpDataRejectedError
+              ? {}
+              : { deliveryAmbiguous: true }),
           };
         }
 

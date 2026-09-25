@@ -75,6 +75,34 @@ describe('email-scheduled-send', () => {
     expect(logger.warn).toHaveBeenCalled();
   });
 
+  // F-A5-02: Ein SMTP-Fehler mit unklarem Zustellstatus (nach DATA) wurde bis zu 5-mal automatisch erneut gesendet.
+  test('unklarer Zustellstatus beendet den geplanten Versand ohne Wiederholung', async () => {
+    mockSendComposeDraft.mockResolvedValue({
+      ok: false,
+      error: 'Connection closed unexpectedly',
+      deliveryAmbiguous: true,
+    });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftScheduledSendAt).toHaveBeenCalledWith(99, null);
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_status:99', 'failed');
+    expect(mockSetSyncInfo).toHaveBeenCalledWith(
+      'scheduled_send_last_error:99',
+      expect.stringMatching(/Zustellstatus unklar.*Gesendet-Ordner.*Connection closed unexpectedly/),
+    );
+    expect(mockSetSyncInfo).not.toHaveBeenCalledWith('scheduled_send_failures:99', '1');
+  });
+
+  test('eindeutige SMTP-Ablehnung bleibt ein normaler Fehlversuch', async () => {
+    mockSendComposeDraft.mockResolvedValue({ ok: false, error: '451 4.3.0 try again later' });
+
+    await processDueScheduledSends(logger);
+
+    expect(mockSetDraftScheduledSendAt).not.toHaveBeenCalled();
+    expect(mockSetSyncInfo).toHaveBeenCalledWith('scheduled_send_failures:99', '1');
+  });
+
   test('does not clear schedule on first throw', async () => {
     mockSendComposeDraft.mockRejectedValue(new Error('transient'));
     syncInfo({ 'scheduled_send_failures:99': '0' });

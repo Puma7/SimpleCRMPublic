@@ -41,6 +41,8 @@ const MAX_SCHEDULED_SEND_FAILURES = 5;
  */
 const SCHEDULED_SEND_DENIAL_BACKOFF_MS = 5 * 60_000;
 const SCHEDULED_SEND_TRUSTED_SERVICE_ACTOR = 'system';
+const SCHEDULED_SEND_AMBIGUOUS_DELIVERY_ERROR =
+  'Zustellstatus unklar: kein automatischer Neuversand, bitte Gesendet-Ordner pruefen';
 
 function isComposeSendAlreadyInProgressError(error: string): boolean {
   const normalized = error.trim().toLowerCase();
@@ -191,6 +193,17 @@ async function processScheduledDraft(input: {
     await input.store.finalizeSentDraft({
       workspaceId: input.workspaceId,
       draftId: draft.id,
+    });
+    return;
+  }
+
+  if (result.deliveryAmbiguous) {
+    // SMTP failed after the message body went out: the server may have
+    // accepted it. An automatic retry could deliver a duplicate, so stop here.
+    await input.store.giveUpDraft({
+      workspaceId: input.workspaceId,
+      draftId: draft.id,
+      error: `${SCHEDULED_SEND_AMBIGUOUS_DELIVERY_ERROR} (${result.error})`,
     });
     return;
   }

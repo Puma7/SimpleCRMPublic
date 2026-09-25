@@ -72,6 +72,21 @@ export class SmtpPreDataSendError extends Error {
   }
 }
 
+/**
+ * The server answered the transmitted message with an explicit 4xx/5xx reply.
+ * It did not accept the message, so the outcome is not ambiguous: nothing was
+ * delivered and the usual retry rules (temporary 4xx) apply.
+ */
+export class SmtpDataRejectedError extends Error {
+  readonly smtpCode: number;
+
+  constructor(message: string, smtpCode: number) {
+    super(message);
+    this.name = 'SmtpDataRejectedError';
+    this.smtpCode = smtpCode;
+  }
+}
+
 export async function sendSmtpMessage(input: ServerSmtpSendInput): Promise<void> {
   let bodySubmitted = false;
   try {
@@ -118,6 +133,9 @@ async function sendSmtpMessageAttempt(
       ...(input.diagnosticsContext ? { context: input.diagnosticsContext } : {}),
       rfc822: rfc822Diagnostics,
     });
+    if (stage === 'DATA_FINAL' && response.code >= 400 && response.code < 600) {
+      throw new SmtpDataRejectedError(response.text, response.code);
+    }
     throw new Error(response.text);
   };
   const socket = await socketFactory({

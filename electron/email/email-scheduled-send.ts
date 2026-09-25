@@ -91,6 +91,18 @@ export async function processDueScheduledSends(
         sent += 1;
       } else {
         const errMsg = 'error' in r ? r.error : 'Versand fehlgeschlagen';
+        if ('deliveryAmbiguous' in r && r.deliveryAmbiguous) {
+          // SMTP brach nach der vollstaendig uebertragenen Nachricht ab: der
+          // Server hat sie womoeglich angenommen. Ein automatischer Neuversand
+          // riskiert eine Doppelzustellung, also hier aufgeben.
+          setDraftScheduledSendAt(draftId, null);
+          markScheduledSendDraftFailed(
+            draftId,
+            `Zustellstatus unklar: kein automatischer Neuversand, bitte Gesendet-Ordner prüfen (${errMsg})`,
+          );
+          logger.warn(`[email] scheduled send ${draftId}: delivery ambiguous, no retry: ${errMsg}`);
+          continue;
+        }
         if (errMsg.includes('Versand') && errMsg.includes('bereits')) {
           // Compose-Sendelock belegt: ein anderer Pfad sendet gerade. Ob er
           // Erfolg hat, wissen wir nicht — deshalb weder als zugestellt werten

@@ -13848,6 +13848,81 @@ describe('server edition foundation', () => {
     expect(syncInfo.get('scheduled_send_failures:104')).toBe('0');
   });
 
+  // F-A5-02: Ein SMTP-Fehler mit unklarem Zustellstatus (nach DATA) wurde bis zu 5-mal automatisch erneut gesendet.
+  test('scheduled-send job port gives up without retry when the delivery outcome is ambiguous', async () => {
+    const storeCalls: unknown[] = [];
+    const claimedSendAt = new Date('2026-06-03T11:30:00.000Z');
+    const baseDraft = {
+      accountId: 7,
+      subject: 'Rechnung',
+      bodyText: 'Hallo',
+      bodyHtml: null,
+      ccJson: null,
+      bccJson: null,
+      draftAttachmentPathsJson: null,
+      replyParentMessageId: null,
+      claimedSendAt,
+    };
+    const port = createScheduledSendJobPort({
+      composeSender: {
+        async send(input) {
+          if (input.values.draftMessageId === 301) {
+            return { ok: false as const, error: 'SMTP-Zeitueberschreitung', deliveryAmbiguous: true };
+          }
+          return { ok: false as const, error: '451 4.3.0 try again later' };
+        },
+      },
+      store: {
+        async claimDueDrafts() {
+          return [
+            { ...baseDraft, id: 301, toJson: { value: [{ address: 'unclear@example.com' }] } },
+            { ...baseDraft, id: 302, toJson: { value: [{ address: 'rejected@example.com' }] } },
+          ];
+        },
+        async finalizeSentDraft(input) {
+          storeCalls.push(['finalizeSentDraft', input]);
+        },
+        async releaseClaimedDraft(input) {
+          storeCalls.push(['releaseClaimedDraft', input]);
+        },
+        async restoreClaimedDraft(input) {
+          storeCalls.push(['restoreClaimedDraft', input]);
+        },
+        async giveUpDraft(input) {
+          storeCalls.push(['giveUpDraft', input]);
+        },
+        async recordFailedAttempt(input) {
+          storeCalls.push(['recordFailedAttempt', input]);
+          return { failures: 1, gaveUp: false };
+        },
+      },
+    });
+
+    await port.processDue({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      accountId: 7,
+      dueBefore: new Date('2026-06-03T12:00:00.000Z'),
+      limit: 10,
+    });
+
+    expect(storeCalls).toEqual([
+      ['giveUpDraft', {
+        workspaceId: WORKSPACE_A_ID,
+        draftId: 301,
+        error: expect.stringMatching(/Zustellstatus unklar.*Gesendet-Ordner.*SMTP-Zeitueberschreitung/),
+      }],
+      // An explicit SMTP reply to the message keeps the normal bounded retry.
+      ['recordFailedAttempt', {
+        workspaceId: WORKSPACE_A_ID,
+        draftId: 302,
+        error: '451 4.3.0 try again later',
+        claimedSendAt,
+        maxFailures: 5,
+      }],
+    ]);
+  });
+
   test('scheduled-send job port forwards the persisted per-message tracking override', async () => {
     const composeCalls: Array<Record<string, unknown>> = [];
     const claimedSendAt = new Date('2026-06-03T11:30:00.000Z');
@@ -25863,6 +25938,152 @@ describe('server edition foundation', () => {
     });
     expect(smtpSends).toEqual([]);
     expect(updates).toEqual([]);
+  });
+
+  // F-A5-02: Eine eindeutige 4xx/5xx-Antwort auf die Nachricht galt als unklarer Zustellstatus; unklar ist nur eine fehlende Antwort nach DATA.
+  test('server compose sender flags only an unanswered message body as ambiguous delivery', async () => {
+    let finalReply: string | null = '554 5.7.1 rejected by policy\r\n';
+    let inData = false;
+    const smtpServer = await startLineServer((line, socket) => {
+      if (inData) {
+        if (line === '.') {
+          inData = false;
+          if (finalReply) socket.write(finalReply);
+        }
+        return;
+      }
+      if (line === 'EHLO simplecrm.local') socket.write('250-localhost\r\n250-AUTH PLAIN LOGIN\r\n250 OK\r\n');
+      else if (line.startsWith('AUTH PLAIN ')) socket.write('235 2.7.0 Authentication successful\r\n');
+      else if (line.startsWith('MAIL FROM:')) socket.write('250 sender ok\r\n');
+      else if (line.startsWith('RCPT TO:')) socket.write('250 recipient ok\r\n');
+      else if (line === 'DATA') {
+        inData = true;
+        socket.write('354 end with dot\r\n');
+      } else if (line === 'QUIT') socket.write('221 bye\r\n');
+      else socket.write('500 unknown command\r\n');
+    }, '220 SMTP ready\r\n');
+    const syncInfo = new Map<string, string | null>();
+    let locked = false;
+    const sender = createEmailComposeSenderPort({
+      now: () => new Date('2026-07-03T08:05:00.000Z'),
+      smtpSend: (input) => sendSmtpMessage({
+        ...input,
+        host: '127.0.0.1',
+        port: smtpServer.port,
+        tls: false,
+        timeoutMs: 300,
+      }),
+      store: {
+        async getDraft(input) {
+          return input.messageId === 49
+            ? {
+              id: 49,
+              accountId: 7,
+              uid: -49,
+              folderKind: 'draft',
+              subject: 'Angebot',
+              bodyText: 'Anbei',
+              bodyHtml: null,
+              messageIdHeader: null,
+              inReplyToHeader: null,
+              referencesHeader: null,
+              ticketCode: 'SCR-DATA01',
+              threadId: 'th-data',
+              draftAttachmentPathsJson: null,
+              outboundHold: false,
+              outboundBlockReason: null,
+            }
+            : null;
+        },
+        async getAccount(input) {
+          return input.accountId === 7
+            ? {
+              id: 7,
+              sourceSqliteId: 70,
+              displayName: 'Support',
+              emailAddress: 'agent@example.com',
+              imapHost: 'imap.example.com',
+              imapUsername: 'agent@example.com',
+              smtpHost: 'smtp.example.com',
+              smtpPort: 587,
+              smtpTls: false,
+              smtpUsername: 'agent@example.com',
+              smtpUseImapAuth: false,
+              oauthProvider: null,
+              protocol: 'imap',
+              requestReadReceipt: false,
+            }
+            : null;
+        },
+        async getParentMessage() {
+          return null;
+        },
+        async getOrCreateThreadForTicket() {
+          return 'th-data';
+        },
+        async readSecret(input) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+        },
+        async setSyncInfo(input) {
+          for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+        },
+        async deleteSyncInfo(input) {
+          for (const key of input.keys) syncInfo.delete(key);
+        },
+        async claimSmtpOutbox(input) {
+          const key = `email_compose_smtp_ok:${input.messageId}`;
+          if (syncInfo.get(key)) return 'outbox';
+          syncInfo.set(key, 'outbox');
+          return 'claimed';
+        },
+        async tryAcquireSendingLock() {
+          if (locked) return false;
+          locked = true;
+          return true;
+        },
+        async releaseSendingLock() {
+          locked = false;
+        },
+        async updateDraftForSend() {},
+        async markDraftAsSent() {},
+        async markMessageDone() {},
+      },
+    });
+    const send = () => sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 49,
+        subject: 'Angebot',
+        bodyText: 'Anbei',
+        to: 'kunde@example.com',
+      },
+    });
+
+    try {
+      await expect(send()).resolves.toEqual({
+        ok: false,
+        error: expect.stringContaining('554 5.7.1 rejected by policy'),
+      });
+      finalReply = '451 4.3.0 try again later\r\n';
+      await expect(send()).resolves.toEqual({
+        ok: false,
+        error: expect.stringContaining('451 4.3.0 try again later'),
+      });
+      // The server stays silent after the terminating dot: accepted or not is unknown.
+      finalReply = null;
+      await expect(send()).resolves.toEqual({
+        ok: false,
+        error: expect.any(String),
+        deliveryAmbiguous: true,
+      });
+    } finally {
+      await smtpServer.close();
+    }
   });
 
   test('server compose sender clears sent-copy failure after successful IMAP APPEND', async () => {
