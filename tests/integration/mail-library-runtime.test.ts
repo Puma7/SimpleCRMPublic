@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer';
+import { createRequire } from 'node:module';
 
 type ParsedMail = {
   subject?: string;
@@ -64,5 +65,62 @@ describe('real mail library runtime compatibility', () => {
     } finally {
       transport.close();
     }
+  });
+});
+
+describe('HTML-to-text dependency compatibility', () => {
+  const mailRequire = createRequire(require.resolve('mailparser'));
+  const { convert } = mailRequire('html-to-text') as {
+    convert(html: string, options?: Record<string, unknown>): string;
+  };
+  test.each([
+    {
+      name: 'preserves defaults, Unicode and link formatting',
+      html: '<h1>Grüße</h1><p>Hello <a href="https://example.test/a">Link</a>.</p>',
+      options: {},
+      expected: 'GRÜSSE\n\nHello Link [https://example.test/a].',
+    },
+    {
+      name: 'composes root selectors and replaces nested arrays',
+      html: '<h1>Keep Case</h1><p><a href="https://example.test/a">Link</a></p>',
+      options: { selectors: [
+        { selector: 'h1', options: { uppercase: false } },
+        { selector: 'a', options: { linkBrackets: ['<', '>'] } },
+      ] },
+      expected: 'Keep Case\n\nLink <https://example.test/a>',
+    },
+    {
+      name: 'keeps the last duplicate selector option',
+      html: '<a href="https://example.test/a">Link</a>',
+      options: { selectors: [
+        { selector: 'a', options: { linkBrackets: ['<', '>'] } },
+        { selector: 'a', options: { linkBrackets: ['{', '}'] } },
+      ] },
+      expected: 'Link {https://example.test/a}',
+    },
+    {
+      name: 'replaces base-element selector arrays',
+      html: '<header>Header</header><main><p>Body</p></main>',
+      options: { baseElements: { selectors: ['main'] } },
+      expected: 'Body',
+    },
+    {
+      name: 'retains table and list formatting',
+      html: '<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table><ol><li>One</li><li>Two</li></ol>',
+      options: { selectors: [{ selector: 'table', format: 'dataTable' }] },
+      expected: 'A   B\n1   2\n\n 1. One\n 2. Two',
+    },
+  ])('$name', ({ html, options, expected }) => {
+    expect(convert(html, options)).toBe(expected);
+  });
+
+  test('mailparser synthesizes text from an actual HTML-only MIME message', async () => {
+    const source = Buffer.from(
+      'From: sender@example.test\r\nTo: recipient@example.test\r\n' +
+      'Subject: HTML-only\r\nMIME-Version: 1.0\r\n' +
+      'Content-Type: text/html; charset=utf-8\r\n\r\n' +
+      '<h1>Grüße</h1><p>Hello <a href="https://example.test/a">Link</a>.</p>',
+    );
+    expect((await simpleParser(source)).text).toBe('GRÜSSE\n\nHello Link [https://example.test/a].');
   });
 });

@@ -1,68 +1,44 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
-
-let app: ElectronApplication;
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
+let session: ElectronTestSession;
 let page: Page;
-
 test.beforeAll(async () => {
-  const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-  app = await electron.launch({
-    args: [mainPath],
-    env: { ...process.env, NODE_ENV: 'production' },
-  });
-  page = await app.firstWindow();
+  session = await launchAuthenticatedElectron('customer-workflows');
+  page = session.page;
 });
+test.afterAll(async () => { await session?.close(); });
 
-test.afterAll(async () => {
-  await app.close();
-});
-
-test('customers page: renders table and search', async () => {
-  await page.getByRole('link', { name: 'Kunden' }).click();
-  await expect(page.getByRole('heading', { name: 'Kunden' })).toBeVisible();
-  await expect(page.getByPlaceholder(/suchen/i)).toBeVisible();
-});
-
-test('customers page: opens and cancels add customer dialog', async () => {
-  await page.getByRole('link', { name: 'Kunden' }).click();
+const CUSTOMER = 'Suchkunde-Änderung';
+test.beforeAll(async () => {
+  await page.getByRole('link', { name: 'Kunden', exact: true }).click();
   await page.getByRole('button', { name: /kunde hinzufügen/i }).click();
-  await expect(page.getByRole('heading', { name: /neuen kunden hinzufügen/i })).toBeVisible();
-  await page.getByRole('button', { name: 'Abbrechen' }).click();
-  await expect(page.getByRole('heading', { name: /neuen kunden hinzufügen/i })).not.toBeVisible();
+  const dialog = page.getByRole('dialog');
+  await dialog.locator('#name').fill(CUSTOMER);
+  await dialog.getByRole('button', { name: 'Kunde erstellen', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
 });
-
-test('customers page: search filters the list', async () => {
-  await page.getByRole('link', { name: 'Kunden' }).click();
-  const searchInput = page.getByPlaceholder(/suchen/i);
-  await searchInput.fill('xxxxxxxxxnotexistingcustomer');
-  // Wait for filter to apply
-  await page.waitForTimeout(300);
-  // Table should show no results or empty state
-  const tableRows = page.locator('table tbody tr');
-  const count = await tableRows.count();
-  // Either 0 rows or "no results" text
-  const noResults = await page.getByText(/keine ergebnisse/i).isVisible().catch(() => false);
-  expect(count === 0 || noResults).toBeTruthy();
-  // Clear search
-  await searchInput.clear();
+test.beforeEach(async () => {
+  await page.locator('nav').first().getByRole('link', { name: 'Kunden', exact: true }).click();
+  await page.getByPlaceholder('Kunden suchen...').clear();
 });
-
-test('customers page: has export button', async () => {
-  await page.getByRole('link', { name: 'Kunden' }).click();
-  await expect(page.getByRole('button', { name: /exportieren/i })).toBeVisible();
+test('customer search hides and restores an existing record', async () => {
+  const customer = page.getByRole('link', { name: CUSTOMER, exact: true });
+  await expect(customer).toBeVisible();
+  await page.getByPlaceholder('Kunden suchen...').fill('xxxxxxxxnotexistingcustomer');
+  await expect(customer).toHaveCount(0);
+  await page.getByPlaceholder('Kunden suchen...').fill('Suchkunde');
+  await expect(customer).toBeVisible();
 });
-
-test('customer detail: navigates to customer detail page', async () => {
-  await page.getByRole('link', { name: 'Kunden' }).click();
-  await page.waitForLoadState('networkidle');
-
-  // Click first customer row if any exist
-  const firstRow = page.locator('table tbody tr').first();
-  const hasRows = await firstRow.isVisible().catch(() => false);
-
-  if (hasRows) {
-    await firstRow.click();
-    // Should navigate to customer detail
-    await expect(page.url()).toContain('/customers/');
-  }
+test('customer detail shows the seeded record', async () => {
+  await page.getByRole('link', { name: CUSTOMER, exact: true }).click();
+  await expect(page).toHaveURL(/\/customers\/\d+/);
+  await expect(page.getByRole('heading', { name: CUSTOMER, exact: true })).toBeVisible();
+});
+test('customer creation can be cancelled', async () => {
+  await page.getByRole('button', { name: /kunde hinzufügen/i }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: /neuen kunden hinzufügen/i })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Abbrechen', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('button', { name: 'Exportieren', exact: true })).toBeVisible();
 });

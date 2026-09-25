@@ -33,7 +33,9 @@ boundary as well as input/save sanitization. The dependency warning remains
 until upstream is fixed; adding any new export consumer requires equivalent
 output sanitization. The application mitigation does not fix Quill itself.
 
-### deepmerge-ts 7.1.5 — GHSA-ggr8-5vv4-36mx (high)
+## Resolved dependency advisories
+
+### deepmerge-ts — GHSA-ggr8-5vv4-36mx (high)
 
 [Upstream advisory](https://github.com/advisories/GHSA-ggr8-5vv4-36mx).
 The dependency path is `mailparser → html-to-text → deepmerge-ts`.
@@ -42,25 +44,38 @@ without sender-controlled options. Incoming HTML is not passed as a recursive
 object graph to the affected merge function. No application caller of
 `deepmerge-ts` was found.
 
-The reported recursive-object prerequisite was therefore not established at
-this boundary. Version 8 is a major release; `html-to-text` uses
-`deepmergeCustom` with custom array and metadata callbacks. Keep the warning
-visible until an upstream-compatible update or explicit callback-contract
-verification permits migration. Reassess immediately if untrusted options
-objects become accepted by HTML conversion.
+The reported recursive-object prerequisite was not established at this
+application boundary. The scoped `html-to-text>deepmerge-ts` override now uses
+8.0.2. Before/after tests exercise the actual CommonJS consumer, default Unicode
+formatting, root selector composition, nested-array replacement, duplicate
+selector precedence, base-element selection, table/list formatting and
+mailparser's HTML-only MIME conversion (`tests/integration/mail-library-runtime.test.ts`).
+The installed dependency advisory is removed.
 
-### uuid 8.3.2 — GHSA-w5hq-g745-h8pq (moderate)
+This update does not establish support for untrusted conversion options:
+html-to-text's custom metadata callback retains only its own key path and
+does not preserve the new merger's recursion metadata. Cyclic options can
+still exhaust the stack in this consumer. All current application mailparser
+callers pass message bytes, not sender-controlled options. Preserve that
+boundary and reassess before exposing configurable conversion objects.
+
+### uuid — GHSA-w5hq-g745-h8pq (moderate)
 
 [Upstream advisory](https://github.com/advisories/GHSA-w5hq-g745-h8pq).
 The affected path is the development dependency chain
 `@types/mssql → tedious → @azure/identity → @azure/msal-node → uuid`.
-The installed MSAL code calls `uuid.v4()` without a buffer. The advisory
+The previous MSAL consumer called `uuid.v4()` without a buffer. The advisory
 concerns output-buffer handling in `v3`, `v5` and `v6`; those calls were not
 found in this consumer. The application uses other UUID implementations.
 
-Do not equate this warning with a remotely reachable CRM vulnerability. Keep it
-visible and prefer an upstream dependency update; a forced migration from
-version 8 to 11 needs CommonJS and consumer compatibility verification.
+No remotely reachable CRM vulnerability was established from this warning.
+The scoped `@azure/identity@4.13.0` override selects the 4.13.1 patch release,
+which replaces the old MSAL/uuid dependency chain. It does not force a uuid or
+tedious major-version override. The actual development dependency chain is
+loaded through CommonJS and a credential object is constructed without
+contacting an identity provider in `tests/integration/mssql-auth-library-runtime.test.ts`.
+The installed uuid advisory is removed; live identity-provider authentication
+is outside this offline compatibility test.
 
 ## Dependency update policy
 
@@ -71,6 +86,8 @@ resolves a suitable patched version without it. The isolated Svelte experiment
 keeps its separate npm lockfile and overrides; root pnpm settings do not apply
 to that experiment.
 
-Prepared by OpenAI Codex (AI agent): source assessment, documentation and
-associated code/test changes. Exact model/build and agent software version
-were not available for verification. No human review is claimed.
+Prepared by OpenAI Codex (AI agent): source assessment, documentation, associated
+code/test changes and execution of the reported checks. The installed CLI
+reports `codex-cli 0.155.0-alpha.16.4`; this is not a model identifier or the
+Desktop agent build. Exact model/build and Desktop agent version were not
+available for verification. No human review is claimed.

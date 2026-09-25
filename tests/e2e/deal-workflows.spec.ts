@@ -1,72 +1,42 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
-
-let app: ElectronApplication;
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
+let session: ElectronTestSession;
 let page: Page;
-
 test.beforeAll(async () => {
-  const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-  app = await electron.launch({
-    args: [mainPath],
-    env: { ...process.env, NODE_ENV: 'production' },
-  });
-  page = await app.firstWindow();
+  session = await launchAuthenticatedElectron('deal-workflows');
+  page = session.page;
 });
+test.afterAll(async () => { await session?.close(); });
 
-test.afterAll(async () => {
-  await app.close();
+test.beforeEach(async () => {
+  await page.getByRole('link', { name: 'Deals', exact: true }).click();
+  await page.getByRole('button', { name: 'Tabellenansicht', exact: true }).click();
 });
-
-test('deals page: renders table with column headers', async () => {
-  await page.getByRole('link', { name: 'Deals' }).click();
-  await expect(page.getByRole('heading', { name: 'Deals' })).toBeVisible();
+test('deal table and export controls render', async () => {
+  await expect(page.getByRole('heading', { name: 'Deals', exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder('Deals suchen...')).toBeVisible();
+  await expect(page.getByRole('columnheader', { name: 'Phase', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Exportieren', exact: true })).toBeVisible();
 });
-
-test('deals page: opens and cancels create deal dialog', async () => {
-  await page.getByRole('link', { name: 'Deals' }).click();
+test('deal creation can be cancelled', async () => {
   await page.getByRole('button', { name: /neuer deal/i }).click();
-  await expect(page.getByRole('heading', { name: /neuen deal hinzufügen/i })).toBeVisible();
-  await page.getByRole('button', { name: 'Abbrechen' }).click();
-  await expect(page.getByRole('heading', { name: /neuen deal hinzufügen/i })).not.toBeVisible();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: /neuen deal hinzufügen/i })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Abbrechen', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
 });
-
-test('deals page: switches to kanban view', async () => {
-  await page.getByRole('link', { name: 'Deals' }).click();
-  // Look for kanban/board view toggle button
-  const kanbanButton = page.getByRole('button', { name: /kanban|board|ansicht/i });
-  const hasKanbanToggle = await kanbanButton.isVisible().catch(() => false);
-
-  if (hasKanbanToggle) {
-    await kanbanButton.click();
-    // Should show kanban columns
-    await expect(page.locator('[data-testid="kanban-column"], .kanban-column, [class*="kanban"]').first()).toBeVisible();
-  }
+test('deal view switches between kanban and table', async () => {
+  await page.getByRole('button', { name: 'Kanban-Ansicht', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /Interessent.*0/ })).toBeVisible();
+  await expect(page.locator('table')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Tabellenansicht', exact: true }).click();
+  await expect(page.locator('table')).toBeVisible();
 });
-
-test('deals page: search input filters deals', async () => {
-  await page.getByRole('link', { name: 'Deals' }).click();
-  const searchInput = page.getByPlaceholder(/suchen/i);
-  const hasSearch = await searchInput.isVisible().catch(() => false);
-
-  if (hasSearch) {
-    await searchInput.fill('xxxxxxxxxnotexistingdeal');
-    await page.waitForTimeout(400); // Wait for debounce
-    const noResults = await page.getByText(/keine ergebnisse|no results/i).isVisible().catch(() => false);
-    const tableEmpty = await page.locator('table tbody tr').count().then(c => c === 0).catch(() => false);
-    expect(noResults || tableEmpty).toBeTruthy();
-    await searchInput.clear();
-  }
-});
-
-test('deals page: stage filter dropdown is visible', async () => {
-  await page.getByRole('link', { name: 'Deals' }).click();
-  // Check for stage filter (combobox/select for filtering by stage)
-  const stageFilter = page.getByRole('combobox').first();
-  const hasFilter = await stageFilter.isVisible().catch(() => false);
-  expect(hasFilter).toBeTruthy();
-});
-
-test('deals page: has export button', async () => {
-  await page.getByRole('link', { name: 'Deals' }).click();
-  await expect(page.getByRole('button', { name: /exportieren/i })).toBeVisible();
+test('deal stage filter changes the empty state', async () => {
+  await page.getByRole('button', { name: /^Filter/ }).click();
+  await page.getByRole('menuitemcheckbox', { name: 'Gewonnen', exact: true }).click();
+  await expect(page.getByText('Keine Deals in Phase "Gewonnen".', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /^Filter/ }).click();
+  await page.getByRole('menuitemcheckbox', { name: 'Alle Deals', exact: true }).click();
+  await expect(page.getByText('Erstellen Sie Ihren ersten Deal, um Ihre Pipeline zu starten.', { exact: true })).toBeVisible();
 });
