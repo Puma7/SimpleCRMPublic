@@ -5082,15 +5082,18 @@ async function attachCustomerCustomFields<T extends { id: number }>(
     customers.map((customer) => [customer.id, {}]),
   )
 
-  const body = await context.fetchJson({
+  const request: HttpRequestSpec = {
     method: "GET",
     path: "/api/v1/customer-custom-field-values",
     query: {
       limit: DEFAULT_LIST_LIMIT,
       customerIds: customers.map((customer) => customer.id).join(","),
     },
-  })
-  const values = listItems<CustomFieldValueRecord>(body)
+  }
+  // One value per customer and field easily exceeds the server's 100-row page,
+  // so read every page instead of dropping the later customers' values.
+  const body = await context.fetchJson(request)
+  const values = await collectPagedListItems<CustomFieldValueRecord>(body, context, request)
   for (const value of values) {
     const customerId = Number(value.customerId ?? 0)
     const fieldName = fieldNamesById.get(Number(value.fieldId ?? 0))

@@ -872,6 +872,53 @@ describe('renderer transport', () => {
     expect(result.items[0].customFields).toEqual({ vip_status: 'Gold' });
   });
 
+  // F-A11b-06: custom field values were read from the first server page only
+  // (100 rows), so grouping and export lost the values of later customers.
+  test('follows the cursor when loading custom field values', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [
+            { id: 42, sourceSqliteId: 7, name: 'Meyer', status: 'Lead' },
+            { id: 43, sourceSqliteId: 8, name: 'Schulz', status: 'Lead' },
+          ],
+          nextCursor: null,
+          total: 2,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 9, name: 'vip_status', label: 'VIP', active: true }], nextCursor: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 99, customerId: 42, fieldId: 9, value: 'Gold' }], nextCursor: 99 },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: { items: [{ id: 100, customerId: 43, fieldId: 9, value: 'Silber' }], nextCursor: null },
+      }));
+
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com/',
+      fetchImpl,
+    });
+
+    const result = await transport.invoke(IPCChannels.Db.GetCustomers, {
+      paginated: true,
+      includeCustomFields: true,
+      limit: 50,
+      offset: 0,
+    }) as { items: Array<{ customFields?: Record<string, string> }> };
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      4,
+      'https://crm.example.com/api/v1/customer-custom-field-values?limit=100&customerIds=42%2C43&cursor=99',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(result.items.map((item) => item.customFields)).toEqual([
+      { vip_status: 'Gold' },
+      { vip_status: 'Silber' },
+    ]);
+  });
+
   test('maps customer updates with custom fields to server HTTP routes', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({
