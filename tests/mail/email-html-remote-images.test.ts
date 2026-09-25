@@ -1,5 +1,6 @@
 import {
   blockRemoteImagesInHtml,
+  blockRemoteInStyleBlock,
   htmlHasRemoteResources,
   isRemoteUrl,
   mapStyleBlockContents,
@@ -154,5 +155,44 @@ describe('blockRemoteImagesInHtml', () => {
     expect(htmlHasRemoteResources('<img src="https://x.com/a">')).toBe(true);
     expect(htmlHasRemoteResources('<img src="cid:a@b">')).toBe(true);
     expect(htmlHasRemoteResources('<p>plain</p>')).toBe(false);
+  });
+});
+
+// N-redos-04: `url\s*\(…\/\/[^)'"]+…\)` rescans to the end of the style text for
+// every `url(//` without a closing parenthesis, so hostile CSS froze the viewer
+// for seconds (140 KB: ~13 s).
+describe('blockRemoteInStyleBlock runs in linear time', () => {
+  const legacy = (styleBody: string): string => styleBody
+    .replace(/@import\s+url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]+['"]?\s*\)/gi, '')
+    .replace(/url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]+['"]?\s*\)/gi, 'url(about:blank)');
+
+  test('unterminated url(// and @import url(// stay fast', () => {
+    for (const hostile of ['url(//a'.repeat(20_000), '@import url(//a'.repeat(10_000)]) {
+      const started = Date.now();
+      expect(blockRemoteInStyleBlock(hostile)).toBe(hostile);
+      expect(Date.now() - started).toBeLessThan(1_000);
+    }
+  });
+
+  test('matches the previous regex on ordinary and random CSS', () => {
+    const samples = [
+      'body{background:url(https://t.example/p.gif)}',
+      "@import url('//cdn.example/x.css'); a{b:url( \"http://x/y\" )}",
+      'p{background:URL(//a b )} q{background:url(data:image/png;base64,AAAA)}',
+      "x{background:url('//a'x)} y{background:url(//a' )}",
+    ];
+    for (const sample of samples) expect(blockRemoteInStyleBlock(sample)).toBe(legacy(sample));
+    const alphabet = ['url(', 'URL(', '@import ', '//', 'https:', 'http:', ')', '(', "'", '"', ' ', '\n', 'a', 'b/', ';', '{', '}'];
+    let seed = 7;
+    const next = () => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed;
+    };
+    for (let i = 0; i < 5_000; i += 1) {
+      let css = '';
+      const parts = 1 + (next() % 24);
+      for (let j = 0; j < parts; j += 1) css += alphabet[next() % alphabet.length];
+      expect(blockRemoteInStyleBlock(css)).toBe(legacy(css));
+    }
   });
 });

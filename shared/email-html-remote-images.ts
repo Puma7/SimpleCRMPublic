@@ -99,10 +99,51 @@ function replaceRemoteLinkTag(tag: string): string {
   });
 }
 
-function blockRemoteInStyleBlock(styleBody: string): string {
-  return styleBody
-    .replace(/@import\s+url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]+['"]?\s*\)/gi, '')
-    .replace(/url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]+['"]?\s*\)/gi, 'url(about:blank)');
+const REMOTE_CSS_IMPORT_PREFIX = /@import\s+url\s*\(\s*['"]?(?:https?:)?\/\//gi;
+const REMOTE_CSS_URL_PREFIX = /url\s*\(\s*['"]?(?:https?:)?\/\//gi;
+
+/**
+ * Same result as `css.replace(new RegExp(prefix.source + /[^)'"]+['"]?\s*\)/.source, 'gi'), replacement)`.
+ * The regex rescans the rest of the text for every `url(//` without a closing
+ * parenthesis (quadratic on hostile CSS, N-redos-04). Here the target of each
+ * candidate ends at the next `)`, `'` or `"`; that position is cached and only
+ * searched forward, and the tail (`['"]?\s*\)`) is checked by hand.
+ */
+function replaceRemoteCssUrls(css: string, prefix: RegExp, replacement: string): string {
+  let out = '';
+  let copied = 0;
+  let terminator = -1;
+  prefix.lastIndex = 0;
+  for (let m = prefix.exec(css); m; m = prefix.exec(css)) {
+    const targetStart = m.index + m[0].length;
+    if (terminator < targetStart) {
+      terminator = targetStart;
+      while (terminator < css.length && !')\'"'.includes(css[terminator]!)) terminator += 1;
+    }
+    let end = -1;
+    if (terminator > targetStart && terminator < css.length) {
+      let pos = terminator;
+      if (css[pos] === "'" || css[pos] === '"') pos += 1;
+      while (pos < css.length && /\s/.test(css[pos]!)) pos += 1;
+      if (css[pos] === ')') end = pos + 1;
+    }
+    if (end === -1) {
+      prefix.lastIndex = m.index + 1;
+      continue;
+    }
+    out += css.slice(copied, m.index) + replacement;
+    copied = end;
+    prefix.lastIndex = end;
+  }
+  return copied === 0 ? css : out + css.slice(copied);
+}
+
+export function blockRemoteInStyleBlock(styleBody: string): string {
+  return replaceRemoteCssUrls(
+    replaceRemoteCssUrls(styleBody, REMOTE_CSS_IMPORT_PREFIX, ''),
+    REMOTE_CSS_URL_PREFIX,
+    'url(about:blank)',
+  );
 }
 
 /**
