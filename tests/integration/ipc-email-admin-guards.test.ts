@@ -47,6 +47,15 @@ jest.mock('../../electron/email/email-store', () => ({
   updateEmailAccountRecord: jest.fn(),
   deleteEmailAccountRecord: jest.fn(async () => undefined),
   getEmailAccountById: jest.fn(() => ({ id: 7, keytar_account_key: 'email-7', smtp_keytar_account_key: null })),
+  saveAccountSignature: jest.fn(),
+}));
+
+jest.mock('../../electron/email/email-oauth-google', () => ({
+  exchangeGoogleAuthCode: jest.fn(async () => undefined),
+}));
+
+jest.mock('../../electron/email/email-oauth-microsoft', () => ({
+  exchangeMicrosoftAuthCode: jest.fn(async () => undefined),
 }));
 
 jest.mock('../../electron/email/email-keytar', () => ({
@@ -120,6 +129,7 @@ import { fireWebhookWorkflows } from '../../electron/email/email-webhook';
 import {
   createEmailAccountRecord,
   deleteEmailAccountRecord,
+  saveAccountSignature,
   updateEmailAccountRecord,
 } from '../../electron/email/email-store';
 import { getEmailPassword, saveEmailPassword } from '../../electron/email/email-keytar';
@@ -127,6 +137,8 @@ import { resolveImapAuth } from '../../electron/email/email-imap-auth';
 import { testImapConnection } from '../../electron/email/email-imap-sync';
 import { testPop3Connection } from '../../electron/email/email-pop3-sync';
 import { testSmtpConnection } from '../../electron/email/email-smtp';
+import { exchangeGoogleAuthCode } from '../../electron/email/email-oauth-google';
+import { exchangeMicrosoftAuthCode } from '../../electron/email/email-oauth-microsoft';
 import { clearAllSessions, createSession, type SessionRole } from '../../electron/auth/session-store';
 import { registerEmailHandlers } from '../../electron/ipc/email';
 
@@ -265,6 +277,11 @@ describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
     [IPCChannels.Email.CreateAccount, createPayload],
     [IPCChannels.Email.UpdateAccount, { id: 7, displayName: 'Umbenannt', imapPassword: 'neu' }],
     [IPCChannels.Email.DeleteAccount, 7],
+    // C-B17: Der OAuth-Abschluss ersetzte mit einer blossen Konto-Freigabe den Refresh-Token des Kontos.
+    [IPCChannels.Email.FinishGoogleOAuth, { accountId: 7, redirectUri: 'http://127.0.0.1/cb', code: 'code' }],
+    [IPCChannels.Email.FinishMicrosoftOAuth, { accountId: 7, redirectUri: 'http://127.0.0.1/cb', code: 'code' }],
+    // C-B17: Konto-Signaturen sind Kontoverwaltung (Server: mail.account.manage).
+    [IPCChannels.Email.SaveAccountSignature, { accountId: 7, signatureHtml: '<p>Gruss</p>' }],
   ] as const;
 
   beforeEach(() => {
@@ -272,6 +289,9 @@ describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
     jest.mocked(updateEmailAccountRecord).mockClear();
     jest.mocked(deleteEmailAccountRecord).mockClear();
     jest.mocked(saveEmailPassword).mockClear();
+    jest.mocked(saveAccountSignature).mockClear();
+    jest.mocked(exchangeGoogleAuthCode).mockClear();
+    jest.mocked(exchangeMicrosoftAuthCode).mockClear();
   });
 
   // F-A7-03: Konto bearbeiten und loeschen liefen mit Stufe "ro"; wer ein Postfach nur lesen durfte, konnte es loeschen.
@@ -283,6 +303,9 @@ describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
     expect(updateEmailAccountRecord).not.toHaveBeenCalled();
     expect(deleteEmailAccountRecord).not.toHaveBeenCalled();
     expect(saveEmailPassword).not.toHaveBeenCalled();
+    expect(saveAccountSignature).not.toHaveBeenCalled();
+    expect(exchangeGoogleAuthCode).not.toHaveBeenCalled();
+    expect(exchangeMicrosoftAuthCode).not.toHaveBeenCalled();
   });
 
   test.each(accountCalls)('%s bleibt fuer Owner und Admin moeglich', async (channel, payload) => {

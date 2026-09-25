@@ -103,7 +103,7 @@ Die Desktop-App kennt keine Capabilities und keine Gruppen. Sie kennt nur die Ro
 | Backup einspielen: ZIP wählen, Vorschau, Restore | `email:pick-local-mail-backup-zip`, `email:preview-restore-local-mail-backup`, `email:restore-local-mail-backup` | nur Owner, echte Anmeldung (wie der Hard-Reset `maintenance:*-hard-reset`) |
 | Vollbackup exportieren und prüfen | `email:export-local-mail-backup`, `email:verify-local-mail-backup` | Owner, Admin |
 | DSGVO-Export | `email:gdpr-export` | Owner, Admin |
-| Mail-Konto anlegen, bearbeiten, löschen | `email:create-account`, `email:update-account`, `email:delete-account` | Owner, Admin (wie `mail.account.manage` auf dem Server) |
+| Mail-Konto anlegen, bearbeiten, löschen, OAuth-Verknüpfung abschließen, Konto-Signatur speichern | `email:create-account`, `email:update-account`, `email:delete-account`, `email:finish-google-oauth`, `email:finish-microsoft-oauth`, `email:save-account-signature` | Owner, Admin (wie `mail.account.manage` auf dem Server) |
 | Verbindungstest IMAP, SMTP, POP3 (mit gespeicherten Zugangsdaten oder für ein neues Konto) | `email:test-imap`, `email:test-smtp`, `email:test-pop3` | Owner, Admin (gehört zu Konto anlegen und bearbeiten) |
 | OAuth-App-Daten und Webhook-Secret speichern | `email:set-google-oauth-app`, `email:set-microsoft-oauth-app`, `email:set-misc-settings` | Owner, Admin; ein leeres Secret-Feld behält das gespeicherte |
 | OAuth-Client-Secrets und Webhook-Secret lesen | `email:get-google-oauth-app`, `email:get-microsoft-oauth-app`, `email:get-misc-settings` | Klartext nur für Owner, Admin; alle anderen bekommen `hasSecret` |

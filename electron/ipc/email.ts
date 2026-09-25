@@ -1977,7 +1977,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         saveAccountSignature(payload.accountId, payload.signatureHtml);
         return { success: true as const };
       },
-      { logger, accountAccess: 'rw' },
+      // Kontoverwaltung wie UpdateAccount (E16); Server: mail.account.manage.
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2770,7 +2771,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger, accountAccess: 'rw' },
+      // Ersetzt den Refresh-Token des Kontos: Kontoverwaltung wie UpdateAccount (E16), Server requireAdmin.
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -3212,7 +3214,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           return { success: false as const, error: e instanceof Error ? e.message : String(e) };
         }
       },
-      { logger, accountAccess: 'rw' },
+      // Ersetzt den Refresh-Token des Kontos: Kontoverwaltung wie UpdateAccount (E16), Server requireAdmin.
+      { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
     ),
   );
 

@@ -147,7 +147,6 @@ describe('Konto-Freigabe "ro" erlaubt keine Mutationen', () => {
       [IPCChannels.Email.SetRemoteContentPolicy, { messageId: message, policy: 'allowed_sender', rememberSender: true }],
       [IPCChannels.Email.RespondReadReceipt, { messageId: message, action: 'decline' }],
       [IPCChannels.Email.TestVacationAutoReply, accountA],
-      [IPCChannels.Email.SaveAccountSignature, { accountId: accountA, signatureHtml: '<p>x</p>' }],
     ];
     for (const [channel, payload] of attempts) {
       await expect(invoke(channel, payload)).rejects.toThrow(/Kein Zugriff/);

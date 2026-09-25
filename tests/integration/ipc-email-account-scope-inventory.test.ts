@@ -231,6 +231,24 @@ const READ_ONLY_CHANNELS = new Set<string>([
   IPCChannels.Email.ListWorkflowRunSteps,
 ]);
 
+/** Kontobezogene Kanaele, die zusaetzlich nur Owner/Admin erreichen (Kontoverwaltung E16, Workflows G1). */
+const OWNER_ADMIN_SCOPED_CHANNELS = new Set<string>([
+  IPCChannels.Email.UpdateAccount,
+  IPCChannels.Email.DeleteAccount,
+  IPCChannels.Email.FinishGoogleOAuth,
+  IPCChannels.Email.FinishMicrosoftOAuth,
+  IPCChannels.Email.SaveAccountSignature,
+  IPCChannels.Email.MergeThreads,
+  IPCChannels.Email.SplitMessageThread,
+  IPCChannels.Email.ExecuteWorkflowNow,
+  IPCChannels.Email.CreateKnowledgeBase,
+  IPCChannels.Email.UpdateKnowledgeBase,
+  IPCChannels.Email.DeleteKnowledgeBase,
+  IPCChannels.Email.AddKnowledgeChunk,
+  IPCChannels.Email.SaveKnowledgeBaseDocument,
+  IPCChannels.Email.ImportKnowledgeFile,
+]);
+
 describe('Klassifizierung: jede kontobezogene Registrierung hat eine explizite Stufe', () => {
   function accountScopedChannels(): string[] {
     return emailChannels.filter((channel) => {
@@ -256,5 +274,16 @@ describe('Klassifizierung: jede kontobezogene Registrierung hat eine explizite S
   test('die Lese-Liste enthaelt nur kontobezogene Kanaele', () => {
     const scoped = new Set(accountScopedChannels());
     expect([...READ_ONLY_CHANNELS].filter((channel) => !scoped.has(channel))).toEqual([]);
+  });
+
+  // E16/G1: Hier prueft register.ts zuerst die Rolle; Owner/Admin umgehen die Konto-ACL.
+  // Die Stufe bleibt trotzdem 'rw' angegeben, und kein Lese-Kanal wird still Owner/Admin-only.
+  test('kontobezogene Owner/Admin-Kanaele sind bekannt und schreibend', () => {
+    const ownerAdminOnly = accountScopedChannels().filter((channel) => {
+      const roles = mockRegistrations.get(channel)?.requireRole as string[] | undefined;
+      return roles !== undefined && roles.every((role) => role === 'owner' || role === 'admin');
+    });
+    expect(ownerAdminOnly.sort()).toEqual([...OWNER_ADMIN_SCOPED_CHANNELS].sort());
+    expect(ownerAdminOnly.filter((channel) => READ_ONLY_CHANNELS.has(channel))).toEqual([]);
   });
 });
