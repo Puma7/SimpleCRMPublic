@@ -17,7 +17,10 @@ import {
   buildReplyGreeting,
   replyGreetingPlainToHtml,
 } from '../../shared/email-reply-greeting';
-import { buildReplyGreeting as buildServerReplyGreeting } from '../../packages/server/src/email-reply-greeting';
+import {
+  buildReplyGreeting as buildServerReplyGreeting,
+  replyGreetingPlainToHtml as serverReplyGreetingPlainToHtml,
+} from '../../packages/server/src/email-reply-greeting';
 import { buildAiTransformSystemPrompt } from '../../shared/ai-transform-prompt';
 import {
   buildSignatureTemplateContext,
@@ -231,6 +234,35 @@ describe('email-reply-greeting', () => {
 
   it('replyGreetingPlainToHtml wraps paragraph', () => {
     expect(replyGreetingPlainToHtml('Guten Tag,')).toBe('<p>Guten Tag,</p>');
+  });
+
+  // F-A6-01: Markup und Zonenmarker aus dem From-Anzeigenamen landeten roh im Antwort-HTML.
+  it.each([
+    ['desktop/renderer', buildReplyGreeting, replyGreetingPlainToHtml],
+    ['server', buildServerReplyGreeting, serverReplyGreetingPlainToHtml],
+  ] as const)('escapes the sender display name in the reply greeting html (%s)', (_edition, build, toHtml) => {
+    const fromJson = JSON.stringify({
+      value: [{
+        address: 'x@evil.tld',
+        name: 'Test <!-- simplecrm-quote --><img src="https://example.org/x.png"> & Co',
+      }],
+    });
+    const greetingHtml = toHtml(build({ fromJson }));
+    const composed = buildReplyComposeHtml({
+      greetingHtml,
+      replyHtml: '<p><br></p>',
+      quotedPlain: 'Original',
+      signatureHtml: '<p>Sig</p>',
+    });
+    const split = splitEditorAndSignature(composed);
+
+    expect(greetingHtml).toBe(
+      '<p>Guten Tag Test &lt;!-- simplecrm-quote --&gt;&lt;img src=&quot;https://example.org/x.png&quot;&gt; &amp; Co,</p>',
+    );
+    expect(split.quotedHtml).not.toContain('<img');
+    expect(split.quotedHtml).toBe('<p>Original</p>');
+    expect(split.signatureHtml).toBe('<p>Sig</p>');
+    expect(split.editorHtml).not.toContain('<img');
   });
 
   // F-D1-09: 'herr'/'frau' irgendwo im From-Anzeigenamen (Sherry, Frauke, Herrmann) erzeugte eine falsche Anrede.

@@ -79,10 +79,21 @@ export function buildReplyGreeting(input: {
   return 'Guten Tag,'
 }
 
+function escapeGreetingHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export function replyGreetingPlainToHtml(greeting: string): string {
   const trimmed = greeting.trim()
   if (!trimmed) return ''
-  return `<p>${trimmed}</p>`
+  // Die Anrede enthaelt den From-Anzeigenamen der Fremdmail: escapen, sonst
+  // wird Markup (auch ein Zonenmarker-Kommentar) im Antwort-HTML wirksam.
+  return `<p>${escapeGreetingHtml(trimmed)}</p>`
 }
 
 /** Avoid duplicating greeting when AI draft already starts with one. */
