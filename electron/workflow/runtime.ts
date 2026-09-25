@@ -294,6 +294,9 @@ async function walkGraph(
         ctx.variables['loop.item'] = items[i]!;
         ctx.variables['loop.index'] = i;
         log.push(`loop:${i}:${items[i]}`);
+        // The branch log starts as a copy of `log`; only its new tail is merged
+        // back, otherwise every iteration re-appended the whole history.
+        const logLengthBefore = log.length;
         const branchLog = [...log];
         const r = await walkGraph(
           ctx,
@@ -304,7 +307,7 @@ async function walkGraph(
           { allowRevisit: true, stopBeforeNodeIds },
           gate,
         );
-        log.push(...r.log);
+        for (const line of r.log.slice(logLengthBefore)) log.push(line);
         if (r.blocked) return r;
         if (r.deferred) return r;
         if (r.status === 'error') {

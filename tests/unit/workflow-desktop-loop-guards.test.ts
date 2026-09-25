@@ -165,4 +165,29 @@ describe('desktop logic.loop guards', () => {
     expect(calls.get('x')).toBe(2);
     expect(calls.get('y')).toBe(4);
   });
+
+  // F-N-dwf-01: Jeder Durchlauf haengte eine Kopie des gesamten bisherigen Logs an; das Log verdoppelte sich je Eintrag bis zum RangeError.
+  test('appends only the new log entries of each iteration', async () => {
+    const calls = new Map<string, number>();
+    installCountingNode(calls);
+    const items = Array.from({ length: 25 }, (_, i) => `i${i}`);
+
+    const result = await run(
+      [trigger, loop, countNode('body'), countNode('after')],
+      [
+        { id: 'e1', source: 'trigger', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'body', label: 'each' },
+        { id: 'e4', source: 'loop', target: 'after', label: 'done' },
+      ],
+      items.join(','),
+    );
+
+    expect(result.status).toBe('ok');
+    expect(calls.get('body')).toBe(25);
+    expect(calls.get('after')).toBe(1);
+    for (const [i, item] of items.entries()) {
+      expect(result.log.filter((line) => line === `loop:${i}:${item}`)).toHaveLength(1);
+    }
+    expect(result.log.length).toBeLessThan(100);
+  });
 });
