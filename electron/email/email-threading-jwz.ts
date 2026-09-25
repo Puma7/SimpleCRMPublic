@@ -4,16 +4,25 @@ import { createTicketCodeForAccount, extractKnownTicketFromSubject, getOrCreateT
 import { rebuildThreadEdges } from './email-thread-aggregate';
 import { applyMessageThreadMetadata, confidenceForJwzAssign } from './email-thread-metadata';
 
+/** Shortest id accepted for linking conversations ("x@y.z"). */
+const MIN_MESSAGE_ID_LENGTH = 5;
+/** RFC 5322 msg-id body: id-left "@" id-right, no brackets or whitespace. */
+const MESSAGE_ID_SHAPE = /^[^\s<>]+@[^\s<>]+$/;
+
 function normId(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const s = raw.trim().replace(/^<|>$/g, '').toLowerCase();
-  return s || null;
+  // Only a plausible msg-id may link conversations: a sender-controlled bare token such
+  // as "com" would otherwise match unrelated threads of the account. (C-A62)
+  return s.length >= MIN_MESSAGE_ID_LENGTH && MESSAGE_ID_SHAPE.test(s) ? s : null;
 }
 
 function parseReferences(refs: string | null): string[] {
   if (!refs) return [];
+  // Brackets separate ids like whitespace does ("<a@b><c@d>" is valid), matching how the
+  // SQL below tokenizes stored References headers.
   return refs
-    .split(/\s+/)
+    .split(/[\s<>]+/)
     .map((x) => normId(x))
     .filter((x): x is string => Boolean(x));
 }
@@ -35,6 +44,19 @@ function collectRelatedIds(messageId: string | null, inReplyTo: string | null, r
 
 function normHeaderCol(col: string): string {
   return `LOWER(TRIM(REPLACE(REPLACE(IFNULL(${col}, ''), '<', ''), '>', '')))`;
+}
+
+/**
+ * A References column as a space-delimited token list (" id1 id2 "): brackets and folding
+ * whitespace become separators, so an id matches only a whole reference, never a substring.
+ */
+function refTokensCol(col: string): string {
+  return `(' ' || LOWER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(${col}, '<', ' '), '>', ' '), char(9), ' '), char(13), ' '), char(10), ' ')) || ' ')`;
+}
+
+/** LIKE pattern for one whole token of refTokensCol; %, _ and \ match literally. */
+function refTokenPattern(id: string): string {
+  return `% ${id.replace(/[\\%_]/g, (c) => `\\${c}`)} %`;
 }
 
 /**
@@ -67,17 +89,18 @@ export function assignJwzThreadAndTicket(
   const placeholders = related.map(() => '?').join(',');
   const nMid = normHeaderCol('message_id');
   const nIrt = normHeaderCol('in_reply_to');
+  const refMatch = `(m.references_header IS NOT NULL AND ${refTokensCol('m.references_header')} LIKE ? ESCAPE '\\')`;
 
   const refClauses: string[] = [];
   const refParams: string[] = [];
   for (const r of related) {
-    refClauses.push(`(m.references_header IS NOT NULL AND INSTR(LOWER(m.references_header), ?) > 0)`);
-    refParams.push(r);
+    refClauses.push(refMatch);
+    refParams.push(refTokenPattern(r));
   }
   const refSql = refClauses.length ? ` OR ${refClauses.join(' OR ')}` : '';
 
   const myReplyClause = myMid
-    ? ` OR ${nIrt} = ? OR (m.references_header IS NOT NULL AND INSTR(LOWER(m.references_header), ?) > 0)`
+    ? ` OR ${nIrt} = ? OR ${refMatch}`
     : '';
 
   const sql = `
@@ -96,7 +119,7 @@ export function assignJwzThreadAndTicket(
 
   const params: unknown[] = [accountId, messageId, ...related, ...related, ...refParams];
   if (myMid) {
-    params.push(myMid, myMid);
+    params.push(myMid, refTokenPattern(myMid));
   }
 
   const matches = getDb().prepare(sql).all(...params) as { thread_id: string; ticket_code: string | null }[];
