@@ -18,6 +18,7 @@ import {
   data,
   error,
   positiveIntFromPath,
+  rejectUnlessCrmWrite,
   requireAdmin,
   requirePrincipal,
 } from './http';
@@ -206,6 +207,9 @@ async function handleGetReturn(req: ApiRequest, ports: ServerApiPorts, id: numbe
 async function handleCreateReturn(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  // The dispatcher only checks crm.read for the returns root segment.
+  const denied = rejectUnlessCrmWrite(principal);
+  if (denied) return denied;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
 
   const parsed = parseCreateBody(req.body);
@@ -232,6 +236,8 @@ async function handleUpdateReturn(
 ): Promise<ApiResponse> {
   const principal = requirePrincipal(req);
   if ('status' in principal) return principal;
+  const denied = rejectUnlessCrmWrite(principal);
+  if (denied) return denied;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
 
   const parsed = parseUpdateBody(req.body);

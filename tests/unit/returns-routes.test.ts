@@ -12,7 +12,7 @@ import type {
   ServerApiPorts,
 } from '../../packages/server/src/api/types';
 
-const PRINCIPAL = { userId: 'user-1', workspaceId: 'ws-1', role: 'user' as const };
+const PRINCIPAL = { userId: 'user-1', workspaceId: 'ws-1', role: 'user' as const, capabilities: ['crm.write'] };
 
 function makeRecord(overrides: Partial<ReturnRecord> = {}): ReturnRecord {
   return {
@@ -429,6 +429,43 @@ describe('handleReturnsRoute', () => {
     );
     expect(result?.status).toBe(404);
     expect((result?.body as { error: { code: string } }).error.code).toBe('return_not_found');
+  });
+
+  // C-A11: POST und PATCH /api/v1/returns schrieben auch fuer Nutzer, die nur crm.read hatten.
+  test('POST and PATCH /api/v1/returns require crm.write, crm.read alone is forbidden', async () => {
+    const harness = makeReturnsPort();
+    const ports: ServerApiPorts = { auth: {} as never, returns: harness.port };
+    const reader = { ...PRINCIPAL, capabilities: ['crm.read'] };
+    const writer = { ...PRINCIPAL, capabilities: ['crm.write'] };
+    const createBody = { items: [{ quantity: 1 }] };
+    const updateBody = { status: 'received' };
+
+    const deniedCreate = await handleReturnsRoute(
+      makeBaseRequest({ method: 'POST', principal: reader, body: createBody }),
+      ports,
+    );
+    const deniedUpdate = await handleReturnsRoute(
+      makeBaseRequest({ method: 'PATCH', path: '/api/v1/returns/5', principal: reader, body: updateBody }),
+      ports,
+    );
+    expect(deniedCreate?.status).toBe(403);
+    expect(deniedUpdate?.status).toBe(403);
+    expect((deniedCreate?.body as { error: { code: string } }).error.code).toBe('forbidden');
+    expect(harness.createCalls).toHaveLength(0);
+    expect(harness.updateCalls).toHaveLength(0);
+
+    const allowedCreate = await handleReturnsRoute(
+      makeBaseRequest({ method: 'POST', principal: writer, body: createBody }),
+      ports,
+    );
+    const allowedUpdate = await handleReturnsRoute(
+      makeBaseRequest({ method: 'PATCH', path: '/api/v1/returns/5', principal: writer, body: updateBody }),
+      ports,
+    );
+    expect(allowedCreate?.status).toBe(201);
+    expect(allowedUpdate?.status).toBe(200);
+    expect(harness.createCalls).toHaveLength(1);
+    expect(harness.updateCalls).toHaveLength(1);
   });
 
   test('endpoints respond with 405 for unsupported methods', async () => {
