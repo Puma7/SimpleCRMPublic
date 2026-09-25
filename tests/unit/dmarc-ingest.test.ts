@@ -1,11 +1,15 @@
 /**
  * @jest-environment node
  */
+import { basename } from 'node:path';
+import { gzipSync } from 'node:zlib';
+
 import {
   createPostgresWorkflowDmarcIngestPort,
   type WorkflowDmarcIngestJobPlan,
 } from '../../packages/server/src/dmarc-ingest';
 import type { DmarcStorePort } from '../../packages/server/src/db/postgres-dmarc-port';
+import { MAX_DECOMPRESSED_BYTES } from '../../packages/server/src/dmarc/parse-aggregate-report';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 
@@ -143,6 +147,45 @@ describe('createPostgresWorkflowDmarcIngestPort', () => {
     const jobs = jobInserts.filter((j) => j.table === 'job_queue');
     expect(jobs).toHaveLength(1); // continuation enqueued despite the first failure
     expect(eventVars(jobs[0])['dmarc.report_count']).toBe(1); // only the second report counted
+  });
+
+  // F-A3b-01: Das Dekompressionslimit galt nur je Anhang; viele gzip-Anhaenge einer fremden Mail vervielfachten Parse-Zeit, Speicher und DB-Zeilen.
+  test('stops ingesting once the decompressed reports of one message exceed the per-message budget', async () => {
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+    // Each report decompresses to ~40 % of the per-attachment cap: two fit into
+    // one message's budget, the third does not.
+    const padding = 'x'.repeat(Math.floor(MAX_DECOMPRESSED_BYTES * 0.4));
+    const gzReport = (reportId: string) => gzipSync(Buffer.from(
+      REPORT_XML
+        .replace('<report_id>G-1</report_id>', `<report_id>${reportId}</report_id>`)
+        .replace('</feedback>', `<!-- ${padding} --></feedback>`),
+      'utf8',
+    ));
+    const files: Record<string, Buffer> = {
+      'a.xml.gz': gzReport('A'),
+      'b.xml.gz': gzReport('B'),
+      'c.xml.gz': gzReport('C'),
+    };
+    const port = createPostgresWorkflowDmarcIngestPort({
+      db: makeFakeDb({
+        attachments: Object.keys(files).map((name) => ({ filename_display: name, storage_path: name })),
+        jobInserts,
+      }),
+      attachmentsRoot: '/tmp/att',
+      readAttachmentFile: async (file) => files[basename(file)]!,
+      store,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    await port.ingest({ workspaceId: WS, workflowId: 5, messageId: 44, continuation: CONTINUATION });
+
+    const persistedIds = (store.persistReport as jest.Mock).mock.calls
+      .map(([input]) => (input as { report: { reportId: string } }).report.reportId);
+    expect(persistedIds).toEqual(['A', 'B']);
+    const jobs = jobInserts.filter((j) => j.table === 'job_queue');
+    expect(jobs).toHaveLength(1);
+    expect(eventVars(jobs[0])['dmarc.report_count']).toBe(2);
   });
 
   test('catastrophic failure (attachment read query throws) still enqueues the continuation, no rethrow', async () => {

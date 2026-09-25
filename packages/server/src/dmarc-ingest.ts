@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import type { Kysely } from 'kysely';
 
 import {
-  parseDmarcReportAttachment,
+  decompressReportAttachment,
+  MAX_DECOMPRESSED_BYTES,
+  parseDmarcXml,
   summarizeDmarcRecords,
   type DmarcRecordRow,
 } from './dmarc/parse-aggregate-report';
@@ -31,6 +33,11 @@ import {
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 /** Total read budget across all of a message's attachments. */
 const MAX_TOTAL_ATTACHMENT_BYTES = 40 * 1024 * 1024;
+/** Total decompressed budget across all of a message's report attachments. The
+ *  compressed budget above does not bound it (gzip expands ~1000:1), so without
+ *  it every extra attachment adds another full-size parse + DB insert. A real
+ *  RUA mail carries one report, so the per-report cap is enough for the mail. */
+const MAX_TOTAL_DECOMPRESSED_BYTES = MAX_DECOMPRESSED_BYTES;
 /** Only attachments whose name ends in one of these are considered reports. */
 const REPORT_ATTACHMENT_PATTERN = /\.(xml|xml\.gz|gz|zip)$/i;
 
@@ -147,6 +154,7 @@ async function ingestAttachments(args: {
 
   const nameFilter = input.attachmentNameFilter?.trim().toLowerCase() || null;
   let total = 0;
+  let decompressedTotal = 0;
 
   for (const attachment of attachments) {
     const lowerName = attachment.filename.toLowerCase();
@@ -167,13 +175,23 @@ async function ingestAttachments(args: {
     if (next > MAX_TOTAL_ATTACHMENT_BYTES) break;
     total = next;
 
+    let xml: Buffer;
+    try {
+      xml = await decompressReportAttachment(attachment.filename, bytes);
+    } catch {
+      continue; // corrupt or over-limit archive — not a report
+    }
+    const nextDecompressed = decompressedTotal + xml.length;
+    if (nextDecompressed > MAX_TOTAL_DECOMPRESSED_BYTES) break;
+    decompressedTotal = nextDecompressed;
+
     // Guard each report independently: a single malformed/oversized report must
     // not abort the whole batch (which would leave the workflow unresumed). The
     // parser already returns null for non-DMARC XML; this also catches a persist
     // that throws (e.g. a value the DB rejects) so the remaining reports still
     // ingest and the summary/continuation stay accurate.
     try {
-      const report = await parseDmarcReportAttachment(attachment.filename, bytes);
+      const report = parseDmarcXml(xml.toString('utf8'));
       if (!report) continue;
 
       const persisted = await store.persistReport({
