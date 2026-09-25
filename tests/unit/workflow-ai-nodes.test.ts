@@ -269,6 +269,18 @@ describe('ai.agent — Wissensbasis-Auswahl und Entwurf', () => {
     expect(r.variables?.['draft.id']).toBe(42);
   });
 
+  // F-A5-01: KI-Antwortentwuerfe kuerzten '+tag' und schrieben den Local-Part des Empfaengers klein.
+  test('createDraft adressiert die exakte Absender-Mailbox (Plus-Tag, Gross-/Kleinschreibung)', async () => {
+    const message = {
+      ...baseMessage,
+      from_json: JSON.stringify({ value: [{ address: 'Kunde+Shop@Firma.DE', name: 'Meier, Max' }] }),
+    };
+    await node.execute(ctx({ message }), {}, 'a');
+    expect(createComposeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      toJson: JSON.stringify({ value: [{ address: 'Kunde+Shop@firma.de' }] }),
+    }));
+  });
+
   test('createDraft: false → kein Entwurf, keine draft.id-Variable', async () => {
     const r = await node.execute(ctx(), { createDraft: false }, 'a');
     expect(createComposeDraft).not.toHaveBeenCalled();
