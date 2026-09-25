@@ -735,6 +735,8 @@ export type CustomerRecord = {
   country: string | null;
   notes?: string | null;
   status: string;
+  /** JTL-Wawi customer key (kKunde); null for customers without JTL link. */
+  jtlKkunde: number | null;
   updatedAt: string;
 };
 

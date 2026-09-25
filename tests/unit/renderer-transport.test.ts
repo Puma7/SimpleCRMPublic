@@ -672,6 +672,7 @@ describe('renderer transport', () => {
             {
               id: 42,
               sourceSqliteId: 7,
+              jtlKkunde: 7,
               customerNumber: 'K-7',
               name: 'Meyer',
               email: 'meyer@example.com',
@@ -689,6 +690,7 @@ describe('renderer transport', () => {
             {
               id: 43,
               sourceSqliteId: 8,
+              jtlKkunde: 8,
               customerNumber: 'K-8',
               name: 'Schulz',
               email: 'schulz@example.com',
@@ -777,6 +779,7 @@ describe('renderer transport', () => {
             {
               id: 43,
               sourceSqliteId: 8,
+              jtlKkunde: 8,
               customerNumber: 'K-8',
               name: 'Schulz',
               email: 'schulz@example.com',
@@ -2159,11 +2162,28 @@ describe('renderer transport', () => {
     })).toBe(false);
   });
 
+  // F-A10-12: Die Registry setzte jtl_kKunde = sourceSqliteId; Kunden ohne JTL-Bezug bekamen eine falsche
+  // JTL-Kundennummer und einen aktiven Auftrag-Button.
+  test('maps the JTL customer key only from jtlKkunde, never from the SQLite source id', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
+      data: { id: 42, sourceSqliteId: 7, jtlKkunde: null, name: 'Lokal', status: 'Active' },
+    }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    const customer = await transport.invoke(IPCChannels.Db.GetCustomer, 42) as { jtl_kKunde?: number };
+
+    expect(customer.jtl_kKunde).toBeUndefined();
+  });
+
   test('maps single customer lookup to server HTTP route', async () => {
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({
       data: {
         id: 42,
         sourceSqliteId: 7,
+        jtlKkunde: 7,
         customerNumber: 'K-7',
         name: 'Meyer',
         firstName: 'Anna',

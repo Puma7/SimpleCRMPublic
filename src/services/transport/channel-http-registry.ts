@@ -83,6 +83,7 @@ type ListResult<T> = {
 type CustomerRecord = {
   id: number
   sourceSqliteId?: number | null
+  jtlKkunde?: number | null
   customerNumber?: string | null
   name?: string | null
   firstName?: string | null
@@ -5023,7 +5024,7 @@ function inviteExpiryDaysValue(value: unknown): number {
 function mapCustomerRecord(record: CustomerRecord) {
   return {
     id: record.id,
-    jtl_kKunde: record.sourceSqliteId ?? record.id,
+    jtl_kKunde: record.jtlKkunde ?? undefined,
     customerNumber: record.customerNumber ?? undefined,
     name: record.name ?? "",
     firstName: record.firstName ?? undefined,

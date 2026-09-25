@@ -38,6 +38,7 @@ const customerSelectColumns = [
   'country',
   'notes',
   'status',
+  'jtl_kkunde',
   'updated_at',
 ] as const;
 
@@ -72,7 +73,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               eb('customer_number', 'ilike', pattern),
               eb('phone', 'ilike', pattern),
               eb('mobile', 'ilike', pattern),
-              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
+              eb(kyselySql<string>`cast(jtl_kkunde as text)`, 'ilike', pattern),
             ]));
             countQuery = countQuery.where((eb) => eb.or([
               eb('name', 'ilike', pattern),
@@ -82,7 +83,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               eb('customer_number', 'ilike', pattern),
               eb('phone', 'ilike', pattern),
               eb('mobile', 'ilike', pattern),
-              eb(kyselySql<string>`cast(source_sqlite_id as text)`, 'ilike', pattern),
+              eb(kyselySql<string>`cast(jtl_kkunde as text)`, 'ilike', pattern),
             ]));
           }
 
@@ -113,7 +114,7 @@ export function createPostgresCustomerReadPort(options: PostgresCustomerReadPort
               query = query.orderBy('status', sortDirection).orderBy('id', 'asc');
               break;
             case 'jtlCustomerNumber':
-              query = query.orderBy('source_sqlite_id', sortDirection).orderBy('id', 'asc');
+              query = query.orderBy('jtl_kkunde', sortDirection).orderBy('id', 'asc');
               break;
             default:
               query = query.orderBy('id', 'asc');
@@ -331,6 +332,8 @@ function mapCustomerRow(row: Pick<CustomerRow, typeof customerSelectColumns[numb
     country: row.country,
     notes: row.notes,
     status: row.status,
+    // bigint: pg returns it as a string.
+    jtlKkunde: row.jtl_kkunde == null ? null : Number(row.jtl_kkunde),
     updatedAt: timestampToIso(row.updated_at),
   };
 }

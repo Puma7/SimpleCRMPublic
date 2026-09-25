@@ -109,6 +109,7 @@ Deal-Queues und Dashboard-Kennzahlen filtern Stages über `WON_DEAL_STAGES`, `LO
 - **Sync:** `electron/sync-service.ts` → `runSync()`
 - **Passwort:** Keytar (wie E-Mail-Credentials)
 - **Bestellung:** `jtl:create-order` — Parameter aus gespeicherten JTL-Settings
+- **JTL-Kundennummer (Server):** Die Kunden-API liefert `jtlKkunde` (Spalte `jtl_kkunde`, `null` ohne JTL-Bezug); der HTTP-Transport setzt daraus `jtl_kKunde`. `sourceSqliteId` ist nur die Import-ID und nie die JTL-Nummer. Sortierung und Suche nach der JTL-Kundennummer laufen über `jtl_kkunde`.
 
 ---
 
