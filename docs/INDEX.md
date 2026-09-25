@@ -79,5 +79,5 @@
 | Document | Purpose |
 |----------|---------|
 | [SETUP_WINDOWS.md](SETUP_WINDOWS.md) | Windows dev setup |
-| [RELEASE.md](RELEASE.md) | Desktop release pipeline: token-free builds, publish job, pinned actions |
+| [RELEASE.md](RELEASE.md) | Desktop release pipeline (token-free builds, publish job, pinned actions), code signing, macOS auto-update switch |
 | [../AGENTS.md](../AGENTS.md) | Cursor Cloud commands & gotchas |

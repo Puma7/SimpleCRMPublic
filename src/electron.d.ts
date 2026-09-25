@@ -24,6 +24,7 @@ interface UpdateStatus {
   status: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error';
   info?: unknown;
   error?: string;
+  manualUpdate?: { releasePageUrl: string | null };
 }
 
 // Augment the Window interface
