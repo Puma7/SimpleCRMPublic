@@ -15230,6 +15230,8 @@ describe('server edition foundation', () => {
       // Eigenes Fenster: die Abschlussmarker muessen das Graphile-Retry-Fenster
       // ueberleben, danach sind sie nur noch Ballast in sync_info.
       terminalMarkersBefore: new Date('2026-05-27T12:00:00.000Z'),
+      // Webhook-Dedup-Marker gelten nur 5 Minuten; nach einer Stunde weg (F-A3b-06).
+      webhookDedupMarkersBefore: new Date('2026-06-03T11:00:00.000Z'),
       limit: 2,
     });
     expect(buildLockCleanupPlan({
@@ -15764,6 +15766,20 @@ describe('server edition foundation', () => {
           ]],
           ['last_updated', '<', new Date('2026-05-27T12:00:00.000Z')],
         ],
+      },
+      {
+        // F-A3b-06: abgelaufene Webhook-Dedup-Marker; im Fixture gibt es keine,
+        // also folgt kein DELETE.
+        kind: 'select',
+        table: 'sync_info',
+        selected: 'key',
+        wheres: [
+          ['workspace_id', '=', WORKSPACE_A_ID],
+          ['last_updated', '<', new Date('2026-06-03T11:00:00.000Z')],
+          ['key', 'like', 'webhook\\_dedup:%'],
+        ],
+        orderBy: ['last_updated', 'asc'],
+        limit: 2,
       },
       {
         kind: 'select',
@@ -43899,8 +43915,30 @@ class FakeMaintenanceSelect {
       orderBy: this.order,
       limit: this.rowLimit,
     });
-    return this.rows;
+    // Plain `like` conditions are evaluated so a query only sees its own keys;
+    // everything else (e.g. expression-builder callbacks) returns all rows.
+    const likes = this.wheres.filter(([, operator, value]) => operator === 'like' && typeof value === 'string');
+    return this.rows.filter((row) => likes.every(([column, , pattern]) => likePatternToRegExp(String(pattern))
+      .test(String(row[column as string] ?? ''))));
   }
+}
+
+function likePatternToRegExp(pattern: string): RegExp {
+  let source = '';
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index]!;
+    if (char === '\\' && index + 1 < pattern.length) {
+      index += 1;
+      source += pattern[index]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } else if (char === '%') {
+      source += '.*';
+    } else if (char === '_') {
+      source += '.';
+    } else {
+      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${source}$`, 's');
 }
 
 class FakeMaintenanceDelete {
