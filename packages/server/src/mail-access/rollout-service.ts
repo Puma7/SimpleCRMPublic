@@ -326,7 +326,7 @@ export class MailAccessRolloutService implements MailAccessService {
           ? () => this.options.newAcl.resolveScopeActorContext!({
             workspaceId: input.workspaceId,
             userId: input.actor.userId,
-          })
+          }, context)
           : async () => ({ userId: input.actor.userId, groupMemberUserIds: [input.actor.userId] }),
       });
       return {
@@ -346,10 +346,10 @@ export class MailAccessRolloutService implements MailAccessService {
     return new NewMailAccessService({
       resolveGrants: (input) => this.options.newAcl.resolveGrants(input, context),
       resolveScopeActorContext: this.options.newAcl.resolveScopeActorContext
-        ? (input) => this.options.newAcl.resolveScopeActorContext!(input)
+        ? (input) => this.options.newAcl.resolveScopeActorContext!(input, context)
         : undefined,
       resolveMessageVisibilityFacts: this.options.newAcl.resolveMessageVisibilityFacts
-        ? (input) => this.options.newAcl.resolveMessageVisibilityFacts!(input)
+        ? (input) => this.options.newAcl.resolveMessageVisibilityFacts!(input, context)
         : undefined,
     });
   }

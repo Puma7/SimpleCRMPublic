@@ -4835,6 +4835,69 @@ describe('server mailbox ACL migration', () => {
     }
   }, 10_000);
 
+  // F-D2-01: a grant with a visibility filter needs the message facts. Those
+  // were loaded through a second pool connection while the evaluation kept its
+  // own, so as many parallel evaluations as pool slots deadlocked the API.
+  test('single-connection rollout evaluation of a constrained grant does not borrow a nested pool connection', async () => {
+    await ensureMailAclConstraintsSchema();
+    const db = createApplicationDb({ maxConnections: 1, applicationName: 'd2-01-constrained-evaluation' });
+    const state = createPostgresMailAclRolloutStatePort({ db });
+    const service = new MailAccessRolloutService({
+      state,
+      legacy: createPostgresMailAclRolloutLegacyPort({ db }),
+      newAcl: createPostgresMailAccessPort({ db }),
+    });
+    let bindingId: string | null = null;
+    let settled = false;
+    try {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`);
+      const binding = await client.query<{ id: string }>(`
+        SELECT id::text AS id FROM mail_acl_bindings
+        WHERE workspace_id = '${WORKSPACE_A}' AND subject_type = 'user' AND subject_id = '${USER_READ}'
+          AND resource_type = 'account' AND account_id = ${ACCOUNT_A}
+      `);
+      bindingId = binding.rows[0]!.id;
+      await client.query(`
+        INSERT INTO mail_acl_binding_constraints (workspace_id, binding_id, kind, mode, value_ids)
+        VALUES ('${WORKSPACE_A}', ${bindingId}, 'category', 'exclude', '{987654}'::bigint[])
+      `);
+      await client.query('RESET app.role; RESET app.cross_workspace_access');
+      await state.resetShadowCounters({ workspaceId: WORKSPACE_A, actorUserId: USER_READ });
+
+      const evaluation = service.assertPermission({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_READ, isOwner: false, isAdmin: false },
+        permission: 'mail.content.read',
+        resource: {
+          type: 'message',
+          accountId: String(ACCOUNT_A),
+          folderId: String(FOLDER_A),
+          messageId: String(MESSAGE_A),
+        },
+      }).finally(() => { settled = true; });
+      const outcome = await Promise.race([
+        evaluation.then(() => 'resolved' as const, () => 'rejected' as const),
+        new Promise<'deadlocked'>((resolve) => setTimeout(() => resolve('deadlocked'), 4_000)),
+      ]);
+      expect(outcome).toBe('resolved');
+    } finally {
+      await client.query(`SELECT set_config('app.role', 'system', false), set_config('app.cross_workspace_access', 'on', false)`).catch(() => undefined);
+      if (bindingId) {
+        await client.query(`DELETE FROM mail_acl_binding_constraints WHERE binding_id = ${bindingId}`).catch(() => undefined);
+      }
+      await client.query('RESET app.role; RESET app.cross_workspace_access').catch(() => undefined);
+      if (!settled) {
+        // A deadlocked evaluation holds the only pool slot; terminate it so the
+        // pool can drain instead of hanging the suite.
+        await client.query(`
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+          WHERE application_name = 'd2-01-constrained-evaluation'
+        `).catch(() => undefined);
+      }
+      await Promise.race([db.destroy(), new Promise((resolve) => setTimeout(resolve, 2_000))]);
+    }
+  }, 15_000);
+
   test('counter saturation marks telemetry unhealthy without changing allowed shadow decisions and reset starts a healthy window', async () => {
     const db = createApplicationDb({ maxConnections: 2 });
     const state = createPostgresMailAclRolloutStatePort({ db });
