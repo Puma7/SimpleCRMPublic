@@ -360,18 +360,12 @@ export function createPostgresMailDelegationPort(
           // wer nur eingeschraenkt verwalten darf, soll die unbeschraenkte
           // Delegation eines fremden Teams auch ueber die dedizierte
           // DELETE-Route nicht widerrufen koennen.
-          if (!input.actor.isOwner && !input.actor.isAdmin) {
-            const manageAuthority = await loadDelegationAuthority(
-              trx,
-              input.workspaceId,
-              input.actor.userId,
-              resource,
-              [MANAGE_PERMISSION],
-            );
-            const existingMap = await loadBindingConstraints(trx, [existing.id]);
-            if (!isConstraintsAllowedByDelegationAuthority(existingMap.get(existing.id) ?? null, manageAuthority)) {
-              return { ok: false as const, code: 'privilege_escalation' as const };
-            }
+          if (
+            !input.actor.isOwner
+            && !input.actor.isAdmin
+            && !await existingWithinManageAuthority(trx, input.workspaceId, input.actor.userId, resource, existing)
+          ) {
+            return { ok: false as const, code: 'privilege_escalation' as const };
           }
           const affectedUserIds = await affectedUsersForSubject(trx, input.workspaceId, rowSubject(existing));
           await trx.deleteFrom('mail_acl_bindings').where('id', '=', input.bindingId).execute();
@@ -449,20 +443,13 @@ export function createPostgresMailDelegationPort(
       // Delegation eines fremden Teams auf demselben Konto widerrufen, obwohl er
       // sie weder vergeben noch bearbeiten duerfte (leere Autoritaet => leeres
       // every() => alles erlaubt).
+      // Dasselbe gilt fuer das Ersetzen mit neuen Filtern (POST/PATCH): Sonst
+      // engte er die fremde Delegation erst auf seine Kategorie ein und loeschte
+      // sie danach — geprueft wird deshalb vor jedem Zweig.
+      if (existing && !await existingWithinManageAuthority(trx, workspaceId, actor.userId, input.resource, existing)) {
+        return { ok: false as const, code: 'privilege_escalation' };
+      }
       if (input.permissions.length === 0) {
-        if (existing) {
-          const manageAuthority = await loadDelegationAuthority(
-            trx,
-            workspaceId,
-            actor.userId,
-            input.resource,
-            [MANAGE_PERMISSION],
-          );
-          const existingMap = await loadBindingConstraints(trx, [existing.id]);
-          if (!isConstraintsAllowedByDelegationAuthority(existingMap.get(existing.id) ?? null, manageAuthority)) {
-            return { ok: false as const, code: 'privilege_escalation' };
-          }
-        }
         const affectedForDelete = await affectedUsersForSubject(trx, workspaceId, input.subject);
         if (existing) await trx.deleteFrom('mail_acl_bindings').where('id', '=', existing.id).execute();
         return {
@@ -799,6 +786,23 @@ async function loadDelegationAuthority(
       ? { kind: 'branches' as const, branches }
       : { kind: 'unconstrained' as const };
   });
+}
+
+/**
+ * Liegt ein BESTEHENDES Binding innerhalb der eigenen Verwaltungs-Autoritaet
+ * (mail.delegation.manage) des Handelnden? Gemeinsame Pruefung fuer Loeschen
+ * und Ersetzen eines Bindings durch einen nicht-administrativen Manager.
+ */
+async function existingWithinManageAuthority(
+  trx: Trx,
+  workspaceId: string,
+  userId: string,
+  resource: MailDelegationResource,
+  existing: BindingRow,
+): Promise<boolean> {
+  const manageAuthority = await loadDelegationAuthority(trx, workspaceId, userId, resource, [MANAGE_PERMISSION]);
+  const existingMap = await loadBindingConstraints(trx, [existing.id]);
+  return isConstraintsAllowedByDelegationAuthority(existingMap.get(existing.id) ?? null, manageAuthority);
 }
 
 /** Candidate must fit at least one branch of every constrained permission. */
