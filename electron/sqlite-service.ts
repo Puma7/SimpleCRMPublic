@@ -106,6 +106,7 @@ import {
 import { Product, DealProduct } from './types';
 import type { TaskScheduleInput } from '@simplecrm/core';
 import { resolveIsDevelopment } from './security/runtime-mode';
+import { CustomerHasDependentsError, type CustomerDependents } from './customer-dependents-error';
 
 function getDatabasePath(): string {
   try {
@@ -2188,21 +2189,6 @@ export function updateCustomer(id: number, customerData: any): any {
         db.prepare('ROLLBACK').run();
         console.error('Error updating customer:', error);
         throw error;
-    }
-}
-
-export type CustomerDependents = { deals: number; tasks: number; appointments: number };
-
-/**
- * Thrown by deleteCustomer while deals, tasks or appointments still belong to
- * the customer and the caller has not confirmed deleting them too.
- */
-export class CustomerHasDependentsError extends Error {
-    readonly code = 'customer_has_dependents';
-
-    constructor(readonly dependents: CustomerDependents) {
-        super('Kunde hat verknüpfte Deals, Aufgaben oder Termine');
-        this.name = 'CustomerHasDependentsError';
     }
 }
 

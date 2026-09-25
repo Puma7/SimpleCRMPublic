@@ -5,8 +5,8 @@ import {
   updateCustomer,
   deleteCustomer,
   searchCustomers,
-  CustomerHasDependentsError,
 } from '../sqlite-service';
+import { CustomerHasDependentsError } from '../customer-dependents-error';
 
 export const CustomerService = {
   list(includeCustomFields = false) {
