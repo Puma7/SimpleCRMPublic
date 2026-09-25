@@ -10,22 +10,12 @@
 | Kandidaten aus der Suche (Phase 2), Zitate mechanisch geprüft | 196, davon 0 halluziniert |
 | Duplikate | 21 |
 | Widerlegt / By Design | 5 / 7 |
-| **Behoben** (roter Regressionstest, dann Fix) | **137** |
-| Teilweise behoben (Rest in Freigabeliste 2) | 11 |
-| Wartet auf Entscheidung (Freigabeliste 2) | 14 |
-| Nicht separat geprüft (Info, in Freigabeliste 2 als E39) | 1 |
-| Neue Befunde aus der Fix-Phase, behoben | 13 (siehe `findings.md`, Abschnitt „Neue Befunde“) |
-| Commits auf dem Branch (Fixes, Tests, Doku) | ca. 180 |
-| Neue Testdateien | über 90 |
-
-Alle 7 hoch eingestuften Befunde sind behoben:
-- F-A2a-01: Credential-Exfiltration über einen geänderten Mailserver-Host.
-- F-A2b-01: Umgehung des Seiteneffekt-Gates für Workflows.
-- F-A10-01: Der JTL-Sync überschrieb fremde Kunden.
-- F-A10-03: Aufgaben-Sichtbarkeit in den Follow-up-Queues.
-- F-A13A14-02: 40-MB-JSON vor der Anmeldung.
-- F-A5-04: DOCX-Zip-Bombe.
-- F-A5-05: quadratische Regex beim Mail-Parsing.
+| **Behoben** (roter Regressionstest, dann Fix) | **162**, das sind alle bestätigten und plausiblen Befunde |
+| Dokumentiert statt behoben (Info, Architektur) | 1 (F-A2c-04: zusammengesetzte Fremdschlüssel, eigenes Vorhaben) |
+| Neue Befunde aus der Fix-Phase, behoben | 21 (siehe `findings.md`, Abschnitt „Neue Befunde“) |
+| Entscheidungen Freigabeliste Teil 1 / Teil 2 | 15 / 42, alle umgesetzt |
+| Commits auf dem Branch | 235 |
+| Neue Testdateien | 129 |
 
 ## 2. Vorgehen (Kurzfassung)
 
@@ -36,10 +26,11 @@ Alle 7 hoch eingestuften Befunde sind behoben:
    - Bei hoch und kritisch eingestuften Befunden folgt eine zusätzliche Exploit-Prüfung.
    - Ein Durchlauf als Nutzer ohne Rechte gegen alle Routen fand keinen schreibenden Datenzugriff ohne Gate.
 4. **Freigabe:** Fixes mit Migration, Vertragsänderung oder sichtbarer Verhaltensänderung erst nach deiner Entscheidung (Teil 1: alle Empfehlungen freigegeben).
-5. **Fixes:**
+5. **Freigabe Teil 2:** Rund 40 Fixes waren als teilweise behoben markiert oder brauchten eine Entscheidung. Pascal hat alle Empfehlungen E1–E42 freigegeben; umgesetzt ist das in sechs weiteren Paketen.
+6. **Fixes:**
    - Je Befund zuerst ein Regressionstest, der vor dem Fix rot war; danach der kleinste Fix an der Ursache, ein Commit pro Befund.
    - Parallele Agenten in eigenen Worktrees; ich habe jeden Diff geprüft, per cherry-pick übernommen, Konflikte zusammengeführt und nach jedem Paket die volle Testbasis laufen lassen.
-6. **Abnahme:** alle CI-Gates lokal (Abschnitt 5).
+7. **Abnahme:** alle CI-Gates lokal (Abschnitt 5) und CI auf dem PR.
 
 ## 3. Was behoben ist (nach Bereichen)
 
@@ -127,16 +118,36 @@ Jeder Eintrag lässt sich im Register (`findings.md`) mit Commit und Testdatei n
 ## 4. Bewusste Grenzen und Restrisiken
 
 - **Migrationen:**
-  - 0052 entkoppelt JTL-Dubletten, statt zu löschen; der entfernte Schlüssel steht in `source_row.jtlLinkRemoved`.
-  - Kunden, die der alte Sync überschrieben hat, ohne eine Dublette zu erzeugen, erkennt die Migration nicht. Die Originaldaten liegen in `sqlite_import_rows`.
-  - Vor dem Deploy ein Backup ziehen (`docker/backup.sh`).
+  - 0052 entkoppelt JTL-Dubletten, statt zu löschen.
+  - Kunden, die der alte Sync ohne Dublette überschrieben hat, erkennt 0052 nicht. Ihre Originaldaten liegen in `sqlite_import_rows`.
+  - 0053 holt den Aufgaben-Backfill nach.
+  - 0054 legt `trusted_authserv_id` an.
+  - Vor dem Deploy ein Backup ziehen.
 - **Update auf den non-root-Container:**
-  - `update.sh` gibt die Volumes einmalig an uid 1000.
-  - Wer das Relay nutzt, muss `key.pem` für uid 1000 lesbar machen und `COMPOSE_FILE` mit dem Relay-Override setzen. Das Update-Skript warnt in beiden Fällen.
-- **Regex-Suche:** Legitime Suchen über sehr große Postfächer brechen nach 10 s ab.
-- **Übergangsphase bei den Graphile-Queues:** Nach dem Deploy laufen alte Jobs noch in den bisherigen Queues und können kurz parallel zu neuen Jobs desselben Workspace laufen. Die Kette ist über Claims geschützt.
-- **Tracking:** Der Override pro Nachricht wirkt nur noch bei aktivierter Admin-Policy (deine Entscheidung A3). Das gilt auch für die Tracking-Regel des Relays.
-- **Weiter offen:** siehe `freigabeliste-2.md` (42 Punkte, jeweils mit Empfehlung).
+  - `update.sh` übergibt die Volumes einmalig an uid 1000.
+  - Wer das Relay nutzt, macht `key.pem` für uid 1000 lesbar und setzt `COMPOSE_FILE` mit dem Relay-Override. Das Skript warnt, wenn eines davon fehlt.
+- **Nutzer-Regex (E1):**
+  - Die lineare V8-Engine greift nicht bei gebundenen Wiederholungen über 16 (`(a|a){0,30}b`) und nicht bei Relay-Mustern mit Flag `u` oder `v`.
+  - Bereits gespeicherte Muster mit Lookaround oder Rückverweis laufen ungeschützt weiter; sie werden erst beim nächsten Speichern abgelehnt.
+  - Vorschlag: zusätzlich `--enable-experimental-regexp-engine` und beim Speichern prüfen, ob das Muster mit dem Flag `l` kompiliert.
+- **Authentication-Results (E6):**
+  - Die Header werden nur genutzt, wenn die Live-DNS-Prüfung ausfällt, und nur mit passender authserv-id.
+  - Weicht die authserv-id eines Anbieters von der Domain des IMAP-Hosts ab (z. B. Gmail mit `mx.google.com`), fehlt dieser Fallback, bis im Konto eine eigene authserv-id eingetragen ist.
+- **Regex-Suche:** Legitime Suchen über sehr große Postfächer brechen nach 10 s ab. Pro Nutzer laufen höchstens zwei Suchen gleichzeitig; der Zähler gilt je Prozess.
+- **Webhooks und Portal (E4):**
+  - Webhook-Bodies über 64 KiB bekommen 413.
+  - Im Portal kann eine Einsendung mit sehr vielen Positionen und langer Notiz mit Umlauten theoretisch über 64 KiB kommen.
+- **Workflows:**
+  - Nach einem UIDVALIDITY-Reset laufen neu indizierte Nachrichten wieder durch Workflows, Spam-Prüfung und Abwesenheitsantwort (E27 unverändert gelassen).
+  - Ein Kreis über `logic.delay` ist auf dem Desktop nicht durch einen Hop-Zähler begrenzt; der Server hat einen.
+- **Release:**
+  - Die umgebaute Release-Pipeline (Build ohne Token, Publish-Job) läuft erst beim nächsten Tag wirklich.
+  - Das macOS-Auto-Update bleibt aus, bis eine Signatur mit Apple Developer ID vorliegt (siehe `docs/RELEASE.md`).
+- **Nicht angefasst (außerhalb des Auftrags):**
+  - Die Desktop-Kontoverwaltung zeigt Nicht-Admins weiter die Knöpfe; die Aktion selbst wird abgelehnt.
+  - Die MDN-Ausgangsprüfung wertet den Text der eingegangenen Mail aus statt den MDN-Text.
+  - Das Deals-Kanban ist auf 100 Einträge begrenzt.
+  - Toter Code `workflowDelayedJobs.create`.
 
 ## 5. Abnahme
 
