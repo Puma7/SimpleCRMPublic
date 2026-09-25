@@ -2195,6 +2195,25 @@ async function executeServerNode(
     if (dryRun) {
       return dryRunSideEffectResult('email.send_draft', log, { message: 'dry_run:email.send_draft' });
     }
+    // Wie bei release_outbound: der Einstieg der Fortsetzung hat den Marker
+    // schon gelesen, ein Geschwisterzweig kann die Kette seitdem gestoppt haben.
+    if (
+      context.direction === 'inbound'
+      && context.messageId !== null
+      && await isInboundSiblingAborted(trx, {
+        workspaceId: context.workspaceId,
+        messageId: context.messageId,
+        workflowId: context.workflowId,
+        chain: context.inboundWorkflowChain ?? null,
+        fanOutRunId: inboundFanOutRunId(context),
+      })
+    ) {
+      return {
+        status: 'skipped',
+        port: 'default',
+        message: 'skip:sibling_terminal_abort',
+      };
+    }
     return await sendWorkflowDraft(trx, context, config, now);
   }
   if (type === 'email.tag' || type === 'tag') {

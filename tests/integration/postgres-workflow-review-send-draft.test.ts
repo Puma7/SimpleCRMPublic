@@ -1,4 +1,12 @@
-import type { Kysely } from 'kysely';
+import type {
+  Kysely,
+  KyselyPlugin,
+  PluginTransformQueryArgs,
+  PluginTransformResultArgs,
+  QueryResult,
+  RootOperationNode,
+  UnknownRow,
+} from 'kysely';
 
 import type { PostgresSecretPort } from '../../packages/server/src/db/postgres-secret-port';
 import { createPostgresEmailMessageReadPort } from '../../packages/server/src/db/postgres-mail-read-ports';
@@ -173,6 +181,30 @@ describe('email.send_draft after an ai.review_draft SEND verdict', () => {
     expect(await sendStepMessages()).toEqual(['send_draft_queued_auto', 'auto_reply_duplicate']);
   });
 
+  // F-D1-08: a sibling branch that stopped the chain after the continuation's
+  // entry check did not stop email.send_draft, which never re-read the marker.
+  test('a sibling chain stop committed after the entry check keeps send_draft from arming the draft', async () => {
+    await seedInboundWithDraft(4521, 4522);
+    const continuation = await reviewWithSendVerdict(4521, 4522);
+
+    // Geschwisterzweig committet seinen Kettenstopp, direkt nachdem die
+    // Fortsetzung den Abbruchmarker beim Einstieg gelesen hat.
+    const siblingStop = new CommitSiblingAbortAfterFirstCheck(async (key) => {
+      await postgres.admin.query(`
+        INSERT INTO sync_info (workspace_id, key, value, last_updated)
+        VALUES ($1, $2, 'sibling_inbound_chain_stop', now())
+      `, [WORKSPACE_ID, key]);
+    });
+    await createPostgresWorkflowExecutionJobPort({ db: db.withPlugin(siblingStop) })
+      .execute(buildWorkflowExecutionJobPlan(continuation.payload, WORKSPACE_ID));
+
+    expect(siblingStop.committedKey).toMatch(/^inbound_sibling_abort:4521:/);
+    const state = await draftState(4522);
+    expect(state.scheduled_send_at).toBeNull();
+    expect(state.approvalMarker).toBeNull();
+    expect(await sendStepMessages()).toEqual(['skip:sibling_terminal_abort']);
+  });
+
   // F-D1-04: an edit saved between the review commit and the queued
   // continuation was sent as if the AI had reviewed it.
   test('a draft edited after the SEND verdict is held for manual approval instead of being sent', async () => {
@@ -197,3 +229,28 @@ describe('email.send_draft after an ai.review_draft SEND verdict', () => {
     expect(await sendStepMessages()).toEqual(['send_draft_changed_after_review']);
   });
 });
+
+/** Commits the sibling-abort marker once, right after the first query that reads it. */
+class CommitSiblingAbortAfterFirstCheck implements KyselyPlugin {
+  committedKey: string | null = null;
+  private readonly pending = new WeakMap<object, string>();
+
+  constructor(private readonly commit: (key: string) => Promise<void>) {}
+
+  transformQuery(args: PluginTransformQueryArgs): RootOperationNode {
+    if (this.committedKey === null && args.node.kind === 'SelectQueryNode') {
+      const key = /"(inbound_sibling_abort:[^"]+)"/.exec(JSON.stringify(args.node))?.[1];
+      if (key) this.pending.set(args.queryId, key);
+    }
+    return args.node;
+  }
+
+  async transformResult(args: PluginTransformResultArgs): Promise<QueryResult<UnknownRow>> {
+    const key = this.pending.get(args.queryId);
+    if (key && this.committedKey === null) {
+      this.committedKey = key;
+      await this.commit(key);
+    }
+    return args.result;
+  }
+}
