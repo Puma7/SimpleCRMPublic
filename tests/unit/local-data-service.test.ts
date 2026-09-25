@@ -1,5 +1,5 @@
 import { IPCChannels } from '@shared/ipc/channels';
-import { localDataService } from '@/services/data/localDataService';
+import { getCustomersPage, localDataService } from '@/services/data/localDataService';
 
 describe('localDataService', () => {
   const invoke = jest.fn();
@@ -50,6 +50,17 @@ describe('localDataService', () => {
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('returned 1 of 650 customers'));
     } finally {
       warnSpy.mockRestore();
+    }
+  });
+
+  // F-A11b-09: Transportfehler wurden zu {customers:[], total:0}; der Kundenexport endete still mit einer Teilmenge.
+  test('getCustomersPage surfaces transport errors instead of an empty page', async () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      invoke.mockRejectedValueOnce(new Error('503 Service Unavailable'));
+      await expect(getCustomersPage({ limit: 500, offset: 500 })).rejects.toThrow('503');
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 

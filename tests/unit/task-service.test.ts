@@ -25,6 +25,17 @@ describe('taskService', () => {
     expect(tasks[1].calendar_event_id).toBeNull();
   });
 
+  // F-A11b-09: Ein Fehler beim Laden wurde zu [], die Aufgabenseite zeigte "keine Aufgaben" statt eines Fehlers.
+  test('getAllTasks surfaces transport errors instead of an empty list', async () => {
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      invoke.mockRejectedValueOnce(new Error('403 Forbidden'));
+      await expect(taskService.getAllTasks()).rejects.toThrow('403');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('updates a task through one backend command', async () => {
     invoke.mockResolvedValueOnce({ success: true });
 

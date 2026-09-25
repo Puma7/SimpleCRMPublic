@@ -85,7 +85,9 @@ export const getCustomersPage = async ({
     };
   } catch (error) {
     console.error("Error invoking paginated 'db:get-customers':", error);
-    return { customers: [], total: 0 };
+    // An empty page would read as "no (more) customers": list views would show
+    // an empty table and the export loop would save a silently truncated file.
+    throw error;
   }
 };
 
