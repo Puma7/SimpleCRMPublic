@@ -3276,6 +3276,11 @@ async function scheduleAiReviewJob(
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
     };
+    // BLOCK (und block/error ohne Kante) setzt den Graphen nicht fort.
+    payload.terminalChainPayloadForUnwiredPort = unwiredPortChainPayload(
+      context,
+      terminalChainStamp(context, node),
+    );
   }
 
   const jobRow = await trx
@@ -3438,6 +3443,35 @@ async function claimTerminalHttpCompletion(
  */
 function terminalNodeExecutionId(context: ServerWorkflowContext, node: WorkflowGraphNode): string {
   return context.branchKey ? `${node.id}#${context.branchKey}` : node.id;
+}
+
+/** Workflow- und Kettenkontext eines terminalen Kindjobs; wozu jedes Feld dient, steht in workflow-inbound-terminal-child. */
+function terminalChainStamp(context: ServerWorkflowContext, node: WorkflowGraphNode): Record<string, unknown> {
+  return {
+    workflowId: context.workflowId,
+    context: { ...inboundChainFieldsFromContext(context) },
+    terminalWorkflowCompletion: true,
+    terminalNodeId: terminalNodeExecutionId(context, node),
+    triggerName: context.trigger,
+  };
+}
+
+/**
+ * Terminal-Kontext fuer einen deferierten KI-Knoten, dessen Urteils-Port keine
+ * Kante hat: dort endet der Zweig im Kindjob wie bei einem terminalen Knoten.
+ * Verschachtelt in der Payload, damit failJob und terminalChildCompletionKey
+ * den Job nicht selbst als terminal behandeln.
+ */
+function unwiredPortChainPayload(
+  context: ServerWorkflowContext,
+  terminalStamp: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    workspaceId: context.workspaceId,
+    ...(context.messageId !== null ? { messageId: context.messageId } : {}),
+    ...workflowJobProvenance(context),
+    ...terminalStamp,
+  };
 }
 
 /**
@@ -3668,14 +3702,7 @@ async function scheduleAiReviewDraftJob(
   const successResumeNodeId = portResumeTargets.send || defaultResume || undefined;
   // Still defer when only a HOLD edge exists so the parent waits for the review.
   const deferAnchor = successResumeNodeId || portResumeTargets.hold || undefined;
-  // Wozu jedes Feld dient, steht in workflow-inbound-terminal-child.
-  const terminalStamp = {
-    workflowId: context.workflowId,
-    context: { ...inboundChainFieldsFromContext(context) },
-    terminalWorkflowCompletion: true,
-    terminalNodeId: terminalNodeExecutionId(context, node),
-    triggerName: context.trigger,
-  };
+  const terminalStamp = terminalChainStamp(context, node);
 
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
@@ -3722,15 +3749,8 @@ async function scheduleAiReviewDraftJob(
       ...inboundChainFieldsFromContext(context),
     };
     // Hat der Port des Urteils keine Kante (etwa SEND bei nur einer HOLD-Kante),
-    // endet der Zweig im Kindjob wie bei einem terminalen Review-Knoten. Der
-    // Kontext dafuer liegt verschachtelt, damit failJob und
-    // terminalChildCompletionKey den Job nicht selbst als terminal behandeln.
-    payload.terminalChainPayloadForUnwiredPort = {
-      workspaceId: context.workspaceId,
-      ...(context.messageId !== null ? { messageId: context.messageId } : {}),
-      ...workflowJobProvenance(context),
-      ...terminalStamp,
-    };
+    // endet der Zweig im Kindjob wie bei einem terminalen Review-Knoten.
+    payload.terminalChainPayloadForUnwiredPort = unwiredPortChainPayload(context, terminalStamp);
   }
 
   const jobRow = await trx

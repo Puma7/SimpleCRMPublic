@@ -135,6 +135,11 @@ export type AiReviewJobPlan = Readonly<{
   eventStrings?: JobPayload;
   eventVariables?: JobPayload;
   continuation?: AiClassificationContinuation;
+  /**
+   * Terminal-Kontext fuer ein Urteil ohne Kante (BLOCK, block/error ohne
+   * Folgeknoten): der Zweig endet dann hier wie ein terminaler Knoten.
+   */
+  terminalChainPayloadForUnwiredPort?: Record<string, unknown>;
 }>;
 
 export type AiReviewJobPort = Readonly<{
@@ -775,14 +780,7 @@ export function createPostgresAiReviewPort(
           async (trx) => {
             if (blocked) {
               await persistAiReviewBlock(trx, input, now());
-              if (input.continuation) {
-                await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
-                  workspaceId: input.workspaceId,
-                  messageId: input.messageId,
-                  actorUserId: input.continuation.actorUserId,
-                  continuation: input.continuation,
-                }, now());
-              }
+              await completeReviewBranchWithoutEdge(trx, input, true, now());
               return;
             }
             if (input.continuation) {
@@ -1718,14 +1716,7 @@ async function maybeEnqueueOutboundReviewContinuation(
   if (!resumeNodeId) {
     // No block/error edge: still advance the inbound priority chain so later
     // workflows are not stranded after a deferred AI child terminates.
-    if (port !== 'ok') {
-      await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
-        workspaceId: input.workspaceId,
-        messageId: input.messageId,
-        actorUserId: continuation.actorUserId,
-        continuation,
-      }, now);
-    }
+    if (port !== 'ok') await completeReviewBranchWithoutEdge(trx, input, port === 'block', now);
     return;
   }
   await enqueueContinuation(trx, {
@@ -1735,6 +1726,33 @@ async function maybeEnqueueOutboundReviewContinuation(
     variables,
     now,
   });
+}
+
+/**
+ * Das Urteil hat keine Kante (BLOCK bzw. block/error ohne Folgeknoten): der
+ * Zweig endet hier wie bei einem terminalen Knoten — Join-Barriere auch ohne
+ * Kette abbauen, Kette weiterschalten und bei gefaelltem Urteil als angewendet
+ * markieren (vgl. ai.review_draft).
+ */
+async function completeReviewBranchWithoutEdge(
+  trx: WorkspaceTransaction,
+  input: AiReviewJobPlan,
+  applied: boolean,
+  now: Date,
+): Promise<void> {
+  const continuation = input.continuation;
+  if (!continuation) return;
+  if (input.terminalChainPayloadForUnwiredPort) {
+    await completeTerminalInboundChild(trx, input.terminalChainPayloadForUnwiredPort, { applied, now });
+    return;
+  }
+  // Jobs von vor diesem Stempel: nur die Kette weiterschalten.
+  await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
+    workspaceId: input.workspaceId,
+    messageId: input.messageId,
+    actorUserId: continuation.actorUserId,
+    continuation,
+  }, now);
 }
 
 async function enqueueClassificationContinuation(
