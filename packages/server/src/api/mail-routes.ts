@@ -56,6 +56,7 @@ import { emailAddressForDelivery } from '@simplecrm/core';
 import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
 import { mailSyncJobTypeForProtocol } from '../jobs/mail-sync-scheduler';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
+import { parseRegexSearch } from '../mail-search-sql';
 import {
   handleMailMetadataReadRoute,
   MAIL_METADATA_ROUTE_INVENTORY,
@@ -1758,6 +1759,13 @@ function publicEmailAccountId(account: EmailAccountRecord): number {
   return account.sourceSqliteId > 0 ? account.sourceSqliteId : account.id;
 }
 
+// Eine Regex-Suche haelt bis zum statement_timeout (10 s) eine der zehn
+// Verbindungen des gemeinsamen Pools; ein Nutzer darf deshalb hoechstens zwei
+// gleichzeitig laufen haben (F-A6-03). Der Zaehler ist prozesslokal: laufen
+// mehrere API-Prozesse, gilt die Grenze je Prozess.
+const MAX_CONCURRENT_REGEX_SEARCHES_PER_USER = 2;
+const activeRegexSearches = new Map<string, number>();
+
 async function handleMessageList(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const principal = requirePrincipal(req);
@@ -1813,26 +1821,60 @@ async function handleMessageList(req: ApiRequest, ports: ServerApiPorts): Promis
         : undefined;
 
   if (!ports.emailMessages) return error(503, 'email_messages_unavailable', 'Email message API nicht konfiguriert');
-  const result = await ports.emailMessages.list({
-    workspaceId: principal.workspaceId,
-    limit,
-    ...(cursor === undefined ? {} : { cursor }),
-    ...(offset === undefined ? {} : { offset }),
-    ...(accountId === undefined ? {} : { accountId }),
-    ...(folderPath === undefined ? {} : { folderPath }),
-    ...(folderKind === undefined ? {} : { folderKind }),
-    ...(view === undefined ? {} : { view }),
-    ...(categoryId === undefined ? {} : { categoryId }),
-    ...(sort === undefined ? {} : { sort }),
-    ...(listFilter === undefined ? {} : { listFilter }),
-    ...(doneFilter === undefined ? {} : { doneFilter }),
-    ...(seen === undefined ? {} : { seen }),
-    ...(done === undefined ? {} : { done }),
-    ...(spam === undefined ? {} : { spam }),
-    ...(search === undefined ? {} : { search }),
-    ...(scope === undefined ? {} : { scope }),
-  });
+  const regexSlot = search !== undefined && parseRegexSearch(search)
+    ? acquireRegexSearchSlot(`${principal.workspaceId}:${principal.userId}`)
+    : null;
+  if (regexSlot === false) {
+    return {
+      ...error(
+        429,
+        'regex_search_busy',
+        `Es laufen bereits ${MAX_CONCURRENT_REGEX_SEARCHES_PER_USER} Regex-Suchen. Bitte warte, bis eine davon fertig ist.`,
+      ),
+      headers: { 'Retry-After': '1' },
+    };
+  }
+  let result: Awaited<ReturnType<NonNullable<ServerApiPorts['emailMessages']>['list']>>;
+  try {
+    result = await ports.emailMessages.list({
+      workspaceId: principal.workspaceId,
+      limit,
+      ...(cursor === undefined ? {} : { cursor }),
+      ...(offset === undefined ? {} : { offset }),
+      ...(accountId === undefined ? {} : { accountId }),
+      ...(folderPath === undefined ? {} : { folderPath }),
+      ...(folderKind === undefined ? {} : { folderKind }),
+      ...(view === undefined ? {} : { view }),
+      ...(categoryId === undefined ? {} : { categoryId }),
+      ...(sort === undefined ? {} : { sort }),
+      ...(listFilter === undefined ? {} : { listFilter }),
+      ...(doneFilter === undefined ? {} : { doneFilter }),
+      ...(seen === undefined ? {} : { seen }),
+      ...(done === undefined ? {} : { done }),
+      ...(spam === undefined ? {} : { spam }),
+      ...(search === undefined ? {} : { search }),
+      ...(scope === undefined ? {} : { scope }),
+    });
+  } finally {
+    regexSlot?.release();
+  }
   return data(200, sanitizeEmailMessageList(result));
+}
+
+function acquireRegexSearchSlot(key: string): { release(): void } | false {
+  const active = activeRegexSearches.get(key) ?? 0;
+  if (active >= MAX_CONCURRENT_REGEX_SEARCHES_PER_USER) return false;
+  activeRegexSearches.set(key, active + 1);
+  let released = false;
+  return {
+    release() {
+      if (released) return;
+      released = true;
+      const remaining = (activeRegexSearches.get(key) ?? 1) - 1;
+      if (remaining > 0) activeRegexSearches.set(key, remaining);
+      else activeRegexSearches.delete(key);
+    },
+  };
 }
 
 async function handleMailFolderCounts(req: ApiRequest, ports: ServerApiPorts): Promise<ApiResponse> {

@@ -18,6 +18,26 @@ export function parseServerMailSearchQuery(raw: string): ParsedMailSearchQuery {
 }
 
 /**
+ * `/muster/flags` als Regex-Suche, sonst null (dann ILIKE/FTS). Hier statt im
+ * Read-Port, weil auch die Route wissen muss, ob eine Suche eine Regex-Suche
+ * ist (Parallelitaetsgrenze in mail-routes, F-A6-03).
+ */
+export function parseRegexSearch(search: string): { pattern: string; caseInsensitive: boolean } | null {
+  const trimmed = search.trim();
+  if (!trimmed.startsWith('/') || trimmed.length <= 2 || trimmed.lastIndexOf('/') <= 0) return null;
+  const lastSlash = trimmed.lastIndexOf('/');
+  const pattern = trimmed.slice(1, lastSlash);
+  const flags = trimmed.slice(lastSlash + 1);
+  try {
+    // Validate the renderer-compatible syntax before handing it to PostgreSQL.
+    new RegExp(pattern, flags.replace(/[^ims]/g, ''));
+  } catch {
+    return null;
+  }
+  return { pattern, caseInsensitive: !flags || flags.includes('i') };
+}
+
+/**
  * Single tsquery lexeme: quotes/backslashes stripped, single-quoted (inside
  * quoted lexemes tsquery operators like & | ! ( ) : <-> are literal text).
  * Null when the token cannot yield a lexeme: PostgreSQLs 'simple' config

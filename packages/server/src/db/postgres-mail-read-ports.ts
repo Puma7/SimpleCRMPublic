@@ -38,6 +38,7 @@ import {
   escapeIlikePattern,
   hasSearchOperators,
   ilikeTextNeedles,
+  parseRegexSearch,
   parseServerMailSearchQuery,
   type ParsedMailSearchQuery,
 } from '../mail-search-sql';
@@ -4170,21 +4171,6 @@ function applyMessageListOrder(
   }
   if (sort === 'date_asc') return query.orderBy(kyselySql`coalesce(date_received, created_at)`, 'asc').orderBy('id', 'asc');
   return query.orderBy(kyselySql`coalesce(date_received, created_at)`, 'desc').orderBy('id', 'desc');
-}
-
-function parseRegexSearch(search: string): { pattern: string; caseInsensitive: boolean } | null {
-  const trimmed = search.trim();
-  if (!trimmed.startsWith('/') || trimmed.length <= 2 || trimmed.lastIndexOf('/') <= 0) return null;
-  const lastSlash = trimmed.lastIndexOf('/');
-  const pattern = trimmed.slice(1, lastSlash);
-  const flags = trimmed.slice(lastSlash + 1);
-  try {
-    // Validate the renderer-compatible syntax before handing it to PostgreSQL.
-    new RegExp(pattern, flags.replace(/[^ims]/g, ''));
-  } catch {
-    return null;
-  }
-  return { pattern, caseInsensitive: !flags || flags.includes('i') };
 }
 
 function escapeLikePattern(value: string): string {
