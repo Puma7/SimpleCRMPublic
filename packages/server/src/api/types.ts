@@ -401,7 +401,12 @@ export type AuthApiPort = {
   }): Promise<TokenPair>;
   rotateRefreshToken(input: {
     refreshToken: string;
-  }): Promise<{ user: AuthUserRecord; tokens: TokenPair } | null>;
+  }): Promise<
+    | { user: AuthUserRecord; tokens: TokenPair }
+    /** An already rotated token came back after the grace period; all sessions of the user were revoked. */
+    | { reuseDetected: true; userId: string; workspaceId: string }
+    | null
+  >;
   revokeRefreshToken(input: {
     refreshToken: string;
     principal?: AuthenticatedPrincipal;

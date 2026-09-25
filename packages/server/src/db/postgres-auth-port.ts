@@ -31,6 +31,9 @@ export const DEFAULT_INVITATION_TTL_DAYS = 7;
 export const MAX_INVITATION_TTL_DAYS = 30;
 export const ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 export const REFRESH_TOKEN_TTL_DAYS = 30;
+// A rotated refresh token presented again within this window is a lost response
+// or a parallel tab and is only rejected; later it is treated as stolen.
+export const REFRESH_TOKEN_REUSE_GRACE_MS = 60_000;
 const INITIAL_OWNER_SETUP_LOCK_KEY = 'simplecrm.initial_owner_setup';
 const AUTH_INVITATION_EMAIL_LOCK_PREFIX = 'simplecrm.auth_invitation.email';
 
@@ -712,7 +715,6 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
 
         if (
           !existing
-          || existing.revoked_at
           || existing.disabled_at
           || toDate(existing.expires_at).getTime() <= now().getTime()
         ) {
@@ -720,6 +722,13 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         }
         if (!verifyRefreshTokenHash(input.refreshToken, existing.token_hash)) {
           return null;
+        }
+        if (existing.revoked_at) {
+          // A rotated token must never come back: whoever still holds it copied
+          // it. Revoke every session of the user, the thief's branch included.
+          if (!(await isRotatedRefreshTokenReplay(trx, existing, now()))) return null;
+          await revokeUserSessions(trx, existing.workspace_id, existing.user_id, now());
+          return { reuseDetected: true as const, userId: existing.user_id, workspaceId: existing.workspace_id };
         }
 
         const revokedAt = now();
@@ -751,7 +760,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             options.accessTokenSigner,
             user,
             undefined,
-            now(),
+            revokedAt,
+            // Links the successor to its predecessor (see isRotatedRefreshTokenReplay).
+            revokedAt,
           ),
         };
       });
@@ -798,6 +809,7 @@ async function issueTokenPair(
   user: AuthUserRecord,
   device: string | undefined,
   now: Date,
+  createdAt?: Date,
 ): Promise<TokenPair> {
   const refreshToken = randomToken(REFRESH_TOKEN_BYTES);
   const expiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
@@ -810,6 +822,7 @@ async function issueTokenPair(
       token_hash: hashRefreshToken(refreshToken),
       device: device ?? null,
       expires_at: expiresAt,
+      ...(createdAt ? { created_at: createdAt } : {}),
     })
     .returning(['id'])
     .executeTakeFirst();
@@ -1129,6 +1142,31 @@ async function countActiveOwners(
     .where('id', '!=', exceptId)
     .executeTakeFirst();
   return Number(row?.count ?? 0);
+}
+
+/**
+ * Whether a revoked refresh-token row was revoked by a rotation (and not by logout,
+ * a password change or an admin) and the grace period is over. refresh_tokens has
+ * no parent column, so rotation stamps the successor's created_at with exactly the
+ * predecessor's revoked_at; other revocations create no such row.
+ */
+async function isRotatedRefreshTokenReplay(
+  db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
+  existing: { token_id: string; user_id: string; workspace_id: string; revoked_at: Date | string | null },
+  now: Date,
+): Promise<boolean> {
+  if (!existing.revoked_at) return false;
+  const revokedAt = toDate(existing.revoked_at);
+  if (now.getTime() - revokedAt.getTime() < REFRESH_TOKEN_REUSE_GRACE_MS) return false;
+  const successor = await db
+    .selectFrom('refresh_tokens')
+    .select('id')
+    .where('workspace_id', '=', existing.workspace_id)
+    .where('user_id', '=', existing.user_id)
+    .where('created_at', '=', revokedAt)
+    .where('id', '!=', existing.token_id)
+    .executeTakeFirst();
+  return Boolean(successor);
 }
 
 // Access tokens are bound to their refresh-token row (resolveAccessTokenPrincipal

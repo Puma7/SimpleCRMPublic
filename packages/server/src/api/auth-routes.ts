@@ -340,7 +340,17 @@ async function handleRefresh(req: ApiRequest, ports: ServerApiPorts): Promise<Ap
   }
 
   const rotated = await ports.auth.rotateRefreshToken({ refreshToken: credential.refreshToken });
-  if (!rotated) {
+  if (rotated && 'reuseDetected' in rotated) {
+    await ports.audit?.record({
+      workspaceId: rotated.workspaceId,
+      actorUserId: rotated.userId,
+      action: 'auth.refresh_token_reuse_detected',
+      entityType: 'user',
+      entityId: rotated.userId,
+      metadata: { ip: req.ip ?? '0.0.0.0' },
+    });
+  }
+  if (!rotated || 'reuseDetected' in rotated) {
     return error(401, 'invalid_refresh_token', 'Refresh-Token ist ungültig oder widerrufen');
   }
 
