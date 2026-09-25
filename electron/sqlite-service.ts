@@ -104,7 +104,7 @@ import {
     createSavedViewsTable,
 } from './database-schema';
 import { Product, DealProduct } from './types';
-import type { TaskScheduleInput } from '@simplecrm/core';
+import { CLOSED_DEAL_STAGES, WON_DEAL_STAGES, type TaskScheduleInput } from '@simplecrm/core';
 import { resolveIsDevelopment } from './security/runtime-mode';
 import { CustomerHasDependentsError, type CustomerDependents } from './customer-dependents-error';
 import { rewriteLegacyAttachmentStoragePaths } from './email/attachment-storage-path';
@@ -3635,6 +3635,13 @@ export function getAllJtlVersandarten(): { kVersandart: number; cName: string }[
 
 // --- Dashboard Operations ---
 
+// Fixed stage lists from @simplecrm/core as SQL literals (constants, no user input).
+function sqlStageList(stages: readonly string[]): string {
+    return stages.map((stage) => `'${stage.replace(/'/g, "''")}'`).join(', ');
+}
+const CLOSED_DEAL_STAGES_SQL = sqlStageList(CLOSED_DEAL_STAGES);
+const WON_DEAL_STAGES_SQL = sqlStageList(WON_DEAL_STAGES);
+
 /**
  * Get dashboard statistics including customer counts, deal values, and task counts
  */
@@ -3668,11 +3675,11 @@ export function getDashboardStats(): {
         const newCustomersLastMonth = newCustomersResult.count;
 
         // Get active deals count and value
-        // 'Active' deals are those not in a won/lost stage (German names plus the legacy English ones)
+        // 'Active' deals are those not in a won/lost stage (see CLOSED_DEAL_STAGES in @simplecrm/core)
         const activeDealsStmt = db.prepare(`
             SELECT COUNT(*) as count, SUM(value) as total_value
             FROM ${DEALS_TABLE}
-            WHERE stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+            WHERE stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
         `);
         const activeDealsResult = activeDealsStmt.get() as { count: number; total_value: number | null };
         const activeDealsCount = activeDealsResult.count;
@@ -3698,8 +3705,8 @@ export function getDashboardStats(): {
         // Calculate conversion rate (closed won deals / total closed deals)
         const conversionRateStmt = db.prepare(`
             SELECT
-                COUNT(CASE WHEN stage IN ('Gewonnen', 'Closed Won') THEN 1 END) as won,
-                COUNT(CASE WHEN stage IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost') THEN 1 END) as total
+                COUNT(CASE WHEN stage IN (${WON_DEAL_STAGES_SQL}) THEN 1 END) as won,
+                COUNT(CASE WHEN stage IN (${CLOSED_DEAL_STAGES_SQL}) THEN 1 END) as total
             FROM ${DEALS_TABLE}
         `);
         const conversionResult = conversionRateStmt.get() as { won: number; total: number };
@@ -3879,10 +3886,10 @@ export function getFollowUpQueueCounts(): {
             (SELECT COUNT(*) FROM ${TASKS_TABLE} WHERE completed = 0
                 AND snoozed_until IS NOT NULL AND snoozed_until > ?) as zurueckgestellt,
             (SELECT COUNT(*) FROM ${DEALS_TABLE} WHERE
-                stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+                stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
                 AND last_modified < ?) as stagnierend,
             (SELECT COUNT(*) FROM ${DEALS_TABLE} WHERE
-                stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+                stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
                 AND value > 1000
                 AND (
                     (expected_close_date IS NOT NULL AND expected_close_date != '' AND substr(expected_close_date, 1, 10) <= ?)
@@ -3946,7 +3953,7 @@ export function getFollowUpItems(
                 (SELECT MAX(al.created_at) FROM ${ACTIVITY_LOG_TABLE} al WHERE al.customer_id = d.customer_id) as last_contact_date
             FROM ${DEALS_TABLE} d
             LEFT JOIN ${CUSTOMERS_TABLE} c ON d.customer_id = c.id
-            WHERE d.stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+            WHERE d.stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
         `;
 
         if (queue === 'stagnierende_deals') {
@@ -3992,7 +3999,7 @@ export function getFollowUpItems(
                 (SELECT MAX(al.created_at) FROM ${ACTIVITY_LOG_TABLE} al WHERE al.customer_id = t.customer_id) as last_contact_date
             FROM ${TASKS_TABLE} t
             LEFT JOIN ${CUSTOMERS_TABLE} c ON t.customer_id = c.id
-            LEFT JOIN ${DEALS_TABLE} d ON d.customer_id = t.customer_id AND d.stage NOT IN ('Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost')
+            LEFT JOIN ${DEALS_TABLE} d ON d.customer_id = t.customer_id AND d.stage NOT IN (${CLOSED_DEAL_STAGES_SQL})
             WHERE t.completed = 0
         `;
 

@@ -106,7 +106,7 @@ Definiert in `src/types/deal.ts` (`DealStage`):
 | Gewonnen / Verloren | Abschluss (offen) |
 | Abgeschlossen Gewonnen / Abgeschlossen Verloren | Finaler Abschluss |
 
-**Nachverfolgung:** Offene Deals in Queues „Stagnierend“ und „High-Value-Risk“ schließen **Gewonnen**, **Verloren** und legacy-Namen `Closed Won` / `Closed Lost` aus (SQL in `sqlite-service.ts`).
+**Geschlossene Deals:** **Gewonnen** und **Abgeschlossen Gewonnen** gelten als gewonnen, **Verloren** und **Abgeschlossen Verloren** als verloren, dazu die Legacy-Namen `Closed Won` / `Closed Lost`. Dashboard (aktive Deals, Pipeline-Wert, Conversion-Rate) und die Queues „Stagnierend“ und „High-Value-Risk“ schließen alle geschlossenen Deals aus, in beiden Editionen. Die Listen stehen zentral in `packages/core/src/crm/deal-stages.ts`.
 
 ---
 

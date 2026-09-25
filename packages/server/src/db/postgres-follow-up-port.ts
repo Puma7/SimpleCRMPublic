@@ -1,3 +1,4 @@
+import { CLOSED_DEAL_STAGES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
 import { ilikeContainsPattern } from './sql-ilike';
 
@@ -17,8 +18,6 @@ export type PostgresFollowUpPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   applyWorkspaceSession?: WorkspaceSessionApplier;
 }>;
-
-const CLOSED_DEAL_STAGES = ['Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost'] as const;
 
 export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions): FollowUpApiPort {
   return {

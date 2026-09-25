@@ -99,7 +99,7 @@ Aufgaben-, Dashboard- und Follow-up-Abfragen liefern den kompatiblen Kundennamen
 - **IPC:** `electron/ipc/followup.ts`
 - **UI:** `src/app/followup/page.tsx`, `src/components/followup/*`
 
-Deal-Queues filtern Stages: schließen u. a. `Gewonnen`, `Verloren`, `Closed Won`, `Closed Lost` aus (Legacy-Strings in SQL).
+Deal-Queues und Dashboard-Kennzahlen filtern Stages über `WON_DEAL_STAGES`, `LOST_DEAL_STAGES` und `CLOSED_DEAL_STAGES` aus `packages/core/src/crm/deal-stages.ts` (`Gewonnen`/`Abgeschlossen Gewonnen`/`Closed Won` bzw. `Verloren`/`Abgeschlossen Verloren`/`Closed Lost`). Desktop (`sqlite-service.ts`) und Server (`postgres-dashboard-port.ts`, `postgres-follow-up-port.ts`) nutzen dieselben Listen; neue Stages dort ergänzen, nicht als String-Literal im SQL.
 
 ---
 

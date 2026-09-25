@@ -1,3 +1,4 @@
+import { CLOSED_DEAL_STAGES, WON_DEAL_STAGES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type {
@@ -173,9 +174,6 @@ export function createPostgresDashboardPort(options: PostgresDashboardPortOption
     },
   };
 }
-
-const WON_DEAL_STAGES = ['Gewonnen', 'Closed Won'] as const;
-const CLOSED_DEAL_STAGES = ['Gewonnen', 'Verloren', 'Closed Won', 'Closed Lost'] as const;
 
 function normalizeLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit <= 0 || limit > 25) {
