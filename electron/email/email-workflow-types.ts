@@ -59,6 +59,7 @@ export type WorkflowRule = {
 };
 
 import safeRegex from 'safe-regex';
+import { compileUserRegex } from '../../packages/core/src/user-regex';
 
 export type WorkflowDefinitionV1 = {
   version: 1;
@@ -124,8 +125,9 @@ function matchAddressListOp(
       if (needle.length > MAX_REGEX_PATTERN_LEN) continue;
       try {
         if (!safeRegex(needle)) continue;
-        const flags = ci ? 'i' : '';
-        if (new RegExp(needle, flags).test(part)) return true;
+        // Nicht new RegExp(needle, 'i'): mit Flag i stellt V8 nie auf die
+        // lineare Engine um (F-A13A14-04).
+        if (compileUserRegex(needle, ci ? 'i' : '')(part)) return true;
       } catch {
         /* invalid pattern */
       }
@@ -211,8 +213,7 @@ function matchSingleCondition(cond: WorkflowCondition, ctx: Record<string, strin
       if (!safeRegex(needle)) {
         return false;
       }
-      const flags = ci ? 'i' : '';
-      return new RegExp(needle, flags).test(haystack);
+      return compileUserRegex(needle, ci ? 'i' : '')(haystack);
     } catch {
       return false;
     }

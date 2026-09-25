@@ -6,6 +6,7 @@ import {
   addressesFromRecipientJson,
   buildSpamDecision,
   buildFeaturePreview,
+  compileUserRegex,
   emailEvidenceWorkflowVariables,
   emailEvidenceSummaryWorkflowVariables,
   encodeOutboundApprovalMarker,
@@ -7570,7 +7571,9 @@ function safeRegexTest(pattern: string, value: string, ci: boolean): boolean {
   if (pattern.length > MAX_REGEX_PATTERN_LEN) return false;
   try {
     if (!safeRegex(pattern)) return false;
-    return new RegExp(pattern, ci ? 'i' : '').test(value);
+    // Nicht new RegExp(pattern, 'i'): mit Flag i stellt V8 nie auf die lineare
+    // Engine um (F-A13A14-04).
+    return compileUserRegex(pattern, ci ? 'i' : '')(value);
   } catch {
     return false;
   }

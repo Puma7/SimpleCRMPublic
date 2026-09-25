@@ -1,3 +1,4 @@
+import { setFlagsFromString } from 'v8';
 import {
   attachmentContextFromJson,
   evaluateWorkflowWhen,
@@ -95,6 +96,19 @@ describe('email-workflow-types', () => {
       expect(matchConditionItem({ field: 'subject', op: 'regex', value: 'x'.repeat(300) }, ctx())).toBe(false);
       expect(matchConditionItem({ field: 'subject', op: 'regex', value: '(unclosed' }, ctx())).toBe(false);
       expect(matchConditionItem({ field: 'subject', op: 'regex', value: 'a{1000000}' }, ctx())).toBe(false);
+    });
+
+    // F-A13A14-04: Standardmaessig case-insensitive Regex-Bedingungen liefen mit Flag i, das V8 nie auf die lineare Engine umstellt; (a|a)*b auf einem Absender-Betreff fror den Main-Prozess ein.
+    test('case-insensitive Regex mit katastrophalem Backtracking bleibt schnell (E1)', () => {
+      // Wie electron/main.js; wirkt auf jeden danach erzeugten RegExp.
+      setFlagsFromString('--enable-experimental-regexp-engine-on-excessive-backtracks');
+      const hostile = 'a'.repeat(26) + '!';
+      const started = Date.now();
+      expect(matchConditionItem({ field: 'subject', op: 'regex', value: '(a|a)*b' }, ctx({ subject: hostile }))).toBe(false);
+      expect(matchConditionItem({ field: 'from_address', op: 'regex', value: '(a|a)*b' }, ctx({ from_address: hostile }))).toBe(false);
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(matchConditionItem({ field: 'subject', op: 'regex', value: 'hello (world|welt)' }, ctx())).toBe(true);
+      expect(matchConditionItem({ field: 'subject', op: 'regex', value: 'hello', caseInsensitive: false }, ctx())).toBe(false);
     });
   });
 
