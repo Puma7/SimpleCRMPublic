@@ -16,6 +16,7 @@ import {
   EMAIL_MESSAGE_ATTACHMENTS_TABLE,
   EMAIL_WORKFLOW_RUNS_TABLE,
 } from '../database-schema';
+import { resolveAttachmentStoragePath } from './email-message-attachments-store';
 
 // Lifted from the export so the erase walk stays in step with it
 // (`email-gdpr-export.ts:16-17`).
@@ -172,7 +173,10 @@ export function planSubjectErasure(input: ErasureSelectorInput): ErasurePlan {
        ORDER BY id ASC`,
     )
     .all(...params) as { id: number; storage_path: string }[];
-  const attachmentFiles = attachmentRows.map((r) => r.storage_path);
+  // Only files inside the attachments root are unlinked (relative or legacy absolute rows).
+  const attachmentFiles = attachmentRows
+    .map((r) => resolveAttachmentStoragePath(r.storage_path))
+    .filter((p): p is string => Boolean(p));
 
   const workflowRuns = countScalar(
     `SELECT COUNT(*) AS c FROM ${EMAIL_WORKFLOW_RUNS_TABLE}
@@ -186,7 +190,7 @@ export function planSubjectErasure(input: ErasureSelectorInput): ErasurePlan {
     counts: {
       messages: messageIds.length,
       notes,
-      attachments: attachmentFiles.length,
+      attachments: attachmentRows.length,
       workflowRuns,
     },
     attachmentFiles,

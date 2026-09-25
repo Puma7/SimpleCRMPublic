@@ -11,10 +11,10 @@
  */
 import fs from 'fs';
 import { createRequire } from 'module';
-import path from 'path';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE } from '../database-schema';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
+import { resolveStoredAttachmentPath } from './attachment-storage-path';
 import {
   assertDocxInflatesWithinLimit,
   ATTACHMENT_TEXT_MAX_BYTES,
@@ -43,12 +43,9 @@ export type ExtractOpts = {
   attachmentsRoot?: string;
 };
 
-/** storage_path -> absoluter Pfad, nur wenn er im Attachments-Root liegt. */
+/** storage_path (relativ oder Altpfad) -> absoluter Pfad, nur wenn er im Attachments-Root liegt. */
 function resolveConfinedStoragePath(storagePath: string, attachmentsRoot?: string): string | null {
-  const root = path.resolve(attachmentsRoot ?? getAttachmentsRootForExport());
-  const resolved = path.resolve(storagePath);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) return null;
-  return resolved;
+  return resolveStoredAttachmentPath(storagePath, attachmentsRoot ?? getAttachmentsRootForExport());
 }
 
 /**

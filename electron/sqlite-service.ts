@@ -107,6 +107,7 @@ import { Product, DealProduct } from './types';
 import type { TaskScheduleInput } from '@simplecrm/core';
 import { resolveIsDevelopment } from './security/runtime-mode';
 import { CustomerHasDependentsError, type CustomerDependents } from './customer-dependents-error';
+import { rewriteLegacyAttachmentStoragePaths } from './email/attachment-storage-path';
 
 function getDatabasePath(): string {
   try {
@@ -1191,6 +1192,16 @@ function runMigrations() {
         migrateEmailFtsSearchV2();
         migrateEmailFtsSearchV3();
         migrateAttachmentTextSearch();
+
+        // Attachment paths are stored relative to the attachments root; rows from
+        // older versions (or restored older backups) still hold absolute paths.
+        if (!getSyncInfo('email_attachment_relative_paths_v1')) {
+            const rewritten = rewriteLegacyAttachmentStoragePaths(conn, EMAIL_MESSAGE_ATTACHMENTS_TABLE);
+            if (rewritten > 0) {
+                console.log(`Rewrote ${rewritten} attachment storage paths to relative form`);
+            }
+            setSyncInfo('email_attachment_relative_paths_v1', '1');
+        }
 
         // Migration: Add snoozed_until column to tasks table if it doesn't exist
         const taskColsForSnooze = db.prepare(`PRAGMA table_info(${TASKS_TABLE})`).all();
