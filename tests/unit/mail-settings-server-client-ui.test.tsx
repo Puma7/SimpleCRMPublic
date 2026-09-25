@@ -344,6 +344,34 @@ describe('mail settings server-client UI', () => {
     expect(body).not.toHaveProperty('smtpPassword');
   });
 
+  // F-A4-04: the SMTP test had no catch, so a rejected request (e.g. HTTP
+  // 403/500) became an unhandled rejection and the user saw nothing.
+  test('SMTP panel shows a failed connection test request', async () => {
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/email/accounts/test-smtp')) {
+        return jsonResponse({ error: { code: 'forbidden', message: 'Adminrechte erforderlich' } }, 403);
+      }
+      if (url.endsWith('/api/v1/email/accounts')) {
+        return jsonResponse({ data: { items: [smtpAccountRecord()] } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    render(<SmtpPanel embeddedAccountId={1} />);
+    await screen.findByDisplayValue('smtp.example.com');
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    });
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Adminrechte erforderlich'));
+  });
+
   // F-A4-02: the server now refuses to move a profile with a stored API key to
   // another origin or provider without a new key; the panel asks for it first.
   test('AI panel requires a new API key once the base URL origin changes', async () => {

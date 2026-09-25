@@ -397,12 +397,23 @@ type ProtocolTestInput = RequiredConnectionInput & Readonly<{
   timeoutMs: number;
 }>;
 
+// Connect failures (DNS, refused, TLS certificate, timeout) are the most
+// common test outcome; report them like any later protocol error instead of
+// letting the rejection escape as an HTTP 500.
+async function connectClient(input: ProtocolTestInput): Promise<LineProtocolClient | MailConnectionTestResult> {
+  try {
+    return new LineProtocolClient(await input.socketFactory(input), input.timeoutMs);
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 async function testImapConnection(input: ProtocolTestInput): Promise<MailConnectionTestResult> {
   const unsafe = validateCommandValue(input.user, 'Benutzername')
     ?? validateCommandValue(input.password, 'Passwort');
   if (unsafe) return unsafe;
-  const socket = await input.socketFactory(input);
-  const client = new LineProtocolClient(socket, input.timeoutMs);
+  const client = await connectClient(input);
+  if (!(client instanceof LineProtocolClient)) return client;
   try {
     const greeting = await client.readLine();
     if (/^\* BYE\b/i.test(greeting)) return { success: false, error: greeting };
@@ -426,8 +437,8 @@ async function testPop3Connection(input: ProtocolTestInput): Promise<MailConnect
   const unsafe = validateCommandValue(input.user, 'Benutzername')
     ?? validateCommandValue(input.password, 'Passwort');
   if (unsafe) return unsafe;
-  const socket = await input.socketFactory(input);
-  const client = new LineProtocolClient(socket, input.timeoutMs);
+  const client = await connectClient(input);
+  if (!(client instanceof LineProtocolClient)) return client;
   try {
     const greeting = await client.readLine();
     if (!isPop3Ok(greeting)) return { success: false, error: greeting };
@@ -454,8 +465,8 @@ async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnect
   if (!envelopeFrom) {
     return { success: false, error: 'SMTP-Benutzername muss eine gueltige E-Mail-Adresse sein' };
   }
-  const socket = await input.socketFactory(input);
-  const client = new LineProtocolClient(socket, input.timeoutMs);
+  const client = await connectClient(input);
+  if (!(client instanceof LineProtocolClient)) return client;
   try {
     let response = await readSmtpResponse(client);
     if (response.code !== 220) return { success: false, error: response.text };

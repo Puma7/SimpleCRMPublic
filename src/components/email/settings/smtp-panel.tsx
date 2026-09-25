@@ -160,6 +160,8 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       ) as { success: boolean; error?: string }
       if (r.success) toast.success("SMTP-Verbindung und Versand OK")
       else toast.error(r.error ?? "Fehler")
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "SMTP-Test fehlgeschlagen.")
     } finally {
       setTesting(false)
     }

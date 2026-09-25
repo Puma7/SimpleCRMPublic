@@ -103,7 +103,7 @@ describe('server mail connection test stored credentials', () => {
       port: 25,
       tls: false,
       user: '',
-    })).rejects.toThrow('stop after input resolution');
+    })).resolves.toEqual({ success: false, error: 'stop after input resolution' });
 
     expect(socketInput).toEqual(expect.objectContaining({
       host: 'smtp.saved.example',
@@ -242,5 +242,26 @@ describe('server mail connection test stored credentials', () => {
 
     expect(result).toEqual({ success: false, error: 'SMTP STARTTLS nicht verfuegbar' });
     expect(socket.written.some((line) => line.startsWith('AUTH'))).toBe(false);
+  });
+
+  // F-A4-04: a failing connect (DNS, refused, TLS certificate, timeout) was
+  // awaited outside the try block, so the route answered HTTP 500 instead of
+  // returning the connection error to the settings UI.
+  test.each(['testImap', 'testPop3', 'testSmtp'] as const)('%s reports a failed connect as a test result', async (method) => {
+    const port = createServerMailConnectionTestPort({
+      socketFactory: (async () => {
+        throw Object.assign(new Error('getaddrinfo ENOTFOUND nicht-existent.invalid'), { code: 'ENOTFOUND' });
+      }) as never,
+      timeoutMs: 50,
+    });
+
+    await expect(port[method]({
+      workspaceId: 'workspace-a',
+      host: 'nicht-existent.invalid',
+      port: 993,
+      tls: true,
+      user: 'a@example.com',
+      password: 'x',
+    })).resolves.toEqual({ success: false, error: 'getaddrinfo ENOTFOUND nicht-existent.invalid' });
   });
 });
