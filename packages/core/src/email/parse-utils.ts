@@ -165,16 +165,61 @@ export function decodeHtmlEntities(text: string): string {
 }
 
 /**
+ * Same result as `input.replace(/<tag[\s\S]*?<\/tag>/gi, ' ')`, but linear:
+ * the lazy regex rescans to the end of the input for every unclosed `<tag`,
+ * which is quadratic on hostile mail bodies/attachments. Once one opening tag
+ * has no closing tag, no later one can have one either, so we stop there.
+ */
+function replaceElementBlocks(input: string, tag: string): string {
+  const open = new RegExp(`<${tag}`, 'gi');
+  const close = new RegExp(`<\\/${tag}>`, 'gi');
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    open.lastIndex = cursor;
+    const start = open.exec(input);
+    if (!start) break;
+    close.lastIndex = start.index + start[0].length;
+    const end = close.exec(input);
+    if (!end) break;
+    out += `${input.slice(cursor, start.index)} `;
+    cursor = end.index + end[0].length;
+  }
+  return cursor === 0 ? input : out + input.slice(cursor);
+}
+
+/**
+ * Same result as `input.replace(/<[^>]+>/g, ' ')` in linear time (see
+ * replaceElementBlocks): a `<` without any later `>` ends the scan.
+ */
+function replaceTags(input: string): string {
+  let out = '';
+  let cursor = 0;
+  let from = 0;
+  for (;;) {
+    const lt = input.indexOf('<', from);
+    if (lt === -1) break;
+    const gt = input.indexOf('>', lt + 1);
+    if (gt === -1) break;
+    from = gt + 1;
+    // `<>` does not match `<[^>]+>`.
+    if (gt === lt + 1) continue;
+    out += `${input.slice(cursor, lt)} `;
+    cursor = from;
+  }
+  return cursor === 0 ? input : out + input.slice(cursor);
+}
+
+/**
  * Strip HTML down to searchable plain text (style/script content removed).
  * Used as body_text fallback for HTML-only mail so search/FTS can see it.
  * HTML entities are decoded after the tag strip (before whitespace collapse)
  * so text like `M&uuml;ller` or `Rechnung&nbsp;2026` becomes searchable.
  */
 export function plainTextFromHtml(html: string, cap = 500_000): string {
-  const stripped = html
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ');
+  const stripped = replaceTags(
+    replaceElementBlocks(replaceElementBlocks(html, 'style'), 'script'),
+  );
   const text = decodeHtmlEntities(stripped)
     .replace(/\s+/g, ' ')
     .trim();
