@@ -27,9 +27,19 @@ import type {
   SmtpRelayCredentialMatch,
 } from './db/postgres-relay-port';
 import type {
+  RelaySubmissionFailureCode,
   RelaySubmissionInput,
   RelaySubmissionResult,
 } from './relay-submission';
+
+// Only these pipeline failures carry curated texts meant for the relay client.
+// Everything else (database, secret store, parser, the hidden account's
+// downstream SMTP) may name tables, hosts or provider responses, so the client
+// gets a generic reply and the details stay in the log.
+const CLIENT_VISIBLE_FAILURE_CODES: ReadonlySet<RelaySubmissionFailureCode> = new Set([
+  'from_mismatch',
+  'account_not_allowed',
+]);
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -375,10 +385,11 @@ export async function startInboundSmtpService(
       retryable: result.retryable,
       error: singleLine(result.message),
     });
+    const clientText = CLIENT_VISIBLE_FAILURE_CODES.has(result.code) ? singleLine(result.message) : '';
     return {
       error: result.retryable
-        ? smtpError(451, `4.3.0 ${singleLine(result.message) || 'Temporary failure, retry later'}`)
-        : smtpError(550, `5.7.1 ${singleLine(result.message) || 'Message rejected'}`),
+        ? smtpError(451, `4.3.0 ${clientText || 'Temporary failure, retry later'}`)
+        : smtpError(550, `5.7.1 ${clientText || 'Message rejected'}`),
     };
   };
 

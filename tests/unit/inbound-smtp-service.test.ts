@@ -366,8 +366,55 @@ describe('startInboundSmtpService', () => {
     }).then(() => null, (error: Error & { responseCode?: number }) => error);
 
     expect(failure?.responseCode).toBe(451);
-    // Multi-line pipeline messages must be collapsed to a single response line.
-    expect(failure?.message).toContain('SMTP upstream ist gerade nicht erreichbar');
+    expect(failure?.message).toContain('Temporary failure, retry later');
+  });
+
+  it('collapses a multi-line client-facing pipeline message to a single response line', async () => {
+    const { ports } = await startService({
+      submitResult: {
+        ok: false,
+        code: 'from_mismatch',
+        message: 'Header-From ist\nfuer dieses Relay nicht freigegeben',
+        retryable: false,
+      },
+    });
+    const transport = makeTransport({ port: ports.smtps, secure: true });
+
+    const failure = await transport.sendMail({
+      envelope: { from: 'sales@acme.test', to: ['kunde@example.com'] },
+      raw: rfc822(),
+    }).then(() => null, (error: Error & { responseCode?: number }) => error);
+
+    expect(failure?.responseCode).toBe(550);
+    expect(failure?.message).toContain('Header-From ist fuer dieses Relay nicht freigegeben');
+  });
+
+  // F-A3b-09: internal failure texts (database, secret store, downstream SMTP) were sent to the relay client.
+  it.each([
+    ['persist_failed', 'duplicate key value violates unique constraint "smtp_relay_submissions_dedup_idx"', true, 451],
+    ['relay_failed', 'secret store: relay master key unavailable at /run/secrets/master', true, 451],
+    ['relay_failed', '550 5.7.1 smtp.intern-provider.example: sender buchhaltung@acme.test rejected', false, 550],
+    ['parse_failed', 'Unexpected token in mailparser at node_modules/mailparser/lib/mail-parser.js:77', false, 550],
+  ] as const)('keeps the internal %s text out of the SMTP response', async (code, message, retryable, responseCode) => {
+    const warn = jest.fn();
+    const { ports } = await startService({
+      submitResult: { ok: false, code, message, retryable },
+      service: { log: { ...silentLog, warn } },
+    });
+    const transport = makeTransport({ port: ports.smtps, secure: true });
+
+    const failure = await transport.sendMail({
+      envelope: { from: 'sales@acme.test', to: ['kunde@example.com'] },
+      raw: rfc822(),
+    }).then(() => null, (error: Error & { responseCode?: number }) => error);
+
+    expect(failure?.responseCode).toBe(responseCode);
+    expect(failure?.message).not.toContain(message.slice(0, 20));
+    expect(failure?.message).toContain(retryable ? 'Temporary failure, retry later' : 'Message rejected');
+    expect(warn).toHaveBeenCalledWith('inbound smtp message rejected by pipeline', expect.objectContaining({
+      code,
+      error: message,
+    }));
   });
 });
 
