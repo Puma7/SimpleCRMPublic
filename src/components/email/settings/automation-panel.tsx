@@ -47,8 +47,9 @@ export function AutomationPanel() {
   // der Schreibzugriff ausdruecklich admin-only. Webhook/Anhaenge haengen an
   // settings.manage, das Secret zusaetzlich an der Adminrolle. Ohne diese
   // Trennung stuenden einem delegierten settings.view-Nutzer Bedienelemente
-  // offen, deren PATCH garantiert 403 liefert.
-  const canEditWorkflowOptions = !serverClientMode || canManage
+  // offen, deren PATCH garantiert 403 liefert. Desktop (G1):
+  // workflow:set-automation-settings verlangt ebenfalls Owner/Admin.
+  const canEditWorkflowOptions = canManage
   // Desktop: email:set-misc-settings verlangt Owner/Admin (kein settings.manage).
   const canEditMiscSettings = serverClientMode ? Boolean(canManageSettings) : canManage
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)

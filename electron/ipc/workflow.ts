@@ -161,7 +161,9 @@ export function registerWorkflowHandlers(options: {
         restartEmailWorkflowCrons(logger);
         return { success: true as const, id };
       },
-      { logger },
+      // G1: Workflows anlegen/aendern (auch per Import, Version oder
+      // Automation-Einstellung) nur Owner/Admin, wie ExecuteWorkflowNow.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -216,7 +218,7 @@ export function registerWorkflowHandlers(options: {
       });
       restartEmailWorkflowCrons(logger);
       return { success: true as const, id, canceled: false as const };
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
@@ -282,7 +284,7 @@ export function registerWorkflowHandlers(options: {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -502,7 +504,7 @@ export function registerWorkflowHandlers(options: {
         const id = saveWorkflowVersion(payload.workflowId, payload.label);
         return { success: true as const, id };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -521,7 +523,7 @@ export function registerWorkflowHandlers(options: {
         restartEmailWorkflowCrons(logger);
         return { success: true as const, workflowId: v.workflow_id };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

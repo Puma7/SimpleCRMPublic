@@ -36,6 +36,8 @@ type Props = {
    * sonst enden beide Aktionen in abgelehnten Requests.
    */
   canEdit?: boolean
+  /** Hinweis ohne Schreibrecht; der Desktop prueft die Rolle statt Capabilities. */
+  readOnlyHint?: string
 }
 
 export function WorkflowVersionsDialog({
@@ -44,6 +46,7 @@ export function WorkflowVersionsDialog({
   onOpenChange,
   onRestored,
   canEdit = true,
+  readOnlyHint = 'Nur lesbar — zum Speichern und Laden wird „Workflows bearbeiten" benötigt.',
 }: Props) {
   const [rows, setRows] = useState<VersionRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -111,7 +114,7 @@ export function WorkflowVersionsDialog({
         <div className="flex items-center justify-between gap-2">
           {canEdit ? <span /> : (
             <span className="text-xs text-muted-foreground">
-              Nur lesbar — zum Speichern und Laden wird „Workflows bearbeiten" benötigt.
+              {readOnlyHint}
             </span>
           )}
           <Button

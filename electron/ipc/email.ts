@@ -584,7 +584,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         restartEmailWorkflowCrons(logger);
         return { success: true as const, id };
       },
-      { logger },
+      // G1: Cron/Inbound fuehren gespeicherte Workflows (inkl. Code-Knoten) ohne
+      // weitere Rollenpruefung im Main-Prozess aus — anlegen, aendern und
+      // loeschen darum nur Owner/Admin, wie ExecuteWorkflowNow.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -618,7 +621,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         restartEmailWorkflowCrons(logger);
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -627,7 +630,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
       deleteWorkflow(id);
       restartEmailWorkflowCrons(logger);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
@@ -2601,6 +2604,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     ),
   );
 
+  // G1: fuehrt alle aktiven Inbound-Workflows erneut ueber alle Konten aus —
+  // nur Owner/Admin (Server: workflows.manage).
   disposers.push(
     registerIpcHandler(IPCChannels.Email.BackfillInboundWorkflows, async () => {
       const pageSize = 500;
@@ -2617,7 +2622,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         offset += pageSize;
       }
       return { success: true as const, processed };
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(

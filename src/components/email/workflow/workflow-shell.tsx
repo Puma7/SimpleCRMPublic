@@ -150,11 +150,16 @@ function triggerFromGraph(doc: WorkflowGraphDocument): string {
 export function WorkflowShell() {
   const electronReady = useHasElectron()
   const serverClientMode = getRendererTransport().kind === "http"
-  const { hasCapability, canViewWorkflows, capabilitiesReady } = useAuth()
-  // Desktop edition has full local control; server edition respects capabilities.
-  const canEditWorkflows = !serverClientMode || hasCapability("workflows.edit")
-  const canManageWorkflows = !serverClientMode || hasCapability("workflows.manage")
+  const { hasCapability, canViewWorkflows, capabilitiesReady, user } = useAuth()
+  // Server edition respects capabilities. Desktop (G1): gespeicherte Workflows
+  // laufen per Cron/Inbound im Main-Prozess, deshalb verlangen die IPC-Kanaele
+  // zum Anlegen, Aendern, Loeschen, Importieren, fuer Versionen, Backfill und
+  // "Jetzt ausfuehren" Owner/Admin — alle anderen sehen den Editor nur lesend.
+  const desktopWorkflowAdmin = user?.role === "owner" || user?.role === "admin"
+  const canEditWorkflows = serverClientMode ? hasCapability("workflows.edit") : desktopWorkflowAdmin
+  const canManageWorkflows = serverClientMode ? hasCapability("workflows.manage") : desktopWorkflowAdmin
   const canRunWorkflows = !serverClientMode || hasCapability("workflows.run")
+  const canExecuteWorkflowsNow = canRunWorkflows && (serverClientMode || desktopWorkflowAdmin)
   const workflowFileTransferAvailable = electronReady || serverClientMode
   const workflowBackfillAvailable = electronReady || serverClientMode
   const workflowDryRunAvailable = electronReady || serverClientMode
@@ -855,7 +860,9 @@ export function WorkflowShell() {
                 <p className="text-[10px] text-muted-foreground">
                   {canEditWorkflows
                     ? "Im Graph am Trigger-Knoten bearbeiten"
-                    : "Nur Ansicht — Bearbeitung erfordert workflows.edit"}
+                    : serverClientMode
+                      ? "Nur Ansicht — Bearbeitung erfordert workflows.edit"
+                      : "Nur Ansicht — Bearbeitung erfordert die Rolle Owner oder Admin"}
                 </p>
               </div>
               <div className="flex items-center gap-2 self-center pb-1">
@@ -1042,7 +1049,7 @@ export function WorkflowShell() {
                         type="button"
                         size="sm"
                         variant="default"
-                        disabled={!canRunWorkflows || selectedId == null || !msgOk || executingNow}
+                        disabled={!canExecuteWorkflowsNow || selectedId == null || !msgOk || executingNow}
                         onClick={async () => {
                           if (selectedId == null || executingNow) return
                           setExecutingNow(true)
@@ -1278,6 +1285,11 @@ export function WorkflowShell() {
         <WorkflowVersionsDialog
           workflowId={selectedId}
           canEdit={canEditWorkflows}
+          readOnlyHint={
+            serverClientMode
+              ? undefined
+              : "Nur lesbar — Speichern und Laden von Versionen ist Owner und Admin vorbehalten."
+          }
           open={versionsOpen}
           onOpenChange={setVersionsOpen}
           onRestored={() => {
