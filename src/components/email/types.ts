@@ -1,5 +1,6 @@
 import { getRendererTransport } from "@/services/transport"
 import { replaceElementBlocks, replaceTags } from "../../../packages/core/src/email/parse-utils"
+import { escapeHtmlText } from "@shared/compose-body"
 
 export type MailView =
   | "inbox"
@@ -365,7 +366,12 @@ export type CannedTemplateContext = {
   userPublicName?: string | null
 }
 
-/** Plain-text placeholder interpolation for canned responses (customer + account + user). */
+/**
+ * Placeholder interpolation for canned responses (customer + account + user).
+ * The result is inserted into the compose HTML, so values are data, not
+ * markup: HTML-escaped and inserted via callback so `$&` in a value is no
+ * replacement pattern.
+ */
 export function applyCannedTemplate(
   body: string,
   customer?: CustomerOpt | null,
@@ -374,15 +380,13 @@ export function applyCannedTemplate(
   const c = customer ?? undefined
   const ctx = context ?? {}
   const publicName = (ctx.userPublicName ?? "").trim() || (ctx.userName ?? "").trim()
+  const firstName = (c?.firstName ?? "").trim() || (c?.name ?? "").split(/\s+/)[0] || ""
   return body
-    .replace(/\{\{customer\.name\}\}/g, c?.name ?? "")
-    .replace(
-      /\{\{customer\.firstName\}\}/g,
-      (c?.firstName ?? "").trim() || (c?.name ?? "").split(/\s+/)[0] || "",
-    )
-    .replace(/\{\{customer\.email\}\}/g, c?.email ?? "")
-    .replace(/\{\{account\.display_name\}\}/g, (ctx.accountDisplayName ?? "").trim())
-    .replace(/\{\{user\.publicName\}\}/g, publicName)
-    .replace(/\{\{user\.name\}\}/g, (ctx.userName ?? "").trim())
-    .replace(/\{\{user\.email\}\}/g, (ctx.userEmail ?? "").trim())
+    .replace(/\{\{customer\.name\}\}/g, () => escapeHtmlText(c?.name ?? ""))
+    .replace(/\{\{customer\.firstName\}\}/g, () => escapeHtmlText(firstName))
+    .replace(/\{\{customer\.email\}\}/g, () => escapeHtmlText(c?.email ?? ""))
+    .replace(/\{\{account\.display_name\}\}/g, () => escapeHtmlText((ctx.accountDisplayName ?? "").trim()))
+    .replace(/\{\{user\.publicName\}\}/g, () => escapeHtmlText(publicName))
+    .replace(/\{\{user\.name\}\}/g, () => escapeHtmlText((ctx.userName ?? "").trim()))
+    .replace(/\{\{user\.email\}\}/g, () => escapeHtmlText((ctx.userEmail ?? "").trim()))
 }

@@ -483,6 +483,24 @@ describe('applyCannedTemplate', () => {
     const out = applyCannedTemplate('[{{account.display_name}}|{{user.name}}|{{customer.name}}]');
     expect(out).toBe('[||]');
   });
+
+  // F-N-fe-01: Kunden-, Konto- und Nutzernamen landeten roh im Compose-HTML und wurden dort wirksames Markup; '$&' im Wert wirkte als Ersetzungsmuster.
+  it('escapes placeholder values for the compose html', () => {
+    const out = applyCannedTemplate(
+      '{{customer.name}}|{{customer.firstName}}|{{customer.email}}|{{account.display_name}}|{{user.publicName}}|{{user.name}}|{{user.email}}',
+      { id: 1, name: 'Müller<img src="https://x.example/p.png">', firstName: "O'Brien <b>", email: 'a<b>@example.com' },
+      {
+        accountDisplayName: 'A & B <i>',
+        userName: 'Bea <u>',
+        userEmail: 'bea"x@example.com',
+        userPublicName: 'Preis $& $\' Co',
+      },
+    );
+    expect(out).toBe(
+      'Müller&lt;img src=&quot;https://x.example/p.png&quot;&gt;|O&#39;Brien &lt;b&gt;|a&lt;b&gt;@example.com'
+        + '|A &amp; B &lt;i&gt;|Preis $&amp; $&#39; Co|Bea &lt;u&gt;|bea&quot;x@example.com',
+    );
+  });
 });
 
 describe('needsFullMessageBody', () => {
