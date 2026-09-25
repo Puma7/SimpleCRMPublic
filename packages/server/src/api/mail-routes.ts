@@ -54,6 +54,7 @@ import { publishMailVisibilityInvalidation } from '../mail-access/visibility-inv
 import type { MailAccessActor } from '../mail-access/types';
 import { emailAddressForDelivery } from '@simplecrm/core';
 import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
+import { mailSyncJobTypeForProtocol } from '../jobs/mail-sync-scheduler';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
 import {
   handleMailMetadataReadRoute,
@@ -483,8 +484,9 @@ async function handleEmailAccountSync(
   const account = await ports.emailAccounts.get({ workspaceId: principal.workspaceId, id: accountId });
   if (!account) return error(404, 'email_account_not_found', 'Email account nicht gefunden');
 
-  const protocol = String(account.protocol ?? '').toLowerCase();
-  const jobType = protocol === 'imap' ? 'mail.sync.imap' : protocol === 'pop3' ? 'mail.sync.pop3' : null;
+  // Same exact mapping as the sync handler and the scheduler: a normalized
+  // 'IMAP' would queue a job the handler always rejects.
+  const jobType = mailSyncJobTypeForProtocol(account.protocol);
   if (!jobType) {
     return error(409, 'unsupported_email_account_protocol', 'Email account protocol wird nicht unterstuetzt');
   }

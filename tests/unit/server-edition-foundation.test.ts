@@ -15,6 +15,7 @@ import {
   MAX_INBOUND_RFC822_BYTES,
 } from '../../packages/core/src/email/inbound-message-size';
 import { SmtpPreDataSendError } from '../../packages/server/src/mail-smtp-send';
+import { mailSyncJobTypeForProtocol } from '../../packages/server/src/jobs/mail-sync-scheduler';
 
 import {
   SERVER_EDITION_DEPLOY_MODES,
@@ -24733,6 +24734,42 @@ describe('server edition foundation', () => {
     // The audit failure aborted before the generic account.deleted event, proving
     // the invalidation ordering actually protects it.
     expect(events.some((event) => event.type === 'email_account.deleted')).toBe(false);
+  });
+
+  // F-D3-05: Die Sync-Route normalisierte das Protokoll anders als Handler und Scheduler ('IMAP' reihte einen sicher scheiternden Job ein).
+  test('server mail account sync route maps the protocol exactly like the sync handler and scheduler', async () => {
+    const queueCalls: Array<{ type: string }> = [];
+    const protocols: Record<number, string> = { 21: 'IMAP', 22: ' imap ', 23: '' };
+    const api = createServerApi(makeServerApiPorts({
+      emailAccounts: {
+        async list() {
+          return { items: [] };
+        },
+        async get(input) {
+          return input.id in protocols ? { ...makeEmailAccountRecord(input.id), protocol: protocols[input.id] } : null;
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+
+    for (const id of [21, 22]) {
+      const rejected = await api.handle({ method: 'POST', path: `/api/v1/email/accounts/${id}/sync`, principal });
+      expect(rejected.status).toBe(409);
+      expect((rejected.body as any).error.code).toBe('unsupported_email_account_protocol');
+    }
+    expect(queueCalls).toEqual([]);
+    expect([mailSyncJobTypeForProtocol('IMAP'), mailSyncJobTypeForProtocol(' imap ')]).toEqual([null, null]);
+
+    // The handler treats an empty protocol as imap, so the route does too.
+    const empty = await api.handle({ method: 'POST', path: '/api/v1/email/accounts/23/sync', principal });
+    expect(empty.status).toBe(202);
+    expect((empty.body as any).data.jobType).toBe(mailSyncJobTypeForProtocol(''));
+    expect(queueCalls.map((call) => call.type)).toEqual(['mail.sync.imap']);
   });
 
   test('server mail account sync route enqueues workspace-scoped mail sync jobs', async () => {
