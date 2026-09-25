@@ -400,7 +400,10 @@ export async function sendComposeDraft(input: {
       return recovered;
     }
 
-    let bodyText = input.bodyText;
+    // The draft and the outbound review keep the user's text; only the SMTP
+    // message (and, after acceptance, the sent copy) carries the PGP armor.
+    const bodyText = input.bodyText;
+    let smtpBodyText = bodyText;
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
     if (input.pgpEncrypt) {
       const hasAttachments = (input.attachmentPaths?.length ?? 0) > 0;
@@ -429,8 +432,9 @@ export async function sendComposeDraft(input: {
         sign: input.pgpSign,
         passphrase: input.pgpPassphrase,
       });
-      bodyText = prepared.bodyText;
+      smtpBodyText = prepared.bodyText;
     }
+    const pgpSent = Boolean(input.pgpEncrypt || input.pgpSign);
     const toJson = recipientJsonFromField(input.to);
     const ccJson = input.cc?.trim() ? recipientJsonFromField(input.cc) : null;
     const bccJson = input.bcc?.trim() ? recipientJsonFromField(input.bcc) : null;
@@ -587,7 +591,7 @@ export async function sendComposeDraft(input: {
         cc: smtpCc,
         bcc: smtpBcc,
         subject: finalSubject,
-        text: bodyText,
+        text: smtpBodyText,
         html: input.pgpEncrypt ? undefined : htmlOut,
         attachments: allAttachments.length > 0 ? allAttachments : undefined,
         messageId: outboundMessageId,
@@ -605,6 +609,14 @@ export async function sendComposeDraft(input: {
         ...(e instanceof SmtpDeliveryAmbiguousError ? { deliveryAmbiguous: true as const } : {}),
       };
     }
+    if (pgpSent) {
+      // SMTP accepted the PGP message: the sent copy keeps the armor, never the
+      // plaintext. Written before the committed marker so a crash in between
+      // cannot finalize a plaintext sent copy (recovery reads the stored draft).
+      getDb()
+        .prepare(`UPDATE ${EMAIL_MESSAGES_TABLE} SET body_text = ?, body_html = ? WHERE id = ?`)
+        .run(smtpBodyText, input.pgpEncrypt ? null : html ?? null, input.draftMessageId);
+    }
     markSmtpCommitted(input.draftMessageId);
     // Erfolgreich versendet — ein evtl. offener Freigabe-Zustand ist erledigt.
     {
@@ -620,7 +632,7 @@ export async function sendComposeDraft(input: {
       cc: smtpCc,
       bcc: smtpBcc,
       subject: finalSubject,
-      text: bodyText,
+      text: smtpBodyText,
       html: input.pgpEncrypt ? undefined : htmlOut || undefined,
       messageId: outboundMessageId,
       inReplyTo: threadHeaders.inReplyTo,

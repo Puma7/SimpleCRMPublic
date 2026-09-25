@@ -33,6 +33,11 @@ jest.mock('../../electron/email/email-imap-append', () => ({
   appendSentToImap: jest.fn().mockResolvedValue(undefined),
 }));
 
+const mockPreparePgp = jest.fn();
+jest.mock('../../electron/pgp/pgp-service', () => ({
+  prepareOutboundPgpBody: (...args: unknown[]) => mockPreparePgp(...args),
+}));
+
 jest.mock('../../electron/email/email-message-attachments-store', () => ({
   persistLocalComposeAttachments: jest.fn(),
 }));
@@ -181,6 +186,84 @@ describe('sendComposeDraft', () => {
     };
     expect(appendSentToImap).toHaveBeenCalledTimes(1);
     expect(appendSentToImap.mock.calls[0][0]).toMatchObject({ to: 'orig@a.de', text: 'Original' });
+  });
+
+  describe('PGP send keeps the plaintext draft until SMTP accepted', () => {
+    const draftRow = {
+      id: 10,
+      uid: -1,
+      account_id: 1,
+      folder_kind: 'draft',
+      subject: 'Hi',
+      body_text: 'Klartext',
+      body_html: null,
+      message_id: null,
+      in_reply_to: null,
+      references_header: null,
+      ticket_code: null,
+    };
+    const pgpInput = {
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Hi',
+      bodyText: 'Geheimer Klartext',
+      to: 'a@b.de',
+      inReplyToMessageId: 5,
+      pgpEncrypt: true,
+      pgpUserId: 'local-owner',
+    };
+    const writtenBodies = () => [
+      ...mockUpdateDraft.mock.calls.map((args) => (args[1] as { bodyText?: string }).bodyText),
+      ...mockDbRun.mock.calls.flat().filter((value) => typeof value === 'string'),
+    ];
+
+    beforeEach(() => {
+      mockGetMessage.mockImplementation((id: number) =>
+        id === 5 ? { id: 5, ticket_code: 'T-1', thread_id: 'th-1', message_id: '<p@x>', references_header: null } : draftRow,
+      );
+      mockPreparePgp.mockResolvedValue({ bodyText: '-----BEGIN PGP MESSAGE-----ARMOR' });
+    });
+
+    // F-A5-10 (Desktop-Paritaet): Der Armor ersetzte den Entwurf schon vor Ausgangspruefung und SMTP; bei Fehler oder Hold war der Klartext weg.
+    it('keeps the plaintext in the draft and the outbound review when the send is held', async () => {
+      mockEvaluateOutbound.mockResolvedValue({ allowed: false, reason: 'Freigabe', workflowRunId: 5 });
+
+      const r = await sendComposeDraft(pgpInput);
+
+      expect(r).toMatchObject({ ok: false });
+      expect(mockUpdateDraft).toHaveBeenCalledWith(10, expect.objectContaining({ bodyText: 'Geheimer Klartext' }));
+      expect(mockEvaluateOutbound).toHaveBeenCalledWith(expect.objectContaining({ bodyText: 'Geheimer Klartext' }));
+      expect(writtenBodies().some((body) => body?.includes('ARMOR'))).toBe(false);
+    });
+
+    it('keeps the plaintext draft when SMTP fails', async () => {
+      mockSendSmtp.mockRejectedValueOnce(new Error('smtp down'));
+
+      const r = await sendComposeDraft(pgpInput);
+
+      expect(r).toMatchObject({ ok: false, error: 'smtp down' });
+      expect(mockSendSmtp).toHaveBeenCalledWith(1, expect.objectContaining({ text: '-----BEGIN PGP MESSAGE-----ARMOR' }));
+      expect(writtenBodies().some((body) => body?.includes('ARMOR'))).toBe(false);
+    });
+
+    it('stores the armor as sent copy after SMTP success, before the commit marker', async () => {
+      const r = await sendComposeDraft(pgpInput);
+
+      expect(r).toEqual({ ok: true });
+      const armorWrite = mockDbRun.mock.invocationCallOrder[
+        mockDbRun.mock.calls.findIndex((args) => args.includes('-----BEGIN PGP MESSAGE-----ARMOR'))
+      ];
+      const commitMarker = mockSetSyncInfo.mock.invocationCallOrder[
+        mockSetSyncInfo.mock.calls.findIndex(([key, value]) => key === 'email_compose_smtp_ok:10' && value === '1')
+      ];
+      expect(armorWrite).toBeDefined();
+      expect(armorWrite).toBeLessThan(commitMarker);
+      expect(armorWrite).toBeGreaterThan(mockSendSmtp.mock.invocationCallOrder[0]);
+      const { appendSentToImap } = jest.requireMock('../../electron/email/email-imap-append') as {
+        appendSentToImap: jest.Mock;
+      };
+      expect(appendSentToImap.mock.calls[0][0]).toMatchObject({ text: '-----BEGIN PGP MESSAGE-----ARMOR' });
+    });
   });
 
   it('skips second SMTP when commit flag is set', async () => {
