@@ -672,7 +672,7 @@ export function createPostgresEmailTrackingService(
       if (!crypto) return;
       const resolver = await resolvePublicToken(options.db, crypto, input.token, 'open', now());
       if (!resolver?.recordable) return;
-      await recordPublicInteraction({
+      const stored = await recordPublicInteraction({
         db: options.db,
         crypto,
         resolver,
@@ -681,6 +681,7 @@ export function createPostgresEmailTrackingService(
         now: now(),
         ipIntelligence: options.emailTrackingIpIntelligence,
       });
+      if (!stored) return;
       await publishTrackingChanged(
         options.events,
         resolver.workspaceId,
@@ -727,13 +728,13 @@ export function createPostgresEmailTrackingService(
         interaction: 'click',
         now: now(),
         ipIntelligence: options.emailTrackingIpIntelligence,
-      }).then(() => publishTrackingChanged(
+      }).then((stored) => (stored ? publishTrackingChanged(
         options.events,
         resolver.workspaceId,
         resolver.messageId,
         'click',
         now(),
-      )).catch((error) => {
+      ) : undefined)).catch((error) => {
         console.warn(`[email-tracking] click evidence could not be recorded for message ${resolver.messageId}: ${error instanceof Error ? error.message : String(error)}`);
       });
       return { targetUrl };
@@ -1632,7 +1633,9 @@ async function insertTrackingEvent(
   input: InsertEventInput,
   classification?: EmailEvidenceClassification,
   options: { messageLockHeld?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
+  // Resolves false when the dedupe key already existed. Only the classified
+  // insert can tell (RETURNING); the unclassified path always resolves true.
   if (!options.messageLockHeld) await lockTrackingMessage(trx, input.trackingMessageId);
   const insert = trx
     .insertInto('email_tracking_events')
@@ -1656,10 +1659,10 @@ async function insertTrackingEvent(
     .onConflict((oc) => oc.columns(['workspace_id', 'dedupe_key']).doNothing());
   if (!classification) {
     await insert.execute();
-    return;
+    return true;
   }
   const event = await insert.returning('id').executeTakeFirst();
-  if (!event) return;
+  if (!event) return false;
   await trx
     .insertInto('email_tracking_event_classifications')
     .values({
@@ -1675,6 +1678,7 @@ async function insertTrackingEvent(
       classified_at: input.occurredAt,
     })
     .execute();
+  return true;
 }
 
 type PublicResolver = {
@@ -1747,7 +1751,9 @@ async function recordPublicInteraction(input: {
   interaction: 'open' | 'click';
   now: Date;
   ipIntelligence?: EmailTrackingIpIntelligencePort;
-}): Promise<void> {
+}): Promise<boolean> {
+  // Resolves true only when new evidence was stored; dedupe hits and the
+  // capacity cap store nothing and must not publish a change either.
   const precheck = await preparePublicInteraction({
     db: input.db,
     workspaceId: input.resolver.workspaceId,
@@ -1756,8 +1762,8 @@ async function recordPublicInteraction(input: {
     requestIp: input.request.ip,
     ipIntelligence: input.ipIntelligence,
   });
-  if (precheck.atCapacity) return;
-  await withWorkspaceTransaction(
+  if (precheck.atCapacity) return false;
+  return withWorkspaceTransaction(
     input.db,
     { workspaceId: input.resolver.workspaceId, role: 'system' },
     async (trx) => {
@@ -1786,7 +1792,7 @@ async function recordPublicInteraction(input: {
         input.resolver.workspaceId,
         input.resolver.trackingMessageId,
       );
-      if (atCapacity) return;
+      if (atCapacity) return false;
       const secondsSinceSmtpAccepted = accepted
         ? Math.max(0, (input.now.getTime() - toDate(accepted.occurred_at).getTime()) / 1_000)
         : null;
@@ -1820,7 +1826,7 @@ async function recordPublicInteraction(input: {
       if (
         recentDuplicate
         && input.now.getTime() - toDate(recentDuplicate.occurred_at).getTime() < 10_000
-      ) return;
+      ) return false;
       const metadata = buildStoredTrackingMetadata({
         collectDerivedMetadata: input.resolver.collectDerivedMetadata,
         ip: input.request.ip,
@@ -1834,7 +1840,7 @@ async function recordPublicInteraction(input: {
           classifierHeaders: trackingClassifierHeaderSubset(input.request.headers),
         }, emailTrackingEventAssociatedData(input.resolver.workspaceId, input.resolver.trackingMessageId, dedupeKey))
         : null;
-      await insertTrackingEvent(trx, {
+      return insertTrackingEvent(trx, {
         workspaceId: input.resolver.workspaceId,
         trackingMessageId: input.resolver.trackingMessageId,
         messageId: input.resolver.messageId,

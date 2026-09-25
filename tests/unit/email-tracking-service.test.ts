@@ -749,6 +749,66 @@ describe('email tracking service security helpers', () => {
     expect(state.classificationRows).toHaveLength(2);
   });
 
+  // F-A3a-09: every pixel fetch published a persisted server event, even when dedupe or the capacity cap stored nothing.
+  test('publishes a tracking change only when a public interaction stored new evidence', async () => {
+    const token = 'G'.repeat(43);
+    const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
+    const request = {
+      token,
+      ip: '8.8.8.8',
+      userAgent: 'Mozilla/5.0 AppleWebKit/537.36',
+      headers: {},
+    };
+
+    const deduped = publicInteractionDatabase(tokenHash);
+    const dedupedPublish = jest.fn(async () => undefined);
+    let current = new Date('2026-07-15T12:00:09.000Z');
+    const dedupedService = createPostgresEmailTrackingService({
+      db: deduped.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      events: { publish: dedupedPublish },
+      now: () => current,
+    });
+    await dedupedService.recordPublicOpen(request);
+    current = new Date('2026-07-15T12:00:14.000Z');
+    await dedupedService.recordPublicOpen(request);
+    expect(deduped.state.eventRows).toHaveLength(1);
+    expect(dedupedPublish).toHaveBeenCalledTimes(1);
+
+    const atCap = publicInteractionDatabase(tokenHash, { publicEventCount: 10_000 });
+    const atCapPublish = jest.fn(async () => undefined);
+    await createPostgresEmailTrackingService({
+      db: atCap.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      events: { publish: atCapPublish },
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    }).recordPublicOpen(request);
+    expect(atCap.state.eventRows).toEqual([]);
+    expect(atCapPublish).not.toHaveBeenCalled();
+
+    const conflict = publicInteractionDatabase(tokenHash, { duplicateEvent: true });
+    const conflictPublish = jest.fn(async () => undefined);
+    await createPostgresEmailTrackingService({
+      db: conflict.db,
+      publicBaseUrl: 'https://crm.example',
+      masterKey: key,
+      events: { publish: conflictPublish },
+      now: () => new Date('2026-07-15T12:00:03.000Z'),
+    }).recordPublicOpen(request);
+    expect(conflict.state.eventRows).toEqual([]);
+    expect(conflictPublish).not.toHaveBeenCalled();
+
+    const click = clickTrackingService({ publicEventCount: 10_000 });
+    await expect(click.service.resolvePublicClick({ ...request, token: click.token }))
+      .resolves.toEqual({ targetUrl: 'https://customer.example/invoice/7' });
+    await flushBackgroundWork(() => click.state.operations.includes('capacity_precheck'));
+    await flushBackgroundWork();
+    expect(click.state.eventRows).toEqual([]);
+    expect(click.publish).not.toHaveBeenCalled();
+  });
+
   test('policy-gates lookup and discards context when the write-time policy opted out', async () => {
     const token = 'C'.repeat(43);
     const tokenHash = createEmailTrackingCrypto(key).tokenHash(token);
