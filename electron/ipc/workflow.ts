@@ -6,6 +6,7 @@ import {
   type AccountOverrideScopePayload,
 } from '../../shared/mail-account-overrides';
 import { registerIpcHandler } from './register';
+import { requireAuthSession } from '../auth/current-user';
 import { getWorkflowById, createWorkflow, updateWorkflow } from '../email/email-workflow-store';
 import { listWorkflowNodeCatalog, ensureBuiltinWorkflowNodes } from '../workflow/registry';
 import { executeWorkflowNow, testWorkflowOnMessage } from '../workflow/workflow-executor';
@@ -293,13 +294,13 @@ export function registerWorkflowHandlers(options: {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ApproveDraftSend,
-      async (_event: IpcMainInvokeEvent, payload: { draftId: number }) => {
+      async (event: IpcMainInvokeEvent, payload: { draftId: number }) => {
         const draftId = Number(payload?.draftId);
         if (!Number.isFinite(draftId) || draftId <= 0) {
           return { success: false as const, error: 'Ungültige Entwurfs-ID' };
         }
         const { approveDraftSend } = await import('../workflow/draft-approval-actions.js');
-        return approveDraftSend(draftId);
+        return approveDraftSend(draftId, requireAuthSession(event));
       },
       // Wie SendCompose: Freigeben versendet ueber das Konto des Entwurfs.
       { logger, accountAccess: 'rw' },

@@ -33,6 +33,7 @@ import {
   interpolateSignatureTemplate,
 } from '../../shared/signature-template';
 import { escapeHtmlText } from '../../shared/compose-body';
+import { clearScheduledSendActor } from './email-scheduled-send-actor';
 
 export type EmailAccountRow = {
   id: number;
@@ -1708,6 +1709,7 @@ export function bulkDeleteLocalComposeDrafts(messageIds: number[]): number {
   const r = getDb()
     .prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${draftIds.map(() => '?').join(',')})`)
     .run(...draftIds);
+  clearScheduledSendActor(...draftIds);
   return r.changes;
 }
 
@@ -1981,6 +1983,7 @@ export function deleteLocalComposeDraft(messageId: number): void {
     throw new Error('Nur lokale Entwürfe können endgültig gelöscht werden');
   }
   getDb().prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(messageId);
+  clearScheduledSendActor(messageId);
 }
 
 export function setMessageSoftDeleted(messageId: number, deleted: boolean): void {

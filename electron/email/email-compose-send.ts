@@ -32,6 +32,7 @@ import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import type { EmailAccountRow } from './email-store';
 import { canAccessLocalAccount } from '../auth/auth-store';
 import type { SessionRole } from '../auth/session-store';
+import { clearScheduledSendActor } from './email-scheduled-send-actor';
 
 function resolveRequestReadReceipt(
   acc: EmailAccountRow,
@@ -156,6 +157,7 @@ async function finalizeSentDraft(input: {
 
   markDraftAsSent(input.draftMessageId);
   clearSmtpCommitted(input.draftMessageId);
+  clearScheduledSendActor(input.draftMessageId);
 
   const acc = getEmailAccountById(input.accountId);
   if (acc && (acc.protocol || 'imap') !== 'imap') {

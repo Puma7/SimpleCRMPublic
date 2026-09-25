@@ -134,6 +134,7 @@ import {
   restoreInboxMessagesFromArchiveSafe,
 } from '../email/email-inbox-recovery';
 import { sendComposeDraft } from '../email/email-compose-send';
+import { clearScheduledSendActor, recordScheduledSendActor } from '../email/email-scheduled-send-actor';
 import { testSmtpConnection } from '../email/email-smtp';
 import {
   listCategories,
@@ -948,7 +949,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.ScheduleDraftSend,
       async (
-        _event: IpcMainInvokeEvent,
+        event: IpcMainInvokeEvent,
         payload: { messageId: number; sendAt: string | null; pgpEncrypt?: boolean; pgpSign?: boolean },
       ) => {
         if (payload.sendAt) {
@@ -994,6 +995,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             attachmentPaths: parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json),
           });
         }
+        // C-A2 (G6): Wer plant, wird fuer die Rechtepruefung beim Versand gespeichert.
+        if (payload.sendAt) {
+          recordScheduledSendActor(payload.messageId, requireAuthSession(event));
+        } else {
+          clearScheduledSendActor(payload.messageId);
+        }
         setDraftScheduledSendAt(payload.messageId, payload.sendAt);
         if (payload.sendAt) {
           const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state.js');
@@ -1037,10 +1044,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.RetryScheduledSendDraft,
-      async (_event: IpcMainInvokeEvent, messageId: number) => {
+      async (event: IpcMainInvokeEvent, messageId: number) => {
         const { clearScheduledSendDraftMeta } = await import('../email/email-scheduled-send-state.js');
         const { setDraftScheduledSendAt } = await import('../email/email-message-features.js');
         clearScheduledSendDraftMeta(messageId);
+        recordScheduledSendActor(messageId, requireAuthSession(event));
         setDraftScheduledSendAt(messageId, new Date().toISOString());
         return { success: true as const };
       },
