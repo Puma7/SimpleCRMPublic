@@ -125,7 +125,18 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
         delete: { summary: 'Remove deal product by link id' },
       },
       '/tasks': {
-        get: { summary: 'List tasks' },
+        get: {
+          summary: 'List tasks',
+          parameters: [
+            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 } },
+            { name: 'cursor', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0 }, description: 'Not combinable with cursor' },
+            { name: 'search', in: 'query', schema: { type: 'string', maxLength: 200 } },
+            { name: 'customerId', in: 'query', schema: { type: 'integer', minimum: 1 } },
+            { name: 'completed', in: 'query', schema: { type: 'boolean' } },
+            { name: 'priority', in: 'query', schema: { type: 'string', maxLength: 50 }, description: 'Exact priority, e.g. High' },
+          ],
+        },
         post: { summary: 'Create task' },
       },
       '/tasks/{id}': {

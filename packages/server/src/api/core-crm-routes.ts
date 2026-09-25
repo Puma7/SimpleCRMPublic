@@ -177,15 +177,24 @@ async function handleListRoute(
       if (customerId === null) return error(400, 'invalid_customer_id', 'customerId muss eine positive Ganzzahl sein');
       const completed = parseOptionalBoolean(req.query?.completed);
       if (completed === null) return error(400, 'invalid_completed', 'completed muss true oder false sein');
+      const priority = normalizeTextFilter(req.query?.priority, 'priority', 50);
+      if (priority === null) return error(400, 'invalid_priority', 'priority darf maximal 50 Zeichen haben');
+      const offset = parseOptionalNonnegativeInt(req.query?.offset);
+      if (offset === null) return error(400, 'invalid_offset', 'offset muss eine nicht-negative Ganzzahl sein');
+      if (cursor !== undefined && offset !== undefined) {
+        return error(400, 'ambiguous_pagination', 'cursor und offset duerfen nicht gemeinsam gesetzt werden');
+      }
       if (!ports.tasks) return error(503, 'tasks_unavailable', 'Task API nicht konfiguriert');
       return data(200, await ports.tasks.list({
         workspaceId: principal.workspaceId,
         limit,
         viewer: { userId: principal.userId, role: principal.role },
         ...(cursor === undefined ? {} : { cursor }),
+        ...(offset === undefined ? {} : { offset }),
         ...(search === undefined ? {} : { search }),
         ...(customerId === undefined ? {} : { customerId }),
         ...(completed === undefined ? {} : { completed }),
+        ...(priority === undefined ? {} : { priority }),
       }));
     }
     default:
@@ -1023,6 +1032,13 @@ function parseLimit(value: string | undefined): number | null {
 function parseOptionalPositiveInt(value: string | undefined): number | undefined | null {
   if (value === undefined || value === '') return undefined;
   return parsePositiveInt(value);
+}
+
+function parseOptionalNonnegativeInt(value: string | undefined): number | undefined | null {
+  if (value === undefined || value === '') return undefined;
+  if (!/^(0|[1-9]\d*)$/.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 function parsePositiveInt(value: string): number | null {

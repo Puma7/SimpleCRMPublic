@@ -81,6 +81,22 @@ describe('task assignment (global/user/group) and visibility', () => {
       expect.objectContaining({ viewer: { userId: 'user-1', role: 'user' } }),
     );
   });
+
+  // F-A11b-01: offset und priority kamen nie beim Port an; die Aufgabenliste blaetterte nicht.
+  test('passes offset and priority to the list port', async () => {
+    const tasks = taskPort();
+    const api = createServerApi(ports({ tasks }));
+
+    const res = await api.handle({
+      method: 'GET',
+      path: '/api/v1/tasks',
+      query: { limit: '10', offset: '10', priority: 'High' },
+      principal,
+    });
+
+    expect(res.status).toBe(200);
+    expect(tasks.list).toHaveBeenCalledWith(expect.objectContaining({ limit: 10, offset: 10, priority: 'High' }));
+  });
 });
 
 function taskRecord(): TaskRecord {

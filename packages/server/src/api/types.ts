@@ -1334,7 +1334,11 @@ export type TaskApiPort = {
     search?: string;
     customerId?: number;
     completed?: boolean;
+    /** Exact task priority (e.g. 'High'), like the desktop task list filter. */
+    priority?: string;
     cursor?: number;
+    /** Rows to skip (page-based task list); not combined with cursor. */
+    offset?: number;
     limit: number;
     viewer?: TaskViewer;
   }): Promise<TaskListResult>;

@@ -163,7 +163,7 @@ Implemented foundation:
   - `PATCH /api/v1/deals/:id`
   - `POST /api/v1/deals/:id/stage`
   - `DELETE /api/v1/deals/:id`
-  - `GET /api/v1/tasks`
+  - `GET /api/v1/tasks` (`limit`, `cursor` oder `offset`, `search`, `customerId`, `completed`, `priority`)
   - `POST /api/v1/tasks`
   - `GET /api/v1/tasks/:id`
   - `PATCH /api/v1/tasks/:id`

@@ -745,6 +745,30 @@ describe('renderer transport', () => {
     ]);
   });
 
+  // F-A11b-01: Tasks.GetAll verwarf offset und Prioritaetsfilter; jede Seite zeigte dieselben Aufgaben.
+  test('maps the task list page offset and priority filter to the server query', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await transport.invoke(IPCChannels.Tasks.GetAll, { limit: 10, offset: 10, filter: { priority: 'High', completed: false } });
+
+    const url = new URL(String(fetchImpl.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe('/api/v1/tasks');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      limit: '10',
+      offset: '10',
+      priority: 'High',
+      completed: 'false',
+    });
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }));
+    await transport.invoke(IPCChannels.Tasks.GetAll, { limit: 10, offset: 0, filter: {} });
+    expect(Object.fromEntries(new URL(String(fetchImpl.mock.calls[1]?.[0])).searchParams)).toEqual({ limit: '10' });
+  });
+
   test('maps paginated customer IPC calls without treating offsets as cursors', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({

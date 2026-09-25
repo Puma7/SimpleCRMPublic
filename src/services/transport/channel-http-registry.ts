@@ -1431,13 +1431,16 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   [IPCChannels.Tasks.GetAll, ([params]) => {
     const input = objectPayload(params ?? {}, "task list params")
     const filter = objectPayload(input.filter ?? {}, "task filter")
+    const offset = offsetValue(input.offset)
     return {
       method: "GET",
       path: "/api/v1/tasks",
       query: {
         limit: limitValue(input.limit),
+        offset: offset > 0 ? offset : undefined,
         search: filter.query,
         completed: filter.completed,
+        priority: optionalTextQueryValue(filter.priority, "task priority", 50),
       },
       transform: (body) => listItems<TaskRecord>(body).map(mapTaskRecord),
     }

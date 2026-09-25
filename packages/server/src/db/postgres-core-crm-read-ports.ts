@@ -652,8 +652,10 @@ export function createPostgresTaskReadPort(options: PostgresCoreCrmReadPortOptio
             .limit(limit + 1);
 
           if (input.cursor !== undefined) query = query.where('tasks.id', '>', input.cursor);
+          if (input.offset !== undefined) query = query.offset(input.offset);
           if (input.customerId !== undefined) query = query.where('tasks.customer_id', '=', input.customerId);
           if (input.completed !== undefined) query = query.where('tasks.completed', '=', input.completed);
+          if (input.priority !== undefined) query = query.where('tasks.priority', '=', input.priority);
           const search = input.search?.trim();
           if (search) {
             const pattern = ilikeContainsPattern(search);
