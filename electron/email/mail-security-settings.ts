@@ -91,6 +91,15 @@ export function getMailSecuritySettings(): MailSecuritySettings {
   };
 }
 
+function normalizedRspamdUrl(value: string | null | undefined): string {
+  return value?.trim().replace(/\/$/, '') || 'http://127.0.0.1:11333';
+}
+
+/** True when saving `rspamdUrl` would point the Rspamd check at another URL than the stored one. */
+export function rspamdUrlDiffersFromStored(rspamdUrl: string): boolean {
+  return normalizedRspamdUrl(rspamdUrl) !== normalizedRspamdUrl(getSyncInfo(KEYS.rspamdUrl));
+}
+
 export function saveMailSecuritySettings(input: Partial<MailSecuritySettings>): void {
   if (input.mailauthEnabled !== undefined) {
     setSyncInfo(KEYS.mailauthEnabled, input.mailauthEnabled ? '1' : '0');
@@ -99,7 +108,7 @@ export function saveMailSecuritySettings(input: Partial<MailSecuritySettings>): 
     setSyncInfo(KEYS.rspamdEnabled, input.rspamdEnabled ? '1' : '0');
   }
   if (input.rspamdUrl !== undefined) {
-    setSyncInfo(KEYS.rspamdUrl, input.rspamdUrl.trim().replace(/\/$/, '') || 'http://127.0.0.1:11333');
+    setSyncInfo(KEYS.rspamdUrl, normalizedRspamdUrl(input.rspamdUrl));
   }
   if (input.rspamdTimeoutMs !== undefined) {
     const t = Math.max(1000, Math.min(60_000, Math.floor(input.rspamdTimeoutMs)));

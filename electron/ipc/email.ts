@@ -219,6 +219,7 @@ import {
 } from '../email/email-workflow-engine';
 import {
   getMailSecuritySettings,
+  rspamdUrlDiffersFromStored,
   saveMailSecuritySettings,
 } from '../email/mail-security-settings';
 import { runMailSecurityPipeline } from '../email/mail-security-pipeline';
@@ -2398,7 +2399,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.SetMailSecuritySettings,
-      async (_event: IpcMainInvokeEvent, payload: Parameters<typeof saveMailSecuritySettings>[0]) => {
+      async (event: IpcMainInvokeEvent, payload: Parameters<typeof saveMailSecuritySettings>[0]) => {
+        // Wie auf dem Server (settings-routes handleMailSecuritySettings): Die
+        // Rspamd-Pruefung schickt jede eingehende Mail roh an diese URL, aendern
+        // duerfen sie nur Owner und Admin. Das Panel sendet die geladene URL bei
+        // jedem Speichern mit; unveraendert bleibt das fuer alle Rollen erlaubt.
+        if (payload.rspamdUrl !== undefined && rspamdUrlDiffersFromStored(payload.rspamdUrl)) {
+          const { role } = requireRealAuthSession(event);
+          if (role !== 'owner' && role !== 'admin') {
+            throw new Error('Die Rspamd-URL darf nur von Administratoren geändert werden');
+          }
+        }
         saveMailSecuritySettings(payload);
         return { success: true as const };
       },
@@ -2526,7 +2537,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           clearTimeout(timer);
         }
       },
-      { logger },
+      // Ruft eine frei waehlbare URL ab; auf dem Server ebenfalls nur fuer Admins.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
