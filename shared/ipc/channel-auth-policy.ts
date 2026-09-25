@@ -18,3 +18,18 @@ const PUBLIC_IPC_CHANNELS = new Set<string>([
 export function ipcChannelRequiresAuth(channel: string): boolean {
   return !PUBLIC_IPC_CHANNELS.has(channel);
 }
+
+/**
+ * Channels the renderer polls on timers without user interaction. They must not
+ * extend the desktop idle window, otherwise an open mail view never auto-locks.
+ */
+const BACKGROUND_POLL_IPC_CHANNELS = new Set<string>([
+  'email:list-imap-auth-notices',
+  'email:get-reply-suggestion',
+  'diagnostics:get-server-logs',
+]);
+
+/** Whether an authenticated call on this channel counts as user activity. */
+export function ipcChannelCountsAsActivity(channel: string): boolean {
+  return !BACKGROUND_POLL_IPC_CHANNELS.has(channel);
+}

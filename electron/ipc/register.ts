@@ -7,7 +7,7 @@ import { resolveAuthContext } from '../auth/current-user';
 import type { SessionRole } from '../auth/session-store';
 import { canAccessLocalAccount } from '../auth/auth-store';
 import type { AccountAccessLevel } from '../auth/account-access';
-import { ipcChannelRequiresAuth } from '../../shared/ipc/channel-auth-policy';
+import { ipcChannelCountsAsActivity, ipcChannelRequiresAuth } from '../../shared/ipc/channel-auth-policy';
 import { resolveEmailChannelAccountId } from './ipc-account-scope';
 
 export interface RegisterIpcOptions {
@@ -56,6 +56,7 @@ export function registerIpcHandler<C extends InvokeChannel>(
     accountAccess = 'ro',
   } = options;
   const requireAuth = requireAuthOption ?? ipcChannelRequiresAuth(channel);
+  const countsAsActivity = ipcChannelCountsAsActivity(channel);
   const payloadSchema = getPayloadSchema(channel);
   const resultSchema = getResultSchema(channel);
   const deprecated = isDeprecatedChannel(channel);
@@ -74,7 +75,8 @@ export function registerIpcHandler<C extends InvokeChannel>(
           ? getSessionFromEvent(event)
           : resolveAuthContext(event);
         if (!session) throw new Error('Nicht angemeldet');
-        if (!requireRealSession && getSessionFromEvent(event)) {
+        // Only a real login session has an idle window (the bootstrap owner does not).
+        if (countsAsActivity && (requireRealSession || getSessionFromEvent(event))) {
           touchSessionActivity(event.sender.id);
         }
         if (requireRole && !requireRole.includes(session.role)) {
