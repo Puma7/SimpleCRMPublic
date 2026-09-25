@@ -76,7 +76,20 @@ function safeRequestIp(request: FastifyRequest): string {
 
 const SUPPORTED_METHODS: readonly HttpMethod[] = ['GET', 'POST', 'PATCH', 'DELETE'];
 export const SERVER_EVENT_ACCESS_PROTOCOL_PREFIX = 'simplecrm.access-token.';
-const SERVER_JSON_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
+// Fastify parses JSON synchronously before the dispatcher looks at the route or
+// the principal, so this is how much JSON an anonymous caller can make the event
+// loop chew on. Ordinary API bodies stay far below 1 MiB (the largest bounded
+// fields are 100k-char knowledge documents and 200k-char PGP private keys).
+const SERVER_JSON_BODY_LIMIT_BYTES = 1024 * 1024;
+// Only the upload routes registered below keep the former cap: the compose
+// attachment upload (contentBase64 up to 36M chars), compose drafts/send/
+// validation (bodyText and bodyHtml up to 2M chars each) and PGP encrypt/sign
+// (2M-char plaintext plus attachments).
+const SERVER_UPLOAD_BODY_LIMIT_BYTES = 40 * 1024 * 1024;
+// Outside /api/v1/ only GET-only public resources are served (health probes,
+// the OpenAPI document, the tracking pixel and redirect). None of them reads a
+// body, and none of them is behind the per-IP rate limiter.
+const PUBLIC_RESOURCE_BODY_LIMIT_BYTES = 1024;
 const CORS_ALLOWED_METHODS = [...SUPPORTED_METHODS, 'OPTIONS'].join(', ');
 const CORS_ALLOWED_HEADERS = [
   'Accept',
@@ -121,7 +134,34 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
         ? resolvePrincipalFromHeaders
         : () => undefined
   );
-  const handler = createFastifyHandler(api, resolvePrincipal);
+  // The upload routes resolve the principal from the headers before Fastify
+  // reads their body, so an anonymous caller is refused before up to 40 MiB of
+  // JSON is parsed. The dispatcher reuses that principal instead of resolving
+  // (and hitting the database) a second time.
+  const principalsResolvedBeforeBody = new WeakMap<FastifyRequest, AuthenticatedPrincipal>();
+  const requirePrincipalBeforeBody = async (request: FastifyRequest, reply: FastifyReply) => {
+    let principal: AuthenticatedPrincipal | undefined;
+    try {
+      principal = await resolvePrincipal(request);
+    } catch {
+      // Leave the failure to the dispatcher, which reports it without detail.
+      return;
+    }
+    if (principal) {
+      principalsResolvedBeforeBody.set(request, principal);
+      return;
+    }
+    reply.code(401).send({
+      error: {
+        code: 'unauthorized',
+        message: 'Authentifizierung erforderlich',
+      },
+    });
+  };
+  const handler = createFastifyHandler(
+    api,
+    (request) => principalsResolvedBeforeBody.get(request) ?? resolvePrincipal(request),
+  );
 
   void app.register(websocketPlugin);
   app.addHook('onRequest', async (request, reply) => {
@@ -167,6 +207,16 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
       });
       return;
     }
+    // Same answer the dispatcher gives, but before the body is read.
+    if (!isServedPath(path)) {
+      reply.code(404).send({
+        error: {
+          code: 'not_found',
+          message: 'Route nicht gefunden',
+        },
+      });
+      return;
+    }
   });
   app.after(() => {
     app.get('/api/v1/events', { websocket: true }, (socket, request) => {
@@ -177,11 +227,19 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
     });
   });
 
-  app.route({
-    method: [...SUPPORTED_METHODS],
-    url: '/*',
-    handler,
-  });
+  // Every route goes to the same dispatcher; they differ only in how much body
+  // Fastify reads first. Keep the upload list in step with the large field
+  // limits in mail-routes.ts and pgp-routes.ts.
+  const uploadRoute = { bodyLimit: SERVER_UPLOAD_BODY_LIMIT_BYTES, onRequest: requirePrincipalBeforeBody, handler };
+  app.route({ method: 'POST', url: '/api/v1/email/messages/:messageId/compose-attachments', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/email/compose-drafts', ...uploadRoute });
+  app.route({ method: 'PATCH', url: '/api/v1/email/messages/:messageId/compose-draft', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/email/compose/send', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/email/compose/validate-outbound', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/pgp/messages/encrypt', ...uploadRoute });
+  app.route({ method: 'POST', url: '/api/v1/pgp/messages/sign', ...uploadRoute });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/api/v1/*', handler });
+  app.route({ method: [...SUPPORTED_METHODS], url: '/*', bodyLimit: PUBLIC_RESOURCE_BODY_LIMIT_BYTES, handler });
   app.options('/*', (request, reply) => {
     if (!applyCorsHeaders(request, reply, corsAllowedOrigins)) {
       reply.code(403).send({
@@ -196,6 +254,14 @@ export function createFastifyServer(options: FastifyServerOptions): FastifyInsta
   });
 
   return app;
+}
+
+/** The prefixes Caddy forwards and the dispatcher serves (`/t/` is let through earlier). */
+function isServedPath(path: string): boolean {
+  return path.startsWith('/api/v1/')
+    || path === '/health'
+    || path.startsWith('/health/')
+    || path === '/openapi.json';
 }
 
 function applyCorsHeaders(

@@ -18,6 +18,11 @@
 	# Spoofable identity headers are stripped before requests reach Fastify.
 	@backend path /api/* /t/* /health /health/* /openapi.json
 	handle @backend {
+		# Defense in depth: Fastify caps request bodies per route (1 MiB, 40 MiB
+		# for the compose and PGP upload routes); nothing larger reaches the API.
+		request_body {
+			max_size 40MiB
+		}
 		reverse_proxy api:3000 {
 			header_up -x-simplecrm-user-id
 			header_up -x-simplecrm-workspace-id

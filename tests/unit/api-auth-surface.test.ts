@@ -353,6 +353,18 @@ describe('unauthentifiziert erreichbare API-Oberflaeche', () => {
       // Die Sammelroute in den Dispatcher — alles, was durch sie laeuft, deckt
       // die Probe unten ab.
       'route /*',
+      // Dieselbe Sammelroute fuer /api/v1/ und die Upload-Routen (F-A13A14-02):
+      // gleicher Dispatcher-Handler, nur ein anderes bodyLimit. Die Probe unten
+      // deckt ihre Pfade ab; dass die Upload-Routen ohne Principal schon vor dem
+      // Body abweisen, prueft tests/integration/server-fastify-body-limit.test.ts.
+      'route /api/v1/*',
+      'route /api/v1/email/compose-drafts',
+      'route /api/v1/email/compose/send',
+      'route /api/v1/email/compose/validate-outbound',
+      'route /api/v1/email/messages/:messageId/compose-attachments',
+      'route /api/v1/email/messages/:messageId/compose-draft',
+      'route /api/v1/pgp/messages/encrypt',
+      'route /api/v1/pgp/messages/sign',
     ]);
   });
 
