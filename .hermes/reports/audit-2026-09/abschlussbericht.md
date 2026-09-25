@@ -151,26 +151,38 @@ Jeder Eintrag lässt sich im Register (`findings.md`) mit Commit und Testdatei n
 
 ## 5. Abnahme
 
-Auf dem Branch-Stand nach der letzten Integration:
+Auf dem Branch-Stand nach der letzten Integration, einschließlich Freigabeliste Teil 2:
 
 | Gate | Ergebnis |
 |---|---|
 | `pnpm run lint` (eslint, 0 Warnungen) | grün |
 | `pnpm run typecheck` (core, server, desktop, web, electron) | grün |
 | `check:typescript-toolchain` | grün |
-| Jest Unit-Projekt | 3322/3322 |
-| Jest Integration als Nicht-root (Embedded Postgres) | 568/570; die 2 roten Tests (`sqlite-task-calendar-atomic`) scheitern nur am Schreibrecht des Testnutzers im root-eigenen Checkout, als root 19/19 grün |
-| Mail-Suite mit Coverage-Ratchet | 1378 grün, 1 übersprungen (bestehender PDF-Skip); 92,1 % Zeilen, 80,8 % Branches (Schwelle erfüllt) |
-| Server-Coverage-Ratchet | erfüllt (69,7 / 71,8 / 67,9 / 69,7) |
-| UI-Coverage-Ratchet | erfüllt (45,4 / 63,8 / 36,9 / 45,4) |
-| `pnpm run build` | siehe Abschnitt 6 |
+| Jest Unit-Projekt | 3490 von 3490 grün, dazu der Base64-Test |
+| Jest Integration als Nicht-root (Embedded Postgres) | 691 von 693; die 2 roten Tests (`sqlite-task-calendar-atomic`) scheitern nur am Schreibrecht des Testnutzers im root-eigenen Checkout, als root 19 von 19 grün |
+| Mail-Suite mit Coverage-Ratchet | 1412 grün, 1 übersprungen (bestehender PDF-Skip), Schwelle erfüllt |
+| Server-Coverage-Ratchet | erfüllt |
+| UI-Coverage-Ratchet | erfüllt (48,3 / 64,6 / 36,9 / 48,3) |
+| `pnpm run build` | grün |
+| CI auf dem PR (build-and-test, server-compose-smoke, electron-e2e) | vor Teil 2 vollständig grün. Die Electron-E2E-Tests und der Compose-Smoke-Test mit Backup- und Restore-Probe liefen auf GitHub. |
 
-Nicht lokal ausgeführt:
-- **Electron-E2E (CI-Job `electron-e2e`):** Er braucht das Electron-Binary samt Download, das hier nicht verfügbar ist.
-- **`server-compose-smoke`:** Er braucht Docker. Stattdessen habe ich `docker compose config`, Caddy (validate und Funktionstest) und PostgreSQL 16 (Restore-Szenarien) einzeln geprüft.
+In der CI aufgefallen und behoben:
+- **Electron-E2E:** Zwei Aufräum-Tests kannten den neuen Rückfragedialog beim Löschen von Kunden noch nicht (F-A10-10).
+- **Stack-Überlauf bei Base64:** Die Base64-Regex für große Uploads warf auf GitHub „Maximum call stack size exceeded“, nachdem im selben Prozess das V8-Flag aus E1 aktiv war. Sie ist durch eine Schleife ersetzt.
+  - Lokal ließ sich das mit Node 24.21 nicht nachstellen.
+  - Restrisiko: Andere Regex auf sehr großen Eingaben könnten mit dem Flag ebenso reagieren. Nach dem Deploy auf `RangeError` in den Logs achten.
 
 ## 6. Hinweise für den Merge
 
-- Der Branch enthält zwei neue Migrationen (0052, 0053). Beide sind unter FORCE RLS als Nicht-Superuser getestet und idempotent.
+- Der Branch enthält drei neue Migrationen (0052, 0053, 0054). Alle sind unter FORCE RLS als Nicht-Superuser getestet und idempotent.
 - Neue öffentliche Route: `GET /api/v1/portal/returns/:token/config`. Additive API-Felder in der Readiness-API, in Compose-Attachments (`sourceAttachmentId`) und im Kunden-Delete (409 mit `dependents`).
+- **API- und IPC-Änderungen aus Teil 2:**
+  - Additive Felder: `trustedAuthservId` am Mailkonto, `portalCaptchaEnabled` in den Sicherheitseinstellungen, `offset`/`priority` bei `GET /api/v1/tasks`, `jtlKkunde` am Kunden, `accountId` bei `PATCH …/compose-draft`, dazu der IPC-Kanal `pgp:set-peer-key-trust`.
+  - Entfallen: `allowArbitraryRecipients` (wird bei Eingabe ignoriert).
+  - Neue Ablehnungen:
+    - 405 für `POST /api/v1/workflow-delayed-jobs`.
+    - 400 `unsupported_trigger` für Desktop-Trigger auf dem Server.
+    - 413 für Auth-, Portal- und Webhook-Bodies über 64 KiB.
+    - 429 `regex_search_busy`.
+    - 403 `target_more_privileged`.
 - Die Doku ist ergänzt: `SETUP_SERVER.md`, `SMTP_RELAY.md`, `BACKUP_AND_RESTORE.md`, `THREAT_MODEL.md`, `GROUP_RIGHTS_ADMIN.md`, `EMAIL_EVIDENCE_TRACKING.md`, `USER_GUIDE_WORKFLOWS.md`, `WORKFLOW_PHASES.md`, `LOGIN_SECURITY.md`.
