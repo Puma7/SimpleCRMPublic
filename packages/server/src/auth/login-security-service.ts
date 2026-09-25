@@ -41,9 +41,14 @@ import type { AccessTokenSigner } from '../security/access-token';
 import {
   buildTotpOtpAuthUri,
   generateTotpSecret,
+  matchTotpTimeStep,
   verifyTotpCode,
 } from '../security/totp';
 import { verifyTurnstileToken } from '../security/turnstile-verify';
+
+// A code for time step T verifies from 30 s before to 60 s after T starts
+// (epochTolerance 30), so remembering an accepted step for 2 min covers it.
+const TOTP_STEP_REPLAY_TTL_MS = 2 * 60 * 1000;
 
 export type LoginSecurityConfig = Readonly<{
   turnstileSiteKey?: string;
@@ -314,6 +319,8 @@ export function createLoginSecurityService(input: {
           secrets: input.secrets,
           user,
           code,
+          challengeStore,
+          now: now(),
         })
         : await verifyEmailMfaCode({
           db: input.db,
@@ -524,6 +531,8 @@ async function verifyUserTotp(input: {
   secrets: PostgresSecretPort;
   user: AuthUserRecord;
   code: string;
+  challengeStore: AuthChallengeStore;
+  now: Date;
 }): Promise<boolean> {
   if (input.user.mfaMethod !== 'totp' || !input.user.mfaEnabled) return false;
   const secretBuffer = await input.secrets.readSecret({
@@ -532,7 +541,17 @@ async function verifyUserTotp(input: {
     name: input.user.id,
   });
   if (!secretBuffer) return false;
-  return verifyTotpCode(secretBuffer.toString('utf8'), input.code);
+  const timeStep = matchTotpTimeStep(secretBuffer.toString('utf8'), input.code);
+  if (timeStep === null) return false;
+  // Only the challenge token is single-use; with the password anyone can mint a
+  // fresh challenge. Burn the accepted time step per user in the shared store so
+  // the same code cannot complete a second login inside the tolerance window.
+  return input.challengeStore.consume({
+    token: `totp-step:${input.user.id}:${timeStep}`,
+    purpose: 'mfa',
+    ttlMs: TOTP_STEP_REPLAY_TTL_MS,
+    now: input.now,
+  });
 }
 
 async function sendEmailMfaCode(input: {

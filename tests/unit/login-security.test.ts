@@ -494,6 +494,63 @@ describe('login security service MFA gate', () => {
     expect(issueTokenPair).toHaveBeenCalledTimes(1);
   });
 
+  // F-A1-12: an accepted TOTP code could be replayed on a second, fresh MFA challenge within the tolerance window.
+  test('rejects an already accepted TOTP code on a second challenge', async () => {
+    const secret = generateTotpSecret();
+    const validCode = generateSync({ secret });
+    const user = { ...mfaUser, mfaMethod: 'totp' as const };
+    const recordFailedLogin = jest.fn(async () => 1);
+    const issueTokenPair = jest.fn(async () => ({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSeconds: 3600,
+    }));
+    const workspaceDb = createWorkspaceLookupDb(user.email);
+    const createReplica = () => createLoginSecurityService({
+      db: workspaceDb.db as never,
+      syncInfo: { getMany: async () => [], setMany: async () => undefined },
+      listPublicWorkspaceSettings: async () => [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS],
+      secrets: {
+        readSecret: async () => Buffer.from(secret),
+        writeSecret: async () => ({ id: 'secret-id' }),
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: {
+        findUserByEmail: async () => user,
+        recordSuccessfulLogin: async () => undefined,
+        recordFailedLogin,
+        issueTokenPair,
+      } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    const challenge = (issuedAt: string) => issueMfaChallengeToken({
+      signer,
+      userId: user.id,
+      workspaceId: user.workspaceId,
+      method: 'totp',
+      issuedAt: new Date(issuedAt),
+    });
+    const firstChallenge = challenge('2026-01-01T11:59:50.000Z');
+    const secondChallenge = challenge('2026-01-01T11:59:55.000Z');
+    expect(secondChallenge).not.toBe(firstChallenge);
+
+    await expect(createReplica().completeMfaLogin({
+      mfaChallengeToken: firstChallenge,
+      code: validCode,
+    })).resolves.toMatchObject({ ok: true });
+    // A second API replica shares only the challenge store, as in production.
+    await expect(createReplica().completeMfaLogin({
+      mfaChallengeToken: secondChallenge,
+      code: validCode,
+    })).resolves.toEqual({ ok: false, code: 'mfa_code_invalid' });
+    expect(issueTokenPair).toHaveBeenCalledTimes(1);
+    expect(recordFailedLogin).toHaveBeenCalledTimes(1);
+  });
+
   test('releases the MFA transaction before SMTP and rejects a concurrent challenge', async () => {
     const rows: Array<{
       id: number;
