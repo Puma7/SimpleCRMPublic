@@ -235,3 +235,32 @@ describe('webhook SSRF blocklist for resolved addresses', () => {
     await expect(resolveTo(address)).resolves.toEqual([address]);
   });
 });
+
+// F-A4-08: allowlist entries written as URLs ("https://hooks.zapier.com")
+// were silently dropped, and a bare label ("info") matched every host of that
+// TLD as a suffix; the desktop allowlist only matches bare labels exactly.
+describe('webhook allowlist entry semantics', () => {
+  const publicLookup = async () => [{ address: '93.184.216.34' }];
+
+  test.each([
+    'https://hooks.zapier.com',
+    'HTTPS://Hooks.Zapier.com:443/hooks/catch/123/',
+    'hooks.zapier.com/hooks',
+    'hooks.zapier.com.',
+  ])('accepts the host of the entry %s', async (entry) => {
+    await expect(assertWebhookUrlAllowed(
+      'https://hooks.zapier.com/hooks/catch/123',
+      `${entry}, api.example.com`,
+      publicLookup,
+    )).resolves.toEqual(['93.184.216.34']);
+  });
+
+  test('matches a bare label only as the exact host, never as a TLD suffix', async () => {
+    await expect(assertWebhookUrlAllowed('https://collector.info/x', 'info', publicLookup))
+      .rejects.toThrow('host is not in the allowlist');
+    await expect(assertWebhookUrlAllowed('https://shop/x', 'shop', publicLookup))
+      .resolves.toEqual(['93.184.216.34']);
+    await expect(assertWebhookUrlAllowed('https://api.hooks.example.com/x', 'example.com', publicLookup))
+      .resolves.toEqual(['93.184.216.34']);
+  });
+});

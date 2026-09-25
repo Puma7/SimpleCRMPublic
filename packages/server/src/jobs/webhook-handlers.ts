@@ -385,12 +385,26 @@ function optionalInteger(
 function normalizeWebhookAllowlist(allowlist: string | readonly string[]): string[] {
   const entries: readonly string[] = typeof allowlist === 'string' ? allowlist.split(/[,;\s]+/) : allowlist;
   return entries
-    .map((entry) => entry.trim().toLowerCase())
+    .map(webhookAllowlistEntryHost)
     .filter((entry) => /^[a-z0-9.-]{4,253}$/.test(entry) && !entry.includes('..'));
 }
 
+// The allowlist is host-based, but admins paste URLs ("https://hooks.zapier.com/…")
+// or host:port. Reduce such entries to their host instead of dropping them silently.
+function webhookAllowlistEntryHost(entry: string): string {
+  const value = entry.trim().toLowerCase();
+  if (!value.includes('/') && !value.includes(':')) return value.replace(/\.$/, '');
+  try {
+    return new URL(value.includes('://') ? value : `http://${value}`).hostname.replace(/\.$/, '');
+  } catch {
+    return value;
+  }
+}
+
 function hostMatchesWebhookAllowlist(hostname: string, allowlist: readonly string[]): boolean {
-  return allowlist.some((entry) => hostname === entry || hostname.endsWith(`.${entry}`));
+  // A bare label ("info", "shop") matches only that exact host; as a suffix it
+  // would open a whole TLD. Same rule as the desktop allowlist.
+  return allowlist.some((entry) => hostname === entry || (entry.includes('.') && hostname.endsWith(`.${entry}`)));
 }
 
 function isBlockedWebhookHostname(hostname: string): boolean {
