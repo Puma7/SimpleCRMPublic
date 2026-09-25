@@ -89,7 +89,7 @@ describe('SettingsPage MSSQL server change', () => {
     );
     expect(mutations()).toHaveLength(0);
 
-    fireEvent.change(screen.getByPlaceholderText('Leer lassen, um nicht zu ändern'), { target: { value: 'neues-passwort' } });
+    fireEvent.change(screen.getByPlaceholderText(/leer lassen/i), { target: { value: 'neues-passwort' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Einstellungen speichern' }));
     });
