@@ -7,6 +7,7 @@ import {
   requirePrincipal,
 } from './http';
 import { authSessionData } from './auth-session-cookie';
+import { verifyStepUpAuthentication } from './password-check-lockout';
 
 export async function handleAuthSecurityRoute(
   req: ApiRequest,
@@ -218,6 +219,8 @@ async function handleTotpConfirm(
   if (!secret || !code) {
     return error(400, 'validation_error', 'secret und code sind erforderlich');
   }
+  const stepUp = await verifyStepUpAuthentication(req, ports, principal, { operation: 'mfa_totp_enable', targetUserId: userId });
+  if ('response' in stepUp) return stepUp.response;
   const ok = await ports.loginSecurity.confirmTotpSetup({
     workspaceId: principal.workspaceId,
     userId,
@@ -225,6 +228,7 @@ async function handleTotpConfirm(
     code,
   });
   if (!ok) return error(400, 'mfa_setup_failed', 'Authenticator-Code konnte nicht bestaetigt werden');
+  await recordMfaChange(ports, principal, userId, 'auth.mfa_totp_enabled', stepUp.method);
   return data(200, { enabled: true, method: 'totp' });
 }
 
@@ -241,6 +245,8 @@ async function handleEnableEmailMfa(
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
+  const stepUp = await verifyStepUpAuthentication(req, ports, principal, { operation: 'mfa_email_enable', targetUserId: userId });
+  if ('response' in stepUp) return stepUp.response;
   const enabled = await ports.loginSecurity.enableEmailMfa({
     workspaceId: principal.workspaceId,
     userId,
@@ -252,6 +258,7 @@ async function handleEnableEmailMfa(
       'E-Mail-2FA ist in diesem Workspace nicht freigegeben oder der E-Mail-Versand (AUTH_INVITE_SMTP_*) ist nicht eingerichtet. Bitte die Authenticator-App verwenden oder den Administrator fragen.',
     );
   }
+  await recordMfaChange(ports, principal, userId, 'auth.mfa_email_enabled', stepUp.method);
   return data(200, { enabled: true, method: 'email' });
 }
 
@@ -268,11 +275,31 @@ async function handleDisableMfa(
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
+  const stepUp = await verifyStepUpAuthentication(req, ports, principal, { operation: 'mfa_disable', targetUserId: userId });
+  if ('response' in stepUp) return stepUp.response;
   await ports.loginSecurity.disableUserMfa({
     workspaceId: principal.workspaceId,
     userId,
   });
+  await recordMfaChange(ports, principal, userId, 'auth.mfa_disabled', stepUp.method);
   return data(200, { enabled: false });
+}
+
+async function recordMfaChange(
+  ports: ServerApiPorts,
+  principal: { userId: string; workspaceId: string },
+  userId: string,
+  action: 'auth.mfa_disabled' | 'auth.mfa_totp_enabled' | 'auth.mfa_email_enabled',
+  reauthMethod: 'password' | 'totp',
+): Promise<void> {
+  await ports.audit?.record({
+    workspaceId: principal.workspaceId,
+    actorUserId: principal.userId,
+    action,
+    entityType: 'user',
+    entityId: userId,
+    metadata: { reauthMethod },
+  });
 }
 
 function parseSecuritySettingsBody(

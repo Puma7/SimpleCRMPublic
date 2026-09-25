@@ -67,6 +67,8 @@ Einstellungen liegen in `sync_info` (Keys `auth_security_*`). PATCH auf `/api/v1
 - **E-Mail-MFA aktivieren** (Code per Invite-SMTP)
 - **MFA deaktivieren**
 
+TOTP bestätigen, E-Mail-MFA aktivieren und MFA deaktivieren verlangen das **aktuelle Passwort des Handelnden** (bei einem Admin sein eigenes). Die UI fragt es im Dialog ab.
+
 Wichtig: Wenn Workspace-PIN aktiv ist, aber ein Admin **keine eigene PIN** hat, erscheint eine Warnung in den Sicherheitseinstellungen. Der PIN-Keypad-Schritt erscheint im Login nur, wenn `loginConfig.user.pinRequired === true` (Benutzer hat PIN gesetzt).
 
 ---
@@ -122,9 +124,11 @@ PIN-Eingabe wird nach E-Mail-Wechsel zurückgesetzt.
 | POST | `/api/v1/auth/users/{id}/pin` | Admin / self | PIN setzen |
 | DELETE | `/api/v1/auth/users/{id}/pin` | Admin / self | PIN entfernen |
 | POST | `/api/v1/auth/users/{id}/mfa/totp/setup` | Admin / self | TOTP-Secret + otpauth-URI |
-| POST | `/api/v1/auth/users/{id}/mfa/totp/confirm` | Admin / self | TOTP aktivieren |
-| POST | `/api/v1/auth/users/{id}/mfa/email` | Admin / self | E-Mail-MFA aktivieren |
-| DELETE | `/api/v1/auth/users/{id}/mfa` | Admin / self | MFA deaktivieren |
+| POST | `/api/v1/auth/users/{id}/mfa/totp/confirm` | Admin / self + Step-up | TOTP aktivieren |
+| POST | `/api/v1/auth/users/{id}/mfa/email` | Admin / self + Step-up | E-Mail-MFA aktivieren |
+| DELETE | `/api/v1/auth/users/{id}/mfa` | Admin / self + Step-up | MFA deaktivieren |
+
+**Step-up:** Body-Feld `currentPassword` (Passwort des Aufrufers) oder `currentMfaCode` (aktueller Code seines Authenticators, einmal verwendbar). Fehlt beides: `403 reauth_required`; falsch: `403 reauth_failed`. Fehlversuche laufen in die (E-Mail, IP)-Staffelung des Logins, die Pfade liegen im Rate-Limit `auth-strict`. Audit: `auth.mfa_disabled`, `auth.mfa_totp_enabled`, `auth.mfa_email_enabled`, `auth.mfa_reauth_failed`.
 
 OpenAPI: `/api/v1/openapi.json` (Server-Modus).
 

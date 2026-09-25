@@ -495,6 +495,39 @@ describe('login security service MFA gate', () => {
   });
 
   // F-A1-12: an accepted TOTP code could be replayed on a second, fresh MFA challenge within the tolerance window.
+  // F-A1-06: step-up before an MFA change needs to check a current authenticator code outside of a login challenge.
+  test('verifies a current TOTP code for step-up once and only for an enrolled authenticator', async () => {
+    const secret = generateTotpSecret();
+    const validCode = generateSync({ secret });
+    const invalidCode = validCode === '000000' ? '000001' : '000000';
+    const workspaceDb = createWorkspaceLookupDb(mfaUser.email);
+    const createStepUpService = (user: Omit<typeof mfaUser, 'mfaMethod'> & { mfaMethod: 'totp' | 'email' }) => createLoginSecurityService({
+      db: workspaceDb.db as never,
+      syncInfo: { getMany: async () => [], setMany: async () => undefined },
+      listPublicWorkspaceSettings: async () => [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS],
+      secrets: {
+        readSecret: async () => Buffer.from(secret),
+        writeSecret: async () => ({ id: 'secret-id' }),
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: { findUserByEmail: async () => user } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    const totpService = createStepUpService({ ...mfaUser, mfaMethod: 'totp' as const });
+    const input = { workspaceId: TEST_WORKSPACE_ID, userId: TEST_USER_ID };
+
+    await expect(totpService.verifyCurrentTotpCode({ ...input, code: invalidCode })).resolves.toBe(false);
+    await expect(totpService.verifyCurrentTotpCode({ ...input, code: validCode })).resolves.toBe(true);
+    await expect(totpService.verifyCurrentTotpCode({ ...input, code: validCode })).resolves.toBe(false);
+    // An e-mail MFA user has no authenticator whose code could be checked.
+    await expect(createStepUpService(mfaUser).verifyCurrentTotpCode({ ...input, code: generateSync({ secret }) }))
+      .resolves.toBe(false);
+  });
+
   test('rejects an already accepted TOTP code on a second challenge', async () => {
     const secret = generateTotpSecret();
     const validCode = generateSync({ secret });

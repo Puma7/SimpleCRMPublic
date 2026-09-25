@@ -456,6 +456,26 @@ describe('server auth client', () => {
     expect(fetchImpl.mock.calls[0]?.[1]).not.toHaveProperty('body');
   });
 
+  // F-A1-06: MFA changes must carry the step-up credential the server now requires.
+  test('sends the current password with an MFA change', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { enabled: false } }));
+    const client = createServerAuthClient({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(client.disableUserMfa('access-mfa', 'user-1', { currentPassword: 'mein-passwort-123' }))
+      .resolves.toEqual({ enabled: false });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/auth/users/user-1/mfa',
+      expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ currentPassword: 'mein-passwort-123' }),
+      }),
+    );
+  });
+
   test('logout revokes the HttpOnly cookie session with CSRF and clears memory', async () => {
     const persistent = memoryStorage();
     const volatile = memoryStorage();

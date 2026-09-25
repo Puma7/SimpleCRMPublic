@@ -511,6 +511,10 @@ function UserSecurityActions(props: {
   const [totpSecret, setTotpSecret] = useState("")
   const [totpUri, setTotpUri] = useState("")
   const [totpCode, setTotpCode] = useState("")
+  // The server requires the actor's current password before any MFA change.
+  const [totpPassword, setTotpPassword] = useState("")
+  const [stepUpAction, setStepUpAction] = useState<"disable" | "email" | null>(null)
+  const [stepUpPassword, setStepUpPassword] = useState("")
   const [pinOpen, setPinOpen] = useState(false)
   const [pinValue, setPinValue] = useState("")
 
@@ -535,6 +539,7 @@ function UserSecurityActions(props: {
       setTotpSecret(setup.secret)
       setTotpUri(setup.otpauthUri)
       setTotpCode("")
+      setTotpPassword("")
       setTotpOpen(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Authenticator-Setup fehlgeschlagen")
@@ -552,6 +557,7 @@ function UserSecurityActions(props: {
       await client.confirmUserTotpSetup(session!.tokens.accessToken, props.user.id, {
         secret: totpSecret,
         code: totpCode.trim(),
+        currentPassword: totpPassword,
       })
       setTotpOpen(false)
       props.onChanged()
@@ -562,13 +568,13 @@ function UserSecurityActions(props: {
     }
   }
 
-  async function enableEmailMfa() {
+  async function enableEmailMfa(currentPassword: string) {
     setError(null)
     setBusy(true)
     try {
       const client = getClient()
       const session = client.getSession()
-      await client.enableUserEmailMfa(session!.tokens.accessToken, props.user.id)
+      await client.enableUserEmailMfa(session!.tokens.accessToken, props.user.id, { currentPassword })
       props.onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : "E-Mail-2FA konnte nicht aktiviert werden")
@@ -577,13 +583,13 @@ function UserSecurityActions(props: {
     }
   }
 
-  async function disableMfa() {
+  async function disableMfa(currentPassword: string) {
     setError(null)
     setBusy(true)
     try {
       const client = getClient()
       const session = client.getSession()
-      await client.disableUserMfa(session!.tokens.accessToken, props.user.id)
+      await client.disableUserMfa(session!.tokens.accessToken, props.user.id, { currentPassword })
       props.onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : "2FA konnte nicht deaktiviert werden")
@@ -612,6 +618,19 @@ function UserSecurityActions(props: {
     } finally {
       setBusy(false)
     }
+  }
+
+  function openStepUp(action: "disable" | "email") {
+    setError(null)
+    setStepUpPassword("")
+    setStepUpAction(action)
+  }
+
+  function confirmStepUp() {
+    const action = stepUpAction
+    setStepUpAction(null)
+    if (action === "disable") void disableMfa(stepUpPassword)
+    if (action === "email") void enableEmailMfa(stepUpPassword)
   }
 
   const securityBits = [
@@ -683,7 +702,7 @@ function UserSecurityActions(props: {
               size="sm"
               variant="outline"
               disabled={props.disabled || busy}
-              onClick={() => void enableEmailMfa()}
+              onClick={() => openStepUp("email")}
             >
               E-Mail-2FA aktivieren
             </Button>
@@ -694,7 +713,7 @@ function UserSecurityActions(props: {
             size="sm"
             variant="outline"
             disabled={props.disabled || busy}
-            onClick={() => void disableMfa()}
+            onClick={() => openStepUp("disable")}
           >
             2FA deaktivieren
           </Button>
@@ -762,6 +781,16 @@ function UserSecurityActions(props: {
                 onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
               />
             </div>
+            <div>
+              <Label htmlFor={`totp-password-${props.user.id}`}>Ihr aktuelles Passwort</Label>
+              <Input
+                id={`totp-password-${props.user.id}`}
+                type="password"
+                autoComplete="current-password"
+                value={totpPassword}
+                onChange={(e) => setTotpPassword(e.target.value)}
+              />
+            </div>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setTotpOpen(false)}>
@@ -769,10 +798,40 @@ function UserSecurityActions(props: {
             </Button>
             <Button
               type="button"
-              disabled={busy || totpCode.length !== 6}
+              disabled={busy || totpCode.length !== 6 || !totpPassword}
               onClick={() => void confirmTotp()}
             >
               Aktivieren
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={stepUpAction !== null} onOpenChange={(open) => { if (!open) setStepUpAction(null) }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {stepUpAction === "disable" ? "2FA deaktivieren" : "E-Mail-2FA aktivieren"}
+            </DialogTitle>
+            <DialogDescription>
+              Änderungen am zweiten Faktor bitte mit Ihrem eigenen aktuellen Passwort bestätigen.
+            </DialogDescription>
+          </DialogHeader>
+          <div>
+            <Label htmlFor={`mfa-step-up-password-${props.user.id}`}>Ihr aktuelles Passwort</Label>
+            <Input
+              id={`mfa-step-up-password-${props.user.id}`}
+              type="password"
+              autoComplete="current-password"
+              value={stepUpPassword}
+              onChange={(e) => setStepUpPassword(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setStepUpAction(null)}>
+              Abbrechen
+            </Button>
+            <Button type="button" disabled={busy || !stepUpPassword} onClick={confirmStepUp}>
+              Bestätigen
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -17540,8 +17540,25 @@ describe('server edition foundation', () => {
 
   test('server auth security route allows non-admin users to enable email MFA for themselves', async () => {
     const enableCalls: Array<{ workspaceId: string; userId: string }> = [];
+    const base = makeServerApiPorts();
     const ports = {
-      ...makeServerApiPorts(),
+      ...base,
+      // Every MFA change needs step-up since F-A1-06: user-b confirms with the own password.
+      auth: {
+        ...base.auth,
+        getUser: async () => ({ id: 'user-b', email: 'user-b@example.com', role: 'user' as const, disabledAt: null }),
+        findUserByEmail: async (email: string) => (email === 'user-b@example.com'
+          ? {
+            id: 'user-b',
+            workspaceId: WORKSPACE_A_ID,
+            email,
+            displayName: 'User B',
+            role: 'user' as const,
+            passwordHash: 'user-b-hash',
+          }
+          : null),
+        verifyPassword: async (password: string, hash: string) => password === 'user-b-password' && hash === 'user-b-hash',
+      },
       loginSecurity: {
         async enableEmailMfa(input: { workspaceId: string; userId: string }) {
           enableCalls.push(input);
@@ -17555,6 +17572,7 @@ describe('server edition foundation', () => {
       method: 'POST',
       path: '/api/v1/auth/users/user-b/mfa/email',
       principal: userPrincipal,
+      body: { currentPassword: 'user-b-password' },
     });
     expect(enabled.status).toBe(200);
     expect((enabled.body as { data: { enabled: boolean; method: string } }).data).toEqual({

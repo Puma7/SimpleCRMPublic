@@ -130,6 +130,8 @@ export type LoginSecurityService = Readonly<{
   /** false when the workspace does not offer e-mail MFA; nothing is changed then. */
   enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<boolean>;
   disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** Step-up outside a login: a current code of the user's enrolled authenticator, usable once. */
+  verifyCurrentTotpCode(input: { workspaceId: string; userId: string; code: string }): Promise<boolean>;
 }>;
 
 export function createLoginSecurityService(input: {
@@ -466,6 +468,21 @@ export function createLoginSecurityService(input: {
         { applySession: input.applyWorkspaceSession },
       );
       return true;
+    },
+
+    async verifyCurrentTotpCode({ workspaceId, userId, code }) {
+      const email = await lookupUserEmail(input.db, workspaceId, userId, input.applyWorkspaceSession);
+      if (!email) return false;
+      const user = await input.auth.findUserByEmail(email);
+      if (!user || user.id !== userId || user.disabledAt) return false;
+      return verifyUserTotp({
+        db: input.db,
+        secrets: input.secrets,
+        user,
+        code,
+        challengeStore,
+        now: now(),
+      });
     },
 
     async disableUserMfa({ workspaceId, userId }) {

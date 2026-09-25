@@ -304,6 +304,8 @@ export type LoginSecurityApiPort = Readonly<{
   /** false when the workspace does not offer e-mail MFA; nothing is changed then. */
   enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<boolean>;
   disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** Step-up outside a login: a current code of the user's enrolled authenticator, usable once. */
+  verifyCurrentTotpCode(input: { workspaceId: string; userId: string; code: string }): Promise<boolean>;
 }>;
 
 export type AuthApiPort = {

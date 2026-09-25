@@ -98,13 +98,23 @@ export type ServerAuthClient = {
   confirmUserTotpSetup(
     accessToken: string,
     userId: string,
-    input: { secret: string; code: string },
+    input: { secret: string; code: string } & ServerMfaStepUp,
   ): Promise<{ enabled: boolean; method: "totp" }>
-  enableUserEmailMfa(accessToken: string, userId: string): Promise<{ enabled: boolean; method: "email" }>
-  disableUserMfa(accessToken: string, userId: string): Promise<{ enabled: boolean }>
+  enableUserEmailMfa(
+    accessToken: string,
+    userId: string,
+    stepUp?: ServerMfaStepUp,
+  ): Promise<{ enabled: boolean; method: "email" }>
+  disableUserMfa(accessToken: string, userId: string, stepUp?: ServerMfaStepUp): Promise<{ enabled: boolean }>
   refresh(): Promise<ServerAuthSession | null>
   logout(): Promise<{ revoked: boolean }>
   getSession(): ServerAuthSession | null
+}
+
+/** The server asks for the actor's current password (or authenticator code) before any MFA change. */
+export type ServerMfaStepUp = {
+  currentPassword?: string
+  currentMfaCode?: string
 }
 
 export type ServerAuthSetupState = {
@@ -337,17 +347,19 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
       })
     },
 
-    async enableUserEmailMfa(accessToken, userId) {
+    async enableUserEmailMfa(accessToken, userId, stepUp) {
       return request(fetchImpl, baseUrl, `/api/v1/auth/users/${encodeURIComponent(userId)}/mfa/email`, {
         method: "POST",
         accessToken,
+        ...(stepUp ? { body: stepUp } : {}),
       })
     },
 
-    async disableUserMfa(accessToken, userId) {
+    async disableUserMfa(accessToken, userId, stepUp) {
       return request(fetchImpl, baseUrl, `/api/v1/auth/users/${encodeURIComponent(userId)}/mfa`, {
         method: "DELETE",
         accessToken,
+        ...(stepUp ? { body: stepUp } : {}),
       })
     },
 
