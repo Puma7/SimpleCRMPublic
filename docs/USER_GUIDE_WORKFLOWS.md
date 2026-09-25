@@ -70,7 +70,7 @@ Ein Workflow läuft nur, wenn der Schalter **„Aktiv“** eingeschaltet ist (be
 ### Gut zu wissen
 
 - **Konto-Auswahl:** Oben links im Editor wählen Sie, ob Sie globale Workflows (für alle Konten) oder die eines bestimmten Kontos sehen.
-- **Import/Export:** Über die Knöpfe **„Import“**/**„Export“** lassen sich Workflows als Datei sichern oder auf einen anderen Rechner übertragen.
+- **Import/Export:** Über die Knöpfe **„Import“**/**„Export“** lassen sich Workflows als Datei sichern oder auf einen anderen Rechner übertragen. In der Desktop-Edition ist ein importierter Workflow zunächst **deaktiviert** — prüfen Sie ihn im Editor und schalten Sie ihn dann auf **„Aktiv“**.
 - **Referenz:** Der Knopf **„Referenz“** öffnet ein Nachschlagewerk aller Bausteine, Auslöser und Variablen mit Erklärungen.
 - **JSON-Ansicht:** Das Code-Symbol oben öffnet den **Workflow-Quelltext** — Tab **„Graph (JSON)“** zeigt den Roh-Graph (nur Lesen), Tab **„Kompiliert“** die Regel-Definition.
 

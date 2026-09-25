@@ -151,7 +151,10 @@ export function registerWorkflowHandlers(options: {
           graphJson: graphStr,
           cronExpr: w.cron_expr,
           scheduleAccountId: w.schedule_account_id,
-          enabled: w.enabled,
+          // Importe bleiben deaktiviert, bis der Nutzer den Graphen geprüft und
+          // selbst aktiviert hat — sonst liefe eine fremde Datei (Code-Knoten,
+          // Weiterleitung) sofort im Main-Prozess.
+          enabled: false,
           executionMode: w.execution_mode ?? 'graph',
           engineVersion: w.engine_version ?? 1,
         });
@@ -206,7 +209,8 @@ export function registerWorkflowHandlers(options: {
         graphJson: graphStr,
         cronExpr: w.cron_expr,
         scheduleAccountId: w.schedule_account_id,
-        enabled: w.enabled,
+        // Siehe ImportWorkflowBundle: Importe starten immer deaktiviert.
+        enabled: false,
         executionMode: w.execution_mode ?? 'graph',
         engineVersion: w.engine_version ?? 1,
       });

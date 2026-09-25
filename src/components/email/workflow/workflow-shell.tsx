@@ -675,7 +675,7 @@ export function WorkflowShell() {
       }>(IPCChannels.Email.ImportWorkflowBundleFromFile)
       if (res.canceled) return
       if (res.id != null) {
-        toast.success("Workflow importiert.")
+        toast.success("Workflow importiert (deaktiviert) – bitte prüfen und dann aktivieren.")
         await load()
         const imported = await invokeRenderer(
           IPCChannels.Email.GetWorkflow,
