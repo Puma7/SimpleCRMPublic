@@ -334,20 +334,6 @@ services:
       postgres:
         condition: service_healthy
 
-  minio:
-    image: minio/minio:latest
-    profiles: ["minio"]
-    restart: unless-stopped
-    command: ["server", "/data", "--console-address", ":9001"]
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-simplecrm}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-CHANGE_ME_minio_root_password}
-    ports:
-      - "${MINIO_API_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
-    volumes:
-      - minio_data:/data
-
   monitor:
     image: louislam/uptime-kuma:1
     profiles: ["monitor"]
@@ -384,6 +370,5 @@ volumes:
   caddy_config:
   caddy_logs:
   backups:
-  minio_data:
   uptime_kuma_data:
   pgadmin_data:

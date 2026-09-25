@@ -185,22 +185,27 @@ describe('server Compose API least privilege', () => {
     const tempDir = createComposeFixture();
     try {
       const resolved = resolveCompose(tempDir, [
-        'geoip', 'backup', 'backup-scheduler', 'restore', 'doctor', 'restore-drill', 'minio', 'monitor', 'pgadmin',
+        'geoip', 'backup', 'backup-scheduler', 'restore', 'doctor', 'restore-drill', 'monitor', 'pgadmin',
       ]);
       expect(resolved.services.pgadmin.image).toBe('dpage/pgadmin4:9');
       for (const [serviceName, service] of Object.entries(resolved.services)) {
         const image = service.image ?? '';
         if (image.startsWith('simplecrm/')) continue;
-        // minio/minio wird auf Docker Hub nicht mehr veroeffentlicht (Stand
-        // 2026-09-25); es gibt keine pruefbare Version, auf die sich pinnen
-        // liesse. Die Entscheidung ueber das Profil steht aus.
-        if (serviceName === 'minio') continue;
         const tag = /^[^:@]+:([^:@]+)(@sha256:[0-9a-f]{64})?$/.exec(image)?.[1];
         expect({ serviceName, tag }).toEqual({ serviceName, tag: expect.stringMatching(/^(?!latest$)\S+$/) });
       }
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  // E40 (minio-Profil): minio/minio wird auf Docker Hub nicht mehr veroeffentlicht, das Profil liess sich nicht mehr ziehen.
+  test('ships no MinIO profile; S3-compatible storage stays external', () => {
+    const compose = readFileSync(join(dockerRoot, 'docker-compose.yml'), 'utf8');
+    const envExample = readFileSync(join(dockerRoot, '.env.example'), 'utf8');
+
+    expect(compose).not.toMatch(/minio/i);
+    expect(envExample).not.toMatch(/MINIO_/);
   });
 });
 

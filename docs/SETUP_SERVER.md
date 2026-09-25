@@ -119,7 +119,6 @@ local smoke test would otherwise lock other local `http://localhost` services.
 The standard stack intentionally starts only Caddy, API, migrations, and PostgreSQL. The optional services from the implementation plan are opt-in:
 
 ```sh
-docker compose --profile minio up -d minio
 docker compose --profile monitor up -d monitor
 docker compose --profile pgadmin up -d pgadmin
 docker compose --profile geoip up -d geoip-updater
@@ -127,13 +126,22 @@ docker compose --profile geoip up -d geoip-updater
 
 Profiles:
 
-- `minio`: S3-compatible storage drill for future attachment growth. Console defaults to `http://127.0.0.1:9001`.
 - `monitor`: Uptime Kuma on `http://127.0.0.1:3001`.
 - `pgadmin`: pgAdmin on `http://127.0.0.1:5050` for setup/debug only. Never expose this publicly.
 - `geoip`: updates local MaxMind GeoLite2 Country and ASN MMDB files once the MaxMind account ID
   and license key are set in the ignored `docker/.env.geoip` file. Create it with
   `cp .env.geoip.example .env.geoip`. The updater alone receives those credentials; the API
   reads the resulting volume only at `/var/lib/simplecrm/geoip`.
+
+There is no `minio` profile any more: the `minio/minio` image is no longer published on Docker
+Hub, so the profile could not be pulled. SimpleCRM keeps attachments in the `attachments` volume
+and has no S3 backend. If you need S3-compatible object storage, for example as an off-host
+target for copies of the `backups` volume or to try out a later attachment backend, use an
+external S3-compatible service (managed, or an instance you run and patch outside this stack).
+The API does not talk to it, so nothing in `docker/.env` changes. An installation that used the
+old profile still has a `minio` container and a `minio_data` volume: Compose reports the
+container as an orphan; remove it with `docker rm -f <project>-minio-1` and delete the volume
+with `docker volume rm <project>_minio_data` once you have copied out what you still need.
 
 The profile ports bind to `127.0.0.1` by default. Change the bind variables only behind a firewall or private VPN, and replace every `CHANGE_ME` profile password before starting the service.
 
@@ -292,9 +300,7 @@ override sets.
 
 Image tags: the stack follows fixed release lines instead of `latest` — `postgres:18-alpine`,
 `caddy:2` and `node:24`/`node:24-alpine` (image builds), `louislam/uptime-kuma:1` (`monitor`) and
-`dpage/pgadmin4:9` (`pgadmin`); `geoip-updater` is pinned by digest. The `minio` profile still
-references `minio/minio:latest`, which is no longer published on Docker Hub, so that profile cannot
-be pulled at the moment.
+`dpage/pgadmin4:9` (`pgadmin`); `geoip-updater` is pinned by digest.
 
 ### "Checksum mismatch for server migration ..."
 
@@ -319,7 +325,6 @@ Data lives in Docker volumes:
 - `audit_archives`
 - `caddy_logs`
 - `backups`
-- `minio_data` when the `minio` profile is used
 - `uptime_kuma_data` when the `monitor` profile is used
 - `pgadmin_data` when the `pgadmin` profile is used
 

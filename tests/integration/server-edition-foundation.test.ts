@@ -195,11 +195,8 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('./restore-drill.sh:/app/restore-drill.sh:ro');
     expect(compose).toContain('RESTORE_DRILL_DUMP_PATH');
     expect(compose).toContain('RESTORE_DRILL_AUDIT_ARCHIVE_PATH');
-    expect(compose).toContain('image: minio/minio:latest');
-    expect(compose).toContain('profiles: ["minio"]');
-    expect(compose).toContain('command: ["server", "/data", "--console-address", ":9001"]');
-    expect(compose).toContain('"${MINIO_API_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"');
-    expect(compose).toContain('"${MINIO_CONSOLE_BIND:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"');
+    // Das minio-Profil ist entfernt (E40), S3-kompatibler Speicher bleibt extern.
+    expect(compose).not.toContain('minio');
     expect(compose).toContain('image: louislam/uptime-kuma:1');
     expect(compose).toContain('profiles: ["monitor"]');
     expect(compose).toContain('"${UPTIME_KUMA_BIND:-127.0.0.1}:${UPTIME_KUMA_PORT:-3001}:3001"');
@@ -212,7 +209,6 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('backups:');
     expect(compose).toContain('caddy_logs:');
     expect(compose).toContain('server_logs:');
-    expect(compose).toContain('minio_data:');
     expect(compose).toContain('uptime_kuma_data:');
     expect(compose).toContain('pgadmin_data:');
     expect(ci).toContain('PUBLIC_DOMAIN: localhost');
@@ -360,9 +356,7 @@ describe('server edition repository boundaries', () => {
     expect(envExample).toContain('AUDIT_ARCHIVE_DIR=/app/data/audit-archive');
     expect(envExample).toContain('RESTORE_DRILL_DB_NAME=');
     expect(envExample).toContain('RESTORE_DRILL_AUDIT_ARCHIVE_PATH=');
-    expect(envExample).toContain('MINIO_ROOT_PASSWORD=CHANGE_ME_minio_root_password');
-    expect(envExample).toContain('MINIO_API_BIND=127.0.0.1');
-    expect(envExample).toContain('MINIO_CONSOLE_PORT=9001');
+    expect(envExample).not.toContain('MINIO_');
     expect(envExample).toContain('UPTIME_KUMA_BIND=127.0.0.1');
     expect(envExample).toContain('UPTIME_KUMA_PORT=3001');
     expect(envExample).toContain('PGADMIN_DEFAULT_PASSWORD=CHANGE_ME_pgadmin_password');

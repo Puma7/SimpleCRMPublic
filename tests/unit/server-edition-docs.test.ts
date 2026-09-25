@@ -31,7 +31,8 @@ describe('server edition AP-12 operator docs', () => {
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('sh ./simplecrm logs api caddy'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('npm run doctor:server'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('JSON access logs in the `caddy_logs` volume'));
-    expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('docker compose --profile minio up -d minio'));
+    expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('external S3-compatible service'));
+    expect(readRepoFile('docs/SETUP_SERVER.md')).not.toEqual(expect.stringContaining('--profile minio'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('docker compose --profile monitor up -d monitor'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('docker compose --profile pgadmin up -d pgadmin'));
     expect(readRepoFile('docs/SETUP_SERVER.md')).toEqual(expect.stringContaining('127.0.0.1'));
@@ -86,7 +87,7 @@ describe('server edition AP-12 operator docs', () => {
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_DAILY=7'));
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_WEEKLY=4'));
     expect(envExample).toEqual(expect.stringContaining('BACKUP_RETENTION_MONTHLY=12'));
-    expect(envExample).toEqual(expect.stringContaining('MINIO_ROOT_PASSWORD=CHANGE_ME_minio_root_password'));
+    expect(envExample).not.toEqual(expect.stringContaining('MINIO_'));
     expect(envExample).toEqual(expect.stringContaining('UPTIME_KUMA_BIND=127.0.0.1'));
     expect(envExample).toEqual(expect.stringContaining('PGADMIN_DEFAULT_PASSWORD=CHANGE_ME_pgadmin_password'));
     expect(envExample).toEqual(expect.stringContaining('MASTER_KEY must decode to exactly 32 bytes'));
@@ -327,10 +328,9 @@ describe('server edition AP-12 operator docs', () => {
     const compose = readRepoFile('docker/docker-compose.yml');
     const setupServer = readRepoFile('docs/SETUP_SERVER.md');
 
-    expect(compose).toEqual(expect.stringContaining('profiles: ["minio"]'));
+    expect(compose).not.toEqual(expect.stringContaining('profiles: ["minio"]'));
     expect(compose).toEqual(expect.stringContaining('profiles: ["monitor"]'));
     expect(compose).toEqual(expect.stringContaining('profiles: ["pgadmin"]'));
-    expect(compose).toEqual(expect.stringContaining('"${MINIO_API_BIND:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"'));
     expect(compose).toEqual(expect.stringContaining('"${UPTIME_KUMA_BIND:-127.0.0.1}:${UPTIME_KUMA_PORT:-3001}:3001"'));
     expect(compose).toEqual(expect.stringContaining('"${PGADMIN_BIND:-127.0.0.1}:${PGADMIN_PORT:-5050}:80"'));
     expect(setupServer).toEqual(expect.stringContaining('The standard stack intentionally starts only Caddy, API, migrations, and PostgreSQL'));
