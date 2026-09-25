@@ -9,15 +9,18 @@ function registryType(node: WorkflowGraphNode): string {
 }
 
 /**
- * Laufzeit-Typ eines Knotens — identisch zu nodeRuntimeType in
- * workflow-execution: `data.nodeType` zaehlt AUSSCHLIESSLICH bei den
+ * Laufzeit-Typ eines Knotens — der Server-Executor (nodeRuntimeType in
+ * workflow-execution) ruft genau diese Funktion auf, damit Guard und
+ * Ausfuehrung denselben Typ sehen. Nur String-Werte zaehlen: ein Array oder
+ * Objekt als nodeType darf weder hier noch im Executor als Knotentyp gelten.
+ * `data.nodeType` zaehlt AUSSCHLIESSLICH bei den
  * Canvas-Typen `registry` und `action`. Ein als `condition` gespeicherter
  * Knoten mit `data.nodeType = "email.release_outbound"` wird zur Laufzeit nur
  * als Bedingung ausgefuehrt und gibt nie frei; wuerde die Trap-Erkennung ihn
  * als Freigabe (oder als beabsichtigtes Hold-Ende) akzeptieren, liesse sie
  * einen aktiven Ausgangs-Workflow durch, der jede Mail dauerhaft festhaelt.
  */
-function runtimeType(node: WorkflowGraphNode): string {
+export function workflowNodeRuntimeType(node: WorkflowGraphNode): string {
   const data = node.data as Record<string, unknown> | undefined;
   if (node.type === 'registry') {
     return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
@@ -48,7 +51,7 @@ function nodeConfig(node: WorkflowGraphNode): Record<string, unknown> {
  *    and errors at runtime instead of sending.
  */
 function isReleaseNode(node: WorkflowGraphNode): boolean {
-  const type = runtimeType(node);
+  const type = workflowNodeRuntimeType(node);
   if (type === 'email.release_outbound') return nodeConfig(node).autoSend === true;
   if (type === 'email.send_draft') {
     const config = nodeConfig(node);
@@ -65,7 +68,7 @@ function isHoldNode(node: WorkflowGraphNode): boolean {
   const data = node.data as Record<string, unknown> | undefined;
   return (
     (node.type === 'action' && data?.actionType === 'hold_outbound') ||
-    runtimeType(node) === 'email.hold_outbound'
+    workflowNodeRuntimeType(node) === 'email.hold_outbound'
   );
 }
 
@@ -89,7 +92,7 @@ const NAMED_PORT_BRANCH_NODES: Readonly<
 function namedPortBranch(
   node: WorkflowGraphNode,
 ): { ports: readonly string[]; releasePorts: readonly string[] } | null {
-  return NAMED_PORT_BRANCH_NODES[runtimeType(node)] ?? null;
+  return NAMED_PORT_BRANCH_NODES[workflowNodeRuntimeType(node)] ?? null;
 }
 
 /**
@@ -139,18 +142,9 @@ export const LOGIC_INMEMORY_NODE_TYPES: ReadonlySet<string> = new Set<string>([
   'logic.loop',
 ]);
 
-/** Resolve the runtime type of an action/registry node (mirrors nodeRuntimeType). */
+/** Resolve the runtime type of an action/registry node (the executor uses the same function). */
 function sideEffectRuntimeType(node: WorkflowGraphNode): string {
-  const data = node.data as Record<string, unknown> | undefined;
-  if (node.type === 'registry') {
-    return typeof data?.nodeType === 'string' ? data.nodeType : 'registry.unknown';
-  }
-  if (node.type === 'action') {
-    if (typeof data?.nodeType === 'string' && data.nodeType) return data.nodeType;
-    if (typeof data?.actionType === 'string' && data.actionType) return data.actionType;
-    return 'action';
-  }
-  return node.type;
+  return workflowNodeRuntimeType(node);
 }
 
 /**
@@ -851,7 +845,7 @@ export function findWorkflowConfigRisks(doc: WorkflowGraphDocument): WorkflowCon
     // Laufzeit-Typ und config liegen unter node.data — dieselben Helfer, die
     // auch die Trap-Erkennung oben benutzt. Direkt an node.config zu greifen
     // faende schlicht nie etwas.
-    const nodeType = runtimeType(node);
+    const nodeType = workflowNodeRuntimeType(node);
     const config = nodeConfig(node);
     for (const [key, value] of Object.entries(config)) {
       if (!RISKY_TARGET_FIELD_KEYS.has(key) || typeof value !== 'string') continue;
@@ -867,10 +861,10 @@ export function findWorkflowConfigRisks(doc: WorkflowGraphDocument): WorkflowCon
   // Automatisierung — und eine Warnung, die immer erscheint, liest niemand
   // mehr. Der Anlass ist die Verbindung: KI formuliert aus fremdem Text, und
   // das Ergebnis geht ohne menschlichen Blick hinaus.
-  const hasAiNode = doc.nodes.some((node) => runtimeType(node).startsWith('ai.'));
+  const hasAiNode = doc.nodes.some((node) => workflowNodeRuntimeType(node).startsWith('ai.'));
   if (hasAiNode) {
     for (const node of doc.nodes) {
-      const nodeType = runtimeType(node);
+      const nodeType = workflowNodeRuntimeType(node);
       const config = nodeConfig(node);
       const autoSends =
         (nodeType === 'email.release_outbound' && config.autoSend === true) ||

@@ -26,6 +26,7 @@ import {
   parseSenderList,
   pickEdge,
   workflowDirectionForTrigger,
+  workflowNodeRuntimeType,
   workflowTriggerNeedsMessage,
   type WorkflowDirection,
   type WorkflowGraphDocument,
@@ -7467,14 +7468,12 @@ function isAddressField(field: string): boolean {
   return field === 'from_address' || field === 'to_address' || field === 'cc_address';
 }
 
+// Must resolve exactly like the side-effect/permission guards in
+// @simplecrm/core: they only accept a string nodeType, and a looser coercion
+// here (String(['email.forward_copy'])) let a graph pass the guard as
+// logic.merge and run as the side-effecting node it names.
 function nodeRuntimeType(node: WorkflowGraphNode): string {
-  if (node.type === 'registry') {
-    return String(node.data.nodeType ?? 'registry.unknown');
-  }
-  if (node.type === 'action') {
-    return String(node.data.nodeType ?? node.data.actionType ?? 'action');
-  }
-  return node.type;
+  return workflowNodeRuntimeType(node);
 }
 
 function inboundGateFromContext(context: ServerWorkflowContext): ServerInboundBranchGate | undefined {
