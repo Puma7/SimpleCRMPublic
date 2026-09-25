@@ -8,12 +8,17 @@ import {
   SERVER_JOB_POLICIES,
   TRUSTED_SERVICE_JOB_MARKER_FIELD,
 } from '../../packages/server/src/jobs';
-import type { ServerEvent, ServerEventPort } from '../../packages/server/src/api';
+import type { AuthenticatedPrincipal, ServerEvent, ServerEventPort } from '../../packages/server/src/api';
+import { SERVER_EVENT_TYPES } from '../../packages/server/src/api';
+import { USER_GROUP_CAPABILITY_KEYS } from '../../packages/server/src/api/capabilities';
 import {
   createPrincipalFilteredEventPort,
   enforceMailJobPolicy,
   filterMailEventForPrincipal,
+  type MailEventFilterContext,
+  NON_MAIL_EVENT_READ_POLICY,
 } from '../../packages/server/src/mail-access/async-policy-enforcer';
+import { MAIL_EVENT_POLICY_MANIFEST } from '../../packages/server/src/mail-access/policy-manifest';
 import {
   createBoundedEventSequenceDedupe,
   isSelfTargetedAclInvalidation,
@@ -2051,6 +2056,205 @@ describe('server mail job and event ACL', () => {
     }
   });
 
+  // C-A19: Nicht-Mail-Ereignisse (Automation-Keys, Workflows, Wissensbasen) gingen live und per Replay unveraendert an jeden Abonnenten, auch ohne das REST-Leserecht.
+  // Gleiche Ursache: C-A35, C-A39, C-A45, C-B5, C-C7.
+  test('delivers non-mail events only with the REST read right of their family, live and on replay', async () => {
+    const ports = makePolicyPorts();
+    const plainUser: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' };
+    const workflowViewer: AuthenticatedPrincipal = { ...plainUser, userId: 'user-b', capabilities: ['workflows.view'] };
+    // Stored grants may carry only the highest module level; workflows.manage implies view.
+    const workflowManager: AuthenticatedPrincipal = { ...plainUser, userId: 'user-c', capabilities: ['workflows.manage'] };
+    // Every grantable capability but no admin role: the automation-key routes are requireAdmin.
+    const everyCapability: AuthenticatedPrincipal = {
+      ...plainUser,
+      userId: 'user-d',
+      capabilities: [...USER_GROUP_CAPABILITY_KEYS],
+    };
+    const admin: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' };
+    const owner: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'owner-a', role: 'owner' };
+
+    const apiKeyEvents = [
+      event({
+        type: 'automation_api_key.created',
+        entityType: 'automation_api_key',
+        entityId: 'key-1',
+        payload: { id: 'key-1', label: 'n8n Produktion', scopes: ['workflows', 'crm'], revokedAt: null, secretConfigured: true },
+      }),
+      event({
+        type: 'automation_api_key.revoked',
+        entityType: 'automation_api_key',
+        entityId: 'key-1',
+        payload: { id: 'key-1', label: 'n8n Produktion', scopes: ['workflows'], revokedAt: '2026-07-19T10:00:00.000Z', secretConfigured: true },
+      }),
+    ];
+    const workflowEvents = [
+      event({
+        type: 'workflow.updated',
+        entityType: 'workflow',
+        entityId: '7',
+        payload: { id: 7, name: 'Mahnlauf Grosskunden', triggerName: 'schedule', enabled: true, priority: 1, scheduleAccountId: 3 },
+      }),
+      event({
+        type: 'workflow_version.created',
+        entityType: 'workflow_version',
+        entityId: '8',
+        payload: { id: 8, workflowId: 7, label: 'vor Umbau' },
+      }),
+      event({
+        type: 'workflow_knowledge_base.created',
+        entityType: 'workflow_knowledge_base',
+        entityId: '12',
+        payload: { id: 12, name: 'Preisliste intern', description: 'Sonderkonditionen' },
+      }),
+      event({
+        type: 'workflow_knowledge_chunk.updated',
+        entityType: 'workflow_knowledge_chunk',
+        entityId: '13',
+        payload: { id: 13, knowledgeBaseId: 12, title: 'Rabatte', sourcePath: '/intern/rabatte.md', embeddingConfigured: true },
+      }),
+      // GET /api/v1/workflow-delayed-jobs sits behind workflows.view too; a message-less
+      // delayed job has no mail resource, so the family gate is its only read check.
+      event({
+        type: 'workflow_delayed_job.updated',
+        entityType: 'workflow_delayed_job',
+        entityId: '87',
+        payload: { id: 87, workflowId: 7, messageId: null, status: 'pending', resumeNodeId: 'wait-1' },
+      }),
+    ];
+    // AI profile/prompt reads are open to every authenticated user (compose/settings).
+    const aiEvents = [
+      event({
+        type: 'ai_profile.updated',
+        entityType: 'ai_profile',
+        entityId: '21',
+        payload: { id: 21, label: 'Standard', provider: 'openai', model: 'gpt-x', apiKeyConfigured: true },
+      }),
+      event({
+        type: 'ai_prompt.created',
+        entityType: 'ai_prompt',
+        entityId: '22',
+        payload: { id: 22, label: 'Antwortvorschlag', target: 'reply', profileId: 21 },
+      }),
+    ];
+
+    for (const evt of apiKeyEvents) {
+      for (const principal of [plainUser, workflowViewer, workflowManager, everyCapability]) {
+        await expect(filterMailEventForPrincipal(evt, { principal, ports })).resolves.toBeNull();
+      }
+      for (const principal of [admin, owner]) {
+        await expect(filterMailEventForPrincipal(evt, { principal, ports })).resolves.toEqual(evt);
+      }
+    }
+    for (const evt of workflowEvents) {
+      await expect(filterMailEventForPrincipal(evt, { principal: plainUser, ports })).resolves.toBeNull();
+      for (const principal of [workflowViewer, workflowManager, everyCapability, admin, owner]) {
+        await expect(filterMailEventForPrincipal(evt, { principal, ports }))
+          .resolves.toMatchObject({ type: evt.type, entityId: evt.entityId });
+      }
+    }
+    for (const evt of aiEvents) {
+      for (const principal of [plainUser, workflowViewer, admin]) {
+        await expect(filterMailEventForPrincipal(evt, { principal, ports })).resolves.toEqual(evt);
+      }
+    }
+
+    // Live delivery and replay run through the same filter.
+    const rawEvents = [...apiKeyEvents, ...workflowEvents, ...aiEvents];
+    const expectations: Array<[AuthenticatedPrincipal, readonly ServerEvent[]]> = [
+      [plainUser, aiEvents],
+      [workflowViewer, [...workflowEvents, ...aiEvents]],
+      [admin, rawEvents],
+    ];
+    for (const [principal, expected] of expectations) {
+      const { live, replay } = await filterLiveAndReplay(rawEvents, { principal, ports });
+      expect(live).toEqual(replay);
+      expect(live.map((visible) => visible.type)).toEqual(expected.map((visible) => visible.type));
+    }
+    expect(JSON.stringify(await filterLiveAndReplay(rawEvents, { principal: plainUser, ports })))
+      .not.toMatch(/n8n Produktion|Mahnlauf|vor Umbau|Preisliste|rabatte\.md/);
+  });
+
+  // C-A19: Jeder Ereignistyp ohne Mail-Policy und ohne CRM-Reduktion ging ungeprueft durch; neue Typen rutschten so still an alle Abonnenten.
+  test('inventories a read policy for every server event type: mail policy, CRM reduction, or explicit non-mail policy', async () => {
+    const ports = makePolicyPorts();
+    const plainUser: AuthenticatedPrincipal = { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' };
+    const mailPolicyTypes = new Set<string>(MAIL_EVENT_POLICY_MANIFEST.map(({ type }) => type));
+    const familyOf = (type: string) => type.slice(0, type.indexOf('.'));
+    const crmReducedFamilies = new Set<string>();
+    const uncovered: string[] = [];
+
+    for (const type of SERVER_EVENT_TYPES) {
+      const family = familyOf(type);
+      // email_acl.changed has its own subject / owner-admin / delegation-manager branch.
+      if (type === 'email_acl.changed') continue;
+      if (mailPolicyTypes.has(type)) continue;
+      const reduced = await filterMailEventForPrincipal(event({
+        type,
+        entityType: family,
+        entityId: '1',
+        payload: { id: 1, secret: 'crm-field' },
+      }), { principal: plainUser, ports });
+      if (reduced !== null && JSON.stringify(reduced.payload) === JSON.stringify({ id: 1 })) {
+        crmReducedFamilies.add(family);
+        continue;
+      }
+      if (!Object.prototype.hasOwnProperty.call(NON_MAIL_EVENT_READ_POLICY, family)) uncovered.push(type);
+    }
+
+    expect(uncovered).toEqual([]);
+    expect(crmReducedFamilies.size).toBeGreaterThan(0);
+    // CRM families keep their id-only reduction and are not filtered a second time.
+    const policyFamilies = Object.keys(NON_MAIL_EVENT_READ_POLICY);
+    expect(policyFamilies.filter((family) => crmReducedFamilies.has(family))).toEqual([]);
+    // No stale entries: every policy family is a registered event family.
+    const registeredFamilies = new Set<string>(SERVER_EVENT_TYPES.map(familyOf));
+    expect(policyFamilies.filter((family) => !registeredFamilies.has(family))).toEqual([]);
+    expect(NON_MAIL_EVENT_READ_POLICY).toEqual({
+      ai_profile: { kind: 'authenticated' },
+      ai_prompt: { kind: 'authenticated' },
+      workflow: { kind: 'capability', capability: 'workflows.view' },
+      workflow_version: { kind: 'capability', capability: 'workflows.view' },
+      workflow_knowledge_base: { kind: 'capability', capability: 'workflows.view' },
+      workflow_knowledge_chunk: { kind: 'capability', capability: 'workflows.view' },
+      workflow_delayed_job: { kind: 'capability', capability: 'workflows.view' },
+      automation_api_key: { kind: 'owner_admin' },
+    });
+  });
+
+  // C-A19: Eine neu registrierte Ereignisfamilie ohne explizite Lese-Policy ging ohne Pruefung an jeden Abonnenten.
+  test('withholds a registered event family without an explicit read policy from non-admins', async () => {
+    jest.resetModules();
+    jest.doMock('../../packages/server/src/api/types', () => {
+      const actual = jest.requireActual('../../packages/server/src/api/types') as typeof import('../../packages/server/src/api/types');
+      return {
+        ...actual,
+        SERVER_EVENT_TYPES: Object.freeze([...actual.SERVER_EVENT_TYPES, 'future_family.created']),
+      };
+    });
+    try {
+      const { filterMailEventForPrincipal: freshFilter } =
+        require('../../packages/server/src/mail-access/async-policy-enforcer') as typeof import('../../packages/server/src/mail-access/async-policy-enforcer');
+      const ports = makePolicyPorts();
+      const futureEvent = event({
+        type: 'future_family.created',
+        entityType: 'future_family',
+        entityId: '1',
+        payload: { id: 1, name: 'neu' },
+      });
+      await expect(freshFilter(futureEvent, {
+        principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user', capabilities: [...USER_GROUP_CAPABILITY_KEYS] },
+        ports,
+      })).resolves.toBeNull();
+      await expect(freshFilter(futureEvent, {
+        principal: { workspaceId: 'workspace-a', userId: 'admin-a', role: 'admin' },
+        ports,
+      })).resolves.toEqual(futureEvent);
+    } finally {
+      jest.dontMock('../../packages/server/src/api/types');
+      jest.resetModules();
+    }
+  });
+
   test('websocket replay/live dedupe keeps a bounded ordered window', () => {
     const dedupe = createBoundedEventSequenceDedupe(3);
 
@@ -2072,10 +2276,21 @@ describe('server mail job and event ACL', () => {
 
   test('delayed-job events require source-message content access and sanitize live or replay payloads', async () => {
     const ports = makePolicyPorts({ denyMessages: new Set(['101']) });
+    // Like GET /api/v1/workflow-delayed-jobs, the events need workflows.view on top of the
+    // mail policy (C-A19); without it even a readable source message is withheld.
     const context = {
-      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const, capabilities: ['workflows.view'] },
       ports,
     };
+    await expect(filterMailEventForPrincipal(event({
+      type: 'workflow_delayed_job.updated',
+      entityType: 'workflow_delayed_job',
+      entityId: '87',
+      payload: { id: 87, messageId: 12, status: 'pending' },
+    }), {
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' as const },
+      ports,
+    })).resolves.toBeNull();
 
     await expect(filterMailEventForPrincipal(event({
       type: 'workflow_delayed_job.updated',
@@ -2176,7 +2391,7 @@ describe('server mail job and event ACL', () => {
       replay() { return rawEvents; },
     };
     const filtered = createPrincipalFilteredEventPort(source, {
-      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user' },
+      principal: { workspaceId: 'workspace-a', userId: 'user-a', role: 'user', capabilities: ['workflows.view'] },
       ports: makePolicyPorts({ denyMessages: new Set(['101']) }),
     });
     const live: ServerEvent[] = [];
@@ -2344,6 +2559,28 @@ function makePolicyPorts(options: {
 
 function messageResource(messageId: number) {
   return { type: 'message' as const, accountId: '7', folderId: '8', messageId: String(messageId) };
+}
+
+async function filterLiveAndReplay(
+  rawEvents: readonly ServerEvent[],
+  context: MailEventFilterContext,
+): Promise<{ live: ServerEvent[]; replay: readonly ServerEvent[] }> {
+  let sourceSubscriber: ((event: ServerEvent) => void | Promise<void>) | undefined;
+  const source: ServerEventPort = {
+    async publish() { return undefined; },
+    subscribe(subscriber) {
+      sourceSubscriber = subscriber;
+      return { unsubscribe() { sourceSubscriber = undefined; } };
+    },
+    replay() { return [...rawEvents]; },
+  };
+  const filtered = createPrincipalFilteredEventPort(source, context);
+  const live: ServerEvent[] = [];
+  const subscription = filtered.subscribe?.((visible) => { live.push(visible); });
+  for (const candidate of rawEvents) await sourceSubscriber?.(candidate);
+  subscription?.unsubscribe();
+  const replay = await filtered.replay?.({ workspaceId: 'workspace-a' }) ?? [];
+  return { live, replay };
 }
 
 function delayedJobEvent(id: number, payload: Record<string, unknown>): ServerEvent {

@@ -18,6 +18,8 @@ import type {
   ServerEventPort,
 } from '../api/types';
 import { SERVER_EVENT_TYPES } from '../api/types';
+import type { UserGroupCapability } from '../api/capabilities';
+import { requireAdmin, requireCapability } from '../api/http';
 import {
   assertMailEventPolicy,
   MAIL_EVENT_POLICY_MANIFEST,
@@ -1061,6 +1063,44 @@ function reduceCrmEventPayload(payload: ServerEvent['payload']): ServerEvent['pa
   return reduced;
 }
 
+type NonMailEventReadPolicy =
+  | Readonly<{ kind: 'authenticated' }>
+  | Readonly<{ kind: 'owner_admin' }>
+  | Readonly<{ kind: 'capability'; capability: UserGroupCapability }>;
+
+// Read gate per event family (the event type before its first '.') for every family the
+// CRM reduction does not cover. Each entry mirrors the REST read route of the family, so
+// the event stream (live and replay) never hands a subscriber what a GET would refuse.
+// A family that also has a mail event policy (workflow_delayed_job) must pass both, like
+// its REST route. A registered family missing here and in the mail event manifest reaches
+// owners/admins only.
+export const NON_MAIL_EVENT_READ_POLICY: Readonly<Record<string, NonMailEventReadPolicy>> = Object.freeze({
+  // /api/v1/ai/profiles and /api/v1/ai/prompts serve every authenticated user
+  // (compose/settings); the event payloads are subsets of the sanitized records.
+  ai_profile: { kind: 'authenticated' },
+  ai_prompt: { kind: 'authenticated' },
+  // Workflow lists/details, versions, knowledge bases/chunks and delayed jobs are
+  // GET-gated by rejectUnlessWorkflowView (workflow-routes.ts, workflow-runtime-routes.ts).
+  workflow: { kind: 'capability', capability: 'workflows.view' },
+  workflow_version: { kind: 'capability', capability: 'workflows.view' },
+  workflow_knowledge_base: { kind: 'capability', capability: 'workflows.view' },
+  workflow_knowledge_chunk: { kind: 'capability', capability: 'workflows.view' },
+  workflow_delayed_job: { kind: 'capability', capability: 'workflows.view' },
+  // Automation-key list/detail/create/revoke are requireAdmin (credential recon).
+  automation_api_key: { kind: 'owner_admin' },
+});
+
+function mayReadEventFamily(type: string, principal: AuthenticatedPrincipal): boolean {
+  const family = type.slice(0, type.indexOf('.'));
+  const policy = Object.prototype.hasOwnProperty.call(NON_MAIL_EVENT_READ_POLICY, family)
+    ? NON_MAIL_EVENT_READ_POLICY[family]
+    : undefined;
+  if (!policy) return MAIL_EVENT_POLICY_TYPES.has(type as never) || requireAdmin(principal);
+  if (policy.kind === 'authenticated') return true;
+  if (policy.kind === 'owner_admin') return requireAdmin(principal);
+  return requireCapability(principal, policy.capability);
+}
+
 export async function filterMailEventForPrincipal(
   event: ServerEvent,
   context: MailEventFilterContext,
@@ -1107,8 +1147,10 @@ export async function filterMailEventForPrincipal(
       throw error;
     }
   }
+  if (!SERVER_EVENT_TYPE_SET.has(event.type)) return null;
+  if (!mayReadEventFamily(event.type, context.principal)) return null;
   const policy = mailEventPolicyOrNull(event.type);
-  if (!policy) return SERVER_EVENT_TYPE_SET.has(event.type) ? event : null;
+  if (!policy) return event;
   const sanitized = sanitizeMailEventPayload(event);
   if (!context.ports.mailAccess || !context.ports.mailResourceLookup) return null;
   const requiredPorts = {
