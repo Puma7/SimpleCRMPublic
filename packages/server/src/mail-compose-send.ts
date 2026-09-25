@@ -17,8 +17,10 @@ import {
   generateTicketCode,
   outboundDraftFingerprint,
   parseOutboundApprovalMarker,
+  replaceTags,
   resolveConfiguredSmtpHost,
   SMTP_HOST_MISSING_ERROR,
+  stripHtmlTagsToText,
 } from '@simplecrm/core';
 
 import type {
@@ -1726,10 +1728,13 @@ function validateRecipientField(raw: string, label: string): string | null {
 }
 
 function htmlToPlainTextForPgp(html: string): string {
-  return html
-    .replace(/<\s*br\s*\/?>/gi, '\n')
-    .replace(/<\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
+  // replaceTags = .replace(/<[^>]+>/g, ' ') in linear time; the regex was
+  // quadratic on drafts with many unclosed '<'.
+  return replaceTags(
+    html
+      .replace(/<\s*br\s*\/?>/gi, '\n')
+      .replace(/<\/\s*(p|div|li|tr|h[1-6])\s*>/gi, '\n'),
+  )
     .replace(/&nbsp;/gi, ' ')
     .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
@@ -2039,7 +2044,7 @@ function outboundValidationEventStrings(
 ): Record<string, string> {
   const bodyText = values.bodyText ?? '';
   const bodyHtml = values.bodyHtml ?? '';
-  const htmlPlain = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlPlain = stripHtmlTagsToText(bodyHtml);
   const attachmentCount = values.attachmentCount ?? 0;
   return {
     subject: values.subject ?? '',
