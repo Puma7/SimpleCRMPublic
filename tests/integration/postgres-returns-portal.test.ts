@@ -1,5 +1,6 @@
 import type { Kysely } from 'kysely';
 
+import { createServerApi } from '../../packages/server/src';
 import {
   handlePublicPortalRoute,
   resetPortalRateLimitersForTests,
@@ -163,6 +164,84 @@ describe('public returns portal against PostgreSQL', () => {
       `SELECT product_id, reason_id FROM return_items`,
     );
     expect(stored.rows.map((row) => [Number(row.product_id), Number(row.reason_id)])).toEqual([[ownProduct, ownReason]]);
+  });
+
+  async function insertCustomer(workspaceId: string, sourceId: number): Promise<number> {
+    const result = await postgres.admin.query<{ id: string }>(
+      `INSERT INTO customers (workspace_id, source_sqlite_id, name) VALUES ($1, $2, 'Kunde') RETURNING id`,
+      [workspaceId, sourceId],
+    );
+    return Number(result.rows[0]!.id);
+  }
+
+  async function insertEmailMessage(workspaceId: string, sourceId: number): Promise<number> {
+    const account = await postgres.admin.query<{ id: string }>(
+      `INSERT INTO email_accounts (
+        workspace_id, source_sqlite_id, display_name, email_address, imap_host, imap_username,
+        smtp_host, smtp_port, smtp_tls, smtp_username, smtp_use_imap_auth
+      ) VALUES ($1, $2, 'Service', 'service@example.test', 'imap.example.test', 'service',
+        'smtp.example.test', 587, true, 'service', false) RETURNING id`,
+      [workspaceId, sourceId],
+    );
+    const accountId = Number(account.rows[0]!.id);
+    const folder = await postgres.admin.query<{ id: string }>(
+      `INSERT INTO email_folders (workspace_id, source_sqlite_id, account_source_sqlite_id, account_id, path)
+       VALUES ($1, $2, $2, $3, 'INBOX') RETURNING id`,
+      [workspaceId, sourceId, accountId],
+    );
+    const folderId = Number(folder.rows[0]!.id);
+    const message = await postgres.admin.query<{ id: string }>(
+      `INSERT INTO email_messages (
+        workspace_id, source_sqlite_id, account_source_sqlite_id, folder_source_sqlite_id,
+        account_id, folder_id, uid, subject, body_text, folder_kind
+      ) VALUES ($1, $2, $2, $2, $3, $4, 1, 'Retoure', 'Bitte zurueck', 'inbox') RETURNING id`,
+      [workspaceId, sourceId, accountId, folderId],
+    );
+    return Number(message.rows[0]!.id);
+  }
+
+  function authenticatedCreate(body: Record<string, unknown>) {
+    const api = createServerApi({ auth: {} as never, locks: {} as never, returns: createPostgresReturnsPort({ db }) });
+    return api.handle({
+      method: 'POST',
+      path: '/api/v1/returns',
+      principal: { userId: '20000000-0000-4000-8000-0000000000a1', workspaceId: WORKSPACE_ID, role: 'owner' },
+      body: { items: [{ sku: 'SKU-1', quantity: 1 }], ...body },
+    });
+  }
+
+  // F-A3a-06: POST /returns uebernahm customerId/emailMessageId ungeprueft; fremde IDs landeten
+  // wegen der globalen FKs im eigenen Workspace, unbekannte endeten als 23503/500.
+  test('authenticated create rejects customer and email message ids outside the workspace', async () => {
+    const foreignCustomer = await insertCustomer(FOREIGN_WORKSPACE_ID, 9_101);
+    const foreignMessage = await insertEmailMessage(FOREIGN_WORKSPACE_ID, 9_102);
+
+    for (const body of [
+      { customerId: foreignCustomer },
+      { emailMessageId: foreignMessage },
+      { customerId: 999_999_999 },
+      { emailMessageId: 999_999_999 },
+    ]) {
+      const response = await authenticatedCreate(body);
+      expect([body, response.status]).toEqual([body, 400]);
+      expect((response.body as { error: { code: string } }).error.code).toBe('create_failed');
+    }
+    const headers = await postgres.admin.query(`SELECT count(*)::int AS count FROM returns`);
+    expect(headers.rows[0].count).toBe(0);
+  });
+
+  test('authenticated create keeps customer and email message ids of the own workspace', async () => {
+    const ownCustomer = await insertCustomer(WORKSPACE_ID, 9_103);
+    const ownMessage = await insertEmailMessage(WORKSPACE_ID, 9_104);
+
+    const response = await authenticatedCreate({ customerId: ownCustomer, emailMessageId: ownMessage });
+
+    expect(response.status).toBe(201);
+    const stored = await postgres.admin.query<{ customer_id: string; email_message_id: string }>(
+      `SELECT customer_id, email_message_id FROM returns`,
+    );
+    expect(stored.rows.map((row) => [Number(row.customer_id), Number(row.email_message_id)]))
+      .toEqual([[ownCustomer, ownMessage]]);
   });
 
   // F-A3a-08: a unique violation aborts the surrounding transaction, so the

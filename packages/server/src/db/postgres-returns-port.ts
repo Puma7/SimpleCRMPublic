@@ -258,6 +258,13 @@ async function createReturn(
   if (!(await idsBelongToWorkspace(trx, 'return_reasons', workspaceId, items.map((item) => item.reasonId)))) {
     return { ok: false, error: 'Unbekannter Retourengrund' };
   }
+  // Same for the header links (returns.customer_id / email_message_id are global FKs too).
+  if (!(await idsBelongToWorkspace(trx, 'customers', workspaceId, [input.customerId]))) {
+    return { ok: false, error: 'Unbekannter Kunde' };
+  }
+  if (!(await idsBelongToWorkspace(trx, 'email_messages', workspaceId, [input.emailMessageId]))) {
+    return { ok: false, error: 'Unbekannte E-Mail' };
+  }
 
   // Retry-safe insert: if the random return_number collides (vanishingly
   // unlikely with 4 random bytes per workspace), try again with a fresh one.
@@ -315,7 +322,7 @@ async function createReturn(
 
 async function idsBelongToWorkspace(
   trx: WorkspaceTransaction,
-  table: 'products' | 'return_reasons',
+  table: 'products' | 'return_reasons' | 'customers' | 'email_messages',
   workspaceId: string,
   candidates: ReadonlyArray<number | null | undefined>,
 ): Promise<boolean> {
