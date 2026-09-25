@@ -26254,7 +26254,13 @@ describe('server edition foundation', () => {
       sign: true,
       passphrase: ' passphrase with spaces ',
     }]);
+    // F-A5-10: the draft keeps the plaintext until SMTP accepted the message;
+    // only then is the prepared armor written back as the sent copy.
     expect(updates[0]).toEqual(['updateDraftForSend', expect.objectContaining({
+      bodyText: 'Secret text',
+      bodyHtml: null,
+    })]);
+    expect(updates).toContainEqual(['updateDraftForSend', expect.objectContaining({
       bodyText: '-----BEGIN PGP MESSAGE-----\nprepared\n-----END PGP MESSAGE-----',
       bodyHtml: null,
     })]);
@@ -26291,7 +26297,12 @@ describe('server edition foundation', () => {
       encrypt: true,
       sign: undefined,
     }]);
+    // F-A5-10: the draft keeps the HTML formatting until SMTP accepted the message.
     expect(updates[0]).toEqual(['updateDraftForSend', expect.objectContaining({
+      bodyText: '',
+      bodyHtml: '<p>Secret <strong>text</strong><br>Line&nbsp;2 &amp; more</p>',
+    })]);
+    expect(updates).toContainEqual(['updateDraftForSend', expect.objectContaining({
       bodyText: '-----BEGIN PGP MESSAGE-----\nprepared\n-----END PGP MESSAGE-----',
       bodyHtml: null,
     })]);
@@ -26478,6 +26489,171 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       messageId: 46,
     }]);
+  });
+
+  // F-A5-10: Der PGP-Versand schrieb den Ciphertext vor Pruefung und SMTP in den Entwurf; bei Fehler oder Hold war der Klartext weg.
+  test('server compose sender keeps the plaintext draft until a PGP send is accepted by SMTP', async () => {
+    const armor = '-----BEGIN PGP MESSAGE-----\nprepared\n-----END PGP MESSAGE-----';
+    const makeSender = (options: {
+      smtpSend: (input: { rfc822: string }) => Promise<void>;
+      review?: (input: unknown) => Promise<{ allowed: true } | { allowed: false; error: string }>;
+    }) => {
+      const ops: unknown[] = [];
+      let locked = false;
+      const syncInfo = new Map<string, string | null>();
+      const sender = createEmailComposeSenderPort({
+        now: () => new Date('2026-07-03T08:05:00.000Z'),
+        smtpSend: async (input) => {
+          ops.push(['smtp', input.rfc822]);
+          await options.smtpSend(input);
+        },
+        ...(options.review ? { outboundReview: { review: options.review } } : {}),
+        pgpMessages: {
+          async prepareOutboundBody() {
+            return { ok: true, bodyText: armor };
+          },
+          async prepareOutboundAttachments() {
+            throw new Error('no attachments in this test');
+          },
+        },
+        store: {
+          async getDraft(input) {
+            return input.messageId === 48
+              ? {
+                id: 48,
+                accountId: 7,
+                uid: -48,
+                folderKind: 'draft',
+                subject: 'Vertraulich',
+                bodyText: 'Geheimer Text',
+                bodyHtml: '<p>Geheimer <b>Text</b></p>',
+                messageIdHeader: null,
+                inReplyToHeader: null,
+                referencesHeader: null,
+                ticketCode: 'SCR-PGP',
+                threadId: 'th-pgp',
+                draftAttachmentPathsJson: null,
+                outboundHold: false,
+                outboundBlockReason: null,
+              }
+              : null;
+          },
+          async getAccount(input) {
+            return input.accountId === 7
+              ? {
+                id: 7,
+                sourceSqliteId: 70,
+                displayName: 'Support',
+                emailAddress: 'agent@example.com',
+                imapHost: 'imap.example.com',
+                imapUsername: 'agent@example.com',
+                smtpHost: 'smtp.example.com',
+                smtpPort: 587,
+                smtpTls: true,
+                smtpUsername: 'smtp-agent@example.com',
+                smtpUseImapAuth: false,
+                oauthProvider: null,
+                protocol: 'imap',
+                requestReadReceipt: false,
+              }
+              : null;
+          },
+          async getParentMessage() {
+            return null;
+          },
+          async getOrCreateThreadForTicket() {
+            return 'th-pgp';
+          },
+          async readSecret(input) {
+            return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+          },
+          async getSyncInfo(input) {
+            return new Map(input.keys.map((key) => [key, syncInfo.get(key) ?? null]));
+          },
+          async setSyncInfo(input) {
+            for (const [key, value] of Object.entries(input.values)) syncInfo.set(key, value);
+          },
+          async deleteSyncInfo(input) {
+            for (const key of input.keys) syncInfo.delete(key);
+          },
+          async claimSmtpOutbox() {
+            return 'claimed';
+          },
+          async tryAcquireSendingLock() {
+            if (locked) return false;
+            locked = true;
+            return true;
+          },
+          async releaseSendingLock() {
+            locked = false;
+          },
+          async updateDraftForSend(input) {
+            ops.push(['updateDraftForSend', { bodyText: input.bodyText, bodyHtml: input.bodyHtml }]);
+          },
+          async markDraftAsSent() {
+            ops.push(['markDraftAsSent']);
+          },
+          async markMessageDone() {},
+        },
+      });
+      return { sender, ops };
+    };
+    const send = (sender: ReturnType<typeof makeSender>['sender']) => sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 48,
+        subject: 'Vertraulich',
+        bodyText: 'Geheimer Text',
+        bodyHtml: '<p>Geheimer <b>Text</b></p>',
+        to: 'kunde@example.com',
+        pgpEncrypt: true,
+      },
+    });
+    const plaintextDraft = ['updateDraftForSend', {
+      bodyText: 'Geheimer Text',
+      bodyHtml: '<p>Geheimer <b>Text</b></p>',
+    }];
+
+    const smtpFailure = makeSender({
+      smtpSend: async () => {
+        throw new SmtpPreDataSendError('535 5.7.8 Authentication failed');
+      },
+    });
+    await expect(send(smtpFailure.sender)).resolves.toMatchObject({ ok: false });
+    expect(smtpFailure.ops.filter((op) => (op as unknown[])[0] === 'updateDraftForSend')).toEqual([plaintextDraft]);
+
+    const reviews: unknown[] = [];
+    const held = makeSender({
+      smtpSend: async () => {
+        throw new Error('SMTP must not run while the outbound review holds the draft');
+      },
+      review: async (input) => {
+        reviews.push(input);
+        return { allowed: false, error: 'Ausgangspruefung wird serverseitig ausgefuehrt' };
+      },
+    });
+    await expect(send(held.sender)).resolves.toMatchObject({ ok: false });
+    expect(reviews).toEqual([expect.objectContaining({
+      bodyText: 'Geheimer Text',
+      bodyHtml: '<p>Geheimer <b>Text</b></p>',
+    })]);
+    expect(held.ops).toEqual([plaintextDraft]);
+
+    const accepted = makeSender({ smtpSend: async () => undefined });
+    await expect(send(accepted.sender)).resolves.toMatchObject({ ok: true });
+    expect(accepted.ops.map((op) => (op as unknown[])[0])).toEqual([
+      'updateDraftForSend',
+      'smtp',
+      'updateDraftForSend',
+      'markDraftAsSent',
+    ]);
+    expect(accepted.ops[0]).toEqual(plaintextDraft);
+    expect(String((accepted.ops[1] as unknown[])[1])).toContain('-----BEGIN PGP MESSAGE-----');
+    expect(String((accepted.ops[1] as unknown[])[1])).not.toContain('Geheimer');
+    // The stored sent copy stays encrypted, as before.
+    expect(accepted.ops[2]).toEqual(['updateDraftForSend', { bodyText: armor, bodyHtml: null }]);
   });
 
   // F-A5-01: Compose kuerzte '+tag' und schrieb den Local-Part klein; ungueltige Eintraege neben gueltigen fielen still weg.

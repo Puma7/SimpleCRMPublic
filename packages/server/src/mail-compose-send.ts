@@ -383,6 +383,12 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         });
         if (!attachmentResolution.ok) return { ok: false, error: attachmentResolution.error };
         let attachments = attachmentResolution.attachments;
+        // The stored draft and the outbound review keep the user's text; only the
+        // SMTP message carries the PGP armor. Writing the armor into the draft before
+        // SMTP lost the plaintext on every failure or review hold (not encrypted to self).
+        const draftBodyText = bodyText;
+        const draftBodyHtml = html;
+        let pgpSentBody: { bodyText: string; bodyHtml: string | null } | null = null;
 
         if (values.pgpEncrypt || values.pgpSign) {
           if (!options.pgpMessages) {
@@ -429,6 +435,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           if (!pgpPrepared.ok) return { ok: false, error: pgpPrepared.error };
           bodyText = pgpPrepared.bodyText;
           if (values.pgpEncrypt) html = null;
+          pgpSentBody = { bodyText, bodyHtml: html };
         }
 
         if (draft.outboundHold && !outboundReview) {
@@ -444,8 +451,8 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           draft,
           account,
           input: values,
-          bodyText,
-          bodyHtml: html,
+          bodyText: draftBodyText,
+          bodyHtml: draftBodyHtml,
           toJson,
           ccJson,
           bccJson,
@@ -466,8 +473,8 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             actorUserId: input.actorUserId,
             draftMessageId: values.draftMessageId,
             subject: prepared.finalSubject,
-            bodyText,
-            bodyHtml: html,
+            bodyText: draftBodyText,
+            bodyHtml: draftBodyHtml,
             to: values.to,
             ...(values.cc === undefined ? {} : { cc: values.cc }),
             ...(values.bcc === undefined ? {} : { bcc: values.bcc }),
@@ -632,6 +639,12 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
           };
         }
 
+        if (pgpSentBody) {
+          // SMTP accepted the PGP message: the sent copy keeps the armor, never the
+          // plaintext. Written before the committed marker so a crash in between
+          // cannot finalize a plaintext sent copy.
+          await options.store.updateDraftForSend({ ...prepared.draftUpdate, ...pgpSentBody });
+        }
         await markSmtpSent(
           options.store,
           input.workspaceId,
@@ -1491,6 +1504,7 @@ async function prepareDraftForSend(input: {
   outboundMessageId: string;
   inReplyTo: string | null;
   references: string | null;
+  draftUpdate: Parameters<ComposeSenderStore['updateDraftForSend']>[0];
 }> {
   let ticketCode: string | null = null;
   let threadId: string | null = null;
@@ -1546,7 +1560,7 @@ async function prepareDraftForSend(input: {
   const outboundMessageId =
     input.draft.messageIdHeader?.trim() || generateOutboundMessageId(input.account.emailAddress);
 
-  await input.store.updateDraftForSend({
+  const draftUpdate: Parameters<ComposeSenderStore['updateDraftForSend']>[0] = {
     workspaceId: input.workspaceId,
     messageId: values.draftMessageId,
     subject: finalSubject,
@@ -1568,13 +1582,15 @@ async function prepareDraftForSend(input: {
     outboundMessageId,
     inReplyTo: threadHeaders.inReplyTo ?? null,
     references: threadHeaders.references ?? null,
-  });
+  };
+  await input.store.updateDraftForSend(draftUpdate);
 
   return {
     finalSubject,
     outboundMessageId,
     inReplyTo: threadHeaders.inReplyTo ?? null,
     references: threadHeaders.references ?? null,
+    draftUpdate,
   };
 }
 
