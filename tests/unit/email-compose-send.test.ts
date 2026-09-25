@@ -233,6 +233,68 @@ describe('sendComposeDraft', () => {
     expect(mockSetMessageDone).not.toHaveBeenCalled();
   });
 
+  // F-A5-01: Desktop-Compose kuerzte '+tag' und schrieb den Local-Part klein; ungueltige Eintraege fielen still weg.
+  it('sends to the exact recipient mailbox and rejects invalid recipient tokens', async () => {
+    mockGetMessage.mockImplementation((id: number) => {
+      if (id === 5) {
+        return {
+          id: 5,
+          uid: 100,
+          account_id: 1,
+          ticket_code: 'T-1',
+          thread_id: 'th',
+          message_id: '<parent@x>',
+          references_header: null,
+        };
+      }
+      return {
+        id: 10,
+        uid: -1,
+        account_id: 1,
+        folder_kind: 'draft',
+        body_html: null,
+        message_id: null,
+      };
+    });
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Re: Rechnung',
+      bodyText: 'Body',
+      to: 'Kunde <Customer+Shop@Example.com>, customer+shop@example.com',
+      cc: 'Mueller, Hans <Hans+Buchhaltung@Firma.DE>',
+      inReplyToMessageId: 5,
+    });
+    expect(r).toEqual({ ok: true });
+    expect(mockSendSmtp).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({
+        to: 'Customer+Shop@example.com',
+        cc: 'Hans+Buchhaltung@firma.de',
+      }),
+    );
+    expect(mockUpdateDraft).toHaveBeenCalledWith(
+      10,
+      expect.objectContaining({
+        toJson: JSON.stringify({ value: [{ address: 'Customer+Shop@example.com' }] }),
+        ccJson: JSON.stringify({ value: [{ address: 'Hans+Buchhaltung@firma.de' }] }),
+      }),
+    );
+
+    mockSendSmtp.mockClear();
+    await expect(
+      sendComposeDraft({
+        accountId: 1,
+        draftMessageId: 10,
+        subject: 'Re: Rechnung',
+        bodyText: 'Body',
+        to: 'kunde@firma.de, chef@firma',
+        inReplyToMessageId: 5,
+      }),
+    ).resolves.toEqual({ ok: false, error: expect.stringContaining('chef@firma') });
+    expect(mockSendSmtp).not.toHaveBeenCalled();
+  });
+
   it('rejects parallel send while lock is held', async () => {
     mockGetMessage.mockReturnValue({
       id: 10,

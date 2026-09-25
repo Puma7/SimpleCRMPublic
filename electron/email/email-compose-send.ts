@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import {
-  extractEmailAddressesFromRecipientField,
+  extractDeliveryAddressesFromRecipientField,
   recipientJsonFromField,
   senderJsonFromMailbox,
   validateRecipientField,
@@ -262,12 +262,12 @@ async function finalizeCommittedSmtpDraft(
   const acc = getEmailAccountById(input.accountId);
   if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
-  const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
+  const smtpTo = extractDeliveryAddressesFromRecipientField(input.to).join(', ');
   const smtpCc = input.cc?.trim()
-    ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
+    ? extractDeliveryAddressesFromRecipientField(input.cc).join(', ')
     : undefined;
   const smtpBcc = input.bcc?.trim()
-    ? extractEmailAddressesFromRecipientField(input.bcc).join(', ')
+    ? extractDeliveryAddressesFromRecipientField(input.bcc).join(', ')
     : undefined;
   const outboundMessageId =
     draft.message_id?.trim() || generateOutboundMessageId(acc.email_address);
@@ -535,12 +535,13 @@ export async function sendComposeDraft(input: {
       }
     }
 
-    const smtpTo = extractEmailAddressesFromRecipientField(input.to).join(', ');
+    // Delivery addresses keep the local part (case, plus tag) intact.
+    const smtpTo = extractDeliveryAddressesFromRecipientField(input.to).join(', ');
     const smtpCc = input.cc?.trim()
-      ? extractEmailAddressesFromRecipientField(input.cc).join(', ')
+      ? extractDeliveryAddressesFromRecipientField(input.cc).join(', ')
       : undefined;
     const smtpBcc = input.bcc?.trim()
-      ? extractEmailAddressesFromRecipientField(input.bcc).join(', ')
+      ? extractDeliveryAddressesFromRecipientField(input.bcc).join(', ')
       : undefined;
 
     let htmlOut = html || undefined;

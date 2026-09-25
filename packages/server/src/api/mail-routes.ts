@@ -51,6 +51,7 @@ import {
 import { MailAccessDeniedError } from '../mail-access/service';
 import { publishMailVisibilityInvalidation } from '../mail-access/visibility-invalidation';
 import type { MailAccessActor } from '../mail-access/types';
+import { emailAddressForDelivery } from '@simplecrm/core';
 import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
 import {
@@ -4294,31 +4295,23 @@ function recipientJsonObjectFromField(raw: string): { value: { address: string }
 
 function extractEmailAddressesFromRecipientField(raw: string): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const chunk of raw.split(/[,;]+/)) {
     const text = chunk.trim();
     if (!text) continue;
     const match = /^(.+)<([^>]+)>$/.exec(text);
     const candidate = (match ? match[2] : text)?.trim() ?? '';
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(candidate)) {
-      out.push(normalizeRecipientEmailAddress(candidate));
+      // Drafts store delivery addresses (scheduled send reads them back):
+      // local part incl. case and plus tag is kept, duplicates collapse case-insensitively.
+      const address = emailAddressForDelivery(candidate);
+      const identity = address.toLowerCase();
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      out.push(address);
     }
   }
-  return [...new Set(out)];
-}
-
-function normalizeRecipientEmailAddress(raw: string): string {
-  const trimmed = raw.trim().toLowerCase();
-  const at = trimmed.lastIndexOf('@');
-  if (at <= 0) return trimmed;
-  const local = trimmed.slice(0, at);
-  let domain = trimmed.slice(at + 1);
-  try {
-    domain = new URL(`http://${domain}`).hostname || domain;
-  } catch {
-    /* keep lower-cased domain */
-  }
-  const plus = local.indexOf('+');
-  return `${plus >= 0 ? local.slice(0, plus) : local}@${domain}`;
+  return out;
 }
 
 function normalizeDraftAttachmentPaths(rawValue: unknown): { ok: true; value: readonly string[] } | { ok: false; message: string } {

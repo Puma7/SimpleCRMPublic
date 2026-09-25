@@ -3,6 +3,7 @@ import {
   recipientFieldFromJson,
   recipientJsonFromField,
   senderJsonFromMailbox,
+  validateRecipientField,
 } from '../../shared/email-recipient-parse';
 import {
   addressJson,
@@ -41,6 +42,35 @@ describe('email recipient mapping', () => {
         preservePlusAddressing: true,
       }),
     ).toEqual(['audit+invoices@example.com']);
+  });
+
+  // F-A5-01: Gespeicherte Empfaenger verloren '+tag' und Gross-/Kleinschreibung des Local-Parts.
+  it('recipientJsonFromField stores delivery addresses with plus tag and local-part case', () => {
+    const json = recipientJsonFromField(
+      'Kunde <Customer+Shop@Example.com>, customer+shop@example.com; Mueller, Hans <hans@firma.de>',
+    );
+    expect(JSON.parse(json!)).toEqual({
+      value: [{ address: 'Customer+Shop@example.com' }, { address: 'hans@firma.de' }],
+    });
+  });
+
+  // F-A5-01: Ungueltige Eintraege neben gueltigen wurden beim Versand still verworfen.
+  it('validateRecipientField names invalid entries next to valid ones', () => {
+    expect(validateRecipientField('kunde@firma.de, chef@firma', 'An')).toEqual({
+      ok: false,
+      error: expect.stringContaining('chef@firma'),
+    });
+    expect(validateRecipientField('Hans, kunde@firma.de', 'Cc')).toEqual({
+      ok: false,
+      error: expect.stringContaining('Hans'),
+    });
+    expect(
+      validateRecipientField('Mueller, Hans <hans@firma.de>; "Meier, Eva" <eva@firma.de>', 'An'),
+    ).toEqual({ ok: true });
+    expect(validateRecipientField(' , ', 'An')).toEqual({
+      ok: false,
+      error: expect.stringContaining('Mindestens eine'),
+    });
   });
 
   it('recipientFieldFromJson round-trips compose fields', () => {

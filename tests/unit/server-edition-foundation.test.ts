@@ -23172,7 +23172,8 @@ describe('server edition foundation', () => {
           accountId: 7,
           subject: 'Draft',
           bodyText: 'Hello',
-          toJson: { value: [{ address: 'person@example.com' }] },
+          // F-A5-01: drafts keep delivery addresses (plus tag, local-part case).
+          toJson: { value: [{ address: 'Person+tag@example.com' }, { address: 'person@example.com' }] },
         },
       }],
       ['updateComposeDraft', {
@@ -23182,7 +23183,7 @@ describe('server edition foundation', () => {
           subject: 'Updated',
           bodyText: 'Plain',
           bodyHtml: '<p>Plain</p>',
-          toJson: { value: [{ address: 'to@example.com' }] },
+          toJson: { value: [{ address: 'to+tag@example.com' }] },
           ccJson: { value: [{ address: 'cc@example.com' }] },
           bccJson: { value: [{ address: 'bcc@example.com' }] },
           draftAttachmentPaths: ['/data/a.eml', '/data/b.eml'],
@@ -25234,11 +25235,12 @@ describe('server edition foundation', () => {
       user: 'smtp-agent@example.com',
       password: 'smtp-secret',
       envelopeFrom: 'agent@example.com',
-      recipients: ['customer@example.com', 'cc@example.com', 'hidden@example.com'],
+      // F-A5-01: the plus tag is delivery data and must reach SMTP unchanged.
+      recipients: ['customer+shop@example.com', 'cc@example.com', 'hidden@example.com'],
     });
     const rfc822 = (smtpSends[0] as { rfc822: string }).rfc822;
     expect(rfc822).toContain('From: Support <agent@example.com>');
-    expect(rfc822).toContain('To: customer@example.com');
+    expect(rfc822).toContain('To: customer+shop@example.com');
     expect(rfc822).toContain('Cc: cc@example.com');
     expect(rfc822).not.toContain('hidden@example.com');
     expect(rfc822).toContain('Subject: [SCR-ABCDEF] Antwort');
@@ -25280,7 +25282,7 @@ describe('server edition foundation', () => {
         subject: '[SCR-ABCDEF] Antwort',
         bodyText: 'Hallo',
         bodyHtml: '<p>Hallo</p>',
-        toJson: { value: [{ address: 'customer@example.com' }] },
+        toJson: { value: [{ address: 'customer+shop@example.com' }] },
         ccJson: { value: [{ address: 'cc@example.com' }] },
         bccJson: { value: [{ address: 'hidden@example.com' }] },
         ticketCode: 'SCR-ABCDEF',
@@ -25693,6 +25695,169 @@ describe('server edition foundation', () => {
       workspaceId: WORKSPACE_A_ID,
       messageId: 46,
     }]);
+  });
+
+  // F-A5-01: Compose kuerzte '+tag' und schrieb den Local-Part klein; ungueltige Eintraege neben gueltigen fielen still weg.
+  test('server compose sender keeps delivery addresses intact and rejects invalid recipient tokens', async () => {
+    const smtpSends: Array<{ recipients: readonly string[]; rfc822: string }> = [];
+    const updates: unknown[] = [];
+    const pgpRecipients: unknown[] = [];
+    let locked = false;
+    const sender = createEmailComposeSenderPort({
+      now: () => new Date('2026-07-03T08:05:00.000Z'),
+      smtpSend: async (input) => {
+        smtpSends.push(input);
+      },
+      pgpMessages: {
+        async prepareOutboundBody(input) {
+          pgpRecipients.push(input.recipientEmails);
+          return { ok: true, bodyText: input.bodyText };
+        },
+        async prepareOutboundAttachments() {
+          throw new Error('no attachments in this test');
+        },
+      },
+      store: {
+        async getDraft(input) {
+          return input.messageId === 47
+            ? {
+              id: 47,
+              accountId: 7,
+              uid: -47,
+              folderKind: 'draft',
+              subject: 'Rechnung',
+              bodyText: 'Anbei',
+              bodyHtml: null,
+              messageIdHeader: null,
+              inReplyToHeader: null,
+              referencesHeader: null,
+              ticketCode: 'SCR-PLUS01',
+              threadId: 'th-plus',
+              draftAttachmentPathsJson: null,
+              outboundHold: false,
+              outboundBlockReason: null,
+            }
+            : null;
+        },
+        async getAccount(input) {
+          return input.accountId === 7
+            ? {
+              id: 7,
+              sourceSqliteId: 70,
+              displayName: 'Support',
+              emailAddress: 'agent@example.com',
+              imapHost: 'imap.example.com',
+              imapUsername: 'agent@example.com',
+              smtpHost: 'smtp.example.com',
+              smtpPort: 587,
+              smtpTls: true,
+              smtpUsername: 'smtp-agent@example.com',
+              smtpUseImapAuth: false,
+              oauthProvider: null,
+              protocol: 'imap',
+              requestReadReceipt: false,
+            }
+            : null;
+        },
+        async getParentMessage() {
+          return null;
+        },
+        async getOrCreateThreadForTicket() {
+          return 'th-plus';
+        },
+        async readSecret(input) {
+          return input.kind === 'email.account.smtp_password' ? Buffer.from('smtp-secret') : null;
+        },
+        async getSyncInfo(input) {
+          return new Map(input.keys.map((key) => [key, null]));
+        },
+        async setSyncInfo(input) {
+          updates.push(['setSyncInfo', input]);
+        },
+        async deleteSyncInfo(input) {
+          updates.push(['deleteSyncInfo', input]);
+        },
+        async claimSmtpOutbox() {
+          return 'claimed';
+        },
+        async tryAcquireSendingLock() {
+          if (locked) return false;
+          locked = true;
+          return true;
+        },
+        async releaseSendingLock() {
+          locked = false;
+        },
+        async updateDraftForSend(input) {
+          updates.push(['updateDraftForSend', input]);
+        },
+        async markDraftAsSent(input) {
+          updates.push(['markDraftAsSent', input]);
+        },
+        async markMessageDone(input) {
+          updates.push(['markMessageDone', input]);
+        },
+      },
+    });
+    const send = (recipients: { to: string; cc?: string; bcc?: string; pgpSign?: boolean }) => sender.send({
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      values: {
+        accountId: 7,
+        draftMessageId: 47,
+        subject: 'Rechnung',
+        bodyText: 'Anbei',
+        ...recipients,
+      },
+    });
+
+    await expect(send({
+      to: 'Kunde <Customer+Shop@Example.com>, customer+shop@example.com',
+      cc: 'Buchhaltung <Rechnung+2026@Firma.DE>; customer@example.com',
+      bcc: 'CUSTOMER+SHOP@example.com',
+    })).resolves.toMatchObject({ ok: true, messageId: 47 });
+    expect(smtpSends).toHaveLength(1);
+    expect(smtpSends[0]!.recipients).toEqual([
+      'Customer+Shop@example.com',
+      'Rechnung+2026@firma.de',
+      'customer@example.com',
+    ]);
+    expect(smtpSends[0]!.rfc822).toContain('To: Customer+Shop@example.com');
+    expect(smtpSends[0]!.rfc822).toContain('Cc: Rechnung+2026@firma.de, customer@example.com');
+    expect(updates).toContainEqual(['updateDraftForSend', expect.objectContaining({
+      toJson: { value: [{ address: 'Customer+Shop@example.com' }] },
+      ccJson: { value: [{ address: 'Rechnung+2026@firma.de' }, { address: 'customer@example.com' }] },
+      bccJson: { value: [{ address: 'CUSTOMER+SHOP@example.com' }] },
+    })]);
+
+    // PGP key lookup keeps its existing match key (lowercase, without plus tag).
+    smtpSends.length = 0;
+    await expect(send({ to: 'Kunde <Customer+Shop@Example.com>', pgpSign: true }))
+      .resolves.toMatchObject({ ok: true });
+    expect(pgpRecipients).toEqual([['customer@example.com']]);
+    expect(smtpSends[0]!.recipients).toEqual(['Customer+Shop@example.com']);
+
+    // A comma inside an unquoted display name is not an invalid recipient.
+    smtpSends.length = 0;
+    await expect(send({ to: 'Mueller, Hans <hans@firma.de>' })).resolves.toMatchObject({ ok: true });
+    expect(smtpSends[0]!.recipients).toEqual(['hans@firma.de']);
+
+    smtpSends.length = 0;
+    updates.length = 0;
+    await expect(send({ to: 'kunde@firma.de, chef@firma' })).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('chef@firma'),
+    });
+    await expect(send({ to: 'kunde@firma.de', cc: 'Hans, buchhaltung@firma.de' })).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('Hans'),
+    });
+    await expect(send({ to: 'kunde@firma.de', bcc: 'Chef <chef@firma>' })).resolves.toEqual({
+      ok: false,
+      error: expect.stringContaining('chef@firma'),
+    });
+    expect(smtpSends).toEqual([]);
+    expect(updates).toEqual([]);
   });
 
   test('server compose sender clears sent-copy failure after successful IMAP APPEND', async () => {

@@ -9,6 +9,7 @@ import {
   type ComposeRfc822Attachment,
   buildOutboundThreadingHeaders,
   buildOutboundWarningBanner,
+  emailAddressForDelivery,
   ensureTicketInSubject,
   extractDraftBodyForOutboundBlock,
   extractTicketFromSubject,
@@ -359,10 +360,17 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
         const toJson = recipientJsonObjectFromField(values.to);
         const ccJson = values.cc?.trim() ? recipientJsonObjectFromField(values.cc) : null;
         const bccJson = values.bcc?.trim() ? recipientJsonObjectFromField(values.bcc) : null;
-        const smtpTo = extractEmailAddressesFromRecipientField(values.to);
-        const smtpCc = values.cc?.trim() ? extractEmailAddressesFromRecipientField(values.cc) : [];
-        const smtpBcc = values.bcc?.trim() ? extractEmailAddressesFromRecipientField(values.bcc) : [];
-        const recipients = [...new Set([...smtpTo, ...smtpCc, ...smtpBcc])];
+        // SMTP envelope, headers and stored recipients use delivery addresses
+        // (local part incl. plus tag unchanged); the PGP key lookup keeps its match key.
+        const smtpTo = extractDeliveryAddressesFromRecipientField(values.to);
+        const smtpCc = values.cc?.trim() ? extractDeliveryAddressesFromRecipientField(values.cc) : [];
+        const smtpBcc = values.bcc?.trim() ? extractDeliveryAddressesFromRecipientField(values.bcc) : [];
+        const recipients = uniqueDeliveryAddresses([...smtpTo, ...smtpCc, ...smtpBcc]);
+        const pgpRecipientEmails = [...new Set([
+          ...extractEmailAddressesFromRecipientField(values.to),
+          ...(values.cc?.trim() ? extractEmailAddressesFromRecipientField(values.cc) : []),
+          ...(values.bcc?.trim() ? extractEmailAddressesFromRecipientField(values.bcc) : []),
+        ])];
         const attachmentResolution = resolveComposeAttachments({
           attachmentPaths: values.attachmentPaths,
           attachmentsRoot: options.attachmentsRoot,
@@ -391,7 +399,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
               workspaceId: input.workspaceId,
               actorUserId: input.actorUserId,
               attachments: attachmentInput.attachments,
-              recipientEmails: recipients,
+              recipientEmails: pgpRecipientEmails,
               encrypt: values.pgpEncrypt,
               sign: values.pgpSign,
               ...(values.pgpPassphrase === undefined ? {} : { passphrase: values.pgpPassphrase }),
@@ -407,7 +415,7 @@ export function createEmailComposeSenderPort(options: ComposeSenderOptions): Ema
             workspaceId: input.workspaceId,
             actorUserId: input.actorUserId,
             bodyText,
-            recipientEmails: recipients,
+            recipientEmails: pgpRecipientEmails,
             encrypt: values.pgpEncrypt,
             sign: values.pgpSign,
             ...(values.pgpPassphrase === undefined ? {} : { passphrase: values.pgpPassphrase }),
@@ -1674,8 +1682,11 @@ function validateComposeRecipients(input: EmailComposeSendInput): string | null 
 }
 
 function validateRecipientField(raw: string, label: string): string | null {
-  const addrs = extractEmailAddressesFromRecipientField(raw);
-  return addrs.length === 0
+  const parsed = parseRecipientField(raw);
+  if (parsed.invalid.length > 0) {
+    return `Ungueltige E-Mail-Adresse in "${label}": ${parsed.invalid[0]}`;
+  }
+  return parsed.candidates.length === 0
     ? `Mindestens eine gueltige E-Mail-Adresse in "${label}" (z. B. a@b.de oder Name <a@b.de>).`
     : null;
 }
@@ -1709,23 +1720,58 @@ function htmlToPlainTextForPgp(html: string): string {
 function recipientJsonObjectFromField(raw: string): { value: { address: string }[] } | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  const addresses = extractEmailAddressesFromRecipientField(trimmed);
+  const addresses = extractDeliveryAddressesFromRecipientField(trimmed);
   if (addresses.length === 0) return null;
   return { value: addresses.map((address) => ({ address })) };
 }
 
-function extractEmailAddressesFromRecipientField(raw: string): string[] {
-  const out: string[] = [];
+/**
+ * Split a recipient field into address candidates and invalid entries.
+ * Unquoted display names may contain commas ("Mueller, Hans <h@x.de>"), so a
+ * chunk without "@" only counts as a name fragment when a "Name <addr>" chunk follows.
+ */
+function parseRecipientField(raw: string): { candidates: string[]; invalid: string[] } {
+  const candidates: string[] = [];
+  const invalid: string[] = [];
+  let nameFragments: string[] = [];
   for (const chunk of raw.split(/[,;]+/)) {
     const text = chunk.trim();
     if (!text) continue;
     const match = /^(.+)<([^>]+)>$/.exec(text);
-    const candidate = (match ? match[2] : text)?.trim() ?? '';
-    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(candidate)) {
-      out.push(normalizeRecipientEmailAddress(candidate));
+    if (!match && !text.includes('@') && !text.includes('<')) {
+      nameFragments.push(text);
+      continue;
     }
+    if (!match) invalid.push(...nameFragments);
+    nameFragments = [];
+    const candidate = (match ? match[2] : text)?.trim() ?? '';
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(candidate)) candidates.push(candidate);
+    else invalid.push(text);
   }
-  return [...new Set(out)];
+  invalid.push(...nameFragments);
+  return { candidates, invalid };
+}
+
+function extractDeliveryAddressesFromRecipientField(raw: string): string[] {
+  return uniqueDeliveryAddresses(parseRecipientField(raw).candidates.map(emailAddressForDelivery));
+}
+
+/** Case-insensitive dedupe that keeps the first spelling of each mailbox. */
+function uniqueDeliveryAddresses(addresses: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const address of addresses) {
+    const identity = address.toLowerCase();
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    out.push(address);
+  }
+  return out;
+}
+
+/** Match key (lowercase, without plus tag) for PGP key lookup. */
+function extractEmailAddressesFromRecipientField(raw: string): string[] {
+  return [...new Set(parseRecipientField(raw).candidates.map(normalizeRecipientEmailAddress))];
 }
 
 function normalizeRecipientEmailAddress(raw: string): string {
