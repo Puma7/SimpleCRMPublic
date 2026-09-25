@@ -1625,16 +1625,18 @@ async function walkGraph(
     allowRevisit?: boolean;
     stopBeforeNodeIds?: ReadonlySet<string>;
     inboundGate?: ServerInboundBranchGate;
+    /** Step counter of this walk; the block-port branch keeps counting (desktop parity). */
+    steps?: { count: number };
   },
 ): Promise<GraphRunResult> {
   const nodesById = new Map(input.doc.nodes.map((node) => [node.id, node]));
   const seen = input.seen ?? new Set<string>();
   let currentId: string | undefined = input.startNodeId;
-  let stepCount = 0;
+  const steps = input.steps ?? { count: 0 };
 
   while (currentId) {
     if (input.stopBeforeNodeIds?.has(currentId)) break;
-    if (stepCount++ >= MAX_GRAPH_STEPS) {
+    if (steps.count++ >= MAX_GRAPH_STEPS) {
       return blockedResult('graph_step_limit:server_workflow_execution', input.log);
     }
     if (input.allowRevisit !== true && seen.has(currentId)) {
@@ -1696,7 +1698,10 @@ async function walkGraph(
           continue;
         }
 
-        const stopBeforeNodeIds = new Set<string>([currentId]);
+        // Stop points of enclosing loops stay active, otherwise nested loops
+        // restart each other (L1 -> L2 -> L1) without bound.
+        const stopBeforeNodeIds = new Set<string>(input.stopBeforeNodeIds);
+        stopBeforeNodeIds.add(currentId);
         if (doneEdge?.target) stopBeforeNodeIds.add(doneEdge.target);
         for (let index = 0; index < activeItems.length; index += 1) {
           const item = activeItems[index]!;
@@ -1814,6 +1819,8 @@ async function walkGraph(
         const branch = await walkGraph(trx, {
           ...input,
           startNodeId: blockEdge.target,
+          seen,
+          steps,
         });
         if (branch.blocked || branch.status === 'blocked') return branch;
         if (branch.deferred) {
