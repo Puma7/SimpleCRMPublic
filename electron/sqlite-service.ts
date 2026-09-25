@@ -2104,6 +2104,14 @@ export function createCustomer(customerData: any): any {
     }
 }
 
+// Keys are interpolated as column names into the UPDATE statement, so only real
+// customer columns may pass (payloads come from IPC and the Automation API).
+const CUSTOMER_UPDATABLE_COLUMNS = new Set([
+    'customerNumber', 'name', 'firstName', 'company', 'email', 'phone', 'mobile',
+    'street', 'zipCode', 'city', 'country', 'jtl_dateCreated', 'jtl_blocked',
+    'status', 'notes', 'affiliateLink', 'dateAdded', 'lastModifiedLocally', 'lastSynced',
+]);
+
 export function updateCustomer(id: number, customerData: any): any {
     const now = new Date().toISOString();
 
@@ -2112,6 +2120,11 @@ export function updateCustomer(id: number, customerData: any): any {
 
     const updateFieldKeys = Object.keys(otherCustomerData)
         .filter(key => key !== 'id' && key !== 'jtl_kKunde'); // Don't update primary keys
+
+    const unknownKey = updateFieldKeys.find(key => !CUSTOMER_UPDATABLE_COLUMNS.has(key));
+    if (unknownKey !== undefined) {
+        throw new Error(`Unbekanntes Kundenfeld: ${unknownKey.slice(0, 64)}`);
+    }
 
     const updateAssignments = updateFieldKeys.map(key => `${key} = @${key}`);
 
