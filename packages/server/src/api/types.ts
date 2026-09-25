@@ -248,6 +248,8 @@ export type AuthSecurityWorkspaceSettings = {
   mfaEnabled: boolean;
   mfaTotpEnabled: boolean;
   mfaEmailEnabled: boolean;
+  /** Returns portal CAPTCHA, on by default once Turnstile is configured (F-A3a-07). */
+  portalCaptchaEnabled: boolean;
 };
 
 export type LoginSecurityApiPort = Readonly<{

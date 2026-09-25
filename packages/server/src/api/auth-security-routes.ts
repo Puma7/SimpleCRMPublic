@@ -313,6 +313,7 @@ function parseSecuritySettingsBody(
     mfaEnabled: readOptionalBoolean(record, 'mfaEnabled', existing?.mfaEnabled ?? false),
     mfaTotpEnabled: readOptionalBoolean(record, 'mfaTotpEnabled', existing?.mfaTotpEnabled ?? true),
     mfaEmailEnabled: readOptionalBoolean(record, 'mfaEmailEnabled', existing?.mfaEmailEnabled ?? false),
+    portalCaptchaEnabled: readOptionalBoolean(record, 'portalCaptchaEnabled', existing?.portalCaptchaEnabled ?? true),
   };
   return { values };
 }

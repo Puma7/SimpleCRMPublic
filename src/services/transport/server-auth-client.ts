@@ -56,6 +56,8 @@ export type ServerAuthSecuritySettings = {
   mfaEnabled: boolean
   mfaTotpEnabled: boolean
   mfaEmailEnabled: boolean
+  /** Returns portal CAPTCHA; on by default once Turnstile is configured. Older servers omit it. */
+  portalCaptchaEnabled?: boolean
 }
 
 export type ServerAuthClient = {

@@ -57,6 +57,9 @@ function makePortalSettings(resolution: Resolution): ReturnsPortalSettingsApiPor
   };
 }
 
+// Since F-A3a-07 (E7) the portal follows its own workspace setting
+// (portalCaptchaEnabled, on by default), no longer the login CAPTCHA; the
+// fixtures set both so `captchaEnabled` keeps meaning "portal CAPTCHA on".
 function workspaceCaptchaSettings(captchaEnabled: boolean) {
   return async () => ({
     captchaEnabled,
@@ -64,6 +67,7 @@ function workspaceCaptchaSettings(captchaEnabled: boolean) {
     mfaEnabled: false,
     mfaTotpEnabled: false,
     mfaEmailEnabled: false,
+    portalCaptchaEnabled: captchaEnabled,
   });
 }
 
@@ -495,6 +499,7 @@ describe('portal CAPTCHA follows the workspace of the portal token', () => {
           mfaEnabled: false,
           mfaTotpEnabled: false,
           mfaEmailEnabled: false,
+          portalCaptchaEnabled: input.workspaceCaptcha[workspaceId] ?? false,
         };
       },
       assertCaptchaChallenge() { return input.challengeValid ?? false; },

@@ -684,9 +684,9 @@ async function handlePortalCreate(
   if ('status' in resolved) return resolved;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
 
-  // CAPTCHA: when the portal token's workspace has captcha enabled in its login
-  // security settings, the public create endpoint also requires a fresh
-  // challenge. When loginSecurity is NOT wired, portal create is rejected —
+  // CAPTCHA: once Turnstile is configured, the public create endpoint requires a
+  // fresh challenge unless the portal token's workspace switched the portal
+  // CAPTCHA off. When loginSecurity is NOT wired, portal create is rejected —
   // public abuse must not rely on optional operator configuration.
   let captchaStatus: 'passed' | 'not_required' | 'unavailable' = 'unavailable';
   if (!ports.loginSecurity) {
@@ -730,7 +730,10 @@ async function handlePortalCreate(
 /**
  * The portal CAPTCHA follows the workspace behind the portal token — not the
  * instance-wide login config, which is on as soon as ANY workspace enables
- * its login CAPTCHA. It needs Turnstile configured on the instance.
+ * its login CAPTCHA. It needs Turnstile configured on the instance and is then
+ * on by default (F-A3a-07): anonymous creates are the abuse surface, so only an
+ * explicit `portalCaptchaEnabled: false` of the workspace switches it off. The
+ * login CAPTCHA setting no longer decides it.
  */
 async function portalCaptchaConfig(
   loginSecurity: NonNullable<ServerApiPorts['loginSecurity']>,
@@ -740,7 +743,7 @@ async function portalCaptchaConfig(
   const siteKey = loginConfig?.captcha.provider === 'turnstile' ? loginConfig.captcha.siteKey : null;
   if (!siteKey) return { captchaRequired: false, siteKey: null };
   const settings = await loginSecurity.getWorkspaceSettings(workspaceId);
-  return settings.captchaEnabled
+  return settings.portalCaptchaEnabled !== false
     ? { captchaRequired: true, siteKey }
     : { captchaRequired: false, siteKey: null };
 }

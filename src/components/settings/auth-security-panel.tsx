@@ -23,6 +23,7 @@ export function AuthSecurityPanel() {
     mfaEnabled: false,
     mfaTotpEnabled: true,
     mfaEmailEnabled: false,
+    portalCaptchaEnabled: true,
   })
   const [captchaProviderConfigured, setCaptchaProviderConfigured] = useState(false)
   const [currentUser, setCurrentUser] = useState({
@@ -109,6 +110,18 @@ export function AuthSecurityPanel() {
           checked={settings.captchaEnabled}
           disabled={!captchaProviderConfigured || busy}
           onCheckedChange={(checked) => setSettings((current) => ({ ...current, captchaEnabled: checked }))}
+        />
+        <SettingToggle
+          id="portal-captcha-enabled"
+          label="CAPTCHA im Retourenportal"
+          description={
+            captchaProviderConfigured
+              ? "Standardmaessig an: Wer im oeffentlichen Retourenportal eine Retoure anlegt, muss zuerst Cloudflare Turnstile bestehen."
+              : "Greift, sobald TURNSTILE_SITE_KEY und TURNSTILE_SECRET_KEY auf dem Server gesetzt sind."
+          }
+          checked={settings.portalCaptchaEnabled !== false}
+          disabled={!captchaProviderConfigured || busy}
+          onCheckedChange={(checked) => setSettings((current) => ({ ...current, portalCaptchaEnabled: checked }))}
         />
         <SettingToggle
           id="pin-keypad-enabled"

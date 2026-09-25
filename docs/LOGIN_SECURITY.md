@@ -48,11 +48,19 @@ Beide Keys müssen gesetzt sein, damit der Provider aktiv wird. In den Workspace
 
 Turnstile-Verifikation hat ein **5-Sekunden-Timeout** — hängende Provider-Antworten blockieren den Login nicht unbegrenzt.
 
+**Retourenportal:** Sobald Turnstile konfiguriert ist, verlangt die öffentliche
+Retouren-Anlage (`POST /api/v1/portal/returns/:token`) standardmäßig ein CAPTCHA,
+unabhängig vom Login-CAPTCHA (F-A3a-07). Der Workspace kann es unter
+**Login-Sicherheit → „CAPTCHA im Retourenportal“** abschalten (Feld
+`portalCaptchaEnabled`, Key `auth_security_portal_captcha_enabled`; fehlt der Key,
+gilt „an“). Ohne Turnstile bleibt das Portal ohne CAPTCHA nutzbar.
+
 ### Workspace-Toggles (Admin)
 
 **Einstellungen → Sicherheit → Login-Sicherheit** (nur Admin):
 
 - CAPTCHA aktivieren
+- CAPTCHA im Retourenportal (standardmäßig an, wirkt nur mit Turnstile)
 - PIN-Keypad aktivieren
 - MFA aktivieren (mit Unterwahl TOTP / E-Mail)
 
