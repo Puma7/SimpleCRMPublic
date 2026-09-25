@@ -31,6 +31,9 @@ export type EmailAccount = {
   smtp_tls?: number | null
   smtp_username?: string | null
   smtp_use_imap_auth?: number | null
+  /** Desktop: OAuth-Anmeldung (google/microsoft), aktiv mit Refresh-Key. */
+  oauth_provider?: string | null
+  oauth_refresh_keytar_key?: string | null
   sent_folder_path?: string | null
   sync_spam_folder_path?: string | null
   sync_archive_folder_path?: string | null

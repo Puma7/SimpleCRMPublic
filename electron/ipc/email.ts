@@ -345,11 +345,11 @@ function smtpLogin(acc: EmailAccountRow): MailLogin {
 // (IMAP/POP3: IMAP-Passwort; SMTP: bei "wie IMAP" das IMAP-, sonst das
 // SMTP-Passwort); das Umschalten von "wie IMAP" zaehlt ebenso. Paritaet zu
 // A2a-01/E2: missingCredentialsForEndpointChange in packages/server/src/api/mail-routes.ts.
-function missingCredentialsForEndpointChange(
+// Liefert je Passwort die Protokolle, deren Server sich aendert.
+function credentialsForEndpointChange(
   current: EmailAccountRow,
   next: EmailAccountRow,
-  fresh: { imapPassword: boolean; smtpPassword: boolean },
-): string | null {
+): Map<'imapPassword' | 'smtpPassword', string[]> {
   const checks = [
     { protocol: 'IMAP', login: imapLogin, credential: 'imapPassword', switched: false },
     { protocol: 'POP3', login: pop3Login, credential: 'imapPassword', switched: false },
@@ -360,20 +360,35 @@ function missingCredentialsForEndpointChange(
       switched: Boolean(next.smtp_use_imap_auth) !== Boolean(current.smtp_use_imap_auth),
     },
   ] as const;
-  const missing = new Map<'imapPassword' | 'smtpPassword', string[]>();
+  const required = new Map<'imapPassword' | 'smtpPassword', string[]>();
   for (const check of checks) {
     const after = check.login(next);
     // Ein geleerter Host schaltet das Protokoll ab; dann geht nichts an einen Server.
-    if (!after.host.trim() || fresh[check.credential]) continue;
+    if (!after.host.trim()) continue;
     if (!check.switched && sameMailEndpoint(check.login(current), after)) continue;
-    missing.set(check.credential, [...(missing.get(check.credential) ?? []), check.protocol]);
+    required.set(check.credential, [...(required.get(check.credential) ?? []), check.protocol]);
   }
-  if (missing.size === 0) return null;
-  const details = [...missing].map(([field, protocols]) =>
+  return required;
+}
+
+function missingCredentialsError(
+  required: Map<'imapPassword' | 'smtpPassword', string[]>,
+  fresh: { imapPassword: boolean; smtpPassword: boolean },
+): string | null {
+  const missing = [...required].filter(([field]) => !fresh[field]);
+  if (missing.length === 0) return null;
+  const details = missing.map(([field, protocols]) =>
     `${field === 'imapPassword' ? 'IMAP-Passwort' : 'SMTP-Passwort'} erforderlich (${
       protocols.map((protocol) => `${protocol}-Server`).join(', ')
     } geaendert)`);
   return `Zugangsdaten bei Serverwechsel neu eingeben: ${details.join('; ')}`;
+}
+
+// Wie resolveImapAuth: ein verknuepftes Google-/Microsoft-Konto meldet sich mit
+// dem OAuth-Token an, auch wenn ein IMAP-Passwort gespeichert ist.
+function usesOAuthLogin(acc: EmailAccountRow): boolean {
+  return (acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft')
+    && Boolean(acc.oauth_refresh_keytar_key);
 }
 
 interface EmailHandlersOptions {
@@ -480,12 +495,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
+        let replaceOAuthLogin = false;
         if (acc) {
           // Vor dem Speichern der Passwoerter: eine abgelehnte Aenderung darf
           // auch den Schluesselbund nicht anfassen. Die Werte folgen der
           // Zuordnung an updateEmailAccountRecord unten (null bei Port/SMTP-TLS
           // laesst den gespeicherten Wert stehen).
-          const missing = missingCredentialsForEndpointChange(acc, {
+          const required = credentialsForEndpointChange(acc, {
             ...acc,
             imap_host: payload.imapHost ?? acc.imap_host,
             imap_port: payload.imapPort ?? acc.imap_port,
@@ -499,11 +515,17 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
             pop3_host: payload.pop3Host === undefined ? acc.pop3_host : payload.pop3Host,
             pop3_port: payload.pop3Port ?? acc.pop3_port,
             pop3_tls: payload.pop3Tls === undefined ? acc.pop3_tls : Number(Boolean(payload.pop3Tls)),
-          }, {
+          });
+          const missing = missingCredentialsError(required, {
             imapPassword: Boolean(payload.imapPassword),
             smtpPassword: Boolean(payload.smtpPassword),
           });
           if (missing) return { success: false as const, error: missing };
+          // Auf dem Desktop hat das OAuth-Token Vorrang vor dem IMAP-Passwort
+          // (resolveImapAuth). Verlangt der Serverwechsel das IMAP-Passwort, ersetzt
+          // das neue Passwort daher die OAuth-Verknuepfung; sonst ginge das Token an
+          // den neuen Server. Auf dem Server hat das Passwort ohnehin Vorrang.
+          replaceOAuthLogin = required.has('imapPassword') && usesOAuthLogin(acc);
         }
         if (payload.imapPassword && payload.imapPassword.length > 0 && acc) {
           await saveEmailPassword(acc.keytar_account_key, payload.imapPassword);
@@ -544,7 +566,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           smtpUsername: payload.smtpUsername ?? undefined,
           smtpUseImapAuth: payload.smtpUseImapAuth,
           smtpKeytarAccountKey: smtpKey,
+          ...(replaceOAuthLogin ? { oauthProvider: null, oauthRefreshKeytarKey: null } : {}),
         });
+        // Access-Tokens werden nicht zwischengespeichert (jeder Connect holt sie
+        // ueber den Refresh-Token), es genuegt also, diesen zu loeschen.
+        if (replaceOAuthLogin && acc?.oauth_refresh_keytar_key) {
+          await deleteEmailPassword(acc.oauth_refresh_keytar_key).catch((err: unknown) => {
+            logger.warn('[IPC] UpdateAccount: OAuth-Refresh-Token nicht geloescht', err);
+          });
+        }
         return { success: true as const };
       },
       { logger, accountAccess: 'rw', requireRole: ['owner', 'admin'] },
@@ -1574,9 +1604,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           const useImap = payload.smtpUseImapAuth ?? Boolean(acc.smtp_use_imap_auth);
           // Mit "wie IMAP" nimmt resolveImapAuth bei OAuth-Konten immer das Token,
           // auch wenn ein Passwort mitkommt.
-          const oauthToken = useImap
-            && (acc.oauth_provider === 'google' || acc.oauth_provider === 'microsoft')
-            && Boolean(acc.oauth_refresh_keytar_key);
+          const oauthToken = useImap && usesOAuthLogin(acc);
           if (
             (!pass || oauthToken)
             && (useImap !== Boolean(acc.smtp_use_imap_auth)

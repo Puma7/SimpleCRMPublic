@@ -57,6 +57,10 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       || smtpImapAuth !== ((storedAccount.smtp_use_imap_auth ?? 1) === 1)
     )
   const requiredPasswordLabel = smtpImapAuth ? "IMAP-Passwort" : "SMTP-Passwort"
+  // Desktop: with "wie IMAP" the OAuth token would win over the IMAP password, so
+  // the IPC drops the OAuth link when the change is saved with the IMAP password.
+  const oauthLinkReplaced = credentialsRequired && smtpImapAuth && !isServerClientMode()
+    && Boolean(storedAccount?.oauth_provider && storedAccount?.oauth_refresh_keytar_key)
 
   const load = useCallback(async () => {
     try {
@@ -289,6 +293,11 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
               <p className="text-xs text-muted-foreground">
                 Server, Port, TLS oder Anmeldung geändert: Das gespeicherte Passwort wird nicht an
                 einen anderen Server gesendet. Bitte erneut eingeben.
+              </p>
+            ) : null}
+            {oauthLinkReplaced ? (
+              <p className="text-xs text-muted-foreground">
+                Beim Speichern wird die OAuth-Verknüpfung dieses Kontos durch dieses Passwort ersetzt.
               </p>
             ) : null}
           </div>

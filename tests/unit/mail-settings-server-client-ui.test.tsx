@@ -469,6 +469,40 @@ describe('mail settings server-client UI', () => {
       await waitFor(() => expect(toast.error).toHaveBeenCalledWith(smtpRejection));
       expect(toast.success).not.toHaveBeenCalled();
     });
+
+    // PR-Review #193: Ein neues Passwort ersetzt beim Serverwechsel die OAuth-Verknuepfung; das Formular kuendigt das vor dem Speichern an.
+    test('OAuth-Konto: Kontoformular und SMTP-Panel kuendigen an, dass das Passwort OAuth ersetzt', async () => {
+      const oauth = { oauth_provider: 'google', oauth_refresh_keytar_key: 'email-oauth-1' };
+      const localInvoke = jest.fn(async (channel: string) => (
+        channel === 'email:list-accounts' ? [{ ...desktopSmtpAccount(), ...oauth }] : { success: true }
+      ));
+      (window as any).electronAPI = { invoke: localInvoke };
+      configureRendererTransport(createIpcRendererTransport());
+      const hint = /OAuth-Verknüpfung.*durch dieses Passwort ersetzt/;
+
+      const form = render(<AccountForm onCreated={jest.fn()} editAccount={{ ...imapAccount(), ...oauth }} />);
+      await screen.findByLabelText('IMAP-Server');
+      expect(screen.queryByText(hint)).not.toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText('IMAP-Server'), { target: { value: 'imap.other.example' } });
+      expect(screen.getByText(hint)).toBeInTheDocument();
+      form.unmount();
+
+      render(<SmtpPanel embeddedAccountId={1} />);
+      const hostInput = await screen.findByDisplayValue('smtp.example.com');
+      expect(screen.queryByText(hint)).not.toBeInTheDocument();
+      fireEvent.change(hostInput, { target: { value: 'smtp.other.example' } });
+      expect(screen.getByText(hint)).toBeInTheDocument();
+    });
+
+    test('Konto ohne OAuth zeigt keinen OAuth-Hinweis', async () => {
+      (window as any).electronAPI = { invoke: jest.fn(async () => [imapAccount()]) };
+      configureRendererTransport(createIpcRendererTransport());
+      render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+      fireEvent.change(await screen.findByLabelText('IMAP-Server'), { target: { value: 'imap.other.example' } });
+      expect(screen.getByLabelText(/Passwort \(erforderlich, Server geändert\)/)).toBeRequired();
+      expect(screen.queryByText(/OAuth-Verknüpfung/)).not.toBeInTheDocument();
+    });
   });
 
   test('SMTP panel asks for the IMAP password when the server changes with IMAP login', async () => {

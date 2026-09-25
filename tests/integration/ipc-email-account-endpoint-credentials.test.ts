@@ -8,6 +8,8 @@
  * schickt der naechste Abruf oder Versand das gespeicherte Passwort (oder das
  * OAuth-Token) an den neuen Server. Paritaet zu A2a-01/E2 der Server-Edition
  * (missingCredentialsForEndpointChange in packages/server/src/api/mail-routes.ts).
+ * Bei OAuth-Konten ersetzt das neue IMAP-Passwort dann die OAuth-Verknuepfung,
+ * weil auf dem Desktop sonst das Token Vorrang haette.
  * Echte SQLite, echte Stores und echter registerIpcHandler; ersetzt sind nur
  * Electron, die Session (Owner) und der Schluesselbund.
  */
@@ -59,15 +61,44 @@ jest.mock('../../electron/email/email-keytar', () => ({
   deleteEmailPassword: jest.fn(async (key: string) => mockKeychain.delete(key)),
 }));
 
+// Kein Netz: IMAP-/POP3-Clients merken sich nur, womit sie sich anmelden wuerden.
+const mockImapOptions: Array<Record<string, any>> = [];
+jest.mock('imapflow', () => ({
+  ImapFlow: class {
+    constructor(options: Record<string, any>) {
+      mockImapOptions.push(options);
+    }
+    connect = async () => {
+      throw new Error('offline (Test)');
+    };
+    logout = async () => undefined;
+  },
+}));
+const mockPop3Options: Array<Record<string, any>> = [];
+jest.mock('node-pop3', () => class {
+  constructor(options: Record<string, any>) {
+    mockPop3Options.push(options);
+  }
+  UIDL = async () => {
+    throw new Error('offline (Test)');
+  };
+  QUIT = async () => undefined;
+});
+jest.mock('../../electron/email/email-oauth-google', () => ({
+  ...jest.requireActual('../../electron/email/email-oauth-google'),
+  getGoogleAccessTokenForImap: jest.fn(async () => 'google-access-token'),
+}));
+
 import Database from 'better-sqlite3';
 import { IPCChannels } from '../../shared/ipc/channels';
-import { bootstrapFreshDatabaseSchema, closeDatabase } from '../../electron/sqlite-service';
+import { bootstrapFreshDatabaseSchema, closeDatabase, setSyncInfo } from '../../electron/sqlite-service';
 import {
   createEmailAccountRecord,
   getEmailAccountById,
   updateEmailAccountRecord,
 } from '../../electron/email/email-store';
-import { saveEmailPassword } from '../../electron/email/email-keytar';
+import { deleteEmailPassword, saveEmailPassword } from '../../electron/email/email-keytar';
+import { getGoogleAccessTokenForImap } from '../../electron/email/email-oauth-google';
 import { registerEmailHandlers } from '../../electron/ipc/email';
 
 const event = { sender: { id: 1 } };
@@ -123,6 +154,8 @@ describe('Konto bearbeiten: Serverwechsel verlangt neue Zugangsdaten (A2a-01, E2
       pop3_host: row.pop3_host,
       pop3_port: row.pop3_port,
       pop3_tls: row.pop3_tls,
+      oauth_provider: row.oauth_provider,
+      oauth_refresh_keytar_key: row.oauth_refresh_keytar_key,
     };
   };
 
@@ -151,9 +184,15 @@ describe('Konto bearbeiten: Serverwechsel verlangt neue Zugangsdaten (A2a-01, E2
       oauthRefreshKeytarKey: 'email-oauth-gmail',
     });
     mockKeychain.set('email-oauth-gmail', 'refresh-token');
+    setSyncInfo('email_google_oauth_client_id', 'google-client');
+    setSyncInfo('email_google_oauth_client_secret', 'google-geheim');
     noSmtpId = account({ name: 'neu' });
 
     jest.mocked(saveEmailPassword).mockClear();
+    jest.mocked(deleteEmailPassword).mockClear();
+    jest.mocked(getGoogleAccessTokenForImap).mockClear();
+    mockImapOptions.length = 0;
+    mockPop3Options.length = 0;
     mockHandlers.clear();
     dispose = registerEmailHandlers({ logger: quietLogger, isDevelopment: false });
   });
@@ -275,9 +314,113 @@ describe('Konto bearbeiten: Serverwechsel verlangt neue Zugangsdaten (A2a-01, E2
   });
 
   // A2a-01, E2: Bei OAuth-Konten ging das Access-Token an einen neuen IMAP-Server.
-  test('OAuth-Konto: neuer IMAP-Host ohne Passwort wird abgelehnt', async () => {
+  test('OAuth-Konto: neuer IMAP-Host ohne Passwort wird abgelehnt, die Verknuepfung bleibt', async () => {
     await expectRejected({ id: oauthId, displayName: 'Geaendert', imapHost: 'imap.fremd.example' },
       'IMAP-Passwort erforderlich (IMAP-Server, POP3-Server geaendert)');
+    expect(getEmailAccountById(oauthId)).toMatchObject({
+      oauth_provider: 'google',
+      oauth_refresh_keytar_key: 'email-oauth-gmail',
+    });
+    expect(deleteEmailPassword).not.toHaveBeenCalled();
+  });
+
+  describe('OAuth-Konto: neues Passwort ersetzt die Verknuepfung (PR-Review #193, A2a-01)', () => {
+    const lastImapLogin = () => mockImapOptions[mockImapOptions.length - 1];
+
+    // PR-Review #193: Auf dem Desktop hat das OAuth-Token Vorrang vor dem IMAP-Passwort; ein Hostwechsel mit beliebigem Passwort schickte das Token an den neuen Server.
+    test('Hostwechsel mit neuem Passwort entfernt die Verknuepfung, der Abruf meldet sich mit dem Passwort an', async () => {
+      // Gegenprobe: vorher holt der Abruf das OAuth-Token.
+      await invoke(IPCChannels.Email.SyncAccount, oauthId);
+      expect(getGoogleAccessTokenForImap).toHaveBeenCalledTimes(1);
+      expect(lastImapLogin()).toMatchObject({ host: 'imap.firma.de', auth: { accessToken: 'google-access-token' } });
+
+      jest.mocked(getGoogleAccessTokenForImap).mockClear();
+      await expect(invoke(IPCChannels.Email.UpdateAccount, {
+        id: oauthId,
+        imapHost: 'imap.neu.example',
+        imapPassword: 'neu-imap',
+      })).resolves.toEqual({ success: true });
+
+      expect(getEmailAccountById(oauthId)).toMatchObject({
+        imap_host: 'imap.neu.example',
+        oauth_provider: null,
+        oauth_refresh_keytar_key: null,
+      });
+      expect(deleteEmailPassword).toHaveBeenCalledWith('email-oauth-gmail');
+      expect(mockKeychain.has('email-oauth-gmail')).toBe(false);
+      expect(mockKeychain.get('email-gmail')).toBe('neu-imap');
+
+      await invoke(IPCChannels.Email.SyncAccount, oauthId);
+      expect(getGoogleAccessTokenForImap).not.toHaveBeenCalled();
+      expect(lastImapLogin()).toMatchObject({ host: 'imap.neu.example', auth: { user: 'gmail@firma.de', pass: 'neu-imap' } });
+      expect(lastImapLogin().auth).not.toHaveProperty('accessToken');
+    });
+
+    test.each([
+      ['neuer SMTP-Host', false, { smtpHost: 'smtp.neu.example' }],
+      ['"wie IMAP" eingeschaltet', true, { smtpUseImapAuth: true }],
+    ])('SMTP wie IMAP: %s mit IMAP-Passwort entfernt die Verknuepfung ebenso', async (_label, ownSmtpBefore, change) => {
+      if (ownSmtpBefore) updateEmailAccountRecord(oauthId, { smtpUseImapAuth: false });
+      await expect(invoke(IPCChannels.Email.UpdateAccount, {
+        id: oauthId,
+        ...change,
+        imapPassword: 'neu-imap',
+      })).resolves.toEqual({ success: true });
+      expect(getEmailAccountById(oauthId)).toMatchObject({ oauth_provider: null, oauth_refresh_keytar_key: null });
+      expect(deleteEmailPassword).toHaveBeenCalledWith('email-oauth-gmail');
+    });
+
+    test.each([
+      ['gleicher Server, neues Passwort', { imapHost: 'imap.firma.de', imapPassword: 'neu-imap' }],
+      ['nur Anzeigename', { displayName: 'Gmail' }],
+    ])('%s: die Verknuepfung bleibt', async (_label, change) => {
+      await expect(invoke(IPCChannels.Email.UpdateAccount, { id: oauthId, ...change }))
+        .resolves.toEqual({ success: true });
+      expect(getEmailAccountById(oauthId)).toMatchObject({
+        oauth_provider: 'google',
+        oauth_refresh_keytar_key: 'email-oauth-gmail',
+      });
+      expect(deleteEmailPassword).not.toHaveBeenCalled();
+      expect(mockKeychain.get('email-oauth-gmail')).toBe('refresh-token');
+    });
+
+    test('SMTP mit eigenem Passwort: SMTP-Hostwechsel mit SMTP-Passwort laesst die Verknuepfung', async () => {
+      updateEmailAccountRecord(oauthId, { smtpUseImapAuth: false, smtpKeytarAccountKey: 'email-smtp-gmail' });
+      await expect(invoke(IPCChannels.Email.UpdateAccount, {
+        id: oauthId,
+        smtpHost: 'smtp.neu.example',
+        smtpPassword: 'neu-smtp',
+      })).resolves.toEqual({ success: true });
+      expect(getEmailAccountById(oauthId)).toMatchObject({ oauth_provider: 'google' });
+      expect(deleteEmailPassword).not.toHaveBeenCalled();
+    });
+
+    // PR-Review #193: Verbindungstests mit neuem Passwort duerfen bei OAuth-Konten nicht doch das Token an den fremden Host schicken.
+    test('IMAP- und POP3-Test mit neuem Passwort nutzen bei OAuth-Konten das Passwort, nicht das Token', async () => {
+      await expect(invoke(IPCChannels.Email.TestImap, {
+        accountId: oauthId,
+        imapHost: 'imap.fremd.example',
+        imapPort: 993,
+        imapTls: true,
+        imapUsername: 'gmail@firma.de',
+        imapPassword: 'neu',
+      })).resolves.toMatchObject({ success: false });
+      expect(lastImapLogin()).toMatchObject({ host: 'imap.fremd.example', auth: { user: 'gmail@firma.de', pass: 'neu' } });
+      expect(lastImapLogin().auth).not.toHaveProperty('accessToken');
+
+      await expect(invoke(IPCChannels.Email.TestPop3, {
+        accountId: oauthId,
+        host: 'pop.fremd.example',
+        port: 995,
+        tls: true,
+        user: 'gmail@firma.de',
+        password: 'neu',
+      })).resolves.toMatchObject({ success: false });
+      expect(mockPop3Options[mockPop3Options.length - 1]).toMatchObject({ host: 'pop.fremd.example', password: 'neu' });
+
+      expect(getGoogleAccessTokenForImap).not.toHaveBeenCalled();
+      expect(getEmailAccountById(oauthId)).toMatchObject({ oauth_provider: 'google' });
+    });
   });
 
   test('fehlen beide Passwoerter, nennt die Meldung beide', async () => {

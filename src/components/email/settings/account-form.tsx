@@ -63,6 +63,10 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
         editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls),
       )
   )
+  // Desktop: the OAuth token would win over the password, so the IPC drops the
+  // OAuth link when a server change is saved with a new password.
+  const oauthLinkReplaced = credentialsRequired && !serverClientMode
+    && Boolean(editAccount?.oauth_provider && editAccount?.oauth_refresh_keytar_key)
 
   const lastInitializedAccountIdRef = useRef<number | null>(null)
 
@@ -483,6 +487,11 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
             <p className="text-[11px] text-muted-foreground">
               Server, Port oder TLS geändert: Das gespeicherte Passwort wird nicht an einen
               anderen Server gesendet. Bitte erneut eingeben.
+            </p>
+          ) : null}
+          {oauthLinkReplaced ? (
+            <p className="text-[11px] text-muted-foreground">
+              Beim Speichern wird die OAuth-Verknüpfung dieses Kontos durch dieses Passwort ersetzt.
             </p>
           ) : null}
         </div>
