@@ -46,6 +46,11 @@ describe('resolveEmailChannelAccountId', () => {
     expect(resolveEmailChannelAccountId('email:unknown-channel', 42)).toBeUndefined();
   });
 
+  // F-A7-03: delete-account bekommt eine nackte Konto-ID, die nie aufgeloest wurde, daher lief die Loeschung ohne Konto-ACL.
+  it('resolves the bare account id that delete-account actually receives', () => {
+    expect(resolveEmailChannelAccountId('email:delete-account', 5)).toBe(5);
+  });
+
   it('uses payload.id as account only for update/delete-account', () => {
     expect(resolveEmailChannelAccountId('email:update-account', { id: 5 })).toBe(5);
     expect(resolveEmailChannelAccountId('email:delete-account', { id: 5 })).toBe(5);

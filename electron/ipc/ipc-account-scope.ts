@@ -51,6 +51,7 @@ export const EMAIL_SKIP_ACCOUNT_SCOPE = new Set<string>([
 
 /** IPC channels whose sole numeric payload is an account id (not message id). */
 const EMAIL_BARE_ACCOUNT_ID_CHANNELS = new Set<string>([
+  'email:delete-account',
   'email:sync-account',
   'email:clear-account-sync-lock',
   'email:test-vacation-auto-reply',
