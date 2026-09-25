@@ -48,7 +48,13 @@ export type WorkflowSaveGateDecision = {
 export function decideWorkflowSaveGate(
   baseline: WorkflowSaveBaseline | null,
   next: WorkflowSaveCandidate,
-  options: { canManageWorkflows: boolean; hasSideEffects: boolean },
+  options: {
+    canManageWorkflows: boolean
+    /** Der NEUE Graph hat Seiteneffekt- oder Kettenabbruch-Knoten. */
+    hasSideEffects: boolean
+    /** Der zuletzt gespeicherte Graph (Baseline) hat solche Knoten. */
+    baselineHasSideEffects: boolean
+  },
 ): WorkflowSaveGateDecision {
   const executionChanged =
     !baseline
@@ -58,8 +64,11 @@ export function decideWorkflowSaveGate(
     || baseline.scheduleAccountId !== next.scheduleAccountId
     || baseline.priority !== next.priority
   // Spiegelt rejectUnlessSideEffectWorkflowManage: nur aktive Workflows mit
-  // Seiteneffekt-Knoten brauchen manage.
-  const needsManage = next.enabled && options.hasSideEffects
+  // Seiteneffekt-Knoten brauchen manage — im neuen Zustand (Aktivieren) wie im
+  // gespeicherten (Stilllegen oder Entschaerfen, C-A20).
+  const needsManage =
+    (next.enabled && options.hasSideEffects)
+    || (baseline?.enabled === true && options.baselineHasSideEffects)
   const gated = !options.canManageWorkflows && needsManage
   return {
     executionChanged,

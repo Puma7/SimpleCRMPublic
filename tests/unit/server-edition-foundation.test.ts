@@ -32259,6 +32259,164 @@ describe('server edition foundation', () => {
     expect(managed.status).toBe(201);
   });
 
+  // C-A20: Das Seiteneffekt-Gate pruefte nur den NEUEN Zustand — ein Editor ohne
+  // workflows.manage konnte einen aktiven Seiteneffekt-/Kettenabbruch-Workflow
+  // per enabled:false stilllegen oder durch einen harmlosen Graphen ersetzen.
+  test('an active side-effect workflow cannot be disabled or defused without workflows.manage', async () => {
+    const updateCalls: any[] = [];
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const chainStopGraph = {
+      version: 1,
+      nodes: [
+        { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+        { id: 'var-1', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'email.is_spam', value: true } } },
+        { id: 'stop-1', type: 'registry', data: { nodeType: 'logic.stop_after_spam' } },
+      ],
+      edges: [
+        { id: 'e1', source: 'trigger-1', target: 'var-1' },
+        { id: 'e2', source: 'var-1', target: 'stop-1' },
+      ],
+    };
+    const harmlessGraph = { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] };
+    const records = new Map<number, WorkflowRecord>([
+      // Aktiv mit Seiteneffekt, aktiv mit Kettenabbruch, deaktivierter Entwurf.
+      [23, { ...makeWorkflowRecord(23), enabled: true, graph: sideEffectGraph }],
+      [24, { ...makeWorkflowRecord(24), triggerName: 'inbound', enabled: true, graph: chainStopGraph }],
+      [25, { ...makeWorkflowRecord(25), enabled: false, graph: sideEffectGraph }],
+    ]);
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [...records.values()], nextCursor: null }; },
+        async get(input) { return records.get(input.id) ?? null; },
+        async create() { throw new Error('nicht verwendet'); },
+        async update(input) {
+          updateCalls.push(input);
+          const stored = records.get(input.id);
+          return stored ? { ok: true as const, workflow: { ...stored, ...input.values } } : null;
+        },
+        async delete() { throw new Error('darf nicht erreicht werden'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+    const patch = (id: number, body: Record<string, unknown>, principal: typeof editor = editor) => api.handle({
+      method: 'PATCH',
+      path: `/api/v1/workflows/${id}`,
+      body,
+      principal,
+    });
+
+    // Stilllegen, Entschaerfen und jede andere Ausfuehrungsaenderung am AKTIVEN
+    // Seiteneffekt-Workflow verlangen workflows.manage — wie das Aktivieren.
+    for (const body of [
+      { enabled: false },
+      { graph: harmlessGraph },
+      { graph: null },
+      { enabled: false, graph: harmlessGraph, name: 'Aus' },
+      { graph: harmlessGraph, triggerName: 'inbound' },
+      { graph: harmlessGraph, executionMode: 'graph' },
+      { graph: harmlessGraph, accountId: null },
+      { graph: harmlessGraph, cronExpr: null, scheduleAccountId: null },
+    ]) {
+      const denied = await patch(23, body);
+      expect([body, denied.status]).toEqual([body, 403]);
+      expect((denied.body as any).error).toMatchObject({
+        code: 'forbidden',
+        message: 'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
+      });
+    }
+    // Ein aktiver Kettenabbruch ist genauso geschuetzt.
+    expect((await patch(24, { enabled: false })).status).toBe(403);
+    expect((await patch(24, { graph: harmlessGraph })).status).toBe(403);
+    // Loeschen war schon immer manage-pflichtig.
+    const deleted = await api.handle({ method: 'DELETE', path: '/api/v1/workflows/23', principal: editor });
+    expect(deleted.status).toBe(403);
+    expect(updateCalls).toEqual([]);
+
+    // Reine Metadaten bleiben mit workflows.edit aenderbar …
+    const renamed = await patch(23, { name: 'Neuer Name', priority: 100, definition: { version: 1, rules: [] } });
+    expect(renamed.status).toBe(200);
+    // … ebenso ein deaktivierter Entwurf, auch mit Seiteneffekt-Knoten.
+    expect((await patch(25, { graph: harmlessGraph })).status).toBe(200);
+    expect((await patch(25, { graph: sideEffectGraph, enabled: false })).status).toBe(200);
+    expect(updateCalls.map((call) => call.id)).toEqual([23, 25, 25]);
+
+    // Mit workflows.manage ist alles erlaubt.
+    const manager = { ...editor, capabilities: ['workflows.edit', 'workflows.manage'] };
+    expect((await patch(23, { enabled: false }, manager)).status).toBe(200);
+    expect((await patch(23, { graph: harmlessGraph }, manager)).status).toBe(200);
+    expect((await patch(24, { enabled: false }, manager)).status).toBe(200);
+    expect(updateCalls).toHaveLength(6);
+  });
+
+  // C-A20: Das Gate auf dem gespeicherten Zustand haelt nur, wenn der Write an
+  // genau diesen (ungeschuetzten) Zustand gebunden ist — sonst deaktiviert ein
+  // veralteter Editor-Patch einen inzwischen scharf geschalteten Workflow.
+  test('the stored-state gate binds the unprotected pre-state into the write', async () => {
+    const updateCalls: any[] = [];
+    const harmlessGraph = { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] };
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const records = new Map<number, WorkflowRecord>([
+      // Deaktivierter Entwurf mit Seiteneffekt und aktiver harmloser Workflow.
+      [31, { ...makeWorkflowRecord(31), enabled: false, graph: sideEffectGraph }],
+      [32, { ...makeWorkflowRecord(32), enabled: true, graph: harmlessGraph }],
+    ]);
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [...records.values()], nextCursor: null }; },
+        async get(input) { return records.get(input.id) ?? null; },
+        async update(input) {
+          updateCalls.push(input);
+          // Ein Admin hat den Workflow zwischen Read und Write scharf geschaltet.
+          return { ok: false as const, code: 'workflow_state_conflict' as const };
+        },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+
+    const disableDraft = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/31',
+      body: { enabled: false, graph: harmlessGraph },
+      principal: editor,
+    });
+    const replaceHarmless = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/32',
+      body: { graph: { ...harmlessGraph, edges: [] } },
+      principal: editor,
+    });
+
+    expect(updateCalls).toHaveLength(2);
+    // Deaktiviert gelesen: der Write gilt nur, solange er deaktiviert ist.
+    expect(updateCalls[0].expected).toMatchObject({ enabled: false });
+    // Aktiv, aber harmlos gelesen: der Write gilt nur fuer genau diesen Graphen.
+    expect(updateCalls[1].expected).toMatchObject({ enabled: true, graph: harmlessGraph });
+    expect(disableDraft.status).toBe(409);
+    expect(replaceHarmless.status).toBe(409);
+  });
+
   test('team member upsert reports an unknown linked user as a client error', async () => {
     // Syntaktisch gueltige, aber unbekannte UUID: ohne Aufloesung wirft der Port
     // und aus dem Eingabefehler wird ein HTTP 500.
@@ -37930,6 +38088,86 @@ describe('server edition foundation', () => {
     });
     expect(allowed.status).toBe(200);
     expect(updateCalls).toHaveLength(1);
+  });
+
+  // C-A20: Restore pruefte nur den wiederhergestellten Graphen — ein Editor
+  // konnte einen aktiven Seiteneffekt-Workflow per harmloser Version entschaerfen.
+  test('restoring a harmless version into an active side-effect workflow needs workflows.manage', async () => {
+    const updateCalls: any[] = [];
+    const sideEffectGraph = {
+      nodes: [
+        { id: 'trigger-1', type: 'trigger' },
+        { id: 'send-1', type: 'action', data: { actionType: 'email.send' } },
+      ],
+      edges: [{ id: 'e1', source: 'trigger-1', target: 'send-1' }],
+    };
+    const harmlessGraph = { nodes: [{ id: 'trigger-1', type: 'trigger' }], edges: [] };
+    let workflow: WorkflowRecord = {
+      ...makeWorkflowRecord(23),
+      sourceSqliteId: -23,
+      enabled: true,
+      graph: sideEffectGraph,
+    };
+    const harmlessVersion = {
+      ...makeWorkflowVersionRecord(82),
+      sourceSqliteId: -82,
+      workflowId: 23,
+      workflowSourceSqliteId: -23,
+      graph: harmlessGraph,
+      definition: { steps: [] },
+    };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [workflow], nextCursor: null }; },
+        async get(input) { return input.id === 23 ? workflow : null; },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow };
+        },
+      },
+      workflowVersions: {
+        async list() { return { items: [harmlessVersion], nextCursor: null }; },
+        async get() { return harmlessVersion; },
+        async create() { throw new Error('nicht verwendet'); },
+      },
+    }));
+    const editor = {
+      userId: USER_A_ID,
+      workspaceId: WORKSPACE_A_ID,
+      role: 'user' as const,
+      capabilities: ['workflows.edit'],
+    };
+    const restore = (principal: typeof editor) => api.handle({
+      method: 'POST',
+      path: '/api/v1/workflow-versions/by-source/-82/restore',
+      body: { workflowId: -23 },
+      principal,
+    });
+
+    const denied = await restore(editor);
+    expect(denied.status).toBe(403);
+    expect((denied.body as any).error).toMatchObject({
+      code: 'forbidden',
+      message: 'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
+    });
+    expect(updateCalls).toEqual([]);
+
+    const managed = await restore({ ...editor, capabilities: ['workflows.edit', 'workflows.manage'] });
+    expect(managed.status).toBe(200);
+    expect(updateCalls).toHaveLength(1);
+
+    // Ein deaktivierter Entwurf bleibt fuer Editoren wiederherstellbar.
+    workflow = { ...workflow, enabled: false };
+    expect((await restore(editor)).status).toBe(200);
+    expect(updateCalls).toHaveLength(2);
+
+    // Ein aktiver, harmloser Workflow auch — der Write ist dann an genau diesen
+    // Graphen gebunden, damit ein zwischenzeitlich scharf geschalteter Graph
+    // nicht per veraltetem Restore ueberschrieben wird.
+    workflow = { ...workflow, enabled: true, graph: harmlessGraph };
+    expect((await restore(editor)).status).toBe(200);
+    expect(updateCalls).toHaveLength(3);
+    expect(updateCalls[2].expected).toMatchObject({ enabled: true, graph: harmlessGraph });
   });
 
   test('server workflow run by-source routes resolve legacy ids for history reads', async () => {

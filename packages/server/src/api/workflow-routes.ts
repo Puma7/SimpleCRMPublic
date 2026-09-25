@@ -1251,6 +1251,17 @@ async function handleUpdateWorkflow(
         enabled: parsed.values.enabled ?? existing?.enabled,
       });
       if (sideEffectDenied) return sideEffectDenied;
+      // Das Gate oben sieht nur den NEUEN Zustand. Ist der GESPEICHERTE Workflow
+      // aktiv und hat Seiteneffekt- oder Kettenabbruch-Knoten, waere Stilllegen
+      // (enabled:false) oder Entschaerfen (harmloser Graph, anderer Trigger,
+      // Modus, Konto oder Zeitplan) derselbe privilegierte Eingriff wie das
+      // Aktivieren, nur in die Gegenrichtung (C-A20). Deaktivierte Entwuerfe und
+      // reine Metadaten-Patches (ohne Guard) bleiben mit workflows.edit frei.
+      const storedSideEffectDenied = rejectUnlessSideEffectWorkflowManage(principal, {
+        graph: existing?.graph ?? null,
+        enabled: existing?.enabled ?? false,
+      });
+      if (storedSideEffectDenied) return storedSideEffectDenied;
       const overrideDenied = rejectUnlessOverrideKeyManage(principal, {
         enabled: parsed.values.enabled ?? existing?.enabled,
         overrideKey: parsed.values.overrideKey !== undefined
@@ -1258,6 +1269,23 @@ async function handleUpdateWorkflow(
           : existing?.overrideKey ?? null,
       });
       if (overrideDenied) return overrideDenied;
+      // Ohne workflows.manage kam dieser Patch nur durch, weil der gespeicherte
+      // Row ungeschuetzt war (deaktiviert oder ohne Seiteneffekt). Das muss auch
+      // beim Write noch gelten: schaltet ein Admin den Workflow dazwischen
+      // scharf, wird aus dem veralteten Patch ein 409 statt einer Stilllegung.
+      // Setzt der Patch enabled bzw. graph selbst, fehlen sie oben im Vorzustand.
+      if (existing && !requireCapability(principal, 'workflows.manage')) {
+        const pinned = expectedState ?? {};
+        const staysUnprotected = pinned.enabled === false
+          || ('graph' in pinned
+            && !workflowGraphHasSideEffectNode(pinned.graph)
+            && !workflowGraphHasChainStopNode(pinned.graph));
+        if (!staysUnprotected) {
+          expectedState = existing.enabled === false
+            ? { ...pinned, enabled: false }
+            : { ...pinned, graph: existing.graph ?? null };
+        }
+      }
     }
   }
 

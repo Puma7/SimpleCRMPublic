@@ -537,6 +537,11 @@ export function WorkflowShell() {
           // und verlangt serverseitig dieselbe Stufe wie ein Seiteneffekt.
           hasSideEffects:
             workflowGraphHasSideEffectNode(graphDoc) || workflowGraphHasChainStopNode(graphDoc),
+          // Den gespeicherten Graphen stilllegen oder entschaerfen verlangt
+          // serverseitig dieselbe Stufe (C-A20).
+          baselineHasSideEffects:
+            workflowGraphHasSideEffectNode(saveBaselineRef.current?.graphJson)
+            || workflowGraphHasChainStopNode(saveBaselineRef.current?.graphJson),
         },
       )
       if (gate.blocked) {

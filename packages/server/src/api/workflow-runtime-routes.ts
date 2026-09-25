@@ -445,6 +445,24 @@ async function handleWorkflowVersionSourceRestore(
       'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
     );
   }
+  // Ebenso der GESPEICHERTE Graph (C-A20): sonst entschaerft ein Editor einen
+  // aktiven Seiteneffekt- oder Kettenabbruch-Workflow per harmloser Version —
+  // dieselbe Pruefung wie beim PATCH. Deaktivierte Entwuerfe bleiben frei.
+  const canManageWorkflows = requireCapability(principal, 'workflows.manage');
+  if (
+    existingWorkflow.enabled !== false
+    && (
+      workflowGraphHasSideEffectNode(existingWorkflow.graph)
+      || workflowGraphHasChainStopNode(existingWorkflow.graph)
+    )
+    && !canManageWorkflows
+  ) {
+    return error(
+      403,
+      'forbidden',
+      'Aktive Workflows mit Seiteneffekten oder Ketten-Abbruch erfordern workflows.manage',
+    );
+  }
   // Ein aktiver Workflow mit Override-Schluessel verdraengt den gleichnamigen
   // globalen Workflow (resolveScopedInboundWorkflowOverrides) — beim Anlegen und
   // Aktualisieren ist er deshalb manage-pflichtig. Ohne dieselbe Pruefung hier
@@ -495,6 +513,11 @@ async function handleWorkflowVersionSourceRestore(
       // — dann muss der Restore mit 409 scheitern statt den verdraengenden
       // Graphen doch zu ersetzen.
       overrideKey: existingWorkflow.overrideKey ?? null,
+      // Ein Editor darf nur einen ungeschuetzten Row ueberschreiben; ist er
+      // aktiv, haelt ihn nur der gelesene harmlose Graph ungeschuetzt.
+      ...(canManageWorkflows || existingWorkflow.enabled === false
+        ? {}
+        : { graph: existingWorkflow.graph ?? null }),
     },
   });
   if (!result) return error(404, 'workflow_not_found', 'Workflow nicht gefunden');
