@@ -4419,6 +4419,78 @@ describe('server edition foundation', () => {
     expect(rows.activityLog).toHaveLength(1);
   });
 
+  // F-A5-14: Die Server-Abwesenheitsantwort pruefte Automaten nur per Teilstring (z. B. nicht 'Precedence:bulk', keine Listen, kein noreply) und unterdrueckte bei 'Auto-Submitted: no' faelschlich.
+  test('postgres email vacation auto-reply port uses the shared auto-reply loop guard', async () => {
+    const now = new Date('2026-06-04T09:30:00.000Z');
+    const cases: Array<{ label: string; rawHeaders: string; sender?: string; expectSend: boolean }> = [
+      { label: 'precedence without space', rawHeaders: 'From: news@example.net\nPrecedence:bulk', expectSend: false },
+      { label: 'auto-submitted without space', rawHeaders: 'From: bot@example.net\nAuto-Submitted:auto-generated', expectSend: false },
+      { label: 'mailing list', rawHeaders: 'From: poster@example.net\nList-Id: <team.lists.example.org>\nPrecedence: list', expectSend: false },
+      { label: 'noreply sender', rawHeaders: 'From: noreply@shop.example', sender: 'noreply@shop.example', expectSend: false },
+      { label: 'mailer daemon', rawHeaders: 'From: MAILER-DAEMON@mx.example.org', sender: 'MAILER-DAEMON@mx.example.org', expectSend: false },
+      { label: 'explicitly manual mail', rawHeaders: 'From: guest@example.com\nAuto-Submitted: no', expectSend: true },
+    ];
+    const outcomes: Array<{ label: string; sent: boolean }> = [];
+    for (const item of cases) {
+      const { db } = makeAiReplySuggestionDb({
+        accounts: [{
+          id: 7,
+          workspace_id: WORKSPACE_A_ID,
+          display_name: 'Support',
+          email_address: 'support@example.com',
+          imap_host: 'imap.example.com',
+          imap_username: 'imap-user',
+          smtp_host: 'smtp.example.com',
+          smtp_port: 587,
+          smtp_tls: false,
+          smtp_username: null,
+          smtp_use_imap_auth: true,
+          oauth_provider: null,
+          vacation_enabled: true,
+          vacation_subject: 'Away',
+          vacation_body_text: 'Back soon',
+        }],
+        messages: [{
+          id: 35,
+          workspace_id: WORKSPACE_A_ID,
+          source_sqlite_id: 350,
+          account_id: 7,
+          uid: 13,
+          pop3_uidl: null,
+          message_id: '<loop-guard@example.net>',
+          from_json: { value: [{ address: item.sender ?? 'guest@example.com' }] },
+          raw_headers: item.rawHeaders,
+          customer_id: null,
+          customer_source_sqlite_id: null,
+          archived: false,
+          soft_deleted: false,
+          is_spam: false,
+          spam_status: 'clean',
+          spam_score_label: 'clean',
+          folder_kind: 'inbox',
+        }],
+      });
+      const smtpInputs: any[] = [];
+      const port = createPostgresEmailVacationAutoReplyPort({
+        db,
+        now: () => now,
+        applyWorkspaceSession: async () => undefined,
+        secrets: {
+          async readSecret() {
+            return Buffer.from('imap-secret');
+          },
+        } as any,
+        async smtpSend(input) {
+          smtpInputs.push(input);
+        },
+      });
+      await port.autoReply({ workspaceId: WORKSPACE_A_ID, messageId: 35 });
+      outcomes.push({ label: item.label, sent: smtpInputs.length > 0 });
+    }
+
+    expect(outcomes).toEqual(cases.map((item) => ({ label: item.label, sent: item.expectSend })));
+  });
+
   test('postgres AI reply suggestion port generates and persists ready replies', async () => {
     const now = new Date('2026-06-03T12:00:00.000Z');
     const { db, rows } = makeAiReplySuggestionDb({

@@ -57,3 +57,13 @@ export function isUnsafeAutoReplyTarget(rawHeaders: string | null | undefined): 
   const headers = (rawHeaders ?? '').toLowerCase();
   return MAILING_LIST_HEADER_PREFIXES.some((prefix) => headers.includes(prefix));
 }
+
+/**
+ * Absender-Adressen von Automaten (noreply, MAILER-DAEMON, postmaster, Bounces,
+ * Benachrichtigungen). Gleiche Regel wie das Auto-Antwort-Gate der Workflows;
+ * Urlaubs-Antworten beider Editionen nutzen sie zusammen mit
+ * isUnsafeAutoReplyTarget, damit Automaten ohne Auto-Submitted keine Antwort
+ * bekommen.
+ */
+export const AUTO_REPLY_NOREPLY_RE =
+  /(^|[._+-])(no[._-]?reply|do[._-]?not[._-]?reply|mailer[._-]?daemon|postmaster|bounce|notifications?|automated)([._+-]|@)/i;
