@@ -215,6 +215,7 @@ import {
   extractEmailAddressesFromRecipientField,
   recipientJsonFromField,
 } from '../../shared/email-recipient-parse';
+import { scheduledSendPgpBlockReason } from '../../shared/compose-scheduled-send';
 import { getEmailReportingSnapshot } from '../email/email-reported-stats';
 import { exportEmailGdprPackage } from '../email/email-gdpr-export';
 import { definitionToJson, compileGraphToDefinition } from '../email/email-workflow-graph-compile';
@@ -890,8 +891,15 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ScheduleDraftSend,
-      async (_event: IpcMainInvokeEvent, payload: { messageId: number; sendAt: string | null }) => {
+      async (
+        _event: IpcMainInvokeEvent,
+        payload: { messageId: number; sendAt: string | null; pgpEncrypt?: boolean; pgpSign?: boolean },
+      ) => {
         if (payload.sendAt) {
+          const pgpBlockReason = scheduledSendPgpBlockReason(payload);
+          if (pgpBlockReason) {
+            return { success: false as const, error: pgpBlockReason };
+          }
           const draft = getEmailMessageById(payload.messageId);
           if (!draft) {
             return { success: false as const, error: 'Entwurf nicht gefunden' };

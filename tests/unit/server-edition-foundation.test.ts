@@ -24036,6 +24036,65 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // F-A5-03: "Spaeter senden" mit PGP-Verschluesselung verschickte die Mail im Klartext.
+  test('scheduled-send route rejects PGP encrypt/sign with a dedicated 400 before scheduling', async () => {
+    const calls: unknown[] = [];
+    const queueCalls: unknown[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      emailMessages: {
+        async list() {
+          return { items: [], nextCursor: null };
+        },
+        async scheduleDraftSend(input) {
+          calls.push(input);
+          return { ok: true as const };
+        },
+      },
+      jobQueue: {
+        async enqueue(input) {
+          queueCalls.push(input);
+        },
+      },
+    }));
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+
+    for (const flags of [{ pgpEncrypt: true }, { pgpSign: true }, { pgpEncrypt: true, pgpSign: true }]) {
+      const rejected = await api.handle({
+        method: 'PATCH',
+        path: '/api/v1/email/messages/44/scheduled-send',
+        body: { sendAt: '2026-06-04T15:00:00.000Z', ...flags },
+        principal,
+      });
+      expect(rejected.status).toBe(400);
+      expect((rejected.body as any).error.code).toBe('email_scheduled_send_pgp_unsupported');
+      expect((rejected.body as any).error.message).toContain('PGP');
+    }
+    expect(calls).toEqual([]);
+    expect(queueCalls).toEqual([]);
+
+    const plain = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z', pgpEncrypt: false, pgpSign: false },
+      principal,
+    });
+    expect(plain.status).toBe(200);
+    const invalidFlag = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/44/scheduled-send',
+      body: { sendAt: '2026-06-04T15:00:00.000Z', pgpEncrypt: 'yes' },
+      principal,
+    });
+    expect(invalidFlag.status).toBe(400);
+    expect((invalidFlag.body as any).error.code).toBe('validation_error');
+    expect(calls).toEqual([{
+      workspaceId: WORKSPACE_A_ID,
+      actorUserId: USER_A_ID,
+      messageId: 44,
+      sendAt: '2026-06-04T15:00:00.000Z',
+    }]);
+  });
+
   test('scheduled-send schedule/retry succeed even when the queue accelerator enqueue fails (R37-5)', async () => {
     const api = createServerApi(makeServerApiPorts({
       emailMessages: {

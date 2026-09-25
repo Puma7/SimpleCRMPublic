@@ -126,6 +126,26 @@ describe('renderer transport', () => {
     );
   });
 
+  // F-A5-03: "Spaeter senden" mit PGP verschickte die Mail im Klartext; die PGP-Flags erreichten den Server nie.
+  test('forwards PGP flags on scheduled-send so the server can reject the schedule', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl });
+
+    await transport.invoke(IPCChannels.Email.ScheduleDraftSend, {
+      messageId: 44,
+      sendAt: '2026-06-04T15:00:00.000Z',
+      pgpEncrypt: true,
+      pgpSign: true,
+    });
+    expect(fetchImpl).toHaveBeenLastCalledWith(
+      'https://crm.example.com/api/v1/email/messages/44/scheduled-send',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ sendAt: '2026-06-04T15:00:00.000Z', pgpEncrypt: true, pgpSign: true }),
+      }),
+    );
+  });
+
   test('does not send a token saved for another server origin', async () => {
     saveServerAuthSession(
       buildServerAuthSession({

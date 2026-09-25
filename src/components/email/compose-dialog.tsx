@@ -139,7 +139,7 @@ import { useNavigate } from "@tanstack/react-router"
 import { emailSettingsSearch } from "@/lib/email-settings-search"
 import { useAuth } from "@/components/auth/auth-context"
 import { resolveComposeTeamMemberId } from "@shared/compose-sender-identity"
-import { prepareScheduledSend } from "@shared/compose-scheduled-send"
+import { prepareScheduledSend, scheduledSendPgpBlockReason } from "@shared/compose-scheduled-send"
 
 type Props = {
   accounts: EmailAccount[]
@@ -336,6 +336,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
   const [sending, setSending] = useState(false)
   const [pgpEncrypt, setPgpEncrypt] = useState(false)
   const [pgpSign, setPgpSign] = useState(false)
+  const scheduledSendPgpBlock = scheduledSendPgpBlockReason({ pgpEncrypt, pgpSign })
   const [pgpPassphrase, setPgpPassphrase] = useState("")
   // Per-message tracking choice (server edition only). null until the policy
   // default is known; the checkbox then reflects a concrete boolean.
@@ -2281,12 +2282,16 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                 onChange={(e) => setScheduledSendAt(e.target.value)}
                 title="Geplante Versendung"
               />
+              {scheduledSendPgpBlock ? (
+                <span className="text-xs text-muted-foreground">{scheduledSendPgpBlock}</span>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
-                disabled={!scheduledSendAt || draftId == null || uploadingAttachment}
+                disabled={!scheduledSendAt || draftId == null || uploadingAttachment || scheduledSendPgpBlock != null}
+                title={scheduledSendPgpBlock ?? undefined}
                 onClick={() => {
-                  if (!draftId || !scheduledSendAt) return
+                  if (!draftId || !scheduledSendAt || scheduledSendPgpBlock) return
                   void (async () => {
                     try {
                       const iso = await prepareScheduledSend(
@@ -2296,6 +2301,8 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                       const result = await invokeRenderer(IPCChannels.Email.ScheduleDraftSend, {
                         messageId: draftId,
                         sendAt: iso,
+                        pgpEncrypt,
+                        pgpSign,
                       }) as { success: boolean; error?: string }
                       if (!result.success) {
                         throw new Error(result.error ?? "Versand konnte nicht geplant werden.")

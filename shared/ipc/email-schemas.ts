@@ -277,6 +277,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: z.object({
       messageId: positiveInt,
       sendAt: z.string().nullable(),
+      pgpEncrypt: z.boolean().optional(),
+      pgpSign: z.boolean().optional(),
     }),
     result: standardResult,
   });

@@ -2681,6 +2681,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
   }],
   [IPCChannels.Email.ScheduleDraftSend, ([payload]) => {
     const input = objectPayload(payload, "email scheduled-send payload")
+    const pgpEncrypt = optionalBoolean(input.pgpEncrypt, "pgp encrypt flag")
+    const pgpSign = optionalBoolean(input.pgpSign, "pgp sign flag")
     return {
       method: "PATCH",
       path: `/api/v1/email/messages/${positiveId(input.messageId, "email message id")}/scheduled-send`,
@@ -2688,6 +2690,9 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
         sendAt: input.sendAt === null || input.sendAt === undefined
           ? null
           : stringPayloadField(input.sendAt, "scheduled send timestamp"),
+        // Mitgeben, damit der Server einen Zeitversand mit PGP ablehnt statt Klartext zu senden.
+        ...(pgpEncrypt === undefined ? {} : { pgpEncrypt }),
+        ...(pgpSign === undefined ? {} : { pgpSign }),
       },
       transform: () => ({ success: true }),
     }

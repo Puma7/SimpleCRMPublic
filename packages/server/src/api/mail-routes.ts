@@ -4376,7 +4376,16 @@ function parseScheduledSendBody(body: unknown): EmailScheduledSendParseResult {
   }
   const errors: Array<{ field: string; message: string }> = [];
   for (const key of Object.keys(body)) {
-    if (key !== 'sendAt') errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+    if (key !== 'sendAt' && key !== 'pgpEncrypt' && key !== 'pgpSign') {
+      errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
+    }
+  }
+  let pgpRequested = false;
+  for (const field of ['pgpEncrypt', 'pgpSign'] as const) {
+    if (!Object.prototype.hasOwnProperty.call(body, field)) continue;
+    const parsed = normalizeBooleanBody(body[field], field);
+    if (!parsed.ok) errors.push({ field, message: parsed.message });
+    else if (parsed.value) pgpRequested = true;
   }
   if (body.sendAt === null || body.sendAt === undefined || body.sendAt === '') {
     return errors.length > 0
@@ -4392,6 +4401,18 @@ function parseScheduledSendBody(body: unknown): EmailScheduledSendParseResult {
     return {
       ok: false,
       response: error(400, 'validation_error', 'Scheduled-send payload ist ungueltig', { fields: errors }),
+    };
+  }
+  if (pgpRequested) {
+    // The scheduled-send ticker has no PGP intent or passphrase to work with and
+    // would transmit the draft in plaintext, so refuse the schedule outright.
+    return {
+      ok: false,
+      response: error(
+        400,
+        'email_scheduled_send_pgp_unsupported',
+        'Geplanter Versand ist mit PGP-Verschluesselung oder -Signatur nicht moeglich',
+      ),
     };
   }
   return { ok: true, sendAt };
