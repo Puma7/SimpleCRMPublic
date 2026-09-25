@@ -72,6 +72,7 @@ import { runChatCompletion } from '../../electron/email/email-openai';
 import {
   createComposeDraft,
   getEmailMessageById,
+  listAccountSignatureRows,
   updateComposeDraft,
 } from '../../electron/email/email-store';
 import {
@@ -251,6 +252,26 @@ describe('ai.draft_reply (Agent 1)', () => {
     // Versand (email.send_draft / ApproveDraftSend) — ein liegen gebliebener
     // Entwurf, den ein Mensch später sendet, ist keine automatische Antwort.
     expect(markDraftAutoSubmitted).not.toHaveBeenCalled();
+  });
+
+  // F-A11a-07: Mit escapten Platzhalterwerten darf die Text-Signatur keine Entities zeigen.
+  test('Signatur-Platzhalter landen als Klartext ohne Entities im Entwurf', async () => {
+    (listAccountSignatureRows as jest.Mock).mockReturnValueOnce([
+      {
+        account_id: 1,
+        display_name: 'Service',
+        email_address: 'service@firma.de',
+        signature_html: '<p>Grüße an {{customer.name}}<br/>{{user.name}}</p>',
+      },
+    ]);
+    await node.execute(
+      ctx({ variables: { 'ai.class_confidence': 95, 'customer.name': `O'Brien & "Söhne" <GmbH>` } }),
+      {},
+      'd',
+    );
+    const draftInput = (createComposeDraft as jest.Mock).mock.calls[0]![0];
+    expect(draftInput.bodyText).toContain(`Grüße an O'Brien & "Söhne" <GmbH>\nService`);
+    expect(draftInput.bodyText).not.toMatch(/&(amp|lt|gt|quot|#39);/);
   });
 
   test('unterdrückt die Anrede, wenn die KI schon eine schreibt', async () => {

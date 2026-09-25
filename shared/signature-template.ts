@@ -42,19 +42,31 @@ export function buildSignatureTemplateContext(input: {
   }
 }
 
+// Platzhalterwerte (Kunden-, Konto-, Nutzernamen) sind Daten, kein Markup:
+// escapen, damit sie in der Signatur-HTML weder Tags noch Attribute bilden.
+// Eingesetzt per Callback, damit '$&' o. ae. im Wert kein Ersetzungsmuster ist.
+function escapeSignatureValue(value: string | null | undefined): string {
+  return (value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 export function interpolateSignatureTemplate(
   html: string,
   ctx: SignatureTemplateContext,
 ): string {
-  let out = html.replace(/\{\{account\.display_name\}\}/g, ctx.accountDisplayName ?? '')
+  let out = html.replace(/\{\{account\.display_name\}\}/g, () => escapeSignatureValue(ctx.accountDisplayName))
   // Only substitute {{user.publicName}} when a sender context is present;
   // otherwise leave it for a subsequent pass that knows the sending user.
   if (ctx.userPublicName != null) {
-    out = out.replace(/\{\{user\.publicName\}\}/g, ctx.userPublicName)
+    out = out.replace(/\{\{user\.publicName\}\}/g, () => escapeSignatureValue(ctx.userPublicName))
   }
   out = out
-    .replace(/\{\{user\.name\}\}/g, ctx.userName ?? '')
-    .replace(/\{\{user\.email\}\}/g, ctx.userEmail ?? '')
+    .replace(/\{\{user\.name\}\}/g, () => escapeSignatureValue(ctx.userName))
+    .replace(/\{\{user\.email\}\}/g, () => escapeSignatureValue(ctx.userEmail))
   const hasCustomer =
     (ctx.customerName ?? '').trim() ||
     (ctx.customerFirstName ?? '').trim() ||
@@ -65,7 +77,7 @@ export function interpolateSignatureTemplate(
     (ctx.customerName ?? '').trim().split(/\s+/)[0] ||
     ''
   return out
-    .replace(/\{\{customer\.name\}\}/g, ctx.customerName ?? '')
-    .replace(/\{\{customer\.firstName\}\}/g, firstName)
-    .replace(/\{\{customer\.email\}\}/g, ctx.customerEmail ?? '')
+    .replace(/\{\{customer\.name\}\}/g, () => escapeSignatureValue(ctx.customerName))
+    .replace(/\{\{customer\.firstName\}\}/g, () => escapeSignatureValue(firstName))
+    .replace(/\{\{customer\.email\}\}/g, () => escapeSignatureValue(ctx.customerEmail))
 }

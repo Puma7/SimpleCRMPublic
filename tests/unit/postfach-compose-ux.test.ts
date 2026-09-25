@@ -26,6 +26,7 @@ import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from '../../shared/signature-template';
+import { interpolateSignatureTemplate as interpolateServerSignatureTemplate } from '../../packages/server/src/signature-template';
 
 jest.mock('quill', () => ({ __esModule: true, default: class MockQuill {} }));
 jest.mock('quill/dist/quill.snow.css', () => ({}));
@@ -333,6 +334,34 @@ describe('signature-template', () => {
       { accountDisplayName: 'Shop', customerName: 'Müller GmbH' },
     );
     expect(out).toBe('Grüße Shop / Müller GmbH');
+  });
+
+  // F-A11a-07: Platzhalterwerte (Kunden-, Konto-, Nutzername) wurden ohne HTML-Escaping in die Signatur gesetzt.
+  it.each([
+    ['desktop/renderer', interpolateSignatureTemplate],
+    ['server', interpolateServerSignatureTemplate],
+  ] as const)('escapes placeholder values inserted into the signature html (%s)', (_edition, interpolate) => {
+    expect(
+      interpolate('<p>{{customer.name}}</p>', { customerName: 'Müller<img src="https://x.example/p.png">' }),
+    ).toBe('<p>Müller&lt;img src=&quot;https://x.example/p.png&quot;&gt;</p>');
+    expect(
+      interpolate('<p>{{account.display_name}} / {{user.name}} / {{user.publicName}}</p>', {
+        accountDisplayName: 'A & B <b>',
+        userName: "O'Brien <i>",
+        userPublicName: '<u>Pub</u>',
+      }),
+    ).toBe('<p>A &amp; B &lt;b&gt; / O&#39;Brien &lt;i&gt; / &lt;u&gt;Pub&lt;/u&gt;</p>');
+    // Anfuehrungszeichen duerfen ein Attribut der Vorlage nicht verlassen.
+    const attr = interpolate('<a href="mailto:{{customer.email}}">{{customer.firstName}}</a>', {
+      customerName: 'Anna Müller',
+      customerFirstName: 'Anna',
+      customerEmail: 'x" style="position:fixed',
+    });
+    expect(attr).toBe('<a href="mailto:x&quot; style=&quot;position:fixed">Anna</a>');
+    expect(interpolate('<p>{{user.email}}</p>', { userEmail: 'a<b>@example.com' }))
+      .toBe('<p>a&lt;b&gt;@example.com</p>');
+    expect(interpolate('<p>{{customer.name}}</p>', { customerName: "Preis $& $' Co" }))
+      .toBe('<p>Preis $&amp; $&#39; Co</p>');
   });
 
   it('preserves customer placeholders until customer context is provided', () => {
