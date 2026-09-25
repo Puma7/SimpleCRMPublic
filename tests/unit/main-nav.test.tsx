@@ -17,6 +17,11 @@ jest.mock('@/components/auth/user-switcher', () => ({
   UserSwitcher: () => null,
 }));
 
+const mockIsServerClientMode = jest.fn(() => true);
+jest.mock('@/lib/runtime-mode', () => ({
+  isServerClientMode: () => mockIsServerClientMode(),
+}));
+
 jest.mock('@/components/auth/auth-context', () => ({
   useAuth: () => ({
     canViewSettings: true,
@@ -28,12 +33,26 @@ jest.mock('@/components/auth/auth-context', () => ({
 import { MainNav } from '@/components/main-nav';
 
 describe('MainNav', () => {
+  beforeEach(() => {
+    mockIsServerClientMode.mockReturnValue(true);
+  });
+
+  // F-A11b-08: Im Desktop fuehrte "Retouren" auf eine Seite ohne IPC-Handler (Returns ist server-only).
+  test('hides the server-only returns link in the standalone desktop', () => {
+    mockIsServerClientMode.mockReturnValue(false);
+    render(<MainNav />);
+
+    expect(screen.queryByText('Retouren')).toBeNull();
+    expect(screen.getAllByRole('link').map((l) => l.getAttribute('href'))).not.toContain('/returns');
+    expect(screen.getByText('Kunden')).toBeTruthy();
+  });
+
   test('renders the SimpleCRM brand link', () => {
     render(<MainNav />);
     expect(screen.getByText('SimpleCRM')).toBeTruthy();
   });
 
-  test('renders all main navigation links', () => {
+  test('renders all main navigation links (server edition)', () => {
     render(<MainNav />);
 
     expect(screen.getByText('Dashboard')).toBeTruthy();

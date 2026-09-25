@@ -31,7 +31,8 @@ const navLinks = [
   { to: "/products", labelKey: "nav.products", icon: Package },
   { to: "/calendar", labelKey: "nav.calendar", icon: CalendarDays },
   { to: "/email", labelKey: "nav.email", icon: Mail },
-  { to: "/returns", labelKey: "nav.returns", icon: PackageOpen },
+  // Returns channels are server-only (DesktopServerOnlyInvokeChannels).
+  { to: "/returns", labelKey: "nav.returns", icon: PackageOpen, serverOnly: true },
 ] as const
 
 export function MainNav({
@@ -45,10 +46,11 @@ export function MainNav({
   const { canViewSettings, canReadCrm, capabilitiesReady } = useAuth()
   // Ohne crm.read liefert jeder CRM-Pfad serverseitig 403 — die Links dorthin
   // waeren Sackgassen. Solange die Rechte noch laden, bleibt alles sichtbar.
-  const hideCrmLinks = isServerClientMode() && capabilitiesReady && !canReadCrm
-  const visibleLinks = hideCrmLinks
-    ? navLinks.filter((link) => !isCrmRoutePath(link.to))
-    : navLinks
+  const serverMode = isServerClientMode()
+  const hideCrmLinks = serverMode && capabilitiesReady && !canReadCrm
+  const visibleLinks = navLinks
+    .filter((link) => serverMode || !("serverOnly" in link && link.serverOnly))
+    .filter((link) => !hideCrmLinks || !isCrmRoutePath(link.to))
   return (
     <nav className={cn("border-b", className)} {...props}>
       <div className="flex h-16 items-center px-4">
