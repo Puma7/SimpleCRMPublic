@@ -219,7 +219,9 @@ export function registerAiNodes(register: Reg): void {
       }
       const p = resolvePromptForConfig(config, accountScopeFromContext(ctx));
       if (!p) return { status: 'error', message: 'Prompt nicht gefunden' };
-      const user = interpolateTemplate(p.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text), ctx);
+      // Single pass ({{text}} included): mail text inserted here is never
+      // rescanned, so its placeholders cannot expand internal variables.
+      const user = interpolateTemplate(p.user_template, ctx);
       const blockKw = String(config.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
       try {
         const out = await runChatCompletion(
@@ -307,10 +309,7 @@ export function registerAiNodes(register: Reg): void {
       const attCount = ctx.outbound?.attachmentCount ?? 0;
       const userParts = [
         custom
-          ? interpolateTemplate(
-              custom.user_template.replace(/\{\{text\}\}/g, ctx.strings.combined_text),
-              ctx,
-            )
+          ? interpolateTemplate(custom.user_template, ctx)
           : [
               'Prüfe die folgende ausgehende E-Mail vor dem Versand an Kunden.',
               '',
