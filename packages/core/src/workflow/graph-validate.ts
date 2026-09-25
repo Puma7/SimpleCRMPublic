@@ -225,6 +225,85 @@ export function workflowGraphHasChainStopNode(graph: unknown): boolean {
 }
 
 /**
+ * Kann dieser Knoten zur Laufzeit die Inbound-Kette stoppen (inboundChainStop)?
+ * Dieselben Wege wie workflowGraphHasChainStopNode: `stopFurtherWorkflows` am
+ * Knoten (nodeRequestsChainStop bzw. email.mark_spam/set_spam_status) und
+ * `logic.stop_after_spam`. Ein Platzhalter im Schalter zaehlt vorsichtshalber
+ * mit, denn sein Wert steht erst zur Laufzeit fest.
+ */
+function nodeMayStopInboundChain(node: WorkflowGraphNode): boolean {
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  const config = data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+    ? (data.config as Record<string, unknown>)
+    : {};
+  const flagMayBeOn = (value: unknown) =>
+    chainStopFlagEnabled(value) || (typeof value === 'string' && value.includes('{{'));
+  if (flagMayBeOn(config[NODE_CHAIN_STOP_CONFIG_KEY]) || flagMayBeOn(data[NODE_CHAIN_STOP_CONFIG_KEY])) {
+    return true;
+  }
+  return workflowNodeRuntimeType(node) === 'logic.stop_after_spam';
+}
+
+/**
+ * Kann hinter `nodeId` auf irgendeinem Pfad noch ein Knoten die Inbound-Kette
+ * stoppen? Folgt jeder Kante (auch Fehler-/Nein-Zweigen) und jedem
+ * `resumeNodeId`, also auch Pfaden hinter weiteren deferierten Knoten.
+ *
+ * Grundlage fuer logic.delay in der Server-Kette: Kann hinter dem Delay nichts
+ * mehr stoppen, schaltet die Kette sofort weiter; sonst wartet sie seriell bis
+ * zum Ende der Verzoegerung. Im Zweifel (unlesbarer Graph, Platzhalter als
+ * Resume-Ziel) gilt der Stopp als erreichbar — dann bleibt es seriell.
+ */
+export function inboundChainStopReachableAfter(doc: WorkflowGraphDocument, nodeId: string): boolean {
+  if (!doc || !Array.isArray(doc.nodes) || !Array.isArray(doc.edges)) return true;
+  const byId = new Map(doc.nodes.map((node) => [node.id, node]));
+  const successors = (id: string): string[] | null => {
+    const targets = doc.edges.filter((edge) => edge.source === id).map((edge) => edge.target);
+    const data = (byId.get(id)?.data ?? {}) as Record<string, unknown>;
+    const config = data.config && typeof data.config === 'object' && !Array.isArray(data.config)
+      ? (data.config as Record<string, unknown>)
+      : data;
+    const resume = typeof config.resumeNodeId === 'string' ? config.resumeNodeId.trim() : '';
+    if (resume.includes('{{')) return null;
+    if (resume) targets.push(resume);
+    return targets;
+  };
+  const start = successors(nodeId);
+  if (start === null) return true;
+  const queue = [...start];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = byId.get(id);
+    if (!node) continue;
+    if (nodeMayStopInboundChain(node)) return true;
+    const next = successors(id);
+    if (next === null) return true;
+    queue.push(...next);
+  }
+  return false;
+}
+
+/**
+ * logic.delay-Knoten eines Inbound-Workflows, hinter denen noch ein Knoten die
+ * Kette stoppen kann. In der Server-Edition warten nachrangige
+ * Inbound-Workflows dort bis zum Ende der Verzoegerung (Hinweis im Editor).
+ */
+export function findInboundDelaysHoldingChain(
+  doc: WorkflowGraphDocument,
+  opts?: { effectiveTrigger?: string },
+): string[] {
+  if (!doc || !Array.isArray(doc.nodes)) return [];
+  if ((opts?.effectiveTrigger ?? triggerKind(doc)) !== 'inbound') return [];
+  return doc.nodes
+    .filter((node) => workflowNodeRuntimeType(node) === 'logic.delay')
+    .filter((node) => inboundChainStopReachableAfter(doc, node.id))
+    .map((node) => node.id);
+}
+
+/**
  * True if the graph contains at least one action/registry node whose runtime
  * type matches `nodeType`. Scans every node regardless of reachability (like
  * workflowGraphHasSideEffectNode), so a matching node behind a delay or an

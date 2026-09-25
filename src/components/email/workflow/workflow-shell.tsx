@@ -10,6 +10,7 @@ import {
   definitionToJson,
 } from "@shared/email-workflow-graph-compile"
 import {
+  findInboundDelaysHoldingChain,
   findOutboundGraphTraps,
   findWorkflowConfigRisks,
   formatOutboundGraphTraps,
@@ -464,6 +465,21 @@ export function WorkflowShell() {
       const configRisks = findWorkflowConfigRisks(graphDoc)
       if (configRisks.length > 0) {
         toast.warning(formatWorkflowConfigRisks(configRisks), { duration: 12000 })
+      }
+      // Hinweis, kein Riegel: Der Server schaltet die Inbound-Kette an einer
+      // Verzögerung nur dann sofort weiter, wenn danach nichts mehr die Kette
+      // stoppen kann. Sonst wartet sie seriell. Standalone-Electron führt
+      // nachrangige Workflows immer sofort aus, dort gibt es keinen Hinweis.
+      if (serverClientMode && trig === "inbound") {
+        const holdingDelays = findInboundDelaysHoldingChain(graphDoc, { effectiveTrigger: "inbound" })
+        if (holdingDelays.length > 0) {
+          toast.warning(
+            `Nachrangige Inbound-Workflows warten bis zum Ende der Verzögerung (${holdingDelays
+              .map((id) => `„${id}“`)
+              .join(", ")}), weil danach noch ein Knoten weitere Workflows stoppen kann.`,
+            { duration: 12000 },
+          )
+        }
       }
       if (selectedId != null) {
         await invokeRenderer(IPCChannels.Email.SaveWorkflowVersion, {

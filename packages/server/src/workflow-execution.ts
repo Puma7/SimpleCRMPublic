@@ -28,6 +28,7 @@ import {
   workflowDirectionForTrigger,
   workflowNodeRuntimeType,
   workflowTriggerNeedsMessage,
+  inboundChainStopReachableAfter,
   type WorkflowDirection,
   type WorkflowGraphDocument,
   type WorkflowGraphNode,
@@ -274,6 +275,8 @@ type GraphRunResult = {
    * Used to init a join barrier so chain advance waits for every sibling.
    */
   deferredBranchCount?: number;
+  /** Knoten, an denen der Lauf deferiert hat (logic.delay, KI-, HTTP-Kindjobs …). */
+  deferredNodeIds?: string[];
   blockReason: string | null;
   log: string[];
 };
@@ -892,6 +895,19 @@ export function createPostgresWorkflowExecutionJobPort(
                 reason: result.inboundChainStop
                   ? 'sibling_inbound_chain_stop'
                   : 'sibling_blocked',
+                now,
+              });
+            } else if (chain && !resumeNodeId && deferredOnlyByChainNeutralDelays(workflow, result)) {
+              // Nur Wartezeit, keine Entscheidung mehr: hinter keinem der
+              // Delays kann noch ein Knoten die Kette stoppen. Die naechste
+              // Prioritaetsstufe startet sofort statt erst nach Tagen; die
+              // Fortsetzung schliesst spaeter nur Join und Applied-Marker ab,
+              // ihr eigener Weiterschalt-Versuch scheitert am Hop-Claim.
+              await maybeEnqueueNextInboundWorkflow(trx, {
+                workspaceId: input.workspaceId,
+                messageId: Number(message.id),
+                actorUserId: input.actorUserId,
+                jobContext,
                 now,
               });
             }
@@ -1571,6 +1587,7 @@ async function runServerWorkflowGraph(
       ...branch,
       deferred: result.deferred === true || branch.deferred === true,
       deferredBranchCount,
+      deferredNodeIds: [...(result.deferredNodeIds ?? []), ...(branch.deferredNodeIds ?? [])],
       // Preserve an earlier sibling error — a later ok branch must not flip the
       // run back to success (would mark inbound applied and advance the chain).
       status: result.status === 'error' || branch.status === 'error' ? 'error' : branch.status,
@@ -1831,6 +1848,7 @@ async function walkGraph(
         // Ordinary logic.stop ends only this workflow; only spam short-circuit
         // (stop_after_spam / stopFurtherWorkflows) terminates the priority chain.
         inboundChainStop: result.inboundChainStop === true && result.deferred !== true,
+        ...(result.deferred === true ? { deferredNodeIds: [node.id] } : {}),
         blockReason: null,
         log: input.log,
       };
@@ -7623,6 +7641,24 @@ function withNodeChainStop(node: WorkflowGraphNode, result: NodeResult): NodeRes
     inboundChainStop: true,
     message: result.message ?? NODE_CHAIN_STOP_MESSAGE,
   };
+}
+
+/**
+ * Hat der Lauf ausschliesslich an logic.delay-Knoten deferiert, hinter denen auf
+ * keinem Pfad mehr ein kettenstoppender Knoten folgt? KI-, HTTP- und andere
+ * Kindjobs zaehlen nicht dazu: sie bleiben seriell wie bisher.
+ */
+function deferredOnlyByChainNeutralDelays(workflow: WorkflowRow, result: GraphRunResult): boolean {
+  const nodeIds = result.deferredNodeIds ?? [];
+  if (nodeIds.length === 0) return false;
+  const doc = parseWorkflowGraph(workflow.graph_json);
+  if (!doc) return false;
+  return nodeIds.every((nodeId) => {
+    const node = doc.nodes.find((candidate) => candidate.id === nodeId);
+    return node !== undefined
+      && nodeRuntimeType(node) === 'logic.delay'
+      && !inboundChainStopReachableAfter(doc, nodeId);
+  });
 }
 
 /**

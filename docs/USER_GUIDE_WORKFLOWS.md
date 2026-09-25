@@ -86,6 +86,8 @@ Wenn mehrere Workflows auf **„E-Mail eingehend“** reagieren, entscheidet die
 
 Auf dem Server werden eingehende Workflows **nacheinander** ausgeführt; ist die Mail danach als Spam oder „Spam prüfen“ markiert, werden nachfolgende Workflows übersprungen.
 
+Eine **Verzögerung** hält die nachrangigen Workflows nur dann auf, wenn danach noch ein Knoten die Kette stoppen kann („Weitere Workflows stoppen“ oder „Stopp nach Spam“). Dann warten sie bis zum Ende der Verzögerung, und der Editor weist beim Speichern darauf hin. Ohne einen solchen Knoten starten die nachrangigen Workflows sofort, der verzögerte Teil läuft später für sich weiter. Eine Verzögerung hinter einem KI- oder HTTP-Schritt hält die Kette weiterhin an.
+
 ### Ausgehende KI-Qualitätsprüfung — was die Ausgänge bedeuten
 
 Der Baustein **„KI-Ausgangsprüfung“** hat drei sichtbare Ausgänge:

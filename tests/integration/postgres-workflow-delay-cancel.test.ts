@@ -49,16 +49,21 @@ describe('manual cancel of a delayed inbound workflow keeps the priority chain m
         account_id, folder_id, uid, subject
       ) VALUES ($1, $2, $1, $3, $4, $3, $4, 1, 'Delay chain')
     `, [MESSAGE_ID, WORKSPACE_ID, ACCOUNT_ID, FOLDER_ID]);
+    // Der Spam-Stopp hinter dem Delay haelt die Kette seriell (F-D1-03): ohne
+    // ihn schaltet die Kette schon beim Einplanen weiter, und der Abbruch
+    // haette nichts mehr weiterzuschalten.
     const delayGraph = {
       version: 1,
       nodes: [
         { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
         { id: 'delay-1', type: 'registry', data: { nodeType: 'logic.delay', config: { delaySeconds: 3600 } } },
         { id: 'tag-1', type: 'registry', data: { nodeType: 'email.tag', config: { tag: 'after-delay' } } },
+        { id: 'spam-stop', type: 'registry', data: { nodeType: 'logic.stop_after_spam', config: {} } },
       ],
       edges: [
         { id: 'edge-1', source: 'trigger-1', target: 'delay-1' },
         { id: 'edge-2', source: 'delay-1', target: 'tag-1' },
+        { id: 'edge-3', source: 'tag-1', target: 'spam-stop' },
       ],
     };
     const nextGraph = {

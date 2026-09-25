@@ -68,6 +68,7 @@ Systemaudit-Overhaul in drei Commits (`f93354e`, `65966ef`, `8dc8298`). Endanwen
 | **2 Spam-Score-Parität** | Ehrliche Server-Hinweise zu `ai.spam_score`; Schema-Doku Desktop vs. Server |
 | **3 Editor-Transparenz** | Read-only Graph-JSON im Editor; Vorlagen-Port-Erklärungen; Doku-Updates |
 | **4 Server-Parität & Spam-Kette** | `ai.draft_reply`/`ai.review_draft` auf dem Server; `approval_state` in PostgreSQL; HTTP Freigabe (`approve-draft-send` / `dismiss-draft-approval`); einheitliche fail-closed KI + Spam-Short-Circuit (`inboundChainStop`); Inbound-Kette überlebt KI/HTTP/Delay-Continuations; Run-Historie mit Port-Labels ok/block/error; Desktop-KI überspringt Spam-Mails |
+| **F-D1-03 Delay in der Kette** | Deferiert ein Inbound-Lauf nur an `logic.delay` und folgt dahinter kein kettenstoppender Knoten (`stopFurtherWorkflows`, `logic.stop_after_spam`), schaltet der Server die Kette sofort weiter (Hop-Claim verhindert doppeltes Einreihen durch die Continuation). Mit Stopper hinter dem Delay bleibt sie seriell; der Editor zeigt dann einen Hinweis |
 
 ## Smoke-Check 2026-06-01
 
