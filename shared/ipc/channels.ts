@@ -362,6 +362,7 @@ const EmailChannels = literal({
   SaveSpamListEntry: 'email:save-spam-list-entry',
   DeleteSpamListEntry: 'email:delete-spam-list-entry',
   PickComposeAttachments: 'email:pick-compose-attachments',
+  RegisterDroppedComposeAttachments: 'email:register-dropped-compose-attachments',
   ListTeamMembers: 'email:list-team-members',
   SaveTeamMember: 'email:save-team-member',
   DeleteTeamMember: 'email:delete-team-member',
@@ -470,6 +471,15 @@ export const DesktopServerOnlyInvokeChannels = tuple(
   EmailChannels.SaveMailDelegationBinding,
   EmailChannels.DeleteMailDelegationBinding,
   EmailChannels.GetMailAclRolloutReadiness,
+);
+
+/**
+ * C-A30 (G12): Nur der Preload ruft diese Kanaele auf (mit Werten, die er selbst
+ * ermittelt, z. B. per webUtils.getPathForFile); die allgemeine invoke-Bruecke
+ * des Renderers laesst sie nicht durch.
+ */
+export const PreloadOnlyInvokeChannels = tuple(
+  EmailChannels.RegisterDroppedComposeAttachments,
 );
 
 // Flattened invoke list for preload allow-listing

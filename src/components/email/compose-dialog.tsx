@@ -283,16 +283,25 @@ function fileToBase64(file: File): Promise<string> {
   })
 }
 
-type FileWithPath = File & { path?: string }
-
 function hasFileDrag(dataTransfer: DataTransfer | null): boolean {
   if (!dataTransfer) return false
   return Array.from(dataTransfer.types).includes("Files")
 }
 
-function localPathFromDroppedFile(file: File): string | null {
-  const path = (file as FileWithPath).path?.trim()
-  return path || null
+/**
+ * Lokale Anhaenge per Drag & Drop: den Pfad ermittelt der Preload und gibt ihn im
+ * Main-Prozess frei; nur so freigegebene Pfade nimmt der Entwurf an (C-A30).
+ */
+async function registerDroppedLocalFiles(files: File[]): Promise<string[]> {
+  const register = typeof window === "undefined"
+    ? undefined
+    : window.electronAPI?.registerDroppedComposeAttachments
+  if (typeof register !== "function") return []
+  try {
+    return await register(files)
+  } catch {
+    return []
+  }
 }
 
 export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, onSent }: Props) {
@@ -1256,11 +1265,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       }
       if (!localAttachmentPickerAvailable) return
 
-      const paths: string[] = []
-      for (const file of Array.from(files)) {
-        const path = localPathFromDroppedFile(file)
-        if (path) paths.push(path)
-      }
+      const paths = await registerDroppedLocalFiles(Array.from(files))
       if (paths.length === 0) {
         toast.error("Anhänge per Drag & Drop sind nur für lokale Dateien verfügbar.")
         return

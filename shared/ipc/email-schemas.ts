@@ -1244,6 +1244,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     payload: voidPayload,
     result: z.object({ success: z.literal(true), paths: z.array(z.string()) }).passthrough(),
   });
+  set(IPCChannels.Email.RegisterDroppedComposeAttachments, {
+    payload: z.object({ paths: z.array(z.string().min(1).max(4096)).min(1).max(100) }).strict(),
+    result: z.object({ success: z.literal(true), paths: z.array(z.string()) }).passthrough(),
+  });
 
   // --- Categories & counts ---
   set(IPCChannels.Email.ListCategories, { payload: voidPayload, result: recordArray });

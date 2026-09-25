@@ -63,6 +63,17 @@ function canAccessEmailAccount(
   });
 }
 
+/** C-A30 (G12): Fenster und Sitzung, an die Anhang-Freigaben gebunden sind. */
+function composeAttachmentCaller(event: IpcMainInvokeEvent): ComposeAttachmentCaller {
+  const session = requireAuthSession(event);
+  return {
+    webContentsId: event.sender.id,
+    sessionId: session.sessionId,
+    userId: session.userId,
+    role: session.role,
+  };
+}
+
 /**
  * C-A79 (G5): Ein Elternbezug wird nur gespeichert, wenn der Aufrufer das Konto
  * der Eltern-Mail lesen darf; sonst bleibt das Feld unveraendert (kein Fehler).
@@ -135,6 +146,11 @@ import {
 } from '../email/email-inbox-recovery';
 import { sendComposeDraft } from '../email/email-compose-send';
 import { clearScheduledSendActor, recordScheduledSendActor } from '../email/email-scheduled-send-actor';
+import {
+  composeAttachmentPathsError,
+  grantComposeAttachmentPaths,
+  type ComposeAttachmentCaller,
+} from '../email/compose-attachment-grants';
 import { testSmtpConnection } from '../email/email-smtp';
 import {
   listCategories,
@@ -741,6 +757,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (payload.accountId !== undefined && !canAccessEmailAccount(event, payload.accountId, 'rw')) {
           throw new Error('Kein Zugriff auf dieses Konto');
         }
+        const attachmentError = composeAttachmentPathsError(
+          composeAttachmentCaller(event),
+          payload.messageId,
+          payload.draftAttachmentPaths,
+        );
+        if (attachmentError) throw new Error(attachmentError);
         const toJson =
           payload.to !== undefined
             ? payload.to.trim()
@@ -1379,6 +1401,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         },
       ) => {
         const session = requireAuthSession(_event);
+        const attachmentError = composeAttachmentPathsError(
+          composeAttachmentCaller(_event),
+          payload.draftMessageId,
+          payload.attachmentPaths,
+        );
+        if (attachmentError) {
+          return { success: false as const, error: attachmentError, workflowRunId: null };
+        }
         const r = await sendComposeDraft({
           ...payload,
           pgpUserId: session.userId,
@@ -2654,7 +2684,29 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (result.canceled || result.filePaths.length === 0) {
           return { success: true as const, paths: [] as string[] };
         }
-        return { success: true as const, paths: result.filePaths };
+        // C-A30 (G12): Nur so gewaehlte Dateien darf dieses Fenster anhaengen.
+        const { sessionId } = requireAuthSession(event);
+        return {
+          success: true as const,
+          paths: grantComposeAttachmentPaths(event.sender.id, sessionId, result.filePaths),
+        };
+      },
+      { logger },
+    ),
+  );
+
+  // C-A30 (G12): Drag-and-drop. Nur der Preload ruft diesen Kanal auf, mit Pfaden
+  // aus webUtils.getPathForFile (PreloadOnlyInvokeChannels); freigegeben werden
+  // nur vorhandene regulaere Dateien.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Email.RegisterDroppedComposeAttachments,
+      async (event: IpcMainInvokeEvent, payload: { paths: string[] }) => {
+        const { sessionId } = requireAuthSession(event);
+        return {
+          success: true as const,
+          paths: grantComposeAttachmentPaths(event.sender.id, sessionId, payload.paths),
+        };
       },
       { logger },
     ),

@@ -8952,6 +8952,7 @@ describe('renderer transport', () => {
       IPCChannels.Email.PreviewRestoreLocalMailBackup,
       IPCChannels.Email.RestoreLocalMailBackup,
       IPCChannels.Email.PickComposeAttachments,
+      IPCChannels.Email.RegisterDroppedComposeAttachments,
       IPCChannels.Email.OpenAttachmentPath,
       IPCChannels.Email.SaveAttachmentToDisk,
 

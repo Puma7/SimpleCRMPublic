@@ -29,6 +29,7 @@ import {
   verifyLocalAuthAuditChain,
 } from '../auth/auth-store';
 import { checkLoginAllowed, recordLoginFailure, clearLoginFailures } from '../auth/login-guard';
+import { revokeComposeAttachmentGrants } from '../email/compose-attachment-grants';
 
 interface AuthRouterOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -132,6 +133,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       const session = getSessionFromEvent(event);
       recordLocalLogout(session?.userId ?? null);
       revokeSession(event.sender.id);
+      revokeComposeAttachmentGrants(event.sender.id);
       return { success: true as const };
     }, { logger }),
   );

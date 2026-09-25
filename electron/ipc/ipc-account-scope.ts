@@ -40,6 +40,7 @@ export const EMAIL_SKIP_ACCOUNT_SCOPE = new Set<string>([
   'email:get-microsoft-oauth-app',
   'email:build-microsoft-oauth-url',
   'email:pick-compose-attachments',
+  'email:register-dropped-compose-attachments',
   'email:pick-local-mail-backup-zip',
   'email:test-imap',
   'email:test-smtp',
