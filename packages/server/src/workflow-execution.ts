@@ -33,6 +33,8 @@ import {
   workflowTriggerNeedsMessage,
   inboundChainStopReachableAfter,
   workflowNodeDefersRun,
+  LOGIC_INMEMORY_NODE_TYPES,
+  READ_ONLY_WORKFLOW_NODE_TYPES,
   type WorkflowDirection,
   type WorkflowGraphDocument,
   type WorkflowGraphNode,
@@ -86,6 +88,7 @@ import { publishMailVisibilityInvalidation } from './mail-access/visibility-inva
 import type { ServerEventPort } from './api/types';
 import { validateReadOnlyMssqlQuery, type MssqlSettingsPort } from './mssql-settings';
 import type { ServerWorkflowImapActionPort, ServerWorkflowImapActionResult } from './workflow-imap-actions';
+import { isServerWorkflowNodeTypeSupported } from './workflow-node-catalog';
 import type {
   EmailMessagesTable,
   EmailWorkflowRunsTable,
@@ -2166,6 +2169,7 @@ async function executeServerNode(
   if (dryRun) {
     const dryRunResult = dryRunMutatingNodeResult(type, config, node, log);
     if (dryRunResult) return dryRunResult;
+    if (!DRY_RUN_LIVE_NODE_TYPES.has(type)) return dryRunFailClosedResult(type, log);
   }
   if (type === 'ai.reply_suggestion') {
     const result = await scheduleAiReplySuggestionJob(trx, context, config, now);
@@ -2649,6 +2653,46 @@ function unsupportedWorkflowNodeResult(type: string, log: string[]): NodeResult 
   };
 }
 
+/**
+ * Knotentypen, die im Dry-Run nach dryRunMutatingNodeResult live laufen. Die
+ * Vorschau committet unter der System-Rolle; eine reine Denylist liess den
+ * Vorlagen-Alias set_category und ai.pick_canned live laufen (C-A64). Alles,
+ * was weder hier steht noch simuliert wird, faellt auf
+ * dryRunFailClosedResult — ein neuer schreibender Knoten wirkt so in der
+ * Vorschau nie live.
+ */
+const DRY_RUN_LIVE_NODE_TYPES: ReadonlySet<string> = new Set([
+  ...READ_ONLY_WORKFLOW_NODE_TYPES,
+  ...LOGIC_INMEMORY_NODE_TYPES,
+  // Eigener Dry-Run-Zweig in executeServerNode.
+  'logic.delay',
+  'ai.draft_reply',
+  'ai.review_draft',
+  'email.release_outbound',
+  'email.send_draft',
+  // Nur Auswertung bzw. Halte-Ergebnis, kein Schreibzugriff.
+  'email.hold_outbound',
+  'hold_outbound',
+  'email.auto_reply',
+  'ai.spam_score',
+  'ai.agent_tool',
+  // Lesen live aus dem externen ERP. Ob die Vorschau das darf, ist eine offene
+  // Produktentscheidung; bis dahin bleibt das bisherige Verhalten.
+  'mssql.query',
+  'jtl.order_context',
+]);
+
+/**
+ * Knoten ohne Live-Freigabe und ohne eigene Simulation: Bekannte Server-Knoten
+ * werden simuliert, unbekannte und nicht serverfaehige bleiben wie im echten
+ * Lauf "nicht unterstuetzt".
+ */
+function dryRunFailClosedResult(type: string, log: string[]): NodeResult {
+  const knownServerNode = isServerWorkflowNodeTypeSupported(type)
+    && listBuiltinWorkflowNodeCatalog().some((entry) => entry.type === type);
+  return knownServerNode ? dryRunSideEffectResult(type, log) : unsupportedWorkflowNodeResult(type, log);
+}
+
 function dryRunMutatingNodeResult(
   type: string,
   config: Record<string, unknown>,
@@ -2678,6 +2722,10 @@ function dryRunMutatingNodeResult(
       return dryRunAsyncContinuationResult(type, config, node, log, {
         'ai.agent.status': 'dry_run',
       });
+    case 'ai.pick_canned':
+      return dryRunAsyncContinuationResult(type, config, node, log, {
+        'ai.pick_canned.status': 'dry_run',
+      });
     case 'email.tag':
     case 'tag': {
       const tag = String(config.tag ?? node.data.tag ?? '').trim();
@@ -2685,7 +2733,8 @@ function dryRunMutatingNodeResult(
         ? dryRunSideEffectResult(type, log, { variables: { 'email.last_tag': tag } })
         : { status: 'skipped', port: 'default', message: 'leerer Tag' };
     }
-    case 'email.set_category': {
+    case 'email.set_category':
+    case 'set_category': {
       const path = String(config.path ?? '').trim();
       return path
         ? dryRunSideEffectResult(type, log, { variables: { 'email.category_path': path } })

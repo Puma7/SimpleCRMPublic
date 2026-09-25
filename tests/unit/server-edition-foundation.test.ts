@@ -8930,6 +8930,141 @@ describe('server edition foundation', () => {
     expect(rows.messageCategories.map((mc) => [mc.message_id, mc.category_id])).toEqual([[28, 801]]);
   });
 
+  function dryRunSideEffectFixture(nodes: Array<Record<string, unknown>>) {
+    return makeWorkflowExecutionDb({
+      workflows: nodes.map((node, index) => ({
+        id: 400 + index,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 4000 + index,
+        trigger_name: 'manual',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [{ id: 'trigger-1', type: 'trigger', data: { kind: 'manual' } }, { id: 'node-1', ...node }],
+          edges: [{ id: 'edge-1', source: 'trigger-1', target: 'node-1' }],
+        },
+        execution_mode: 'graph',
+      })),
+      messages: [{
+        id: 29,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 290,
+        account_id: 1,
+        subject: 'Vorschau',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        snippet: 'Vorschau',
+        body_text: 'Hallo',
+        body_html: null,
+        has_attachments: true,
+        attachments_json: null,
+        seen_local: false,
+        archived: false,
+        done_local: false,
+        is_spam: false,
+        spam_status: 'clean',
+        assigned_to: null,
+      }],
+      categories: [{
+        id: 801,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 9801,
+        parent_source_sqlite_id: null,
+        parent_id: null,
+        name: 'Support',
+        sort_order: 0,
+      }],
+      teamMembers: [{ id: 'agent-1', workspace_id: WORKSPACE_A_ID, linked_user_id: null }],
+    });
+  }
+
+  // C-A64: Der Dry-Run simulierte nur eine Denylist; der Vorlagen-Alias set_category und ai.pick_canned liefen in der Vorschau live, setzten die Kategorie bzw. reihten einen echten KI-Job ein.
+  test('workflow dry-run simulates the set_category alias and ai.pick_canned instead of running them', async () => {
+    const now = new Date('2026-07-04T10:31:30.000Z');
+    const { db, rows } = dryRunSideEffectFixture([
+      { type: 'action', data: { actionType: 'set_category', path: 'Support' } },
+      { type: 'registry', data: { nodeType: 'ai.pick_canned', config: {} } },
+    ]);
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const logs: string[][] = [];
+    for (const workflowId of [400, 401]) {
+      const result = await port.dryRun!({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId,
+        messageId: 29,
+        triggerName: 'manual',
+        context: {},
+      });
+      logs.push(result.log);
+    }
+
+    expect(logs).toEqual([
+      ['dry_run:server', 'dry_run:set_category'],
+      ['dry_run:server', 'dry_run:ai.pick_canned'],
+    ]);
+    expect(rows.messageCategories).toEqual([]);
+    expect(rows.jobs).toEqual([]);
+  });
+
+  // C-A64: Der Dry-Run muss fail-closed sein: nur ausdruecklich lesende oder rein logische Knoten laufen live, jeder andere Knotentyp (auch Aliase) bleibt ohne Schreibzugriff.
+  test('workflow dry-run leaves persisted state untouched for every catalog node type and action alias', async () => {
+    const now = new Date('2026-07-04T10:31:30.000Z');
+    const config = {
+      tag: 'vorschau',
+      path: 'Support',
+      teamMemberId: 'agent-1',
+      level: 'hoch',
+      to: 'kopie@example.com',
+      url: 'https://api.example.com/hook',
+      method: 'POST',
+      folderPath: 'Archiv',
+      title: 'Aufgabe',
+      status: 'spam',
+      draftId: 1,
+      workflowId: 1,
+    };
+    const aliases = [
+      'tag', 'set_category', 'mark_seen', 'archive', 'link_customer', 'forward_copy',
+      'tag_attachment_meta', 'hold_outbound', 'ai_review', 'stop',
+    ];
+    const nodes = [
+      ...listBuiltinWorkflowNodeCatalog().map((entry) => ({ type: 'registry', data: { nodeType: entry.type, config } })),
+      ...aliases.map((actionType) => ({ type: 'action', data: { actionType, ...config, config } })),
+    ];
+    const { db, rows } = dryRunSideEffectFixture(nodes);
+    const port = createPostgresWorkflowExecutionJobPort({
+      db,
+      now: () => now,
+      applyWorkspaceSession: async () => undefined,
+    });
+
+    const touched: string[] = [];
+    let snapshot = JSON.stringify(rows);
+    for (const [index, node] of nodes.entries()) {
+      // Ein Fehler des Knotens (fehlender Port, ungueltige Konfiguration) ist
+      // hier egal; es zaehlt nur, dass nichts geschrieben wurde.
+      await port.dryRun!({
+        workspaceId: WORKSPACE_A_ID,
+        workflowId: 400 + index,
+        messageId: 29,
+        triggerName: 'manual',
+        context: {},
+      }).catch(() => undefined);
+      const after = JSON.stringify(rows);
+      if (after !== snapshot) touched.push(String(node.data.nodeType ?? node.data.actionType));
+      snapshot = after;
+    }
+
+    expect(touched).toEqual([]);
+  });
+
   test('postgres workflow execution job port resolves set_category by stable id (rename-safe)', async () => {
     const now = new Date('2026-07-04T10:31:45.000Z');
     const { db, rows } = makeWorkflowExecutionDb({
