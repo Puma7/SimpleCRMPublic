@@ -1,4 +1,5 @@
 import { getEmailMessageById } from '../email/email-store';
+import { getAttachmentById } from '../email/email-message-attachments-store';
 
 /** Channels with `accountScope: number | 'all'` — no single-account gate. */
 export const EMAIL_MULTI_ACCOUNT_CHANNELS = new Set<string>([
@@ -79,6 +80,12 @@ const EMAIL_BARE_MESSAGE_ID_CHANNELS = new Set<string>([
   'email:get-latest-workflow-run-for-message',
 ]);
 
+/** IPC channels whose payload `{ attachmentId }` names a stored message attachment. */
+const EMAIL_ATTACHMENT_ID_CHANNELS = new Set<string>([
+  'email:save-attachment-to-disk',
+  'email:open-attachment-path',
+]);
+
 function accountIdFromObject(payload: unknown): number | undefined {
   if (payload == null || typeof payload !== 'object') return undefined;
   const o = payload as Record<string, unknown>;
@@ -112,6 +119,15 @@ export function resolveEmailChannelAccountId(channel: string, payload: unknown):
 
   if (EMAIL_MULTI_ACCOUNT_CHANNELS.has(channel)) {
     return accountIdFromObject(payload);
+  }
+
+  if (EMAIL_ATTACHMENT_ID_CHANNELS.has(channel)) {
+    const attachmentId = (payload as { attachmentId?: unknown } | null)?.attachmentId;
+    if (typeof attachmentId !== 'number' || !Number.isInteger(attachmentId) || attachmentId <= 0) {
+      return undefined;
+    }
+    const messageId = getAttachmentById(attachmentId)?.message_id;
+    return messageId ? getEmailMessageById(messageId)?.account_id : undefined;
   }
 
   if (channel === 'email:update-account' || channel === 'email:delete-account') {

@@ -1,8 +1,12 @@
 jest.mock('../../electron/email/email-store', () => ({
   getEmailMessageById: jest.fn(),
 }));
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  getAttachmentById: jest.fn(),
+}));
 
 import { getEmailMessageById } from '../../electron/email/email-store';
+import { getAttachmentById } from '../../electron/email/email-message-attachments-store';
 import { IPCChannels } from '../../shared/ipc/channels';
 import {
   EMAIL_MULTI_ACCOUNT_CHANNELS,
@@ -11,10 +15,12 @@ import {
 } from '../../electron/ipc/ipc-account-scope';
 
 const mockGetMessage = getEmailMessageById as jest.MockedFunction<typeof getEmailMessageById>;
+const mockGetAttachment = getAttachmentById as jest.MockedFunction<typeof getAttachmentById>;
 
 describe('resolveEmailChannelAccountId', () => {
   beforeEach(() => {
     mockGetMessage.mockReset();
+    mockGetAttachment.mockReset();
   });
 
   it('returns undefined for non-email channels', () => {
@@ -49,6 +55,25 @@ describe('resolveEmailChannelAccountId', () => {
   // F-A7-03: delete-account bekommt eine nackte Konto-ID, die nie aufgeloest wurde, daher lief die Loeschung ohne Konto-ACL.
   it('resolves the bare account id that delete-account actually receives', () => {
     expect(resolveEmailChannelAccountId('email:delete-account', 5)).toBe(5);
+  });
+
+  // F-A7b-06: Anhang speichern/oeffnen loeste aus attachmentId kein Konto auf, die Konto-ACL wurde uebersprungen (IDOR).
+  it('resolves the owning account of an attachment for save/open attachment channels', () => {
+    mockGetAttachment.mockReturnValue({ id: 42, message_id: 7 } as never);
+    mockGetMessage.mockReturnValue({ account_id: 3 } as never);
+
+    expect(resolveEmailChannelAccountId('email:save-attachment-to-disk', { attachmentId: 42 })).toBe(3);
+    expect(
+      resolveEmailChannelAccountId('email:open-attachment-path', { attachmentId: 42, confirmOpenRisky: true }),
+    ).toBe(3);
+    expect(mockGetAttachment).toHaveBeenCalledWith(42);
+    expect(mockGetMessage).toHaveBeenCalledWith(7);
+  });
+
+  it('leaves unknown attachments to the handler (not found, nothing to leak)', () => {
+    mockGetAttachment.mockReturnValue(undefined);
+    expect(resolveEmailChannelAccountId('email:open-attachment-path', { attachmentId: 99 })).toBeUndefined();
+    expect(mockGetMessage).not.toHaveBeenCalled();
   });
 
   it('uses payload.id as account only for update/delete-account', () => {
