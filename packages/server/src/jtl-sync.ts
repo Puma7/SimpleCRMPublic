@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely, type RawBuilder } from 'kysely';
 
 import type {
   JtlSyncApiPort,
@@ -450,7 +450,7 @@ async function upsertJtlCustomers(
       .insertInto('customers')
       .values(chunk.map((row) => ({
         workspace_id: workspaceId,
-        source_sqlite_id: row.sourceSqliteId,
+        source_sqlite_id: jtlSourceSqliteId('customers', workspaceId, row.sourceSqliteId),
         jtl_kkunde: row.sourceSqliteId,
         customer_number: row.customerNumber,
         name: row.name,
@@ -475,8 +475,9 @@ async function upsertJtlCustomers(
         created_at: syncedAt,
         updated_at: syncedAt,
       })))
-      .onConflict((oc) => oc.columns(['workspace_id', 'source_sqlite_id']).doUpdateSet({
-        jtl_kkunde: (eb: any) => eb.ref('excluded.jtl_kkunde'),
+      // Match on the JTL key: migrated rows keep their desktop id in
+      // source_sqlite_id, which can equal an unrelated kKunde.
+      .onConflict((oc) => oc.columns(['workspace_id', 'jtl_kkunde']).where('jtl_kkunde', 'is not', null).doUpdateSet({
         customer_number: (eb: any) => eb.ref('excluded.customer_number'),
         name: (eb: any) => eb.ref('excluded.name'),
         first_name: (eb: any) => eb.ref('excluded.first_name'),
@@ -509,7 +510,7 @@ async function upsertJtlProducts(
       .insertInto('products')
       .values(chunk.map((row) => ({
         workspace_id: workspaceId,
-        source_sqlite_id: row.sourceSqliteId,
+        source_sqlite_id: jtlSourceSqliteId('products', workspaceId, row.sourceSqliteId),
         jtl_kartikel: row.sourceSqliteId,
         name: row.name,
         sku: row.sku,
@@ -525,8 +526,7 @@ async function upsertJtlProducts(
         created_at: syncedAt,
         updated_at: syncedAt,
       })))
-      .onConflict((oc) => oc.columns(['workspace_id', 'source_sqlite_id']).doUpdateSet({
-        jtl_kartikel: (eb: any) => eb.ref('excluded.jtl_kartikel'),
+      .onConflict((oc) => oc.columns(['workspace_id', 'jtl_kartikel']).where('jtl_kartikel', 'is not', null).doUpdateSet({
         name: (eb: any) => eb.ref('excluded.name'),
         sku: (eb: any) => eb.ref('excluded.sku'),
         description: (eb: any) => eb.ref('excluded.description'),
@@ -540,6 +540,28 @@ async function upsertJtlProducts(
       }))
       .execute();
   }
+}
+
+/**
+ * source_sqlite_id for a row the sync inserts. It stays the JTL key when that id
+ * is free (the web client still derives the customer's JTL number from it), and
+ * falls back to a negative id like server-created rows when a migrated desktop
+ * row already uses it. On an update the existing source_sqlite_id is kept.
+ */
+function jtlSourceSqliteId(
+  table: 'customers' | 'products',
+  workspaceId: string,
+  jtlKey: number,
+): RawBuilder<number> {
+  return sql<number>`CASE
+    WHEN EXISTS (
+      SELECT 1 FROM ${sql.table(table)} AS existing
+      WHERE existing.workspace_id = ${workspaceId}
+        AND existing.source_sqlite_id = ${jtlKey}
+    )
+    THEN -nextval(pg_get_serial_sequence(${table}, 'id'))
+    ELSE ${jtlKey}
+  END`;
 }
 
 type JtlReferenceTableName = 'jtl_firmen' | 'jtl_warenlager' | 'jtl_zahlungsarten' | 'jtl_versandarten';

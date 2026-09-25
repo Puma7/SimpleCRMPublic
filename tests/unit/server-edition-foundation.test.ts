@@ -383,6 +383,7 @@ const EXPECTED_SERVER_MIGRATION_IDS = [
   '0049_master_key_fingerprint',
   '0050_mail_acl_shadow_without_legacy',
   '0051_email_account_sync_schedule',
+  '0052_jtl_key_uniqueness',
 ];
 
 const WORKSPACE_A_ID = '11111111-1111-4111-8111-111111111111';
