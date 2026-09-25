@@ -128,6 +128,7 @@ type WorkflowRow = Pick<
   Selectable<EmailWorkflowsTable>,
   | 'id'
   | 'source_sqlite_id'
+  | 'account_id'
   | 'trigger_name'
   | 'enabled'
   | 'definition_json'
@@ -666,6 +667,35 @@ export function createPostgresWorkflowExecutionJobPort(
             return;
           }
 
+          // Die Kette wurde beim Eingang der Mail mit den damals zustaendigen
+          // Workflows festgelegt. Wurde dieser Workflow seitdem auf ein anderes
+          // Postfach umgehaengt oder vom Inbound-Trigger genommen, ist er fuer
+          // die Mail nicht mehr zustaendig — wie deaktiviert behandeln.
+          if (
+            trigger === 'inbound'
+            && message
+            && !resumeNodeId
+            && parseInboundWorkflowChain(jobContext.inboundWorkflowChain)
+            && (
+              workflow.trigger_name !== 'inbound'
+              || (workflow.account_id != null && Number(workflow.account_id) !== Number(message.account_id))
+            )
+          ) {
+            await finishRun(trx, input.workspaceId, run.id, {
+              status: 'ok',
+              log: ['skip:workflow_scope_changed'],
+              now,
+            });
+            await maybeEnqueueNextInboundWorkflow(trx, {
+              workspaceId: input.workspaceId,
+              messageId: Number(message.id),
+              actorUserId: input.actorUserId,
+              jobContext,
+              now,
+            });
+            return;
+          }
+
           if (
             trigger === 'inbound'
             && message
@@ -1183,6 +1213,7 @@ async function loadWorkflow(
     .select([
       'id',
       'source_sqlite_id',
+      'account_id',
       'trigger_name',
       'enabled',
       'definition_json',
