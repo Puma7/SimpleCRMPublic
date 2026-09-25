@@ -85,6 +85,7 @@ import type {
   ServerDatabase,
 } from './schema';
 import type { PostgresSecretPort } from './postgres-secret-port';
+import { resolveEmailAccountReference } from './resolve-email-account-reference';
 import {
   withWorkspaceTransaction,
   type WorkspaceSessionApplier,
@@ -527,7 +528,18 @@ export function createPostgresEmailAccountReadPort(options: PostgresEmailAccount
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
-          const row = await selectEmailAccountByPublicId(trx, input.workspaceId, input.id);
+          // Resolve the public id exactly like the mail ACL layer does: an id that names one
+          // account by postgres id and ANOTHER by legacy source_sqlite_id is ambiguous. The
+          // enforcer authorized the canonical account, so preferring the legacy match here
+          // would serve a different mailbox's identity — fail closed instead. (C-A67)
+          const reference = await resolveEmailAccountReference(trx, input.workspaceId, input.id);
+          if (!reference) return null;
+          const row = await trx
+            .selectFrom('email_accounts')
+            .select(emailAccountSelectColumns)
+            .where('workspace_id', '=', input.workspaceId)
+            .where('id', '=', reference.id)
+            .executeTakeFirst();
           if (!row) return null;
           // Same parent-only redaction as list(): a delegate reaching this account
           // ONLY as the parent of a scoped folder/message (restricted scope that does

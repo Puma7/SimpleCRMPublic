@@ -310,9 +310,18 @@ export async function enforceMailHttpPolicy(
       if (accountScope.kind === 'all') {
         return { ok: true, context: { permission: entry.policy.permission } };
       }
+      if (accountScope.kind === 'none') return denied();
+      // The URL carries a public id (postgres id or legacy source_sqlite_id) while the scope
+      // holds canonical ids. Resolve it like the strict account routes do — fail closed when it
+      // names two different accounts — so the grant check covers the account get() serves. (C-A67)
+      const [account, ...ambiguous] = await ports.mailResourceLookup!.resolve({
+        workspaceId: principal.workspaceId,
+        target: { kind: 'account', id: Number(resources.accountId) },
+      });
       if (
-        accountScope.kind === 'none'
-        || !await restrictedScopeSeesAccount(accountScope, resources.accountId, principal.workspaceId, ports)
+        !account
+        || ambiguous.length > 0
+        || !await restrictedScopeSeesAccount(accountScope, account.accountId, principal.workspaceId, ports)
       ) {
         return denied();
       }
