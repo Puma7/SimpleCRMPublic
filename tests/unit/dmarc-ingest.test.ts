@@ -111,6 +111,38 @@ describe('createPostgresWorkflowDmarcIngestPort', () => {
     expect(vars['dmarc.domain']).toBe('firma.de');
   });
 
+  // F-A3b-03: spreading a report with more than ~125k records into push() threw a RangeError after the
+  // report was already persisted, so it was logged as "skipped" and its records never reached dmarc.* vars.
+  test('counts every record of a very large report without a RangeError', async () => {
+    const recordCount = 200_000;
+    const header = REPORT_XML.slice(0, REPORT_XML.indexOf('<record>'));
+    const record = '<record><row><count>1</count></row></record>';
+    const xml = `${header}${record.repeat(recordCount)}</feedback>`;
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const port = createPostgresWorkflowDmarcIngestPort({
+        db: makeFakeDb({ attachments: [{ filename_display: 'big.xml', storage_path: 'big.xml' }], jobInserts }),
+        attachmentsRoot: '/tmp/att',
+        readAttachmentFile: async () => Buffer.from(xml, 'utf8'),
+        store,
+        applyWorkspaceSession: async () => undefined,
+      });
+
+      await port.ingest({ workspaceId: WS, workflowId: 5, messageId: 41, continuation: CONTINUATION });
+
+      expect(store.persistReport).toHaveBeenCalledTimes(1);
+      const jobs = jobInserts.filter((j) => j.table === 'job_queue');
+      expect(jobs).toHaveLength(1);
+      expect(eventVars(jobs[0])['dmarc.report_count']).toBe(1);
+      expect(eventVars(jobs[0])['dmarc.record_count']).toBe(recordCount);
+      expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('skipping report attachment'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test('a report whose persist throws is skipped, others still ingest, continuation still enqueued', async () => {
     const jobInserts: JobInsert[] = [];
     let call = 0;

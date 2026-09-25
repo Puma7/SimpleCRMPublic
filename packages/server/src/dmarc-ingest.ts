@@ -204,7 +204,9 @@ async function ingestAttachments(args: {
       summary.reportCount += 1;
       if (persisted.isNew) summary.newReportCount += 1;
       if (!summary.domain) summary.domain = report.domain;
-      summary.records.push(...report.records);
+      // No spread: push(...records) exceeds the engine's argument limit
+      // (RangeError) for reports with more than ~125k records.
+      for (const record of report.records) summary.records.push(record);
     } catch (error) {
       console.warn(
         `workflow.dmarc_ingest: skipping report attachment "${attachment.filename}": ${error instanceof Error ? error.message : String(error)}`,
