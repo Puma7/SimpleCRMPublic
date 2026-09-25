@@ -14887,10 +14887,11 @@ describe('server edition foundation', () => {
     }
 
     expect(composeCalls).toEqual([]);
-    // Two transactions now: the due-draft scan + the bounded-retry
-    // recordFailedAttempt that backs the denied draft off (so it can't starve
-    // the global ticker) and gives up after MAX_SCHEDULED_SEND_FAILURES.
-    expect(db.transactionCount).toBe(2);
+    // Three transactions now: the stale-claim sweep (F-A8-03; finds none here),
+    // the due-draft scan + the bounded-retry recordFailedAttempt that backs the
+    // denied draft off (so it can't starve the global ticker) and gives up after
+    // MAX_SCHEDULED_SEND_FAILURES.
+    expect(db.transactionCount).toBe(3);
     expect(String(warnings[0]?.[0] ?? '')).toContain('authorization denied');
     expect(String(warnings[0]?.[0] ?? '')).toContain('attempt 1');
   });
@@ -42898,7 +42899,7 @@ function makeScheduledSendTickerDb(rows: Array<Record<string, unknown>>): Kysely
   // recordFailedAttempt. executeTakeFirst → undefined so the failure counter
   // starts at 0.
   const chain: Record<string, unknown> = {};
-  for (const method of ['select', 'selectAll', 'where', 'whereRef', 'orderBy', 'limit', 'offset',
+  for (const method of ['select', 'selectAll', 'distinct', 'where', 'whereRef', 'orderBy', 'limit', 'offset',
     'set', 'values', 'onConflict', 'columns', 'doUpdateSet', 'doNothing', 'returning']) {
     chain[method] = () => chain;
   }

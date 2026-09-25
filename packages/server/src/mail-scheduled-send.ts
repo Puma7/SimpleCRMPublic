@@ -41,6 +41,13 @@ const MAX_SCHEDULED_SEND_FAILURES = 5;
  */
 const SCHEDULED_SEND_DENIAL_BACKOFF_MS = 5 * 60_000;
 const SCHEDULED_SEND_TRUSTED_SERVICE_ACTOR = 'system';
+/**
+ * A claim (sync_info `scheduled_send_claimed_at:<id>`, last_updated = claim time)
+ * only counts as orphaned once it is older than any plausible send: SMTP runs with
+ * 90 s per-step timeouts and the compose-send lock expires after 15 minutes.
+ * Younger claims belong to a send still in flight elsewhere and are left alone.
+ */
+const SCHEDULED_SEND_CLAIM_STALE_MS = 30 * 60_000;
 const SCHEDULED_SEND_AMBIGUOUS_DELIVERY_ERROR =
   'Zustellstatus unklar: kein automatischer Neuversand, bitte Gesendet-Ordner pruefen';
 
@@ -305,16 +312,19 @@ async function recoverOrphanedScheduledClaims(
   trx: Kysely<ServerDatabase>,
   workspaceId: string,
 ): Promise<void> {
+  const now = new Date();
   const claimRows = await trx
     .selectFrom('sync_info')
     .select(['key', 'value'])
     .where('workspace_id', '=', workspaceId)
     .where('key', 'like', `${SCHEDULED_SEND_CLAIMED_AT_PREFIX}%`)
+    .where('last_updated', '<', new Date(now.getTime() - SCHEDULED_SEND_CLAIM_STALE_MS))
+    .forUpdate()
+    .skipLocked()
     .execute();
 
   if (claimRows.length === 0) return;
 
-  const now = new Date();
   for (const row of claimRows) {
     const match = /^scheduled_send_claimed_at:(\d+)$/.exec(row.key);
     if (!match) continue;
@@ -673,6 +683,43 @@ function serverApiSourceRow(): RawBuilder<unknown> {
 }
 
 const DEFAULT_SCHEDULED_SEND_TICKER_MS = 30_000;
+const STALE_CLAIM_RECOVERY_WORKSPACE_LIMIT = 50;
+const STALE_CLAIM_RECOVERY_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Claiming nulls scheduled_send_at, so a draft whose claim was orphaned by a crash
+ * or restart is invisible to the due-draft scan. Recovery used to run only when
+ * another draft of the same workspace was claimed; sweep stale claims here so the
+ * orphaned draft is restored (and sent) on its own.
+ */
+async function recoverStaleScheduledClaimsAcrossWorkspaces(
+  db: Kysely<ServerDatabase>,
+  applySession: WorkspaceSessionApplier | undefined,
+): Promise<void> {
+  const staleBefore = new Date(Date.now() - SCHEDULED_SEND_CLAIM_STALE_MS);
+  const rows = await withWorkspaceTransaction(
+    db,
+    { workspaceId: randomUUID(), role: 'system', crossWorkspaceAccess: true },
+    async (trx) => trx
+      .selectFrom('sync_info')
+      .select('workspace_id')
+      .distinct()
+      .where('key', 'like', `${SCHEDULED_SEND_CLAIMED_AT_PREFIX}%`)
+      .where('last_updated', '<', staleBefore)
+      .limit(STALE_CLAIM_RECOVERY_WORKSPACE_LIMIT)
+      .execute(),
+    { applySession },
+  );
+  for (const row of rows) {
+    const workspaceId = String(row.workspace_id);
+    await withWorkspaceTransaction(
+      db,
+      { workspaceId, role: 'system' },
+      async (trx) => recoverOrphanedScheduledClaims(trx, workspaceId),
+      { applySession },
+    );
+  }
+}
 
 export type ScheduledSendTickerRuntime = Readonly<{
   stop(): void;
@@ -698,11 +745,21 @@ export function startScheduledSendTicker(input: {
   const store = createPostgresScheduledSendStore(input.db, input.applyWorkspaceSession);
   let stopped = false;
   let inFlight = false;
+  let nextClaimRecoveryAt = 0;
 
   const tick = async () => {
     if (stopped || inFlight) return;
     inFlight = true;
     try {
+      if (Date.now() >= nextClaimRecoveryAt) {
+        nextClaimRecoveryAt = Date.now() + STALE_CLAIM_RECOVERY_INTERVAL_MS;
+        try {
+          await recoverStaleScheduledClaimsAcrossWorkspaces(input.db, input.applyWorkspaceSession);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[mail] scheduled send ticker claim recovery: ${message}`);
+        }
+      }
       const dueBefore = new Date();
       const rows = await withWorkspaceTransaction(
         input.db,
