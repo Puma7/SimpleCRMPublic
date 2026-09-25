@@ -233,6 +233,35 @@ curl -fsS -X POST "$PUBLIC_BASE_URL/api/v1/auth/initial-setup" \
   -d '{"email":"owner@example.com","password":"change-me-min-12-chars","workspaceName":"Acme"}'
 ```
 
+## JTL-Wawi / MSSQL Connection (Optional)
+
+Owners and admins configure the MSSQL connection to the JTL-Wawi database in the app under
+**Einstellungen**; the password is kept in the encrypted secret store. The same login is used by
+the JTL sync, the workflow nodes `mssql.query` and `jtl.order_context`, and "JTL Auftrag
+erstellen" on the deal page.
+
+- **Use a read-only login.** Give it only the `db_datareader` role on the JTL database: no
+  `db_datawriter`, no `db_ddladmin` or `db_owner`, no server role such as `sysadmin`, never
+  `sa`. `mssql.query` checks that a query is read-only (`SELECT`/`WITH`), but that is a text
+  filter; the database permissions are the boundary that still holds if a statement gets past it.
+
+  ```sql
+  CREATE LOGIN simplecrm_read WITH PASSWORD = '<strong password>';
+  USE eazybusiness; -- your JTL database
+  CREATE USER simplecrm_read FOR LOGIN simplecrm_read;
+  ALTER ROLE db_datareader ADD MEMBER simplecrm_read;
+  ```
+
+- **Dry runs read live.** On the server, `mssql.query` ("MSSQL (Read-only)") and
+  `jtl.order_context` ("JTL Bestell-Kontext") also run in a workflow dry run ("Dry-Run testen")
+  and query the real JTL database, so the preview shows real rows; other side effects are only
+  simulated. The desktop edition simulates `mssql.query` in a dry run.
+- **Exception "JTL Auftrag erstellen":** creating a JTL order from a deal writes into the
+  `Verkauf` order tables and runs `Verkauf.spAuftragEckdatenBerechnen`, so it fails with a pure
+  `db_datareader` login. If you need it, grant only the permissions it requires (never
+  `db_owner`, `sysadmin` or `sa`) and keep in mind that `mssql.query`, including dry runs, then
+  runs with those permissions too.
+
 ## Server Doctor
 
 The legacy Compose doctor is a PostgreSQL-shell check for backups and database state. It does not
