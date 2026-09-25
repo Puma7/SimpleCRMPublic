@@ -1115,6 +1115,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             rows = await runQuery(undefined, page);
           } else if (regex) {
             searchMode = 'regex';
+            // The pattern comes straight from the user. With back-references
+            // PostgreSQL's regex engine backtracks super-linearly, and nothing
+            // else ends the scan (a client abort does not cancel it), so bound
+            // this one statement; SET LOCAL ends with the transaction.
+            await kyselySql`SET LOCAL statement_timeout = '10s'`.execute(trx);
             rows = await runQuery('regex', page);
           } else if (!hasTextNeedles && parsed && !hasSearchOperators(parsed)) {
             // Nichts Suchbares in der Query (z. B. nur Anfuehrungszeichen):
