@@ -16528,9 +16528,17 @@ describe('server edition foundation', () => {
       runId: 'run-1',
     });
 
-    expect(client.queries).toHaveLength(50);
-    expect(client.queries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
-    expect(client.queries[49].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
+    // F-A10-06 (E38): each domain now runs in its own transaction, so the
+    // table commands are framed by BEGIN/COMMIT per domain.
+    const transactionControl = new Set(['BEGIN', 'COMMIT']);
+    expect(client.queries.map((query) => query.sql).filter((sql) => transactionControl.has(sql)))
+      .toEqual(['BEGIN', 'COMMIT', 'BEGIN', 'COMMIT', 'BEGIN', 'COMMIT']);
+    expect(client.queries[0].sql).toBe('BEGIN');
+    expect(client.queries.at(-1)?.sql).toBe('COMMIT');
+    const tableQueries = client.queries.filter((query) => !transactionControl.has(query.sql));
+    expect(tableQueries).toHaveLength(50);
+    expect(tableQueries[0].params).toEqual(['workspace-a', 'sync_info', 'run-1']);
+    expect(tableQueries[49].params).toEqual(['workspace-a', 'pgp_peer_keys', 'run-1']);
     expect(result.domains.map((domain) => [domain.domain, domain.commandCount])).toEqual([
       ['core_crm', 15],
       ['core_mail', 17],

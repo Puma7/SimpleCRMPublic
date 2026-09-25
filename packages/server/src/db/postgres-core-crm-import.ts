@@ -420,13 +420,25 @@ SELECT
   (r.source_row->>'product_id')::bigint,
   d.id,
   p.id,
-  COALESCE(NULLIF(r.source_row->>'quantity', '')::integer, 1),
+  -- The desktop stores quantities as REAL; the server column is integer. A
+  -- fractional quantity is rounded (never below 1) and the original value is
+  -- kept in source_row.quantityRoundedFrom.
+  COALESCE(
+    CASE WHEN q.quantity <> trunc(q.quantity) THEN GREATEST(round(q.quantity), 1) ELSE q.quantity END::integer,
+    1
+  ),
   COALESCE(NULLIF(r.source_row->>'price_at_time_of_adding', '')::numeric, 0),
   NULLIF(r.source_row->>'dateAdded', '')::timestamptz,
-  r.source_row,
+  CASE WHEN q.quantity <> trunc(q.quantity)
+    THEN r.source_row || jsonb_build_object('quantityRoundedFrom', r.source_row->'quantity')
+    ELSE r.source_row
+  END,
   $3,
   now()
 ${sqliteImportRowsFrom}
+CROSS JOIN LATERAL (
+  SELECT NULLIF(r.source_row->>'quantity', '')::numeric AS quantity
+) q
 LEFT JOIN deals d
   ON d.workspace_id = $1
  AND d.source_sqlite_id = (r.source_row->>'deal_id')::bigint

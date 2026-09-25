@@ -65,27 +65,37 @@ export async function runPostgresSqliteFinalImport(
   const results: PostgresSqliteFinalImportDomainResult[] = [];
 
   for (const domain of domains) {
-    switch (domain) {
-      case 'core_crm': {
-        const commands = buildCoreCrmImportCommands(input);
-        await runPostgresCoreCrmImport(client, input);
-        results.push(domainResult(domain, commands));
-        break;
+    // Each domain is all-or-nothing: a failing table must not leave the
+    // workspace half imported (earlier tables committed, later ones missing).
+    // The client must be a single connection (pg Client), not a pool.
+    await client.query('BEGIN');
+    try {
+      switch (domain) {
+        case 'core_crm': {
+          const commands = buildCoreCrmImportCommands(input);
+          await runPostgresCoreCrmImport(client, input);
+          results.push(domainResult(domain, commands));
+          break;
+        }
+        case 'core_mail': {
+          const commands = buildCoreMailImportCommands(input);
+          await runPostgresCoreMailImport(client, input);
+          results.push(domainResult(domain, commands));
+          break;
+        }
+        case 'workflow_security': {
+          const commands = buildWorkflowSecurityImportCommands(input);
+          await runPostgresWorkflowSecurityImport(client, input);
+          results.push(domainResult(domain, commands));
+          break;
+        }
+        default:
+          assertNever(domain);
       }
-      case 'core_mail': {
-        const commands = buildCoreMailImportCommands(input);
-        await runPostgresCoreMailImport(client, input);
-        results.push(domainResult(domain, commands));
-        break;
-      }
-      case 'workflow_security': {
-        const commands = buildWorkflowSecurityImportCommands(input);
-        await runPostgresWorkflowSecurityImport(client, input);
-        results.push(domainResult(domain, commands));
-        break;
-      }
-      default:
-        assertNever(domain);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
     }
   }
 
