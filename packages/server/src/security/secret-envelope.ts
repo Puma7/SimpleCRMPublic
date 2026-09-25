@@ -1,3 +1,5 @@
+import { argon2 } from 'node:crypto';
+
 import {
   createSecretEnvelopeMetadata,
   MASTER_KEY_BYTES,
@@ -130,7 +132,7 @@ export async function encryptPgpPrivateKeyWithPassphrase(input: {
   const sodium = await loadSodium();
   const kdf = normalizePgpKdfOptions(sodium, input.kdf);
   const nonce = Buffer.from(sodium.randombytes_buf(sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES));
-  const dek = derivePgpPrivateKeyDek(sodium, input.passphrase, kdf);
+  const dek = await derivePgpPrivateKeyDek(sodium, input.passphrase, kdf);
 
   try {
     const plaintext = Buffer.isBuffer(input.privateKeyArmored)
@@ -166,7 +168,7 @@ export async function decryptPgpPrivateKeyWithPassphrase(input: {
   assertPassphrase(input.passphrase);
   assertPgpPrivateKeyEnvelope(input.envelope);
   const sodium = await loadSodium();
-  const dek = derivePgpPrivateKeyDek(sodium, input.passphrase, {
+  const dek = await derivePgpPrivateKeyDek(sodium, input.passphrase, {
     opsLimit: input.envelope.opsLimit,
     memLimit: input.envelope.memLimit,
     salt: input.envelope.salt,
@@ -292,11 +294,31 @@ function assertPgpPrivateKeyEnvelope(envelope: EncryptedPgpPrivateKeyEnvelope): 
   }
 }
 
-function derivePgpPrivateKeyDek(
+async function derivePgpPrivateKeyDek(
   sodium: Sodium,
   passphrase: string,
   kdf: Required<PgpPrivateKeyKdfOptions>,
-): Buffer {
+): Promise<Buffer> {
+  // libsodium-wrappers-sumo is WASM: crypto_pwhash runs synchronously and held
+  // the event loop for ~200 ms (64 MiB) on every PGP sign or decrypt. Node
+  // >= 24.7 derives the same Argon2id v1.3 key (one lane, libsodium's byte
+  // memLimit in whole KiB) on the libuv thread pool, like the scrypt login
+  // hashes. Older Node 24 releases keep the libsodium path.
+  if (typeof argon2 === 'function') {
+    return new Promise((resolve, reject) => {
+      argon2('argon2id', {
+        message: passphrase,
+        nonce: kdf.salt,
+        parallelism: 1,
+        tagLength: PGP_PRIVATE_KEY_DEK_BYTES,
+        memory: Math.floor(kdf.memLimit / 1024),
+        passes: kdf.opsLimit,
+      }, (error, derivedKey) => {
+        if (error) reject(error);
+        else resolve(derivedKey);
+      });
+    });
+  }
   return Buffer.from(sodium.crypto_pwhash(
     PGP_PRIVATE_KEY_DEK_BYTES,
     passphrase,
