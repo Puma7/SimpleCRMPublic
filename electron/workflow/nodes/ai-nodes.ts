@@ -66,7 +66,7 @@ import {
 } from '../ai-classification-parse';
 import { searchKnowledgeChunks, searchKnowledgeForWorkflow } from '../knowledge-base';
 import type { NodeExecuteResult, RegisteredWorkflowNode, WorkflowContext } from '../types';
-import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint } from '@simplecrm/core';
+import { messageIsSpamOrReviewForInboundWorkflow, outboundDraftFingerprint, replaceTags } from '@simplecrm/core';
 import { recipientFieldFromJson } from '../../../shared/email-recipient-parse';
 import { parseDraftAttachmentPathsJson } from '../../../shared/compose-draft-attachments';
 
@@ -137,10 +137,14 @@ function knowledgeSourcesLabel(
  * &amp; wird als LETZTES dekodiert, sonst würde "&amp;lt;" zu "<".
  */
 function signatureHtmlToText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+  // replaceTags(…, '') = .replace(/<[^>]+>/g, '') in linearer Zeit; die Regex
+  // lief bei Signaturen mit vielen unverschlossenen '<' quadratisch.
+  return replaceTags(
+    html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6])>/gi, '\n'),
+    '',
+  )
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
