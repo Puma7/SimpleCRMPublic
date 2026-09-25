@@ -987,6 +987,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
     void (async () => {
       try {
         const ok = await saveDraft({ silent: true })
+        if (!ok && draftId != null) {
+          // Nicht schließen: closeDialog() verwirft den ungespeicherten Inhalt.
+          toast.error("Entwurf konnte nicht gespeichert werden. Der Verfasser bleibt geöffnet.")
+          return
+        }
         if (ok) toast.success("Entwurf in „Entwürfe“ gespeichert")
         await finishComposeClose(contextId)
       } finally {
@@ -1876,7 +1881,11 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                   void (async () => {
                     const id = parseInt(v, 10)
                     if (!Number.isFinite(id)) return
-                    await saveDraft({ silent: true })
+                    const saved = await saveDraft({ silent: true })
+                    if (!saved && draftId != null) {
+                      toast.error("Entwurf konnte nicht gespeichert werden. Das Konto wurde nicht gewechselt.")
+                      return
+                    }
                     initialisedDraftKeyRef.current = null
                     setDraftId(null)
                     setComposeAccountId(id)
