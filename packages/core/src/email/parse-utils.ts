@@ -190,10 +190,10 @@ export function replaceElementBlocks(input: string, tag: string, replacement = '
 }
 
 /**
- * Same result as `input.replace(/<[^>]+>/g, ' ')` in linear time (see
+ * Same result as `input.replace(/<[^>]+>/g, replacement)` in linear time (see
  * replaceElementBlocks): a `<` without any later `>` ends the scan.
  */
-export function replaceTags(input: string): string {
+export function replaceTags(input: string, replacement = ' '): string {
   let out = '';
   let cursor = 0;
   let from = 0;
@@ -205,7 +205,7 @@ export function replaceTags(input: string): string {
     from = gt + 1;
     // `<>` does not match `<[^>]+>`.
     if (gt === lt + 1) continue;
-    out += `${input.slice(cursor, lt)} `;
+    out += `${input.slice(cursor, lt)}${replacement}`;
     cursor = from;
   }
   return cursor === 0 ? input : out + input.slice(cursor);

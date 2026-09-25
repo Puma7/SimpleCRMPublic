@@ -9,6 +9,7 @@ import {
   extractDraftBodyForOutboundBlock,
   outboundDraftFingerprint,
   parseDraftReviewResponse,
+  replaceTags,
   scheduledSendClaimedAtKey,
 } from '@simplecrm/core';
 
@@ -493,10 +494,14 @@ function firstFromAddress(fromJson: unknown): string | null {
 }
 
 function signatureHtmlToText(html: string): string {
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6])>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+  // replaceTags(…, '') = .replace(/<[^>]+>/g, '') in linear time; the regex was
+  // quadratic on signatures with many unclosed '<'.
+  return replaceTags(
+    html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|li|h[1-6])>/gi, '\n'),
+    '',
+  )
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
