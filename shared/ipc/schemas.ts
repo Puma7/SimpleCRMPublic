@@ -731,6 +731,18 @@ baseSchemaMap.set(IPCChannels.Pgp.DeletePeerKey, {
   result: standardResult,
 });
 
+// Manueller Fingerprint-Abgleich: 'verified' macht gueltige Signaturen vertrauenswuerdig,
+// 'imported' nimmt das zurueck (Schluessel bleibt fuer die Verschluesselung nutzbar).
+const pgpPeerKeyTrustLevel = z.enum(['verified', 'imported']);
+
+baseSchemaMap.set(IPCChannels.Pgp.SetPeerKeyTrust, {
+  payload: z.object({
+    id: z.number().int().positive(),
+    trustLevel: pgpPeerKeyTrustLevel,
+  }),
+  result: z.object({ success: z.literal(true), trustLevel: pgpPeerKeyTrustLevel }),
+});
+
 baseSchemaMap.set(IPCChannels.Pgp.CheckRecipientKeys, {
   payload: z.object({
     emails: z.array(z.string()).max(200),

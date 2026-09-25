@@ -156,6 +156,7 @@ const PgpChannels = literal({
   VerifyMessage: 'pgp:verify-message',
   ListPeerKeys: 'pgp:list-peer-keys',
   DeletePeerKey: 'pgp:delete-peer-key',
+  SetPeerKeyTrust: 'pgp:set-peer-key-trust',
   CheckRecipientKeys: 'pgp:check-recipient-keys',
   DeleteIdentity: 'pgp:delete-identity',
   RotateIdentityPassphrase: 'pgp:rotate-identity-passphrase',

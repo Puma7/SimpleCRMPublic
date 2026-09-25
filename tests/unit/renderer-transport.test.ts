@@ -8850,6 +8850,9 @@ describe('renderer transport', () => {
       IPCChannels.Email.OpenAttachmentPath,
       IPCChannels.Email.SaveAttachmentToDisk,
 
+      // Desktop-only trust action for peer keys; the server has PATCH /pgp/peer-keys/:id but no UI mapping yet.
+      IPCChannels.Pgp.SetPeerKeyTrust,
+
       // Native workflow/knowledge file-dialog variants remain local; browser mode uses upload/download helpers.
       IPCChannels.Email.ExportWorkflowBundleToFile,
       IPCChannels.Email.ImportWorkflowBundleFromFile,

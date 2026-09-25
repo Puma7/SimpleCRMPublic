@@ -69,6 +69,7 @@ Die Desktop-App kennt keine Capabilities und keine Gruppen. Sie kennt nur die Ro
 | Mail-Konto anlegen, bearbeiten, löschen | `email:create-account`, `email:update-account`, `email:delete-account` | Owner, Admin (wie `mail.account.manage` auf dem Server) |
 | OAuth-App-Daten und Webhook-Secret speichern | `email:set-google-oauth-app`, `email:set-microsoft-oauth-app`, `email:set-misc-settings` | Owner, Admin; ein leeres Secret-Feld behält das gespeicherte |
 | OAuth-Client-Secrets und Webhook-Secret lesen | `email:get-google-oauth-app`, `email:get-microsoft-oauth-app`, `email:get-misc-settings` | Klartext nur für Owner, Admin; alle anderen bekommen `hasSecret` |
+| PGP-Empfängerschlüssel importieren, löschen, als verifiziert markieren oder Vertrauen entziehen | `pgp:import-peer-key`, `pgp:delete-peer-key`, `pgp:set-peer-key-trust` | Owner, Admin (die Schlüssel gelten workspace-weit, ohne Konto oder Eigentümer) |
 
 Die Oberfläche blendet die zugehörigen Einstellungen für andere Rollen aus: den Tab „Datenschutz-Export“, in „Diagnose“ die Backup-Knöpfe (Owner, Admin) und den Restore-Assistenten (nur Owner) sowie die Tabs „OAuth-Apps“ und „Audit-Log“. Maßgeblich ist die Prüfung im IPC-Handler, nicht die Oberfläche.
 

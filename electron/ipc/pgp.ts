@@ -16,6 +16,8 @@ import {
   verifySignedMessage,
   listPgpPeerKeys,
   deletePgpPeerKey,
+  setPgpPeerKeyTrust,
+  type PgpPeerKeyTrustLevel,
   checkRecipientKeys,
   rotateIdentityPassphrase,
 } from '../pgp/pgp-service';
@@ -148,6 +150,19 @@ export function registerPgpHandlers(options: {
         requireRealAuthSession(event);
         deletePgpPeerKey(payload.id);
         return { success: true as const };
+      },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
+    ),
+  );
+
+  // Peer-Schluessel sind workspace-weit (kein Konto, kein Eigentuemer): wie Import und Loeschen nur Owner/Admin.
+  disposers.push(
+    registerIpcHandler(
+      IPCChannels.Pgp.SetPeerKeyTrust,
+      async (event, payload: { id: number; trustLevel: PgpPeerKeyTrustLevel }) => {
+        const session = requireRealAuthSession(event);
+        const { trustLevel } = setPgpPeerKeyTrust(payload.id, payload.trustLevel, session.userId);
+        return { success: true as const, trustLevel };
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),

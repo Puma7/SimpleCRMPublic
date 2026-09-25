@@ -25,6 +25,7 @@ import {
   checkRecipientKeys,
   decryptMessageBody,
   importPublicKeyArmored,
+  setPgpPeerKeyTrust,
   verifySignedMessage,
 } from '../../electron/pgp/pgp-service';
 
@@ -96,6 +97,36 @@ describe('desktop PGP with real openpgp', () => {
     await expect(verifySignedMessage(messageId)).resolves.toEqual({ valid: true, fingerprint, status: 'signed_valid' });
     expect(db.prepare('SELECT pgp_status, pgp_signer_fingerprint FROM email_messages WHERE id = ?').get(messageId))
       .toEqual({ pgp_status: 'signed_valid', pgp_signer_fingerprint: fingerprint });
+  });
+
+  // F-A7b-08: Kein Desktop-Pfad setzte trust_level, eine gueltige Signatur blieb immer "nicht vertrauenswuerdig".
+  test('marking a peer key as verified makes its valid signature trusted, revoking undoes it', async () => {
+    const { fingerprint } = await importPublicKeyArmored(bob.publicKey);
+    const { id } = db.prepare('SELECT id FROM pgp_peer_keys').get() as { id: number };
+    const messageId = await insertSignedMessage('Rechnung 42');
+    await expect(verifySignedMessage(messageId)).resolves.toMatchObject({ valid: false, status: 'signed_untrusted_key' });
+
+    expect(setPgpPeerKeyTrust(id, 'verified', 'admin-1')).toEqual({ trustLevel: 'verified' });
+    expect(db.prepare('SELECT trust_level, verified_at, verified_by_user_id FROM pgp_peer_keys').get()).toEqual({
+      trust_level: 'verified',
+      verified_at: expect.any(String),
+      verified_by_user_id: 'admin-1',
+    });
+    await expect(verifySignedMessage(messageId)).resolves.toEqual({ valid: true, fingerprint, status: 'signed_valid' });
+
+    expect(setPgpPeerKeyTrust(id, 'imported', 'admin-1')).toEqual({ trustLevel: 'imported' });
+    expect(db.prepare('SELECT trust_level, verified_at, verified_by_user_id FROM pgp_peer_keys').get()).toEqual({
+      trust_level: 'imported',
+      verified_at: null,
+      verified_by_user_id: null,
+    });
+    await expect(verifySignedMessage(messageId)).resolves.toMatchObject({ valid: false, status: 'signed_untrusted_key' });
+    // Ohne Verifizierung bleibt der manuell importierte Schluessel fuer die Verschluesselung nutzbar.
+    expect(checkRecipientKeys(['bob@example.com'])[0]).toEqual({ email: 'bob@example.com', hasKey: true, fingerprint });
+  });
+
+  test('setting the trust of an unknown peer key fails', () => {
+    expect(() => setPgpPeerKeyTrust(999, 'verified', 'admin-1')).toThrow(/nicht gefunden/);
   });
 
   test('a tampered cleartext signature is reported as invalid', async () => {

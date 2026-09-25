@@ -361,6 +361,30 @@ export function listPgpPeerKeys() {
     .all();
 }
 
+export type PgpPeerKeyTrustLevel = 'verified' | 'imported';
+
+/**
+ * Nach einem Fingerprint-Abgleich ausserhalb der Mail: 'verified' laesst gueltige
+ * Signaturen dieses Schluessels als vertrauenswuerdig gelten, 'imported' nimmt das
+ * zurueck. Der Schluessel bleibt in beiden Stufen fuer die Verschluesselung nutzbar.
+ */
+export function setPgpPeerKeyTrust(
+  id: number,
+  trustLevel: PgpPeerKeyTrustLevel,
+  actorUserId: string,
+): { trustLevel: PgpPeerKeyTrustLevel } {
+  const db = getDb();
+  if (!db) throw new Error('Database not initialized');
+  const verified = trustLevel === 'verified';
+  const result = db
+    .prepare(
+      `UPDATE ${PGP_PEER_KEYS_TABLE} SET trust_level = ?, verified_at = ?, verified_by_user_id = ? WHERE id = ?`,
+    )
+    .run(trustLevel, verified ? new Date().toISOString() : null, verified ? actorUserId : null, id);
+  if (result.changes === 0) throw new Error('PGP-Schlüssel nicht gefunden');
+  return { trustLevel };
+}
+
 export function deletePgpPeerKey(id: number): void {
   const db = getDb();
   if (!db) return;
