@@ -1,6 +1,8 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
+import { fetchWithGuardedRedirects, type GuardedRedirectMessages } from '@simplecrm/core';
+
 import { createPinnedFetch, type GuardedFetch } from './pinned-fetch';
 import type { JobPayload } from './types';
 import type { JobHandlerRegistry } from './worker';
@@ -43,6 +45,13 @@ const MAX_WEBHOOK_URL_LENGTH = 2048;
 const MAX_WEBHOOK_BODY_LENGTH = 128 * 1024;
 const MAX_WEBHOOK_HEADER_COUNT = 32;
 const MAX_WEBHOOK_HEADER_VALUE_LENGTH = 8 * 1024;
+
+const WEBHOOK_REDIRECT_MESSAGES: GuardedRedirectMessages = {
+  aborted: 'request was aborted',
+  timeout: 'webhook request exceeded its total timeout',
+  tooManyRedirects: (maxRedirects) => `webhook exceeded ${maxRedirects} redirects`,
+  missingLocation: 'webhook redirect response is missing a Location header',
+};
 
 const DISALLOWED_WEBHOOK_HEADERS = new Set([
   'connection',
@@ -111,88 +120,16 @@ export async function guardedFetch(args: {
   };
   maxRedirects?: number;
 }): Promise<{ ok: boolean; status: number; headers: { get(name: string): string | null }; text(): Promise<string> }> {
-  const maxRedirects = args.maxRedirects ?? 3;
-  // One shared deadline for the whole redirect chain: each hop gets only the
-  // remaining budget, so a slow multi-hop chain can't multiply the timeout by
-  // the number of hops. Date.now() is available in the server runtime.
-  const deadline = Date.now() + args.init.timeoutMs;
-  let currentUrl = args.url;
-  // Method/body/headers can change across hops per fetch redirect semantics.
-  let method = args.init.method;
-  let body = args.init.body;
-  let headers: Record<string, string> = { ...args.init.headers };
-  for (let hop = 0; ; hop += 1) {
-    if (args.init.signal?.aborted) {
-      throw new Error('request was aborted');
-    }
-    const remainingMs = Math.max(0, deadline - Date.now());
-    if (remainingMs <= 0) {
-      throw new Error('webhook request exceeded its total timeout');
-    }
-    const addresses = await assertWebhookUrlAllowed(currentUrl, args.allowlist, args.lookup, {
-      signal: args.init.signal,
-      timeoutMs: remainingMs,
-    });
-    const hopRemainingMs = Math.max(0, deadline - Date.now());
-    if (hopRemainingMs <= 0) {
-      throw new Error('webhook request exceeded its total timeout');
-    }
-    const timeoutSignal =
-      typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-        ? AbortSignal.timeout(hopRemainingMs)
-        : undefined;
-    const signal = combineAbortSignals(args.init.signal, timeoutSignal);
-    const response = await args.fetchImpl(currentUrl, {
-      method,
-      headers,
-      ...(body !== undefined ? { body } : {}),
-      ...(signal ? { signal } : {}),
-      redirect: 'manual',
-      pinnedAddresses: addresses,
-    });
-    if (response.status >= 300 && response.status < 400) {
-      if (hop >= maxRedirects) {
-        throw new Error(`webhook exceeded ${maxRedirects} redirects`);
-      }
-      const location = response.headers.get('location');
-      if (!location) {
-        throw new Error('webhook redirect response is missing a Location header');
-      }
-      const previousOrigin = new URL(currentUrl).origin;
-      const nextUrl = new URL(location, currentUrl);
-      currentUrl = nextUrl.toString();
-      // On a cross-origin redirect, drop credential headers so an allowlisted
-      // endpoint can't bounce the webhook's Authorization/Cookie to a different
-      // (also-allowlisted) host (matches fetch's cross-origin credential strip).
-      if (nextUrl.origin !== previousOrigin) {
-        headers = Object.fromEntries(
-          Object.entries(headers).filter(([k]) => {
-            const lower = k.toLowerCase();
-            return lower !== 'authorization' && lower !== 'cookie' && lower !== 'proxy-authorization';
-          }),
-        );
-      }
-      // Match fetch redirect method handling: a 303 (and a POST on 301/302) is
-      // replayed as a bodyless GET; 307/308 preserve method + body. Without this
-      // the original POST payload would be re-submitted to the redirect target
-      // (double-submit, or a 405 on a GET-only landing URL).
-      if (
-        response.status === 303 ||
-        ((response.status === 301 || response.status === 302) && method === 'POST')
-      ) {
-        method = 'GET';
-        body = undefined;
-        headers = Object.fromEntries(
-          Object.entries(headers).filter(([k]) => {
-            const lower = k.toLowerCase();
-            return lower !== 'content-type' && lower !== 'content-length';
-          }),
-        );
-      }
-      continue; // re-runs assertWebhookUrlAllowed on the new URL → blocks private/off-allowlist hops
-    }
-    return response;
-  }
+  // The redirect loop is shared with the desktop workflow HTTP node; every hop
+  // re-runs assertWebhookUrlAllowed → blocks private/off-allowlist hops.
+  return fetchWithGuardedRedirects({
+    url: args.url,
+    resolveHop: (url, budget) => assertWebhookUrlAllowed(url, args.allowlist, args.lookup, budget),
+    fetchImpl: args.fetchImpl,
+    init: args.init,
+    maxRedirects: args.maxRedirects ?? 3,
+    messages: WEBHOOK_REDIRECT_MESSAGES,
+  });
 }
 
 export function buildWebhookFirePlan(payload: JobPayload, jobWorkspaceId: string): WebhookFirePlan {
@@ -495,21 +432,4 @@ function expandIpv6(value: string): number[] | null {
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function combineAbortSignals(
-  external: AbortSignal | undefined,
-  timeout: AbortSignal | undefined,
-): AbortSignal | undefined {
-  if (!external) return timeout;
-  if (!timeout) return external;
-  const anyFn = (AbortSignal as typeof AbortSignal & {
-    any?: (signals: AbortSignal[]) => AbortSignal;
-  }).any;
-  if (typeof anyFn === 'function') {
-    return anyFn([external, timeout]);
-  }
-  // Fallback: prefer the external signal (caller timeout) when AbortSignal.any
-  // is unavailable; the guarded hop still uses Date.now() deadline checks.
-  return external;
 }

@@ -1,6 +1,6 @@
 import { getSyncInfo } from '../../sqlite-service';
 import { isHttpMethodAllowed } from '../../../shared/workflow-http-allowlist';
-import { assertWorkflowHttpUrlAllowed } from '../http-request-guard';
+import { assertWorkflowHttpUrlAllowed, sendWorkflowHttpRequest } from '../http-request-guard';
 import type { RegisteredWorkflowNode } from '../types';
 
 type Reg = (def: RegisteredWorkflowNode) => void;
@@ -101,11 +101,19 @@ export function registerIntegrationNodes(register: Reg): void {
           message: `HTTP-Methode ${method} nicht erlaubt (nur GET, POST)`,
         };
       }
-      const res = await fetch(url, {
-        method,
+      const res = await sendWorkflowHttpRequest({
+        url,
+        allowlistRaw,
+        addresses: urlCheck.addresses,
+        method: method === 'POST' ? 'POST' : 'GET',
         body: method === 'GET' ? undefined : String(config.body ?? ''),
-        headers: { 'Content-Type': 'application/json' },
-        signal: AbortSignal.timeout(30_000),
+        headers: {
+          'Content-Type': 'application/json',
+          // Global fetch added these on its own; some APIs reject requests without a User-Agent.
+          Accept: '*/*',
+          'User-Agent': 'node',
+        },
+        timeoutMs: 30_000,
       });
       const text = await res.text();
       return {
