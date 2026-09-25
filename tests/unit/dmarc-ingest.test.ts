@@ -12,6 +12,8 @@ import type { DmarcStorePort } from '../../packages/server/src/db/postgres-dmarc
 import {
   MAX_DECOMPRESSED_BYTES,
   MAX_DMARC_RECORDS_PER_REPORT,
+  parseDmarcXml,
+  summarizeDmarcRecords,
 } from '../../packages/server/src/dmarc/parse-aggregate-report';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -87,6 +89,42 @@ const CONTINUATION: WorkflowDmarcIngestJobPlan['continuation'] = {
 function eventVars(insert: JobInsert): Record<string, unknown> {
   const payload = insert.values.payload as { context?: { eventVariables?: Record<string, unknown> } };
   return payload.context?.eventVariables ?? {};
+}
+
+/** A report with its own id and the given `<record>` rows. */
+function reportXml(reportId: string, records: string): string {
+  const header = REPORT_XML.slice(0, REPORT_XML.indexOf('<record>')).replace('G-1', reportId);
+  return `${header}${records}</feedback>`;
+}
+
+function recordXml(sourceIp: string, count: number, disposition: string, dkim: string, spf: string): string {
+  const ip = sourceIp ? `<source_ip>${sourceIp}</source_ip>` : '';
+  return `<record><row>${ip}<count>${count}</count><policy_evaluated><disposition>${disposition}</disposition>`
+    + `<dkim>${dkim}</dkim><spf>${spf}</spf></policy_evaluated></row></record>`;
+}
+
+/** Ingest port over in-memory attachment files (name -> bytes). */
+function portForFiles(
+  files: Record<string, Buffer>,
+  jobInserts: JobInsert[],
+  store: DmarcStorePort,
+  readAttachmentFile: (path: string) => Promise<Buffer> = async (file) => files[basename(file)]!,
+) {
+  return createPostgresWorkflowDmarcIngestPort({
+    db: makeFakeDb({
+      attachments: Object.keys(files).map((name) => ({ filename_display: name, storage_path: name })),
+      jobInserts,
+    }),
+    attachmentsRoot: '/tmp/att',
+    readAttachmentFile,
+    store,
+    applyWorkspaceSession: async () => undefined,
+  });
+}
+
+function persistedReportIds(store: DmarcStorePort): string[] {
+  return (store.persistReport as jest.Mock).mock.calls
+    .map(([input]) => (input as { report: { reportId: string } }).report.reportId);
 }
 
 describe('createPostgresWorkflowDmarcIngestPort', () => {
@@ -299,5 +337,120 @@ describe('createPostgresWorkflowDmarcIngestPort', () => {
       port.ingest({ workspaceId: WS, workflowId: 5, messageId: 43 }),
     ).rejects.toThrow('db read failed');
     expect(jobInserts.filter((j) => j.table === 'job_queue')).toHaveLength(0);
+  });
+});
+
+// C-A73: Die Budgets galten nur je Report bzw. nur fuer gelungene Dekompressionen; eine fremde Mail
+// konnte mit vielen Anhaengen beliebig viele Entpackversuche, Reports und Records ausloesen.
+describe('DMARC ingest budget per message', () => {
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => warn.mockRestore());
+
+  test('failed decompressions use up the per-message budget instead of being free', async () => {
+    const bomb = gzipSync(Buffer.alloc(MAX_DECOMPRESSED_BYTES + 1, 0x20), { level: 9 });
+    const files: Record<string, Buffer> = {};
+    for (let index = 0; index < 30; index += 1) files[`bomb-${index}.xml.gz`] = bomb;
+    const readAttachmentFile = jest.fn(async (file: string) => files[basename(file)]!);
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+
+    await portForFiles(files, jobInserts, store, readAttachmentFile)
+      .ingest({ workspaceId: WS, workflowId: 5, messageId: 45, continuation: CONTINUATION });
+
+    // Each attempt inflates up to the 32 MiB cap before it fails: one attempt spends the budget.
+    expect(readAttachmentFile).toHaveBeenCalledTimes(1);
+    expect(store.persistReport).not.toHaveBeenCalled();
+    expect(eventVars(jobInserts.filter((j) => j.table === 'job_queue')[0])['dmarc.ok']).toBe(false);
+  });
+
+  test('a small corrupt archive does not block the report next to it', async () => {
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+    const truncated = gzipSync(Buffer.from(REPORT_XML, 'utf8')).subarray(0, 40);
+
+    await portForFiles({ 'broken.xml.gz': truncated, 'report.xml.gz': gzipSync(Buffer.from(REPORT_XML, 'utf8')) }, jobInserts, store)
+      .ingest({ workspaceId: WS, workflowId: 5, messageId: 46, continuation: CONTINUATION });
+
+    expect(persistedReportIds(store)).toEqual(['G-1']);
+  });
+
+  test('reads at most 20 report attachments of one message', async () => {
+    const files: Record<string, Buffer> = {};
+    for (let index = 0; index < 25; index += 1) {
+      files[`r-${String(index).padStart(2, '0')}.xml`] = Buffer.from(reportXml(`R-${index}`, recordXml('10.0.0.1', 1, 'none', 'pass', 'pass')), 'utf8');
+    }
+    const readAttachmentFile = jest.fn(async (file: string) => files[basename(file)]!);
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+
+    await portForFiles(files, jobInserts, store, readAttachmentFile)
+      .ingest({ workspaceId: WS, workflowId: 5, messageId: 47, continuation: CONTINUATION });
+
+    expect(readAttachmentFile).toHaveBeenCalledTimes(20);
+    expect(store.persistReport).toHaveBeenCalledTimes(20);
+    expect(eventVars(jobInserts.filter((j) => j.table === 'job_queue')[0])['dmarc.report_count']).toBe(20);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('20'));
+  });
+
+  test('applies the record limit of E13 to all reports of one message together', async () => {
+    const record = '<record><row><count>1</count></row></record>';
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+
+    await portForFiles({
+      'a.xml': Buffer.from(reportXml('A', record.repeat(60_000)), 'utf8'),
+      'b.xml': Buffer.from(reportXml('B', record.repeat(60_000)), 'utf8'),
+      'c.xml': Buffer.from(reportXml('C', record.repeat(30_000)), 'utf8'),
+    }, jobInserts, store).ingest({ workspaceId: WS, workflowId: 5, messageId: 48, continuation: CONTINUATION });
+
+    // B would take the message to 120,000 records: logged and skipped; C still fits.
+    expect(persistedReportIds(store)).toEqual(['A', 'C']);
+    expect(eventVars(jobInserts.filter((j) => j.table === 'job_queue')[0])['dmarc.record_count']).toBe(90_000);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/"b\.xml".*60000.*100000/));
+  });
+
+  test('summarizes several reports exactly like the records of all reports taken together', async () => {
+    const reports = {
+      'a.xml': reportXml('A', recordXml('10.0.0.1', 5, 'none', 'pass', 'pass') + recordXml('10.0.0.2', 3, 'reject', 'fail', 'fail')),
+      'b.xml': reportXml('B', recordXml('10.0.0.2', 2, 'quarantine', 'fail', 'fail')
+        + recordXml('10.0.0.3', 5, 'none', 'pass', 'fail') + recordXml('', 4, 'none', 'fail', 'fail')),
+      'c.xml': reportXml('C', recordXml('10.0.0.1', 0, 'none', 'fail', 'fail') + recordXml('10.0.0.4', 5, 'reject', 'fail', 'fail')),
+    };
+    const jobInserts: JobInsert[] = [];
+    const store = makeStore();
+
+    await portForFiles(
+      Object.fromEntries(Object.entries(reports).map(([name, xml]) => [name, Buffer.from(xml, 'utf8')])),
+      jobInserts,
+      store,
+    ).ingest({ workspaceId: WS, workflowId: 5, messageId: 49, continuation: CONTINUATION });
+
+    // "Vorher": all records of all reports collected, then summarized at once.
+    const before = summarizeDmarcRecords(Object.values(reports).flatMap((xml) => [...parseDmarcXml(xml)!.records]));
+    const vars = eventVars(jobInserts.filter((j) => j.table === 'job_queue')[0]);
+    expect({
+      recordCount: vars['dmarc.record_count'],
+      messageCount: vars['dmarc.message_count'],
+      passCount: vars['dmarc.pass_count'],
+      failCount: vars['dmarc.fail_count'],
+      rejectCount: vars['dmarc.reject_count'],
+      quarantineCount: vars['dmarc.quarantine_count'],
+      unauthorizedSourceCount: vars['dmarc.unauthorized_source_count'],
+      topSourceIp: vars['dmarc.top_source_ip'],
+    }).toEqual(before);
+    // Ties across reports keep the first IP seen.
+    expect(before).toEqual({
+      recordCount: 7,
+      messageCount: 24,
+      passCount: 10,
+      failCount: 14,
+      rejectCount: 8,
+      quarantineCount: 2,
+      unauthorizedSourceCount: 3,
+      topSourceIp: '10.0.0.1',
+    });
   });
 });

@@ -211,6 +211,21 @@ export function parseDmarcXml(xml: string): ParsedDmarcReport | null {
 export function summarizeDmarcRecords(
   records: readonly DmarcRecordRow[],
 ): DmarcReportSummary {
+  const aggregator = createDmarcRecordAggregator();
+  aggregator.add(records);
+  return aggregator.summary();
+}
+
+export type DmarcRecordAggregator = Readonly<{
+  add(records: readonly DmarcRecordRow[]): void;
+  summary(): DmarcReportSummary;
+}>;
+
+/** Running form of {@link summarizeDmarcRecords}: adding several reports' rows
+ *  one after another gives the same summary as summarizing all rows at once,
+ *  without keeping the rows themselves. */
+export function createDmarcRecordAggregator(): DmarcRecordAggregator {
+  let recordCount = 0;
   let messageCount = 0;
   let passCount = 0;
   let failCount = 0;
@@ -219,38 +234,44 @@ export function summarizeDmarcRecords(
   const unauthorizedSources = new Set<string>();
   const volumeByIp = new Map<string, number>();
 
-  for (const row of records) {
-    const count = row.count > 0 ? row.count : 0;
-    messageCount += count;
-    const dmarcPass = row.dkimEval === 'pass' || row.spfEval === 'pass';
-    if (dmarcPass) passCount += count;
-    else {
-      failCount += count;
-      if (row.sourceIp) unauthorizedSources.add(row.sourceIp);
-    }
-    if (row.disposition === 'reject') rejectCount += count;
-    else if (row.disposition === 'quarantine') quarantineCount += count;
-    if (row.sourceIp) volumeByIp.set(row.sourceIp, (volumeByIp.get(row.sourceIp) ?? 0) + count);
-  }
-
-  let topSourceIp: string | null = null;
-  let topVolume = -1;
-  for (const [ip, volume] of volumeByIp) {
-    if (volume > topVolume) {
-      topVolume = volume;
-      topSourceIp = ip;
-    }
-  }
-
   return {
-    recordCount: records.length,
-    messageCount,
-    passCount,
-    failCount,
-    rejectCount,
-    quarantineCount,
-    unauthorizedSourceCount: unauthorizedSources.size,
-    topSourceIp,
+    add(records) {
+      recordCount += records.length;
+      for (const row of records) {
+        const count = row.count > 0 ? row.count : 0;
+        messageCount += count;
+        const dmarcPass = row.dkimEval === 'pass' || row.spfEval === 'pass';
+        if (dmarcPass) passCount += count;
+        else {
+          failCount += count;
+          if (row.sourceIp) unauthorizedSources.add(row.sourceIp);
+        }
+        if (row.disposition === 'reject') rejectCount += count;
+        else if (row.disposition === 'quarantine') quarantineCount += count;
+        if (row.sourceIp) volumeByIp.set(row.sourceIp, (volumeByIp.get(row.sourceIp) ?? 0) + count);
+      }
+    },
+    summary() {
+      let topSourceIp: string | null = null;
+      let topVolume = -1;
+      for (const [ip, volume] of volumeByIp) {
+        if (volume > topVolume) {
+          topVolume = volume;
+          topSourceIp = ip;
+        }
+      }
+
+      return {
+        recordCount,
+        messageCount,
+        passCount,
+        failCount,
+        rejectCount,
+        quarantineCount,
+        unauthorizedSourceCount: unauthorizedSources.size,
+        topSourceIp,
+      };
+    },
   };
 }
 
