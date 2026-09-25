@@ -102,6 +102,7 @@ import {
 import { useAuth } from "@/components/auth/auth-context"
 import { lockOwnerLabel } from "./use-conversation-locks"
 import { isSafeAttachmentMimeTypeForInlineOpen } from "@shared/email-attachment-open-policy"
+import { PGP_SIGNED_PARTIAL_STATUS, PGP_SIGNED_PARTIAL_WARNING } from "@shared/pgp-signature-status"
 
 type Props = {
   accounts: EmailAccount[]
@@ -1476,7 +1477,11 @@ export function MessageViewer(props: Props) {
                           const status = res && typeof res === "object" && "status" in res
                             ? String((res as { status?: string }).status ?? "")
                             : ""
-                          toast.success(status ? `Signatur geprueft: ${status}` : "Signatur geprueft")
+                          if (status === PGP_SIGNED_PARTIAL_STATUS) {
+                            toast.warning(`Signatur geprueft: ${PGP_SIGNED_PARTIAL_WARNING}`)
+                          } else {
+                            toast.success(status ? `Signatur geprueft: ${status}` : "Signatur geprueft")
+                          }
                           await refreshCurrentMessage()
                           await refreshList({ preserveSelection: true })
                         } catch (e) {
@@ -1488,7 +1493,22 @@ export function MessageViewer(props: Props) {
                     </Button>
                   </div>
                 ) : null}
-                {selectedMessage.pgp_status?.startsWith("signed_") ? (
+                {selectedMessage.pgp_status === PGP_SIGNED_PARTIAL_STATUS ? (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-md border border-amber-500/60 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200"
+                  >
+                    <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      <strong>{PGP_SIGNED_PARTIAL_WARNING}</strong>{" "}
+                      Text außerhalb des signierten Blocks und die HTML-Ansicht stammen nicht
+                      nachweislich vom Absender – die Signatur gilt nicht für die ganze Nachricht.
+                      {selectedMessage.pgp_signer_fingerprint
+                        ? ` (Signatur von ${selectedMessage.pgp_signer_fingerprint.slice(0, 16)}…)`
+                        : ""}
+                    </span>
+                  </div>
+                ) : selectedMessage.pgp_status?.startsWith("signed_") ? (
                   <p className="rounded-md border border-muted px-3 py-2 text-xs text-muted-foreground">
                     PGP-Signatur: {selectedMessage.pgp_status.replace("signed_", "")}
                     {selectedMessage.pgp_signer_fingerprint

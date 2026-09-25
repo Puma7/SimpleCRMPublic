@@ -14,6 +14,7 @@ export * from './outbound-approval-marker';
 export * from './outbound-review-parse';
 export * from './outbound-threading';
 export * from './parse-utils';
+export * from './pgp-signature-status';
 export * from './pop3-uidl-cache';
 export * from './read-receipt';
 export * from './reference-threading';

@@ -1,5 +1,10 @@
 import { MAX_INBOUND_RFC822_BYTES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
+import {
+  PGP_SIGNED_PARTIAL_STATUS,
+  pgpCleartextSignatureCoversMessage,
+  type PgpSignatureStatus,
+} from '@simplecrm/core';
 
 import type {
   PgpAttachmentDecryptPortResult,
@@ -189,7 +194,7 @@ export function createPostgresPgpMessageCryptoPort(
           ? peers.find((peer) => fingerprintMatchesSignature(peer.fingerprint, signerKeyId))
           : undefined;
         const signerFingerprint = matchedPeer?.fingerprint ?? signerKeyId;
-        let status = signatureValid ? 'signed_valid' : 'signed_invalid';
+        let status: PgpSignatureStatus = signatureValid ? 'signed_valid' : 'signed_invalid';
         let valid = signatureValid;
         if (signatureValid) {
           if (!matchedPeer) {
@@ -200,6 +205,16 @@ export function createPostgresPgpMessageCryptoPort(
             status = isEncryptableTrustLevel(matchedPeer.trustLevel)
               ? 'signed_untrusted_key'
               : 'signed_unknown_key';
+          } else if (!pgpCleartextSignatureCoversMessage({
+            bodyText: message.body_text,
+            bodyHtml: message.body_html,
+            armoredBlock: armoredMessage,
+            signedText: cleartextMessage.getText(),
+          })) {
+            // Unsigned text around the block (or a differing HTML part) would
+            // otherwise be shown under the sender's valid signature.
+            valid = false;
+            status = PGP_SIGNED_PARTIAL_STATUS;
           }
         }
 
