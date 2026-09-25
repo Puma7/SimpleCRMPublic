@@ -85,17 +85,25 @@ export function revokeSession(webContentsId: number): void {
  * Revoke every active session belonging to a user. `getSessionForWebContents`
  * only checks idle/TTL, not the DB, so a deleted (or hard-deactivated) account
  * would otherwise keep authenticated IPC access from an already-open window
- * until the idle timeout. Returns the number of sessions dropped.
+ * until the idle timeout. `keepWebContentsId` spares the caller's own window on
+ * a change to its own account (like keepSessionId on the server). Returns the
+ * number of sessions dropped.
  */
-export function revokeSessionsForUser(userId: string): number {
+export function revokeSessionsForUser(userId: string, keepWebContentsId?: number): number {
   let revoked = 0;
   for (const [webContentsId, session] of sessionsByWebContents) {
-    if (session.userId === userId) {
+    if (session.userId === userId && webContentsId !== keepWebContentsId) {
       sessionsByWebContents.delete(webContentsId);
       revoked += 1;
     }
   }
   return revoked;
+}
+
+/** Apply a changed role to a window that keeps its session (the server re-reads the role per request). */
+export function setSessionRole(webContentsId: number, role: SessionRole): void {
+  const session = sessionsByWebContents.get(webContentsId);
+  if (session) session.role = role;
 }
 
 export function clearAllSessions(): void {

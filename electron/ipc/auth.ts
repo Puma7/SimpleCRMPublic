@@ -6,6 +6,7 @@ import {
   revokeSession,
   revokeSessionsForUser,
   getSessionFromEvent,
+  setSessionRole,
   touchSession,
   type SessionRole,
 } from '../auth/session-store';
@@ -35,6 +36,29 @@ interface AuthRouterOptions {
 }
 
 const sessionCleanupSenders = new WeakSet<object>();
+
+/**
+ * Paritaet zum Server (F-A1-02): Dort beendet ein Passwort-Reset die Sitzungen des
+ * Ziels, eine Deaktivierung macht sie ungueltig und die Rolle wird je Anfrage neu
+ * gelesen. Eine Desktop-Session haelt die Rolle aus dem Login fest, deshalb enden
+ * hier nach Rollenwechsel, Deaktivierung oder Passwort-Reset die Sessions des Ziels.
+ * Am eigenen Konto bleibt das aktuelle Fenster wie auf dem Server (actorSessionId)
+ * erhalten und bekommt die neue Rolle; nur das Deaktivieren beendet auch es.
+ */
+function revokeSessionsAfterUserSave(
+  actor: { webContentsId: number; userId: string },
+  before: { id: string; role: string; is_active: number },
+  passwordSet: boolean,
+): void {
+  const after = listLocalAuthUsers().find((user) => user.id === before.id);
+  if (!after) return;
+  const roleChanged = after.role !== before.role;
+  const inactive = after.is_active !== 1;
+  if (!roleChanged && !inactive && !passwordSet) return;
+  const keep = before.id === actor.userId && !inactive ? actor.webContentsId : undefined;
+  revokeSessionsForUser(before.id, keep);
+  if (keep !== undefined && roleChanged) setSessionRole(keep, after.role as SessionRole);
+}
 
 function isMainRenderer(
   event: { sender: { id: number } },
@@ -206,7 +230,16 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (!session) {
           return { success: false as const, error: 'Nicht angemeldet' };
         }
-        return saveLocalAuthUser(payload, session.role);
+        const before = payload.id ? listLocalAuthUsers().find((user) => user.id === payload.id) : undefined;
+        const result = saveLocalAuthUser(payload, session.role);
+        if (result.success && before) {
+          revokeSessionsAfterUserSave(
+            { webContentsId: event.sender.id, userId: session.userId },
+            before,
+            Boolean(payload.passphrase),
+          );
+        }
+        return result;
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
@@ -241,11 +274,14 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
         if (!session) {
           return { success: false as const, error: 'Nicht angemeldet' };
         }
-        return changeLocalAuthPassword({
+        const result = changeLocalAuthPassword({
           userId: session.userId,
           currentPassword: payload.currentPassword,
           newPassword: payload.newPassword,
         });
+        // Wie changePassword auf dem Server: andere Sitzungen des Nutzers enden, die aktuelle bleibt.
+        if (result.success) revokeSessionsForUser(session.userId, event.sender.id);
+        return result;
       },
       { logger, requireAuth: true, requireRealSession: true },
     ),
