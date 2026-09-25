@@ -21,6 +21,7 @@ declare module 'mailparser' {
       contentType?: string;
       size?: number;
       content?: Buffer;
+      cid?: string;
     }[];
     headerLines?: { key: string; line: string }[];
     headers?: {
@@ -29,5 +30,8 @@ declare module 'mailparser' {
     };
   }
 
-  export function simpleParser(source: Buffer | string | Readable): Promise<ParsedMail>;
+  export function simpleParser(
+    source: Buffer | string | Readable,
+    options?: { keepCidLinks?: boolean },
+  ): Promise<ParsedMail>;
 }

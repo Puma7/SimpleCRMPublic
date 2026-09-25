@@ -1,3 +1,4 @@
+import { repeatedCidImageMail } from './helpers/cid-mime';
 import { createImapFlowMock } from './helpers/imap-flow-mock';
 import { createSqliteMock } from './helpers/sqlite-mock';
 
@@ -261,4 +262,27 @@ describe('email-imap-sync', () => {
     await syncInboxImap(1);
     expect(mockRecordFailure).toHaveBeenCalled();
   });
+
+  // C-A71: simpleParser lief mit der Standard-CID-Expansion; ein vielfach referenziertes Inline-Bild blaehte body_html ohne Grenze auf.
+  test('syncInboxImap stores html with a bounded cid image expansion', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const realSimpleParser = (jest.requireActual('mailparser') as typeof import('mailparser')).simpleParser;
+    simpleParser.mockImplementationOnce((source: Buffer, options?: { keepCidLinks?: boolean }) =>
+      realSimpleParser(source, options));
+    const { source, html } = repeatedCidImageMail(100 * 1024, 200);
+    Object.assign(mockFolder, { last_uid: 1, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([2]);
+    client.fetchOne.mockResolvedValueOnce({ source, flags: new Set() });
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValue({ id: 99, isNew: true });
+
+    const r = await syncInboxImap(1);
+
+    expect(r.fetched).toBe(1);
+    const stored = (insertOrUpdateEmailMessage as jest.Mock).mock.calls[0]![0] as { bodyHtml: string };
+    expect(stored.bodyHtml.length).toBeLessThanOrEqual(html.length + 16 * 1024 * 1024);
+    expect(stored.bodyHtml).toContain('<img src="data:image/png;base64,');
+    expect(stored.bodyHtml).toContain('<img src="cid:a">');
+    expect(simpleParser).toHaveBeenCalledWith(source, { keepCidLinks: true });
+  }, 30_000);
 });

@@ -26,6 +26,17 @@ describe('blockRemoteImagesInHtml', () => {
     expect(blockRemoteImagesInHtml(html)).toBe(html);
   });
 
+  // C-A71: Verweise ueber dem Inline-Budget bleiben cid:; der Viewer zeigt sie als Platzhalter neben den eingebetteten Bildern.
+  test('shows cid references left over by the inline budget as placeholders', () => {
+    const inlined = '<img src="data:image/png;base64,AQID">';
+    const html = `${inlined.repeat(2)}<img src="cid:a"><img alt='x' src='cid:a'>`;
+    const out = blockRemoteImagesInHtml(html);
+    expect(out.startsWith(inlined.repeat(2))).toBe(true);
+    expect(out).not.toContain('cid:');
+    expect(out.match(/data:image\/svg\+xml/g)).toHaveLength(2);
+    expect(htmlHasRemoteResources(html)).toBe(true);
+  });
+
   test('blocks https srcset on img', () => {
     const html =
       '<img src="data:image/png;base64,abc" srcset="https://cdn.example/a.png 1x, https://cdn.example/b.png 2x">';

@@ -76,8 +76,8 @@ export async function processNewMessagesAfterSync(
               throw new Error('raw RFC822 unavailable for attachment recovery');
             }
             assertInboundRfc822Base64Size(row.raw_rfc822_b64);
-            const { simpleParser } = await import('mailparser');
-            const parsed = await simpleParser(Buffer.from(row.raw_rfc822_b64, 'base64'));
+            const { parseInboundMailSource } = await import('./email-inbound-parse.js');
+            const parsed = await parseInboundMailSource(Buffer.from(row.raw_rfc822_b64, 'base64'));
             parsedAttachments = parsed.attachments;
           }
         }

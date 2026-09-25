@@ -1,5 +1,4 @@
 import { ImapFlow } from 'imapflow';
-import { simpleParser } from 'mailparser';
 import { assertInboundRfc822Size } from '@simplecrm/core';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb } from '../sqlite-service';
@@ -39,6 +38,7 @@ import {
   rawHeadersFromParsed,
   snippetFromParsed,
 } from './email-parse-utils';
+import { parseInboundMailSource } from './email-inbound-parse';
 import { canAdvanceImapSyncCursor } from './imap-sync-cursor';
 import {
   clearImapUidFetchFailure,
@@ -189,7 +189,7 @@ async function syncFolderImapInternal(
         }
         const sourceBuf = Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(msg.source as Buffer);
         assertInboundRfc822Size(sourceBuf.length);
-        const parsed = await simpleParser(sourceBuf);
+        const parsed = await parseInboundMailSource(sourceBuf);
         const messageId = parsed.messageId ?? null;
         const inReplyTo = parsed.inReplyTo ?? null;
         const refs = parsed.references

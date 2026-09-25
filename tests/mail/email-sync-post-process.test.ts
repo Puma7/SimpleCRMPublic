@@ -153,7 +153,8 @@ describe('processNewMessagesAfterSync', () => {
 
     await processNewMessagesAfterSync(1, [], 2);
 
-    expect(mockSimpleParser).toHaveBeenCalledWith(Buffer.from('raw mail'));
+    // C-A71: Auch die Wiederherstellung parste mit der unbegrenzten Standard-CID-Expansion.
+    expect(mockSimpleParser).toHaveBeenCalledWith(Buffer.from('raw mail'), { keepCidLinks: true });
     expect(mockPersist).toHaveBeenCalledWith(9, recoveredAttachments);
     expect(mockMarkDone).toHaveBeenCalledWith(9);
   });

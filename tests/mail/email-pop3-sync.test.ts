@@ -1,3 +1,5 @@
+import { repeatedCidImageMail } from './helpers/cid-mime';
+
 const mockGetSyncInfo = jest.fn(() => null as string | null);
 const mockSetSyncInfo = jest.fn();
 const mockAssertInboundRfc822Size = jest.fn();
@@ -232,4 +234,25 @@ describe('email-pop3-sync', () => {
     expect(mockRetr).toHaveBeenCalledTimes(1);
     expect(persisted).toBe(JSON.stringify(['uidl-oversized']));
   });
+
+  // C-A71: simpleParser lief mit der Standard-CID-Expansion; ein vielfach referenziertes Inline-Bild blaehte body_html ohne Grenze auf.
+  test('stores html with a bounded cid image expansion', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const realSimpleParser = (jest.requireActual('mailparser') as typeof import('mailparser')).simpleParser;
+    simpleParser.mockImplementationOnce((source: Buffer, options?: { keepCidLinks?: boolean }) =>
+      realSimpleParser(source, options));
+    const { source, html } = repeatedCidImageMail(100 * 1024, 200);
+    mockUidl.mockResolvedValue([['1', 'uidl-cid']]);
+    mockRetr.mockResolvedValueOnce(source);
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+
+    const r = await syncInboxPop3(1);
+
+    expect(r.fetched).toBe(1);
+    const stored = (insertOrUpdateEmailMessage as jest.Mock).mock.calls[0]![0] as { bodyHtml: string };
+    expect(stored.bodyHtml.length).toBeLessThanOrEqual(html.length + 16 * 1024 * 1024);
+    expect(stored.bodyHtml).toContain('<img src="data:image/png;base64,');
+    expect(stored.bodyHtml).toContain('<img src="cid:a">');
+    expect(simpleParser).toHaveBeenCalledWith(source, { keepCidLinks: true });
+  }, 30_000);
 });

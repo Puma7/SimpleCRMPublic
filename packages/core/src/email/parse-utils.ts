@@ -236,6 +236,82 @@ export function plainTextFromHtml(html: string, cap = 500_000): string {
   return text.length > cap ? text.slice(0, cap) : text;
 }
 
+/** Lower bound of the {@link cidInlineBudgetBytes} budget. */
+export const CID_INLINE_MIN_BUDGET_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Budget for the data: URLs {@link inlineCidImages} may add to one message:
+ * 16 MiB or twice the raw RFC822 size, whichever is larger. The base64 form of
+ * an image is at most about 4/3 of the size its part takes in the source, so
+ * images referenced once always fit.
+ */
+export function cidInlineBudgetBytes(rawBytes: number): number {
+  return Math.max(CID_INLINE_MIN_BUDGET_BYTES, 2 * rawBytes);
+}
+
+export type CidInlineAttachment = {
+  cid?: string;
+  contentType?: string;
+  content?: Buffer | Uint8Array;
+};
+
+// Same patterns as mailparser's updateImageLinks (lib/mail-parser.js), so the
+// result matches its default output (keepCidLinks: false) byte for byte.
+const CID_REFERENCE_SOURCE = /\bcid:([^'"\s]{1,256})/.source;
+const INLINE_IMAGE_CONTENT_TYPE = /^image\/[\w]+$/i;
+
+/**
+ * Replaces `cid:` references to image attachments with
+ * `data:<contentType>;base64,<content>` like mailparser's default, but in one
+ * linear pass and within `maxExpandedBytes` of added data: URLs. mailparser
+ * inlines every reference without a limit: a 157 KB mail referencing one image
+ * a thousand times became 136 million characters of HTML, slightly larger mail
+ * an uncatchable RangeError (C-A71). A reference whose URL no longer fits stays
+ * `cid:`; the viewer shows it as a blocked inline image.
+ */
+export function inlineCidImages(
+  html: string,
+  attachments: readonly CidInlineAttachment[] | undefined,
+  maxExpandedBytes: number,
+): string {
+  if (!attachments?.length || !html.includes('cid:')) return html;
+  // Like mailparser: the first image attachment carrying the content id wins.
+  const imageByCid = new Map<string, { contentType: string; content: Buffer }>();
+  for (const { cid, contentType, content } of attachments) {
+    if (typeof cid !== 'string' || imageByCid.has(cid) || content == null) continue;
+    if (typeof contentType !== 'string' || !INLINE_IMAGE_CONTENT_TYPE.test(contentType)) continue;
+    imageByCid.set(cid, {
+      contentType,
+      content: Buffer.isBuffer(content) ? content : Buffer.from(content),
+    });
+  }
+  if (imageByCid.size === 0) return html;
+
+  const urlByCid = new Map<string, string>();
+  const reference = new RegExp(CID_REFERENCE_SOURCE, 'g');
+  let remaining = maxExpandedBytes;
+  let out = '';
+  let copied = 0;
+  for (let m = reference.exec(html); m; m = reference.exec(html)) {
+    const cid = m[1]!;
+    const image = imageByCid.get(cid);
+    if (!image) continue;
+    let url = urlByCid.get(cid);
+    if (url === undefined) {
+      // Sized before encoding, so an image that cannot fit is never encoded.
+      const urlLength = `data:${image.contentType};base64,`.length + 4 * Math.ceil(image.content.length / 3);
+      if (urlLength > remaining) continue;
+      url = `data:${image.contentType};base64,${image.content.toString('base64')}`;
+      urlByCid.set(cid, url);
+    }
+    if (url.length > remaining) continue;
+    remaining -= url.length;
+    out += html.slice(copied, m.index) + url;
+    copied = m.index + m[0].length;
+  }
+  return copied === 0 ? html : out + html.slice(copied);
+}
+
 export function snippetFromParsed(textBody: string | null, htmlBody: string | null): string | null {
   if (textBody?.trim()) {
     const t = textBody.trim();

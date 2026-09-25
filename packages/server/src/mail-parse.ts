@@ -11,7 +11,9 @@ import { createHash } from 'node:crypto';
 import {
   addressJson,
   assertInboundRfc822Size,
+  cidInlineBudgetBytes,
   formatDate,
+  inlineCidImages,
   parseAttachmentsMeta,
   plainTextFromHtml,
   rawHeadersFromParsed,
@@ -119,7 +121,7 @@ export async function parseMailSource(
 ): Promise<ServerMailSyncParsedMessage> {
   assertInboundRfc822Size(source.length, maxBytes);
   const { simpleParser } = require('mailparser') as {
-    simpleParser(input: Buffer): Promise<{
+    simpleParser(input: Buffer, options: { keepCidLinks: boolean }): Promise<{
       messageId?: string;
       inReplyTo?: string;
       references?: string | string[];
@@ -132,18 +134,22 @@ export async function parseMailSource(
       date?: Date;
       text?: string;
       html?: string | false;
-      attachments?: { filename?: string; contentType?: string; size?: number; content?: Buffer | Uint8Array | string }[];
+      attachments?: { filename?: string; contentType?: string; size?: number; content?: Buffer | Uint8Array; cid?: string }[];
       headerLines?: { key: string; line: string }[];
       headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
     }>;
   };
-  const parsed = await simpleParser(source);
+  // mailparser's default inlines every cid: image reference without a limit
+  // (C-A71); keep the links and inline them within a budget instead.
+  const parsed = await simpleParser(source, { keepCidLinks: true });
   const referencesHeader = parsed.references
     ? Array.isArray(parsed.references)
       ? parsed.references.join(' ')
       : String(parsed.references)
     : null;
-  const htmlBody = typeof parsed.html === 'string' ? parsed.html : null;
+  const htmlBody = typeof parsed.html === 'string' && parsed.html
+    ? inlineCidImages(parsed.html, parsed.attachments, cidInlineBudgetBytes(source.length))
+    : null;
   // HTML-only mail: derive body_text from the HTML so search (search_vector)
   // can see it — parity with the desktop ingest.
   const textBody =

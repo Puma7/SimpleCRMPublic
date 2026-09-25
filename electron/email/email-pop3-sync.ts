@@ -1,5 +1,4 @@
 import { createRequire } from 'module';
-import { simpleParser } from 'mailparser';
 import {
   assertInboundRfc822Size,
   InboundMessageTooLargeError,
@@ -46,6 +45,7 @@ import {
   rawHeadersFromParsed,
   snippetFromParsed,
 } from './email-parse-utils';
+import { parseInboundMailSource } from './email-inbound-parse';
 import { rfc822SourceToStorageB64 } from './mail-eml-build';
 
 const POP_FOLDER = 'INBOX';
@@ -128,7 +128,7 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     const sourceBuf =
       typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw as Buffer);
     assertInboundRfc822Size(sourceBuf.length);
-    const parsed = await simpleParser(sourceBuf);
+    const parsed = await parseInboundMailSource(sourceBuf);
     const messageId = parsed.messageId ?? null;
     const inReplyTo = parsed.inReplyTo ?? null;
     const refs = parsed.references
