@@ -92,6 +92,23 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
       toast.error(msg)
       return
     }
+    // Server edition: without a new password the server deliberately tests the
+    // STORED host/port/TLS/user (mail-connection-test.ts), not these form values.
+    if (
+      serverClientMode &&
+      editAccount &&
+      !imapPassword.trim() &&
+      (imapHost.trim() !== (editAccount.imap_host ?? "").trim() ||
+        (parseInt(imapPort, 10) || 993) !== editAccount.imap_port ||
+        imapTls !== Boolean(editAccount.imap_tls) ||
+        imapUsername.trim() !== (editAccount.imap_username ?? "").trim())
+    ) {
+      const msg =
+        "IMAP-Server, Port, TLS oder Benutzername geändert: Ohne Passwort prüft der Server nur die gespeicherten Werte. Bitte Passwort eingeben, um die neuen Werte zu testen."
+      setTestFeedback(msg)
+      toast.error(msg)
+      return
+    }
     setTesting(true)
     setTestFeedback("IMAP-Verbindung wird getestet …")
     const loadingId = toast.loading("IMAP-Verbindung wird getestet …")
@@ -135,6 +152,22 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
     }
     if (!isEdit && !imapPassword) {
       const msg = "Bitte Passwort eingeben (neues Konto)."
+      setTestFeedback(msg)
+      toast.error(msg)
+      return
+    }
+    // Same server rule as the IMAP test: stored secret ⇒ stored endpoint.
+    if (
+      serverClientMode &&
+      editAccount &&
+      !imapPassword.trim() &&
+      (host !== (editAccount.pop3_host ?? "").trim() ||
+        (parseInt(pop3Port, 10) || 995) !== (editAccount.pop3_port ?? 995) ||
+        pop3Tls !== (editAccount.pop3_tls == null ? true : Boolean(editAccount.pop3_tls)) ||
+        imapUsername.trim() !== (editAccount.imap_username ?? "").trim())
+    ) {
+      const msg =
+        "POP3-Server, Port, TLS oder Benutzername geändert: Ohne Passwort prüft der Server nur die gespeicherten Werte. Bitte Passwort eingeben, um die neuen Werte zu testen."
       setTestFeedback(msg)
       toast.error(msg)
       return

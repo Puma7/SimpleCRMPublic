@@ -11,6 +11,7 @@ import { ArchiveRecoverySection } from '@/components/email/settings/archive-reco
 import {
   configureRendererTransport,
   createHttpRendererTransport,
+  createIpcRendererTransport,
   resetRendererTransportForTests,
 } from '@/services/transport';
 
@@ -18,6 +19,7 @@ jest.mock('sonner', () => ({
   toast: {
     error: jest.fn(),
     success: jest.fn(),
+    loading: jest.fn(() => 'loading-toast'),
   },
 }));
 
@@ -151,6 +153,82 @@ describe('mail settings server-client UI', () => {
 
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
     expect((nameInput as HTMLInputElement).value).toBe('Neuer Name');
+  });
+
+  // F-A11a-06: Ohne Passwort testete der Server still den gespeicherten Host, das UI meldete Erfolg fuer die geaenderten Werte.
+  test('IMAP-Test mit geaendertem Host ohne Passwort verlangt ein Passwort statt Erfolg zu melden', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl }));
+    render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+    fireEvent.change(await screen.findByLabelText('IMAP-Server'), { target: { value: 'imap.neu.invalid' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'IMAP testen' }));
+    });
+
+    expect(screen.getByRole('status')).toHaveTextContent(/Passwort eingeben/);
+    expect(screen.queryByText('IMAP-Verbindung erfolgreich.')).not.toBeInTheDocument();
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('test-imap'))).toBe(false);
+  });
+
+  test('IMAP-Test ohne Aenderung nutzt weiter das gespeicherte Konto', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl }));
+    render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+    await screen.findByLabelText('IMAP-Server');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'IMAP testen' }));
+    });
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('IMAP-Verbindung erfolgreich.'));
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('test-imap'))).toBe(true);
+  });
+
+  test('IMAP-Test mit geaendertem Host und neuem Passwort testet die Formularwerte', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl }));
+    render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+    fireEvent.change(await screen.findByLabelText('IMAP-Server'), { target: { value: 'imap.neu.example' } });
+    fireEvent.change(screen.getByLabelText('Passwort'), { target: { value: 'geheim' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'IMAP testen' }));
+    });
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('IMAP-Verbindung erfolgreich.'));
+    const testCall = fetchImpl.mock.calls.find(([url]) => String(url).includes('test-imap'));
+    expect(JSON.parse(String(testCall?.[1]?.body))).toEqual(expect.objectContaining({ imapHost: 'imap.neu.example' }));
+  });
+
+  test('Desktop: IMAP-Test prueft geaenderte Werte auch ohne Passwort (lokales Passwort, Formularwerte)', async () => {
+    const localInvoke = jest.fn().mockResolvedValue({ success: true });
+    (window as any).electronAPI = { invoke: localInvoke };
+    configureRendererTransport(createIpcRendererTransport());
+    render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+    fireEvent.change(await screen.findByLabelText('IMAP-Server'), { target: { value: 'imap.neu.example' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'IMAP testen' }));
+    });
+
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('IMAP-Verbindung erfolgreich.'));
+    expect(localInvoke).toHaveBeenCalledWith('email:test-imap', expect.objectContaining({ imapHost: 'imap.neu.example' }));
+  });
+
+  // F-A11a-06: Gleiches gilt fuer den POP3-Test.
+  test('POP3-Test mit geaendertem Host ohne Passwort verlangt ein Passwort statt Erfolg zu melden', async () => {
+    const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({ data: { success: true } }));
+    configureRendererTransport(createHttpRendererTransport({ baseUrl: 'https://crm.example.com', fetchImpl }));
+    render(<AccountForm onCreated={jest.fn()} editAccount={{ ...pop3Account(), imap_username: 'mail@example.com' }} />);
+
+    fireEvent.change(await screen.findByLabelText('POP3-Server'), { target: { value: 'pop.neu.invalid' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'POP3 testen' }));
+    });
+
+    expect(screen.getByRole('status')).toHaveTextContent(/Passwort eingeben/);
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes('test-pop3'))).toBe(false);
   });
 
   test('export panel does not fall back to local IPC when HTTP transport has no server URL', async () => {
