@@ -66,6 +66,12 @@ const loop: GraphNode = {
   type: 'registry',
   data: { nodeType: 'logic.loop', config: { sourceVariable: 'items' } },
 };
+/** Schleife mit dem höchsten erlaubten maxItems (500, wie der Server). */
+const bigLoop: GraphNode = {
+  id: 'loop',
+  type: 'registry',
+  data: { nodeType: 'logic.loop', config: { sourceVariable: 'items', maxItems: 500 } },
+};
 
 describe('desktop logic.loop guards', () => {
   beforeEach(() => {
@@ -136,6 +142,53 @@ describe('desktop logic.loop guards', () => {
     expect(result.log.some((line) => line.startsWith('graph_step_limit:'))).toBe(true);
     expect((calls.get('a') ?? 0) + (calls.get('b') ?? 0)).toBeLessThanOrEqual(500);
     expect(calls.get('after')).toBeUndefined();
+  });
+
+  // PR-Review (#193): Jede Iteration begann mit eigenem Schrittzähler; 500 Einträge mal ein langer
+  // Rumpf ergaben weit mehr als 500 Knotenausführungen je Lauf (bis 500×500).
+  test('caps the total node executions of a run across all loop iterations', async () => {
+    const calls = new Map<string, number>();
+    installCountingNode(calls, 1000);
+    const body = Array.from({ length: 30 }, (_, i) => countNode(`n${i}`));
+    const bodyEdges = body.slice(1).map((node, i) => ({ id: `b${i}`, source: body[i]!.id, target: node.id }));
+    const items = Array.from({ length: 500 }, (_, i) => `i${i}`).join(',');
+
+    const result = await run(
+      [trigger, bigLoop, ...body, countNode('after')],
+      [
+        { id: 'e1', source: 'trigger', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'n0', label: 'each' },
+        ...bodyEdges,
+        { id: 'e3', source: 'loop', target: 'after', label: 'done' },
+      ],
+      items,
+    );
+
+    const total = [...calls.values()].reduce((sum, n) => sum + n, 0);
+    expect(result.status).toBe('blocked');
+    expect(result.blockReason).toMatch(/Schrittlimit/);
+    expect(total).toBeLessThanOrEqual(10_000);
+    expect(calls.get('after')).toBeUndefined();
+  });
+
+  test('a loop over 500 items with a short body still completes', async () => {
+    const calls = new Map<string, number>();
+    installCountingNode(calls, 1000);
+    const items = Array.from({ length: 500 }, (_, i) => `i${i}`).join(',');
+
+    const result = await run(
+      [trigger, bigLoop, countNode('body'), countNode('after')],
+      [
+        { id: 'e1', source: 'trigger', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'body', label: 'each' },
+        { id: 'e3', source: 'loop', target: 'after', label: 'done' },
+      ],
+      items,
+    );
+
+    expect(result.status).toBe('ok');
+    expect(calls.get('body')).toBe(500);
+    expect(calls.get('after')).toBe(1);
   });
 
   // F-A9-05: Zwei Schleifen, die sich über ihre Je-Eintrag-Zweige gegenseitig

@@ -172,6 +172,12 @@ async function executeNode(
  * allowRevisit; ein Kreis A→B→A liefe dort sonst endlos mit Seiteneffekten.
  */
 const MAX_GRAPH_STEPS = 500;
+/**
+ * Knotenausführungen je Lauf über alle Schleifen-Iterationen — Parität zu
+ * MAX_GRAPH_TOTAL_STEPS auf dem Server. Jede Iteration beginnt einen eigenen
+ * Pfad; ohne Gesamtbudget ergaben 500 Einträge mal langer Rumpf bis 250.000.
+ */
+const MAX_GRAPH_TOTAL_STEPS = 10_000;
 
 type WalkOptions = {
   allowRevisit?: boolean;
@@ -179,6 +185,8 @@ type WalkOptions = {
   stopBeforeNodeIds?: ReadonlySet<string>;
   /** Schrittzähler des Durchlaufs; der Block-Port-Zweig zählt weiter statt neu. */
   steps?: { count: number };
+  /** Knotenausführungen des ganzen Laufs, geteilt von allen Schleifen-Iterationen. */
+  totalSteps?: { count: number };
   /** Je-Eintrag-Zweig einer Schleife: deferierende Knoten sind dort verboten (F-A9-04). */
   insideLoopBody?: boolean;
 };
@@ -210,6 +218,7 @@ async function walkGraph(
   let currentId: string | undefined = startNodeId;
   const seen = visited ?? new Set<string>();
   const steps = options?.steps ?? { count: 0 };
+  const totalSteps = options?.totalSteps ?? { count: 0 };
   let blocked = false;
   let blockReason: string | null = null;
 
@@ -224,6 +233,15 @@ async function walkGraph(
         status: 'blocked',
         blocked: true,
         blockReason: `Schrittlimit von ${MAX_GRAPH_STEPS} Knoten erreicht (vermutlich ein Kreis im Workflow)`,
+      };
+    }
+    if (totalSteps.count++ >= MAX_GRAPH_TOTAL_STEPS) {
+      log.push(`graph_step_limit:${MAX_GRAPH_TOTAL_STEPS} – Abbruch bei Knoten ${currentId}, Gesamtbudget des Laufs erreicht`);
+      return {
+        log,
+        status: 'blocked',
+        blocked: true,
+        blockReason: `Schrittlimit von ${MAX_GRAPH_TOTAL_STEPS} Knoten je Lauf erreicht (Schleife mit zu vielen Schritten)`,
       };
     }
     if (!options?.allowRevisit && seen.has(currentId)) {
@@ -307,7 +325,7 @@ async function walkGraph(
           eachEdge.target,
           branchLog,
           new Set<string>(),
-          { allowRevisit: true, stopBeforeNodeIds, insideLoopBody: true },
+          { allowRevisit: true, stopBeforeNodeIds, insideLoopBody: true, totalSteps },
           gate,
         );
         for (const line of r.log.slice(logLengthBefore)) log.push(line);
@@ -391,7 +409,7 @@ async function walkGraph(
           blockEdge.target,
           log,
           seen,
-          { ...options, steps },
+          { ...options, steps, totalSteps },
           gate,
         );
         if (branch.blocked || branch.status === 'blocked') return branch;
@@ -519,6 +537,8 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
   }
 
   let merged: GraphRunResult = { log, status: 'ok', blocked: false, blockReason: null };
+  // Ein Knotenbudget für den ganzen Lauf, geteilt von allen Trigger-Zweigen.
+  const totalSteps = { count: 0 };
   for (const edge of outs) {
     // The branch log starts as a copy of `log`; only its new tail is merged
     // back, otherwise every trigger edge re-appended the whole history.
@@ -526,7 +546,7 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
     const branchLog = [...log, `branch:${edge.target}`];
     const branchCtx = cloneWorkflowContext(ctx);
     const branchGate: InboundBranchGate = { conditionOk: false };
-    const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, undefined, branchGate);
+    const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, { totalSteps }, branchGate);
     for (const line of r.log.slice(logLengthBefore)) merged.log.push(line);
     if (r.blocked) return r;
     // Spam-chain stop ends the whole inbound priority chain — bail immediately.

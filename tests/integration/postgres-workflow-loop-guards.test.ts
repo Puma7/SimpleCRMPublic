@@ -15,8 +15,8 @@ type GraphEdge = { id: string; source: string; target: string; label?: string };
 
 const trigger: GraphNode = { id: 'trigger', type: 'trigger', data: { kind: 'manual' } };
 
-function loopNode(id: string, items: string, sourceVariable: string): GraphNode {
-  return { id, type: 'registry', data: { nodeType: 'logic.loop', config: { items, sourceVariable } } };
+function loopNode(id: string, items: string, sourceVariable: string, maxItems?: number): GraphNode {
+  return { id, type: 'registry', data: { nodeType: 'logic.loop', config: { items, sourceVariable, ...(maxItems ? { maxItems } : {}) } } };
 }
 
 const review: GraphNode = {
@@ -104,6 +104,63 @@ describe('server workflow loop and block-port guards', () => {
       'loop:0:p',
       'loop:1:q',
     ]);
+  });
+
+  // PR-Review (#193): Der Je-Eintrag-Zweig bekam je Iteration einen frischen Schrittzaehler;
+  // 500 Eintraege mal ein langer Rumpf ergaben weit mehr als 500 Knoten je Lauf (bis 500×500).
+  test('caps the total node executions of a run across all loop iterations', async () => {
+    const body: GraphNode[] = Array.from({ length: 30 }, (_, i) => ({
+      id: `n${i}`,
+      type: 'registry',
+      data: { nodeType: 'logic.set_variable', config: { name: `v${i}`, value: 'x' } },
+    }));
+    const items = Array.from({ length: 500 }, (_, i) => `i${i}`).join(',');
+    const workflowId = await insertWorkflow(
+      [trigger, loopNode('l1', items, 'l1_items', 500), ...body, { id: 'after', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'done', value: 'y' } } }],
+      [
+        { id: 'e1', source: 'trigger', target: 'l1' },
+        { id: 'e2', source: 'l1', target: 'n0', label: 'each' },
+        ...body.slice(1).map((node, i) => ({ id: `b${i}`, source: body[i]!.id, target: node.id })),
+        { id: 'e3', source: 'l1', target: 'after', label: 'done' },
+      ],
+    );
+
+    const result = await createPostgresWorkflowExecutionJobPort({ db }).dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(result.blocked).toBe(true);
+    expect(result.blockReason).toBe('graph_step_limit:server_workflow_execution');
+    // Bei 30 Knoten je Eintrag endet der Lauf nach hoechstens 10.000 Schritten, also vor Eintrag 334.
+    expect(result.log.filter((line) => /^loop:\d+:/.test(line)).length).toBeLessThan(340);
+  });
+
+  test('a loop over 500 items with a short body still completes', async () => {
+    const items = Array.from({ length: 500 }, (_, i) => `i${i}`).join(',');
+    const workflowId = await insertWorkflow(
+      [
+        trigger,
+        loopNode('l1', items, 'l1_items', 500),
+        { id: 'body', type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'seen', value: 'x' } } },
+      ],
+      [
+        { id: 'e1', source: 'trigger', target: 'l1' },
+        { id: 'e2', source: 'l1', target: 'body', label: 'each' },
+      ],
+    );
+
+    const result = await createPostgresWorkflowExecutionJobPort({ db }).dryRun!({
+      workspaceId: WORKSPACE_ID,
+      workflowId,
+      triggerName: 'manual',
+      context: {},
+    });
+
+    expect(result.blocked).toBe(false);
+    expect(result.log.filter((line) => /^loop:\d+:/.test(line)).length).toBe(500);
   });
 
   // F-N-srv-01: Der Block-Port-Zweig begann mit stepCount 0; ein Kreis ueber einen

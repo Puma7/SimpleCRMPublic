@@ -114,6 +114,13 @@ import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
 
 const MAX_REGEX_PATTERN_LEN = 240;
 const MAX_GRAPH_STEPS = 500;
+/**
+ * Node executions per run across all loop iterations. MAX_GRAPH_STEPS counts per
+ * path and each loop iteration starts its own path, so 500 items times a long
+ * body reached 250,000 executions (with run-step inserts and side effects).
+ * 10,000 still covers 500 items with a body of up to ~19 nodes.
+ */
+const MAX_GRAPH_TOTAL_STEPS = 10_000;
 const MAX_WORKFLOW_LOOP_ITEMS = 500;
 /** Hard cap on chained workflow.subflow depth (cycle / runaway fan-out guard). */
 const MAX_SUBFLOW_DEPTH = 8;
@@ -1608,6 +1615,8 @@ async function runServerWorkflowGraph(
   const log: string[] = [];
   let result: GraphRunResult = { status: 'ok', blocked: false, deferred: false, blockReason: null, log };
   let deferredBranchCount = 0;
+  // One node budget for the whole run, shared by every trigger branch.
+  const totalSteps = { count: 0 };
   for (const [branchIndex, edge] of triggerEdges.entries()) {
     const branchContext = cloneServerWorkflowContext(input.context);
     branchContext.branchKey = edge.id || String(branchIndex);
@@ -1620,6 +1629,7 @@ async function runServerWorkflowGraph(
       dryRun: input.dryRun === true,
       ports: input.ports,
       inboundGate: branchContext.direction === 'inbound' ? { conditionOk: false } : undefined,
+      totalSteps,
     });
     if (branch.deferred) deferredBranchCount += 1;
     result = {
@@ -1664,6 +1674,8 @@ async function walkGraph(
     inboundGate?: ServerInboundBranchGate;
     /** Step counter of this walk; the block-port branch keeps counting (desktop parity). */
     steps?: { count: number };
+    /** Node executions of the whole run, shared by every loop iteration. */
+    totalSteps?: { count: number };
     /** Walk of a loop's each branch: deferring nodes are rejected there (F-A9-04). */
     insideLoopBody?: boolean;
   },
@@ -1672,10 +1684,11 @@ async function walkGraph(
   const seen = input.seen ?? new Set<string>();
   let currentId: string | undefined = input.startNodeId;
   const steps = input.steps ?? { count: 0 };
+  const totalSteps = input.totalSteps ?? { count: 0 };
 
   while (currentId) {
     if (input.stopBeforeNodeIds?.has(currentId)) break;
-    if (steps.count++ >= MAX_GRAPH_STEPS) {
+    if (steps.count++ >= MAX_GRAPH_STEPS || totalSteps.count++ >= MAX_GRAPH_TOTAL_STEPS) {
       return blockedResult('graph_step_limit:server_workflow_execution', input.log);
     }
     if (input.allowRevisit !== true && seen.has(currentId)) {
@@ -1760,6 +1773,7 @@ async function walkGraph(
             stopBeforeNodeIds,
             inboundGate: input.inboundGate,
             insideLoopBody: true,
+            totalSteps,
           });
           if (branchResult.status !== 'ok' || branchResult.blocked || branchResult.deferred) {
             return branchResult;
@@ -1879,6 +1893,7 @@ async function walkGraph(
           startNodeId: blockEdge.target,
           seen,
           steps,
+          totalSteps,
         });
         if (branch.blocked || branch.status === 'blocked') return branch;
         if (branch.deferred) {
