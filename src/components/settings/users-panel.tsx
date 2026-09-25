@@ -148,7 +148,7 @@ export function UsersPanel() {
       setError(null)
       setRowBusy(u.id)
       try {
-        await invokeRenderer(IPCChannels.Auth.SaveUser, {
+        const result = (await invokeRenderer(IPCChannels.Auth.SaveUser, {
           id: u.id,
           username: u.username,
           displayName: u.display_name,
@@ -158,7 +158,13 @@ export function UsersPanel() {
           // reactivates a disabled user. An explicit toggle in `changes` wins.
           isActive: Boolean(u.is_active),
           ...changes,
-        })
+        })) as { success: boolean; error?: string } | undefined
+        // The desktop store rejects an update (e.g. the last active owner) with
+        // { success: false } instead of throwing, same as DeleteUser.
+        if (result && result.success === false) {
+          setError(result.error || "Benutzer konnte nicht gespeichert werden.")
+          return
+        }
         await load()
         // If the signed-in user edited their own row (notably the public name),
         // force a fresh auth session so {{user.publicName}} interpolation in
