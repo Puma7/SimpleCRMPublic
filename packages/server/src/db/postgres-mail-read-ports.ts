@@ -341,7 +341,7 @@ type EmailMessageApiRow =
     attachment_readable?: boolean;
   };
 
-type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number]>;
+type LocalDraftMutationRow = Pick<EmailMessageRow, typeof emailMessageDetailColumns[number] | 'pop3_uidl'>;
 
 type EmailMessageSpamStatusMutationRow = Pick<EmailMessageRow, typeof emailMessageSpamStatusMutationColumns[number]>;
 type EmailMessageSecurityRow = Pick<EmailMessageRow, typeof emailMessageSecurityColumns[number]>;
@@ -1303,7 +1303,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         async (trx) => {
           const current = await selectLocalDraftForMutation(trx, input.workspaceId, input.messageId, { forUpdate: true });
           if (!current) return { ok: false as const, reason: 'not_found' as const };
-          if (!isLocalDraftUid(current)) return { ok: false as const, reason: 'not_local_draft' as const };
+          if (!isLocalDraftRow(current)) return { ok: false as const, reason: 'not_local_draft' as const };
           const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
           if (claimedConflict) return claimedConflict;
           // Composer "Von" switch: move the draft (same id, so draft-local uploads
@@ -1930,13 +1930,13 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           }
           const row = await trx
             .selectFrom('email_messages')
-            .select(['id', 'uid'])
+            .select(['id', 'uid', 'pop3_uidl', 'folder_kind'])
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.messageId)
             .forUpdate()
             .executeTakeFirst();
           if (!row) return { ok: false as const, reason: 'not_found' as const };
-          if (Number(row.uid) >= 0) return { ok: false as const, reason: 'not_local_draft' as const };
+          if (!isLocalDraftRow(row)) return { ok: false as const, reason: 'not_local_draft' as const };
           return deleteLocalDraftRows(trx, {
             workspaceId: input.workspaceId,
             messageIds: [input.messageId],
@@ -2883,24 +2883,27 @@ async function deleteLocalDraftRows(
 ): Promise<LocalDraftDeleteRowsResult> {
   const ids = normalizeMessageIdList(input.messageIds);
   if (ids.length === 0) return { ok: true, count: 0, deletedIds: [] };
-  const drafts = await trx
+  const candidates = await trx
     .selectFrom('email_messages')
-    .select('id')
+    .select(['id', 'uid', 'pop3_uidl', 'folder_kind'])
     .where('workspace_id', '=', input.workspaceId)
     .where('id', 'in', ids)
     .where('uid', '<', 0)
     .orderBy('id', 'asc')
     .forUpdate()
     .execute();
-  for (const draft of drafts) {
-    const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, Number(draft.id));
+  const draftIds = candidates
+    .filter((row: Pick<EmailMessageRow, 'uid' | 'pop3_uidl' | 'folder_kind'>) => isLocalDraftRow(row))
+    .map((row: { id: unknown }) => Number(row.id));
+  if (draftIds.length === 0) return { ok: true, count: 0, deletedIds: [] };
+  for (const draftId of draftIds) {
+    const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, draftId);
     if (claimedConflict) return claimedConflict;
   }
   const rows = await trx
     .deleteFrom('email_messages')
     .where('workspace_id', '=', input.workspaceId)
-    .where('id', 'in', ids)
-    .where('uid', '<', 0)
+    .where('id', 'in', draftIds)
     .returning('id')
     .execute();
   return { ok: true, count: rows.length, deletedIds: rows.map((row: { id: unknown }) => Number(row.id)) };
@@ -5101,15 +5104,22 @@ async function selectLocalDraftForMutation(
 ): Promise<LocalDraftMutationRow | undefined> {
   let query = trx
     .selectFrom('email_messages')
-    .select(emailMessageDetailColumns)
+    .select([...emailMessageDetailColumns, 'pop3_uidl'])
     .where('workspace_id', '=', workspaceId)
     .where('id', '=', messageId);
   if (options.forUpdate) query = query.forUpdate();
   return query.executeTakeFirst();
 }
 
-function isLocalDraftUid(row: Pick<EmailMessageRow, 'uid'>): boolean {
-  return Number(row.uid) < 0;
+/**
+ * A local compose draft, and nothing else with a negative uid: received POP3 mail
+ * (uid <= POP3_UID_CEILING, pop3_uidl set) and sent local copies (folder 'sent') must
+ * not be edited or permanently deleted through the draft routes (desktop parity:
+ * isLocalComposeDraftRow in electron/email/email-store.ts).
+ */
+function isLocalDraftRow(row: Pick<EmailMessageRow, 'uid' | 'pop3_uidl' | 'folder_kind'>): boolean {
+  const uid = Number(row.uid);
+  return uid < 0 && uid > POP3_UID_CEILING && row.pop3_uidl == null && row.folder_kind === 'draft';
 }
 
 function isSchedulableLocalDraft(row: Pick<EmailMessageRow, 'uid' | 'folder_kind'>): boolean {
