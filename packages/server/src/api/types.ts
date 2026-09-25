@@ -2756,6 +2756,10 @@ export type EmailMessageApiPort = {
     // mail.attachment.read (R50-2). Absent ⇒ scope 'all' ⇒ neither predicate ⇒ full row.
     mailScope?: MailSqlScope;
     mailAttachmentScope?: MailSqlScope;
+    // Set only when a triage/draft-edit mutation re-reads its echoed row: the single-message
+    // GET route already requires mail.content.read, a mutation does not, so the read port
+    // computes content_readable from it and blanks the body-derived fields.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailMessageRecord | null>;
   createComposeDraft?(input: {
     workspaceId: string;

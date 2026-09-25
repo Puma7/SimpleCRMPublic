@@ -1238,11 +1238,23 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             assignedToUserId: 'email_messages.assigned_to_user_id',
             assignedTo: 'email_messages.assigned_to',
           });
+          // Only the mutation re-read passes a content scope (the GET route already gated
+          // mail.content.read): a triage/draft-edit delegate without it gets the body redacted.
+          const contentReadablePredicate = mailScopePredicate(input.mailContentScope, {
+            accountId: 'email_messages.account_id',
+            folderId: 'email_messages.folder_id',
+            messageId: 'email_messages.id',
+            assignedToUserId: 'email_messages.assigned_to_user_id',
+            assignedTo: 'email_messages.assigned_to',
+          });
           let query = trx
             .selectFrom('email_messages')
             .select(input.includeBody ? emailMessageDetailColumns : emailMessageSummaryColumns)
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.id);
+          if (contentReadablePredicate) {
+            query = query.select(kyselySql<boolean>`(${contentReadablePredicate})`.as('content_readable'));
+          }
           if (replyParentScopePredicate) {
             query = query.select(kyselySql<boolean>`(
               email_messages.reply_parent_message_id is null

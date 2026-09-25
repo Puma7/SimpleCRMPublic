@@ -4,6 +4,7 @@ import type { MailPermission, MailResource } from '@simplecrm/core';
 import type {
   ApiRequest,
   ApiResponse,
+  EmailMessageRecord,
   MailRouteAccessContext,
   ServerApiPorts,
 } from '../api/types';
@@ -443,8 +444,10 @@ export async function enforceMailHttpPolicy(
     // Triage/draft-edit mutations echo the mutated message back whole. Owner/admin
     // read everything; a restricted delegate gets its body-derived content redacted
     // per its independent mail.content.read scope (the read port turns this into a
-    // per-row content_readable flag on the returned row). A caller whose content
-    // scope is 'all' can read everything anyway, so skip the injection — there is
+    // per-row content_readable flag on the returned row), and — like the single-message
+    // GET — a reply-parent id outside that scope and draft attachment paths outside its
+    // mail.attachment.read scope nulled. A caller whose content and attachment scopes
+    // are both 'all' can read everything anyway, so skip the injection — there is
     // nothing to redact and the read port would compute no predicate.
     if (
       !actor.isOwner
@@ -452,10 +455,15 @@ export async function enforceMailHttpPolicy(
       && MESSAGE_CONTENT_SCOPE_MUTATION_PATHS.has(entry.route.path)
     ) {
       const mutationContentScope = await resolveContentScope();
-      if (mutationContentScope.kind !== 'all') {
+      const mutationAttachmentScope = await resolveAttachmentScope();
+      if (mutationContentScope.kind !== 'all' || mutationAttachmentScope.kind !== 'all') {
         return {
           ok: true,
-          context: { permission: entry.policy.permission, contentScope: mutationContentScope },
+          context: {
+            permission: entry.policy.permission,
+            contentScope: mutationContentScope,
+            attachmentScope: mutationAttachmentScope,
+          },
         };
       }
     }
@@ -521,7 +529,7 @@ export function portsWithMailAccessContext(
   // three mutation ports to inject the caller's content scope; the read port turns
   // it into a per-row content_readable flag that blanks the body-derived fields.
   if ((!context?.scope || context.scope.kind === 'all') && context?.contentScope) {
-    return portsWithContentRedactedMutations(ports, context.contentScope);
+    return portsWithContentRedactedMutations(ports, context.contentScope, context.attachmentScope);
   }
   if (!context?.scope || context.scope.kind === 'all') return ports;
   const mailScope = context.scope;
@@ -703,24 +711,57 @@ export function portsWithMailAccessContext(
 function portsWithContentRedactedMutations(
   ports: ServerApiPorts,
   contentScope: MailSqlScope,
+  attachmentScope: MailSqlScope | undefined,
 ): ServerApiPorts {
   if (!ports.emailMessages) return ports;
   const messages = ports.emailMessages;
+  // The mutation ports flag only content_readable on the row they return. Re-read the
+  // mutated row through get() with the scopes the single-message GET applies — the
+  // content-read scope for the reply parent (R50-1), the attachment-read scope for the
+  // draft attachment paths (R50-2) — plus the content scope itself, so the echo never
+  // shows more than GET /messages/:id would. A row gone in between fails closed.
+  const project = async (
+    workspaceId: string,
+    message: EmailMessageRecord,
+    includeBody: boolean,
+  ): Promise<EmailMessageRecord> => {
+    const projected = await messages.get({
+      workspaceId,
+      id: message.id,
+      includeBody,
+      mailScope: contentScope,
+      mailContentScope: contentScope,
+      ...(attachmentScope ? { mailAttachmentScope: attachmentScope } : {}),
+    });
+    return projected ?? { ...message, draftAttachmentPathsJson: null, replyParentMessageId: null };
+  };
   return {
     ...ports,
     emailMessages: {
       ...messages,
       ...(messages.linkCustomer ? {
-        linkCustomer: (input) => messages.linkCustomer!({ ...input, mailContentScope: contentScope }),
+        linkCustomer: async (input) => {
+          const result = await messages.linkCustomer!({ ...input, mailContentScope: contentScope });
+          return result.ok ? { ...result, message: await project(input.workspaceId, result.message, false) } : result;
+        },
       } : {}),
       ...(messages.assign ? {
-        assign: (input) => messages.assign!({ ...input, mailContentScope: contentScope }),
+        assign: async (input) => {
+          const result = await messages.assign!({ ...input, mailContentScope: contentScope });
+          return result.ok ? { ...result, message: await project(input.workspaceId, result.message, false) } : result;
+        },
       } : {}),
       ...(messages.setSpamStatus ? {
-        setSpamStatus: (input) => messages.setSpamStatus!({ ...input, mailContentScope: contentScope }),
+        setSpamStatus: async (input) => {
+          const message = await messages.setSpamStatus!({ ...input, mailContentScope: contentScope });
+          return message ? project(input.workspaceId, message, false) : message;
+        },
       } : {}),
       ...(messages.updateComposeDraft ? {
-        updateComposeDraft: (input) => messages.updateComposeDraft!({ ...input, mailContentScope: contentScope }),
+        updateComposeDraft: async (input) => {
+          const result = await messages.updateComposeDraft!({ ...input, mailContentScope: contentScope });
+          return result.ok ? { ...result, message: await project(input.workspaceId, result.message, true) } : result;
+        },
       } : {}),
     },
   };
