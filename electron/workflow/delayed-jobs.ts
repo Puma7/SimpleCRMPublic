@@ -45,11 +45,17 @@ export function scheduleDelayedJob(input: {
   executeAt: string;
   contextJson: string;
 }): number {
+  // Mail-Läufe: ein erneuter Lauf derselben Nachricht nutzt den offenen Job.
+  // Nachrichtenlose Läufe (task.due, Zeitplan, CRM, Webhook) sind je Lauf
+  // eigene Ereignisse und dürfen nie auf einen fremden wartenden Job fallen,
+  // sonst geht die Fortsetzung des zweiten Laufs still verloren. Abgeglichen
+  // wird dort nur noch mit dem gerade fortgesetzten Job ('running'), damit eine
+  // Kante zurück zur Verzögerung keine endlose Job-Kette startet.
   const existing = getDb()
     .prepare(
       `SELECT id FROM ${WORKFLOW_DELAYED_JOBS_TABLE}
        WHERE workflow_id = ? AND resume_node_id = ?
-         AND ((message_id IS NULL AND ? IS NULL) OR message_id = ?)
+         AND (message_id = ? OR (message_id IS NULL AND ? IS NULL AND status = 'running'))
          AND status IN ('pending', 'running')
        LIMIT 1`,
     )
