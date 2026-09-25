@@ -210,7 +210,8 @@ describe('server compose draft attachments: per-draft quota and cleanup', () => 
       sourceAttachmentId: 999_999,
     });
 
-    expect(copied).toMatchObject({ ok: true, filename: 'Rechnung_M_rz.pdf', sizeBytes: 9 });
+    // F-A5-13: Umlaute bleiben im Anhangsnamen erhalten.
+    expect(copied).toMatchObject({ ok: true, filename: 'Rechnung März.pdf', sizeBytes: 9 });
     if (!copied.ok) throw new Error(copied.error);
     expect(copied.path.startsWith(`${WORKSPACE_ID}/compose-drafts/7009/`)).toBe(true);
     expect(readFileSync(join(attachmentsRoot, copied.path), 'utf8')).toBe('pdf bytes');
