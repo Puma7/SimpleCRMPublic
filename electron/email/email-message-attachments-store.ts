@@ -393,10 +393,11 @@ export async function purgeAttachmentFilesForAccount(accountId: number): Promise
       await fs.promises.unlink(filePath).catch(() => undefined);
     }
   }
-  const accountDir = path.join(attachmentsRoot(), String(accountId));
-  await fs.promises.rm(accountDir, { recursive: true, force: true }).catch(() => undefined);
+  // Folders are named after the message id (there are no per-account folders),
+  // so only the folders of this account's own messages are removed.
+  const root = path.resolve(attachmentsRoot());
   for (const d of dirs) {
-    if (d.startsWith(attachmentsRoot())) {
+    if (path.resolve(d).startsWith(root + path.sep)) {
       await fs.promises.rm(d, { recursive: true, force: true }).catch(() => undefined);
     }
   }

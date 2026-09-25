@@ -219,4 +219,21 @@ describe('email-message-attachments-store', () => {
     await purgeAttachmentFilesForAccount(1);
     expect(fs.existsSync(f)).toBe(false);
   });
+
+  // F-A7b-07: Die Ordner heissen nach der Message-ID; Konto 2 loeschen entfernte den Ordner von Nachricht 2 eines anderen Kontos.
+  test('purgeAttachmentFilesForAccount leaves the folder of a foreign message whose id equals the account id', async () => {
+    const root = path.join(userData, 'email-attachments');
+    const ownFile = path.join(root, '21', 'own.bin');
+    const foreignFile = path.join(root, '2', 'other.pdf');
+    for (const file of [ownFile, foreignFile]) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, 'x');
+    }
+    stmt.all.mockReturnValueOnce([{ storage_path: '21/own.bin' }]);
+
+    await purgeAttachmentFilesForAccount(2);
+
+    expect(fs.existsSync(ownFile)).toBe(false);
+    expect(fs.existsSync(foreignFile)).toBe(true);
+  });
 });
