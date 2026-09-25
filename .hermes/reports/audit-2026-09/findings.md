@@ -8,9 +8,9 @@ Statuswerte: `KANDIDAT` (noch nicht geprüft) · `BESTÄTIGT` · `PLAUSIBEL` · 
 
 | Status | Anzahl |
 |---|---:|
-| BEHOBEN | 162 |
+| BEHOBEN | 164 |
 | DUPLIKAT | 21 |
-| BY-DESIGN | 7 |
+| BY-DESIGN | 5 |
 | WIDERLEGT | 5 |
 | DOKUMENTIERT | 1 |
 
@@ -20,7 +20,7 @@ Offene und behobene Befunde nach Schweregrad (ohne widerlegte, By-Design und Dup
 |---|---:|
 | Hoch | 7 |
 | Mittel | 84 |
-| Niedrig | 68 |
+| Niedrig | 70 |
 | Info | 3 |
 
 ## Tabelle
@@ -163,6 +163,7 @@ Offene und behobene Befunde nach Schweregrad (ohne widerlegte, By-Design und Dup
 | A12-08 | BEHOBEN (`4f92379`) | Niedrig | Infra | `docker/docker-compose.yml:38` | BACKUP_DIR-Verdrahtung: Backup-Prüfung der Server-Diagnose kann im Compose-Deployment nie gelingen; ein abweichender BACKUP_DIR-Wert lässt Backups mit dem --rm-Container verschwinden |
 | A13A14-11 | BEHOBEN (`bb6b009 + d4b2f8d`) | Niedrig | Server | `packages/server/src/mssql-settings.ts:245` | MSSQL-Verbindungstest sendet das gespeicherte Passwort an einen vom Aufrufer gewählten Host |
 | A2a-04 | BEHOBEN (`f79362b`) | Niedrig | Server | `packages/server/src/api/pgp-routes.ts:154` | Nicht inventarisierte Methoden umgehen den Mail-Enforcer: PGP-Passphrase-/by-source-Handler führen workspace-weite Lookups vor der Methodenprüfung aus (Existenz-Orakel für fremde Schlüssel) |
+| A2b-05 | BEHOBEN (`5605170`) | Niedrig | Server | `packages/server/src/api/capabilities.ts:101` | Admin kann sich selbst zum Owner machen oder Owner übernehmen – Owner-exklusiver Hard-Reset dadurch erreichbar |
 | A2c-01 | BEHOBEN (`b8e0c44`) | Niedrig | Server | `packages/server/src/migrations/0019_task_assignment_scope_reset.ts:44` | Migration 0019: Backfill-UPDATE ohne RLS-Kontext ist ein stiller No-op, verwaiste Aufgaben bleiben unsichtbar |
 | A2c-02 | BEHOBEN (`aa758d6`) | Niedrig | Server | `packages/server/src/maintenance/hard-reset.ts:48` | Komplett-Reset: nicht-atomare TRUNCATE-Schleife ohne Transaktion und Graphile-Jobs ueberleben den Reset |
 | A2c-03 | BEHOBEN (`1383b51`) | Niedrig | Infra | `docker/postgres-init/001-create-app-role.sh:39` | Laufzeit-Rolle ist Eigentuemer von Datenbank, Tabellen und RLS-Hilfsfunktionen; API und Migrationen teilen dieselbe Rolle |
@@ -183,6 +184,7 @@ Offene und behobene Befunde nach Schweregrad (ohne widerlegte, By-Design und Dup
 | A4-08 | BEHOBEN (`b61fefe`) | Niedrig | Server | `packages/server/src/jobs/webhook-handlers.ts:389` | Server-Allowlist: Eintraege mit Schema werden stillschweigend verworfen, Einzel-Labels ohne Punkt (z. B. 'shop', 'info') erlauben ganze TLD |
 | A6-06 | BEHOBEN (`0eaab28`) | Niedrig | beide | `shared/email-html-remote-images.ts:110` | Remote-Content-Sperre in <style> per '$&'-Ersetzungsmuster umgehbar |
 | A6-07 | BEHOBEN (`d915244`) | Niedrig | beide | `src/lib/electron-utils.ts:94` | CSV-Export ohne Schutz gegen Formel-Injection (=, +, -, @) |
+| A7-01 | BEHOBEN (`aa968e7`) | Niedrig | Desktop | `electron/ipc/email.ts:580` | Nicht-Admin (Agent) kann Workflows mit code.javascript/code.python anlegen und so Code im Electron-Main-Prozess ausführen |
 | A7-08 | BEHOBEN (`f6159d9`) | Niedrig | Desktop | `electron/ipc/sync.ts:41` | Sync.GetInfo liest beliebige sync_info-Schlüssel für jeden angemeldeten Nutzer (u. a. OAuth-Client-Secrets im Klartext) |
 | A7-09 | BEHOBEN (`6e586c0`) | Niedrig | Desktop | `electron/main.js:54` | Entwicklungsmodus wird aus NODE_ENV abgeleitet – gepackte App lädt bei NODE_ENV=development http://localhost:5173 mit privilegiertem Preload |
 | A7-10 | BEHOBEN (`f633752`) | Niedrig | Desktop | `package.json:242` | Auto-Update: macOS nur als DMG und unsigniert, Windows unsigniert – Update-Integrität nur über sha512 derselben GitHub-Release, macOS-Updates scheitern |
@@ -206,9 +208,7 @@ Offene und behobene Befunde nach Schweregrad (ohne widerlegte, By-Design und Dup
 | A1-03 | BY-DESIGN | Niedrig | Server | `packages/server/src/auth/login-security-service.ts:232` | Pro-Benutzer-MFA wird angezeigt und eingerichtet, beim Login aber still übersprungen, solange der Workspace-Schalter mfaEnabled aus ist (Default) |
 | A12-05 | DUPLIKAT (`04bb7c4`) | Niedrig | Server | `src/services/transport/server-events.ts:118` | Caddy-Access-Log schreibt Bearer-Access-Tokens (Sec-WebSocket-Protocol) und Einladungs-Tokens (Query) im Klartext |
 | A13A14-09 | DUPLIKAT (`04bb7c4`) | Niedrig | Server | `packages/server/src/diagnostics/server-log-store.ts:132` | Einladungs-Token im URL-Pfad landen unredigiert in stdout/Docker-Logs und Caddy-Access-Log |
-| A2b-05 | BY-DESIGN | Niedrig | Server | `packages/server/src/api/capabilities.ts:101` | Admin kann sich selbst zum Owner machen oder Owner übernehmen – Owner-exklusiver Hard-Reset dadurch erreichbar |
 | A2b-07 | DUPLIKAT → A2c-02 | Niedrig | Server | `packages/server/src/maintenance/hard-reset.ts:48` | Komplett-Reset nicht atomar: TRUNCATE pro Tabelle ohne Transaktion, Teilzustand bei Fehler |
-| A7-01 | BY-DESIGN | Niedrig | Desktop | `electron/ipc/email.ts:580` | Nicht-Admin (Agent) kann Workflows mit code.javascript/code.python anlegen und so Code im Electron-Main-Prozess ausführen |
 | A8-04 | DUPLIKAT → D1-02 | Niedrig | Server | `packages/server/src/db/postgres-workflow-runtime-read-ports.ts:1085` | Abbrechen/Loeschen eines Delayed Jobs ueber die Diagnose loescht die Fortsetzung – Join-Barriere des Inbound-Fan-outs bleibt dauerhaft offen |
 | D3-04 | BY-DESIGN | Niedrig | Server | `packages/server/src/api/server-api.ts:157` | Erzwungenes crm.read ohne Übergang: bestehende Nutzer ohne Gruppenrecht verlieren nach dem Update jeden CRM-Lesezugriff |
 | A3a-01 | BEHOBEN (`f9304e7`) | Info | Server | `packages/server/src/api/returns-routes.ts:666` | Öffentliches Retourenportal: jede erfolgreiche Anlage endet mit HTTP 500, weil der Audit-Eintrag 'portal' in eine uuid-Spalte schreibt |
@@ -230,6 +230,10 @@ Beim Beheben gefunden (nicht Teil der 196 Kandidaten). Jeder BEHOBEN-Eintrag ist
 
 | ID | Status | Schwere | Edition | Titel |
 |---|---|---|---|---|
+| N-cx-01 | BEHOBEN (`bc0e38d`) | Niedrig | Desktop | Auto-Antwort-Einstellungen der Workflow-Automation gehen auf dem Desktop verloren: Zod-Schemas entfernen autoReplyEnabled/autoReplyMaxPerSenderPerDay beim Lesen und Speichern |
+| N-cx-02 | BEHOBEN (`191f0f8`) | Mittel | Server | Server-Entwurfsfunktionen (PATCH compose-draft, DELETE local-draft, Bulk) prüfen nur uid < 0 und treffen auch empfangene POP3-Mails und gesendete lokale Kopien (Überschreiben mit Entwurfsrecht, Löschen am Papierkorb vorbei) |
+| N-cx-03 | BEHOBEN (`7e8c54f`) | Niedrig | Server | CRM-Ereignisse (id-reduziert) erreichen per WebSocket/Replay auch Nutzer ohne crm.read |
+| N-cx-04 | BEHOBEN (`77183bb`) | Niedrig | Desktop | Desktop: Rollen-, Aktiv- und Passwortwechsel beenden die Sitzungen des Ziels nicht (Rolle bleibt bis Logout im Session-Store) |
 | N-ds-01 | BEHOBEN (`dee4460`) | Niedrig | Desktop | Spaltennamen-Injection auch in updateProduct/updateCalendarEvent (IPC) |
 | N-ds-02 | BEHOBEN (`f940265 + 7e3a795`) | Mittel | Desktop | OAuth-Client-Secrets und Webhook-Secret per IPC an jeden angemeldeten Nutzer; Set-Kanaele ohne Rollenpruefung |
 | N-dwf-01 | BEHOBEN (`486c745`) | Niedrig | Desktop | runtime.ts:297/307 Schleifen-Log verdoppelt sich je Durchlauf (RangeError ab ~15-20 Eintraegen) |
@@ -251,6 +255,10 @@ Beim Beheben gefunden (nicht Teil der 196 Kandidaten). Jeder BEHOBEN-Eintrag ist
 | N-sm-02 | BEHOBEN (`0fda5ba`) | Niedrig | Desktop | Desktop IMAP-Sync UID n+1:* (email-imap-sync.ts:144) wie A5-06 |
 | N-srv-01 | BEHOBEN (`6713c77`) | Niedrig | Server | Server-Schleife erbt Haltepunkte nicht (L1->L2->L1) und Block-Port-Walk setzt stepCount zurueck |
 | N-wf-01 | BEHOBEN (`579b86a`) | Mittel | Server | ai-classification.ts:1717 Port ohne Kante nach deferierter Klassifikation (Muster D1-07) |
+
+## Abgleich mit den Codex-Befunden (PR #192)
+
+Die 110 Einträge aus PR #192 sind einzeln gegen dieses Register und den Code geprüft; Ergebnis, Commits und Restpunkte stehen in [`codex-abgleich.md`](codex-abgleich.md). Entscheidungen mit Nebenwirkung: [`freigabeliste-3.md`](freigabeliste-3.md) (G1–G12).
 
 ## Details
 
@@ -2073,13 +2081,16 @@ Für die generische Härtung im Dispatcher (server-api.ts) sollten bei `registra
 
 ### F-A2b-05: Admin kann sich selbst zum Owner machen oder Owner übernehmen – Owner-exklusiver Hard-Reset dadurch erreichbar
 
-- Status: **BY-DESIGN** · Schweregrad: Niedrig (gemeldet: Mittel) · Edition: Server
+- Status: **BEHOBEN** · Schweregrad: Niedrig (gemeldet: Mittel) · Edition: Server
 - Ort: `packages/server/src/api/capabilities.ts:101`
 - Pfad: PATCH /api/v1/auth/users/:id (auth-routes.ts:86 handleSaveUser) -> ports.auth.saveUser({actorIsAdmin: requireAdmin(principal), role, password, ...}) -> postgres-auth-port.ts:239 isForbiddenUserMutation -> für Admins immer false -> UPDATE users SET role = input.role, password_hash ...; danach POST /api/v1/maintenance/reset/execute (maintenance-routes.ts:50 requireOwner).
 - Szenario: Ein Nutzer mit Rolle admin sendet PATCH auf sein eigenes Konto mit role:'owner' (oder setzt Passwort/E-Mail des einzigen Owners neu, oder deaktiviert/degradiert einen Owner, solange ein zweiter existiert). Anschließend besitzt er die Owner-Rolle und kann den nur für Owner vorgesehenen Komplett-Reset (TRUNCATE aller Tabellen, Löschen aller Anhänge und Audit-Archive) auslösen bzw. den bisherigen Owner aussperren. Die Code-Stelle requireOwner zeigt, dass Owner als eigene, höhere Stufe gedacht ist.
 - Prüfurteil: BY_DESIGN – Das Zitat `if (actorIsAdmin) return false;` steht am Baseline-Stand 134b808 in packages/server/src/api/capabilities.ts (Funktion isForbiddenUserMutation, ca. Z. 101). Kein Branch-Commit berührt Auth/Capabilities/Maintenance. Der Pfad ist technisch korrekt nachvollzogen: PATCH /api/v1/auth/users/:id -> handleSaveUser (auth-routes.ts, requireCapability 'users.manage', actorIsAdmin: requireAdmin(principal)) -> postgres-auth-port.ts saveUser -> isForbiddenUserMutation liefert für Admins immer false -> UPDATE users SET role/password_hash. Der last_owner_required-Check verhindert nur das Entfernen des letzten aktiven Owners. Ein Admin kann sich also selbst zum Owner machen, das Passwort eines Owners neu setzen oder, wenn es einen zweiten Owner gibt, Owner degradieren oder deaktivieren. Danach erreicht er den nur für Owner vorgesehenen Hard-Reset (maintenance-routes.ts requireOwner).
 
 Widerlegung als Fehler: Das Verhalten ist ausdrücklich gewollt und durch Tests festgeschrieben. tests/unit/user-group-capabilities.test.ts, Test 'delegated user managers may only create/edit ordinary users', prüft `expect(isForbiddenUserMutation(true, 'owner')).toBe(false);`: Ein Admin darf also einen Owner anlegen. Dazu kommt `expect(isForbiddenUserMutation(true, 'admin', 'owner')).toBe(false);`: Ein Admin darf einen Owner zum Admin herabstufen. Der Kommentar im Code sagt „Privileged user management is admin-only“; die Einschränkung gilt bewusst nur für delegierte users.manage-Nutzer. Die API-Fehlerme
+- Fix-Skizze: Nur als Härtung, wenn gewollt: isForbiddenUserMutation bekommt die Rolle des Handelnden statt nur actorIsAdmin (actorRole: 'owner'|'admin'|'user'). Ist actorRole 'admin', dann verboten, wenn requestedRole === 'owner' oder existingRole === 'owner'. Owner-Konten und die Vergabe der Owner-Rolle ändert nur ein Owner. In handleSaveUser/handleDeleteUser `actorRole: principal.role` übergeben, postgres-auth-port.ts saveUser/deleteUser entsprechend anpassen. Test Z. 97/98 bewusst umschreiben und GROUP_RIGHTS_MATRIX.md um die Zeile 'Owner-Rolle/Owner-Konten: nur Owner' ergänzen. Alternative ohne Codeänderung: den Hard-Reset-Hinweis in der UI als Bestätigungshürde statt als Sicherheitsgrenze beschreiben.
+- Parität: Die Desktop-Edition verhält sich gleich, nur ohne jede Rollenprüfung in der Store-Schicht. electron/auth/auth-store.ts (134b808) saveLocalAuthUser ca. Z. 240-265 setzt `role = ?` und das Passwort ohne Prüfung der Rolle des Handelnden; deleteLocalAuthUser ca. Z. 267-288 schützt nur den letzten Owner. Weil Desktop ein lokales Einzelplatz-Modell ist, ist das bei Desktop nicht sicherheitsrelevant.
+- Fix-Status: BEHOBEN – Commit `5605170` – Revidiert durch Freigabe G3 (Codex C-A72): Owner-Rolle und Owner-Konten verwaltet nur ein Owner, beide Editionen (5605170, 56e1721, 35a7aa6)
 
 ### F-A2c-01: Migration 0019: Backfill-UPDATE ohne RLS-Kontext ist ein stiller No-op, verwaiste Aufgaben bleiben unsichtbar
 
@@ -2325,13 +2336,16 @@ Nur Strings (nicht Zahlen) mit einem Apostroph voranstellen (OWASP-Empfehlung), 
 
 ### F-A7-01: Nicht-Admin (Agent) kann Workflows mit code.javascript/code.python anlegen und so Code im Electron-Main-Prozess ausführen
 
-- Status: **BY-DESIGN** · Schweregrad: Niedrig (gemeldet: Hoch) · Edition: Desktop
+- Status: **BEHOBEN** · Schweregrad: Niedrig (gemeldet: Hoch) · Edition: Desktop
 - Ort: `electron/ipc/email.ts:580`
 - Pfad: Renderer (angemeldeter Agent) -> window.electronAPI.invoke('email:create-workflow' | 'email:update-workflow' | 'email:import-workflow-bundle') -> registerIpcHandler (register.ts, nur requireAuth, keine requireRole; Kanal steht in EMAIL_SKIP_ACCOUNT_SCOPE) -> createWorkflow() -> Inbound-/Cron-Ausführung -> electron/workflow/nodes/code-nodes.ts: vm.runInNewContext(...) bzw. spawnSync('python3', ['-c', code])
 - Szenario: Ein lokal angemeldeter Benutzer mit Rolle 'agent' legt per IPC einen aktivierten Inbound- oder Cron-Workflow mit Knoten code.python (print + os.system) oder code.javascript (Ausbruch via ctx.strings.constructor.constructor('return process')()) an. Beim nächsten eingehenden Mail bzw. Cron-Tick führt der Main-Prozess den Code mit den Rechten des OS-Kontos aus, unter dem die App läuft (Zugriff auf Keytar-Secrets, SQLite, Dateisystem). Der Workflow bleibt nach dem Abmelden des Agenten aktiv und läuft auch in späteren Owner-Sitzungen weiter (Persistenz, z. B. dauerhafte Weiterleitung aller Mails aller Konten via email.forward_copy). Die Knoten-Doku selbst sagt: 'Es gibt KEINE echte Sandbox'.
 - Prüfurteil: BY_DESIGN – Das Zitat steht wörtlich in electron/ipc/email.ts:580-582 (Baseline 134b808). Der Pfad ist technisch erreichbar: registerIpcHandler (electron/ipc/register.ts:73-95) prüft bei email:create-workflow nur die Anmeldung, weil keine requireRole-Option gesetzt ist. Der Kanal steht in EMAIL_SKIP_ACCOUNT_SCOPE (electron/ipc/ipc-account-scope.ts:23), das Zod-Schema (shared/ipc/email-schemas.ts:1514) validiert nur die Form. Dasselbe gilt für email:update-workflow und workflow:import-bundle (electron/ipc/workflow.ts:137, ebenfalls ohne requireRole). code.javascript läuft über vm.runInNewContext mit Host-Realm-Objekten wie ctx.strings, JSON und Date. Damit ist ein Ausbruch über constructor.constructor möglich. code.python läuft über spawnSync('python3'). Die Knotenbeschreibung sagt selbst „Keine echte Sandbox“.
 
 Als Sicherheitsbefund hält das aber nicht. (1) Die Rechte-Matrix legt fest, dass der Desktop keine Rechtestufen hat: docs/GROUP_RIGHTS_MATRIX.md:4 „Zielsystem: Server-Edition (Desktop bleibt unrestricted)“. Die Stufen workflows.edit/manage gibt es nur auf dem Server. (2) Der Renderer behandelt im Desktop-Modus jeden Benutzer als Admin: src/components/email/settings-panels.tsx:270 `const isAdmin = !isServerClientMode() || user?.role === "owner" || user?.role === "admin"`. Der Workflow-Editor ist dort für Agenten gewollt nutzbar. Passend dazu sind viele Verwaltungs-Kanäle bewusst nicht an eine Rolle gebunden, etwa email:create-account, email:set-mail-security-settings und email:gdpr
+- Fix-Skizze: Kleinste Härtung, keine Pflicht: Bei email:create-workflow, email:update-workflow, email:delete-workflow, workflow:import-bundle und workflow:import-bundle-from-file requireRole: ['owner','admin'] ergänzen, analog zu ExecuteWorkflowNow (electron/ipc/workflow.ts:70). Schonendere Alternative: nur Graphen mit code.javascript, code.python oder plugin.custom für Nicht-Admins ablehnen. Dafür vor createWorkflow/updateWorkflow die Knotentypen aus graphJson/definitionJson prüfen und bei Rolle agent/viewer 'Keine Berechtigung' werfen. Zusätzlich GROUP_RIGHTS_MATRIX.md bzw. THREAT_MODEL.md um einen Satz ergänzen: Desktop-Rollen sind keine Sicherheitsgrenze gegenüber Personen mit Zugriff auf die OS-Sitzung.
+- Parität: Die Server-Edition hat den Defekt nicht: Das Anlegen und Ändern von Workflows verlangt die Capabilities workflows.edit bzw. workflows.manage (packages/server/src/api/http.ts:122-132, packages/server/src/api/workflow-routes.ts:725 ff.). code.javascript, code.python und plugin.custom werden aus dem Server-Katalog gefiltert (packages/server/src/workflow-node-catalog.ts:9-10). Importierte Workflows mit diesen Knoten schlagen bei der Ausführung fail-closed fehl (docs/SERVER_EDITION_IMPLEMENTATION.md:
+- Fix-Status: BEHOBEN – Commit `aa968e7` – Revidiert durch Freigabe G1 (Codex C-A1/C-A47/C-B1/C-A37): Workflow- und Wissensbasis-Bearbeitung auf dem Desktop nur Owner/Admin (aa968e7, 7d138e5, 38d0acf)
 
 ### F-A7-08: Sync.GetInfo liest beliebige sync_info-Schlüssel für jeden angemeldeten Nutzer (u. a. OAuth-Client-Secrets im Klartext)
 
