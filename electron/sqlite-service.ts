@@ -108,6 +108,7 @@ import type { TaskScheduleInput } from '@simplecrm/core';
 import { resolveIsDevelopment } from './security/runtime-mode';
 import { CustomerHasDependentsError, type CustomerDependents } from './customer-dependents-error';
 import { rewriteLegacyAttachmentStoragePaths } from './email/attachment-storage-path';
+import { localDateKey, localDateKeyInDays } from './utils/local-date';
 
 function getDatabasePath(): string {
   try {
@@ -3686,7 +3687,7 @@ export function getDashboardStats(): {
         const pendingTasksCount = pendingTasksResult.count;
 
         // Get tasks due today
-        const today = new Date().toISOString().split('T')[0]; // Get YYYY-MM-DD
+        const today = localDateKey(); // local YYYY-MM-DD, due dates are local dates
         const dueTodayTasksStmt = db.prepare(`
             SELECT COUNT(*) as count FROM ${TASKS_TABLE}
             WHERE completed = 0 AND date(due_date) = ?
@@ -3855,8 +3856,8 @@ export function getFollowUpQueueCounts(): {
     stagnierend: number;
     highValueRisk: number;
 } {
-    const today = new Date().toISOString().slice(0, 10);
-    const weekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const today = localDateKey();
+    const weekFromNow = localDateKeyInDays(7);
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const nowISO = new Date().toISOString();
@@ -3914,8 +3915,8 @@ export function getFollowUpItems(
     limit: number = 100,
     offset: number = 0
 ): any[] {
-    const today = new Date().toISOString().slice(0, 10);
-    const weekFromNow = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const today = localDateKey();
+    const weekFromNow = localDateKeyInDays(7);
     const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     const nowISO = new Date().toISOString();
