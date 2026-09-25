@@ -1,4 +1,4 @@
-import { applyCannedTemplate, needsFullMessageBody } from '../../src/components/email/types';
+import { applyCannedTemplate, needsFullMessageBody, stripHtmlToText } from '../../src/components/email/types';
 import {
   COMPOSE_BODY_MARKER,
   COMPOSE_QUOTE_MARKER,
@@ -491,5 +491,55 @@ describe('needsFullMessageBody', () => {
     expect(needsFullMessageBody({ body_text: '  ', body_html: null })).toBe(true);
     expect(needsFullMessageBody({ body_text: null, body_html: '<p>x</p>' })).toBe(false);
     expect(needsFullMessageBody({ body_text: 'hello', body_html: null })).toBe(false);
+  });
+});
+
+describe('stripHtmlToText', () => {
+  // F-N-redos-01: Lazy-/Negativklassen-Regexe liefen bei unverschlossenen <script/<style/< quadratisch; eine praeparierte Mail fror Viewer und Compose ein.
+  it('stays linear on unclosed tags', () => {
+    for (const html of ['<'.repeat(60_000), '<script'.repeat(20_000), `<p>x</p>${'<style'.repeat(20_000)}`]) {
+      const started = Date.now();
+      const text = stripHtmlToText(html);
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(text.length).toBeGreaterThan(0);
+    }
+  });
+
+  // F-N-redos-01: Der lineare Strip muss exakt das Ergebnis der bisherigen Regex-Kette liefern.
+  it('matches the previous regex chain', () => {
+    const legacy = (html: string): string => html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    const samples = [
+      '',
+      'Nur Text',
+      '<p>Hallo <b>Welt</b></p>',
+      'a<script>x</script>b<style>y</style>c',
+      '<script><style></script></style>rest',
+      '<style><script></style></script>rest',
+      '<SCRIPT type="x">1</sCrIpT>mehr<style>unterminated <p>bleibt</p>',
+      'a <> b <<c>> d > e < f',
+    ];
+    const tokens = [
+      '<', '>', '<>', 'a', ' ', '\n', '<p>', '</p>', '<style', '<STYLE>', '</style>', '</StYlE>',
+      '<script', '<Script>', '</script>', '</SCRIPT>', 'ſ', 'İ',
+    ];
+    let seed = 0x5eed;
+    const random = () => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return seed / 0x80000000;
+    };
+    for (let n = 0; n < 3000; n++) {
+      const count = Math.floor(random() * 14);
+      let html = '';
+      for (let i = 0; i < count; i++) html += tokens[Math.floor(random() * tokens.length)];
+      samples.push(html);
+    }
+    for (const html of samples) {
+      expect(stripHtmlToText(html)).toBe(legacy(html));
+    }
   });
 });

@@ -1,4 +1,5 @@
 import { getRendererTransport } from "@/services/transport"
+import { replaceElementBlocks, replaceTags } from "../../../packages/core/src/email/parse-utils"
 
 export type MailView =
   | "inbox"
@@ -204,10 +205,9 @@ export function mailEndpointKey(host: string, port: number, tls: boolean): strin
 }
 
 export function stripHtmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
+  // Linear scans from core instead of lazy/negated-class regexes: unclosed
+  // <script/<style/< in a hostile mail made those quadratic and froze the UI.
+  return replaceTags(replaceElementBlocks(replaceElementBlocks(html, "script", ""), "style", ""))
     .replace(/\s+/g, " ")
     .trim()
 }
