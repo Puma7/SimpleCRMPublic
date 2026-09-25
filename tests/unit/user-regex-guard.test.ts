@@ -4,6 +4,7 @@ import path from 'path';
 import { createServerApi } from '../../packages/server/src/api/server-api';
 import type { AuthenticatedPrincipal, ServerApiPorts } from '../../packages/server/src/api/types';
 import {
+  compileUserRegex,
   describeUnsupportedUserRegex,
   describeUnsupportedWorkflowRegex,
   findUnsupportedUserRegexConstruct,
@@ -153,6 +154,25 @@ describe('Nutzer-Regex: lineare Engine als ReDoS-Schutz (F-A13A14-04, E1)', () =
     expect(renderers).toBeGreaterThan(-1);
     expect(ownProcess).toBeLessThan(ready);
     expect(renderers).toBeLessThan(ready);
+  });
+
+  // Codex-Review (PR #193): Mit u oder v stellt V8 nicht auf die lineare Engine um.
+  test.each(['u', 'v', 'iu', 'gv'])('compileUserRegex lehnt das Flag %s ab', (flags) => {
+    expect(() => compileUserRegex('^(a|aa)+$', flags)).toThrow(/Flag/);
+  });
+
+  test('compileUserRegex nimmt die geschuetzten Flags weiter an', () => {
+    for (const flags of ['', 'i', 'm', 's', 'g', 'y', 'd', 'gims']) {
+      expect(compileUserRegex('^rechnung', flags)('Rechnung 42'.toLowerCase())).toBe(true);
+    }
+  });
+
+  test('mit dem Flag bleibt ein u-Regex exponentiell, deshalb wird er abgelehnt', () => {
+    const script = "const t=Date.now();new RegExp('^(a|aa)+$','u').test('a'.repeat(30)+'b');process.stdout.write(String(Date.now()-t));";
+    const result = spawnSync(process.execPath, [V8_FLAG, '-e', script], { encoding: 'utf8', timeout: 20_000 });
+    expect(result.status).toBe(0);
+    // Referenz fuer die Ablehnung oben: ohne lineare Engine waechst die Laufzeit exponentiell.
+    expect(Number(result.stdout)).toBeGreaterThan(20);
   });
 
   test('mit dem Flag laeuft (a|a)*b auf 40 Zeichen linear statt exponentiell', () => {

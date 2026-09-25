@@ -169,13 +169,20 @@ function tryCompilePatternMatcher(line: string): UserRegexMatcher | null {
  * phase, so a catastrophically-backtracking pattern must be rejected before it
  * is ever stored. Applies the same trim + length bound as evaluation. */
 export function extractRelaySubjectRegexSources(subjectPatterns: string | null): string[] {
+  return extractRelaySubjectRegexes(subjectPatterns).map((regex) => regex.source);
+}
+
+/** Like {@link extractRelaySubjectRegexSources}, with each line's flags. */
+export function extractRelaySubjectRegexes(
+  subjectPatterns: string | null,
+): Array<{ source: string; flags: string }> {
   if (!subjectPatterns) return [];
-  const sources: string[] = [];
+  const regexes: Array<{ source: string; flags: string }> = [];
   for (const raw of subjectPatterns.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.length > MAX_PATTERN_LENGTH) continue;
     const match = REGEX_PATTERN_LINE.exec(line);
-    if (match) sources.push(match[1]!);
+    if (match) regexes.push({ source: match[1]!, flags: match[2]! });
   }
-  return sources;
+  return regexes;
 }

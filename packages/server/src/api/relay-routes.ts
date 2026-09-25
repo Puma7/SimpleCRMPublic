@@ -19,7 +19,12 @@ import type {
   SmtpRelayAdminPort,
   SmtpRelayMutationInput,
 } from './types';
-import { describeUnsupportedUserRegex, extractRelaySubjectRegexSources } from '@simplecrm/core';
+import {
+  describeUnsupportedUserRegex,
+  describeUnsupportedUserRegexFlags,
+  extractRelaySubjectRegexes,
+  extractRelaySubjectRegexSources,
+} from '@simplecrm/core';
 import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
 
 // Same catastrophic-backtracking guard the workflow regex conditions use.
@@ -461,6 +466,13 @@ function parseRelayMutation(
     for (const source of regexSources) {
       const unsupported = describeUnsupportedUserRegex(source);
       if (unsupported) return invalidRelay(unsupported);
+    }
+    // Mit Flag u oder v stellt V8 nicht auf die lineare Engine um.
+    for (const { flags } of extractRelaySubjectRegexes(
+      typeof body.trackingSubjectPatterns === 'string' ? body.trackingSubjectPatterns : null,
+    )) {
+      const unsupportedFlags = describeUnsupportedUserRegexFlags(flags);
+      if (unsupportedFlags) return invalidRelay(unsupportedFlags);
     }
     values.trackingSubjectPatterns = body.trackingSubjectPatterns as string | null;
   }

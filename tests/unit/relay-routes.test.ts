@@ -218,6 +218,10 @@ describe('smtp relay routes', () => {
     ['/(?<=Rechnung )\\d+/', 'Lookaround'],
     ['/(?=a)(a|a)*b/i', 'Lookaround'],
     ['mahnung\n/(a|a)*\\1/', 'Rückverweis'],
+    // Codex-Review (PR #193): Mit Flag u oder v schaltet V8 nicht auf die lineare Engine um;
+    // /^(a|aa)+$/u besteht safe-regex und blockierte mit einem langen Betreff den Event-Loop.
+    ['/^(a|aa)+$/u', 'Flag'],
+    ['/^(a|aa)+$/iv', 'Flag'],
   ])('rejects a subject regex the linear engine cannot take over: %s (E1)', async (patterns, reason) => {
     const calls: string[] = [];
     const response = await apiFor(makeRelayPort({

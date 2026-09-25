@@ -225,11 +225,12 @@ describe('Nutzer-Regex mit Flag i auf der linearen Engine (F-A13A14-04, E1)', ()
     expect(rewrittenCount).toBeGreaterThan(4000);
   });
 
-  test('ohne Flag i, mit u oder mit nicht umschreibbaren Konstrukten bleibt es beim nativen Muster', () => {
+  test('ohne Flag i oder mit nicht umschreibbaren Konstrukten bleibt es beim nativen Muster; u wird abgelehnt', () => {
     expect(rewriteCaseInsensitiveUserRegex('(?i:a)b')).toBeNull();
     expect(rewriteCaseInsensitiveUserRegex('(a)\\1')).toBeNull();
     expect(rewriteCaseInsensitiveUserRegex('[\\1]')).toBeNull();
-    expect(compileUserRegex('Straße', 'iu')('STRASSE')).toBe(false);
+    // Codex-Review (PR #193): u lief hier nativ ohne linearen Fallback und ist jetzt abgelehnt.
+    expect(() => compileUserRegex('Straße', 'iu')).toThrow(/Flag u/);
     expect(compileUserRegex('abc', '')('ABC')).toBe(false);
     expect(compileUserRegex('abc', 'i')('xABCx')).toBe(true);
     const sticky = compileUserRegex('b', 'gi');

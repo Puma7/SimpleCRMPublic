@@ -122,4 +122,11 @@ describe('evaluateRelayTrackingRule rule-mode subject matching', () => {
     expect(evaluate({ mode: 'rule', subjectPatterns: 'and/or', subject: 'terms And/Or conditions' }))
       .toEqual({ track: true, reason: 'subject_match' });
   });
+
+  // Codex-Review (PR #193): Regex-Zeilen mit Flag u oder v liefen nativ, ohne linearen V8-Fallback.
+  // Sie gelten jetzt wie ungueltige Muster als Literaltext und werden nie als Regex ausgewertet.
+  test.each(['u', 'v', 'iu'])('a /…/%s regex line is not evaluated as a regex', (flags) => {
+    expect(evaluate({ mode: 'rule', subjectPatterns: `/^(a|aa)+$/${flags}`, subject: 'aaaa' }))
+      .toEqual({ track: false, reason: 'no_match' });
+  });
 });

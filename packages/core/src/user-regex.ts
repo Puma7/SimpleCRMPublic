@@ -364,11 +364,28 @@ export function rewriteCaseInsensitiveUserRegex(source: string): string | null {
 export type UserRegexMatcher = (value: string) => boolean;
 
 /**
+ * Flags, unter denen V8 bei zu vielen Backtracks auf die lineare Engine umstellt
+ * (d streicht compileUserRegex fuer test()). Mit u oder v bleibt das Muster auf
+ * der Backtracking-Engine: /^(a|aa)+$/u braucht auf 34 Zeichen schon ueber 1 s.
+ */
+const LINEAR_SAFE_USER_REGEX_FLAGS = new Set(['d', 'g', 'i', 'm', 's', 'y']);
+
+/** Meldung fuer Flags ausserhalb der geschuetzten Menge, sonst `null`. */
+export function describeUnsupportedUserRegexFlags(flags: string): string | null {
+  const unsupported = [...new Set(flags)].filter((flag) => !LINEAR_SAFE_USER_REGEX_FLAGS.has(flag));
+  if (unsupported.length === 0) return null;
+  return `Das Regex-Flag ${unsupported.join(', ')} ist nicht erlaubt, weil solche Muster nicht gegen `
+    + 'katastrophales Backtracking geschützt werden können (erlaubt: i, m, s, g, y).';
+}
+
+/**
  * Kompiliert ein Nutzer-Regex so, dass V8 es bei zu vielen Backtracks auf die
  * lineare Engine umstellen kann. Wirft wie `new RegExp` bei ungueltigem Muster
- * oder Flag. Jeder Aufruf beginnt wie ein frisch erzeugter RegExp bei Index 0.
+ * oder Flag, ausserdem bei u oder v (dafuer gibt es keinen linearen Fallback). Jeder Aufruf beginnt wie ein frisch erzeugter RegExp bei Index 0.
  */
 export function compileUserRegex(source: string, flags = ''): UserRegexMatcher {
+  const unsupportedFlags = describeUnsupportedUserRegexFlags(flags);
+  if (unsupportedFlags) throw new SyntaxError(unsupportedFlags);
   const native = new RegExp(source, flags);
   // hasIndices aendert test() nicht, sperrt aber die lineare Engine.
   const testFlags = flags.replace('d', '');
