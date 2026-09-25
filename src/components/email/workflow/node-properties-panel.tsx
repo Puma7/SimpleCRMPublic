@@ -37,6 +37,7 @@ import { useWorkflowEditorStore } from "@/app/email/stores/workflow-editor-store
 import { WorkflowCategorySelect } from "./workflow-category-select"
 import type { AiPrompt } from "../types"
 import { getRendererTransport, invokeRenderer } from "@/services/transport"
+import { workflowTriggerOptions } from "./trigger-labels"
 import {
   edgeLabelOptionsForSource,
   edgeSourceHandleFromLabel,
@@ -407,38 +408,38 @@ type ActionFieldProps = FieldProps & {
 
 function TriggerFields({ node, patch }: FieldProps) {
   const d = node.data as { kind?: string }
-  // Der Relay-Trigger feuert nur in der Server-Edition (SMTP-Relay). Im
-  // Desktop-Modus ausblenden — analog zum runtime:'server'-Filter des
-  // Knoten-Katalogs (use-workflow-node-catalog.ts). Ein bereits gesetzter
-  // Wert bleibt sichtbar, damit importierte Graphen nicht kaputtgehen.
+  // Jede Edition bietet nur Trigger an, die sie auch auslöst: Relay nur der
+  // Server, Zeitplan/CRM-Ereignisse/Entwurf erstellt nur der Desktop — analog
+  // zum runtime-Filter des Knoten-Katalogs (use-workflow-node-catalog.ts). Ein
+  // bereits gesetzter Wert bleibt sichtbar, damit importierte Graphen nicht
+  // kaputtgehen.
   const serverClientMode = getRendererTransport().kind === "http"
-  const showRelay = serverClientMode || d.kind === "relay"
+  const kind = d.kind ?? "inbound"
+  const options = workflowTriggerOptions({ serverClientMode, current: kind })
+  const desktopOnlySelected = options.some((option) => option.value === kind && option.desktopOnly)
   return (
     <div className="space-y-1.5">
       <Label className="text-xs">Typ</Label>
       <Select
-        value={d.kind ?? "inbound"}
-        onValueChange={(kind) => patch({ kind })}
+        value={kind}
+        onValueChange={(next) => patch({ kind: next })}
       >
         <SelectTrigger className="h-9">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="inbound">E-Mail eingehend</SelectItem>
-          <SelectItem value="outbound">E-Mail ausgehend</SelectItem>
-          <SelectItem value="draft_created">Entwurf erstellt</SelectItem>
-          <SelectItem value="schedule">Zeitplan (Cron)</SelectItem>
-          <SelectItem value="manual">Manuell</SelectItem>
-          {showRelay ? (
-            <SelectItem value="relay">SMTP-Relay (nach Versand)</SelectItem>
-          ) : null}
-          <SelectItem value="crm.deal_stage_changed">Deal-Phase geändert</SelectItem>
-          <SelectItem value="task.due">Aufgabe fällig</SelectItem>
-          <SelectItem value="calendar.event_start">Termin beginnt</SelectItem>
-          <SelectItem value="webhook.incoming">Webhook (eingehend)</SelectItem>
-          <SelectItem value="crm.customer_created">Kunde angelegt</SelectItem>
+          {options.map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
         </SelectContent>
       </Select>
+      {desktopOnlySelected ? (
+        <p className="text-[11px] text-amber-700 dark:text-amber-400">
+          Dieser Trigger wird in der Server-Edition nicht ausgelöst — der Workflow läuft hier nie.
+        </p>
+      ) : null}
     </div>
   )
 }
