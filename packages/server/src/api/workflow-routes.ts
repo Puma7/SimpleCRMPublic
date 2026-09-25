@@ -4,6 +4,7 @@ import {
   describeUnsupportedWorkflowRegex,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
+  isServerWorkflowTrigger,
   workflowGraphHasChainStopNode,
   workflowGraphHasSideEffectNode,
   type WorkflowGraphDocument,
@@ -1060,6 +1061,20 @@ function rejectUnlessOverrideKeyManage(
   );
 }
 
+/**
+ * Der Server reiht Workflows nur fuer inbound, outbound, manual, relay und
+ * webhook.incoming ein. Desktop-Trigger (Zeitplan, Entwurf, CRM-Ereignisse)
+ * liessen sich speichern und aktivieren, liefen aber nie — deshalb 400 statt
+ * stiller Nichtfunktion. Bestehende Zeilen bleiben lesbar.
+ */
+function unsupportedTriggerError(triggerName: string): ApiResponse {
+  return error(
+    400,
+    'unsupported_trigger',
+    `Ausloeser "${triggerName}" gibt es nur in der Desktop-Edition; der Server loest ihn nie aus`,
+  );
+}
+
 async function handleCreateWorkflow(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -1075,6 +1090,9 @@ async function handleCreateWorkflow(
     requireDefinition: true,
   });
   if (!parsed.ok) return parsed.response;
+  if (parsed.values.triggerName !== undefined && !isServerWorkflowTrigger(parsed.values.triggerName)) {
+    return unsupportedTriggerError(parsed.values.triggerName);
+  }
 
   // New workflows default to enabled=true (postgres-workflow-read-ports), so an
   // outbound workflow is live immediately — validate its effective state.
@@ -1125,6 +1143,9 @@ async function handleUpdateWorkflow(
     requireDefinition: false,
   });
   if (!parsed.ok) return parsed.response;
+  if (parsed.values.triggerName !== undefined && !isServerWorkflowTrigger(parsed.values.triggerName)) {
+    return unsupportedTriggerError(parsed.values.triggerName);
+  }
 
   // Validate the EFFECTIVE post-patch state. Any patch that touches trigger,
   // enabled, graph, or execution mode can turn the workflow into (or keep it as)
@@ -1208,6 +1229,15 @@ async function handleUpdateWorkflow(
             : {}),
         };
         if (Object.keys(expectedState).length === 0) expectedState = undefined;
+      }
+      // Einen Bestands-Workflow mit Desktop-Trigger zu aktivieren, liefe ebenso
+      // ins Leere; Umbenennen oder Deaktivieren bleibt moeglich.
+      if (
+        parsed.values.enabled === true
+        && typeof existing?.triggerName === 'string'
+        && !isServerWorkflowTrigger(existing.triggerName)
+      ) {
+        return unsupportedTriggerError(existing.triggerName);
       }
       const trap = outboundWorkflowGuardError({
         graph: parsed.values.graph !== undefined ? parsed.values.graph : existing?.graph ?? null,

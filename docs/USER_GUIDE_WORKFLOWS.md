@@ -26,6 +26,8 @@ Sie finden die Workflows unter **E-Mail → Workflows** (Unterleiste im E-Mail-B
 | **CRM-Ereignisse** | z. B. Kunde angelegt, Deal-Phase geändert, Aufgabe fällig, Termin beginnt |
 | **Webhook (eingehend)** | wenn ein externes System die Automations-Schnittstelle aufruft (für Fortgeschrittene) |
 
+**Entwurf erstellt**, **Zeitplan** und die **CRM-Ereignisse** gibt es nur in der Desktop-Edition. Die Server-Edition bietet sie nicht an, blendet das Zeitplan-Feld aus und lehnt das Speichern mit einem solchen Auslöser ab; bestehende Workflows bleiben lesbar und lassen sich umstellen oder deaktivieren.
+
 ## Der Editor in 5 Minuten
 
 Der Editor hat drei Bereiche:

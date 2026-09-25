@@ -685,6 +685,16 @@ describe('server edition foundation', () => {
     }
   });
 
+  // F-A9-01 (E30): Die Server-Vorlagenliste bot Vorlagen mit Desktop-Triggern an
+  // (etwa crm-deal-won-task); auf dem Server liefen sie nie.
+  test('server template list omits templates whose trigger the server never fires', () => {
+    const templates = listServerWorkflowTemplates();
+    expect(templates.map((template) => template.id)).not.toContain('crm-deal-won-task');
+    for (const template of templates) {
+      expect(['inbound', 'outbound', 'manual', 'relay', 'webhook.incoming']).toContain(template.trigger);
+    }
+  });
+
   test('desktop setup config persists AP-10 deploy-mode choices in userData config.json', async () => {
     const userDataDir = mkdtempSync(join(tmpdir(), 'simplecrm-config-'));
     try {
@@ -31976,6 +31986,75 @@ describe('server edition foundation', () => {
       expect(event.payload).toEqual({ targetUserId: event.entityId, state: 'changed', reason: 'visibility_filter' });
       expect(event.actorUserId).toBe(USER_A_ID);
     }
+  });
+
+  // F-A9-01 (E30): Die API speicherte jeden triggerName; Workflows mit Zeitplan
+  // oder CRM-Ereignis waren aktiv, liefen auf dem Server aber nie.
+  test('workflow API rejects triggers the server never fires but keeps such workflows readable', async () => {
+    const createCalls: unknown[] = [];
+    const updateCalls: unknown[] = [];
+    const stored = { ...makeWorkflowRecord(41), triggerName: 'schedule', cronExpr: '0 8 * * *', enabled: false };
+    const api = createServerApi(makeServerApiPorts({
+      workflows: {
+        async list() { return { items: [stored], nextCursor: null }; },
+        async get(input) { return input.id === 41 ? stored : null; },
+        async create(input) {
+          createCalls.push(input);
+          return { ok: true as const, workflow: { ...makeWorkflowRecord(42), ...input.values } };
+        },
+        async update(input) {
+          updateCalls.push(input);
+          return { ok: true as const, workflow: { ...stored, ...input.values } };
+        },
+      },
+    }));
+    const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: { name: 'Taeglich', triggerName: 'schedule', cronExpr: '0 8 * * *', definition: { version: 1, rules: [] } },
+      principal: admin,
+    });
+    expect(created.status).toBe(400);
+    expect((created.body as any).error.code).toBe('unsupported_trigger');
+    expect(createCalls).toEqual([]);
+
+    const switched = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { triggerName: 'crm.deal_stage_changed' },
+      principal: admin,
+    });
+    expect(switched.status).toBe(400);
+    const enabled = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { enabled: true },
+      principal: admin,
+    });
+    expect(enabled.status).toBe(400);
+    expect(updateCalls).toEqual([]);
+
+    // Lesen, Umbenennen und Deaktivieren eines Bestands-Workflows bleiben moeglich.
+    const read = await api.handle({ method: 'GET', path: '/api/v1/workflows/41', principal: admin });
+    expect(read.status).toBe(200);
+    expect((read.body as any).data.triggerName).toBe('schedule');
+    const renamed = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/workflows/41',
+      body: { name: 'Alt (Desktop)', enabled: false },
+      principal: admin,
+    });
+    expect(renamed.status).toBe(200);
+
+    const inbound = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows',
+      body: { name: 'Eingang', triggerName: 'inbound', definition: { version: 1, rules: [] } },
+      principal: admin,
+    });
+    expect(inbound.status).toBe(201);
   });
 
   test('an active chain-stopping workflow requires workflows.manage', async () => {

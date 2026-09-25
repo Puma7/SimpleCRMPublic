@@ -932,48 +932,53 @@ export function WorkflowShell() {
                       advancedOpen && "rotate-180",
                     )}
                   />
-                  Erweitert (Zeitplan, Test, Backfill)
+                  {serverClientMode ? "Erweitert (Test, Backfill)" : "Erweitert (Zeitplan, Test, Backfill)"}
                 </Button>
               </CollapsibleTrigger>
               <CollapsibleContent className="pt-2">
                 <div className="flex flex-wrap items-end gap-3 rounded-md border bg-background/80 p-3">
-                  <div className="w-[180px] space-y-1">
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Cron (Zeitplan)
-                    </Label>
-                    <Input
-                      value={editCron}
-                      onChange={(e) => setEditCron(e.target.value)}
-                      placeholder="*/15 * * * *"
-                      className="h-8 font-mono text-xs"
-                      disabled={!canEditWorkflows}
-                      readOnly={!canEditWorkflows}
-                    />
-                  </div>
-                  <div className="min-w-[180px] space-y-1">
-                    <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Geplantes Konto
-                    </Label>
-                    <select
-                      className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                      value={
-                        editScheduleAccountId === "" ? "" : String(editScheduleAccountId)
-                      }
-                      disabled={!canEditWorkflows}
-                      onChange={(e) =>
-                        setEditScheduleAccountId(
-                          e.target.value ? parseInt(e.target.value, 10) : "",
-                        )
-                      }
-                    >
-                      <option value="">— keins (nur Graph-Lauf) —</option>
-                      {accounts.map((a) => (
-                        <option key={a.id} value={a.id}>
-                          {a.display_name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  {/* Zeitplan-Trigger löst nur die Desktop-Runtime aus (F-A9-01). */}
+                  {!serverClientMode ? (
+                    <>
+                      <div className="w-[180px] space-y-1">
+                        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Cron (Zeitplan)
+                        </Label>
+                        <Input
+                          value={editCron}
+                          onChange={(e) => setEditCron(e.target.value)}
+                          placeholder="*/15 * * * *"
+                          className="h-8 font-mono text-xs"
+                          disabled={!canEditWorkflows}
+                          readOnly={!canEditWorkflows}
+                        />
+                      </div>
+                      <div className="min-w-[180px] space-y-1">
+                        <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                          Geplantes Konto
+                        </Label>
+                        <select
+                          className="flex h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                          value={
+                            editScheduleAccountId === "" ? "" : String(editScheduleAccountId)
+                          }
+                          disabled={!canEditWorkflows}
+                          onChange={(e) =>
+                            setEditScheduleAccountId(
+                              e.target.value ? parseInt(e.target.value, 10) : "",
+                            )
+                          }
+                        >
+                          <option value="">— keins (nur Graph-Lauf) —</option>
+                          {accounts.map((a) => (
+                            <option key={a.id} value={a.id}>
+                              {a.display_name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </>
+                  ) : null}
                   <div className="w-[120px] space-y-1">
                     <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
                       Test-Nachricht-ID
