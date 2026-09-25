@@ -301,7 +301,8 @@ export type LoginSecurityApiPort = Readonly<{
     secret: string;
     code: string;
   }): Promise<boolean>;
-  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** false when the workspace does not offer e-mail MFA; nothing is changed then. */
+  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<boolean>;
   disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
 }>;
 

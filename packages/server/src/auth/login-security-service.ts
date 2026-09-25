@@ -127,7 +127,8 @@ export type LoginSecurityService = Readonly<{
     secret: string;
     code: string;
   }): Promise<boolean>;
-  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<void>;
+  /** false when the workspace does not offer e-mail MFA; nothing is changed then. */
+  enableEmailMfa(input: { workspaceId: string; userId: string }): Promise<boolean>;
   disableUserMfa(input: { workspaceId: string; userId: string }): Promise<void>;
 }>;
 
@@ -438,6 +439,14 @@ export function createLoginSecurityService(input: {
     },
 
     async enableEmailMfa({ workspaceId, userId }) {
+      // Login fails closed for an enrolled method the workspace does not offer
+      // (beginMfaIfRequired -> mfa_delivery_failed), so enrolling it would lock
+      // the user out for good. Only the method toggle and SMTP count here, not
+      // mfaEnabled: users may enroll before the workspace switches MFA on.
+      const settings = await loadWorkspaceSettings(input.syncInfo, workspaceId);
+      if (!resolveMfaMethods({ ...settings, mfaEnabled: true }, Boolean(input.authInvitationSmtp)).includes('email')) {
+        return false;
+      }
       await withWorkspaceTransaction(
         input.db,
         { workspaceId, role: 'system' },
@@ -456,6 +465,7 @@ export function createLoginSecurityService(input: {
         },
         { applySession: input.applyWorkspaceSession },
       );
+      return true;
     },
 
     async disableUserMfa({ workspaceId, userId }) {

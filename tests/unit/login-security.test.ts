@@ -1,4 +1,4 @@
-import { DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS } from '@simplecrm/core';
+import { DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS, serializeAuthSecuritySyncValues } from '@simplecrm/core';
 
 jest.mock('../../packages/server/src/mail-smtp-send', () => ({
   sendSmtpMessage: jest.fn().mockRejectedValue(new Error('smtp down')),
@@ -716,6 +716,67 @@ describe('login security service MFA gate', () => {
         mfaEmailEnabled: true,
       },
     })).resolves.toEqual({ kind: 'mfa_delivery_failed' });
+  });
+
+  function createEmailEnrollmentService(options: { mfaEmailEnabled: boolean; smtp: boolean }) {
+    const updateChain: Record<string, jest.Mock> = {};
+    updateChain.set = jest.fn(() => updateChain);
+    updateChain.where = jest.fn(() => updateChain);
+    updateChain.execute = jest.fn(async () => undefined);
+    const trx = { updateTable: jest.fn(() => updateChain) };
+    const settings = { ...DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS, mfaEnabled: true, mfaEmailEnabled: options.mfaEmailEnabled };
+    const service = createLoginSecurityService({
+      db: {
+        transaction: () => ({
+          execute: async (operation: (transaction: typeof trx) => Promise<unknown>) => operation(trx),
+        }),
+      } as never,
+      syncInfo: {
+        getMany: async () => Object.entries(serializeAuthSecuritySyncValues(settings)).map(([key, value]) => ({ key, value })),
+        setMany: async () => undefined,
+      } as never,
+      listPublicWorkspaceSettings: async () => [settings],
+      secrets: {
+        readSecret: async () => null,
+        writeSecret: async () => undefined,
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: { findUserByEmail: async () => null } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      ...(options.smtp ? {
+        authInvitationSmtp: {
+          host: 'smtp.example.com',
+          port: 587,
+          tls: true,
+          user: 'smtp-user',
+          password: 'smtp-pass',
+          from: 'noreply@example.com',
+        },
+      } : {}),
+      applyWorkspaceSession: async () => undefined,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    return { service, updateTable: trx.updateTable };
+  }
+
+  // F-A1-04: e-mail MFA could be enrolled although the workspace does not offer it, so every later login ended in 503 mfa_delivery_failed.
+  test.each([
+    ['the workspace does not allow e-mail MFA', { mfaEmailEnabled: false, smtp: true }],
+    ['no invitation SMTP is configured', { mfaEmailEnabled: true, smtp: false }],
+  ])('refuses to enroll e-mail MFA when %s', async (_reason, options) => {
+    const { service, updateTable } = createEmailEnrollmentService(options);
+
+    await expect(service.enableEmailMfa({ workspaceId: TEST_WORKSPACE_ID, userId: TEST_USER_ID })).resolves.toBe(false);
+    expect(updateTable).not.toHaveBeenCalled();
+  });
+
+  test('enrolls e-mail MFA when the workspace offers it', async () => {
+    const { service, updateTable } = createEmailEnrollmentService({ mfaEmailEnabled: true, smtp: true });
+
+    await expect(service.enableEmailMfa({ workspaceId: TEST_WORKSPACE_ID, userId: TEST_USER_ID })).resolves.toBe(true);
+    expect(updateTable).toHaveBeenCalledWith('users');
   });
 });
 

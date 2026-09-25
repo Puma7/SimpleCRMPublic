@@ -241,10 +241,17 @@ async function handleEnableEmailMfa(
   if (!ports.loginSecurity) {
     return error(503, 'login_security_unavailable', 'Login-Sicherheit ist nicht konfiguriert');
   }
-  await ports.loginSecurity.enableEmailMfa({
+  const enabled = await ports.loginSecurity.enableEmailMfa({
     workspaceId: principal.workspaceId,
     userId,
   });
+  if (enabled === false) {
+    return error(
+      409,
+      'mfa_method_not_allowed',
+      'E-Mail-2FA ist in diesem Workspace nicht freigegeben oder der E-Mail-Versand (AUTH_INVITE_SMTP_*) ist nicht eingerichtet. Bitte die Authenticator-App verwenden oder den Administrator fragen.',
+    );
+  }
   return data(200, { enabled: true, method: 'email' });
 }
 
