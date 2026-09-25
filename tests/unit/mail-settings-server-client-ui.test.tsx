@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 
@@ -9,6 +9,7 @@ import { MailSecurityPanel } from '@/components/email/settings/mail-security-pan
 import { MiscPanel, SnoozePanel } from '@/components/email/settings/misc-panel';
 import { ArchiveRecoverySection } from '@/components/email/settings/archive-recovery-section';
 import { SmtpPanel } from '@/components/email/settings/smtp-panel';
+import { AiPanel } from '@/components/email/settings/ai-panel';
 import {
   configureRendererTransport,
   createHttpRendererTransport,
@@ -341,6 +342,54 @@ describe('mail settings server-client UI', () => {
     const body = JSON.parse(String(patch?.[1]?.body));
     expect(body).toMatchObject({ smtpHost: 'smtp.other.example', imapPassword: 'imap-secret' });
     expect(body).not.toHaveProperty('smtpPassword');
+  });
+
+  // F-A4-02: the server now refuses to move a profile with a stored API key to
+  // another origin or provider without a new key; the panel asks for it first.
+  test('AI panel requires a new API key once the base URL origin changes', async () => {
+    mockUseAuth.mockReturnValue({
+      user: { id: 'admin-1', role: 'admin' },
+      loading: false,
+      hasCapability: () => true,
+    } as any);
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === 'PATCH') return jsonResponse({ data: { ...aiProfileRecord(), baseUrl: 'https://openrouter.ai/api/v1' } });
+      if (String(input).includes('/api/v1/ai/profiles')) {
+        return jsonResponse({ data: { items: [aiProfileRecord()], nextCursor: null } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as typeof fetch,
+    }));
+
+    const { container } = render(<AiPanel />);
+
+    const baseUrlInput = await screen.findByDisplayValue('https://api.openai.com/v1');
+    const keyInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+    expect(keyInput).not.toBeRequired();
+    const profileForm = within(keyInput.closest('.grid') as HTMLElement);
+
+    fireEvent.change(baseUrlInput, { target: { value: 'https://openrouter.ai/api/v1' } });
+    expect(keyInput).toBeRequired();
+
+    await act(async () => {
+      fireEvent.click(profileForm.getByRole('button', { name: 'Speichern' }));
+    });
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'));
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+
+    fireEvent.change(keyInput, { target: { value: 'or-new-key' } });
+    await act(async () => {
+      fireEvent.click(profileForm.getByRole('button', { name: 'Speichern' }));
+    });
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('KI-Profil gespeichert.'));
+    const patch = fetchImpl.mock.calls.find(([, init]) => init?.method === 'PATCH');
+    expect(JSON.parse(String(patch?.[1]?.body))).toMatchObject({
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'or-new-key',
+    });
   });
 
   test('export panel does not fall back to local IPC when HTTP transport has no server URL', async () => {
@@ -712,6 +761,21 @@ function emailAccountRecord() {
     displayName: 'Server Mail',
     emailAddress: 'mail@example.com',
     protocol: 'imap',
+  };
+}
+
+function aiProfileRecord() {
+  return {
+    id: 21,
+    sourceSqliteId: 21,
+    label: 'Firmen-Key',
+    provider: 'openai',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-4o-mini',
+    embeddingModel: null,
+    isDefault: true,
+    sortOrder: 0,
+    apiKeyConfigured: true,
   };
 }
 

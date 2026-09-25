@@ -772,6 +772,18 @@ async function handleUpdateAiProfile(
     requireModel: false,
   });
   if (!parsed.ok) return parsed.response;
+  if (parsed.values.baseUrl !== undefined || parsed.values.provider !== undefined) {
+    const current = await ports.aiProfiles.get({ workspaceId: principal.workspaceId, id });
+    if (!current) return error(404, 'ai_profile_not_found', 'AI profile nicht gefunden');
+    if (aiProfileMoveNeedsNewApiKey(current, parsed.values)) {
+      return error(
+        400,
+        'ai_profile_api_key_required',
+        'Zugangsdaten bei Serverwechsel neu eingeben: API-Key erforderlich (Base-URL oder Anbieter geaendert)',
+        { fields: [{ field: 'apiKey', message: 'apiKey ist erforderlich, wenn Base-URL-Origin oder Anbieter geaendert werden' }] },
+      );
+    }
+  }
 
   const result = await ports.aiProfiles.update({
     workspaceId: principal.workspaceId,
@@ -822,6 +834,28 @@ function aiProfileMutationError(code: 'secret_port_unavailable'): ApiResponse {
       return error(503, 'ai_profile_secret_unavailable', 'AI profile secret storage ist nicht konfiguriert');
     default:
       return assertNever(code);
+  }
+}
+
+// The stored API key belongs to the profile id, not to a host: every AI call
+// sends it to the profile's baseUrl with the provider's auth header. Moving a
+// profile to another origin or provider without a new key would hand the stored
+// key to that server, which lets a workflows.manage holder collect a key an
+// admin entered. Such a move needs a new key (or apiKey: null to drop it).
+function aiProfileMoveNeedsNewApiKey(current: AiProfileRecord, values: AiProfileMutationInput): boolean {
+  if (!current.apiKeyConfigured || values.apiKey !== undefined) return false;
+  const providerChanged = values.provider !== undefined
+    && values.provider.trim().toLowerCase() !== current.provider.trim().toLowerCase();
+  const originChanged = values.baseUrl !== undefined
+    && urlOriginOrRaw(values.baseUrl) !== urlOriginOrRaw(current.baseUrl);
+  return providerChanged || originChanged;
+}
+
+function urlOriginOrRaw(value: string): string {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return value;
   }
 }
 

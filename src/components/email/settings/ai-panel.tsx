@@ -24,6 +24,7 @@ import {
   getRendererTransport,
   invokeRenderer,
   isMailAiProfileRefreshEvent,
+  RendererTransportError,
   subscribeServerEvents,
 } from "@/services/transport"
 import { ReplySuggestionSettingsSection } from "./reply-suggestion-settings-section"
@@ -45,6 +46,14 @@ type ProviderPreset = {
   baseUrl: string
   defaultModel: string
   defaultEmbeddingModel?: string
+}
+
+function urlOrigin(value: string): string {
+  try {
+    return new URL(value.trim()).origin
+  } catch {
+    return value.trim()
+  }
 }
 
 function mergePresets(
@@ -141,6 +150,12 @@ export function AiPanel() {
   }, [load, selectedId, serverClientMode])
 
   const selectedProfile = profiles.find((p) => p.id === selectedId)
+  // The server refuses to move a profile with a stored key to another origin or
+  // provider without a new key, so the stored one never reaches that host.
+  const apiKeyRequired = serverClientMode && selectedProfile?.hasApiKey === true && (
+    provider.trim().toLowerCase() !== selectedProfile.provider.trim().toLowerCase()
+    || urlOrigin(baseUrl) !== urlOrigin(selectedProfile.baseUrl)
+  )
 
   const selectProfile = (p: AiProfile) => {
     setSelectedId(p.id)
@@ -160,6 +175,10 @@ export function AiPanel() {
     }
     if (!baseUrl.trim() || !model.trim()) {
       toast.error("Base-URL und Chat-Modell sind erforderlich.")
+      return
+    }
+    if (apiKeyRequired && !apiKey.trim()) {
+      toast.error("Zugangsdaten bei Serverwechsel neu eingeben: Bitte einen neuen API-Key eingeben.")
       return
     }
     const isNew = selectedId == null
@@ -193,7 +212,11 @@ export function AiPanel() {
       await load(savedId ?? undefined)
     } catch (e) {
       console.error(e)
-      toast.error("KI-Profil konnte nicht gespeichert werden.")
+      toast.error(
+        e instanceof RendererTransportError && e.code === "ai_profile_api_key_required"
+          ? e.message
+          : "KI-Profil konnte nicht gespeichert werden.",
+      )
     } finally {
       setSaving(false)
     }
@@ -328,8 +351,17 @@ export function AiPanel() {
           />
         </div>
         <div className="space-y-1.5">
-          <Label>API-Key (nur bei Speichern setzen)</Label>
-          {selectedId != null ? (
+          <Label htmlFor="ai-profile-api-key">
+            {apiKeyRequired
+              ? "API-Key (erforderlich, Base-URL oder Anbieter geändert)"
+              : "API-Key (nur bei Speichern setzen)"}
+          </Label>
+          {apiKeyRequired ? (
+            <p className="text-xs text-amber-700 dark:text-amber-400">
+              Base-URL oder Anbieter geändert: Der gespeicherte Key wird nicht an einen anderen
+              Server gesendet. Bitte einen neuen Key eingeben.
+            </p>
+          ) : selectedId != null ? (
             <p
               className={
                 selectedProfile?.hasApiKey
@@ -344,10 +376,13 @@ export function AiPanel() {
           ) : null}
           {canManageAiProfiles ? (
             <Input
+              id="ai-profile-api-key"
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder="sk-… / or-…"
+              required={apiKeyRequired}
+              aria-invalid={apiKeyRequired && !apiKey.trim() ? true : undefined}
             />
           ) : null}
         </div>
