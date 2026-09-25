@@ -146,6 +146,33 @@ function releaseInboundClaimForJob(job: DelayedJobRow): void {
   }
 }
 
+/**
+ * runInboundWorkflowsForMessage überspringt Antwortvorschlag und
+ * Abwesenheitsnotiz, solange ein Inbound-Workflow per logic.delay pausiert.
+ * Ist für die Nachricht kein Verzögerungsjob mehr offen (auch ein erneut
+ * eingereihter Fehlversuch zählt als offen), hier einmal nachholen.
+ */
+async function runInboundPostStepsWhenSettled(
+  job: DelayedJobRow,
+  logger: Pick<typeof console, 'warn' | 'debug'>,
+): Promise<void> {
+  if (job.message_id == null) return;
+  try {
+    const open = getDb()
+      .prepare(
+        `SELECT id FROM ${WORKFLOW_DELAYED_JOBS_TABLE}
+         WHERE message_id = ? AND status IN ('pending', 'running')
+         LIMIT 1`,
+      )
+      .get(job.message_id);
+    if (open) return;
+    const { runInboundPostWorkflowSteps } = await import('../email/email-workflow-engine.js');
+    await runInboundPostWorkflowSteps(job.message_id);
+  } catch (e) {
+    logger.warn('[workflow] inbound post-steps after delay failed', job.id, e);
+  }
+}
+
 export async function processDueDelayedJobs(
   logger: Pick<typeof console, 'warn' | 'debug'>,
 ): Promise<number> {
@@ -155,8 +182,10 @@ export async function processDueDelayedJobs(
     if (PROCESSING.has(job.id)) continue;
     if (!tryClaimDelayedJob(job.id)) continue;
     PROCESSING.add(job.id);
+    let inboundJob = false;
     try {
       const wf = getWorkflowById(job.workflow_id);
+      inboundJob = wf != null && ((wf.trigger as WorkflowTriggerKind) || 'inbound') === 'inbound';
       if (!wf?.enabled) {
         releaseInboundClaimForJob(job);
         markJob(job.id, 'cancelled', 'workflow_disabled');
@@ -252,6 +281,7 @@ export async function processDueDelayedJobs(
       if (outcome === 'failed') releaseInboundClaimForJob(job);
     } finally {
       PROCESSING.delete(job.id);
+      if (inboundJob) await runInboundPostStepsWhenSettled(job, logger);
     }
   }
   return processed;

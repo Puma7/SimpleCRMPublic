@@ -111,6 +111,7 @@ import {
   runCompiledInboundRules,
   runCompiledOutboundRules,
   runDraftCreatedWorkflowsForMessage,
+  runInboundPostWorkflowSteps,
   runInboundWorkflowsForMessage,
   runScheduledWorkflowFire,
 } from '../../electron/email/email-workflow-engine';
@@ -552,6 +553,27 @@ describe('email-workflow-engine core', () => {
         appliedWorkflowIds: new Set(),
       });
       expect(mockExecuteWorkflowForTrigger).toHaveBeenCalled();
+      expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
+      expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
+    });
+
+    // F-A9-14: Nach der Fortsetzung eines verzögerten Workflows holt
+    // processDueDelayedJobs die übersprungene Nachbearbeitung hierüber nach.
+    test('runInboundPostWorkflowSteps runs reply suggestion and vacation reply for the fresh row', async () => {
+      const row = inboundRow();
+      mockGetEmailMessageById.mockReturnValue(row);
+
+      await runInboundPostWorkflowSteps(row.id);
+
+      expect(mockEnsureReplySuggestion).toHaveBeenCalledWith(row.id, { row, trigger: 'inbound' });
+      expect(mockMaybeSendVacationAutoReply).toHaveBeenCalledWith(row.id, row);
+    });
+
+    test('runInboundPostWorkflowSteps skips when the continuation marked the mail as spam', async () => {
+      mockGetEmailMessageById.mockReturnValue(inboundRow({ is_spam: 1, spam_status: 'spam' }));
+
+      await runInboundPostWorkflowSteps(42);
+
       expect(mockEnsureReplySuggestion).not.toHaveBeenCalled();
       expect(mockMaybeSendVacationAutoReply).not.toHaveBeenCalled();
     });

@@ -397,9 +397,21 @@ export async function runInboundWorkflowsForMessage(
     }
   }
 
+  // Pausiert ein Workflow (logic.delay), holt processDueDelayedJobs die
+  // Nachbearbeitung nach der letzten Fortsetzung nach (erst dann steht z. B.
+  // ein späteres Spam-Urteil fest).
   if (inboundWorkflowDeferred) return;
 
-  const postWorkflowRow = getEmailMessageById(messageId) ?? freshRow;
+  await runInboundPostWorkflowSteps(messageId, freshRow);
+}
+
+/** Antwortvorschlag und Abwesenheitsnotiz nach den Inbound-Workflows einer Nachricht. */
+export async function runInboundPostWorkflowSteps(
+  messageId: number,
+  fallbackRow?: import('./email-store.js').EmailMessageRow,
+): Promise<void> {
+  const postWorkflowRow = getEmailMessageById(messageId) ?? fallbackRow;
+  if (!postWorkflowRow) return;
   // Dieselbe Pruefung wie in der Kette oben — bewusst ueber den gemeinsamen
   // Helfer statt als zweite, handgeschriebene Kopie: die inline-Variante war
   // strenger (kein Lowercasing, kein `is_spam === true`) und konnte damit
