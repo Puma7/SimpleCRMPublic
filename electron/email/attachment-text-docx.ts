@@ -73,6 +73,9 @@ export function extractDocxTextInWorker(buf: Buffer, timeoutMs: number): Promise
   const entry = workerEntry();
   const worker = new Worker(entry.filename, {
     execArgv: entry.execArgv,
+    // Explicitly the caller's process.env (the default outside Jest): under Jest the
+    // test's sandboxed env (e.g. TSX_TSCONFIG_PATH) must reach the tsx-loaded worker.
+    env: process.env,
     workerData: { kind: WORKER_KIND, docx: buf } satisfies DocxWorkerInput,
     resourceLimits: DOCX_WORKER_RESOURCE_LIMITS,
   });
