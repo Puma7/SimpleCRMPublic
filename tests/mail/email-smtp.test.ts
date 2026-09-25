@@ -132,4 +132,30 @@ describe('email-smtp', () => {
       expect.objectContaining({ secure: true }),
     );
   });
+
+  // F-A7b-14: Vorgefertigte MIME-Nachrichten (MDN) gehen unveraendert raus, statt dass nodemailer einen zweiten Content-Type baut.
+  test('sendSmtpForAccount sends a prebuilt raw message unchanged with an explicit envelope', async () => {
+    (getEmailAccountById as jest.Mock).mockReturnValue({
+      id: 3,
+      email_address: 'agent@example.org',
+      imap_host: 'imap.test',
+      smtp_host: 'smtp.test',
+      smtp_port: 587,
+      smtp_tls: true,
+      imap_username: 'u',
+      keytar_account_key: 'k',
+    });
+    const raw = Buffer.from('From: agent@example.org\r\n\r\nbody');
+    await sendSmtpForAccount(3, {
+      from: 'Agent <agent@example.org>',
+      to: 'sender@example.com',
+      subject: 'Gelesen',
+      text: 'ignored',
+      raw,
+    });
+    expect(mockSendMail).toHaveBeenCalledWith({
+      envelope: { from: 'agent@example.org', to: ['sender@example.com'] },
+      raw,
+    });
+  });
 });

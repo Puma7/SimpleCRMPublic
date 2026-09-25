@@ -85,6 +85,11 @@ export async function sendSmtpForAccount(
     requestReadReceipt?: boolean;
     /** Extra RFC5322 headers (merged with built-in headers). */
     headers?: Record<string, string>;
+    /**
+     * Complete RFC 5322 message sent as-is (e.g. multipart/report MDN); the
+     * other content fields then only describe the envelope.
+     */
+    raw?: Buffer;
   },
 ): Promise<void> {
   const acc = getEmailAccountById(accountId);
@@ -124,6 +129,16 @@ export async function sendSmtpForAccount(
   });
 
   try {
+    if (mail.raw) {
+      await transporter.sendMail({
+        envelope: {
+          from: acc.email_address,
+          to: [mail.to, mail.cc, mail.bcc].filter((value): value is string => Boolean(value?.trim())),
+        },
+        raw: mail.raw,
+      });
+      return;
+    }
     await transporter.sendMail({
       from: mail.from,
       to: mail.to,
