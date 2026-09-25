@@ -3649,6 +3649,14 @@ async function scheduleAiReviewDraftJob(
   const successResumeNodeId = portResumeTargets.send || defaultResume || undefined;
   // Still defer when only a HOLD edge exists so the parent waits for the review.
   const deferAnchor = successResumeNodeId || portResumeTargets.hold || undefined;
+  // Wozu jedes Feld dient, steht in workflow-inbound-terminal-child.
+  const terminalStamp = {
+    workflowId: context.workflowId,
+    context: { ...inboundChainFieldsFromContext(context) },
+    terminalWorkflowCompletion: true,
+    terminalNodeId: terminalNodeExecutionId(context, node),
+    triggerName: context.trigger,
+  };
 
   const payload: Record<string, unknown> = {
     workspaceId: context.workspaceId,
@@ -3659,15 +3667,8 @@ async function scheduleAiReviewDraftJob(
     runId: context.runId,
     ...workflowJobProvenance(context),
     // Terminaler Knoten (keine ausgehende Kante): Kontext trotzdem stempeln, der
-    // Kindjob schliesst Kette und Marker selbst ab. Wozu jedes Feld dient, steht
-    // in workflow-inbound-terminal-child.
-    ...(deferAnchor ? {} : {
-      workflowId: context.workflowId,
-      context: { ...inboundChainFieldsFromContext(context) },
-      terminalWorkflowCompletion: true,
-      terminalNodeId: terminalNodeExecutionId(context, node),
-      triggerName: context.trigger,
-    }),
+    // Kindjob schliesst Kette und Marker selbst ab.
+    ...(deferAnchor ? {} : terminalStamp),
     eventStrings: context.strings,
     eventVariables: context.variables,
     portResumeTargets: Object.fromEntries(
@@ -3700,6 +3701,16 @@ async function scheduleAiReviewDraftJob(
       eventStrings: context.strings,
       eventVariables: context.variables,
       ...inboundChainFieldsFromContext(context),
+    };
+    // Hat der Port des Urteils keine Kante (etwa SEND bei nur einer HOLD-Kante),
+    // endet der Zweig im Kindjob wie bei einem terminalen Review-Knoten. Der
+    // Kontext dafuer liegt verschachtelt, damit failJob und
+    // terminalChildCompletionKey den Job nicht selbst als terminal behandeln.
+    payload.terminalChainPayloadForUnwiredPort = {
+      workspaceId: context.workspaceId,
+      ...(context.messageId !== null ? { messageId: context.messageId } : {}),
+      ...workflowJobProvenance(context),
+      ...terminalStamp,
     };
   }
 

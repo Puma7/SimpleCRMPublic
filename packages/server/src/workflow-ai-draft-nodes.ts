@@ -748,6 +748,12 @@ export type AiReviewDraftJobPlan = Readonly<{
    * Kindjob Abbruchpruefung und Kettenabschluss selbst durchfuehren kann.
    */
   terminalChainPayload?: Record<string, unknown>;
+  /**
+   * Derselbe Kontext fuer einen Knoten MIT Continuation, dessen Urteils-Port
+   * keine Kante hat (etwa SEND bei nur einer HOLD-Kante): dann endet der Zweig
+   * hier und wird wie ein terminaler Knoten abgeschlossen.
+   */
+  terminalChainPayloadForUnwiredPort?: Record<string, unknown>;
 }>;
 
 export type AiReviewDraftJobPort = Readonly<{
@@ -1412,23 +1418,23 @@ export function createPostgresAiReviewDraftPort(
             const stillLocalDraft = Boolean(live && live.folder_kind === 'draft' && Number(live.uid) < 0);
             if (!stillLocalDraft) {
               // Draft gone/sent — do not stamp pending; still continue the graph.
+              // Versendet und geloescht sind NICHT dasselbe. Ging der
+              // Entwurf waehrend der Pruefung raus (uid >= 0), ist die
+              // Arbeit dieses Workflows erledigt und der Marker gehoert
+              // gesetzt — sonst erzeugt eine spaetere Wiederverarbeitung
+              // eine zweite Antwort auf eine bereits beantwortete Mail.
+              // Geloescht oder verschoben zaehlt dagegen nicht: dort ist
+              // nichts rausgegangen.
+              // Der Server-Compose-Pfad (mail-compose-send) setzt beim
+              // Finalisieren nur `folder_kind = 'sent'` und laesst die
+              // negative lokale uid stehen — die uid allein reicht als
+              // Zustellnachweis also nicht.
+              const sentDuringReview = Boolean(
+                live && (Number(live.uid) >= 0 || live.folder_kind === 'sent'),
+              );
               const continuation = input.continuation;
               if (!continuation) {
                 if (input.terminalChainPayload) {
-                  // Versendet und geloescht sind NICHT dasselbe. Ging der
-                  // Entwurf waehrend der Pruefung raus (uid >= 0), ist die
-                  // Arbeit dieses Workflows erledigt und der Marker gehoert
-                  // gesetzt — sonst erzeugt eine spaetere Wiederverarbeitung
-                  // eine zweite Antwort auf eine bereits beantwortete Mail.
-                  // Geloescht oder verschoben zaehlt dagegen nicht: dort ist
-                  // nichts rausgegangen.
-                  // Der Server-Compose-Pfad (mail-compose-send) setzt beim
-                  // Finalisieren nur `folder_kind = 'sent'` und laesst die
-                  // negative lokale uid stehen — die uid allein reicht als
-                  // Zustellnachweis also nicht.
-                  const sentDuringReview = Boolean(
-                    live && (Number(live.uid) >= 0 || live.folder_kind === 'sent'),
-                  );
                   await completeTerminalInboundChild(trx, input.terminalChainPayload, {
                     applied: sentDuringReview,
                     now: now(),
@@ -1445,6 +1451,13 @@ export function createPostgresAiReviewDraftPort(
                 if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
               }
               if (!resumeNodeId) {
+                if (input.terminalChainPayloadForUnwiredPort) {
+                  await completeTerminalInboundChild(trx, input.terminalChainPayloadForUnwiredPort, {
+                    applied: sentDuringReview,
+                    now: now(),
+                  });
+                  return;
+                }
                 await enqueueNextInboundWorkflowAfterTerminalChildFailure(trx, {
                   workspaceId: input.workspaceId,
                   messageId: input.messageId,
@@ -1505,6 +1518,18 @@ export function createPostgresAiReviewDraftPort(
               if (!holdOnlyAnchor) resumeNodeId = continuation.resumeNodeId;
             }
             if (!resumeNodeId) {
+              // Der Port des Urteils hat keine Kante (etwa SEND bei nur einer
+              // HOLD-Kante): der Zweig endet hier wie bei einem terminalen
+              // Review-Knoten — Join-Barriere auch ohne Kette abbauen und bei
+              // gefaelltem Urteil als angewendet markieren.
+              if (input.terminalChainPayloadForUnwiredPort) {
+                await completeTerminalInboundChild(trx, input.terminalChainPayloadForUnwiredPort, {
+                  applied: verdictRendered,
+                  now: now(),
+                });
+                return;
+              }
+              // Jobs von vor diesem Stempel.
               // Terminal SEND without a success edge (e.g. hold-only graph) must
               // still advance the inbound priority chain — otherwise later
               // workflows stay stranded after a successful child.

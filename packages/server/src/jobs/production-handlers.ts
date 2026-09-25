@@ -488,6 +488,9 @@ export function buildAiReviewDraftJobPlan(
     ...(payload.terminalWorkflowCompletion === true
       ? { terminalChainPayload: payload as Record<string, unknown> }
       : {}),
+    ...(isPlainRecord(payload.terminalChainPayloadForUnwiredPort)
+      ? { terminalChainPayloadForUnwiredPort: payload.terminalChainPayloadForUnwiredPort }
+      : {}),
   };
 }
 
