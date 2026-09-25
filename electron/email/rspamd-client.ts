@@ -1,5 +1,10 @@
 import { buildRfc822FromStored } from './mail-rfc822-build';
 import { normalizeRspamdBaseUrl } from '../../shared/rspamd-url';
+import { readBoundedResponseJson, readBoundedResponseText } from '../../packages/core/src/net/bounded-body';
+
+// Byte limits while reading: the Rspamd URL is configurable and may point to a foreign host.
+const MAX_RSPAMD_RESPONSE_BYTES = 1024 * 1024;
+const MAX_RSPAMD_ERROR_TEXT_BYTES = 64 * 1024;
 
 export type RspamdCheckResult = {
   score: number | null;
@@ -62,7 +67,7 @@ export async function checkMessageWithRspamd(input: {
       signal: controller.signal,
     });
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
+      const text = await readBoundedResponseText(res, MAX_RSPAMD_ERROR_TEXT_BYTES).catch(() => '');
       return {
         score: null,
         action: null,
@@ -71,7 +76,7 @@ export async function checkMessageWithRspamd(input: {
         error: `Rspamd HTTP ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`,
       };
     }
-    const data = (await res.json()) as RspamdJson;
+    const data = (await readBoundedResponseJson(res, MAX_RSPAMD_RESPONSE_BYTES)) as RspamdJson;
     const symbols = data.symbols
       ? Object.entries(data.symbols)
           .filter(([, v]) => (v?.score ?? 0) > 0.01)

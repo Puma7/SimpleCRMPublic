@@ -1,3 +1,4 @@
+import { readBoundedResponseJson, readBoundedResponseText } from '../../packages/core/src/net/bounded-body';
 import { getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getResolvedAiRuntime } from './email-ai-profiles';
 import { formatAiUserError } from './ai-error-format';
@@ -5,6 +6,9 @@ import { formatAiUserError } from './ai-error-format';
 const KEY_BASE = 'email_ai_base_url';
 const KEY_MODEL = 'email_ai_model';
 const KEY_EMBED_MODEL = 'email_ai_embedding_model';
+// Byte limits while reading: the base URL is configurable, so the endpoint may be foreign.
+const MAX_AI_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_AI_ERROR_TEXT_BYTES = 64 * 1024;
 
 export function getAiSettings(): { baseUrl: string; model: string; embeddingModel: string } {
   const baseUrl = (getSyncInfo(KEY_BASE) || 'https://api.openai.com/v1').replace(/\/$/, '');
@@ -51,10 +55,10 @@ export async function runChatCompletion(
       signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) {
-      const t = await res.text();
+      const t = await readBoundedResponseText(res, MAX_AI_ERROR_TEXT_BYTES);
       throw new Error(`KI-Anfrage fehlgeschlagen: ${res.status} ${t.slice(0, 200)}`);
     }
-    const data = (await res.json()) as {
+    const data = (await readBoundedResponseJson(res, MAX_AI_RESPONSE_BYTES)) as {
       choices?: { message?: { content?: string } }[];
     };
     const text = data.choices?.[0]?.message?.content?.trim();
@@ -84,7 +88,9 @@ export async function runEmbedding(text: string, profileId?: number | null): Pro
       signal: AbortSignal.timeout(90_000),
     });
     if (!res.ok) return null;
-    const data = (await res.json()) as { data?: { embedding?: number[] }[] };
+    const data = (await readBoundedResponseJson(res, MAX_AI_RESPONSE_BYTES)) as {
+      data?: { embedding?: number[] }[];
+    };
     const vec = data.data?.[0]?.embedding;
     if (!vec || !Array.isArray(vec)) return null;
     return vec;

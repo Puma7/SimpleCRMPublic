@@ -73,6 +73,7 @@ describe('desktop workflow http.request transport', () => {
   let server: http.Server;
   let port = 0;
   let hits: Hit[] = [];
+  let endlessClientGone = false;
   const realFetch = globalThis.fetch;
   // Stand-in for the old transport: global fetch pointed at the test server.
   // The hardened node must never use it.
@@ -106,6 +107,23 @@ describe('desktop workflow http.request transport', () => {
         if (path === '/temp-cross-host') return redirect(307, `http://other.example.com:${port}/echo`);
         if (path === '/temp-same-host') return redirect(307, '/echo');
         if (path === '/loop') return redirect(302, '/loop');
+        if (path === '/endless') {
+          // Never ends: only the client tearing the socket down stops it.
+          res.writeHead(200, { 'content-type': 'text/plain' });
+          const chunk = Buffer.alloc(64 * 1024, 0x61);
+          let stopped = false;
+          res.on('close', () => {
+            stopped = true;
+            if (!res.writableFinished) endlessClientGone = true;
+          });
+          const pump = (): void => {
+            if (stopped) return;
+            if (res.write(chunk)) setImmediate(pump);
+            else res.once('drain', pump);
+          };
+          pump();
+          return;
+        }
         if (path === '/secret') {
           res.writeHead(200, { 'content-type': 'text/plain' });
           res.end('internal-secret');
@@ -223,6 +241,19 @@ describe('desktop workflow http.request transport', () => {
       httpNode().execute(ctx(false), { method: 'GET', url: api('/loop') }, 'http'),
     ).rejects.toThrow('Zu viele Weiterleitungen (max 5)');
     expect(hits).toHaveLength(6);
+  });
+
+  // C-C5: the node buffered the whole response in the main process before cutting it to 8000 chars.
+  test('caps an endless response body instead of buffering it', async () => {
+    endlessClientGone = false;
+    const result = await httpNode().execute(ctx(false), { method: 'GET', url: api('/endless') }, 'http');
+
+    expect(result).toMatchObject({ status: 'ok', variables: { 'http.status': 200 } });
+    expect(String(result.variables?.['http.body'])).toHaveLength(8000);
+    for (let i = 0; i < 40 && !endlessClientGone; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(endlessClientGone).toBe(true);
   });
 
   test('dry-run validates the URL but never sends the request', async () => {
