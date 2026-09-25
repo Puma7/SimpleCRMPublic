@@ -12,6 +12,7 @@ import { saveLocalAuthUser } from '../../electron/auth/auth-store';
 
 // C-A72: Auf dem Desktop konnte SaveUser den letzten aktiven Owner zum Admin herabstufen oder
 // deaktivieren; danach waren Restore und Hard-Reset (nur Owner) fuer niemanden mehr erreichbar.
+// Seit G3 aendert nur ein Owner Owner-Konten; die Aufrufe handeln deshalb als Owner.
 describe('saveLocalAuthUser erhaelt den letzten aktiven Owner', () => {
   let db: Database.Database;
 
@@ -23,7 +24,7 @@ describe('saveLocalAuthUser erhaelt den letzten aktiven Owner', () => {
     };
 
   const createUser = (username: string, role: 'owner' | 'admin') => {
-    const result = saveLocalAuthUser({ username, displayName: username, role, passphrase: 'Passwort-1234567' });
+    const result = saveLocalAuthUser({ username, displayName: username, role, passphrase: 'Passwort-1234567' }, 'owner');
     if (!result.success || !result.id) throw new Error('Benutzer konnte nicht angelegt werden');
     return result.id;
   };
@@ -51,7 +52,7 @@ describe('saveLocalAuthUser erhaelt den letzten aktiven Owner', () => {
       displayName: 'Owner',
       passphrase: 'Neues-Passwort-123',
       ...change,
-    });
+    }, 'owner');
 
     expect(result).toEqual({ success: false, error: 'Mindestens ein aktiver Eigentümer muss bestehen bleiben' });
     expect(userRow(LOCAL_OWNER_USER_ID)).toEqual(before);
@@ -61,7 +62,7 @@ describe('saveLocalAuthUser erhaelt den letzten aktiven Owner', () => {
     const secondOwner = createUser('owner2', 'owner');
     db.prepare('UPDATE users SET is_active = 0 WHERE id = ?').run(secondOwner);
 
-    const result = saveLocalAuthUser({ id: LOCAL_OWNER_USER_ID, username: 'owner', displayName: 'Owner', role: 'admin' });
+    const result = saveLocalAuthUser({ id: LOCAL_OWNER_USER_ID, username: 'owner', displayName: 'Owner', role: 'admin' }, 'owner');
 
     expect(result.success).toBe(false);
     expect(userRow(LOCAL_OWNER_USER_ID).role).toBe('owner');
@@ -74,7 +75,7 @@ describe('saveLocalAuthUser erhaelt den letzten aktiven Owner', () => {
       displayName: 'Umbenannt',
       role: 'owner',
       isActive: true,
-    });
+    }, 'owner');
 
     expect(result).toEqual({ success: true, id: LOCAL_OWNER_USER_ID });
   });
@@ -82,12 +83,12 @@ describe('saveLocalAuthUser erhaelt den letzten aktiven Owner', () => {
   test('mit einem weiteren aktiven Owner sind Herabstufen und Deaktivieren moeglich', () => {
     const secondOwner = createUser('owner2', 'owner');
 
-    expect(saveLocalAuthUser({ id: LOCAL_OWNER_USER_ID, username: 'owner', displayName: 'Owner', role: 'admin' }))
+    expect(saveLocalAuthUser({ id: LOCAL_OWNER_USER_ID, username: 'owner', displayName: 'Owner', role: 'admin' }, 'owner'))
       .toEqual({ success: true, id: LOCAL_OWNER_USER_ID });
     expect(userRow(LOCAL_OWNER_USER_ID).role).toBe('admin');
 
     // Jetzt ist owner2 der letzte aktive Owner.
-    expect(saveLocalAuthUser({ id: secondOwner, username: 'owner2', displayName: 'owner2', role: 'owner', isActive: false }))
+    expect(saveLocalAuthUser({ id: secondOwner, username: 'owner2', displayName: 'owner2', role: 'owner', isActive: false }, 'owner'))
       .toMatchObject({ success: false });
     expect(userRow(secondOwner)).toMatchObject({ role: 'owner', is_active: 1 });
   });

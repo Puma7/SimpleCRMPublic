@@ -63,6 +63,16 @@ export type AuthMutationResult =
   | { success: true; id?: string }
   | { success: false; error: string };
 
+const OWNER_MANAGEMENT_REQUIRES_OWNER =
+  'Nur Eigentümer dürfen die Eigentümer-Rolle vergeben oder entziehen und Eigentümer-Konten ändern oder löschen';
+
+// G3 (wie isForbiddenUserMutation auf dem Server): Nur ein Owner vergibt oder entzieht
+// die Owner-Rolle und aendert Owner-Konten. Sonst erreicht ein Admin ueber ein
+// Owner-Konto Restore und Hard-Reset, die nur Owner ausloesen duerfen.
+function requiresOwnerActor(actorRole: SessionRole, ...roles: Array<string | undefined>): boolean {
+  return actorRole !== 'owner' && roles.includes('owner');
+}
+
 function optionalLocalAuthDb(): Database.Database | null {
   try {
     return (getDb() as Database.Database | null) ?? null;
@@ -238,15 +248,18 @@ export function readOrCreateOneTimeSetupPassword():
   return { success: true, passphrase: pass };
 }
 
-export function saveLocalAuthUser(payload: SaveLocalAuthUserInput): AuthMutationResult {
+export function saveLocalAuthUser(payload: SaveLocalAuthUserInput, actorRole: SessionRole): AuthMutationResult {
   const db = requireLocalAuthDb();
   const now = new Date().toISOString();
   if (payload.id) {
-    // Wie beim Loeschen und auf dem Server (last_owner_required): ohne aktiven
-    // Owner waeren Restore und Hard-Reset fuer niemanden mehr erreichbar.
     const target = db
       .prepare(`SELECT role FROM ${USERS_TABLE} WHERE id = ?`)
       .get(payload.id) as { role: string } | undefined;
+    if (requiresOwnerActor(actorRole, payload.role, target?.role)) {
+      return { success: false, error: OWNER_MANAGEMENT_REQUIRES_OWNER };
+    }
+    // Wie beim Loeschen und auf dem Server (last_owner_required): ohne aktiven
+    // Owner waeren Restore und Hard-Reset fuer niemanden mehr erreichbar.
     if (target?.role === 'owner' && (payload.role !== 'owner' || payload.isActive === false)) {
       const otherOwners = (
         db
@@ -270,6 +283,9 @@ export function saveLocalAuthUser(payload: SaveLocalAuthUserInput): AuthMutation
     logAuthAction(db, { action: 'user.update', resourceId: payload.id });
     return { success: true, id: payload.id };
   }
+  if (requiresOwnerActor(actorRole, payload.role)) {
+    return { success: false, error: OWNER_MANAGEMENT_REQUIRES_OWNER };
+  }
   const id = randomUUID();
   if (!payload.passphrase) {
     return { success: false, error: 'Passphrase erforderlich' };
@@ -282,13 +298,16 @@ export function saveLocalAuthUser(payload: SaveLocalAuthUserInput): AuthMutation
   return { success: true, id };
 }
 
-export function deleteLocalAuthUser(payload: { id: string }): AuthMutationResult {
+export function deleteLocalAuthUser(payload: { id: string }, actorRole: SessionRole): AuthMutationResult {
   const db = requireLocalAuthDb();
   const target = db
     .prepare(`SELECT id, role FROM ${USERS_TABLE} WHERE id = ?`)
     .get(payload.id) as { id: string; role: string } | undefined;
   if (!target) {
     return { success: false, error: 'Benutzer nicht gefunden' };
+  }
+  if (requiresOwnerActor(actorRole, target.role)) {
+    return { success: false, error: OWNER_MANAGEMENT_REQUIRES_OWNER };
   }
   if (target.role === 'owner') {
     const otherOwners = (

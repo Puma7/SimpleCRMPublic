@@ -191,7 +191,7 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
     registerIpcHandler(
       IPCChannels.Auth.SaveUser,
       async (
-        _event,
+        event,
         payload: {
           id?: string;
           username: string;
@@ -201,7 +201,12 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
           isActive?: boolean;
         },
       ) => {
-        return saveLocalAuthUser(payload);
+        // Die Rolle des Handelnden kommt aus der Session, nie aus dem Renderer (G3).
+        const session = getSessionFromEvent(event);
+        if (!session) {
+          return { success: false as const, error: 'Nicht angemeldet' };
+        }
+        return saveLocalAuthUser(payload, session.role);
       },
       { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner', 'admin'] },
     ),
@@ -212,10 +217,13 @@ export function registerAuthHandlers(options: AuthRouterOptions): () => void {
       IPCChannels.Auth.DeleteUser,
       async (event, payload: { id: string }) => {
         const session = getSessionFromEvent(event);
-        if (session && session.userId === payload.id) {
+        if (!session) {
+          return { success: false as const, error: 'Nicht angemeldet' };
+        }
+        if (session.userId === payload.id) {
           return { success: false as const, error: 'Sie können sich nicht selbst löschen' };
         }
-        const result = deleteLocalAuthUser(payload);
+        const result = deleteLocalAuthUser(payload, session.role);
         // Drop any open sessions for the deleted user so an already-authenticated
         // window loses IPC access immediately instead of at the idle timeout.
         if (result.success) revokeSessionsForUser(payload.id);
