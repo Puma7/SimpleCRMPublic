@@ -163,6 +163,7 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 - **Login-Failure-Counter** (Brute-Force) in einer Transaktion inkrementiert.
 - **Passwort ändern** (`/auth/change-password`) prüft das aktuelle Passwort wie ein Login: gleiche (E-Mail, IP)-Staffelung, Rate-Limit `auth-strict`, Audit `auth.password_change_failed`; neues Passwort 12–1000 Zeichen wie bei Setup und Einladung.
 - **Refresh-Token-Wiederverwendung**: Wird ein bereits rotiertes Refresh-Token mehr als 60 s nach der Rotation erneut vorgelegt, widerruft der Server alle Sitzungen des Nutzers (Audit `auth.refresh_token_reuse_detected`); innerhalb der 60 s (verlorene Antwort, paralleler Tab) nur `401`. Per Logout, Passwortwechsel oder Ablauf ungültige Tokens lösen das nicht aus.
+- **Abmelden** (Webclient): Bei `403 csrf_invalid` holt der Client einmal ein frisches CSRF-Token (`GET /auth/csrf`) und wiederholt, bei `429` wiederholt er nach kurzem Backoff. Die lokale Sitzung verwirft er nur bei Erfolg oder `401`; scheitert der Widerruf sonst, bleibt man angemeldet und bekommt eine Fehlermeldung, statt dass ein gültiges Refresh-Cookie zurückbleibt.
 - **Kontoweite Abwehr** gegen verteiltes Raten — siehe unten.
 - **INITIAL_SETUP_TOKEN** verhindert unbemerktes Owner-Takeover bei exponiertem Setup-Endpunkt.
 

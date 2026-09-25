@@ -170,6 +170,14 @@ export class ServerAuthClientError extends Error {
   }
 }
 
+/** A rate-limited logout is replayed a couple of times; the revoke is idempotent. */
+const LOGOUT_RATE_LIMIT_RETRIES = 2
+const LOGOUT_RATE_LIMIT_BACKOFF_MS = 300
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 const refreshOperations = new Map<string, Promise<ServerAuthSession | null>>()
 const refreshStorageIds = new WeakMap<object, number>()
 let nextRefreshStorageId = 1
@@ -406,26 +414,57 @@ export function createServerAuthClient(options: ServerAuthClientOptions): Server
         clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
         return { revoked: false }
       }
-      try {
-        if (!csrfToken && !legacyRefreshToken) {
-          const bootstrap = await request<{ csrfToken: string }>(fetchImpl, baseUrl, "/api/v1/auth/csrf", {
-            method: "GET",
-          })
-          csrfToken = bootstrap.csrfToken
-        }
-        return await request<{ revoked: boolean }>(fetchImpl, baseUrl, "/api/v1/auth/logout", {
-          method: "POST",
-          accessToken,
-          ...(legacyRefreshToken ? { body: { refreshToken: legacyRefreshToken } } : {}),
-          headers: legacyRefreshToken
-            ? {
-                "X-SimpleCRM-Session-Migration": "1",
-                ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
-              }
-            : { "X-CSRF-Token": csrfToken ?? "" },
+      const fetchCsrfToken = async (): Promise<string> => {
+        const bootstrap = await request<{ csrfToken: string }>(fetchImpl, baseUrl, "/api/v1/auth/csrf", {
+          method: "GET",
         })
-      } finally {
-        clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
+        return bootstrap.csrfToken
+      }
+      const postLogout = () => request<{ revoked: boolean }>(fetchImpl, baseUrl, "/api/v1/auth/logout", {
+        method: "POST",
+        accessToken,
+        ...(legacyRefreshToken ? { body: { refreshToken: legacyRefreshToken } } : {}),
+        headers: legacyRefreshToken
+          ? {
+              "X-SimpleCRM-Session-Migration": "1",
+              ...(csrfToken ? { "X-CSRF-Token": csrfToken } : {}),
+            }
+          : { "X-CSRF-Token": csrfToken ?? "" },
+      })
+      // The local session is dropped only once the server revoked it (or reports
+      // it as already gone, 401). On any other failure the refresh cookie is still
+      // valid, so the caller stays signed in and can retry.
+      try {
+        if (!csrfToken && !legacyRefreshToken) csrfToken = await fetchCsrfToken()
+        let csrfRetried = false
+        let rateLimitRetries = 0
+        for (;;) {
+          try {
+            const result = await postLogout()
+            clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
+            return result
+          } catch (error) {
+            if (!(error instanceof ServerAuthClientError)) throw error
+            if (error.status === 403 && error.code === "csrf_invalid" && !csrfRetried) {
+              csrfRetried = true
+              csrfToken = await fetchCsrfToken()
+              saveServerCsrfToken(csrfToken, options.storage, baseUrl)
+              continue
+            }
+            if (error.status === 429 && rateLimitRetries < LOGOUT_RATE_LIMIT_RETRIES) {
+              rateLimitRetries += 1
+              await delay(LOGOUT_RATE_LIMIT_BACKOFF_MS * rateLimitRetries)
+              continue
+            }
+            throw error
+          }
+        }
+      } catch (error) {
+        if (error instanceof ServerAuthClientError && error.status === 401) {
+          clearServerAuthSession(options.storage, options.accessTokenStorage, baseUrl)
+          return { revoked: false }
+        }
+        throw error
       }
     },
 

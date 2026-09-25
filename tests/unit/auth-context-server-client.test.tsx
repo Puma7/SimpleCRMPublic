@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { AuthGate } from '@/components/auth/auth-gate';
 import { AuthProvider, useAuth } from '@/components/auth/auth-context';
+import { UserSwitcher } from '@/components/auth/user-switcher';
 import {
   buildServerAuthSession,
   clearServerAuthSession,
@@ -12,6 +13,16 @@ import {
 import { IPCChannels } from '../../shared/ipc/channels';
 
 const mockNavigate = jest.fn();
+const mockToastError = jest.fn();
+
+jest.mock('sonner', () => ({
+  toast: {
+    error: (...args: unknown[]) => mockToastError(...args),
+    success: jest.fn(),
+    info: jest.fn(),
+    warning: jest.fn(),
+  },
+}));
 
 jest.mock('@tanstack/react-router', () => ({
   useNavigate: () => mockNavigate,
@@ -24,6 +35,7 @@ describe('AuthProvider server-client mode', () => {
 
   beforeEach(() => {
     mockNavigate.mockReset();
+    mockToastError.mockReset();
     window.localStorage.clear();
     window.sessionStorage.clear();
     clearServerAuthSession();
@@ -197,6 +209,70 @@ describe('AuthProvider server-client mode', () => {
     expect(screen.getByTestId('auth-user')).toHaveTextContent('none');
     expect(localInvoke).not.toHaveBeenCalled();
   });
+  function renderSignedInWithLogoutResponse(logoutResponse: () => Response) {
+    saveServerAuthSession(buildServerAuthSession({
+      user: serverUser({ displayName: 'Server Owner' }),
+      tokens: { accessToken: 'access-stored', expiresInSeconds: 900 },
+    }), 'csrf-stored', undefined, undefined, 'https://crm.example.com');
+    const fetchImpl = jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/auth/logout')) return logoutResponse();
+      if (url.includes('/api/v1/auth/capabilities')) {
+        return jsonResponse({ data: { role: 'owner', capabilities: [] } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    global.fetch = fetchImpl as unknown as typeof fetch;
+    configureRendererTransport(createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    }));
+    render(
+      <AuthProvider>
+        <Probe />
+        <UserSwitcher />
+      </AuthProvider>,
+    );
+    return fetchImpl;
+  }
+
+  // F-A11b-07: Scheiterte das Abmelden am Server, blieb die Oberflaeche ohne Hinweis haengen;
+  // die Rejection blieb unbehandelt und der naechste Klick verwarf nur die lokale Sitzung.
+  test('failed server logout keeps the user signed in and shows an error toast', async () => {
+    const fetchImpl = renderSignedInWithLogoutResponse(() => jsonResponse({
+      error: { code: 'internal_error', message: 'kaputt' },
+    }, 500));
+    expect(await screen.findByTestId('auth-status')).toHaveTextContent('authenticated');
+
+    fireEvent.click(screen.getByTitle('Abmelden'));
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith(
+      'Abmelden fehlgeschlagen – Sie sind weiterhin angemeldet. Bitte erneut versuchen.',
+    ));
+    expect(screen.getByTestId('auth-status')).toHaveTextContent('authenticated');
+    expect(mockNavigate).not.toHaveBeenCalledWith({ to: '/login' });
+
+    // The stored session survived, so a second click really revokes it again.
+    fireEvent.click(screen.getByTitle('Abmelden'));
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(2));
+    const logoutCalls = fetchImpl.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/auth/logout'));
+    expect(logoutCalls).toHaveLength(2);
+    expect(logoutCalls[1]?.[1]).toEqual(expect.objectContaining({
+      headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-stored' }),
+    }));
+  });
+
+  test('successful server logout signs out and navigates to the login page', async () => {
+    renderSignedInWithLogoutResponse(() => jsonResponse({ data: { revoked: true } }));
+    expect(await screen.findByTestId('auth-status')).toHaveTextContent('authenticated');
+
+    fireEvent.click(screen.getByTitle('Abmelden'));
+
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith({ to: '/login' }));
+    expect(screen.getByTestId('auth-status')).toHaveTextContent('anonymous');
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
   test('capabilities are never reported ready with an empty list for a fresh user session', async () => {
     // Sonst sieht ein Gate im ersten Render "fertig geladen, keine Rechte" und
     // leitet um, bevor die Liste ueberhaupt angefragt wurde.

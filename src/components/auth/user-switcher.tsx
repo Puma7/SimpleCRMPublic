@@ -24,8 +24,8 @@ export function UserSwitcher() {
           className="h-7 w-7"
           title="Abmelden"
           onClick={async () => {
-            await logout()
-            navigate({ to: "/login" })
+            // logout() reports a failure itself (toast) and keeps the session.
+            if (await logout()) navigate({ to: "/login" })
           }}
         >
           <LogOut className="h-3.5 w-3.5" />
