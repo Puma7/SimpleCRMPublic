@@ -1,4 +1,4 @@
-import { normalizeAddressJson } from './parse-utils';
+import { normalizeAddressJson, stripHtmlTagsToText } from './parse-utils';
 
 export type SpamFeatureMessageInput = {
   fromJson?: unknown | null;
@@ -173,7 +173,7 @@ function truthyAttachmentFlag(value: boolean | number | string | null): boolean 
 
 function textFromHtml(html: string | null): string {
   if (!html) return '';
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return stripHtmlTagsToText(html);
 }
 
 function token(value: string): string {

@@ -165,12 +165,13 @@ export function decodeHtmlEntities(text: string): string {
 }
 
 /**
- * Same result as `input.replace(/<tag[\s\S]*?<\/tag>/gi, ' ')`, but linear:
- * the lazy regex rescans to the end of the input for every unclosed `<tag`,
- * which is quadratic on hostile mail bodies/attachments. Once one opening tag
- * has no closing tag, no later one can have one either, so we stop there.
+ * Same result as `input.replace(/<tag[\s\S]*?<\/tag>/gi, replacement)`, but
+ * linear: the lazy regex rescans to the end of the input for every unclosed
+ * `<tag`, which is quadratic on hostile mail bodies/attachments. Once one
+ * opening tag has no closing tag, no later one can have one either, so we stop
+ * there.
  */
-function replaceElementBlocks(input: string, tag: string): string {
+export function replaceElementBlocks(input: string, tag: string, replacement = ' '): string {
   const open = new RegExp(`<${tag}`, 'gi');
   const close = new RegExp(`<\\/${tag}>`, 'gi');
   let out = '';
@@ -182,7 +183,7 @@ function replaceElementBlocks(input: string, tag: string): string {
     close.lastIndex = start.index + start[0].length;
     const end = close.exec(input);
     if (!end) break;
-    out += `${input.slice(cursor, start.index)} `;
+    out += `${input.slice(cursor, start.index)}${replacement}`;
     cursor = end.index + end[0].length;
   }
   return cursor === 0 ? input : out + input.slice(cursor);
@@ -192,7 +193,7 @@ function replaceElementBlocks(input: string, tag: string): string {
  * Same result as `input.replace(/<[^>]+>/g, ' ')` in linear time (see
  * replaceElementBlocks): a `<` without any later `>` ends the scan.
  */
-function replaceTags(input: string): string {
+export function replaceTags(input: string): string {
   let out = '';
   let cursor = 0;
   let from = 0;
@@ -208,6 +209,15 @@ function replaceTags(input: string): string {
     cursor = from;
   }
   return cursor === 0 ? input : out + input.slice(cursor);
+}
+
+/**
+ * Same result as `html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()`
+ * in linear time; for callers that need exactly that legacy tag strip (no
+ * style/script removal, no entity decoding).
+ */
+export function stripHtmlTagsToText(html: string): string {
+  return replaceTags(html).replace(/\s+/g, ' ').trim();
 }
 
 /**
