@@ -241,7 +241,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             return { ok: false as const, code: 'role_change_forbidden' as const };
           }
 
-          const nextActive = input.isActive !== false;
+          // isActive is optional: an update that does not send it (a rename by an API
+          // client, a stale form) must not re-enable a user another admin disabled.
+          const nextActive = input.isActive ?? existing.disabled_at === null;
           if (existing.role === 'owner' && (input.role !== 'owner' || !nextActive)) {
             const otherOwnerCount = await countActiveOwners(trx, input.workspaceId, input.id);
             if (otherOwnerCount < 1) {
@@ -255,7 +257,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
               email: input.email,
               display_name: input.displayName,
               role: input.role,
-              disabled_at: input.isActive === false ? now() : null,
+              ...(input.isActive === undefined ? {} : { disabled_at: input.isActive ? null : now() }),
               updated_at: now(),
               ...(input.publicName === undefined ? {} : { public_name: input.publicName }),
               ...(input.password ? { password_hash: await hashPassword(input.password) } : {}),
