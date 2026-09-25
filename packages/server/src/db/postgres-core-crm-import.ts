@@ -531,7 +531,13 @@ SELECT
   COALESCE(NULLIF(r.source_row->>'label', ''), NULLIF(r.source_row->>'name', ''), 'Field ' || (r.source_row->>'id')),
   COALESCE(NULLIF(r.source_row->>'type', ''), 'text'),
   COALESCE(${sqliteBoolean('required')}, false),
-  CASE WHEN NULLIF(r.source_row->>'options', '') IS NULL THEN NULL ELSE (r.source_row->>'options')::jsonb END,
+  -- The desktop stores options as free text; keep text that is not JSON as a
+  -- JSON string (as the server API does) instead of aborting the import.
+  CASE
+    WHEN NULLIF(r.source_row->>'options', '') IS NULL THEN NULL
+    WHEN pg_input_is_valid(r.source_row->>'options', 'jsonb') THEN (r.source_row->>'options')::jsonb
+    ELSE to_jsonb(r.source_row->>'options')
+  END,
   NULLIF(r.source_row->>'default_value', ''),
   NULLIF(r.source_row->>'placeholder', ''),
   NULLIF(r.source_row->>'description', ''),
