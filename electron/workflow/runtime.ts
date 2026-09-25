@@ -165,8 +165,19 @@ async function executeNode(
   return { status: 'skipped', message: `Unbekannter Knotentyp ${node.type}` };
 }
 
+/**
+ * Schrittlimit je Graph-Durchlauf — Parität zu MAX_GRAPH_STEPS in
+ * packages/server/src/workflow-execution.ts. Schleifenrümpfe laufen mit
+ * allowRevisit; ein Kreis A→B→A liefe dort sonst endlos mit Seiteneffekten.
+ */
+const MAX_GRAPH_STEPS = 500;
+
 type WalkOptions = {
   allowRevisit?: boolean;
+  /** Vor diesen Knoten anhalten (Schleifenknoten und Fertig-Ziel, wie der Server). */
+  stopBeforeNodeIds?: ReadonlySet<string>;
+  /** Schrittzähler des Durchlaufs; der Block-Port-Zweig zählt weiter statt neu. */
+  steps?: { count: number };
 };
 
 type InboundBranchGate = {
@@ -195,10 +206,23 @@ async function walkGraph(
   const nodesById = new Map(doc.nodes.map((n) => [n.id, n]));
   let currentId: string | undefined = startNodeId;
   const seen = visited ?? new Set<string>();
+  const steps = options?.steps ?? { count: 0 };
   let blocked = false;
   let blockReason: string | null = null;
 
   while (currentId) {
+    if (options?.stopBeforeNodeIds?.has(currentId)) break;
+    if (steps.count++ >= MAX_GRAPH_STEPS) {
+      log.push(
+        `graph_step_limit:${MAX_GRAPH_STEPS} – Abbruch bei Knoten ${currentId}, vermutlich ein Kreis im Workflow`,
+      );
+      return {
+        log,
+        status: 'blocked',
+        blocked: true,
+        blockReason: `Schrittlimit von ${MAX_GRAPH_STEPS} Knoten erreicht (vermutlich ein Kreis im Workflow)`,
+      };
+    }
     if (!options?.allowRevisit && seen.has(currentId)) {
       log.push(`cycle:${currentId}`);
       break;
@@ -260,6 +284,12 @@ async function walkGraph(
         currentId = doneEdge?.target;
         continue;
       }
+      // Wie der Server: Eine Rückkante zum Schleifenknoten oder zum Fertig-Ziel
+      // beendet den Durchgang. Haltepunkte umschließender Schleifen gelten
+      // weiter, sonst starten sich verschachtelte Schleifen gegenseitig neu.
+      const stopBeforeNodeIds = new Set<string>(options?.stopBeforeNodeIds);
+      stopBeforeNodeIds.add(currentId);
+      if (doneEdge?.target) stopBeforeNodeIds.add(doneEdge.target);
       for (let i = 0; i < items.length; i++) {
         ctx.variables['loop.item'] = items[i]!;
         ctx.variables['loop.index'] = i;
@@ -271,7 +301,7 @@ async function walkGraph(
           eachEdge.target,
           branchLog,
           new Set<string>(),
-          { allowRevisit: true },
+          { allowRevisit: true, stopBeforeNodeIds },
           gate,
         );
         log.push(...r.log);
@@ -345,7 +375,7 @@ async function walkGraph(
           blockEdge.target,
           log,
           seen,
-          options,
+          { ...options, steps },
           gate,
         );
         if (branch.blocked || branch.status === 'blocked') return branch;

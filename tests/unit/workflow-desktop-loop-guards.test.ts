@@ -91,4 +91,78 @@ describe('desktop logic.loop guards', () => {
     expect(result.log).toContain('loop:empty');
     expect(result.log).not.toContain('loop:0:a');
   });
+
+  // F-A9-05: Eine Rückkante Rumpf → Schleife startete ohne Ende neue, verschachtelte Schleifen.
+  test('stops each iteration before a back edge to the loop node', async () => {
+    const calls = new Map<string, number>();
+    installCountingNode(calls);
+
+    const result = await run(
+      [trigger, loop, countNode('body'), countNode('after')],
+      [
+        { id: 'e1', source: 'trigger', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'body', label: 'each' },
+        { id: 'e3', source: 'body', target: 'loop' },
+        { id: 'e4', source: 'loop', target: 'after', label: 'done' },
+      ],
+      'a,b',
+    );
+
+    expect(result.status).toBe('ok');
+    expect(calls.get('body')).toBe(2);
+    expect(calls.get('after')).toBe(1);
+  });
+
+  // F-A9-05: Ein Kreis A→B→A im Je-Eintrag-Zweig lief ohne Schrittlimit endlos weiter.
+  test('aborts a cycle inside the each branch at the step limit', async () => {
+    const calls = new Map<string, number>();
+    installCountingNode(calls, 1000);
+
+    const result = await run(
+      [trigger, loop, countNode('a'), countNode('b'), countNode('after')],
+      [
+        { id: 'e1', source: 'trigger', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'a', label: 'each' },
+        { id: 'e3', source: 'a', target: 'b' },
+        { id: 'e4', source: 'b', target: 'a' },
+        { id: 'e5', source: 'loop', target: 'after', label: 'done' },
+      ],
+      'x,y',
+    );
+
+    expect(result.status).toBe('blocked');
+    expect(result.blocked).toBe(true);
+    expect(result.blockReason).toMatch(/Schrittlimit/);
+    expect(result.log.some((line) => line.startsWith('graph_step_limit:'))).toBe(true);
+    expect((calls.get('a') ?? 0) + (calls.get('b') ?? 0)).toBeLessThanOrEqual(500);
+    expect(calls.get('after')).toBeUndefined();
+  });
+
+  // F-A9-05: Zwei Schleifen, die sich über ihre Je-Eintrag-Zweige gegenseitig
+  // erreichen, starteten einander ohne Ende neu.
+  test('nested loops do not restart an enclosing loop', async () => {
+    const calls = new Map<string, number>();
+    installCountingNode(calls);
+    const inner: GraphNode = {
+      id: 'inner',
+      type: 'registry',
+      data: { nodeType: 'logic.loop', config: { sourceVariable: 'items' } },
+    };
+
+    const result = await run(
+      [trigger, loop, inner, countNode('x'), countNode('y')],
+      [
+        { id: 'e1', source: 'trigger', target: 'loop' },
+        { id: 'e2', source: 'loop', target: 'x', label: 'each' },
+        { id: 'e3', source: 'x', target: 'inner' },
+        { id: 'e4', source: 'inner', target: 'y', label: 'each' },
+        { id: 'e5', source: 'y', target: 'loop' },
+      ],
+      'a,b',
+    );
+
+    expect(result.status).toBe('ok');
+    expect(calls.get('x')).toBe(2);
+    expect(calls.get('y')).toBe(4);
+  });
 });
