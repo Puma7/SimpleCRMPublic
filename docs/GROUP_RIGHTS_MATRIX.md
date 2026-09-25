@@ -1,7 +1,7 @@
 # Gruppenrechte — Capability-Matrix & Vorlagen
 
 **Stand:** Masterplan „Einfaches, gruppenbasiertes Rechtemanagement“  
-**Zielsystem:** Server-Edition (Desktop bleibt unrestricted)
+**Zielsystem:** Server-Edition (Desktop: nur lokale Rollen, siehe [Desktop-Edition](#desktop-edition-lokale-rollen))
 
 ## Zwei Fragen
 
@@ -56,3 +56,20 @@ Postfächer und Sichtbarkeitsfilter (Zuweisung/Kategorie/Tag) werden **nicht** i
 - Basis: Account/Folder/Message + Profil (viewer…manager) — unverändert.
 - Optional pro Binding: Zuweisungsmodus, Kategorie-Allow/Exclude, Tag-Allow/Exclude.
 - Siehe Migration `0047_group_rights_and_mail_constraints` und Admin-UI „Gruppen & Rechte“.
+
+## Desktop-Edition (lokale Rollen)
+
+Die Desktop-App kennt keine Capabilities und keine Gruppen. Sie kennt nur die Rollen der lokalen Anmeldung (`owner`, `admin`, `agent`, `viewer`) und die Konto-Freigaben in `user_account_access` (Stufen `ro`, `send_only`, `rw`). Owner und Admin dürfen auf alle Konten zugreifen. Die folgenden Aktionen prüft der Main-Prozess im IPC-Handler (`requireRole`) unabhängig von der Konto-Freigabe:
+
+| Aktion | IPC-Kanäle | Rolle |
+|--------|-----------|-------|
+| Backup einspielen: ZIP wählen, Vorschau, Restore | `email:pick-local-mail-backup-zip`, `email:preview-restore-local-mail-backup`, `email:restore-local-mail-backup` | nur Owner, echte Anmeldung (wie der Hard-Reset `maintenance:*-hard-reset`) |
+| Vollbackup exportieren und prüfen | `email:export-local-mail-backup`, `email:verify-local-mail-backup` | Owner, Admin |
+| DSGVO-Export | `email:gdpr-export` | Owner, Admin |
+| Mail-Konto anlegen, bearbeiten, löschen | `email:create-account`, `email:update-account`, `email:delete-account` | Owner, Admin (wie `mail.account.manage` auf dem Server) |
+| OAuth-App-Daten und Webhook-Secret speichern | `email:set-google-oauth-app`, `email:set-microsoft-oauth-app`, `email:set-misc-settings` | Owner, Admin; ein leeres Secret-Feld behält das gespeicherte |
+| OAuth-Client-Secrets und Webhook-Secret lesen | `email:get-google-oauth-app`, `email:get-microsoft-oauth-app`, `email:get-misc-settings` | Klartext nur für Owner, Admin; alle anderen bekommen `hasSecret` |
+
+Die Oberfläche blendet die zugehörigen Einstellungen für andere Rollen aus: den Tab „Datenschutz-Export“, in „Diagnose“ die Backup-Knöpfe (Owner, Admin) und den Restore-Assistenten (nur Owner) sowie die Tabs „OAuth-Apps“ und „Audit-Log“. Maßgeblich ist die Prüfung im IPC-Handler, nicht die Oberfläche.
+
+**Grenze:** Die lokalen Rollen schützen nicht gegen Zugriff auf das Dateisystem. `database.sqlite` ist nicht verschlüsselt und liegt im Profil des Betriebssystem-Benutzers (unter Linux `~/.config/simplecrm/`). Alle lokalen App-Benutzer teilen sich dieses Profil. Wer die Datei lesen oder ersetzen kann, umgeht jede Rollenprüfung.

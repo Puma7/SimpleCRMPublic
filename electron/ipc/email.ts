@@ -1138,25 +1138,26 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     }, { logger }),
   );
 
+  // Vollbackup: alle Mails aller Konten und die Passwort-Hashes der App-Benutzer.
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ExportLocalMailBackup, async () => {
       const { exportLocalMailBackup } = await import('../email/email-local-backup.js');
       return exportLocalMailBackup();
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.VerifyLocalMailBackup, async () => {
       const { verifyLocalMailBackup } = await import('../email/email-local-backup.js');
       return verifyLocalMailBackup();
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
     registerIpcHandler(IPCChannels.Email.PickLocalMailBackupZip, async () => {
       const { pickLocalMailBackupZip } = await import('../email/email-local-restore.js');
       return pickLocalMailBackupZip();
-    }, { logger }),
+    }, { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner'] }),
   );
 
   disposers.push(
@@ -1166,7 +1167,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const { previewRestoreLocalMailBackup } = await import('../email/email-local-restore.js');
         return previewRestoreLocalMailBackup(payload.zipPath);
       },
-      { logger },
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner'] },
     ),
   );
 
@@ -1185,7 +1186,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const { restoreLocalMailBackup } = await import('../email/email-local-restore.js');
         return restoreLocalMailBackup(payload);
       },
-      { logger },
+      // Ersetzt database.sqlite samt Benutzertabelle: so kritisch wie der Hard-Reset (nur Owner).
+      { logger, requireAuth: true, requireRealSession: true, requireRole: ['owner'] },
     ),
   );
 
@@ -2886,7 +2888,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const r = await exportEmailGdprPackage({ skipAttachments: Boolean(payload?.skipAttachments) });
         return r;
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

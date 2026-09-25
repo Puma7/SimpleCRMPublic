@@ -55,7 +55,42 @@ jest.mock('../../electron/email/email-keytar', () => ({
   deleteEmailPassword: jest.fn(async () => undefined),
 }));
 
+jest.mock('../../electron/email/email-local-backup', () => ({
+  exportLocalMailBackup: jest.fn(async () => ({ ok: true, path: '/tmp/backup.zip' })),
+  verifyLocalMailBackup: jest.fn(async () => ({
+    ok: true,
+    path: '/tmp/backup.zip',
+    hasDatabase: true,
+    hasAttachments: false,
+  })),
+}));
+
+jest.mock('../../electron/email/email-local-restore', () => ({
+  pickLocalMailBackupZip: jest.fn(async () => ({ ok: true, path: '/tmp/backup.zip' })),
+  previewRestoreLocalMailBackup: jest.fn(async () => ({
+    ok: true,
+    path: '/tmp/backup.zip',
+    previewToken: 'token',
+    currentSchemaGeneration: 1,
+    hasAttachments: false,
+    accountEmails: [],
+    warnings: [],
+  })),
+  restoreLocalMailBackup: jest.fn(async () => ({ ok: true })),
+}));
+
+jest.mock('../../electron/email/email-gdpr-export', () => ({
+  exportEmailGdprPackage: jest.fn(async () => ({ ok: true, path: '/tmp/export.zip' })),
+}));
+
 import { IPCChannels } from '../../shared/ipc/channels';
+import { exportLocalMailBackup, verifyLocalMailBackup } from '../../electron/email/email-local-backup';
+import {
+  pickLocalMailBackupZip,
+  previewRestoreLocalMailBackup,
+  restoreLocalMailBackup,
+} from '../../electron/email/email-local-restore';
+import { exportEmailGdprPackage } from '../../electron/email/email-gdpr-export';
 import {
   createEmailAccountRecord,
   deleteEmailAccountRecord,
@@ -205,5 +240,50 @@ describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
     for (const role of ['owner', 'admin'] as const) {
       await expect(invoke(channel, eventFor(role), payload)).resolves.toMatchObject({ success: true });
     }
+  });
+});
+
+describe('Backup, Restore und DSGVO-Export (E17)', () => {
+  const restoreCalls = [
+    [IPCChannels.Email.PickLocalMailBackupZip, undefined, pickLocalMailBackupZip],
+    [IPCChannels.Email.PreviewRestoreLocalMailBackup, { zipPath: '/tmp/backup.zip' }, previewRestoreLocalMailBackup],
+    [
+      IPCChannels.Email.RestoreLocalMailBackup,
+      { zipPath: '/tmp/backup.zip', previewToken: 'token', confirmPhrase: 'WIEDERHERSTELLEN', createPreBackup: true },
+      restoreLocalMailBackup,
+    ],
+  ] as const;
+  const exportCalls = [
+    [IPCChannels.Email.ExportLocalMailBackup, undefined, exportLocalMailBackup],
+    [IPCChannels.Email.VerifyLocalMailBackup, undefined, verifyLocalMailBackup],
+    [IPCChannels.Email.EmailGdprExport, { skipAttachments: true }, exportEmailGdprPackage],
+  ] as const;
+
+  beforeEach(() => {
+    for (const [, , impl] of [...restoreCalls, ...exportCalls]) jest.mocked(impl).mockClear();
+  });
+
+  // F-A7b-01: Ein Restore ersetzte ohne Rollenpruefung die komplette Datenbank samt Benutzertabelle, auch fuer Agent und Viewer.
+  test.each(restoreCalls)('%s ist nur fuer den Owner', async (channel, payload, impl) => {
+    for (const role of ['admin', 'agent', 'viewer'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).rejects.toThrow('Keine Berechtigung');
+    }
+    expect(impl).not.toHaveBeenCalled();
+
+    await expect(invoke(channel, eventFor('owner'), payload)).resolves.toMatchObject({ ok: true });
+    expect(impl).toHaveBeenCalledTimes(1);
+  });
+
+  // F-A7b-01: Vollbackup und DSGVO-Export gaben jedem angemeldeten Nutzer alle Mails aller Konten und die Passwort-Hashes.
+  test.each(exportCalls)('%s ist nur fuer Owner und Admin', async (channel, payload, impl) => {
+    for (const role of ['agent', 'viewer'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).rejects.toThrow('Keine Berechtigung');
+    }
+    expect(impl).not.toHaveBeenCalled();
+
+    for (const role of ['owner', 'admin'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).resolves.toMatchObject({ ok: true });
+    }
+    expect(impl).toHaveBeenCalledTimes(2);
   });
 });
