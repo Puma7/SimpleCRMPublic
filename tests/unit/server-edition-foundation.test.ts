@@ -30281,6 +30281,97 @@ describe('server edition foundation', () => {
       ].sort());
   });
 
+  // F-D2-02: Manuelle Zuweisung sowie Tag/Kategorie per REST schickten email_acl.changed ohne reason 'visibility_filter' und setzten so bei jedem Betroffenen Sitzung und Mail-Oberflaeche zurueck.
+  test('manual assignment and tag mutations mark their ACL fan-out as visibility-only', async () => {
+    // Zuweisung, Tag und Kategorie aendern nur, WELCHE Nachrichten ein
+    // gefilterter Nutzer sieht — keine Rolle, kein Binding, keine Kontenliste.
+    // Genau wie beim Workflow- und KI-Pfad muss das Ereignis das sagen, sonst
+    // erneuert jeder Betroffene die Sitzung und verliert Auswahl und Filter.
+    const events: ServerEvent[] = [];
+    const api = createServerApi({
+      ...makeServerApiPorts({
+        events,
+        emailMessages: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async assign() {
+            return {
+              ok: true as const,
+              message: { ...makeEmailMessageRecord(11), assignedToUserId: USER_A_ID },
+              previousAssignedToUserId: null,
+            };
+          },
+        },
+        emailMessageTags: {
+          async list() {
+            return { items: [], nextCursor: null };
+          },
+          async get() {
+            return null;
+          },
+          async create(input) {
+            return {
+              ok: true as const,
+              tag: {
+                id: 5,
+                sourceSqliteId: 5,
+                messageSourceSqliteId: input.values.messageId ?? 11,
+                messageId: input.values.messageId ?? 11,
+                tag: input.values.tag ?? 'intern',
+                createdAt: '2026-06-01T12:00:00.000Z',
+                updatedAt: '2026-06-02T12:00:00.000Z',
+              },
+            };
+          },
+          async delete() {
+            return null;
+          },
+        },
+      }),
+      mailAccess: {
+        async assertPermission() {
+          return undefined;
+        },
+        async resolveScope() {
+          return { kind: 'all' as const };
+        },
+        async resolveGroupPeerUserIds(_workspaceId: string, userId: string) {
+          return [userId];
+        },
+        async resolveConstraintSubjectUserIds() {
+          return ['filtered-user'];
+        },
+      } as unknown as ServerApiPorts['mailAccess'],
+    });
+    const admin = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'admin' as const };
+
+    const assigned = await api.handle({
+      method: 'PATCH',
+      path: '/api/v1/email/messages/11/assignment',
+      body: { teamMemberId: 'agent-2' },
+      principal: admin,
+    });
+    const tagged = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/tags',
+      body: { messageId: 11, tag: 'intern' },
+      principal: admin,
+    });
+
+    expect(assigned.status).toBe(200);
+    expect(tagged.status).toBe(201);
+    const acl = events.filter((event) => event.type === 'email_acl.changed');
+    expect(acl.map((event) => event.entityId).sort()).toEqual([USER_A_ID, 'filtered-user', 'filtered-user'].sort());
+    for (const event of acl) {
+      expect(event.payload).toEqual({ targetUserId: event.entityId, state: 'changed', reason: 'visibility_filter' });
+      expect(event.actorUserId).toBe(USER_A_ID);
+    }
+  });
+
   test('an active chain-stopping workflow requires workflows.manage', async () => {
     // logic.set_variable (email.is_spam=true) + logic.stop_after_spam setzt
     // inboundChainStop und ueberspringt damit ALLE nachrangigen Inbound-

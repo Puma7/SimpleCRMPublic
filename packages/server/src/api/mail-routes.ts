@@ -49,6 +49,7 @@ import {
   requirePrincipal,
 } from './http';
 import { MailAccessDeniedError } from '../mail-access/service';
+import { publishMailVisibilityInvalidation } from '../mail-access/visibility-invalidation';
 import type { MailAccessActor } from '../mail-access/types';
 import { JOB_STALE_LOCK_SECONDS, POST_PROCESS_RETRY_JOB_MARKER_FIELD } from '../jobs/policy';
 import { autoSubmittedDraftKey } from '../mail-compose-send';
@@ -2540,23 +2541,17 @@ async function publishAssignmentAclInvalidation(
       `[mail] assignment filter lookup failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  for (const targetUserId of targets) {
-    try {
-      await ports.events?.publish({
-        type: 'email_acl.changed',
-        workspaceId,
-        entityType: 'email_acl',
-        entityId: targetUserId,
-        actorUserId,
-        occurredAt: new Date().toISOString(),
-        payload: { targetUserId, state: 'changed' },
-      });
-    } catch (error) {
-      console.warn(
-        `[mail] email_acl.changed publish failed for user ${targetUserId}; mutation already committed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
+  if (!ports.events) return;
+  // Eine Zuweisung aendert nur, WELCHE Nachrichten sichtbar sind — keine Rolle,
+  // kein Binding, keine Konten- oder Teamliste. Ohne reason 'visibility_filter'
+  // erneuerte jeder Betroffene seine Sitzung und verloere Auswahl und Filter.
+  await publishMailVisibilityInvalidation({
+    workspaceId,
+    actorUserId,
+    targetUserIds: targets,
+    events: ports.events,
+    logPrefix: '[mail]',
+  });
 }
 
 async function handleMessageSetArchived(
