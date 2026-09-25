@@ -1,5 +1,11 @@
 import { deleteSyncInfo, getDb, getSyncInfo, setSyncInfo, tryClaimSyncInfo } from '../sqlite-service';
-import { CUSTOMERS_TABLE, DEALS_TABLE, TASKS_TABLE, CALENDAR_EVENTS_TABLE } from '../database-schema';
+import {
+  CUSTOMERS_TABLE,
+  DEALS_TABLE,
+  TASKS_TABLE,
+  CALENDAR_EVENTS_TABLE,
+  SYNC_INFO_TABLE,
+} from '../database-schema';
 import { listWorkflowsByTrigger } from '../email/email-workflow-store';
 import { getEmailMessageById } from '../email/email-store';
 import { executeWorkflowForTrigger } from './workflow-executor';
@@ -262,11 +268,18 @@ export async function fireDealStageChangedWorkflows(
 
 export async function scanDueTasksAndFireWorkflows(): Promise<number> {
   const today = new Date().toISOString().slice(0, 10);
+  // Bereits gefeuerte (oder gerade geclaimte) Aufgaben schon im SQL ausschließen:
+  // Sonst belegen dauerhaft offene, überfällige Aufgaben das LIMIT, und neu
+  // fällige werden nie gelesen. Der Schlüssel entspricht workflowTriggerDedupKey.
   const rows = getDb()
     .prepare(
-      `SELECT id, customer_id, title, due_date FROM ${TASKS_TABLE}
-       WHERE completed = 0 AND due_date IS NOT NULL AND date(due_date) <= date(?)
-       ORDER BY due_date ASC LIMIT 50`,
+      `SELECT t.id, t.customer_id, t.title, t.due_date FROM ${TASKS_TABLE} t
+       WHERE t.completed = 0 AND t.due_date IS NOT NULL AND date(t.due_date) <= date(?)
+         AND NOT EXISTS (
+           SELECT 1 FROM ${SYNC_INFO_TABLE} s
+           WHERE s.key = 'workflow_trigger_fired:task.due:' || t.id || ':' || t.due_date
+         )
+       ORDER BY t.due_date ASC LIMIT 50`,
     )
     .all(today) as { id: number; customer_id: number | null; title: string; due_date: string }[];
   let n = 0;
