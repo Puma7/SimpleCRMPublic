@@ -3,7 +3,12 @@
  */
 import { resolveTrustedAuthservId } from '../../packages/core/src/email/authentication-results';
 import { parseMailSource } from '../../packages/server/src/mail-parse';
-import { runStoredMailSecurityChecks, verifyMailAuthentication } from '../../packages/server/src/mail-security-check';
+import {
+  checkMessageWithRspamd,
+  learnMessageWithRspamd,
+  runStoredMailSecurityChecks,
+  verifyMailAuthentication,
+} from '../../packages/server/src/mail-security-check';
 
 describe('server mail security provider timeouts', () => {
   test('returns from a mailauth provider that never settles', async () => {
@@ -229,5 +234,96 @@ describe('server mail auth header fallback', () => {
 
       expect(result).toMatchObject({ spf: 'fail', dkim: 'unknown', dmarc: 'fail' });
     });
+  });
+});
+
+// N-cx-06: the server Rspamd client read the answer and its error text with
+// response.json()/text(), i.e. without a byte limit (the desktop stops at
+// 1 MiB / 64 KiB since C-A23); a configured foreign Rspamd URL could fill the
+// worker's memory until the timeout.
+describe('server Rspamd client bounds what it reads', () => {
+  const KIB = 1024;
+  const CHUNK = 64 * KIB;
+  // Safety net far above both limits, so an unbounded read fails the test
+  // instead of filling the test process.
+  const SAFETY_STOP_BYTES = 8 * KIB * KIB;
+
+  /** A body that never ends, served in 64 KiB pulls; records how much was read. */
+  function endlessResponse(status: number, prefix = '') {
+    const stats = { pulled: 0, cancelled: false };
+    const encoder = new TextEncoder();
+    const filler = encoder.encode('x'.repeat(CHUNK));
+    let pending = prefix ? encoder.encode(prefix) : null;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (stats.pulled >= SAFETY_STOP_BYTES) {
+            controller.error(new Error('endloser Body ungebremst gelesen'));
+            return;
+          }
+          const chunk = pending ?? filler;
+          pending = null;
+          stats.pulled += chunk.length;
+          controller.enqueue(chunk);
+        },
+        cancel() {
+          stats.cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return { response: new Response(stream, { status }), stats };
+  }
+
+  const message = {
+    rawHeaders: 'From: sender@example.com\r\nSubject: Test',
+    bodyText: 'body',
+    bodyHtml: null,
+    rspamdUrl: 'http://rspamd.example.com',
+    rspamdTimeoutMs: 5_000,
+  };
+
+  test('stops reading an endless Rspamd answer at 1 MiB', async () => {
+    const { response, stats } = endlessResponse(200, '{"score":1,"action":"no action","pad":"');
+
+    const result = await checkMessageWithRspamd({ ...message, fetchImpl: async () => response });
+
+    expect(result).toMatchObject({ score: null, action: null, error: expect.stringMatching(/zu gro/) });
+    expect(stats.cancelled).toBe(true);
+    expect(stats.pulled).toBeLessThanOrEqual(KIB * KIB + CHUNK);
+  });
+
+  test('reads at most 64 KiB of an endless Rspamd error text', async () => {
+    const { response, stats } = endlessResponse(503);
+
+    const result = await checkMessageWithRspamd({ ...message, fetchImpl: async () => response });
+
+    expect(result.error).toBe(`Rspamd HTTP 503: ${'x'.repeat(200)}`);
+    expect(stats.cancelled).toBe(true);
+    expect(stats.pulled).toBeLessThanOrEqual(CHUNK + CHUNK);
+  });
+
+  test('reads at most 64 KiB of an endless Rspamd learn error text', async () => {
+    const { response, stats } = endlessResponse(500);
+
+    const result = await learnMessageWithRspamd({ ...message, label: 'spam', fetchImpl: async () => response });
+
+    expect(result).toEqual({ success: false, label: 'spam', error: `Rspamd HTTP 500: ${'x'.repeat(200)}` });
+    expect(stats.cancelled).toBe(true);
+    expect(stats.pulled).toBeLessThanOrEqual(CHUNK + CHUNK);
+  });
+
+  test('still reads a normal Rspamd answer', async () => {
+    const result = await checkMessageWithRspamd({
+      ...message,
+      fetchImpl: async () => new Response(JSON.stringify({
+        score: 7.5,
+        action: 'add header',
+        required_score: 6,
+        symbols: { BAYES_SPAM: { score: 5.1 } },
+      })),
+    });
+
+    expect(result).toEqual({ score: 7.5, action: 'add header', requiredScore: 6, symbols: ['BAYES_SPAM(5.10)'] });
   });
 });

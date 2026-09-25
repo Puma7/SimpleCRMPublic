@@ -1,7 +1,17 @@
 import dns from 'node:dns';
 
-import { isCorruptRawHeaders, selectTrustedAuthenticationResults } from '@simplecrm/core';
+import {
+  isCorruptRawHeaders,
+  readBoundedResponseJson,
+  readBoundedResponseText,
+  selectTrustedAuthenticationResults,
+} from '@simplecrm/core';
 import type { AuthStatus, DKIMVerifyResult } from 'mailauth';
+
+// Byte limits while reading, as on the desktop: the Rspamd URL is configurable
+// and may point to a foreign host.
+const MAX_RSPAMD_RESPONSE_BYTES = 1024 * 1024;
+const MAX_RSPAMD_ERROR_TEXT_BYTES = 64 * 1024;
 
 export type AuthResultLabel =
   | 'pass'
@@ -240,7 +250,7 @@ export async function checkMessageWithRspamd(input: {
       signal: controller.signal,
     });
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await readBoundedResponseText(response, MAX_RSPAMD_ERROR_TEXT_BYTES).catch(() => '');
       return {
         score: null,
         action: null,
@@ -249,7 +259,7 @@ export async function checkMessageWithRspamd(input: {
         error: `Rspamd HTTP ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`,
       };
     }
-    const data = await response.json() as RspamdJson;
+    const data = await readBoundedResponseJson(response, MAX_RSPAMD_RESPONSE_BYTES) as RspamdJson;
     return {
       score: typeof data.score === 'number' ? data.score : null,
       action: data.action ?? null,
@@ -313,7 +323,7 @@ export async function learnMessageWithRspamd(input: {
       signal: controller.signal,
     });
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await readBoundedResponseText(response, MAX_RSPAMD_ERROR_TEXT_BYTES).catch(() => '');
       return {
         success: false,
         label: input.label,

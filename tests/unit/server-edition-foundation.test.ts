@@ -4,6 +4,7 @@ import net from 'net';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { PassThrough } from 'stream';
+import { ReadableStream } from 'stream/web';
 
 import type { Kysely } from 'kysely';
 import {
@@ -43389,13 +43390,19 @@ function makeFetchResponse(input: {
   json?: unknown;
 } = {}): Response {
   const status = input.status ?? 200;
-  const text = input.text ?? '';
+  const bytes = new TextEncoder().encode(input.json !== undefined ? JSON.stringify(input.json) : input.text ?? '');
+  // Only a body stream: the Rspamd client reads it with a byte limit (N-cx-06);
+  // text()/json() were exactly the unbounded reads.
   return {
     ok: status >= 200 && status < 300,
     status,
-    text: async () => text,
-    json: async () => input.json ?? {},
-  } as Response;
+    body: new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
+  } as unknown as Response;
 }
 
 function makeEmailAttachmentRecord(id: number): EmailAttachmentRecord {
