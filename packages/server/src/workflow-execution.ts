@@ -104,6 +104,7 @@ import {
 import { createPostgresComposeDraftInTransaction } from './db/postgres-mail-read-ports';
 import { autoSubmittedDraftKey, outboundReviewApprovedKey } from './mail-compose-send';
 import { extractWorkspaceTicketFromSubject, listWorkspaceTicketPrefixes } from './mail-ticket-prefixes';
+import { READ_RECEIPT_REVIEW_ROUND_VARIABLE, readReceiptReviewRoundFromJobContext } from './mail-read-receipt-responder';
 import { loadEmailEvidenceSummaryForTracking } from './email-tracking';
 
 const MAX_REGEX_PATTERN_LEN = 240;
@@ -113,6 +114,8 @@ const MAX_WORKFLOW_LOOP_ITEMS = 500;
 const MAX_SUBFLOW_DEPTH = 8;
 /** Reserved variable carrying the current subflow chain depth across child runs. */
 const SUBFLOW_DEPTH_VARIABLE = '__subflow_depth';
+/** Variables only the executor may set; nodes can neither write nor overwrite them. */
+const RESERVED_WORKFLOW_VARIABLES = [SUBFLOW_DEPTH_VARIABLE, READ_RECEIPT_REVIEW_ROUND_VARIABLE];
 const MAX_EMAIL_CATEGORY_DEPTH = 3;
 const WORKFLOW_SENDER_WHITELIST_KEY = 'workflow_sender_whitelist';
 const WORKFLOW_SENDER_BLACKLIST_KEY = 'workflow_sender_blacklist';
@@ -1755,12 +1758,14 @@ async function walkGraph(
     }
 
     if (result.variables) {
-      const subflowDepth = input.context.variables[SUBFLOW_DEPTH_VARIABLE];
+      const reserved = RESERVED_WORKFLOW_VARIABLES.map((name) => [name, input.context.variables[name]] as const);
       Object.assign(input.context.variables, result.variables);
-      if (subflowDepth === undefined) {
-        delete input.context.variables[SUBFLOW_DEPTH_VARIABLE];
-      } else {
-        input.context.variables[SUBFLOW_DEPTH_VARIABLE] = subflowDepth;
+      for (const [name, value] of reserved) {
+        if (value === undefined) {
+          delete input.context.variables[name];
+        } else {
+          input.context.variables[name] = value;
+        }
       }
     }
     // Inbound gate: condition.yes, auto_reply.approved, threshold.yes oder
@@ -2016,7 +2021,7 @@ async function executeServerNode(
   }
   if (type === 'logic.set_variable') {
     const name = String(config.name ?? 'var').trim() || 'var';
-    if (name === SUBFLOW_DEPTH_VARIABLE) {
+    if (RESERVED_WORKFLOW_VARIABLES.includes(name)) {
       return { status: 'error', port: 'error', message: `Variable ${name} ist reserviert` };
     }
     const value = config.value;
@@ -5696,6 +5701,12 @@ async function releaseWorkflowOutboundHold(
   if (context.messageId === null) {
     return { status: 'error', port: 'error', message: 'Keine Nachricht im Kontext' };
   }
+  // Pruefrunde einer Lesebestaetigung: die Nachricht ist die eingegangene Mail,
+  // kein Entwurf. Die Freigabe gilt nur der Lesebestaetigung (SEND); Betreff,
+  // Text und Versandzeit der Mail bleiben unberuehrt.
+  if (typeof context.variables[READ_RECEIPT_REVIEW_ROUND_VARIABLE] === 'string') {
+    return { status: 'ok', port: 'default', message: 'read_receipt_review:send' };
+  }
   const autoSend = config.autoSend === true;
 
   if (!autoSend) {
@@ -7362,6 +7373,10 @@ async function buildWorkflowContext(
     if (Number.isFinite(inReplyTo) && inReplyTo > 0) {
       variables['outbound.in_reply_to_message_id'] = inReplyTo;
     }
+    // Pruefrunde einer Lesebestaetigung: die Runde reist ab hier in allen
+    // Job-Payloads und Fortsetzungen mit (siehe mail-read-receipt-responder).
+    const readReceiptRound = readReceiptReviewRoundFromJobContext(input.jobContext);
+    if (readReceiptRound) variables[READ_RECEIPT_REVIEW_ROUND_VARIABLE] = readReceiptRound;
   }
   return {
     workspaceId: input.workspaceId,

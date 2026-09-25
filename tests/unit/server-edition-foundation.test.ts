@@ -27823,6 +27823,7 @@ describe('server edition foundation', () => {
           },
           readReceipt: true,
           source: 'server_read_receipt_outbound_review',
+          readReceiptRound: expect.stringMatching(/^[0-9a-f-]{36}$/),
         },
       },
       {
@@ -27847,9 +27848,13 @@ describe('server edition foundation', () => {
           },
           readReceipt: true,
           source: 'server_read_receipt_outbound_review',
+          readReceiptRound: expect.stringMatching(/^[0-9a-f-]{36}$/),
         },
       },
     ]);
+    // F-A5-11 (E24): alle Laeufe eines Klicks gehoeren zu einer Pruefrunde.
+    const rounds = rows.jobs.map((job) => (job.payload as any).context.readReceiptRound);
+    expect(new Set(rounds).size).toBe(1);
   });
 
   test('server read receipt responder refreshes OAuth tokens for SMTP MDN responses', async () => {

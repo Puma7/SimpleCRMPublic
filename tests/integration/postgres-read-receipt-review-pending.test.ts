@@ -16,7 +16,8 @@ const WORKFLOW_ID = 831;
 
 // F-A5-11: every click on "Lesebestaetigung senden" queued a new round of
 // outbound review runs and jobs, even while the previous review was still
-// pending. How a finished review releases the MDN is intentionally still open.
+// pending. A finished review now releases the MDN (E24, see
+// postgres-read-receipt-review-release.test.ts).
 describe('read receipt outbound review while a review is pending', () => {
   let postgres: EmbeddedPostgres;
   let db: Kysely<ServerDatabase>;
@@ -94,13 +95,14 @@ describe('read receipt outbound review while a review is pending', () => {
     await expect(guard.review(input)).resolves.toMatchObject({ allowed: false, workflowRunId: firstRunId });
     expect(await countRowsForMessage()).toEqual({ runs: 1, jobs: 1 });
 
-    // Once the review finished, the unchanged (still undecided) release
-    // semantics apply: a new click queues a fresh review.
+    // Once the review finished without a block (run ok, its job done), the
+    // MDN is released instead of queueing a fresh review (E24).
     await postgres.admin.query(
       `UPDATE email_workflow_runs SET status = 'ok', finished_at = now() WHERE id = $1`,
       [firstRunId],
     );
-    await expect(guard.review(input)).resolves.toMatchObject({ allowed: false });
-    expect(await countRowsForMessage()).toEqual({ runs: 2, jobs: 2 });
+    await postgres.admin.query(`DELETE FROM job_queue WHERE workspace_id = $1`, [WORKSPACE_ID]);
+    await expect(guard.review(input)).resolves.toEqual({ allowed: true });
+    expect(await countRowsForMessage()).toEqual({ runs: 1, jobs: 0 });
   });
 });
