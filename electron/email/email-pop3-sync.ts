@@ -5,12 +5,14 @@ import {
   InboundMessageTooLargeError,
   parseLegacyPop3UidlStr,
 } from '@simplecrm/core';
+import { withOpportunisticStls } from './pop3-stls';
 
 const requireCjs = createRequire(__filename);
-const Pop3Command = requireCjs('node-pop3') as typeof import(
+// Opportunistic STLS on top of node-pop3 (F-A4-05), see pop3-stls.ts.
+const Pop3Command = withOpportunisticStls(requireCjs('node-pop3') as typeof import(
   'node-pop3',
   { with: { 'resolution-mode': 'require' } }
-).default;
+).default);
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { getDb, getSyncInfo, setSyncInfo } from '../sqlite-service';
 import { getEmailPassword } from './email-keytar';

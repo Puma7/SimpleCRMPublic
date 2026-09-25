@@ -459,6 +459,11 @@ async function testPop3Connection(input: ProtocolTestInput): Promise<MailConnect
   try {
     const greeting = await client.readLine();
     if (!isPop3Ok(greeting)) return { success: false, error: greeting };
+    // Like the POP3 sync: without implicit TLS, upgrade via STLS whenever the
+    // server offers it, so USER/PASS do not carry the password in plaintext.
+    if (!input.tls && await pop3OffersStls(client)) {
+      if (isPop3Ok(await client.command('STLS'))) await upgradeClientToTls(client, input.host, input.timeoutMs);
+    }
     let line = await client.command(`USER ${input.user}`);
     if (!isPop3Ok(line)) return { success: false, error: line };
     line = await client.command(`PASS ${input.password}`);
@@ -472,6 +477,18 @@ async function testPop3Connection(input: ProtocolTestInput): Promise<MailConnect
   } finally {
     client.close();
   }
+}
+
+async function pop3OffersStls(client: LineProtocolClient): Promise<boolean> {
+  // CAPA is optional (RFC 2449); a server without it answers -ERR.
+  if (!isPop3Ok(await client.command('CAPA'))) return false;
+  let stls = false;
+  for (let count = 0; count < MAX_RESPONSE_LINES; count += 1) {
+    const line = await client.readLine();
+    if (line === '.') return stls;
+    if (/^STLS\b/i.test(line)) stls = true;
+  }
+  throw new Error('Server-Antwort hat zu viele Zeilen');
 }
 
 async function testSmtpConnection(input: ProtocolTestInput): Promise<MailConnectionTestResult> {
@@ -748,6 +765,10 @@ class LineProtocolClient {
     this.socket.off('data', this.onData);
     this.socket.off('error', this.onError);
     this.socket.off('end', this.onEnd);
+    // Only used for the STARTTLS/STLS switch: bytes read before it arrived in
+    // plaintext and must not be taken as a TLS-protected response (RFC 3207
+    // section 4.2, RFC 2595 section 4).
+    this.buffer = '';
     return this.socket;
   }
 

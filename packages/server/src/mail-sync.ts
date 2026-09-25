@@ -2253,7 +2253,9 @@ function createDefaultImapClient(input: Parameters<ServerMailSyncImapClientFacto
   });
 }
 
-function createDefaultPop3Client(input: Parameters<ServerMailSyncPop3ClientFactory>[0]): ServerMailSyncPop3Client {
+const POP3_CAPA_MAX_LINES = 1_000;
+
+export function createDefaultPop3Client(input: Parameters<ServerMailSyncPop3ClientFactory>[0]): ServerMailSyncPop3Client {
   return new LineProtocolPop3Client(input);
 }
 
@@ -2274,14 +2276,62 @@ class LineProtocolPop3Client implements ServerMailSyncPop3Client {
       ?? validateAuthValue(this.input.password, 'Passwort');
     if (unsafeUser) throw new Error(unsafeUser);
     this.socket = await connectSocket(this.input);
-    this.socket.setEncoding('latin1');
-    this.socket.on('data', this.onData);
-    this.socket.on('error', this.onError);
-    this.socket.on('end', this.onEnd);
+    this.attach(this.socket);
     const greeting = await this.readLine();
     assertPop3Ok(greeting);
+    // Like IMAP (ImapFlow with secure=false): without implicit TLS, upgrade via
+    // STLS whenever the server offers it, so USER/PASS do not travel in plaintext.
+    if (!this.input.tls && await this.offersStls()) {
+      if (/^\+OK\b/i.test(await this.command('STLS'))) await this.upgradeToTls();
+    }
     assertPop3Ok(await this.command(`USER ${this.input.user}`));
     assertPop3Ok(await this.command(`PASS ${this.input.password}`));
+  }
+
+  private attach(socket: net.Socket): void {
+    socket.setEncoding('latin1');
+    socket.on('data', this.onData);
+    socket.on('error', this.onError);
+    socket.on('end', this.onEnd);
+  }
+
+  private async offersStls(): Promise<boolean> {
+    // CAPA is optional (RFC 2449); a server without it answers -ERR.
+    if (!/^\+OK\b/i.test(await this.command('CAPA'))) return false;
+    let stls = false;
+    for (let count = 0; count < POP3_CAPA_MAX_LINES; count += 1) {
+      const line = await this.readLine();
+      if (line === '.') return stls;
+      if (/^STLS\b/i.test(line)) stls = true;
+    }
+    throw new Error('POP3 CAPA-Antwort hat zu viele Zeilen');
+  }
+
+  private async upgradeToTls(): Promise<void> {
+    const raw = this.socket!;
+    raw.off('data', this.onData);
+    raw.off('error', this.onError);
+    raw.off('end', this.onEnd);
+    // Anything read before the switch was sent in plaintext and must not be
+    // taken as a TLS-protected response (RFC 2595 section 4).
+    this.buffer = '';
+    const secure = await new Promise<tls.TLSSocket>((resolve, reject) => {
+      const socket = tls.connect({ socket: raw, servername: this.input.host });
+      const timer = setTimeout(() => fail(new Error('Connection timed out')), this.input.timeoutMs);
+      const fail = (error: Error): void => {
+        clearTimeout(timer);
+        socket.destroy();
+        reject(error);
+      };
+      socket.once('error', fail);
+      socket.once('secureConnect', () => {
+        clearTimeout(timer);
+        socket.off('error', fail);
+        resolve(socket);
+      });
+    });
+    this.socket = secure;
+    this.attach(secure);
   }
 
   async uidl(): Promise<readonly [number, string][]> {
