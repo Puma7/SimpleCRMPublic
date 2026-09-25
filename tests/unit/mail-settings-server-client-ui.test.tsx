@@ -372,6 +372,130 @@ describe('mail settings server-client UI', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Adminrechte erforderlich'));
   });
 
+  // F-N-fe-03: Ohne Passwort testet der Server still den gespeicherten SMTP-Host; das Panel meldete Erfolg fuer die geaenderten Werte.
+  describe('SMTP-Test ohne Passwort', () => {
+    const smtpTestFetch = () => jest.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/v1/email/accounts/test-smtp')) return jsonResponse({ data: { success: true } });
+      if (url.endsWith('/api/v1/email/accounts')) {
+        return jsonResponse({ data: { items: [smtpAccountRecord()] } });
+      }
+      return jsonResponse({ data: null }, 404);
+    });
+    const testCalls = (fetchImpl: jest.Mock) =>
+      fetchImpl.mock.calls.filter(([url]) => String(url).endsWith('/test-smtp'));
+
+    test.each([
+      ['Host', 'smtp.example.com', 'smtp.neu.invalid'],
+      ['Port', '587', '2525'],
+    ])('geaenderter %s verlangt ein Passwort statt Erfolg zu melden', async (_field, current, next) => {
+      const fetchImpl = smtpTestFetch();
+      configureRendererTransport(createHttpRendererTransport({
+        baseUrl: 'https://crm.example.com',
+        fetchImpl: fetchImpl as typeof fetch,
+      }));
+      render(<SmtpPanel embeddedAccountId={1} />);
+      await screen.findByDisplayValue('smtp.example.com');
+      fireEvent.change(screen.getByDisplayValue(current), { target: { value: next } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+      });
+
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Passwort eingeben/));
+      expect(toast.success).not.toHaveBeenCalled();
+      expect(testCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    test('geaenderte Anmeldung (nicht mehr wie IMAP) verlangt ein Passwort', async () => {
+      const fetchImpl = smtpTestFetch();
+      configureRendererTransport(createHttpRendererTransport({
+        baseUrl: 'https://crm.example.com',
+        fetchImpl: fetchImpl as typeof fetch,
+      }));
+      render(<SmtpPanel embeddedAccountId={1} />);
+      await screen.findByDisplayValue('smtp.example.com');
+      fireEvent.click(screen.getByLabelText('SMTP-Anmeldung wie IMAP'));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+      });
+
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Passwort eingeben/));
+      expect(testCalls(fetchImpl)).toHaveLength(0);
+    });
+
+    test('ohne Aenderung wird weiter das gespeicherte Konto getestet', async () => {
+      const fetchImpl = smtpTestFetch();
+      configureRendererTransport(createHttpRendererTransport({
+        baseUrl: 'https://crm.example.com',
+        fetchImpl: fetchImpl as typeof fetch,
+      }));
+      render(<SmtpPanel embeddedAccountId={1} />);
+      await screen.findByDisplayValue('smtp.example.com');
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+      });
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SMTP-Verbindung und Versand OK'));
+      expect(testCalls(fetchImpl)).toHaveLength(1);
+    });
+
+    test('geaenderter Host mit Passwort testet die Formularwerte', async () => {
+      const fetchImpl = smtpTestFetch();
+      configureRendererTransport(createHttpRendererTransport({
+        baseUrl: 'https://crm.example.com',
+        fetchImpl: fetchImpl as typeof fetch,
+      }));
+      const { container } = render(<SmtpPanel embeddedAccountId={1} />);
+      fireEvent.change(await screen.findByDisplayValue('smtp.example.com'), { target: { value: 'smtp.neu.example' } });
+      fireEvent.change(container.querySelector('input[type="password"]') as HTMLInputElement, {
+        target: { value: 'imap-secret' },
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+      });
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SMTP-Verbindung und Versand OK'));
+      const [, init] = testCalls(fetchImpl)[0]!;
+      expect(JSON.parse(String(init?.body))).toEqual(expect.objectContaining({ host: 'smtp.neu.example' }));
+    });
+
+    test('Desktop: geaenderter Host wird auch ohne Passwort mit den Formularwerten getestet', async () => {
+      const localInvoke = jest.fn(async (channel: string) => {
+        if (channel === 'email:list-accounts') {
+          return [{
+            id: 1,
+            display_name: 'Kontakt',
+            email_address: 'kontakt@example.com',
+            protocol: 'imap',
+            imap_host: 'imap.example.com',
+            imap_username: 'kontakt@example.com',
+            smtp_host: 'smtp.example.com',
+            smtp_port: 587,
+            smtp_tls: 1,
+            smtp_username: null,
+            smtp_use_imap_auth: 1,
+          }];
+        }
+        return { success: true };
+      });
+      (window as any).electronAPI = { invoke: localInvoke };
+      configureRendererTransport(createIpcRendererTransport());
+      render(<SmtpPanel embeddedAccountId={1} />);
+      fireEvent.change(await screen.findByDisplayValue('smtp.example.com'), { target: { value: 'smtp.neu.example' } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+      });
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SMTP-Verbindung und Versand OK'));
+      expect(localInvoke).toHaveBeenCalledWith('email:test-smtp', expect.objectContaining({ host: 'smtp.neu.example' }));
+    });
+  });
+
   // F-A4-02: the server now refuses to move a profile with a stored API key to
   // another origin or provider without a new key; the panel asks for it first.
   test('AI panel requires a new API key once the base URL origin changes', async () => {

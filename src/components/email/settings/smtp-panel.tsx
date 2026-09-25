@@ -144,6 +144,19 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
       toast.error("Bitte SMTP-Passwort zum Testen eingeben oder Konto wählen.")
       return
     }
+    // Server edition: without a new password the server deliberately tests the
+    // STORED host/port/TLS and login (mail-connection-test.ts), not these form
+    // values, so a success would not cover the changes.
+    const loginChanged = storedAccount != null && (
+      smtpImapAuth !== ((storedAccount.smtp_use_imap_auth ?? 1) === 1)
+      || (!smtpImapAuth && smtpUser.trim() !== (storedAccount.smtp_username ?? "").trim())
+    )
+    if (isServerClientMode() && !smtpPass && (credentialsRequired || loginChanged)) {
+      toast.error(
+        `SMTP-Server, Port, TLS oder Anmeldung geändert: Ohne Passwort prüft der Server nur die gespeicherten Werte. Bitte das ${requiredPasswordLabel} eingeben, um die neuen Werte zu testen.`,
+      )
+      return
+    }
     setTesting(true)
     try {
       const r = await invokeRenderer(
