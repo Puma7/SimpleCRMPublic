@@ -952,10 +952,17 @@ async function handleAiTextTransform(
   const parsed = parseAiTextTransformBody(req.body);
   if (!parsed.ok) return parsed.response;
 
+  // customerId fuellt die Kunden-Platzhalter (Name, E-Mail) aus dem CRM — ohne
+  // crm.read ein CRM-Lesezugriff an der zentralen Pruefung vorbei (C-A36). Der
+  // Composer sendet customerId automatisch mit, deshalb still verwerfen statt
+  // 403: Mail-Nutzer ohne CRM-Recht formulieren weiter um, die Platzhalter
+  // bleiben leer und es gibt kein "Kunde nicht gefunden" als Existenz-Orakel.
+  const { customerId, ...values } = parsed.values;
   const result = await ports.aiTextTransform.transformText({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
-    ...parsed.values,
+    ...values,
+    ...(customerId !== undefined && requireCapability(principal, 'crm.read') ? { customerId } : {}),
   });
   return data(200, result);
 }

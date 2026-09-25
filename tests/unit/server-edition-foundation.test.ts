@@ -36554,6 +36554,44 @@ describe('server edition foundation', () => {
     expect(unavailable.status).toBe(503);
   });
 
+  // C-A36: Die KI-Umformung lud den Kunden zu customerId auch ohne crm.read und
+  // schickte Name und E-Mail an den KI-Anbieter (bzw. verriet, ob es ihn gibt).
+  test('server AI text transform ignores customerId without crm.read', async () => {
+    const calls: unknown[] = [];
+    const api = createServerApi(makeServerApiPorts({
+      aiTextTransform: {
+        async transformText(input) {
+          calls.push(input);
+          return { success: true, text: 'Umformuliert' };
+        },
+      },
+    }));
+    const transform = (principal: { role: 'user' | 'admin'; capabilities?: string[] }) => api.handle({
+      method: 'POST',
+      path: '/api/v1/ai/transform-text',
+      body: { promptId: 22, text: 'Hallo', customerId: 7 },
+      principal: { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, ...principal },
+    });
+    const withoutCustomer = { workspaceId: WORKSPACE_A_ID, actorUserId: USER_A_ID, promptId: 22, text: 'Hallo' };
+
+    // Ohne CRM-Recht: umformulieren geht weiter, der Kunde wird nie geladen.
+    for (const capabilities of [[], ['workflows.manage'], ['settings.manage']]) {
+      const response = await transform({ role: 'user', capabilities });
+      expect(response.status).toBe(200);
+      expect((response.body as any).data).toEqual({ success: true, text: 'Umformuliert' });
+    }
+    expect(calls).toEqual([withoutCustomer, withoutCustomer, withoutCustomer]);
+
+    // Mit crm.read (oder als Admin) werden die Kunden-Platzhalter wie bisher gefuellt.
+    calls.length = 0;
+    expect((await transform({ role: 'user', capabilities: ['crm.read'] })).status).toBe(200);
+    expect((await transform({ role: 'admin' })).status).toBe(200);
+    expect(calls).toEqual([
+      { ...withoutCustomer, customerId: 7 },
+      { ...withoutCustomer, customerId: 7 },
+    ]);
+  });
+
   test('server workflow graph compile route returns legacy-compatible compile results', async () => {
     const api = createServerApi(makeServerApiPorts());
     const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
