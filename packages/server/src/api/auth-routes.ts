@@ -26,6 +26,10 @@ import {
   readRefreshCredential,
 } from './auth-session-cookie';
 import {
+  isUsableInitialSetupToken,
+  MIN_INITIAL_SETUP_TOKEN_LENGTH,
+} from '../security/initial-setup-token';
+import {
   passwordCheckEmail,
   passwordCheckLockResponse,
   recordFailedPasswordCheck,
@@ -1150,6 +1154,13 @@ function verifyInitialSetupToken(
       503,
       'initial_setup_token_required',
       'INITIAL_SETUP_TOKEN muss auf dem Server gesetzt sein, bevor das erste Owner-Konto angelegt werden kann.',
+    );
+  }
+  if (!isUsableInitialSetupToken(expected)) {
+    return error(
+      503,
+      'initial_setup_token_required',
+      `INITIAL_SETUP_TOKEN ist ein Platzhalter oder kuerzer als ${MIN_INITIAL_SETUP_TOKEN_LENGTH} Zeichen. Bitte einen zufaelligen Wert setzen und den Server neu starten.`,
     );
   }
 

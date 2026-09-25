@@ -17689,7 +17689,7 @@ describe('server edition foundation', () => {
     const auditEvents: CapturedAuditEvent[] = [];
     const ports = {
       ...makeServerApiPorts({ auditEvents, initialSetupNeeded: true }),
-      initialSetupToken: 'setup-token-secret',
+      initialSetupToken: 'setup-token-secret-0123456789',
     };
     const api = createServerApi(ports);
 
@@ -17720,7 +17720,7 @@ describe('server edition foundation', () => {
         displayName: ' Owner ',
         workspaceName: ' Vertrieb ',
         device: 'browser',
-        initialSetupToken: 'setup-token-secret',
+        initialSetupToken: 'setup-token-secret-0123456789',
       },
     });
     expect(created.status).toBe(201);
@@ -17749,7 +17749,7 @@ describe('server edition foundation', () => {
     const invalid = await api.handle({
       method: 'POST',
       path: '/api/v1/auth/initial-setup',
-      body: { email: 'invalid', password: 'short', initialSetupToken: 'setup-token-secret' },
+      body: { email: 'invalid', password: 'short', initialSetupToken: 'setup-token-secret-0123456789' },
     });
     expect(invalid.status).toBe(400);
     expect((invalid.body as any).error.code).toBe('validation_error');
@@ -17760,7 +17760,7 @@ describe('server edition foundation', () => {
       body: {
         email: 'second@example.com',
         password: 'another-passphrase',
-        initialSetupToken: 'setup-token-secret',
+        initialSetupToken: 'setup-token-secret-0123456789',
       },
     });
     expect(blocked.status).toBe(409);

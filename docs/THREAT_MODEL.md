@@ -32,7 +32,7 @@ Invalid `Authorization` headers must not fall back to test/server principal head
 
 ### Initial setup token
 
-`POST /api/v1/auth/initial-setup` requires `INITIAL_SETUP_TOKEN` (env + header `X-Initial-Setup-Token`). Without it, no owner account can be created. This closes unauthenticated workspace takeover on freshly deployed instances.
+`POST /api/v1/auth/initial-setup` requires `INITIAL_SETUP_TOKEN` (env + header `X-Initial-Setup-Token`). Without it, no owner account can be created. This closes unauthenticated workspace takeover on freshly deployed instances. A `CHANGE_ME` placeholder (as in `docker/.env.example`) or a token shorter than 24 characters counts as unset, and `simplecrm doctor` warns about it.
 
 ### Optional login security layers
 

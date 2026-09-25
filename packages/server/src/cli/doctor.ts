@@ -13,6 +13,10 @@ import {
   type EmailTrackingIpIntelligencePort,
 } from '../email-tracking-ip-intelligence';
 import { parseBooleanEnv } from '../config';
+import {
+  isUsableInitialSetupToken,
+  MIN_INITIAL_SETUP_TOKEN_LENGTH,
+} from '../security/initial-setup-token';
 
 export type DoctorStatus = 'ok' | 'warn' | 'fail';
 
@@ -179,6 +183,8 @@ export async function runDoctorChecks(
   checks.push(await checkJobQueue(client));
   checks.push(checkBackgroundWorker(env));
   checks.push(checkTrustProxy(env));
+  const initialSetupToken = checkInitialSetupToken(env);
+  if (initialSetupToken) checks.push(initialSetupToken);
   checks.push(await checkConversationLocks(client));
   checks.push(await checkBackups(options.backupDir));
   checks.push(await checkGeoIpIntelligence(
@@ -350,6 +356,24 @@ export function checkTrustProxy(env: NodeJS.ProcessEnv): DoctorCheck {
     name: 'trust_proxy',
     status: 'ok',
     message: `TRUST_PROXY=${value}`,
+  };
+}
+
+/** Reported only when a token is configured; it matters until the first owner exists. */
+export function checkInitialSetupToken(env: NodeJS.ProcessEnv): DoctorCheck | null {
+  const value = env.INITIAL_SETUP_TOKEN?.trim();
+  if (!value) return null;
+  if (!isUsableInitialSetupToken(value)) {
+    return {
+      name: 'initial_setup_token',
+      status: 'warn',
+      message: `INITIAL_SETUP_TOKEN is a CHANGE_ME placeholder or shorter than ${MIN_INITIAL_SETUP_TOKEN_LENGTH} characters; the server refuses the initial owner setup with it (generate a random value, or remove it once setup is done)`,
+    };
+  }
+  return {
+    name: 'initial_setup_token',
+    status: 'ok',
+    message: 'INITIAL_SETUP_TOKEN is set',
   };
 }
 
