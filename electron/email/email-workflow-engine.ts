@@ -17,6 +17,7 @@ import {
 } from './email-workflow-store';
 import {
   messageIsSpamOrReviewForInboundWorkflow,
+  stripHtmlTagsToText,
   workflowGraphHasExplicitChainStopConfig,
 } from '@simplecrm/core';
 import type { WorkflowDefinitionV1, WorkflowThenStep } from './email-workflow-types';
@@ -88,7 +89,7 @@ function buildInboundContext(row: EmailMessageRow) {
 }
 
 function buildOutboundContext(payload: OutboundDraftPayload) {
-  const htmlPlain = (payload.bodyHtml ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const htmlPlain = stripHtmlTagsToText(payload.bodyHtml ?? '');
   const combined = [
     payload.subject,
     payload.bodyText,

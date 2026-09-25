@@ -416,6 +416,28 @@ describe('email-workflow-engine core', () => {
       const skip = await runCompiledOutboundRules(skipDef, payload);
       expect(skip.log.some((l) => l.startsWith('skip:'))).toBe(true);
     });
+
+    // F-N-redos-01: buildOutboundContext strippte bodyHtml per /<[^>]+>/g; unverschlossene '<' blockierten den Main-Prozess quadratisch.
+    test('strips draft HTML linearly for rule conditions', async () => {
+      const payload = {
+        ...outboundPayloadFromMessage(draftRow()),
+        bodyText: '',
+        bodyHtml: `<p>Hallo</p>Welt${'<'.repeat(60_000)}`,
+      };
+      const def: WorkflowDefinitionV1 = {
+        version: 1,
+        rules: [
+          {
+            when: { field: 'combined_text', op: 'contains', value: 'Hallo Welt' },
+            then: [{ type: 'stop' }],
+          },
+        ],
+      };
+      const started = Date.now();
+      const r = await runCompiledOutboundRules(def, payload);
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(r.log).toEqual(['rule_matched', 'stop']);
+    });
   });
 
   describe('evaluateOutboundWorkflows', () => {
