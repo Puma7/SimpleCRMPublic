@@ -32,6 +32,7 @@ import {
   processNewMessagesAfterSync,
   type SyncNewMessageItem,
 } from './email-sync-post-process';
+import { persistParsedAttachments } from './email-message-attachments-store';
 import {
   assertSyncNotAborted,
   isEmailSyncAbortedError,
@@ -171,9 +172,22 @@ async function syncInboxPop3Internal(accountId: number, signal?: AbortSignal): P
     );
 
     if (isNew && localMsgId > 0) {
+      // Stored per message so the run does not hold the decoded attachments
+      // of every new message until the loop is done (C-A59). [] = stored;
+      // undefined makes the post-process recover them from raw_rfc822_b64.
+      let parsedAttachments: SyncNewMessageItem['parsedAttachments'] = [];
+      try {
+        await persistParsedAttachments(localMsgId, parsed.attachments);
+      } catch (attErr) {
+        parsedAttachments = undefined;
+        console.warn(
+          `[pop3-sync] attachments of message ${localMsgId} not stored, retried in post-process:`,
+          attErr instanceof Error ? attErr.message : attErr,
+        );
+      }
       newAfterSync.push({
         localMsgId,
-        parsedAttachments: parsed.attachments,
+        parsedAttachments,
         threading: {
           messageIdHeader: messageId,
           inReplyTo,

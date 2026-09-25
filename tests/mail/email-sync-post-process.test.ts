@@ -221,6 +221,24 @@ describe('processNewMessagesAfterSync', () => {
     expect(mockMarkDone).toHaveBeenCalledWith(14);
   });
 
+  // C-A59: Vom Sync schon gespeicherte Anhaenge kommen als leere Liste und loesen keine Wiederherstellung aus.
+  test('does not recover attachments that the sync already stored', async () => {
+    mockGetMessage.mockReturnValue({ id: 6, has_attachments: 1, raw_rfc822_b64: Buffer.from('raw').toString('base64') });
+
+    await processNewMessagesAfterSync(1, [
+      {
+        localMsgId: 6,
+        parsedAttachments: [],
+        threading: { messageIdHeader: null, inReplyTo: null, referencesHeader: null, subject: null },
+      },
+    ]);
+
+    expect(mockHasCompleteStoredAttachments).not.toHaveBeenCalled();
+    expect(mockSimpleParser).not.toHaveBeenCalled();
+    expect(mockThread).toHaveBeenCalled();
+    expect(mockMarkDone).toHaveBeenCalledWith(6);
+  });
+
   test('skips workflow when message row missing', async () => {
     mockGetMessage.mockReturnValue(undefined);
     await processNewMessagesAfterSync(1, [

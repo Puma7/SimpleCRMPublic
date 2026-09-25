@@ -48,6 +48,10 @@ jest.mock('../../electron/email/email-sync-mutex', () => ({
 jest.mock('../../electron/email/email-sync-post-process', () => ({
   processNewMessagesAfterSync: jest.fn().mockResolvedValue(undefined),
 }));
+const mockPersistAttachments = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../electron/email/email-message-attachments-store', () => ({
+  persistParsedAttachments: (...args: unknown[]) => mockPersistAttachments(...args),
+}));
 const mockBackup = jest.fn(() => []);
 const mockRecordNotice = jest.fn();
 const mockRestoreMeta = jest.fn();
@@ -285,4 +289,52 @@ describe('email-imap-sync', () => {
     expect(stored.bodyHtml).toContain('<img src="cid:a">');
     expect(simpleParser).toHaveBeenCalledWith(source, { keepCidLinks: true });
   }, 30_000);
+
+  // C-A59: Die dekodierten Anhaenge aller neuen Mails lagen bis zum Ende der Ordnerschleife in newAfterSync (bis 2000 Mails beim Erst-Sync).
+  test('syncInboxImap stores attachments per message and hands no buffers to the post-process', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    const attachment = (n: number) => ({ filename: `a${n}.pdf`, contentType: 'application/pdf', content: Buffer.alloc(1024, n) });
+    const parsedWith = (n: number) => ({ messageId: `<m${n}@x>`, subject: `S${n}`, text: 'x', attachments: [attachment(n)] });
+    simpleParser.mockResolvedValueOnce(parsedWith(1)).mockResolvedValueOnce(parsedWith(2));
+    Object.assign(mockFolder, { last_uid: 1, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([2, 3]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock)
+      .mockReturnValueOnce({ id: 21, isNew: true })
+      .mockReturnValueOnce({ id: 22, isNew: true });
+
+    const r = await syncInboxImap(1);
+
+    expect(r.fetched).toBe(2);
+    expect(mockPersistAttachments.mock.calls).toEqual([[21, [attachment(1)]], [22, [attachment(2)]]]);
+    // Stored before the next message is inserted, not after the whole folder.
+    expect(mockPersistAttachments.mock.invocationCallOrder[0])
+      .toBeLessThan((insertOrUpdateEmailMessage as jest.Mock).mock.invocationCallOrder[1]!);
+    const items = (processNewMessagesAfterSync as jest.Mock).mock.calls[0]![1] as { localMsgId: number; parsedAttachments: unknown }[];
+    expect(items.map((i) => [i.localMsgId, i.parsedAttachments])).toEqual([[21, []], [22, []]]);
+  });
+
+  // C-A59: Scheitert das Speichern im Sync, holt die Nachverarbeitung die Anhaenge aus raw_rfc822_b64 nach, ohne die UID als Fehler zu zaehlen.
+  test('syncInboxImap leaves attachments to the post-process recovery when storing fails', async () => {
+    const { simpleParser } = jest.requireMock('mailparser') as { simpleParser: jest.Mock };
+    const { insertOrUpdateEmailMessage } = await import('../../electron/email/email-store');
+    const { processNewMessagesAfterSync } = await import('../../electron/email/email-sync-post-process');
+    simpleParser.mockResolvedValueOnce({ messageId: '<m@x>', text: 'x', attachments: [{ filename: 'a.pdf', content: Buffer.from('pdf') }] });
+    mockPersistAttachments.mockRejectedValueOnce(new Error('disk full'));
+    Object.assign(mockFolder, { last_uid: 1, uidvalidity: 1, uidvalidity_str: '1' });
+    client.search.mockResolvedValueOnce([2]);
+    client.fetchOne.mockResolvedValue({ source: Buffer.from('From: a@b.de\r\n\r\nx'), flags: new Set() });
+    (insertOrUpdateEmailMessage as jest.Mock).mockReturnValueOnce({ id: 31, isNew: true });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const r = await syncInboxImap(1);
+
+    expect(r.fetched).toBe(1);
+    expect(mockRecordFailure).not.toHaveBeenCalled();
+    const items = (processNewMessagesAfterSync as jest.Mock).mock.calls[0]![1] as { localMsgId: number; parsedAttachments: unknown }[];
+    expect(items).toEqual([expect.objectContaining({ localMsgId: 31, parsedAttachments: undefined })]);
+    warn.mockRestore();
+  });
 });
