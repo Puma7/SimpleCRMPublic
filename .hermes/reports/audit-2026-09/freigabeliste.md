@@ -2,6 +2,16 @@
 
 **Stand:** 2026-09-25 · Grundlage: Befundregister `findings.md`
 
+## Entscheidung (2026-09-25)
+
+Pascal hat **alle Empfehlungen** freigegeben (A1–A5, B1 Mischform, B2–B5, C1–C5, D1–D4). Umsetzung und Commits stehen im Befundregister (`findings.md`, Status BEHOBEN).
+
+Nachträglich gemeldet (Fix-Agent Mail-Versand):
+- **F-A5-02** (mehrdeutiges SMTP-Ergebnis nach DATA → automatischer Neuversand): Umgesetzt wird die konservative Variante ohne neue Abläufe. Bei unklarem Zustellstatus bricht der geplante Versand ab („Zustellstatus unklar, bitte Gesendet-Ordner prüfen“) statt erneut zu senden. Eine eindeutige 4xx/5xx-Antwort auf DATA gilt als „nicht zugestellt“. Das entspricht dem Ziel „kein Doppelversand“, keine Migration, kein API-Bruch.
+- **F-A5-11** (MDN nie versendet, sobald ein Outbound-Workflow aktiv ist): Umgesetzt wird nur der unstrittige Teil (keine neuen Review-Läufe pro Klick). Die Semantik der Freigabe (Dry-Run, abgeschlossener Lauf oder eigener Marker) bleibt als offene Entscheidung im Register.
+
+---
+
 Diese Befunde sind bestätigt. Ihr Fix braucht aber eine Migration, ändert einen API-Vertrag, ändert sichtbares Verhalten für legitime Nutzer oder erlaubt mehrere vertretbare Semantiken. Nach der vereinbarten Freigabeschwelle werden sie erst nach deiner Entscheidung umgesetzt. Die Empfehlung steht jeweils zuerst.
 
 ## A. Sicherheit (Server, aus dem Internet erreichbar)
