@@ -8,6 +8,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { deflateRawSync } from 'zlib';
 import Database from 'better-sqlite3';
 
 let db: Database.Database;
@@ -77,6 +78,44 @@ async function buildMiniDocx(text: string): Promise<Buffer> {
 </w:document>`,
   );
   return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+/** ZIP with DEFLATE entries from node:zlib (JSZip's JS deflate is too slow for a 40 MiB bomb). */
+function buildDeflatedZip(files: Array<[string, Buffer]>): Buffer {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  for (const [name, data] of files) {
+    const nameBytes = Buffer.from(name);
+    const compressed = deflateRawSync(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(8, 10);
+    central.writeUInt32LE(compressed.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    localParts.push(local, nameBytes, compressed);
+    centralParts.push(central, nameBytes);
+    offset += local.length + nameBytes.length + compressed.length;
+  }
+  const centralDirectory = Buffer.concat(centralParts);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralDirectory.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
 describe('attachment text extraction', () => {
@@ -152,6 +191,32 @@ describe('attachment text extraction', () => {
     const text = await extractAttachmentTextFromBuffer(docx, 'docx');
     expect(text).toContain('Suchtext DOCX Inhalt');
   });
+
+  // F-A5-04: DOCX wurde ohne jede Groessenpruefung an mammoth gegeben; ein kleines Archiv mit 40 MiB Deflate-Inhalt wurde voll entpackt.
+  test('buffer extraction: docx zip bomb is rejected before mammoth inflates it', async () => {
+    const docx = buildDeflatedZip([
+      [
+        '[Content_Types].xml',
+        Buffer.from(
+          '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+        ),
+      ],
+      [
+        'word/document.xml',
+        Buffer.concat([
+          Buffer.from(
+            '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Bombe</w:t></w:r></w:p></w:body></w:document>',
+          ),
+          Buffer.alloc(40 * 1024 * 1024, 0x20),
+        ]),
+      ],
+    ]);
+    expect(docx.length).toBeLessThan(1024 * 1024);
+
+    await expect(extractAttachmentTextFromBuffer(docx, 'docx')).rejects.toThrow(
+      /DOCX archive exceeds safe expansion limit/,
+    );
+  }, 30_000);
 
   test('row extraction stores text and marks the row', async () => {
     const file = path.join(tmpDir, 'brief.txt');

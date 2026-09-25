@@ -1,6 +1,7 @@
 export {
   addressJson,
   addressesFromRecipientJson,
+  assertDocxInflatesWithinLimit,
   ATTACHMENT_TEXT_MAX_BYTES,
   ATTACHMENT_TEXT_MAX_CHARS,
   attachmentTextKind,
@@ -16,4 +17,5 @@ export {
   snippetFromParsed,
   type AttachmentTextKind,
   type CanonicalAddressJson,
+  type DocxZipLoader,
 } from '../../packages/core/src/email';

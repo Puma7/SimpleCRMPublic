@@ -15,13 +15,16 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 
 import {
+  assertDocxInflatesWithinLimit,
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
   capAttachmentText,
   plainTextFromHtml,
   type AttachmentTextKind,
+  type DocxZipLoader,
 } from '@simplecrm/core';
 import type { Kysely } from 'kysely';
 import yauzl from 'yauzl';
@@ -108,11 +111,17 @@ export async function extractAttachmentTextFromBuffer(
     }
     case 'docx': {
       await validateDocxArchive(buf);
+      await assertDocxInflatesWithinLimit(buf, mammothJsZip());
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ buffer: buf });
       return capAttachmentText(result.value ?? '');
     }
   }
+}
+
+/** JSZip resolved from mammoth's own location, i.e. the parser mammoth reads the DOCX with. */
+function mammothJsZip(): DocxZipLoader {
+  return createRequire(require.resolve('mammoth'))('jszip') as DocxZipLoader;
 }
 
 async function validateDocxArchive(buf: Buffer): Promise<void> {

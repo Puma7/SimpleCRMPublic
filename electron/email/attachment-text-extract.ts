@@ -10,16 +10,19 @@
  * a manipulated row must not pull arbitrary files into the search index.
  */
 import fs from 'fs';
+import { createRequire } from 'module';
 import path from 'path';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE } from '../database-schema';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 import {
+  assertDocxInflatesWithinLimit,
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
   capAttachmentText,
   plainTextFromHtml,
   type AttachmentTextKind,
+  type DocxZipLoader,
 } from './email-parse-utils';
 
 const BACKFILL_BATCH_SIZE = 25;
@@ -69,6 +72,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
+/** JSZip resolved from mammoth's own location, i.e. the parser mammoth reads the DOCX with. */
+function mammothJsZip(): DocxZipLoader {
+  return createRequire(require.resolve('mammoth'))('jszip') as DocxZipLoader;
+}
+
 /** Buffer -> plain text for a supported kind (caller checked size limits). */
 export async function extractAttachmentTextFromBuffer(
   buf: Buffer,
@@ -90,6 +98,7 @@ export async function extractAttachmentTextFromBuffer(
       }
     }
     case 'docx': {
+      await assertDocxInflatesWithinLimit(buf, mammothJsZip());
       const mammoth = await import('mammoth');
       const result = await mammoth.extractRawText({ buffer: buf });
       return capAttachmentText(result.value ?? '');

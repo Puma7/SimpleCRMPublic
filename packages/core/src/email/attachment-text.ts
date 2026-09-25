@@ -47,3 +47,69 @@ export function capAttachmentText(text: string, cap = ATTACHMENT_TEXT_MAX_CHARS)
   const collapsed = text.replace(/\s+/g, ' ').trim();
   return collapsed.length > cap ? collapsed.slice(0, cap) : collapsed;
 }
+
+/** DOCX (ZIP) budget for text extraction: entry count and bytes actually inflated. */
+export const DOCX_MAX_ARCHIVE_ENTRIES = 2_048;
+export const DOCX_MAX_INFLATED_BYTES = 32 * 1024 * 1024;
+
+type DocxZipStream = {
+  on(event: 'data', listener: (chunk: Uint8Array) => void): DocxZipStream;
+  on(event: 'error', listener: (error: Error) => void): DocxZipStream;
+  on(event: 'end', listener: () => void): DocxZipStream;
+  resume(): DocxZipStream;
+  pause(): DocxZipStream;
+};
+
+/** The slice of JSZip's API the inflate check needs (JSZip itself is a mammoth dependency). */
+export type DocxZipLoader = {
+  loadAsync(data: Uint8Array): Promise<{
+    files: Record<string, { dir: boolean; internalStream(type: 'uint8array'): DocxZipStream }>;
+  }>;
+};
+
+/**
+ * Zip-bomb guard before handing a DOCX to mammoth. Declared entry sizes are
+ * attacker-controlled and JSZip only compares them after inflating
+ * everything, so this inflates every entry and counts the bytes actually
+ * produced, stopping at the budget. `jszip` must be the JSZip mammoth itself
+ * loads: a different ZIP parser (e.g. yauzl) can be shown other entries than
+ * mammoth reads by a crafted central directory.
+ */
+export async function assertDocxInflatesWithinLimit(
+  buf: Uint8Array,
+  jszip: DocxZipLoader,
+): Promise<void> {
+  const unsafe = () => new Error('DOCX archive exceeds safe expansion limit');
+  const zip = await jszip.loadAsync(buf);
+  const entries = Object.values(zip.files);
+  if (entries.length > DOCX_MAX_ARCHIVE_ENTRIES) throw unsafe();
+  let inflatedBytes = 0;
+  for (const entry of entries) {
+    if (entry.dir) continue;
+    await new Promise<void>((resolve, reject) => {
+      const stream = entry.internalStream('uint8array');
+      let settled = false;
+      stream
+        .on('data', (chunk) => {
+          if (settled) return;
+          inflatedBytes += chunk.length;
+          if (inflatedBytes > DOCX_MAX_INFLATED_BYTES) {
+            settled = true;
+            stream.pause();
+            reject(unsafe());
+          }
+        })
+        // A corrupt entry only fails once mammoth reads it (as before); its
+        // bytes up to the error are already counted.
+        .on('error', () => {
+          settled = true;
+          resolve();
+        })
+        .on('end', () => {
+          settled = true;
+          resolve();
+        })
+        .resume();
+    });
+  }
+}
