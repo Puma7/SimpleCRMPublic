@@ -19,6 +19,7 @@ import {
 import { LoginMfaStep } from "@/components/auth/login-mfa-step"
 import { LoginPinKeypad } from "@/components/auth/login-pin-keypad"
 import {
+  clearBrowserDeployConfig,
   createServerAuthClient,
   getRendererTransport,
   ServerAuthClientError,
@@ -462,6 +463,12 @@ export default function LoginPage() {
     }
   }
 
+  function handleResetBrowserDeployConfig() {
+    clearBrowserDeployConfig()
+    // Reload without the query string so a ?serverUrl= link is not applied again.
+    window.location.replace(window.location.pathname)
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const normalizedUsername = username.trim()
@@ -704,7 +711,17 @@ export default function LoginPage() {
                 >
                   Betriebsmodus oder Server-Verbindung ändern
                 </Button>
-              ) : null}
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleResetBrowserDeployConfig}
+                  disabled={isLoading}
+                >
+                  Server-Verbindung zurücksetzen
+                </Button>
+              )}
             </form>
           </CardContent>
         </Card>
@@ -852,7 +869,17 @@ export default function LoginPage() {
             >
               Betriebsmodus oder Server-Verbindung ändern
             </Button>
-          ) : null}
+          ) : (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-4 w-full"
+              onClick={handleResetBrowserDeployConfig}
+              disabled={isLoading}
+            >
+              Server-Verbindung zurücksetzen
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>

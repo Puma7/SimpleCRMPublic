@@ -160,7 +160,9 @@ health probes, OpenAPI and the
 WebSocket event stream to the `api` service. Open `PUBLIC_BASE_URL` in a browser;
 because the bundle is served by the server itself, it talks to the same origin
 automatically (no `?serverUrl=` query and no extra `CORS_ALLOWED_ORIGINS` entry
-needed for the served app).
+needed for the served app). The served app ignores a `?serverUrl=` pointing to another
+origin and drops a foreign server URL an older build stored in the browser; the login page
+offers "Server-Verbindung zurücksetzen" to clear the stored connection.
 
 Caddy deliberately excludes `/t/*` from access logs because those paths contain opaque
 bearer-like tracking tokens. It also redacts the other bearer-like secrets before a line is

@@ -40,6 +40,9 @@ Open one of:
 - `http://localhost:5173/?simplecrmServer=https://crm.example.com`
 
 The URL bootstrap stores the server URL in browser local storage under `simplecrm.deployConfig.v1`.
+This only applies to the dev build; the web app served by the server itself ignores a
+`?serverUrl=` for another origin. "Server-Verbindung zurücksetzen" on the login page clears the
+stored URL.
 
 ## Local Verification
 

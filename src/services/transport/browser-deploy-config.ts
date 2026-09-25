@@ -52,21 +52,25 @@ const serverUserSearchParams = ["simplecrmUser", "username"]
 export function getBrowserDeployConfig(): DeployConfigResult {
   if (typeof window === "undefined") return { status: "missing" }
 
+  // The server-served web build only ever talks to the server it was loaded
+  // from: a link with a foreign ?serverUrl= is ignored entirely (not even for
+  // this page load), and a foreign server config stored by an older build is
+  // dropped so it cannot keep the browser pointed elsewhere.
+  const forced = typeof __SIMPLECRM_FORCE_SAME_ORIGIN__ !== "undefined" && __SIMPLECRM_FORCE_SAME_ORIGIN__
   const queryConfig = deployConfigFromUrl(window.location.href)
-  if (queryConfig.status === "ok") {
-    // In the server-served web build a foreign ?serverUrl= only applies to this
-    // page load: a link must not repoint the browser permanently away from the
-    // server it was loaded from (there is no browser-side reset).
-    const forced = typeof __SIMPLECRM_FORCE_SAME_ORIGIN__ !== "undefined" && __SIMPLECRM_FORCE_SAME_ORIGIN__
-    const baseUrl = queryConfig.config.server?.baseUrl
-    const foreignOrigin = baseUrl != null && new URL(baseUrl).origin !== window.location.origin
-    if (!(forced && foreignOrigin)) persistBrowserDeployConfig(queryConfig.config)
+  const ignoreQuery = forced && !isSameOriginServerConfig(queryConfig)
+  if (queryConfig.status === "ok" && !ignoreQuery) {
+    persistBrowserDeployConfig(queryConfig.config)
     return queryConfig
   }
-  if (queryConfig.status === "invalid") return queryConfig
+  if (queryConfig.status === "invalid" && !ignoreQuery) return queryConfig
 
   const stored = readStoredBrowserDeployConfig()
-  if (stored) return stored
+  if (stored && forced && stored.status === "ok" && !isSameOriginServerConfig(stored)) {
+    clearBrowserDeployConfig()
+  } else if (stored) {
+    return stored
+  }
 
   const sameOrigin = sameOriginServerDefault()
   if (sameOrigin) return sameOrigin
@@ -74,12 +78,19 @@ export function getBrowserDeployConfig(): DeployConfigResult {
   return { status: "missing" }
 }
 
+function isSameOriginServerConfig(result: DeployConfigResult): boolean {
+  if (result.status !== "ok") return false
+  const baseUrl = result.config.server?.baseUrl
+  if (result.config.mode !== "server-client" || baseUrl == null) return true
+  return new URL(baseUrl).origin === window.location.origin
+}
+
 /**
  * When the SPA is served by the SimpleCRM server (web-only build flag), an
  * unconfigured browser defaults to a server-client config pointing at its own
  * origin. This is intentionally not persisted, so the config follows the URL
- * the app is actually loaded from (e.g. after a domain change). An explicit
- * `?serverUrl=` or a stored config always takes precedence (checked earlier).
+ * the app is actually loaded from (e.g. after a domain change). A same-origin
+ * `?serverUrl=` or stored config takes precedence (checked earlier).
  */
 function sameOriginServerDefault(): DeployConfigResult | null {
   const forced = typeof __SIMPLECRM_FORCE_SAME_ORIGIN__ !== "undefined" && __SIMPLECRM_FORCE_SAME_ORIGIN__
