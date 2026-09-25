@@ -3158,6 +3158,31 @@ export function createDeal(dealData: any): { success: boolean; id?: number; erro
   }
 }
 
+/** Activity log + crm.deal_stage_changed workflows for a stage change (Kanban and edit dialog). */
+function recordDealStageChange(dealId: number, customerId: number, oldStage: string | null | undefined, newStage: string): void {
+  try {
+    createActivityLog({
+      customer_id: customerId,
+      deal_id: dealId,
+      activity_type: 'stage_change',
+      title: `Deal-Phase geändert: ${oldStage} → ${newStage}`,
+      metadata: JSON.stringify({ old_stage: oldStage, new_stage: newStage }),
+    });
+  } catch (e) {
+    console.error('Failed to log stage change activity:', e);
+  }
+  void import('./workflow/workflow-trigger-dispatch.js')
+    .then((m) =>
+      m.fireDealStageChangedWorkflows(
+        dealId,
+        Number(customerId),
+        String(oldStage ?? ''),
+        newStage,
+      ),
+    )
+    .catch((e) => console.warn('[workflow] deal stage trigger', e));
+}
+
 export function updateDeal(dealId: number, dealData: any): { success: boolean; error?: string } {
   try {
     // Update last_modified timestamp
@@ -3174,6 +3199,15 @@ export function updateDeal(dealId: number, dealData: any): { success: boolean; e
       return { success: false, error: 'No fields to update' };
     }
 
+    // The edit dialog and PATCH /deals/:id can change the stage too; they must
+    // have the same side effects as updateDealStage.
+    const newStage = typeof dealData.stage === 'string' ? dealData.stage : undefined;
+    const before = newStage !== undefined
+      ? getDb().prepare(`SELECT stage, customer_id FROM ${DEALS_TABLE} WHERE id = ?`).get(dealId) as
+          | { stage: string | null; customer_id: number }
+          | undefined
+      : undefined;
+
     const stmt = getDb().prepare(`
       UPDATE ${DEALS_TABLE}
       SET ${fields}
@@ -3184,6 +3218,10 @@ export function updateDeal(dealId: number, dealData: any): { success: boolean; e
       id: dealId,
       ...dealData
     });
+
+    if (result.changes > 0 && before && newStage !== undefined && before.stage !== newStage) {
+      recordDealStageChange(dealId, before.customer_id, before.stage, newStage);
+    }
 
     return { success: result.changes > 0, error: result.changes === 0 ? 'Deal not found' : undefined };
   } catch (error) {
@@ -3209,27 +3247,7 @@ export function updateDealStage(dealId: number, newStage: string): { success: bo
     const result = stmt.run(newStage, now, dealId);
 
     if (result.changes > 0 && deal) {
-      try {
-        createActivityLog({
-          customer_id: deal.customer_id,
-          deal_id: dealId,
-          activity_type: 'stage_change',
-          title: `Deal-Phase geändert: ${oldStage} → ${newStage}`,
-          metadata: JSON.stringify({ old_stage: oldStage, new_stage: newStage }),
-        });
-      } catch (e) {
-        console.error('Failed to log stage change activity:', e);
-      }
-      void import('./workflow/workflow-trigger-dispatch.js')
-        .then((m) =>
-          m.fireDealStageChangedWorkflows(
-            dealId,
-            Number(deal.customer_id),
-            String(oldStage ?? ''),
-            newStage,
-          ),
-        )
-        .catch((e) => console.warn('[workflow] deal stage trigger', e));
+      recordDealStageChange(dealId, deal.customer_id, oldStage, newStage);
     }
 
     return { success: result.changes > 0, error: result.changes === 0 ? 'Deal not found' : undefined };
