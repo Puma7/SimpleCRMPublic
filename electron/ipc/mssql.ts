@@ -10,6 +10,30 @@ import { parsePort } from '../utils/ports';
 
 const ADMIN_IPC_ROLES = ['owner', 'admin'] as const;
 
+const MSSQL_CREDENTIALS_REQUIRED =
+  'Zugangsdaten bei Serverwechsel neu eingeben: MSSQL-Passwort erforderlich (Server, Port, Datenbank oder Benutzer geändert)';
+
+type MssqlIdentity = { server?: unknown; port?: unknown; database?: unknown; user?: unknown };
+
+/** Server, Port, Datenbank und Benutzer bilden das Keytar-Konto des gespeicherten Passworts. */
+function sameMssqlIdentity(a: MssqlIdentity, b: MssqlIdentity): boolean {
+  return a.server === b.server
+    && (parsePort(a.port) ?? 1433) === (parsePort(b.port) ?? 1433)
+    && a.database === b.database
+    && a.user === b.user;
+}
+
+/**
+ * Der Renderer bekommt das Passwort nicht mehr; ein leeres Feld heisst "gespeichertes
+ * behalten". Das gilt nur fuer dieselbe Verbindung — nach einem Wechsel von Server,
+ * Port, Datenbank oder Benutzer muss das Passwort neu eingegeben werden (wie beim Server).
+ */
+async function requiresNewMssqlPassword(settings: MssqlIdentity & { password?: unknown }): Promise<boolean> {
+  if (typeof settings.password === 'string' && settings.password.length > 0) return false;
+  const stored = await getMssqlSettingsWithKeytar();
+  return stored != null && !sameMssqlIdentity(stored, settings);
+}
+
 interface MssqlHandlersOptions {
   logger: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
   isDevelopment: boolean;
@@ -32,6 +56,9 @@ export function registerMssqlHandlers(options: MssqlHandlersOptions) {
         if (isDevelopment) {
           logger.debug('[IPC Main] mssql:save-settings sanitized payload', sanitize(processedSettings));
         }
+        if (await requiresNewMssqlPassword(processedSettings)) {
+          return { success: false, error: MSSQL_CREDENTIALS_REQUIRED };
+        }
         await saveMssqlSettingsWithKeytar(processedSettings);
         return { success: true };
       } catch (error) {
@@ -48,7 +75,10 @@ export function registerMssqlHandlers(options: MssqlHandlersOptions) {
         if (isDevelopment) {
           logger.debug('[IPC Main] mssql:get-settings returning sanitized settings', sanitize(settings ?? {}));
         }
-        return settings;
+        if (!settings) return settings;
+        // Das Passwort bleibt im Main-Prozess; der Renderer erfaehrt nur, ob eines gespeichert ist.
+        const { password, ...rest } = settings;
+        return { ...rest, hasPassword: Boolean(password) };
       } catch (error) {
         logger.error('IPC Error getting MSSQL settings:', error);
         return { success: false, error: (error as Error).message || 'Failed to retrieve settings', data: null };
@@ -66,6 +96,9 @@ export function registerMssqlHandlers(options: MssqlHandlersOptions) {
         };
         if (isDevelopment) {
           logger.debug('[IPC Main] mssql:test-connection sanitized payload', sanitize(processedSettings));
+        }
+        if (await requiresNewMssqlPassword(processedSettings)) {
+          return { success: false, error: MSSQL_CREDENTIALS_REQUIRED };
         }
         const result = await testConnectionWithKeytar(processedSettings);
         if (result.success) {

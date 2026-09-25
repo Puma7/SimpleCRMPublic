@@ -75,7 +75,7 @@ describe('registerMssqlHandlers', () => {
 
       const handler = handlers.get(IPCChannels.Mssql.GetSettings);
       const result = await handler({});
-      expect(result).toEqual(settings);
+      expect(result).toEqual({ ...settings, hasPassword: false });
     });
 
     test('returns null when no settings stored', async () => {
@@ -198,6 +198,68 @@ describe('registerMssqlHandlers', () => {
       const result = await handler({});
       expect(result.success).toBe(false);
       expect(result.error).toBe('Failed to clear password');
+    });
+  });
+
+  describe('Passwort bleibt im Main-Prozess (E18)', () => {
+    const stored = { server: 'jtl-db', port: 1433, database: 'eazybusiness', user: 'sa', encrypt: true };
+
+    // F-A11b-10: mssql:get-settings gab das JTL/MSSQL-Passwort aus Keytar im Klartext an den Renderer.
+    test('GetSettings liefert hasPassword statt des Passworts', async () => {
+      keytarMocks.getMssqlSettingsWithKeytar.mockResolvedValue({ ...stored, password: 'geheim' });
+
+      const result = await handlers.get(IPCChannels.Mssql.GetSettings)({});
+      expect(result).toEqual({ ...stored, hasPassword: true });
+      expect(result).not.toHaveProperty('password');
+    });
+
+    test('GetSettings meldet hasPassword false ohne gespeichertes Passwort', async () => {
+      keytarMocks.getMssqlSettingsWithKeytar.mockResolvedValue({ ...stored, password: undefined });
+
+      await expect(handlers.get(IPCChannels.Mssql.GetSettings)({})).resolves.toEqual({ ...stored, hasPassword: false });
+    });
+
+    // F-A11b-10: Ohne Klartext im Formular darf ein Wechsel der Verbindung das gespeicherte Passwort nicht stillschweigend weiterverwenden.
+    test.each([
+      ['Server', { server: 'fremder-host' }],
+      ['Port', { port: 14330 }],
+      ['Datenbank', { database: 'andere' }],
+      ['Benutzer', { user: 'admin' }],
+    ])('ein %s-Wechsel ohne Passwort wird beim Speichern und Testen abgelehnt', async (_label, change) => {
+      keytarMocks.getMssqlSettingsWithKeytar.mockResolvedValue({ ...stored, password: 'geheim' });
+      const payload = { ...stored, ...change };
+
+      for (const channel of [IPCChannels.Mssql.SaveSettings, IPCChannels.Mssql.TestConnection]) {
+        const result = await handlers.get(channel)({}, payload);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Zugangsdaten bei Serverwechsel neu eingeben');
+      }
+      expect(keytarMocks.saveMssqlSettingsWithKeytar).not.toHaveBeenCalled();
+      expect(keytarMocks.testConnectionWithKeytar).not.toHaveBeenCalled();
+    });
+
+    test('ein Wechsel mit neuem Passwort ist erlaubt', async () => {
+      keytarMocks.getMssqlSettingsWithKeytar.mockResolvedValue({ ...stored, password: 'geheim' });
+      keytarMocks.saveMssqlSettingsWithKeytar.mockResolvedValue(undefined);
+      keytarMocks.testConnectionWithKeytar.mockResolvedValue({ success: true });
+      const payload = { ...stored, server: 'neuer-host', password: 'neu' };
+
+      await expect(handlers.get(IPCChannels.Mssql.TestConnection)({}, payload)).resolves.toEqual({ success: true });
+      await expect(handlers.get(IPCChannels.Mssql.SaveSettings)({}, payload)).resolves.toEqual({ success: true });
+      expect(keytarMocks.saveMssqlSettingsWithKeytar).toHaveBeenCalledWith(expect.objectContaining({ password: 'neu' }));
+    });
+
+    test('ohne Identitaetswechsel behaelt ein fehlendes Passwort das gespeicherte', async () => {
+      keytarMocks.getMssqlSettingsWithKeytar.mockResolvedValue({ ...stored, password: 'geheim' });
+      keytarMocks.saveMssqlSettingsWithKeytar.mockResolvedValue(undefined);
+      keytarMocks.testConnectionWithKeytar.mockResolvedValue({ success: true });
+      const payload = { ...stored, port: '1433', encrypt: false };
+
+      await expect(handlers.get(IPCChannels.Mssql.TestConnection)({}, payload)).resolves.toEqual({ success: true });
+      await expect(handlers.get(IPCChannels.Mssql.SaveSettings)({}, payload)).resolves.toEqual({ success: true });
+      const saved = keytarMocks.saveMssqlSettingsWithKeytar.mock.calls[0][0];
+      expect(saved.password).toBeUndefined();
+      expect(keytarMocks.testConnectionWithKeytar.mock.calls[0][0].password).toBeUndefined();
     });
   });
 

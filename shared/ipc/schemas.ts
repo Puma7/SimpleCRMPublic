@@ -367,7 +367,8 @@ baseSchemaMap.set(IPCChannels.Mssql.SaveSettings, {
 baseSchemaMap.set(IPCChannels.Mssql.GetSettings, {
   payload: z.undefined(),
   result: z.union([
-    z.object({}).passthrough(),
+    // Ohne Passwort: der Renderer erfaehrt nur, ob eines gespeichert ist.
+    z.object({ hasPassword: z.boolean() }).passthrough(),
     z.null(),
     failureResponse,
   ]),

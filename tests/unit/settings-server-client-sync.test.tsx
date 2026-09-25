@@ -119,6 +119,24 @@ describe('SettingsPage server-client sync controls', () => {
     expect(await screen.findByText(/nur von Ownern und Admins/)).toBeTruthy();
     expect(await screen.findByRole('button', { name: 'Synchronisation starten' })).toBeEnabled();
   });
+
+  // F-A11b-10: Die Einstellungsseite schrieb das Klartext-Passwort aus mssql:get-settings ins Formular.
+  test('desktop form keeps the password field empty and tests with the stored password', async () => {
+    const stored = { server: 'jtl-db', database: 'eazybusiness', user: 'sa', port: 1433, encrypt: true };
+    const localInvoke = jest.fn(async (channel: string) => {
+      if (channel === 'mssql:get-settings') return { ...stored, hasPassword: true };
+      if (channel === 'mssql:test-connection') return { success: true };
+      if (channel === 'sync:get-status') return null;
+      throw new Error(`unexpected channel ${channel}`);
+    });
+    (window as any).electronAPI = { invoke: localInvoke };
+
+    render(<SettingsPage />);
+
+    const passwordField = await screen.findByPlaceholderText('Gespeichert – leer lassen, um es zu behalten');
+    expect(passwordField).toHaveValue('');
+    await waitFor(() => expect(localInvoke).toHaveBeenCalledWith('mssql:test-connection', stored));
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

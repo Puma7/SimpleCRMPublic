@@ -60,6 +60,8 @@ export default function SettingsPage() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [isClearingPassword, setIsClearingPassword] = useState(false); // New state for clearing password
+  // Das Passwort selbst bleibt im Main-Prozess bzw. auf dem Server; GetSettings meldet nur hasPassword.
+  const [hasStoredPassword, setHasStoredPassword] = useState(false)
   const [syncStatusMessage, setSyncStatusMessage] = useState<string | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'success' | 'error'>('unknown')
   const [lastSyncTimestamp, setLastSyncTimestamp] = useState<string | null>(null)
@@ -96,15 +98,18 @@ export default function SettingsPage() {
       try {
         const settingsFromIPC = await invokeRenderer(IPCChannels.Mssql.GetSettings);
         if (settingsFromIPC) {
+          const { hasPassword, password: _password, ...storedSettings } = settingsFromIPC;
+          setHasStoredPassword(Boolean(hasPassword));
           const formValues = {
-            ...settingsFromIPC,
-            password: settingsFromIPC.password || "",
-            forcePort: settingsFromIPC.forcePort || false,
+            ...storedSettings,
+            password: "",
+            forcePort: storedSettings.forcePort || false,
           };
           form.reset(formValues);
 
           try {
-            const testResult = await invokeRenderer(IPCChannels.Mssql.TestConnection, settingsFromIPC);
+            // Ohne Passwort: der Main-Prozess nutzt das gespeicherte (gleiche Verbindung).
+            const testResult = await invokeRenderer(IPCChannels.Mssql.TestConnection, storedSettings);
             setConnectionStatus(testResult.success ? 'success' : 'error');
           } catch (error) {
             console.error("Error testing connection on load:", error);
@@ -150,7 +155,9 @@ export default function SettingsPage() {
           toast.success("Einstellungen gespeichert", { description: "Verbindung erfolgreich und Einstellungen gespeichert." })
           const newSettings = await invokeRenderer(IPCChannels.Mssql.GetSettings);
           if (newSettings) {
-            form.reset({ ...newSettings, password: newSettings.password || "" });
+            const { hasPassword, password: _password, ...storedSettings } = newSettings;
+            setHasStoredPassword(Boolean(hasPassword));
+            form.reset({ ...storedSettings, password: "" });
           }
         } else {
           toast.error("Speichern fehlgeschlagen", { description: saveResult.error || "Konnte die Einstellungen nicht speichern." })
@@ -209,6 +216,7 @@ export default function SettingsPage() {
         }
         toast.success("Erfolg", { description: germanMessage });
         form.setValue('password', ''); // Clear password field in the form
+        setHasStoredPassword(false);
       } else {
         console.error('Fehler beim Löschen des Passworts (Backend-Nachricht):', result.message);
         toast.error("Fehlgeschlagen", { description: "Das Passwort konnte nicht gelöscht werden. Bitte überprüfen Sie die Konsolenprotokolle für weitere Details." });
@@ -458,10 +466,16 @@ export default function SettingsPage() {
                     <FormItem>
                       <FormLabel>Passwort</FormLabel>
                       <FormControl>
-                        <Input type="password" {...field} placeholder="Leer lassen, um nicht zu ändern" />
+                        <Input
+                          type="password"
+                          {...field}
+                          placeholder={hasStoredPassword ? "Gespeichert – leer lassen, um es zu behalten" : "Leer lassen, um nicht zu ändern"}
+                        />
                       </FormControl>
                       <FormDescription>
-                        Wenn Sie das Passwort nicht ändern möchten, lassen Sie dieses Feld leer.
+                        {hasStoredPassword ? "Ein Passwort ist gespeichert. " : ""}
+                        Wenn Sie das Passwort nicht ändern möchten, lassen Sie dieses Feld leer. Nach einem Wechsel
+                        von Server, Port, Datenbank oder Benutzer muss es neu eingegeben werden.
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
