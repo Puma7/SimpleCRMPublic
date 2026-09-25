@@ -1217,8 +1217,11 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { webhookSecret?: string; maxAttachmentMb?: number },
       ) => {
-        // Leer heisst "unveraendert", wie bei den OAuth-App-Secrets.
-        if (payload.webhookSecret !== undefined && payload.webhookSecret.trim()) {
+        // Anders als bei den OAuth-App-Secrets heisst leer hier "entfernen":
+        // ohne Secret nimmt der Webhook-Eingang nichts mehr an, das ist der
+        // Weg, ihn abzuschalten. Nur Owner/Admin speichern, und sie bekommen
+        // das Secret im Formular vorbefuellt.
+        if (payload.webhookSecret !== undefined) {
           writeSyncInfo('email_webhook_secret', payload.webhookSecret.trim());
         }
         if (payload.maxAttachmentMb !== undefined) {

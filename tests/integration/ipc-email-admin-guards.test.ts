@@ -184,11 +184,11 @@ describe('OAuth-App- und Webhook-Secrets (E15)', () => {
     await expect(invoke(channel, eventFor('admin'), payload)).resolves.toEqual({ success: true });
   });
 
-  test('ein leeres Secret-Feld behaelt das gespeicherte Secret', async () => {
+  test('ein leeres OAuth-Secret-Feld behaelt das gespeicherte Secret, ein leeres Webhook-Secret schaltet den Webhook ab', async () => {
     const admin = eventFor('owner');
     await invoke(IPCChannels.Email.SetGoogleOAuthApp, admin, { clientId: 'google-neu', clientSecret: '' });
     await invoke(IPCChannels.Email.SetMicrosoftOAuthApp, admin, { clientId: 'ms-neu', clientSecret: '  ' });
-    await invoke(IPCChannels.Email.SetEmailMiscSettings, admin, { webhookSecret: '', maxAttachmentMb: 40 });
+    await invoke(IPCChannels.Email.SetEmailMiscSettings, admin, { maxAttachmentMb: 40 });
 
     expect(mockSyncInfo.get('email_google_oauth_client_id')).toBe('google-neu');
     expect(mockSyncInfo.get('email_google_oauth_client_secret')).toBe('google-geheim');
@@ -196,6 +196,8 @@ describe('OAuth-App- und Webhook-Secrets (E15)', () => {
     expect(mockSyncInfo.get('email_ms_oauth_client_secret')).toBe('ms-geheim');
     expect(mockSyncInfo.get('email_webhook_secret')).toBe('webhook-geheim');
     expect(mockSyncInfo.get('email_max_attachment_mb')).toBe('40');
+    await invoke(IPCChannels.Email.SetEmailMiscSettings, admin, { webhookSecret: '', maxAttachmentMb: 40 });
+    expect(mockSyncInfo.get('email_webhook_secret')).toBe('');
 
     await invoke(IPCChannels.Email.SetGoogleOAuthApp, admin, { clientId: 'google-neu', clientSecret: 'google-neu-geheim' });
     expect(mockSyncInfo.get('email_google_oauth_client_secret')).toBe('google-neu-geheim');
