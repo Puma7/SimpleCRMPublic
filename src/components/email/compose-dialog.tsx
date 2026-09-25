@@ -164,6 +164,32 @@ export function handleSubjectTabToEditor(
 
 const MAX_SERVER_CLIENT_ATTACHMENT_BYTES = 25 * 1024 * 1024
 
+/**
+ * Uploads files one by one. The server rejects uploads beyond the per-draft
+ * limit (413); files uploaded before a rejection are still returned so the
+ * caller attaches them — otherwise they would sit unreferenced on the server
+ * and count against the draft's limit.
+ */
+export async function uploadServerComposeFiles(
+  files: readonly File[],
+  upload: (file: File) => Promise<{ path: string }>,
+  onTooLarge: (file: File) => void,
+): Promise<{ uploadedPaths: string[]; error: unknown }> {
+  const uploadedPaths: string[] = []
+  for (const file of files) {
+    if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
+      onTooLarge(file)
+      continue
+    }
+    try {
+      uploadedPaths.push((await upload(file)).path)
+    } catch (error) {
+      return { uploadedPaths, error }
+    }
+  }
+  return { uploadedPaths, error: null }
+}
+
 function getComposeContextMessageId(
   intent: ComposeIntent,
   replyToId: number | null,
@@ -1123,29 +1149,20 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
       if (!serverClientMode || draftId == null || !files?.length) return
       serverUploadsInFlightRef.current += 1
       setUploadingAttachment(true)
-      const uploadedPaths: string[] = []
       try {
-        let uploadError: unknown = null
-        for (const file of Array.from(files)) {
-          if (file.size > MAX_SERVER_CLIENT_ATTACHMENT_BYTES) {
-            toast.error(`${file.name}: Anhang ist größer als 25 MB.`)
-            continue
-          }
-          try {
-            const contentBase64 = await fileToBase64(file)
-            const uploaded = await uploadServerComposeAttachment({
-              draftMessageId: draftId,
-              filename: file.name || "attachment",
-              contentBase64,
-              contentType: file.type || undefined,
-            })
-            uploadedPaths.push(uploaded.path)
-          } catch (e) {
-            // Already uploaded files of this batch are still recorded below.
-            uploadError = e
-            break
-          }
-        }
+        const { uploadedPaths, error: uploadError } = await uploadServerComposeFiles(
+          Array.from(files),
+          async (file) => uploadServerComposeAttachment({
+            draftMessageId: draftId,
+            filename: file.name || "attachment",
+            contentBase64: await fileToBase64(file),
+            contentType: file.type || undefined,
+          }),
+          (file) => toast.error(`${file.name}: Anhang ist größer als 25 MB.`),
+        )
+        // Already uploaded files of this batch are recorded even if a later one
+        // failed (e.g. the per-draft quota); merge into the current list, not the
+        // closure's, so parallel uploads do not drop each other's paths.
         if (uploadedPaths.length > 0) {
           const nextPaths = [...new Set([...attachmentPathsRef.current, ...uploadedPaths])]
           attachmentPathsRef.current = nextPaths
@@ -1154,14 +1171,15 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
             messageId: draftId,
             draftAttachmentPaths: nextPaths,
           })
+          if (uploadError == null) {
+            toast.success(
+              uploadedPaths.length === 1
+                ? "Anhang hochgeladen"
+                : `${uploadedPaths.length} Anhänge hochgeladen`,
+            )
+          }
         }
-        if (uploadError) throw uploadError
-        if (uploadedPaths.length === 0) return
-        toast.success(
-          uploadedPaths.length === 1
-            ? "Anhang hochgeladen"
-            : `${uploadedPaths.length} Anhänge hochgeladen`,
-        )
+        if (uploadError != null) throw uploadError
       } catch (e) {
         logError("compose-dialog: upload server attachment", e)
         toast.error(e instanceof Error ? e.message : "Anhang konnte nicht hochgeladen werden.")

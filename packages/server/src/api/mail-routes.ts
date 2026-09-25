@@ -1122,6 +1122,7 @@ async function handleComposeAttachmentUpload(
   if (!result.ok) {
     if (result.reason === 'not_found') return error(404, 'compose_draft_not_found', result.error);
     if (result.reason === 'not_local_draft') return error(409, 'compose_draft_not_local', result.error);
+    if (result.reason === 'quota_exceeded') return error(413, 'compose_attachment_quota_exceeded', result.error);
     if (result.reason === 'write_failed') return error(500, 'compose_attachment_write_failed', result.error);
     return error(400, 'invalid_compose_attachment', result.error);
   }

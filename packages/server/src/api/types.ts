@@ -2574,7 +2574,7 @@ export type EmailComposeAttachmentUploadResult =
   }
   | {
     ok: false;
-    reason: 'not_found' | 'not_local_draft' | 'invalid_content' | 'write_failed';
+    reason: 'not_found' | 'not_local_draft' | 'invalid_content' | 'quota_exceeded' | 'write_failed';
     error: string;
   };
 

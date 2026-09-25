@@ -24145,6 +24145,36 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // F-A13A14-06: Ein Entwurf ueber der Anhangsgrenze muss als 413 mit der deutschen Meldung beim Client ankommen.
+  test('compose attachment upload over the per-draft limit returns 413 with the German message', async () => {
+    const api = createServerApi({
+      ...makeServerApiPorts({}),
+      emailComposeAttachments: {
+        async upload() {
+          return {
+            ok: false as const,
+            reason: 'quota_exceeded' as const,
+            error: 'Anhaenge dieses Entwurfs waeren zusammen groesser als 50 MB',
+          };
+        },
+      },
+    });
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write'] };
+
+    const response = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/messages/44/compose-attachments',
+      body: { filename: 'gross.bin', contentBase64: Buffer.from('x').toString('base64') },
+      principal,
+    });
+
+    expect(response.status).toBe(413);
+    expect((response.body as any).error).toMatchObject({
+      code: 'compose_attachment_quota_exceeded',
+      message: 'Anhaenge dieses Entwurfs waeren zusammen groesser als 50 MB',
+    });
+  });
+
   test('server outbound validation persists manual approval marker on success', () => {
     const source = readFileSync(resolve(__dirname, '../../packages/server/src/mail-compose-send.ts'), 'utf8');
     expect(source).toMatch(/persistManualOutboundApproval/);

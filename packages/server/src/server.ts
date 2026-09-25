@@ -696,6 +696,7 @@ export function createPostgresServerApiPorts(options: PostgresServerApiPortsOpti
       rspamdFetch: options.rspamdFetch,
       seenFlagSync: workflowImapActions,
       outboundValidation: emailOutboundValidation,
+      attachmentsRoot,
     }),
     emailMessageTags: createPostgresEmailMessageTagReadPort({ db: options.db }),
     mailConnectionTests: createServerMailConnectionTestPort({ db: options.db, secrets: options.secrets }),

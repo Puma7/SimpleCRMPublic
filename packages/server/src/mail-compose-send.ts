@@ -39,6 +39,7 @@ import {
   type WorkspaceTransaction,
 } from './db/workspace-context';
 import { computeTextChangeRatio } from './ai-feedback';
+import { removeComposeDraftAttachmentDirectory } from './compose-draft-attachment-files';
 import { refreshServerEmailOAuthAccessToken } from './email-oauth';
 import { buildDefaultServerAccountMailSettings } from './account-mail-settings-defaults';
 import type {
@@ -1444,6 +1445,15 @@ function createPostgresComposeSenderStore(options: PostgresComposeSenderOptions)
           }
         },
       );
+      // The RFC822 (incl. attachments) is committed and snapshotted; the
+      // draft's uploads are never read again once it is marked sent.
+      if (options.attachmentsRoot) {
+        await removeComposeDraftAttachmentDirectory({
+          attachmentsRoot: options.attachmentsRoot,
+          workspaceId: input.workspaceId,
+          draftMessageId: input.messageId,
+        });
+      }
     },
     async markMessageDone(input) {
       await withWorkspaceTransaction(

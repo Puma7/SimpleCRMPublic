@@ -102,6 +102,11 @@ import {
   approveDraftSendInTransaction,
   dismissDraftApprovalInTransaction,
 } from '../draft-approval-actions';
+import {
+  composeDraftAttachmentPathsFromStored,
+  removeComposeDraftAttachmentDirectory,
+  removeComposeDraftAttachmentFiles,
+} from '../compose-draft-attachment-files';
 
 export type PostgresMailReadPortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
@@ -109,6 +114,8 @@ export type PostgresMailReadPortOptions = Readonly<{
   rspamdFetch?: typeof fetch;
   seenFlagSync?: Pick<ServerWorkflowImapActionPort, 'setSeen'>;
   outboundValidation?: EmailOutboundValidationApiPort;
+  /** Root of compose-draft uploads; enables removing files of deleted drafts / dropped attachments. */
+  attachmentsRoot?: string;
 }>;
 
 export type PostgresEmailAccountReadPortOptions = PostgresMailReadPortOptions & Readonly<{
@@ -1260,7 +1267,8 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
       );
     },
     async updateComposeDraft(input) {
-      return withWorkspaceTransaction(
+      let droppedAttachmentPaths: string[] = [];
+      const result = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
@@ -1269,6 +1277,11 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           if (!isLocalDraftUid(current)) return { ok: false as const, reason: 'not_local_draft' as const };
           const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
           if (claimedConflict) return claimedConflict;
+          if (input.values.draftAttachmentPaths !== undefined) {
+            const kept = new Set(input.values.draftAttachmentPaths.map((value) => value.trim()));
+            droppedAttachmentPaths = composeDraftAttachmentPathsFromStored(current.draft_attachment_paths_json)
+              .filter((value) => !kept.has(value));
+          }
           const bodyText = input.values.bodyText ?? current.body_text ?? '';
           const snippet = bodyText.trim()
             ? (bodyText.length > 220 ? `${bodyText.slice(0, 217)}...` : bodyText)
@@ -1340,6 +1353,16 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         },
         { applySession: options.applyWorkspaceSession },
       );
+      if (result.ok && options.attachmentsRoot && droppedAttachmentPaths.length > 0) {
+        await removeComposeDraftAttachmentFiles({
+          attachmentsRoot: options.attachmentsRoot,
+          workspaceId: input.workspaceId,
+          draftMessageId: input.messageId,
+          storagePaths: droppedAttachmentPaths,
+          now: new Date(),
+        });
+      }
+      return result;
     },
     async scheduleDraftSend(input) {
       return withWorkspaceTransaction(
@@ -1830,7 +1853,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
       return { count: result.count };
     },
     async bulkDeleteLocalDrafts(input) {
-      return withWorkspaceTransaction(
+      const result = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => deleteLocalDraftRows(trx, {
@@ -1839,9 +1862,10 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         }),
         { applySession: options.applyWorkspaceSession },
       );
+      return removeDeletedDraftUploads(options, input.workspaceId, result);
     },
     async deleteLocalDraft(input) {
-      return withWorkspaceTransaction(
+      const result = await withWorkspaceTransaction(
         options.db,
         { workspaceId: input.workspaceId, role: 'system' },
         async (trx) => {
@@ -1864,6 +1888,7 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
         },
         { applySession: options.applyWorkspaceSession },
       );
+      return result.ok ? removeDeletedDraftUploads(options, input.workspaceId, result) : result;
     },
     async snooze(input) {
       return withWorkspaceTransaction(
@@ -2742,18 +2767,39 @@ async function shouldSyncSeenFlagToServer(
   return String(row.protocol || 'imap').toLowerCase() === 'imap' && row.imap_sync_seen_on_open !== false;
 }
 
+type LocalDraftDeleteRowsResult =
+  | { ok: true; count: number; deletedIds: number[] }
+  | { ok: false; reason: 'scheduled_send_claimed'; message: string };
+
+// Uploaded compose files have no attachment row; once the draft row is gone
+// nothing references them anymore.
+async function removeDeletedDraftUploads(
+  options: PostgresMailReadPortOptions,
+  workspaceId: string,
+  result: LocalDraftDeleteRowsResult,
+): Promise<{ ok: true; count: number } | { ok: false; reason: 'scheduled_send_claimed'; message: string }> {
+  if (!result.ok) return result;
+  if (options.attachmentsRoot) {
+    for (const draftMessageId of result.deletedIds) {
+      await removeComposeDraftAttachmentDirectory({
+        attachmentsRoot: options.attachmentsRoot,
+        workspaceId,
+        draftMessageId,
+      });
+    }
+  }
+  return { ok: true, count: result.count };
+}
+
 async function deleteLocalDraftRows(
   trx: any,
   input: {
     workspaceId: string;
     messageIds: readonly number[];
   },
-): Promise<
-  | { ok: true; count: number }
-  | { ok: false; reason: 'scheduled_send_claimed'; message: string }
-> {
+): Promise<LocalDraftDeleteRowsResult> {
   const ids = normalizeMessageIdList(input.messageIds);
-  if (ids.length === 0) return { ok: true, count: 0 };
+  if (ids.length === 0) return { ok: true, count: 0, deletedIds: [] };
   const drafts = await trx
     .selectFrom('email_messages')
     .select('id')
@@ -2774,7 +2820,7 @@ async function deleteLocalDraftRows(
     .where('uid', '<', 0)
     .returning('id')
     .execute();
-  return { ok: true, count: rows.length };
+  return { ok: true, count: rows.length, deletedIds: rows.map((row: { id: unknown }) => Number(row.id)) };
 }
 
 async function bulkSetSpamStatusRows(
