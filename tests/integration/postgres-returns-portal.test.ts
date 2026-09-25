@@ -16,6 +16,7 @@ jest.mock('kysely', () => jest.requireActual('../../packages/server/node_modules
 jest.setTimeout(120_000);
 
 const WORKSPACE_ID = '10000000-0000-4000-8000-0000000000a1';
+const FOREIGN_WORKSPACE_ID = '10000000-0000-4000-8000-0000000000b2';
 
 function loginSecurityWithoutCaptcha(): ServerApiPorts['loginSecurity'] {
   return {
@@ -38,6 +39,7 @@ describe('public returns portal against PostgreSQL', () => {
   beforeAll(async () => {
     postgres = await startMigratedEmbeddedPostgres('returns-portal');
     await postgres.admin.query(`INSERT INTO workspaces (id, name) VALUES ($1, 'Portal Test')`, [WORKSPACE_ID]);
+    await postgres.admin.query(`INSERT INTO workspaces (id, name) VALUES ($1, 'Fremder Mandant')`, [FOREIGN_WORKSPACE_ID]);
     db = postgres.createApplicationDb();
   });
 
@@ -96,6 +98,71 @@ describe('public returns portal against PostgreSQL', () => {
         metadata: expect.objectContaining({ actor: 'portal', captcha: 'not_required' }),
       }),
     ]);
+  });
+
+  async function insertProduct(workspaceId: string, sourceId: number): Promise<number> {
+    const result = await postgres.admin.query<{ id: string }>(
+      `INSERT INTO products (workspace_id, source_sqlite_id, name) VALUES ($1, $2, 'Artikel') RETURNING id`,
+      [workspaceId, sourceId],
+    );
+    return Number(result.rows[0]!.id);
+  }
+
+  async function insertReason(workspaceId: string, code: string): Promise<number> {
+    const result = await postgres.admin.query<{ id: string }>(
+      `INSERT INTO return_reasons (workspace_id, code, label) VALUES ($1, $2, 'Grund') RETURNING id`,
+      [workspaceId, code],
+    );
+    return Number(result.rows[0]!.id);
+  }
+
+  function itemRequest(token: string, item: Record<string, unknown>): ApiRequest {
+    return {
+      method: 'POST',
+      path: `/api/v1/portal/returns/${token}`,
+      ip: '203.0.113.7',
+      body: { items: [{ quantity: 1, ...item }] },
+    };
+  }
+
+  // F-A3a-06: portal items stored productId/reasonId of other workspaces (global FKs bypass RLS)
+  // and unknown ids surfaced as a 500 existence oracle.
+  test('rejects product and reason ids that do not belong to the portal workspace', async () => {
+    const token = await enabledPortalToken();
+    const foreignProduct = await insertProduct(FOREIGN_WORKSPACE_ID, 9_001);
+    const foreignReason = await insertReason(FOREIGN_WORKSPACE_ID, 'fremd-9001');
+
+    for (const item of [
+      { productId: foreignProduct },
+      { reasonId: foreignReason },
+      { productId: 999_999_999 },
+      { reasonId: 999_999_999 },
+    ]) {
+      const response = await handlePublicPortalRoute(itemRequest(token, item), portalPorts());
+      expect([item, response?.status]).toEqual([item, 400]);
+      expect((response?.body as { error: { code: string } }).error.code).toBe('create_failed');
+    }
+    const stored = await postgres.admin.query(`SELECT count(*)::int AS count FROM return_items`);
+    expect(stored.rows[0].count).toBe(0);
+    const headers = await postgres.admin.query(`SELECT count(*)::int AS count FROM returns`);
+    expect(headers.rows[0].count).toBe(0);
+  });
+
+  test('keeps product and reason ids of the portal workspace', async () => {
+    const token = await enabledPortalToken();
+    const ownProduct = await insertProduct(WORKSPACE_ID, 9_002);
+    const ownReason = await insertReason(WORKSPACE_ID, 'eigen-9002');
+
+    const response = await handlePublicPortalRoute(
+      itemRequest(token, { productId: ownProduct, reasonId: ownReason }),
+      portalPorts(),
+    );
+
+    expect(response?.status).toBe(201);
+    const stored = await postgres.admin.query<{ product_id: string; reason_id: string }>(
+      `SELECT product_id, reason_id FROM return_items`,
+    );
+    expect(stored.rows.map((row) => [Number(row.product_id), Number(row.reason_id)])).toEqual([[ownProduct, ownReason]]);
   });
 
   // F-A3a-08: a unique violation aborts the surrounding transaction, so the

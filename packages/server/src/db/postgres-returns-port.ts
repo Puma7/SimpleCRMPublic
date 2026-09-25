@@ -248,6 +248,16 @@ async function createReturn(
   if (items.length === 0) {
     return { ok: false, error: 'Mindestens eine Position mit Menge > 0 ist erforderlich' };
   }
+  // products.id / return_reasons.id are global and FK checks bypass RLS, so a
+  // caller-supplied id must be proven to belong to this workspace before it is
+  // referenced — otherwise another tenant's row (or an unknown id → 23503/500)
+  // would leak through.
+  if (!(await idsBelongToWorkspace(trx, 'products', workspaceId, items.map((item) => item.productId)))) {
+    return { ok: false, error: 'Unbekanntes Produkt' };
+  }
+  if (!(await idsBelongToWorkspace(trx, 'return_reasons', workspaceId, items.map((item) => item.reasonId)))) {
+    return { ok: false, error: 'Unbekannter Retourengrund' };
+  }
 
   // Retry-safe insert: if the random return_number collides (vanishingly
   // unlikely with 4 random bytes per workspace), try again with a fresh one.
@@ -301,6 +311,23 @@ async function createReturn(
   const record = await getReturn(trx, workspaceId, returnId);
   if (!record) return { ok: false, error: 'Retoure wurde angelegt, konnte aber nicht gelesen werden' };
   return { ok: true, record };
+}
+
+async function idsBelongToWorkspace(
+  trx: WorkspaceTransaction,
+  table: 'products' | 'return_reasons',
+  workspaceId: string,
+  candidates: ReadonlyArray<number | null | undefined>,
+): Promise<boolean> {
+  const ids = [...new Set(candidates.filter((id): id is number => typeof id === 'number'))];
+  if (ids.length === 0) return true;
+  const rows = await trx
+    .selectFrom(table)
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', 'in', ids)
+    .execute();
+  return rows.length === ids.length;
 }
 
 async function updateReturn(
