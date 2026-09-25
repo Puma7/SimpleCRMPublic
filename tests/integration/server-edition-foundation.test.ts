@@ -374,7 +374,10 @@ describe('server edition repository boundaries', () => {
     // postinstall (electron install), which fails in the prod image. Regression guard.
     expect(dockerfile).toContain('pnpm prune --prod --ignore-scripts');
     expect(dockerfile).toContain('COPY --from=build /app/node_modules ./node_modules');
-    expect(dockerfile).toContain('CMD ["node", "packages/server/dist/server.js"]');
+    // Das V8-Flag gehoert zum Start (ReDoS-Schutz, F-A13A14-04, E1).
+    expect(dockerfile).toContain(
+      'CMD ["node", "--enable-experimental-regexp-engine-on-excessive-backtracks", "packages/server/dist/server.js"]',
+    );
   });
 
   test('server package declares Fastify 5 and Pino as direct server dependencies', () => {

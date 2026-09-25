@@ -19,7 +19,7 @@ import type {
   SmtpRelayAdminPort,
   SmtpRelayMutationInput,
 } from './types';
-import { extractRelaySubjectRegexSources } from '@simplecrm/core';
+import { describeUnsupportedUserRegex, extractRelaySubjectRegexSources } from '@simplecrm/core';
 import { data, error, positiveIntFromPath, requireAdmin, requirePrincipal } from './http';
 
 // Same catastrophic-backtracking guard the workflow regex conditions use.
@@ -445,11 +445,19 @@ function parseRelayMutation(
     // subjects during SMTP DATA, so reject a catastrophically-backtracking
     // pattern (e.g. /(a+)+$/) at save time — the same safe-regex check the
     // workflow regex conditions use. Substring patterns carry no such risk.
-    const unsafe = extractRelaySubjectRegexSources(
+    const regexSources = extractRelaySubjectRegexSources(
       typeof body.trackingSubjectPatterns === 'string' ? body.trackingSubjectPatterns : null,
-    ).find((source) => !safeRegex(source));
+    );
+    const unsafe = regexSources.find((source) => !safeRegex(source));
     if (unsafe !== undefined) {
       return invalidRelay('Ein Betreff-Regex ist potenziell unsicher (katastrophales Backtracking) und wurde abgelehnt');
+    }
+    // safe-regex erkennt nicht jedes katastrophale Muster; den Rest faengt V8s
+    // lineare Engine ab, die aber Lookarounds und Rueckverweise nicht kann
+    // (F-A13A14-04).
+    for (const source of regexSources) {
+      const unsupported = describeUnsupportedUserRegex(source);
+      if (unsupported) return invalidRelay(unsupported);
     }
     values.trackingSubjectPatterns = body.trackingSubjectPatterns as string | null;
   }

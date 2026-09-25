@@ -1,5 +1,15 @@
 // Main Electron process
 const { app, BrowserWindow, dialog, protocol, screen } = require('electron'); // Added 'protocol'
+
+// Workflow-Regex laeuft im Main-Prozess auf Text, den Mail-Absender bestimmen.
+// Mit diesem V8-Flag wechselt ein Muster, das zu oft zurueckspringt, auf die
+// Engine mit linearer Laufzeit, statt die App einzufrieren (F-A13A14-04).
+// `js-flags` erreicht nur die Renderer: V8 laeuft im Main-Prozess schon, wenn
+// diese Datei startet. Fuer ihn setzt setFlagsFromString das Flag; es wirkt auf
+// jeden danach erzeugten RegExp, deshalb steht es vor den Modul-Imports.
+require('v8').setFlagsFromString('--enable-experimental-regexp-engine-on-excessive-backtracks');
+app.commandLine.appendSwitch('js-flags', '--enable-experimental-regexp-engine-on-excessive-backtracks');
+
 const path = require('path');
 const { pathToFileURL } = require('url');
 const windowStateKeeper = require('electron-window-state');

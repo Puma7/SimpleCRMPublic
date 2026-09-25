@@ -33,4 +33,9 @@ RUN mkdir -p /app/data/attachments /app/data/audit-archive /app/data/logs \
   && chown -R node:node /app/data
 USER node
 EXPOSE 3000
-CMD ["node", "packages/server/dist/server.js"]
+# Nutzer-Regex (Workflow-Bedingungen, Relay-Betreffregeln) laeuft auf Text, den
+# Mail-Absender bestimmen. Mit diesem V8-Flag wechselt ein Muster, das zu oft
+# zurueckspringt, auf die Engine mit linearer Laufzeit, statt den Prozess fuer
+# Sekunden bis Stunden zu blockieren (F-A13A14-04). NODE_OPTIONS nimmt dieses
+# Flag nicht an, deshalb steht es hier.
+CMD ["node", "--enable-experimental-regexp-engine-on-excessive-backtracks", "packages/server/dist/server.js"]

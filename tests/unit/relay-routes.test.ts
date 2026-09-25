@@ -214,6 +214,26 @@ describe('smtp relay routes', () => {
     expect(ok.status).toBe(201);
   });
 
+  // F-A13A14-04: Lookarounds und Rueckverweise im Betreff-Regex wurden gespeichert, obwohl V8 sie nicht auf die lineare Engine umstellen kann.
+  test.each([
+    ['/(?<=Rechnung )\\d+/', 'Lookaround'],
+    ['/(?=a)(a|a)*b/i', 'Lookaround'],
+    ['mahnung\n/(a|a)*\\1/', 'Rückverweis'],
+  ])('rejects a subject regex the linear engine cannot take over: %s (E1)', async (patterns, reason) => {
+    const calls: string[] = [];
+    const response = await apiFor(makeRelayPort({
+      async createRelay() { calls.push('create'); throw new Error('unreachable'); },
+    })).handle({
+      method: 'POST',
+      path: '/api/v1/email/relays',
+      principal: admin,
+      body: { label: 'ERP', trackingMode: 'rule', trackingSubjectPatterns: patterns },
+    });
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body)).toContain(reason);
+    expect(calls).toEqual([]);
+  });
+
   test('creates a relay and records the audit event', async () => {
     const audit = makeAudit();
     const response = await apiFor(makeRelayPort(), audit).handle({

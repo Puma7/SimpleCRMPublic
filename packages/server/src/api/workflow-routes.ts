@@ -1,6 +1,7 @@
 import {
   compileGraphToDefinition,
   definitionToJson,
+  describeUnsupportedWorkflowRegex,
   findOutboundGraphTraps,
   formatOutboundGraphTraps,
   workflowGraphHasChainStopNode,
@@ -1916,6 +1917,21 @@ function parseWorkflowMutationBody(
   }
   if (options.requireDefinition && values.definition === undefined) {
     return { ok: false, response: error(400, 'validation_error', 'definition ist erforderlich') };
+  }
+  // Regex-Bedingungen laufen auf Absendertext. Der ReDoS-Schutz ist V8s
+  // lineare Engine, die Lookarounds und Rueckverweise nicht kann — solche
+  // Muster werden deshalb gar nicht erst gespeichert (F-A13A14-04).
+  for (const field of ['graph', 'definition'] as const) {
+    if (values[field] === undefined) continue;
+    const unsupportedRegex = describeUnsupportedWorkflowRegex({ [field]: values[field] });
+    if (unsupportedRegex) {
+      return {
+        ok: false,
+        response: error(400, 'validation_error', unsupportedRegex, {
+          fields: [{ field, message: unsupportedRegex }],
+        }),
+      };
+    }
   }
 
   return { ok: true, values };
