@@ -373,6 +373,15 @@ async function handleEventSocket(
     if (!(await revalidatePrincipal(forceRevalidate))) {
       if (!closed) {
         closed = true;
+        // The socket keeps the access token of its upgrade request, so the re-resolve
+        // also fails after a routine refresh (the token's refresh-token row is rotated)
+        // or once the token expires. When the account itself is unchanged, nothing was
+        // taken from the user: close without the invalidation below, which would wipe
+        // the client's mail state, and let it reconnect with its current token.
+        if (!forceRevalidate && await isEventSocketAccountUnchanged(ports, context.principal)) {
+          socket.close(1008, 'session expired');
+          return;
+        }
         // The just-revoked/disabled user's own socket is the one that most needs the
         // invalidation, but the filtered path needs a valid principal we no longer
         // have. Push a self-targeted email_acl.changed on the RAW path before closing
@@ -544,6 +553,25 @@ export function isSelfTargetedAclInvalidation(event: ServerEvent, userId: string
     // Nachricht. Die normale TTL-Revalidierung laeuft unveraendert weiter.
     && event.payload.reason !== 'visibility_filter'
   );
+}
+
+/**
+ * True when the socket's user still exists, is enabled and holds the role the socket
+ * was last authorized with, i.e. only the socket's own access token has lapsed. Any
+ * doubt (no lookup port, lookup failure) counts as changed, so the caller keeps the
+ * revoke path with its invalidation.
+ */
+async function isEventSocketAccountUnchanged(
+  ports: ServerApiPorts,
+  principal: AuthenticatedPrincipal,
+): Promise<boolean> {
+  if (!ports.auth.getUser) return false;
+  try {
+    const user = await ports.auth.getUser({ workspaceId: principal.workspaceId, userId: principal.userId });
+    return Boolean(user && user.disabledAt === null && user.role === principal.role);
+  } catch {
+    return false;
+  }
 }
 
 function waitForWebSocketClient(): Promise<void> {
