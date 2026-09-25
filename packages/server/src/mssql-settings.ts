@@ -47,7 +47,12 @@ export type MssqlQueryResult = {
 
 export type MssqlSettingsPort = Readonly<{
   getSettings(input: { workspaceId: string }): Promise<MssqlSettingsRecord | null>;
-  saveSettings(input: { workspaceId: string; settings: MssqlSettingsInput }): Promise<{ success: boolean; error?: string }>;
+  saveSettings(input: { workspaceId: string; settings: MssqlSettingsInput }): Promise<{
+    success: boolean;
+    error?: string;
+    /** The endpoint changed while a stored password would have been kept (F-A13A14-11). */
+    code?: 'credentials_required';
+  }>;
   clearPassword(input: { workspaceId: string }): Promise<{ success: boolean; message: string }>;
   testConnection(input: { workspaceId: string; settings?: MssqlSettingsInput }): Promise<MssqlQueryResult>;
   executeReadOnlyQuery(input: { workspaceId: string; query: string }): Promise<MssqlQueryResult>;
@@ -117,6 +122,25 @@ export function createPostgresMssqlSettingsPort(
         : undefined;
       if (passwordToWrite && !secrets) {
         return { success: false, error: 'MSSQL secret storage is not configured' };
+      }
+      // The stored password belongs to the stored server (same rule as the
+      // connection test): moving to another server, port or instance must not
+      // keep it, or the next sync presents the write-only secret to that host.
+      const clearsPassword = 'password' in input.settings
+        && (input.settings.password === '' || input.settings.password === null);
+      if (!passwordToWrite && !clearsPassword) {
+        const stored = await loadMssqlSettings(options.db, input.workspaceId, options.applyWorkspaceSession);
+        if (
+          stored
+          && mssqlEndpointKey(stored) !== mssqlEndpointKey(normalized.settings)
+          && await hasMssqlPassword(secrets, input.workspaceId)
+        ) {
+          return {
+            success: false,
+            code: 'credentials_required',
+            error: 'Zugangsdaten bei Serverwechsel neu eingeben: MSSQL-Passwort erforderlich (Server, Port oder Instanz geaendert)',
+          };
+        }
       }
       await withWorkspaceTransaction(
         options.db,

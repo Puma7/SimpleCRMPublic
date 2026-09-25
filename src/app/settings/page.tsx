@@ -1,7 +1,7 @@
 // @ts-nocheck
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useForm } from "react-hook-form"
 import * as z from "zod"
@@ -47,6 +47,17 @@ const settingsSchema = z.object({
 
 type SettingsForm = z.infer<typeof settingsSchema>
 
+type StoredMssqlEndpoint = { server: string; port: number; forcePort: boolean; hasPassword: boolean }
+
+function storedMssqlEndpoint(settings: any): StoredMssqlEndpoint {
+  return {
+    server: String(settings?.server ?? "").trim().toLowerCase(),
+    port: Number(settings?.port) || 0,
+    forcePort: Boolean(settings?.forcePort),
+    hasPassword: Boolean(settings?.hasPassword),
+  }
+}
+
 export default function SettingsPage() {
   const { user, canWriteCrm } = useAuth()
   const serverClientMode = getRendererTransport().kind === "http"
@@ -65,6 +76,24 @@ export default function SettingsPage() {
   const [syncStatusMessage, setSyncStatusMessage] = useState<string | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'success' | 'error'>('unknown')
   const [lastSyncTimestamp, setLastSyncTimestamp] = useState<string | null>(null)
+  // Server edition: the stored SQL password belongs to the stored server. The
+  // API refuses a different server, port or instance without a new password
+  // (F-A13A14-11), so ask for it before testing or saving.
+  const storedEndpointRef = useRef<StoredMssqlEndpoint | null>(null)
+  const passwordRequiredForServerChange = (formData: SettingsForm): boolean => {
+    const stored = storedEndpointRef.current
+    if (!serverClientMode || !stored?.hasPassword || formData.password) return false
+    const current = storedMssqlEndpoint(formData)
+    const changed = current.server !== stored.server
+      || current.port !== stored.port
+      || current.forcePort !== stored.forcePort
+    if (!changed) return false
+    form.setError("password", { message: "Passwort erforderlich: Server, Port oder Instanz geändert." })
+    toast.error("Zugangsdaten bei Serverwechsel neu eingeben", {
+      description: "Server, Port oder Instanz geändert: Bitte das MSSQL-Passwort erneut eingeben. Das gespeicherte wird nicht an einen anderen Server gesendet.",
+    })
+    return true
+  }
 
   
   const form = useForm<SettingsForm>({
@@ -100,6 +129,7 @@ export default function SettingsPage() {
         if (settingsFromIPC) {
           const { hasPassword, password: _password, ...storedSettings } = settingsFromIPC;
           setHasStoredPassword(Boolean(hasPassword));
+          storedEndpointRef.current = storedMssqlEndpoint(settingsFromIPC);
           const formValues = {
             ...storedSettings,
             password: "",
@@ -157,6 +187,7 @@ export default function SettingsPage() {
           if (newSettings) {
             const { hasPassword, password: _password, ...storedSettings } = newSettings;
             setHasStoredPassword(Boolean(hasPassword));
+            storedEndpointRef.current = storedMssqlEndpoint(newSettings);
             form.reset({ ...storedSettings, password: "" });
           }
         } else {
@@ -180,6 +211,7 @@ export default function SettingsPage() {
   }
 
   const onSubmit = async (formData: SettingsForm) => {
+    if (passwordRequiredForServerChange(formData)) return
     // formData contains the current values from the form fields
     const dataToSave: Partial<SettingsForm> = { ...formData };
     const dataToTest: SettingsForm = { ...formData }; // Start with all form data for testing
@@ -230,8 +262,9 @@ export default function SettingsPage() {
   };
 
   const handleTestConnection = async () => {
-    setIsConnecting(true)
     const formData = form.getValues()
+    if (passwordRequiredForServerChange(formData)) return
+    setIsConnecting(true)
     const dataToTest = { ...formData };
     if (dataToTest.password === "") {
         delete dataToTest.password; // Don't send empty password for testing if not changed
