@@ -53,7 +53,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | External links | Confirm before `app:open-external-url` |
 | Mail categories | Manual assignment in UI (#71) |
 | Sent folder | IMAP append for outbound (#75) |
-| Toolchain | Node 24 LTS, pnpm 11.12.0, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
+| Toolchain | Node 24 LTS, pnpm 11.13.1, TypeScript 7.0.2+, SWC/Jest, ESLint 10 |
 | ESM compatibility | `archiver` 8 and `electron-store` 11 load lazily from CommonJS entry points |
 | Native ABI | Cached Node 141 / Electron 148 `better-sqlite3` binaries; every Electron command restores Node in `finally` |
 | Electron E2E | Dedicated `ubuntu-22.04` CI gate with Chromium sandbox, Xvfb, isolated standalone user-data, first-run authentication, HTML/trace/video/screenshot artifacts, and Electron/renderer logs |

@@ -15,6 +15,10 @@ export default defineConfig({
     'followup-calendar-customfields.spec.ts',
     'remaining-flows.spec.ts',
     'workflow-parity-manual.spec.ts',
+    'customer-workflows.spec.ts',
+    'deal-workflows.spec.ts',
+    'settings-workflows.spec.ts',
+    'followup-workflows.spec.ts',
   ],
   timeout: 120_000,
   // Keep one worker to bound Electron/SQLite resource usage on CI runners.

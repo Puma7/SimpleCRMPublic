@@ -9,6 +9,7 @@ const mockQuillInstances: Array<{
   getSelection: jest.Mock;
   getLength: jest.Mock;
   setSelection: jest.Mock;
+  clipboard: { onCopy: () => { html: string; text: string } };
 }> = [];
 
 jest.mock('quill/dist/quill.snow.css', () => ({}));
@@ -19,6 +20,7 @@ jest.mock('quill', () => {
     root = document.createElement('div');
     handlers: Record<string, (...a: any[]) => void> = {};
     clipboard = {
+      onCopy: () => ({ html: this.root.innerHTML, text: this.root.textContent ?? '' }),
       dangerouslyPasteHTML: (html: string) => {
         this.root.innerHTML = html;
       },
@@ -75,6 +77,9 @@ describe('ComposeQuillEditor', () => {
     const inst = mockQuillInstances[0]!;
     expect(inst.options.placeholder).toBe('Nachricht verfassen…');
     expect(inst.options.modules.toolbar.container).toEqual(EXPECTED_TOOLBAR);
+    inst.root.innerHTML = '<strong>Text</strong><img src=x onerror="void 0">';
+    expect(inst.clipboard.onCopy().html).toBe('<strong>Text</strong><img src="x">');
+    expect(inst.clipboard.onCopy().text).toBe('Text');
   });
 
   test('forwards editor changes to onChange, normalizing empty content to ""', () => {

@@ -1,69 +1,34 @@
-import path from 'path';
-import { _electron as electron, test, expect, ElectronApplication, Page } from '@playwright/test';
-
-let app: ElectronApplication;
+import { test, expect, type Page } from '@playwright/test';
+import { launchAuthenticatedElectron, type ElectronTestSession } from './helpers/electron-session';
+let session: ElectronTestSession;
 let page: Page;
-
 test.beforeAll(async () => {
-  const mainPath = path.resolve(process.cwd(), 'dist-electron/main.js');
-  app = await electron.launch({
-    args: [mainPath],
-    env: { ...process.env, NODE_ENV: 'production' },
-  });
-  page = await app.firstWindow();
+  session = await launchAuthenticatedElectron('followup-workflows');
+  page = session.page;
 });
+test.afterAll(async () => { await session?.close(); });
 
-test.afterAll(async () => {
-  await app.close();
+test.beforeEach(async () => {
+  await page.getByRole('link', { name: 'Nachverfolgung', exact: true }).click();
+  await page.getByRole('button', { name: /^Heute\s*0$/ }).click();
 });
-
-test('followup page: navigates and renders queue rail', async () => {
-  await page.getByRole('link', { name: 'Nachverfolgung' }).click();
-  // Should show the smart queue rail with preset queues
-  await expect(page.getByText(/Heute|Überfällig|Diese Woche/i)).toBeVisible();
+test('empty queues have zero counts', async () => {
+  await expect(page.getByRole('heading', { name: 'Nachverfolgung', exact: true })).toBeVisible();
+  for (const name of [/^Heute\s*0$/, /^Überfällig\s*0$/, /^Diese Woche\s*0$/]) {
+    await expect(page.getByRole('button', { name })).toBeVisible();
+  }
 });
-
-test('followup page: shows queue count labels', async () => {
-  await page.getByRole('link', { name: 'Nachverfolgung' }).click();
-  await page.waitForLoadState('networkidle');
-  // Smart queue rail should be visible with queue labels
-  await expect(page.getByText('Heute')).toBeVisible();
-  await expect(page.getByText('Überfällig')).toBeVisible();
-  await expect(page.getByText('Diese Woche')).toBeVisible();
+test('switching queues changes the empty state', async () => {
+  await page.getByRole('button', { name: /^Überfällig\s*0$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Keine überfälligen Aufgaben', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /^Diese Woche\s*0$/ }).click();
+  await expect(page.getByRole('heading', { name: 'Keine Aufgaben diese Woche', exact: true })).toBeVisible();
 });
-
-test('followup page: can switch between queues', async () => {
-  await page.getByRole('link', { name: 'Nachverfolgung' }).click();
-  await page.waitForLoadState('networkidle');
-
-  // Click on Überfällig queue
-  const ueberfaelligQueue = page.getByText('Überfällig').first();
-  await ueberfaelligQueue.click();
-  // Content area should update (may be empty if no overdue items)
-  await page.waitForTimeout(500);
-  // Should still show the queue rail
-  await expect(page.getByText('Überfällig')).toBeVisible();
+test('empty state offers a working next queue action', async () => {
+  await expect(page.getByRole('heading', { name: 'Keine Aufgaben für heute', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Diese Woche', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Keine Aufgaben diese Woche', exact: true })).toBeVisible();
 });
-
-test('followup page: shows empty state or items list', async () => {
-  await page.getByRole('link', { name: 'Nachverfolgung' }).click();
-  await page.waitForLoadState('networkidle');
-
-  // Click Heute queue and check for either items or empty state
-  await page.getByText('Heute').first().click();
-  await page.waitForTimeout(500);
-
-  // Main content area exists (list or empty state message)
-  const hasContent = await page.locator('main, [role="main"], .content').first().isVisible().catch(() => true);
-  expect(hasContent).toBeTruthy();
-});
-
-test('followup page: detail panel shows placeholder when no item selected', async () => {
-  await page.getByRole('link', { name: 'Nachverfolgung' }).click();
-  await page.waitForLoadState('networkidle');
-
-  // Without selecting an item, detail panel shows placeholder
-  const placeholder = await page.getByText(/Zeile auswählen/i).isVisible().catch(() => false);
-  // Either placeholder is shown OR items are loaded and one may be auto-selected
-  expect(true).toBeTruthy(); // Page loaded without errors
+test('without an item the detail panel shows a placeholder', async () => {
+  await expect(page.getByText('Zeile auswählen um Details anzuzeigen', { exact: true })).toBeVisible();
 });

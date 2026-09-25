@@ -12,7 +12,7 @@ import {
   createEmailTrackingIpIntelligence,
   type EmailTrackingIpIntelligencePort,
 } from '../email-tracking-ip-intelligence';
-import { parseBooleanEnv } from '../config';
+import { parseBooleanEnv, parseTrustProxyEnv } from '../config';
 import {
   isUsableInitialSetupToken,
   MIN_INITIAL_SETUP_TOKEN_LENGTH,
@@ -330,26 +330,29 @@ function checkBackgroundWorker(env: NodeJS.ProcessEnv): DoctorCheck {
 }
 
 export function checkTrustProxy(env: NodeJS.ProcessEnv): DoctorCheck {
-  const value = env.TRUST_PROXY?.trim();
-  if (!value) {
-    return {
-      name: 'trust_proxy',
-      status: 'warn',
-      message: 'TRUST_PROXY is unset; per-IP rate limits use the direct socket address (set to uniquelocal behind Caddy)',
-    };
-  }
-  if (value === 'false' || value === '0') {
-    return {
-      name: 'trust_proxy',
-      status: 'warn',
-      message: `TRUST_PROXY=${value}; per-IP rate limits use the direct socket address (set to uniquelocal behind Caddy)`,
-    };
-  }
-  if (/^\d+$/.test(value)) {
+  let value: boolean | string;
+  try {
+    value = parseTrustProxyEnv(env.TRUST_PROXY);
+  } catch (error) {
     return {
       name: 'trust_proxy',
       status: 'fail',
-      message: `TRUST_PROXY=${value} is a hop count, which fastify ignores; every client shares Caddy's rate-limit bucket (set to uniquelocal behind Caddy)`,
+      message: formatError(error),
+    };
+  }
+  if (value === false) {
+    return {
+      name: 'trust_proxy',
+      status: 'warn',
+      message: 'TRUST_PROXY=false; per-IP rate limits use the direct socket address. '
+        + 'Behind a proxy, configure its IP/CIDR; bundled Compose uses CADDY_PROXY_IP.',
+    };
+  }
+  if (value === true) {
+    return {
+      name: 'trust_proxy',
+      status: 'warn',
+      message: 'TRUST_PROXY=true trusts every peer. Prefer explicit proxy IPs/CIDRs.',
     };
   }
   return {

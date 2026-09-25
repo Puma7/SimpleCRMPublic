@@ -234,6 +234,25 @@ describe('several compose files (SMTP relay override)', () => {
   }));
 });
 
+describe('TRUST_PROXY preflight', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+
+  // Merge von PR #192: Die API lehnt Hop-Zahlen wie TRUST_PROXY=1 jetzt beim Start ab. Ein Update mit dieser alten .env-Zeile haette die API in eine Neustartschleife geschickt.
+  test('update stops before touching the stack when TRUST_PROXY is an old hop count', ranOrSkipped(() => {
+    const blocked = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { TRUST_PROXY: '1' } });
+    expect(blocked.status).not.toBe(0);
+    expect(blocked.stderr).toContain('TRUST_PROXY=1');
+    expect(blocked.log).not.toContain(' build');
+    expect(blocked.log).not.toContain('stop api');
+
+    const ok = runWithFakeDocker(['docker/simplecrm', 'update', '--no-pull', '--no-backup'], { env: { TRUST_PROXY: '172.31.255.2' } });
+    expect(ok.status).toBe(0);
+  }));
+});
+
 describe('API volume ownership after the switch to a non-root image', () => {
   const ranOrSkipped = (fn: () => void) => () => {
     if (!bashAvailable()) return;

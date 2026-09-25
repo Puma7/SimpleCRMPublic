@@ -25,6 +25,7 @@ import {
   messageMatchesReplySuggestionCategories,
   shouldAutoEnsureReplySuggestion,
   setReplySuggestionSettings,
+  clearReplySuggestionAccountOverrides,
 } from '../../electron/email/reply-suggestion-settings';
 
 describe('reply suggestion settings (shared)', () => {
@@ -53,6 +54,7 @@ describe('reply suggestion settings (electron)', () => {
   beforeEach(() => {
     mockGetSyncInfo.mockReset();
     mockSetSyncInfo.mockReset();
+    mockGetEmailMessageById.mockReset();
     mockListMessageCategoryAssignments.mockReset();
     mockGetSyncInfo.mockReturnValue(null);
     mockListMessageCategoryAssignments.mockReturnValue([]);
@@ -66,6 +68,35 @@ describe('reply suggestion settings (electron)', () => {
       categoryMode: 'any',
       categoryIds: [],
     });
+  });
+
+  it('clears only one account overrides and restores global settings', () => {
+    const values = new Map<string, string>([
+      ['reply_suggestion_auto_enabled', 'false'],
+      ['reply_suggestion_category_mode', 'only_listed'],
+      ['reply_suggestion_category_ids', '[2, 9]'],
+      ['reply_suggestion_auto_enabled@7', 'true'],
+      ['reply_suggestion_category_mode@7', 'any'],
+      ['reply_suggestion_category_ids@7', '[3]'],
+      ['reply_suggestion_auto_enabled@8', 'true'],
+    ]);
+    mockGetSyncInfo.mockImplementation((key: string) => values.get(key) ?? null);
+    mockSetSyncInfo.mockImplementation((key: string, value: string) => values.set(key, value));
+    expect(getReplySuggestionSettings(7)).toMatchObject({ autoEnabled: true, categoryMode: 'any', categoryIds: [3] });
+    clearReplySuggestionAccountOverrides(7);
+    expect(getReplySuggestionSettings(7)).toMatchObject({ autoEnabled: false, categoryMode: 'only_listed', categoryIds: [2, 9] });
+    expect(getReplySuggestionSettings(8).autoEnabled).toBe(true);
+    expect(mockSetSyncInfo).toHaveBeenCalledTimes(5);
+  });
+
+  it.each(['{invalid', '{}', '  '])('rejects malformed stored category lists: %s', (raw) => {
+    mockGetSyncInfo.mockImplementation((key: string) => key === 'reply_suggestion_category_ids' ? raw : null);
+    expect(getReplySuggestionSettings().categoryIds).toEqual([]);
+  });
+
+  it('keeps valid category IDs and excludes nonpositive and fractional IDs', () => {
+    mockGetSyncInfo.mockImplementation((key: string) => key === 'reply_suggestion_category_ids' ? '[2, "3", -1, 0, 1.5, "bad", 2]' : null);
+    expect(getReplySuggestionSettings().categoryIds).toEqual([2, 3, 2]);
   });
 
   it('setReplySuggestionSettings persists flags', () => {
@@ -116,6 +147,19 @@ describe('reply suggestion settings (electron)', () => {
       return null;
     });
     expect(shouldAutoEnsureReplySuggestion(1, 'open')).toBe(false);
+  });
+
+  it('uses a preloaded message and falls back from empty account flags to global defaults', () => {
+    mockGetSyncInfo.mockImplementation((key: string) => key.includes('@5') ? '' : null);
+    const row = { account_id: 5 } as NonNullable<Parameters<typeof shouldAutoEnsureReplySuggestion>[2]>;
+    expect(shouldAutoEnsureReplySuggestion(10, 'open', row)).toBe(true);
+    expect(mockGetEmailMessageById).not.toHaveBeenCalled();
+  });
+
+  it('an empty category allowlist never triggers automatic replies', () => {
+    const settings = normalizeReplySuggestionSettings({ categoryMode: 'only_listed', categoryIds: [] });
+    expect(messageMatchesReplySuggestionCategories(10, settings)).toBe(false);
+    expect(mockListMessageCategoryAssignments).not.toHaveBeenCalled();
   });
 
   it('messageMatchesReplySuggestionCategories with only_listed matches ANY assigned category', () => {

@@ -40,7 +40,7 @@ See `package.json` `scripts` for the full list.
 
 ### Gotchas
 
-- **Toolchain:** Node.js 24 LTS, pnpm 11.12.0 and TypeScript 7.0.2+ are enforced by `package.json`, CI and `pnpm run check:typescript-toolchain`. Do not add a second root lockfile.
+- **Toolchain:** Node.js 24 LTS, pnpm 11.13.1 and TypeScript 7.0.2+ are enforced by `package.json`, CI and `pnpm run check:typescript-toolchain`. Do not add a second root lockfile.
 - **Root package manager is pnpm.** It resolves the root peer tree without `--legacy-peer-deps`. The isolated `packages/svelte-lab` experiment intentionally keeps its own npm lock and uses `npm ci --legacy-peer-deps`.
 - **`@testing-library/dom` is an explicit dependency** because `@testing-library/react` requires that peer.
 - **Native modules** use different ABIs under Node 24 and Electron 43. `postinstall` caches both `better-sqlite3` binaries and leaves the workspace on the Node ABI; all `electron:*` scripts switch to the Electron ABI and restore Node afterwards. Use `pnpm run native:status` to inspect or `pnpm run native:initialize` to rebuild the caches. Do not invoke `electron-rebuild` directly.

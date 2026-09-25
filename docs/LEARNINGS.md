@@ -19,7 +19,7 @@ Short, durable facts discovered during implementation. **Read before refactoring
 
 ## Cross-cutting (whole repo)
 
-1. **Pinned toolchain** — use Node.js 24 LTS and pnpm 11.12.0; `pnpm run check:typescript-toolchain` rejects TypeScript below 7.0.2 and legacy compiler integrations.
+1. **Pinned toolchain** — use Node.js 24 LTS and pnpm 11.13.1; `pnpm run check:typescript-toolchain` rejects TypeScript below 7.0.2 and legacy compiler integrations.
 2. **Package managers** — use `pnpm install` at the root. Only isolated `packages/svelte-lab` uses its own npm lock with `npm ci --legacy-peer-deps`.
 3. **Native modules** — Node 24 uses ABI 137 while Electron 43 uses ABI 148. `pnpm run native:initialize` caches both `better-sqlite3` binaries; Electron scripts switch with `run-with-electron-native.mjs` and restore Node in `finally`. Do not run `electron-rebuild` directly. The patch guard accepts both the legacy direct `HolderV2` patch and the upstream `PROPERTY_HOLDER` macro.
 4. **CommonJS to ESM dependencies** — load ESM-only packages such as `archiver`, `electron-store`, and `openpgp` with memoized dynamic imports from Electron/server CommonJS output.
@@ -34,7 +34,7 @@ Short, durable facts discovered during implementation. **Read before refactoring
 13. **Untrusted HTML/regex** — never strip HTML with backtracking regexes (`/<[^>]+>/`, `<style[\s\S]*?</style>`) on mail content; use the linear helpers in `packages/core/src/email/parse-utils.ts` (`plainTextFromHtml`, `stripHtmlTagsToText`, `replaceElementBlocks`). Insert user values with callback replacements so `$&`/`$'` are not patterns, and interpolate placeholders in a single pass.
 14. **Archive/parse differentials** — guard ZIP bombs with the same parser that later reads the file (JSZip for mammoth); yauzl can be shown different entries. mailparser `headerLines` are `{key,line}` objects — join `.line`.
 15. **Module cycles** — class exports in modules that sit in an import cycle (e.g. `electron/sqlite-service.ts`) are in the temporal dead zone during load and break `{ ...jest.requireActual() }` mocks; put error classes in their own module.
-16. **Operator scripts** — `docker/simplecrm`, `update.sh` and `restore-compose.sh` accept a `:`-separated `COMPOSE_FILE`; the SMTP relay override must be listed there or updates recreate the API without relay ports. `TRUST_PROXY` must be `uniquelocal`/CIDR, Fastify ≥ 5.12 ignores hop counts.
+16. **Operator scripts** — `docker/simplecrm`, `update.sh` and `restore-compose.sh` accept a `:`-separated `COMPOSE_FILE`; the SMTP relay override must be listed there or updates recreate the API without relay ports. `TRUST_PROXY` must name proxy IPs/CIDRs (Compose: Caddy's fixed `CADDY_PROXY_IP` on its own network); hop counts are rejected at startup because Fastify ≥ 5.12 ignores them.
 9. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).
 
 ---

@@ -1,5 +1,8 @@
 services:
   caddy:
+    networks:
+      proxy:
+        ipv4_address: ${CADDY_PROXY_IP:-172.31.255.2}
     build:
       context: ..
       dockerfile: docker/web.Dockerfile
@@ -19,6 +22,9 @@ services:
         condition: service_healthy
 
   api:
+    networks:
+      - default
+      - proxy
     build:
       context: ..
       dockerfile: docker/api.Dockerfile
@@ -42,11 +48,9 @@ services:
       NODE_ENV: ${NODE_ENV:-production}
       CI: ${CI:-}
       BACKUP_DIR: ${BACKUP_DIR:-}
-      # Trust the Caddy container on the private compose network so rate limiting
-      # sees the real client IP (not Caddy's). The API port is not published and
-      # Caddy overwrites X-Forwarded-For, so a client cannot inject extra hops.
-      # Hop counts (e.g. 1) are ignored by fastify >= 5.12 and must not be used.
-      TRUST_PROXY: ${TRUST_PROXY:-uniquelocal}
+      # Trust Caddy's fixed address, not every peer on a private network.
+      # The API port remains unpublished. Custom proxies must use explicit IPs/CIDRs.
+      TRUST_PROXY: ${TRUST_PROXY:-${CADDY_PROXY_IP:-172.31.255.2}}
       AUTH_INVITE_FROM: ${AUTH_INVITE_FROM:-}
       AUTH_INVITE_SMTP_HOST: ${AUTH_INVITE_SMTP_HOST:-}
       AUTH_INVITE_SMTP_PORT: ${AUTH_INVITE_SMTP_PORT:-587}
@@ -359,6 +363,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+networks:
+  default:
+  proxy:
+    ipam:
+      config:
+        - subnet: ${PROXY_SUBNET:-172.31.255.0/29}
+          # Keep dynamic allocations (including API startup) away from Caddy.
+          ip_range: ${PROXY_DYNAMIC_RANGE:-172.31.255.4/30}
 
 volumes:
   postgres_data:

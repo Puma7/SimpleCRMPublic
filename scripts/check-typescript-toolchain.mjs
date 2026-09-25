@@ -33,8 +33,8 @@ for (const dependency of forbiddenRoot) {
 checkTypeScriptRange(rootManifest, 'root package.json');
 checkTypeScriptRange(svelteManifest, 'packages/svelte-lab/package.json');
 
-if (rootManifest.packageManager !== 'pnpm@11.12.0') {
-  problems.push(`Expected packageManager pnpm@11.12.0, found ${rootManifest.packageManager ?? 'none'}`);
+if (rootManifest.packageManager !== 'pnpm@11.13.1') {
+  problems.push(`Expected packageManager pnpm@11.13.1, found ${rootManifest.packageManager ?? 'none'}`);
 }
 
 if (rootManifest.engines?.node !== '>=24') {

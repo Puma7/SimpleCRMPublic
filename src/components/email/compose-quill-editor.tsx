@@ -6,6 +6,7 @@ import "quill/dist/quill.snow.css"
 import "@/styles/compose-quill.css"
 import { cn } from "@/lib/utils"
 import { sanitizeEmailHtml } from "@/lib/sanitize-email-html"
+import { sanitizeQuillClipboard } from "@/lib/quill-clipboard"
 
 export type ComposeQuillEditorHandle = {
   /** Focuses the editor and restores a usable cursor position. */
@@ -165,6 +166,7 @@ export const ComposeQuillEditor = forwardRef<ComposeQuillEditorHandle, Props>(
         },
         placeholder: "Nachricht verfassen…",
       })
+      sanitizeQuillClipboard(quill)
       quillRef.current = quill
 
       if (value) {

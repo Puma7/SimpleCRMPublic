@@ -16,6 +16,7 @@
 | [**GROUP_RIGHTS_ADMIN.md**](GROUP_RIGHTS_ADMIN.md) | Admin-Kurzanleitung Gruppen & Postfach-Rechte |
 | [**PR_156_FOLLOWUP_AUDIT.md**](PR_156_FOLLOWUP_AUDIT.md) | Validierung und Aufloesung der dokumentierten Claude-/Bugbot-Follow-ups in PR 156 |
 | [**SECURITY_DEPENDENCY_EXCEPTIONS.md**](SECURITY_DEPENDENCY_EXCEPTIONS.md) | Time-bound dependency risk acceptances, owners and controls |
+| [**SECURITY_STABILITY_REVIEW_2026_09_25.md**](SECURITY_STABILITY_REVIEW_2026_09_25.md) | Abbruchbericht zu PR #192: Korrekturen, Tests, Grenzen und erhaltene vorläufige Scan-Hinweise |
 | [LEARNINGS_AUTH.md](LEARNINGS_AUTH.md) | Auth hardening pitfalls + audit learnings |
 | [LEARNINGS_EMAIL.md](LEARNINGS_EMAIL.md) | E-mail / IMAP / POP3 / SQLite pitfalls |
 | [LEARNINGS_WORKFLOW.md](LEARNINGS_WORKFLOW.md) | Workflow engine, modular graphs, outbound/spam |

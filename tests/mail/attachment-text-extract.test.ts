@@ -8,6 +8,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { execFileSync } from 'node:child_process';
 import { deflateRawSync } from 'zlib';
 import Database from 'better-sqlite3';
 
@@ -198,14 +199,34 @@ describe('attachment text extraction', () => {
     ).toBe('Hallo Welt');
   });
 
-  // pdf-parse (pdfjs) laedt seinen Worker per dynamischem ESM-Import, was in
-  // Jests CJS-VM ohne --experimental-vm-modules nicht funktioniert. Derselbe
-  // Codepfad ist unter echtem Node verifiziert (siehe PR-/Report-Notiz):
-  //   new PDFParse({data}) -> getText() liefert den Textinhalt des Mini-PDFs.
-  test.skip('buffer extraction: pdf (pdf-parse) — nur unter echtem Node lauffaehig', async () => {
-    const text = await extractAttachmentTextFromBuffer(buildMiniPdf('Suchtext PDF Inhalt'), 'pdf');
-    expect(text).toContain('Suchtext PDF Inhalt');
-  });
+  // Use real Node workers outside Jest's CJS VM, with the production source.
+  test('buffer extraction: pdf through desktop and server Node runtimes', () => {
+    const script = `
+      import { readFileSync } from 'node:fs';
+      import { extractAttachmentTextFromBuffer as desktop } from './electron/email/attachment-text-extract.ts';
+      import { extractAttachmentTextFromBuffer as server } from './packages/server/src/mail-attachment-text.ts';
+      const input = readFileSync(0);
+      process.stdout.write(JSON.stringify({
+        desktop: await desktop(input, 'pdf'),
+        server: await server(input, 'pdf'),
+      }));
+    `;
+    const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+      cwd: path.resolve(__dirname, '../..'),
+      env: {
+        ...process.env,
+        // Match Jest's source aliases; a fresh checkout has no core/dist yet.
+        TSX_TSCONFIG_PATH: path.resolve(__dirname, '../setup/tsconfig.node-runtime.json'),
+      },
+      input: buildMiniPdf('Suchtext PDF Inhalt'),
+      encoding: 'utf8',
+      timeout: 15_000,
+      windowsHide: true,
+    });
+    const result = JSON.parse(output) as { desktop: string; server: string };
+    expect(result.desktop).toContain('Suchtext PDF Inhalt');
+    expect(result.server).toContain('Suchtext PDF Inhalt');
+  }, 20_000);
 
   test('buffer extraction: docx (mammoth)', async () => {
     const docx = await buildMiniDocx('Suchtext DOCX Inhalt');

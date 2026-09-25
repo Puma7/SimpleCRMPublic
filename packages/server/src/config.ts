@@ -1,8 +1,34 @@
+import { isIP } from 'node:net';
+
 import {
   JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
   JOB_MAIL_SYNC_MAX_CONCURRENCY,
 } from './jobs/policy';
 import { MASTER_KEY_BYTES, masterKeyLooksGuessable } from './security/master-key';
+
+/** Trust proxy identities/subnets, never a path length that a client can shorten. */
+export function parseTrustProxyEnv(raw: string | undefined): boolean | string {
+  const value = raw?.trim();
+  if (!value || value === 'false' || value === '0') return false;
+  if (value === 'true') return true;
+  const entries = value.split(',').map((entry) => entry.trim());
+  const valid = entries.every((entry) => {
+    if (['loopback', 'linklocal', 'uniquelocal'].includes(entry)) return true;
+    const parts = entry.split('/');
+    const family = isIP(parts[0] ?? '');
+    if (!family || parts.length > 2) return false;
+    if (parts.length === 1) return true;
+    const prefix = parts[1] ?? '';
+    return /^\d+$/.test(prefix) && Number(prefix) <= (family === 4 ? 32 : 128);
+  });
+  if (!valid) {
+    throw new Error(
+      'Invalid TRUST_PROXY: hop counts are no longer supported. '
+      + 'Use false (direct access) or trusted proxy IPs/CIDRs separated by commas.',
+    );
+  }
+  return entries.join(',');
+}
 
 export type ServerEditionEnv = {
   DATABASE_URL?: string;

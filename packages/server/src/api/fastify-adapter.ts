@@ -53,10 +53,8 @@ export type FastifyServerOptions = Readonly<{
    *
    * Defaults to `false` (trust nobody) — the safe choice for a directly-exposed
    * API, where trusting any peer's XFF would let a client spoof it to escape the
-   * per-IP buckets. The bundled Docker deployment sets `TRUST_PROXY=uniquelocal`
-   * (trust peers on the private compose network, i.e. Caddy) via its env; other
-   * values accepted are `true` (trust all hops) or a proxy-addr subnet/preset
-   * string. Hop counts are not accepted: fastify >= 5.12 ignores them.
+   * per-IP buckets. Docker trusts Caddy's fixed address on its proxy network.
+   * Custom deployments should name proxy IPs/CIDRs. `true` trusts every peer.
    */
   trustProxy?: boolean | string;
   apiRateLimit?: PostgresApiRateLimitPort;

@@ -107,6 +107,22 @@ migrate_cli() {
 
 say "Project: $COMPOSE_PROJECT_NAME    Compose file: $COMPOSE_FILE"
 
+# The API refuses to start with a proxy hop count such as TRUST_PROXY=1 (fastify
+# >= 5.12 ignores hop counts; see docs/SETUP_SERVER.md). Stop here, before
+# anything is rebuilt or restarted, instead of leaving the new API crash-looping.
+trust_proxy_value="${TRUST_PROXY:-}"
+if [ -z "$trust_proxy_value" ] && [ -f "$COMPOSE_DIR/.env" ]; then
+  trust_proxy_value="$(sed -n 's/^TRUST_PROXY=["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' "$COMPOSE_DIR/.env" | tail -n 1)"
+fi
+case "$trust_proxy_value" in
+  ''|*[!0-9]*) ;;
+  *)
+    printf 'ERROR: TRUST_PROXY=%s is a proxy hop count, which the API no longer accepts.\n' "$trust_proxy_value" >&2
+    printf 'Remove the line from %s/.env to trust the bundled Caddy (CADDY_PROXY_IP), or list your proxy IPs/CIDRs.\n' "$COMPOSE_DIR" >&2
+    exit 4
+    ;;
+esac
+
 # Guard against a silent stack swap. An older version of this tooling hardcoded
 # the project name "simplecrm". If a stack still runs under that name and the
 # operator did not explicitly pick a project, operating on the derived default
