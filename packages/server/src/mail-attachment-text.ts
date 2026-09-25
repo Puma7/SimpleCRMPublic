@@ -204,6 +204,9 @@ export async function extractTextForAttachmentRow(
       return false;
     }
     const buf = await readFile(resolvedPath);
+    // Mark as tried before parsing: if a parse takes the process down, the
+    // backfill must not pick the same row again after every restart.
+    await markExtracted(options, row, null);
     const text = await withTimeout(extractAttachmentTextFromBuffer(buf, kind), EXTRACT_TIMEOUT_MS);
     await markExtracted(options, row, text.length > 0 ? text : null);
     return text.length > 0;
