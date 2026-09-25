@@ -1,4 +1,5 @@
 import { z, ZodTypeAny } from 'zod';
+import { isStrictBase64Payload } from '../../packages/core/src/base64';
 import { AllowedInvokeChannels, DeprecatedInvokeChannels, IPCChannels, InvokeChannel } from './channels';
 import { applyEmailIpcSchemas } from './email-schemas';
 
@@ -660,7 +661,7 @@ const pgpMessageAttachmentPayload = z.object({
   filename: z.string().trim().min(1).max(260),
   contentType: z.string().trim().max(200).optional(),
   contentBase64: z.string().trim().min(1).max(70_000_000)
-    .refine((value) => value.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(value), 'contentBase64 must be valid Base64'),
+    .refine((value) => value.length % 4 === 0 && isStrictBase64Payload(value), 'contentBase64 must be valid Base64'),
 });
 
 const pgpPreparedAttachmentResult = z.object({

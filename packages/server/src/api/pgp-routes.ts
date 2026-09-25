@@ -1,3 +1,4 @@
+import { isStrictBase64Payload } from '@simplecrm/core';
 import type {
   ApiErrorBody,
   ApiRequest,
@@ -1943,7 +1944,7 @@ function normalizeBase64AttachmentContent(
   if (typeof rawValue !== 'string') return { ok: false, message: `${field} muss ein Base64-String sein` };
   const normalized = rawValue.trim();
   if (!normalized) return { ok: false, message: `${field} darf nicht leer sein` };
-  if (normalized.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) {
+  if (normalized.length % 4 !== 0 || !isStrictBase64Payload(normalized)) {
     return { ok: false, message: `${field} muss valides Base64 sein` };
   }
   return { ok: true, value: Buffer.from(normalized, 'base64') };

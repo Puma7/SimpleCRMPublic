@@ -5,7 +5,10 @@ import path from 'node:path';
 
 import type { Kysely } from 'kysely';
 
-import { sanitizeAttachmentFilename as sanitizeUnicodeAttachmentFilename } from '@simplecrm/core';
+import {
+  isStrictBase64Payload,
+  sanitizeAttachmentFilename as sanitizeUnicodeAttachmentFilename,
+} from '@simplecrm/core';
 
 import type { EmailComposeAttachmentUploadApiPort, EmailComposeAttachmentUploadResult } from './api';
 import {
@@ -222,5 +225,5 @@ function sanitizeAttachmentFilename(input: string): string {
 function isValidBase64(value: string): boolean {
   if (!value) return true;
   if (value.length % 4 !== 0) return false;
-  return /^[A-Za-z0-9+/]+={0,2}$/.test(value);
+  return isStrictBase64Payload(value);
 }

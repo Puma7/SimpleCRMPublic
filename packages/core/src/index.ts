@@ -7,3 +7,4 @@ export * from './email';
 export * from './crm';
 export * from './workflow';
 export * from './user-regex';
+export * from './base64';
