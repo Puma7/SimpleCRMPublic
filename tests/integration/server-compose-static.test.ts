@@ -179,6 +179,31 @@ describe('server Compose backup volume', () => {
   });
 });
 
+describe('server Compose restore identity', () => {
+  // C-A61: restore und restore-drill spielten den Dump als simplecrm_admin (Superuser) mit PG_RESTORE_ROLE ein; SQL aus dem Dump kam per RESET ROLE zum Superuser zurueck.
+  test('restores the dump through the application login, admin only manages the drill database', () => {
+    const appUrl = 'postgres://simplecrm_app:test-app-password@postgres:5432/simplecrm';
+    const tempDir = createComposeFixture({ extraEnvironment: { RESTORE_DRILL_MAINTENANCE_DATABASE_URL: '' } });
+    try {
+      const resolved = resolveCompose(tempDir, ['restore', 'restore-drill']);
+      const restore = resolved.services.restore.environment ?? {};
+      const drill = resolved.services['restore-drill'].environment ?? {};
+
+      expect(restore.DATABASE_URL).toBe(appUrl);
+      expect(restore.PG_RESTORE_ROLE).toBeUndefined();
+      // Der In-Place-Restore braucht die Admin-Zugangsdaten gar nicht.
+      expect(Object.values(restore).join('\n')).not.toMatch(/simplecrm_admin|test-admin-password/);
+
+      expect(drill.DATABASE_URL).toBe(appUrl);
+      expect(drill.PG_RESTORE_ROLE).toBeUndefined();
+      expect(drill.RESTORE_DRILL_MAINTENANCE_DATABASE_URL)
+        .toBe('postgres://simplecrm_admin:test-admin-password@postgres:5432/simplecrm');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('server Compose API least privilege', () => {
   // F-A12-07: Der API-Container (auch migrate) lief als root mit vollem Capability-Set, pgadmin zog ungepinnt :latest.
   test('runs the API image as the unprivileged node user without capabilities', () => {
@@ -236,6 +261,7 @@ function createComposeFixture(options: Readonly<{
   broadGeoIpCredentials?: boolean;
   updaterCredentials?: Readonly<{ accountId: string; licenseKey: string }>;
   proxyEnvironment?: Readonly<Record<string, string>>;
+  extraEnvironment?: Readonly<Record<string, string>>;
 }> = {}): string {
   const tempDir = mkdtempSync(join(tmpdir(), 'simplecrm-geoip-compose-'));
   copyFileSync(join(dockerRoot, 'docker-compose.yml'), join(tempDir, 'docker-compose.yml'));
@@ -247,6 +273,7 @@ function createComposeFixture(options: Readonly<{
     PUBLIC_BASE_URL: 'https://crm.example.test',
     ...RUNTIME_SENTINELS,
     ...options.proxyEnvironment,
+    ...options.extraEnvironment,
     ...(options.broadGeoIpCredentials ? {
       GEOIPUPDATE_ACCOUNT_ID: 'legacy-account-sentinel',
       GEOIPUPDATE_LICENSE_KEY: 'legacy-license-sentinel',

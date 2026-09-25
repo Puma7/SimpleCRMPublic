@@ -23,7 +23,7 @@ describe('backup metadata verification only counts real tables', () => {
 
   beforeAll(async () => {
     postgres = await startMigratedEmbeddedPostgres('backup-metadata-count');
-    // restore.sh und restore-drill.sh pruefen mit der Admin-Rolle, also als Superuser.
+    // Geprueft wird hier als Superuser: auch dann darf die Zaehlung nichts aus dem Dump auswerten.
     await postgres.admin.query(
       `CREATE ROLE ${RESTORE_ADMIN} LOGIN SUPERUSER PASSWORD '${RESTORE_ADMIN_PASSWORD}'`,
     );

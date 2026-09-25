@@ -178,7 +178,8 @@ describe('server edition repository boundaries', () => {
     expect(compose).toContain('BACKUP_RETENTION_MONTHLY: ${BACKUP_RETENTION_MONTHLY:-12}');
     expect(compose).toContain('./backup-retention.sh:/app/backup-retention.sh:ro');
     expect(compose).toContain('DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm');
-    expect(compose).toContain('PG_RESTORE_ROLE: simplecrm_app');
+    // C-A61: restore und restore-drill melden sich als App-Rolle an statt als Superuser mit --role.
+    expect(compose).not.toContain('PG_RESTORE_ROLE');
     expect(compose).toContain('audit_archives:/app/data/audit-archive');
     expect(compose).toContain('SERVER_LOG_FILE: ${SERVER_LOG_FILE:-/app/data/logs/server-log.jsonl}');
     expect(compose).toContain('server_logs:/app/data/logs');
@@ -270,8 +271,10 @@ describe('server edition repository boundaries', () => {
     expect(restore).toContain('verify_backup_file "$DUMP_PATH" "$CHECKSUM_MANIFEST"');
     expect(restore).toContain('verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"');
     expect(restore).toContain('checksum mismatch for $file_name');
-    expect(restore).toContain('PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-}"');
-    expect(restore).toContain('pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner');
+    expect(restore).not.toContain('PG_RESTORE_ROLE');
+    expect(restore).not.toContain('--role=');
+    expect(restore).toContain('assert_restricted_restore_session "$DATABASE_URL" \'restore\'');
+    expect(restore).toContain('pg_restore --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"');
     expect(restore).toContain('validate_tar_archive "$ATTACHMENTS_ARCHIVE"');
     expect(restore).toContain('validate_tar_archive "$AUDIT_ARCHIVE"');
     expect(restore).toContain('if ($1 !~ /^[-d]/)');
@@ -291,7 +294,9 @@ describe('server edition repository boundaries', () => {
     expect(restoreDrill).toContain('verify_backup_file "$AUDIT_ARCHIVE" "$CHECKSUM_MANIFEST"');
     expect(restoreDrill).toContain('tar -tf "$AUDIT_ARCHIVE"');
     expect(restoreDrill).toContain('CREATE DATABASE \\"$DRILL_DB_SQL\\" OWNER \\"$PG_APP_USER_SQL\\"');
-    expect(restoreDrill).toContain('pg_restore --role="$PG_RESTORE_ROLE" --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"');
+    expect(restoreDrill).not.toContain('--role=');
+    expect(restoreDrill).toContain('assert_restricted_restore_session "$DRILL_DATABASE_URL" \'restore drill\'');
+    expect(restoreDrill).toContain('pg_restore --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"');
     expect(restoreDrill).toContain('DROP DATABASE IF EXISTS');
     // C-A55: kein rohes count(*) als Admin ueber einen Namen aus dem Dump.
     expect(restoreDrill).toContain('backup_metadata_count "$DRILL_DATABASE_URL" workspaces');

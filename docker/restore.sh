@@ -11,7 +11,6 @@ ATTACHMENTS_ARCHIVE="${2:-}"
 AUDIT_ARCHIVE="${3:-}"
 ATTACHMENTS_DIR="${ATTACHMENTS_DIR:-/data/attachments}"
 AUDIT_ARCHIVE_DIR="${AUDIT_ARCHIVE_DIR:-/data/audit-archive}"
-PG_RESTORE_ROLE="${PG_RESTORE_ROLE:-}"
 
 if [ -z "$DUMP_PATH" ]; then
   echo "usage: restore.sh /path/to/db.dump [/path/to/attachments.tar] [/path/to/audit-archive.tar]" >&2
@@ -115,11 +114,17 @@ fi
 # zurueck; so rollt jeder Fehler zurueck und die Datenbank bleibt, wie sie war.
 #
 # Erweiterungen, die es in der Zieldatenbank schon gibt, bleiben deshalb
-# unangetastet: dort legt postgres-init sie als Admin an, und unter
-# PG_RESTORE_ROLE scheitern DROP EXTENSION (aus --clean) und COMMENT ON
-# EXTENSION an der Besitzerpruefung. In einer Transaktion rollte das jeden
-# In-Place-Restore zurueck. Fehlt eine Erweiterung (frische Datenbank), bleibt
-# ihr Eintrag stehen und wird wie bisher angelegt.
+# unangetastet: dort legt postgres-init sie als Admin an, und unter der
+# App-Rolle scheitern DROP EXTENSION (aus --clean) und COMMENT ON EXTENSION an
+# der Besitzerpruefung. In einer Transaktion rollte das jeden In-Place-Restore
+# zurueck. Fehlt eine Erweiterung (frische Datenbank), bleibt ihr Eintrag stehen
+# und wird wie bisher angelegt.
+#
+# DATABASE_URL meldet sich als App-Rolle an, nicht als Superuser mit --role:
+# SQL aus dem Dump kaeme per RESET ROLE sonst zur Anmelderolle zurueck. Das
+# wird geprueft, bevor irgendetwas aus dem Dump die Datenbank erreicht.
+assert_restricted_restore_session "$DATABASE_URL" 'restore'
+
 RESTORE_TOC="$(mktemp)"
 trap 'rm -f "$RESTORE_TOC"' EXIT
 existing_extensions="$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atc "SELECT string_agg(extname, ',') FROM pg_extension")"
@@ -133,11 +138,7 @@ printf '%s\n' "$dump_toc" | awk -v existing="$existing_extensions" '
   { print }
 ' > "$RESTORE_TOC"
 
-if [ -n "$PG_RESTORE_ROLE" ]; then
-  pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"
-else
-  pg_restore --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"
-fi
+pg_restore --clean --if-exists --no-owner --single-transaction -L "$RESTORE_TOC" --dbname "$DATABASE_URL" "$DUMP_PATH"
 
 if [ -n "$ATTACHMENTS_ARCHIVE" ]; then
   mkdir -p "$ATTACHMENTS_DIR"

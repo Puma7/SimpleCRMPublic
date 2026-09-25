@@ -359,9 +359,9 @@ refresh_backup_metadata_master_key() {
 # und ein Backup ist kein vertrauenswuerdiger Eingang: die SHA-256-Liste liegt
 # direkt daneben und wird beim Manipulieren einfach mitgeschrieben, sie belegt
 # also Unversehrtheit gegen Bitfehler, nicht Herkunft. Ein praeparierter
-# rows_-Eintrag darf deshalb nicht in SQL landen — restore.sh und
-# restore-drill.sh laufen mit der Admin-Rolle und damit mit deutlich mehr
-# Rechten als das pg_restore selbst, das bewusst als App-Rolle arbeitet.
+# rows_-Eintrag darf deshalb nicht in SQL landen — auch wenn restore.sh und
+# restore-drill.sh inzwischen als eingeschraenkte App-Rolle pruefen
+# (assert_restricted_restore_session), wird ein Name aus der Datei nie zu SQL.
 backup_metadata_is_identifier() {
   case "$1" in
     '' | *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_]*) return 1 ;;
@@ -381,12 +381,22 @@ backup_metadata_is_identifier() {
 # Server weiter und ersetzt gar keine Variablen.
 #
 # Gezaehlt wird nur eine ECHTE Tabelle (relkind 'r'/'p') in public. Die Pruefung
-# laeuft mit der Admin-Rolle gegen Objekte aus dem Dump: ein to_regclass allein
-# nahm auch eine View, und deren count(*) fuehrte die Funktion dahinter als
-# Superuser aus. Alles andere ergibt 'n/a', und die Pruefung faellt durch.
-# Aus demselben Grund steht vor jeder Funktion pg_catalog: der Dump kann in
-# public eine gleichnamige Funktion mit passenderer Signatur ablegen.
+# laeuft gegen Objekte aus dem Dump: ein to_regclass allein nahm auch eine View,
+# und deren count(*) fuehrte die Funktion dahinter mit den Rechten der
+# pruefenden Rolle aus — frueher der Superuser. Alles andere ergibt 'n/a', und
+# die Pruefung faellt durch. Aus demselben Grund steht vor jeder Funktion
+# pg_catalog: der Dump kann in public eine gleichnamige Funktion mit
+# passenderer Signatur ablegen.
+#
+# Restore und Drill zaehlen als App-Rolle, und fuer die ist Row Level Security
+# erzwungen (FORCE). Ohne Kontext saehe sie keine einzige Zeile, und jede
+# gefuellte Tabelle stuende als leer da. Deshalb derselbe Systemkontext, mit
+# dem der Server workspace-uebergreifend liest (app.role=system plus
+# app.cross_workspace_access): damit gelten die Policies fuer alle Workspaces.
+# Fuer einen Superuser aendert das nichts, er umgeht RLS ohnehin.
 BACKUP_METADATA_TABLE_COUNT_SQL="
+  SET app.role = 'system';
+  SET app.cross_workspace_access = 'on';
   SELECT CASE WHEN NOT EXISTS (
       SELECT 1
       FROM pg_catalog.pg_class c
@@ -402,9 +412,50 @@ BACKUP_METADATA_TABLE_COUNT_SQL="
 
 backup_metadata_count() {
   backup_metadata_is_identifier "$2" || { printf 'n/a'; return 0; }
+  # -q, damit die SET-Bestaetigungen nicht vor der Zahl in der Ausgabe stehen.
   printf '%s' "$BACKUP_METADATA_TABLE_COUNT_SQL" \
-    | psql "$1" -v ON_ERROR_STOP=1 -v tbl="$2" -At -f - 2>/dev/null \
+    | psql "$1" -q -v ON_ERROR_STOP=1 -v tbl="$2" -At -f - 2>/dev/null \
     || printf 'n/a'
+}
+
+# Darf diese Verbindung SQL aus einem Dump ausfuehren?
+#
+# pg_restore fuehrt die Eintraege eines Archivs woertlich aus, und ein Backup
+# ist kein vertrauenswuerdiger Eingang (Begruendung bei
+# backup_metadata_is_identifier). Frueher meldeten sich restore.sh und
+# restore-drill.sh als Superuser an und wechselten nur per --role (SET ROLE)
+# zur App-Rolle. Das laesst sich umkehren: SQL im Dump kommt mit RESET ROLE zur
+# Anmelderolle zurueck, beim Drill im Produktionscluster.
+#
+# Entscheidend ist deshalb die ANMELDErolle (session_user), nicht die aktuelle.
+# Sie darf weder Superuser sein noch Row Level Security umgehen, und sie darf
+# auch keiner Rolle angehoeren, die das darf oder an Serverprogramme und
+# -dateien kommt — per SET ROLE kaeme der Dump sonst doch wieder dorthin.
+# pg_has_role(..., 'MEMBER') zaehlt die Rolle selbst mit, ein Superuser ist
+# ohnehin Mitglied jeder Rolle.
+RESTORE_SESSION_RESTRICTED_SQL="
+  SELECT (NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_roles r
+    WHERE (r.rolsuper OR r.rolbypassrls
+           OR r.rolname IN ('pg_execute_server_program', 'pg_read_server_files', 'pg_write_server_files'))
+      AND pg_catalog.pg_has_role(session_user, r.oid, 'MEMBER')))::text"
+
+assert_restricted_restore_session() {
+  database_url="$1"
+  label="${2:-restore}"
+  restricted="$(psql "$database_url" -v ON_ERROR_STOP=1 -Atc "$RESTORE_SESSION_RESTRICTED_SQL" 2>/dev/null || printf 'unknown')"
+  case "$restricted" in
+    true) return 0 ;;
+    false)
+      echo "$label: refusing to run pg_restore — this connection logs in as a role that is, or can become, a superuser or bypasses row level security" >&2
+      ;;
+    *)
+      echo "$label: refusing to run pg_restore — could not determine whether this connection's login role is restricted" >&2
+      ;;
+  esac
+  echo "$label: point DATABASE_URL at the application role (simplecrm_app, password PG_PASSWORD) instead of the admin role; see docs/BACKUP_AND_RESTORE.md" >&2
+  return 1
 }
 
 write_backup_metadata() {

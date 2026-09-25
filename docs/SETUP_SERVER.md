@@ -27,8 +27,13 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 Set these in `docker/.env`:
 
-- `PG_ADMIN_PASSWORD`: strong PostgreSQL admin password used only by bootstrap and maintenance profiles.
+- `PG_ADMIN_PASSWORD`: strong PostgreSQL admin password used only by bootstrap and maintenance profiles
+  (backup, doctor, and the restore drill's create/drop of its temporary database).
 - `PG_PASSWORD`: strong PostgreSQL password for the non-superuser `simplecrm_app` role used by API and migrations.
+  The `restore` and `restore-drill` profiles also log in with it: `pg_restore` and the check after it run
+  as this role, never as the admin role, so SQL from a manipulated dump cannot switch back to a superuser
+  (see [BACKUP_AND_RESTORE.md](BACKUP_AND_RESTORE.md#what-the-manifest-proves--and-what-it-does-not)).
+  Only restore backups you trust.
 - `MASTER_KEY`: Base64 value that decodes to exactly 32 bytes. **Generate it, do not
   invent it** — a base64-encoded passphrase decodes to 32 bytes just as well and is
   guessable. A key that looks like text or repeats itself is warned about, and refused

@@ -221,8 +221,11 @@ services:
     image: postgres:18-alpine
     profiles: ["restore"]
     environment:
-      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
-      PG_RESTORE_ROLE: simplecrm_app
+      # pg_restore und die Pruefung danach melden sich als App-Rolle an, nicht
+      # als Superuser mit --role: SQL aus dem Dump kaeme per RESET ROLE sonst
+      # zur Anmelderolle zurueck (restore.sh prueft das vor dem Einspielen).
+      # Die Admin-Zugangsdaten braucht dieser Dienst deshalb gar nicht.
+      DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
       ATTACHMENTS_DIR: /data/attachments
       AUDIT_ARCHIVE_DIR: /data/audit-archive
       RESTORE_DUMP_PATH: ${RESTORE_DUMP_PATH:-}
@@ -292,12 +295,13 @@ services:
     image: postgres:18-alpine
     profiles: ["restore-drill"]
     environment:
-      DATABASE_URL: postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm
+      # Wie beim Restore: der Dump laeuft ueber die App-Rolle in der
+      # Drill-Datenbank. Die Admin-Verbindung legt diese nur an und entfernt sie.
+      DATABASE_URL: postgres://simplecrm_app:${PG_PASSWORD}@postgres:5432/simplecrm
       PG_APP_USER: simplecrm_app
-      PG_RESTORE_ROLE: simplecrm_app
       RESTORE_DRILL_DB_NAME: ${RESTORE_DRILL_DB_NAME:-}
       RESTORE_DRILL_DATABASE_URL: ${RESTORE_DRILL_DATABASE_URL:-}
-      RESTORE_DRILL_MAINTENANCE_DATABASE_URL: ${RESTORE_DRILL_MAINTENANCE_DATABASE_URL:-}
+      RESTORE_DRILL_MAINTENANCE_DATABASE_URL: ${RESTORE_DRILL_MAINTENANCE_DATABASE_URL:-postgres://simplecrm_admin:${PG_ADMIN_PASSWORD}@postgres:5432/simplecrm}
       RESTORE_DRILL_DUMP_PATH: ${RESTORE_DRILL_DUMP_PATH:-}
       RESTORE_DRILL_ATTACHMENTS_PATH: ${RESTORE_DRILL_ATTACHMENTS_PATH:-}
       RESTORE_DRILL_AUDIT_ARCHIVE_PATH: ${RESTORE_DRILL_AUDIT_ARCHIVE_PATH:-}
