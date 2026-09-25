@@ -296,11 +296,14 @@ const STORED_LOGIN_CHANGED_ERROR = 'Host oder Zugang geändert: bitte Passwort e
 
 type MailLogin = { host: string; port: number; tls: boolean | string; user: string };
 
-function sameMailLogin(stored: MailLogin, requested: MailLogin): boolean {
+function sameMailEndpoint(stored: MailLogin, requested: MailLogin): boolean {
   return stored.host.trim().toLowerCase() === requested.host.trim().toLowerCase()
     && stored.port === requested.port
-    && stored.tls === requested.tls
-    && stored.user.trim() === requested.user.trim();
+    && stored.tls === requested.tls;
+}
+
+function sameMailLogin(stored: MailLogin, requested: MailLogin): boolean {
+  return sameMailEndpoint(stored, requested) && stored.user.trim() === requested.user.trim();
 }
 
 function imapLogin(acc: EmailAccountRow): MailLogin {
@@ -334,6 +337,43 @@ function smtpLogin(acc: EmailAccountRow): MailLogin {
     tls: smtpTransportSecurity(tls && port === 465, tls && port !== 465),
     user: acc.smtp_use_imap_auth ? acc.imap_username : acc.smtp_username?.trim() || acc.imap_username,
   };
+}
+
+// Abruf, Versand und Verbindungstest schicken die gespeicherten Zugangsdaten an
+// den Server, den die Kontozeile nennt. Aendert sich Host, Port oder TLS eines
+// Protokolls, muss daher das Passwort mitkommen, mit dem es sich anmeldet
+// (IMAP/POP3: IMAP-Passwort; SMTP: bei "wie IMAP" das IMAP-, sonst das
+// SMTP-Passwort); das Umschalten von "wie IMAP" zaehlt ebenso. Paritaet zu
+// A2a-01/E2: missingCredentialsForEndpointChange in packages/server/src/api/mail-routes.ts.
+function missingCredentialsForEndpointChange(
+  current: EmailAccountRow,
+  next: EmailAccountRow,
+  fresh: { imapPassword: boolean; smtpPassword: boolean },
+): string | null {
+  const checks = [
+    { protocol: 'IMAP', login: imapLogin, credential: 'imapPassword', switched: false },
+    { protocol: 'POP3', login: pop3Login, credential: 'imapPassword', switched: false },
+    {
+      protocol: 'SMTP',
+      login: smtpLogin,
+      credential: next.smtp_use_imap_auth ? 'imapPassword' : 'smtpPassword',
+      switched: Boolean(next.smtp_use_imap_auth) !== Boolean(current.smtp_use_imap_auth),
+    },
+  ] as const;
+  const missing = new Map<'imapPassword' | 'smtpPassword', string[]>();
+  for (const check of checks) {
+    const after = check.login(next);
+    // Ein geleerter Host schaltet das Protokoll ab; dann geht nichts an einen Server.
+    if (!after.host.trim() || fresh[check.credential]) continue;
+    if (!check.switched && sameMailEndpoint(check.login(current), after)) continue;
+    missing.set(check.credential, [...(missing.get(check.credential) ?? []), check.protocol]);
+  }
+  if (missing.size === 0) return null;
+  const details = [...missing].map(([field, protocols]) =>
+    `${field === 'imapPassword' ? 'IMAP-Passwort' : 'SMTP-Passwort'} erforderlich (${
+      protocols.map((protocol) => `${protocol}-Server`).join(', ')
+    } geaendert)`);
+  return `Zugangsdaten bei Serverwechsel neu eingeben: ${details.join('; ')}`;
 }
 
 interface EmailHandlersOptions {
@@ -440,6 +480,31 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         },
       ) => {
         const acc = getEmailAccountById(payload.id);
+        if (acc) {
+          // Vor dem Speichern der Passwoerter: eine abgelehnte Aenderung darf
+          // auch den Schluesselbund nicht anfassen. Die Werte folgen der
+          // Zuordnung an updateEmailAccountRecord unten (null bei Port/SMTP-TLS
+          // laesst den gespeicherten Wert stehen).
+          const missing = missingCredentialsForEndpointChange(acc, {
+            ...acc,
+            imap_host: payload.imapHost ?? acc.imap_host,
+            imap_port: payload.imapPort ?? acc.imap_port,
+            imap_tls: payload.imapTls === undefined ? acc.imap_tls : Number(payload.imapTls),
+            smtp_host: payload.smtpHost === undefined ? acc.smtp_host : payload.smtpHost,
+            smtp_port: payload.smtpPort ?? acc.smtp_port,
+            smtp_tls: payload.smtpTls == null ? acc.smtp_tls : Number(payload.smtpTls),
+            smtp_use_imap_auth: payload.smtpUseImapAuth === undefined
+              ? acc.smtp_use_imap_auth
+              : Number(payload.smtpUseImapAuth),
+            pop3_host: payload.pop3Host === undefined ? acc.pop3_host : payload.pop3Host,
+            pop3_port: payload.pop3Port ?? acc.pop3_port,
+            pop3_tls: payload.pop3Tls === undefined ? acc.pop3_tls : Number(Boolean(payload.pop3Tls)),
+          }, {
+            imapPassword: Boolean(payload.imapPassword),
+            smtpPassword: Boolean(payload.smtpPassword),
+          });
+          if (missing) return { success: false as const, error: missing };
+        }
         if (payload.imapPassword && payload.imapPassword.length > 0 && acc) {
           await saveEmailPassword(acc.keytar_account_key, payload.imapPassword);
         }

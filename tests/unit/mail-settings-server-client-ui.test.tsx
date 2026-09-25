@@ -355,6 +355,122 @@ describe('mail settings server-client UI', () => {
     ));
   });
 
+  describe('Desktop: Serverwechsel verlangt neue Zugangsdaten (A2a-01, E2)', () => {
+    const desktopSmtpAccount = () => ({
+      id: 1,
+      display_name: 'Kontakt',
+      email_address: 'kontakt@example.com',
+      protocol: 'imap',
+      imap_host: 'imap.example.com',
+      imap_username: 'kontakt@example.com',
+      smtp_host: 'smtp.example.com',
+      smtp_port: 587,
+      smtp_tls: 1,
+      smtp_username: null,
+      smtp_use_imap_auth: 1,
+    });
+    const rejection = 'Zugangsdaten bei Serverwechsel neu eingeben: IMAP-Passwort erforderlich (IMAP-Server geaendert)';
+    const updateCalls = (localInvoke: jest.Mock) =>
+      localInvoke.mock.calls.filter(([channel]) => channel === 'email:update-account');
+
+    // PR-Review #193 (A2a-01, E2): Auf dem Desktop speicherte das Formular einen neuen Server ohne Passwort; der naechste Abruf schickte das gespeicherte Passwort dorthin.
+    test('Kontoformular verlangt das Passwort, sobald Host, Port oder TLS sich aendern', async () => {
+      const localInvoke = jest.fn(async (channel: string) => (
+        channel === 'email:list-accounts' ? [imapAccount()] : { success: true }
+      ));
+      (window as any).electronAPI = { invoke: localInvoke };
+      configureRendererTransport(createIpcRendererTransport());
+      render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+      const passwordInput = await screen.findByLabelText(/^Passwort/);
+      expect(passwordInput).not.toBeRequired();
+      fireEvent.change(screen.getByLabelText('IMAP-Server'), { target: { value: 'imap.other.example' } });
+      expect(passwordInput).toBeRequired();
+      expect(screen.getByLabelText(/Passwort \(erforderlich, Server geändert\)/)).toBe(passwordInput);
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+      });
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'));
+      expect(updateCalls(localInvoke)).toHaveLength(0);
+
+      fireEvent.change(passwordInput, { target: { value: 'fresh-secret' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+      });
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Konto aktualisiert.'));
+      expect(updateCalls(localInvoke)[0]?.[1]).toMatchObject({ imapHost: 'imap.other.example', imapPassword: 'fresh-secret' });
+    });
+
+    test('Kontoformular zeigt die Ablehnung der IPC statt Erfolg', async () => {
+      const localInvoke = jest.fn(async (channel: string) => (
+        channel === 'email:update-account' ? { success: false, error: rejection } : [imapAccount()]
+      ));
+      (window as any).electronAPI = { invoke: localInvoke };
+      configureRendererTransport(createIpcRendererTransport());
+      render(<AccountForm onCreated={jest.fn()} editAccount={imapAccount()} />);
+
+      fireEvent.change(await screen.findByLabelText(/Anzeigename/i), { target: { value: 'Neuer Name' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /Aktualisieren/i }));
+      });
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith(rejection));
+      expect(toast.success).not.toHaveBeenCalled();
+    });
+
+    // PR-Review #193 (A2a-01, E2): Das SMTP-Panel speicherte auf dem Desktop einen neuen SMTP-Server ohne Passwort.
+    test('SMTP-Panel verlangt das IMAP-Passwort, sobald der Server wechselt', async () => {
+      const localInvoke = jest.fn(async (channel: string) => (
+        channel === 'email:list-accounts' ? [desktopSmtpAccount()] : { success: true }
+      ));
+      (window as any).electronAPI = { invoke: localInvoke };
+      configureRendererTransport(createIpcRendererTransport());
+      const { container } = render(<SmtpPanel embeddedAccountId={1} />);
+
+      const hostInput = await screen.findByDisplayValue('smtp.example.com');
+      const passwordInput = container.querySelector('input[type="password"]') as HTMLInputElement;
+      expect(passwordInput).not.toBeRequired();
+      fireEvent.change(hostInput, { target: { value: 'smtp.other.example' } });
+      expect(passwordInput).toBeRequired();
+      expect(screen.getByLabelText(/^IMAP-Passwort \(erforderlich/)).toBe(passwordInput);
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+      });
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Zugangsdaten bei Serverwechsel neu eingeben'));
+      expect(updateCalls(localInvoke)).toHaveLength(0);
+
+      fireEvent.change(passwordInput, { target: { value: 'imap-secret' } });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+      });
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith('SMTP gespeichert.'));
+      const payload = updateCalls(localInvoke)[0]?.[1];
+      expect(payload).toMatchObject({ smtpHost: 'smtp.other.example', imapPassword: 'imap-secret' });
+      expect(payload).not.toHaveProperty('smtpPassword');
+    });
+
+    test('SMTP-Panel zeigt die Ablehnung der IPC statt Erfolg', async () => {
+      const smtpRejection = 'Zugangsdaten bei Serverwechsel neu eingeben: SMTP-Passwort erforderlich (SMTP-Server geaendert)';
+      const localInvoke = jest.fn(async (channel: string) => {
+        if (channel === 'email:list-accounts') return [desktopSmtpAccount()];
+        return { success: false, error: smtpRejection };
+      });
+      (window as any).electronAPI = { invoke: localInvoke };
+      configureRendererTransport(createIpcRendererTransport());
+      render(<SmtpPanel embeddedAccountId={1} />);
+      await screen.findByDisplayValue('smtp.example.com');
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Speichern' }));
+      });
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith(smtpRejection));
+      expect(toast.success).not.toHaveBeenCalled();
+    });
+  });
+
   test('SMTP panel asks for the IMAP password when the server changes with IMAP login', async () => {
     const fetchImpl = jest.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === 'PATCH') return jsonResponse({ data: { success: true } });

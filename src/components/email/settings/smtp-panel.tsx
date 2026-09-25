@@ -46,11 +46,11 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
   const [importingInbox, setImportingInbox] = useState(false)
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const storedAccount = accounts.find((x) => x.id === accId)
-  // The server refuses an SMTP endpoint change (host, port, TLS) without the
-  // password SMTP logs in with, so the stored one never reaches a different
-  // server. With "wie IMAP" that is the IMAP password. Switching "wie IMAP"
-  // counts as such a change: it needs the password of the new login source.
-  const credentialsRequired = isServerClientMode() && storedAccount != null && smtpHost.trim() !== ""
+  // The server and the desktop IPC refuse an SMTP endpoint change (host, port,
+  // TLS) without the password SMTP logs in with, so the stored one never reaches
+  // a different server. With "wie IMAP" that is the IMAP password. Switching
+  // "wie IMAP" counts as such a change: it needs the password of the new login source.
+  const credentialsRequired = storedAccount != null && smtpHost.trim() !== ""
     && (
       mailEndpointKey(smtpHost, parseInt(smtpPort, 10) || 587, smtpTls)
         !== mailEndpointKey(storedAccount.smtp_host ?? "", storedAccount.smtp_port ?? 587, (storedAccount.smtp_tls ?? 1) === 1)
@@ -105,7 +105,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
     }
     setSaving(true)
     try {
-      await invokeRenderer(IPCChannels.Email.UpdateAccount, {
+      const res = await invokeRenderer(IPCChannels.Email.UpdateAccount, {
         id: accId,
         smtpHost: host,
         smtpPort: parseInt(smtpPort, 10) || 587,
@@ -122,7 +122,12 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
         imapSyncArchive: syncArchive,
         imapSyncSpam: syncSpam,
         imapDeleteOptIn,
-      })
+      }) as { success?: boolean; error?: string } | undefined
+      // The desktop IPC answers a refused update with success: false instead of throwing.
+      if (res?.success === false) {
+        toast.error(res.error ?? "Fehler")
+        return
+      }
       toast.success("SMTP gespeichert.")
       setSmtpPass("")
       // Bump the shared revision so every consumer (inbox sidebar, OAuth

@@ -50,10 +50,10 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
   const [saving, setSaving] = useState(false)
   const [testFeedback, setTestFeedback] = useState<string | null>(null)
   const isEdit = editAccount != null
-  // The server refuses an IMAP/POP3 endpoint change (host, port, TLS) without the
-  // password, so the stored one is never sent to a different server. Ask for it
-  // before saving instead of letting the update fail.
-  const credentialsRequired = serverClientMode && editAccount != null && (
+  // The server and the desktop IPC refuse an IMAP/POP3 endpoint change (host,
+  // port, TLS) without the password, so the stored one is never sent to a
+  // different server. Ask for it before saving instead of letting the update fail.
+  const credentialsRequired = editAccount != null && (
     mailEndpointKey(imapHost, parseInt(imapPort, 10) || 993, imapTls)
       !== mailEndpointKey(editAccount.imap_host, editAccount.imap_port, Boolean(editAccount.imap_tls))
     || mailEndpointKey(pop3Host.trim() || imapHost, parseInt(pop3Port, 10) || 995, pop3Tls)
@@ -253,7 +253,7 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
     setSaving(true)
     try {
       if (isEdit && editAccount) {
-        await invokeRenderer(IPCChannels.Email.UpdateAccount, {
+        const res = await invokeRenderer(IPCChannels.Email.UpdateAccount, {
           id: editAccount.id,
           displayName: displayName.trim(),
           emailAddress: emailAddress.trim(),
@@ -272,7 +272,13 @@ export function AccountForm({ onCreated, editAccount, onCancelEdit, onSaved }: P
           vacationBodyText: vacationBodyText.trim() || null,
           requestReadReceipt,
           ...authservIdPayload,
-        })
+        }) as { success?: boolean; error?: string } | undefined
+        // The desktop IPC answers a refused update (e.g. a server change without
+        // the password) with success: false instead of throwing.
+        if (res?.success === false) {
+          toast.error(res.error ?? "Speichern fehlgeschlagen.")
+          return
+        }
         toast.success("Konto aktualisiert.")
         setImapPassword("")
         const refreshed = (await invokeRenderer(IPCChannels.Email.ListAccounts)) as EmailAccount[]
