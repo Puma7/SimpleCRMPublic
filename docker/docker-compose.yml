@@ -165,7 +165,9 @@ services:
       - ./doctor.sh:/app/doctor.sh:ro
       - attachments:/data/attachments:ro
       - audit_archives:/data/audit-archive:ro
-      - backups:/backups
+      # Mounted where BACKUP_DIR points: a different BACKUP_DIR would otherwise
+      # write next to the volume into the container and vanish with it.
+      - backups:${BACKUP_DIR:-/backups}
     depends_on:
       postgres:
         condition: service_healthy
@@ -192,7 +194,9 @@ services:
       - ./backup-scheduler.sh:/app/backup-scheduler.sh:ro
       - attachments:/data/attachments:ro
       - audit_archives:/data/audit-archive:ro
-      - backups:/backups
+      # Mounted where BACKUP_DIR points: a different BACKUP_DIR would otherwise
+      # write next to the volume into the container and vanish with it.
+      - backups:${BACKUP_DIR:-/backups}
     depends_on:
       postgres:
         condition: service_healthy

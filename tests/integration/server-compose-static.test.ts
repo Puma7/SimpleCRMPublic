@@ -125,6 +125,35 @@ describe('server Compose GeoIP profile', () => {
   });
 });
 
+describe('server Compose backup volume', () => {
+  // F-A12-08: Ein abweichender BACKUP_DIR liess backup/backup-scheduler neben das fest unter /backups eingehaengte Volume schreiben; die Backups verschwanden mit dem Container.
+  test('backup writers always write into the backups volume, whatever BACKUP_DIR says', () => {
+    const tempDir = createComposeFixture();
+    try {
+      const resolved = resolveCompose(tempDir, ['backup', 'backup-scheduler', 'restore', 'doctor', 'restore-drill']);
+      for (const serviceName of ['backup', 'backup-scheduler']) {
+        const service = resolved.services[serviceName];
+        expect(service.environment?.BACKUP_DIR).toBe(RUNTIME_SENTINELS.BACKUP_DIR);
+        expect(volumeList(service.volumes)).toContainEqual({
+          source: 'backups',
+          target: service.environment?.BACKUP_DIR,
+          readOnly: false,
+        });
+      }
+      // Die Leser suchen fest unter /backups im selben Volume.
+      for (const serviceName of ['restore', 'doctor', 'restore-drill']) {
+        expect(volumeList(resolved.services[serviceName].volumes)).toContainEqual({
+          source: 'backups',
+          target: '/backups',
+          readOnly: true,
+        });
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 function createComposeFixture(options: Readonly<{
   broadGeoIpCredentials?: boolean;
   updaterCredentials?: Readonly<{ accountId: string; licenseKey: string }>;
