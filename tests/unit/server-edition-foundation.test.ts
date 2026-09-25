@@ -3522,6 +3522,66 @@ describe('server edition foundation', () => {
     expect(JSON.parse(syncInfo.get('email_imap_pending_uids:7:71') ?? '[]')).toEqual([8]);
   });
 
+  // F-A5-06: 'UID n+1:*' liefert nach RFC 3501 die hoechste vorhandene UID, auch wenn sie <= n ist; die neueste Nachricht wurde so bei jedem Poll neu geholt und lokales Archivieren/Loeschen zurueckgesetzt.
+  test('server mail sync ignores the already-synced highest UID that an RFC 3501 "n+1:*" search returns', async () => {
+    const now = new Date('2026-07-06T10:00:00.000Z');
+    const account = makeServerMailSyncAccount({ protocol: 'imap' });
+    const upserts: any[] = [];
+    const attachmentWrites: any[] = [];
+    const folderUpdates: any[] = [];
+    const folders = new Map<string, any>([
+      ['INBOX', makeServerMailSyncFolder({ id: 71, path: 'INBOX', lastUid: 5, uidvalidity: 22 })],
+    ]);
+    const store = makeServerMailSyncStore({
+      account,
+      folders,
+      upserts,
+      attachmentWrites,
+      folderUpdates,
+      messageIds: [105],
+    });
+    store.loadImapUidToId = async () => new Map([[5, 105]]);
+    const fetchedUids: string[] = [];
+    const client = {
+      async connect() { return undefined; },
+      async list() { return []; },
+      async status() { return { uidValidity: 22 }; },
+      async getMailboxLock() { return { release: () => undefined }; },
+      async search(query: any) {
+        // RFC 3501 §6.4.8: "6:*" contains the UID of the last message (5)
+        // even though no message with UID >= 6 exists.
+        if (query.uid === '6:*') return [5];
+        return [];
+      },
+      async fetchOne(uid: string) {
+        fetchedUids.push(uid);
+        return {
+          source: Buffer.from(`Subject: ${uid}\r\n\r\nBody ${uid}`),
+          flags: new Set<string>(),
+          threadId: null,
+        };
+      },
+      async logout() { return undefined; },
+    };
+    const port = createServerMailSyncJobPort({
+      store,
+      now: () => now,
+      parser: async (source) => makeParsedServerMailSyncMessage(source.toString('utf8').slice(0, 64)),
+      imapClientFactory: () => client as any,
+    });
+
+    await port.sync({
+      workspaceId: WORKSPACE_A_ID,
+      accountId: 7,
+      protocol: 'imap' as const,
+      actorUserId: USER_A_ID,
+    });
+
+    expect(fetchedUids).toEqual([]);
+    expect(upserts).toEqual([]);
+    expect(attachmentWrites).toEqual([]);
+  });
+
   test('server mail sync full inbox backfill imports only missing older messages without moving the cursor', async () => {
     const now = new Date('2026-07-06T10:00:00.000Z');
     const account = makeServerMailSyncAccount({ protocol: 'imap' });
