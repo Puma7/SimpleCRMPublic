@@ -485,7 +485,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: false as const, error: result.error };
       },
-      { logger },
+      // Verbindungstests gehoeren zur Kontoverwaltung (E16): mit accountId nutzen
+      // sie die gespeicherten Zugangsdaten gegen den eingegebenen Host, ohne
+      // accountId dienen sie dem Anlegen. Beides nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -1425,7 +1428,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         if (r.ok) return { success: true as const };
         return { success: false as const, error: r.error };
       },
-      { logger },
+      // Kontoverwaltung wie beim IMAP-Test (E16): nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2790,7 +2794,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         const r = await testPop3Connection(fakeAcc as EmailAccountRow, payload.password);
         return r.ok ? { success: true as const } : { success: false as const, error: r.error };
       },
-      { logger },
+      // Kontoverwaltung wie beim IMAP-Test (E16): nur Owner/Admin.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

@@ -88,10 +88,11 @@ Die Desktop-App kennt keine Capabilities und keine Gruppen. Sie kennt nur die Ro
 | Vollbackup exportieren und prüfen | `email:export-local-mail-backup`, `email:verify-local-mail-backup` | Owner, Admin |
 | DSGVO-Export | `email:gdpr-export` | Owner, Admin |
 | Mail-Konto anlegen, bearbeiten, löschen | `email:create-account`, `email:update-account`, `email:delete-account` | Owner, Admin (wie `mail.account.manage` auf dem Server) |
+| Verbindungstest IMAP, SMTP, POP3 (mit gespeicherten Zugangsdaten oder für ein neues Konto) | `email:test-imap`, `email:test-smtp`, `email:test-pop3` | Owner, Admin (gehört zu Konto anlegen und bearbeiten) |
 | OAuth-App-Daten und Webhook-Secret speichern | `email:set-google-oauth-app`, `email:set-microsoft-oauth-app`, `email:set-misc-settings` | Owner, Admin; ein leeres Secret-Feld behält das gespeicherte |
 | OAuth-Client-Secrets und Webhook-Secret lesen | `email:get-google-oauth-app`, `email:get-microsoft-oauth-app`, `email:get-misc-settings` | Klartext nur für Owner, Admin; alle anderen bekommen `hasSecret` |
 | PGP-Empfängerschlüssel importieren, löschen, als verifiziert markieren oder Vertrauen entziehen | `pgp:import-peer-key`, `pgp:delete-peer-key`, `pgp:set-peer-key-trust` | Owner, Admin (die Schlüssel gelten workspace-weit, ohne Konto oder Eigentümer) |
 
-Die Oberfläche blendet die zugehörigen Einstellungen für andere Rollen aus: den Tab „Datenschutz-Export“, in „Diagnose“ die Backup-Knöpfe (Owner, Admin) und den Restore-Assistenten (nur Owner) sowie die Tabs „OAuth-Apps“ und „Audit-Log“. Maßgeblich ist die Prüfung im IPC-Handler, nicht die Oberfläche.
+Die Oberfläche blendet die zugehörigen Einstellungen für andere Rollen aus: im Tab „Konten“ das Anlegen und Löschen, die Tabs „IMAP / POP3“, „SMTP“ und „OAuth“ samt Verbindungstests und die geteilten Konto-Signaturen (die Kontenliste bleibt sichtbar), den Tab „Datenschutz-Export“, in „Diagnose“ die Backup-Knöpfe (Owner, Admin) und den Restore-Assistenten (nur Owner) sowie die Tabs „OAuth-Apps“ und „Audit-Log“. Maßgeblich ist die Prüfung im IPC-Handler, nicht die Oberfläche.
 
 **Grenze:** Die lokalen Rollen schützen nicht gegen Zugriff auf das Dateisystem. `database.sqlite` ist nicht verschlüsselt und liegt im Profil des Betriebssystem-Benutzers (unter Linux `~/.config/simplecrm/`). Alle lokalen App-Benutzer teilen sich dieses Profil. Wer die Datei lesen oder ersetzen kann, umgeht jede Rollenprüfung.

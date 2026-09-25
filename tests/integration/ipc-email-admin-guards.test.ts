@@ -53,6 +53,27 @@ jest.mock('../../electron/email/email-keytar', () => ({
   ...jest.requireActual('../../electron/email/email-keytar'),
   saveEmailPassword: jest.fn(async () => undefined),
   deleteEmailPassword: jest.fn(async () => undefined),
+  getEmailPassword: jest.fn(async () => 'gespeichert'),
+}));
+
+jest.mock('../../electron/email/email-imap-auth', () => ({
+  ...jest.requireActual('../../electron/email/email-imap-auth'),
+  resolveImapAuth:jest.fn(async () => ({ accessToken: 'oauth-token' })),
+}));
+
+jest.mock('../../electron/email/email-imap-sync', () => ({
+  ...jest.requireActual('../../electron/email/email-imap-sync'),
+  testImapConnection: jest.fn(async () => ({ ok: true })),
+}));
+
+jest.mock('../../electron/email/email-pop3-sync', () => ({
+  ...jest.requireActual('../../electron/email/email-pop3-sync'),
+  testPop3Connection: jest.fn(async () => ({ ok: true })),
+}));
+
+jest.mock('../../electron/email/email-smtp', () => ({
+  ...jest.requireActual('../../electron/email/email-smtp'),
+  testSmtpConnection: jest.fn(async () => ({ ok: true })),
 }));
 
 jest.mock('../../electron/email/email-local-backup', () => ({
@@ -101,7 +122,11 @@ import {
   deleteEmailAccountRecord,
   updateEmailAccountRecord,
 } from '../../electron/email/email-store';
-import { saveEmailPassword } from '../../electron/email/email-keytar';
+import { getEmailPassword, saveEmailPassword } from '../../electron/email/email-keytar';
+import { resolveImapAuth } from '../../electron/email/email-imap-auth';
+import { testImapConnection } from '../../electron/email/email-imap-sync';
+import { testPop3Connection } from '../../electron/email/email-pop3-sync';
+import { testSmtpConnection } from '../../electron/email/email-smtp';
 import { clearAllSessions, createSession, type SessionRole } from '../../electron/auth/session-store';
 import { registerEmailHandlers } from '../../electron/ipc/email';
 
@@ -264,6 +289,38 @@ describe('Konto anlegen, bearbeiten, loeschen (E16)', () => {
     for (const role of ['owner', 'admin'] as const) {
       await expect(invoke(channel, eventFor(role), payload)).resolves.toMatchObject({ success: true });
     }
+  });
+
+  const storedImap = { accountId: 7, imapHost: 'evil.example', imapPort: 993, imapTls: true, imapUsername: 'x', imapPassword: '' };
+  const storedSmtp = { accountId: 7, host: 'evil.example', port: 587, secure: false, user: 'x' };
+  const storedPop3 = { accountId: 7, host: 'evil.example', port: 995, tls: true, user: 'x', password: '' };
+  const connectionTests = [
+    ['IMAP mit gespeichertem Passwort', IPCChannels.Email.TestImap, storedImap, testImapConnection],
+    ['SMTP mit OAuth ueber die IMAP-Anmeldung', IPCChannels.Email.TestSmtp, { ...storedSmtp, smtpUseImapAuth: true }, testSmtpConnection],
+    ['SMTP mit gespeichertem Passwort', IPCChannels.Email.TestSmtp, { ...storedSmtp, smtpUseImapAuth: false }, testSmtpConnection],
+    ['POP3 mit gespeichertem Passwort', IPCChannels.Email.TestPop3, storedPop3, testPop3Connection],
+    ['IMAP fuer ein neues Konto', IPCChannels.Email.TestImap, { ...storedImap, accountId: undefined, imapPassword: 'neu' }, testImapConnection],
+    ['SMTP fuer ein neues Konto', IPCChannels.Email.TestSmtp, { ...storedSmtp, accountId: undefined, password: 'neu' }, testSmtpConnection],
+    ['POP3 fuer ein neues Konto', IPCChannels.Email.TestPop3, { ...storedPop3, accountId: undefined, password: 'neu' }, testPop3Connection],
+  ] as const;
+
+  // C-A12, C-B2: Die Verbindungstests liefen ohne Rolle und schickten gespeicherte Passwoerter oder OAuth-Tokens an den eingegebenen Host.
+  test.each(connectionTests)('Verbindungstest %s verlangt Owner oder Admin', async (_label, channel, payload, connect) => {
+    jest.mocked(getEmailPassword).mockClear();
+    jest.mocked(resolveImapAuth).mockClear();
+    jest.mocked(connect).mockClear();
+
+    for (const role of ['agent', 'viewer'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).rejects.toThrow('Keine Berechtigung');
+    }
+    expect(getEmailPassword).not.toHaveBeenCalled();
+    expect(resolveImapAuth).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+
+    for (const role of ['owner', 'admin'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).resolves.toEqual({ success: true });
+    }
+    expect(connect).toHaveBeenCalledTimes(2);
   });
 });
 
