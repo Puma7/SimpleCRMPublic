@@ -23,6 +23,32 @@ function mailScopeSessionFromEvent(event: IpcMainInvokeEvent): MailScopeSession 
   return { userId: session.userId, role: session.role };
 }
 
+/**
+ * Workspace-weite App-Secrets (OAuth-Client-Secrets, Webhook-Secret) sehen nur
+ * Owner und Admin im Klartext; alle anderen erfahren nur, ob eines gesetzt ist.
+ */
+function canReadEmailAppSecrets(event: IpcMainInvokeEvent): boolean {
+  const { role } = requireRealAuthSession(event);
+  return role === 'owner' || role === 'admin';
+}
+
+function oauthAppSettingsForCaller(
+  event: IpcMainInvokeEvent,
+  settings: { clientId: string; clientSecret: string },
+) {
+  const hasSecret = settings.clientSecret.length > 0;
+  return canReadEmailAppSecrets(event)
+    ? { success: true as const, clientId: settings.clientId, clientSecret: settings.clientSecret, hasSecret }
+    : { success: true as const, clientId: settings.clientId, hasSecret };
+}
+
+/** Ein leeres Secret-Feld beim Speichern behaelt das gespeicherte Secret. */
+function oauthAppSettingsUpdate(payload: { clientId: string; clientSecret: string }) {
+  return payload.clientSecret.trim()
+    ? { clientId: payload.clientId, clientSecret: payload.clientSecret }
+    : { clientId: payload.clientId };
+}
+
 function canAccessEmailAccount(
   event: IpcMainInvokeEvent,
   accountId: number,
@@ -1064,11 +1090,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.GetEmailMiscSettings, async () => {
-      return {
-        webhookSecret: readSyncInfo('email_webhook_secret') ?? '',
-        maxAttachmentMb: readSyncInfo('email_max_attachment_mb') ?? '25',
-      };
+    registerIpcHandler(IPCChannels.Email.GetEmailMiscSettings, async (event: IpcMainInvokeEvent) => {
+      const webhookSecret = readSyncInfo('email_webhook_secret') ?? '';
+      const maxAttachmentMb = readSyncInfo('email_max_attachment_mb') ?? '25';
+      const hasSecret = webhookSecret.length > 0;
+      return canReadEmailAppSecrets(event)
+        ? { webhookSecret, maxAttachmentMb, hasSecret }
+        : { maxAttachmentMb, hasSecret };
     }, { logger }),
   );
 
@@ -1186,7 +1214,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         _event: IpcMainInvokeEvent,
         payload: { webhookSecret?: string; maxAttachmentMb?: number },
       ) => {
-        if (payload.webhookSecret !== undefined) {
+        // Leer heisst "unveraendert", wie bei den OAuth-App-Secrets.
+        if (payload.webhookSecret !== undefined && payload.webhookSecret.trim()) {
           writeSyncInfo('email_webhook_secret', payload.webhookSecret.trim());
         }
         if (payload.maxAttachmentMb !== undefined) {
@@ -1194,7 +1223,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         }
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2614,8 +2643,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.GetGoogleOAuthApp, async () => {
-      return { success: true as const, ...getGoogleOAuthAppSettings() };
+    registerIpcHandler(IPCChannels.Email.GetGoogleOAuthApp, async (event: IpcMainInvokeEvent) => {
+      return oauthAppSettingsForCaller(event, getGoogleOAuthAppSettings());
     }, { logger }),
   );
 
@@ -2623,10 +2652,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetGoogleOAuthApp,
       async (_event: IpcMainInvokeEvent, payload: { clientId: string; clientSecret: string }) => {
-        setGoogleOAuthAppSettings(payload);
+        setGoogleOAuthAppSettings(oauthAppSettingsUpdate(payload));
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -2861,8 +2890,8 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Email.GetMicrosoftOAuthApp, async () => {
-      return { success: true as const, ...getMicrosoftOAuthAppSettings() };
+    registerIpcHandler(IPCChannels.Email.GetMicrosoftOAuthApp, async (event: IpcMainInvokeEvent) => {
+      return oauthAppSettingsForCaller(event, getMicrosoftOAuthAppSettings());
     }, { logger }),
   );
 
@@ -2870,10 +2899,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.SetMicrosoftOAuthApp,
       async (_event: IpcMainInvokeEvent, payload: { clientId: string; clientSecret: string }) => {
-        setMicrosoftOAuthAppSettings(payload);
+        setMicrosoftOAuthAppSettings(oauthAppSettingsUpdate(payload));
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

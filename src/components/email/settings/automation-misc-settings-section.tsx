@@ -17,6 +17,7 @@ type Props = {
 
 export function AutomationMiscSettingsSection({ canEdit = true, canEditSecret = true }: Props) {
   const [webhookSecret, setWebhookSecret] = useState("")
+  const [hasStoredSecret, setHasStoredSecret] = useState(false)
   const [maxMb, setMaxMb] = useState("25")
   const [testSecret, setTestSecret] = useState("")
 
@@ -24,8 +25,9 @@ export function AutomationMiscSettingsSection({ canEdit = true, canEditSecret = 
     void invokeRenderer(
       IPCChannels.Email.GetEmailMiscSettings,
     ).then((s) => {
-      const settings = s as { webhookSecret: string; maxAttachmentMb: string }
+      const settings = s as { webhookSecret?: string; maxAttachmentMb: string; hasSecret?: boolean }
       setWebhookSecret(settings.webhookSecret ?? "")
+      setHasStoredSecret(settings.hasSecret ?? Boolean(settings.webhookSecret))
       setMaxMb(settings.maxAttachmentMb ?? "25")
     })
   }, [])
@@ -41,11 +43,13 @@ export function AutomationMiscSettingsSection({ canEdit = true, canEditSecret = 
       <div className="space-y-3 text-sm">
         <div className="space-y-1.5">
           <Label htmlFor="automation-webhook-secret">Webhook-Secret (Workflow-Trigger webhook.incoming)</Label>
-          {/* Nicht-Admins bekommen den Wert nur maskiert geliefert; ein Schreiben
-              lehnt der Server ab, sobald er vom Maskenwert abweicht. */}
+          {/* Nicht-Admins bekommen den Wert nur maskiert (Server) bzw. gar nicht
+              (Desktop: nur hasSecret); ein Schreiben lehnt der Server ab, sobald
+              er vom Maskenwert abweicht. */}
           <Input
             id="automation-webhook-secret"
             value={webhookSecret}
+            placeholder={hasStoredSecret && !webhookSecret ? "Gesetzt (nur für Owner/Admin sichtbar)" : undefined}
             disabled={!canEdit || !canEditSecret}
             onChange={(e) => setWebhookSecret(e.target.value)}
           />

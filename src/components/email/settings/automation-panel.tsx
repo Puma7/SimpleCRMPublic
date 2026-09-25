@@ -49,7 +49,8 @@ export function AutomationPanel() {
   // Trennung stuenden einem delegierten settings.view-Nutzer Bedienelemente
   // offen, deren PATCH garantiert 403 liefert.
   const canEditWorkflowOptions = !serverClientMode || canManage
-  const canEditMiscSettings = !serverClientMode || Boolean(canManageSettings)
+  // Desktop: email:set-misc-settings verlangt Owner/Admin (kein settings.manage).
+  const canEditMiscSettings = serverClientMode ? Boolean(canManageSettings) : canManage
   const [imapDeleteOptIn, setImapDeleteOptIn] = useState(false)
   const [httpAllowlist, setHttpAllowlist] = useState("")
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false)

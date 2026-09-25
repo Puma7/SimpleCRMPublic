@@ -360,8 +360,10 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.GetEmailMiscSettings, {
     payload: voidPayload,
     result: z.object({
-      webhookSecret: z.string(),
+      // Klartext nur fuer Owner/Admin; alle anderen sehen nur hasSecret.
+      webhookSecret: z.string().optional(),
       maxAttachmentMb: z.string(),
+      hasSecret: z.boolean(),
     }),
   });
   set(IPCChannels.Email.SetEmailMiscSettings, {
@@ -1785,7 +1787,9 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   const oauthAppResult = z.object({
     success: z.literal(true),
     clientId: z.string().optional(),
+    // Klartext nur fuer Owner/Admin; alle anderen sehen nur hasSecret.
     clientSecret: z.string().optional(),
+    hasSecret: z.boolean(),
   });
   set(IPCChannels.Email.GetGoogleOAuthApp, { payload: voidPayload, result: oauthAppResult });
   set(IPCChannels.Email.SetGoogleOAuthApp, {
