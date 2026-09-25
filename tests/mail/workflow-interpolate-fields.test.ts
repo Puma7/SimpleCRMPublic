@@ -352,6 +352,6 @@ describe('Pre-Pass löst {{Platzhalter}} vor execute() auf (echter Interpreter)'
       .map((c) => c[0] as { nodeType: string; status: string; message: string | null })
       .find((s) => s.nodeType === 'mssql.query');
     expect(step?.status).toBe('error');
-    expect(step?.message).toBe('Query muss mit SELECT beginnen');
+    expect(step?.message).toBe('Query muss mit SELECT oder WITH beginnen');
   });
 });

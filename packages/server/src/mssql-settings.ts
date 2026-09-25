@@ -1,3 +1,4 @@
+import { validateReadOnlyMssqlQuery } from '@simplecrm/core';
 import type { Kysely } from 'kysely';
 
 import type { PostgresSecretPort, SecretIdentifier, ServerDatabase } from './db';
@@ -9,7 +10,6 @@ import {
 const MSSQL_SETTINGS_KEY = 'mssql_settings_v1';
 const MSSQL_PASSWORD_SECRET_KIND = 'mssql.password';
 const MSSQL_PASSWORD_SECRET_NAME = 'mssql:default';
-const MAX_MSSQL_QUERY_CHARS = 8_000;
 const MAX_MSSQL_RESULT_ROWS = 100;
 const MAX_MSSQL_RESULT_JSON_CHARS = 256_000;
 
@@ -219,23 +219,8 @@ export function createPostgresMssqlSettingsPort(
   };
 }
 
-export function validateReadOnlyMssqlQuery(query: unknown): { ok: true; query: string } | { ok: false; error: string } {
-  const text = String(query ?? '').trim();
-  if (!text) return { ok: false, error: 'SQL darf nicht leer sein' };
-  if (text.length > MAX_MSSQL_QUERY_CHARS) {
-    return { ok: false, error: `SQL zu lang (max ${MAX_MSSQL_QUERY_CHARS} Zeichen)` };
-  }
-
-  const normalized = text.replace(/^\s*--.*$/gm, '').trim();
-  const upper = normalized.toUpperCase();
-  if (!upper.startsWith('SELECT') && !upper.startsWith('WITH')) {
-    return { ok: false, error: 'Query muss mit SELECT oder WITH beginnen' };
-  }
-  if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|MERGE|GRANT|REVOKE|BACKUP|RESTORE)\b/.test(upper)) {
-    return { ok: false, error: 'Nur lesende SELECT-Abfragen sind erlaubt' };
-  }
-  return { ok: true, query: normalized };
-}
+// Shared with the desktop mssql.query node (@simplecrm/core).
+export { validateReadOnlyMssqlQuery };
 
 export function mssqlPasswordSecretIdentifier(workspaceId: string): SecretIdentifier {
   return {
