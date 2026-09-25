@@ -2,7 +2,7 @@ import { getDb } from '../sqlite-service';
 import { EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE } from '../database-schema';
 import { getEmailAccountById } from './email-store';
 import { sendSmtpForAccount } from './email-smtp';
-import { extractEmailAddressesFromRecipientField } from '../../shared/email-recipient-parse';
+import { extractDeliveryAddressesFromRecipientField } from '../../shared/email-recipient-parse';
 
 export type ForwardCopyInput = {
   accountId: number;
@@ -18,13 +18,13 @@ export type ForwardCopyInput = {
 
 const MAX_FORWARD_RECIPIENTS = 10;
 
-/** Parse comma/semicolon-separated forward targets (aligned with server edition). */
+/**
+ * Parse comma/semicolon-separated forward targets (aligned with server edition):
+ * the local part (case, plus tag) is delivery data and stays exact, only the
+ * domain is normalized; duplicates collapse case-insensitively.
+ */
 export function normalizeForwardCopyRecipients(raw: string): string[] {
-  const out: string[] = [];
-  for (const addr of extractEmailAddressesFromRecipientField(raw, { preservePlusAddressing: true }).slice(0, MAX_FORWARD_RECIPIENTS)) {
-    if (addr && !out.includes(addr)) out.push(addr);
-  }
-  return out;
+  return extractDeliveryAddressesFromRecipientField(raw).slice(0, MAX_FORWARD_RECIPIENTS);
 }
 
 export async function sendWorkflowForwardCopy(
@@ -48,7 +48,8 @@ export async function sendWorkflowForwardCopy(
     return { ok: false, reason: 'Konto fehlt' };
   }
 
-  const dest = [...recipients].sort().join(',');
+  // Dedup key over the normalized recipient set, independent of the spelling in the workflow.
+  const dest = recipients.map((address) => address.toLowerCase()).sort().join(',');
   const dup = getDb()
     .prepare(
       `SELECT 1 FROM ${EMAIL_WORKFLOW_FORWARD_DEDUP_TABLE} WHERE message_id = ? AND workflow_id = ? AND dest = ?`,
