@@ -192,6 +192,19 @@ describe('email-imap-sync', () => {
     expect(client.search).toHaveBeenCalledWith({ all: true }, { uid: true });
   });
 
+  // F-A5-06 (Desktop-Paritaet): "UID n+1:*" liefert nach RFC 3501 immer die hoechste UID, auch wenn sie <= n ist; sie wurde bei jedem Poll neu geholt.
+  test('syncInboxImap does not refetch the already synced highest uid', async () => {
+    (mockFolder as { last_uid: number; uidvalidity: number; uidvalidity_str: string }).last_uid = 7;
+    (mockFolder as { uidvalidity_str: string }).uidvalidity_str = '1';
+    client.search.mockResolvedValueOnce([7]);
+
+    const r = await syncInboxImap(1);
+
+    expect(client.search).toHaveBeenCalledWith({ uid: '8:*' }, { uid: true });
+    expect(client.fetchOne).not.toHaveBeenCalled();
+    expect(r.fetched).toBe(0);
+  });
+
   test('syncInboxImap skips uid after repeated failures', async () => {
     (mockFolder as { last_uid: number }).last_uid = 1;
     client.search.mockResolvedValueOnce([2]);

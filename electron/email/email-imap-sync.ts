@@ -142,7 +142,10 @@ async function syncFolderImapInternal(
       let uids: number[];
       if (lastUid > 0) {
         const searchResult = await client.search({ uid: `${lastUid + 1}:*` }, { uid: true });
-        uids = searchResult === false ? [] : searchResult;
+        // RFC 3501 §6.4.8: "n:*" always contains the highest existing UID, even
+        // when it is below n; without this filter the newest message is refetched
+        // and re-upserted on every poll (as on the server, mail-sync.ts).
+        uids = (searchResult === false ? [] : searchResult).filter((uid) => uid > lastUid);
       } else {
         const searchResult = await client.search({ all: true }, { uid: true });
         const allUids = searchResult === false ? [] : searchResult;
