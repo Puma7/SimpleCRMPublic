@@ -56,6 +56,15 @@ describe('parseMailSource json fields are jsonb-safe', () => {
     expect(JSON.parse(parsed.fromJson as string)).toBeTruthy();
   });
 
+  // F-N-sm-01: raw_headers bestanden aus "[object Object]"-Zeilen, weil mailparser headerLines als Objekte liefert.
+  test('rawHeaders keeps the original header lines', async () => {
+    const parsed = await parseMailSource(Buffer.from(mime));
+
+    expect(parsed.rawHeaders).not.toContain('[object Object]');
+    expect(parsed.rawHeaders).toContain('Subject: With attachment');
+    expect(parsed.rawHeaders).toContain('Content-Type: multipart/mixed; boundary="b"');
+  });
+
   test('rejects oversized multipart sources before MIME expansion', async () => {
     const source = Buffer.from(mime);
     await expect(parseMailSource(source, source.length - 1)).rejects.toBeInstanceOf(InboundMessageTooLargeError);

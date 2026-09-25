@@ -22,7 +22,7 @@ declare module 'mailparser' {
       size?: number;
       content?: Buffer;
     }[];
-    headerLines?: string[];
+    headerLines?: { key: string; line: string }[];
     headers?: {
       get?: (key: string) => unknown;
       [Symbol.iterator]?: () => IterableIterator<[string, unknown]>;

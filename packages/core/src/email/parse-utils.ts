@@ -307,11 +307,17 @@ export function formatMailparserHeaderValue(val: unknown): string {
 
 /** Serialize RFC822 headers from mailparser for support/debug display. */
 export function rawHeadersFromParsed(parsed: {
-  headerLines?: string[];
+  headerLines?: ReadonlyArray<string | { key?: string; line?: string }>;
   headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
 }): string | null {
   if (parsed.headerLines?.length) {
-    return parsed.headerLines.join('\n');
+    // mailparser delivers `{ key, line }` objects (line = original, still
+    // folded header text); joining the objects directly stored
+    // "[object Object]" and blinded Auto-Submitted/List-* checks.
+    const lines = parsed.headerLines
+      .map((entry) => (typeof entry === 'string' ? entry : entry?.line ?? ''))
+      .filter((line) => line.length > 0);
+    if (lines.length > 0) return lines.join('\n');
   }
   const headers = parsed.headers;
   if (!headers) return null;

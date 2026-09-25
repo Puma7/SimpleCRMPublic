@@ -133,7 +133,7 @@ export async function parseMailSource(
       text?: string;
       html?: string | false;
       attachments?: { filename?: string; contentType?: string; size?: number; content?: Buffer | Uint8Array | string }[];
-      headerLines?: string[];
+      headerLines?: { key: string; line: string }[];
       headers?: { get?: (key: string) => unknown; [Symbol.iterator]?: () => IterableIterator<[string, unknown]> };
     }>;
   };
