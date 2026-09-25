@@ -141,6 +141,7 @@ import {
   calculateJobRetryDelaySeconds,
   calculateLoginPenalty,
   calculateMailSyncPoolSize,
+  JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
   checksumMigration,
   collectMigrationSql,
   computeSqliteFileFingerprint,
@@ -24908,6 +24909,30 @@ describe('server edition foundation', () => {
 
     await runtime.stop();
     await expect(runtime.promise).resolves.toBeUndefined();
+  });
+
+  // F-D3-02: Mit den Compose-Voreinstellungen (JOB_WORKER_MAIL_ACCOUNT_COUNT=0) lief je Prozess nur ein einziger Mail-Sync.
+  test('die Voreinstellung ohne Kontozahl faehrt die Mail-Obergrenze statt eines einzigen Slots', () => {
+    const config = parseServerJobWorkerConfig({ JOB_WORKER_ENABLED: 'true' });
+    const plan = buildGraphileWorkerPlan({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      concurrency: {
+        mailAccountCount: config.mailAccountCount,
+        mailConcurrency: config.mailConcurrency,
+        aiConcurrency: config.aiConcurrency,
+      },
+    });
+    expect(plan.mailConcurrentJobs).toBe(JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY);
+    // Eine gesetzte Kontozahl begrenzt weiterhin (zwei Slots je Konto) ...
+    expect(buildGraphileWorkerPlan({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      concurrency: { mailAccountCount: 3, mailConcurrency: 50 },
+    }).mailConcurrentJobs).toBe(6);
+    // ... und die Obergrenze bleibt eine.
+    expect(buildGraphileWorkerPlan({
+      connectionString: 'postgres://simplecrm@postgres/simplecrm',
+      concurrency: { mailAccountCount: 0, mailConcurrency: 4 },
+    }).mailConcurrentJobs).toBe(4);
   });
 
   test('server mail account sync cooldown: Vollimport haengt nicht am Takt des periodischen Syncs', async () => {

@@ -2,6 +2,7 @@ import {
   assertServerJobType,
   buildTrustedServiceJobPayload,
   calculateMailSyncPoolSize,
+  JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY,
   normalizeAiJobConcurrency,
   normalizeMaxAttempts,
   SERVER_JOB_TYPES,
@@ -218,10 +219,13 @@ export function buildGraphileWorkerPlan(input: {
   if (!input.connectionString.trim()) {
     throw new Error('connectionString is required for Graphile Worker runtime');
   }
-  const mailConcurrency = calculateMailSyncPoolSize(
-    input.concurrency.mailAccountCount,
-    input.concurrency.mailConcurrency,
-  );
+  const mailCap = input.concurrency.mailConcurrency ?? JOB_MAIL_SYNC_DEFAULT_MAX_CONCURRENCY;
+  const mailPoolForAccounts = calculateMailSyncPoolSize(input.concurrency.mailAccountCount, mailCap);
+  // JOB_WORKER_MAIL_ACCOUNT_COUNT=0 ist die Voreinstellung (Compose, .env) und
+  // heisst "Kontozahl nicht angegeben", nicht "keine Konten". Als echte Null
+  // gerechnet blieb dem Mail-Worker genau ein Slot fuer alle Konten aller
+  // Workspaces; dann gilt stattdessen die Obergrenze JOB_WORKER_MAIL_CONCURRENCY.
+  const mailConcurrency = input.concurrency.mailAccountCount === 0 ? mailCap : mailPoolForAccounts;
   const aiConcurrency = normalizeAiJobConcurrency(input.concurrency.aiConcurrency);
 
   return {
