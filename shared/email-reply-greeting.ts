@@ -65,10 +65,15 @@ export function buildReplyGreeting(input: {
   }
   const fromName = parseFromName(input.fromJson)
   if (fromName) {
-    const last = lastNameFromFullName(fromName)
-    const lower = fromName.toLowerCase()
-    if (lower.includes('herr')) return `Sehr geehrter Herr ${last},`
-    if (lower.includes('frau')) return `Sehr geehrte Frau ${last},`
+    // Nur eine VORANGESTELLTE Anrede als eigenes Wort zaehlt: ein Teilstring
+    // ("Sherry", "Frauke", "Herrmann") oder "Herr" als Nachname ist keine.
+    const salutation = /^(herr|frau)\.?\s+(\S.*)$/i.exec(fromName)
+    if (salutation) {
+      const last = lastNameFromFullName(salutation[2]!)
+      return salutation[1]!.toLowerCase() === 'herr'
+        ? `Sehr geehrter Herr ${last},`
+        : `Sehr geehrte Frau ${last},`
+    }
     return `Guten Tag ${fromName},`
   }
   return 'Guten Tag,'

@@ -17,6 +17,7 @@ import {
   buildReplyGreeting,
   replyGreetingPlainToHtml,
 } from '../../shared/email-reply-greeting';
+import { buildReplyGreeting as buildServerReplyGreeting } from '../../packages/server/src/email-reply-greeting';
 import { buildAiTransformSystemPrompt } from '../../shared/ai-transform-prompt';
 import {
   buildSignatureTemplateContext,
@@ -201,6 +202,33 @@ describe('email-reply-greeting', () => {
 
   it('replyGreetingPlainToHtml wraps paragraph', () => {
     expect(replyGreetingPlainToHtml('Guten Tag,')).toBe('<p>Guten Tag,</p>');
+  });
+
+  // F-D1-09: 'herr'/'frau' irgendwo im From-Anzeigenamen (Sherry, Frauke, Herrmann) erzeugte eine falsche Anrede.
+  it.each([
+    ['desktop/renderer', buildReplyGreeting],
+    ['server', buildServerReplyGreeting],
+  ] as const)('derives the salutation from the sender name only for a leading Herr/Frau (%s)', (_edition, build) => {
+    const fromName = (name: string) => build({
+      fromJson: JSON.stringify({ value: [{ name, address: 'kontakt@example.com' }] }),
+    });
+
+    // Teilstring-Treffer sind keine Anrede.
+    expect(fromName('Sherry Miller')).toBe('Guten Tag Sherry Miller,');
+    expect(fromName('Frauke Schmidt')).toBe('Guten Tag Frauke Schmidt,');
+    expect(fromName('Anna Herrmann')).toBe('Guten Tag Anna Herrmann,');
+    expect(fromName('Herrera GmbH')).toBe('Guten Tag Herrera GmbH,');
+    expect(fromName('Frauenhofer Institut')).toBe('Guten Tag Frauenhofer Institut,');
+    // "Herr" als Nachname ist ebenfalls keine Anrede.
+    expect(fromName('Anna Herr')).toBe('Guten Tag Anna Herr,');
+    // Ohne Namen hinter der Anrede gibt es keinen Nachnamen.
+    expect(fromName('Herr')).toBe('Guten Tag Herr,');
+
+    // Eine vorangestellte Anrede bleibt erkannt.
+    expect(fromName('Herr Max Müller')).toBe('Sehr geehrter Herr Müller,');
+    expect(fromName('frau Anna Müller')).toBe('Sehr geehrte Frau Müller,');
+    expect(fromName('Frau Dr. Anna Müller')).toBe('Sehr geehrte Frau Müller,');
+    expect(fromName('Herr. Max Müller')).toBe('Sehr geehrter Herr Müller,');
   });
 });
 
