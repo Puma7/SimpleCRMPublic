@@ -66,7 +66,8 @@ Owner/Admin.
 Nur ein Owner vergibt oder entzieht die Rolle `owner` und ändert oder löscht ein
 Owner-Konto: Rolle, Aktiv-Status, Passwort, E-Mail, Anzeige- und öffentlicher
 Name, Login-PIN, 2FA (Authenticator einrichten, E-Mail-2FA, 2FA abschalten).
-Auch eine Einladung mit Rolle `owner` darf nur ein Owner erstellen. Admins
+Auch eine Einladung mit Rolle `owner` darf nur ein Owner erstellen, und sie
+lässt sich nur annehmen, solange der Einladende aktiver Owner ist. Admins
 verwalten alle übrigen Konten weiter, auch andere Admins. Sonst antwortet der
 Server mit **403 `owner_management_requires_owner`** (Regel
 `isForbiddenUserMutation`). Grund: Ein Admin könnte sich sonst selbst zum Owner

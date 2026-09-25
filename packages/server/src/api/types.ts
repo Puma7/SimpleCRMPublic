@@ -227,7 +227,10 @@ export type AuthInvitationAcceptInput = {
 
 export type AuthInvitationAcceptResult =
   | { ok: true; user: AuthUserRecord; tokens: TokenPair }
-  | { ok: false; code: 'invalid_token' | 'expired' | 'accepted' | 'revoked' | 'duplicate_email' };
+  | {
+    ok: false;
+    code: 'invalid_token' | 'expired' | 'accepted' | 'revoked' | 'duplicate_email' | 'owner_management_requires_owner';
+  };
 
 export type AuthInvitationDeliveryStatus =
   | { status: 'sent'; recipient: string; sentAt: string }

@@ -440,6 +440,12 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         const invite = await selectInvitationByToken(trx, input.token);
         const lookup = invitationLookupResult(invite, now());
         if (!lookup.ok) return lookup;
+        // G3: Die Owner-Rolle vergibt nur ein Owner. Eine Owner-Einladung gilt deshalb nur,
+        // solange der Einladende aktiver Owner ist; das faengt auch Einladungen, die ein
+        // Admin vor G3 erstellt hat. Ohne Einladenden wird abgelehnt.
+        if (invite!.role === 'owner' && !(await isActiveOwner(trx, invite!.workspace_id, invite!.invited_by_user_id))) {
+          return { ok: false as const, code: 'owner_management_requires_owner' as const };
+        }
 
         const existingUser = await selectUserByEmail(trx, invite!.workspace_id, invite!.email);
         if (existingUser) return { ok: false as const, code: 'duplicate_email' as const };
@@ -1205,6 +1211,23 @@ async function selectUserByEmail(
 
 function normalizeAuthEmail(email: string): string {
   return email.trim().toLowerCase();
+}
+
+async function isActiveOwner(
+  db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
+  workspaceId: string,
+  userId: string | null | undefined,
+): Promise<boolean> {
+  if (!userId) return false;
+  const row = await db
+    .selectFrom('users')
+    .select('id')
+    .where('workspace_id', '=', workspaceId)
+    .where('id', '=', userId)
+    .where('role', '=', 'owner')
+    .where('disabled_at', 'is', null)
+    .executeTakeFirst();
+  return row !== undefined;
 }
 
 async function countActiveOwners(

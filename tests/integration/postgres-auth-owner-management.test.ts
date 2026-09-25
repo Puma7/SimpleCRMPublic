@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import type { Kysely } from 'kysely';
 
 import { handleAuthRoute } from '../../packages/server/src/api/auth-routes';
@@ -317,6 +318,89 @@ describe('only owners assign the owner role and change owner accounts', () => {
       );
       expect(lastOwner).toMatchObject({ status: 409, body: { error: { code: 'last_owner_required' } } });
       expect((await row(OWNER2_ID))?.role).toBe('owner');
+    });
+  });
+
+  // C-A72 (G3): Eine vor G3 von einem Admin erstellte Owner-Einladung (oder die eines inzwischen
+  // herabgestuften oder deaktivierten Owners) liess sich weiter annehmen und vergab die Owner-Rolle.
+  describe('accepting an owner invitation', () => {
+    let tokenSequence = 0;
+
+    async function insertInvitation(invitedBy: string, role: Role): Promise<{ token: string; email: string }> {
+      tokenSequence += 1;
+      const token = `einladung-${tokenSequence}-${'x'.repeat(32)}`;
+      const email = `eingeladen-${tokenSequence}@example.test`;
+      await postgres.admin.query(
+        `INSERT INTO auth_invitations (workspace_id, email, display_name, role, token_hash, invited_by_user_id, expires_at)
+         VALUES ($1, $2, 'Eingeladen', $3, $4, $5, now() + interval '7 days')`,
+        [WORKSPACE_ID, email, role, createHash('sha256').update(token, 'utf8').digest('hex'), invitedBy],
+      );
+      return { token, email };
+    }
+
+    async function accept(token: string) {
+      return handleAuthRoute({
+        method: 'POST',
+        path: `/api/v1/auth/invitations/${encodeURIComponent(token)}/accept`,
+        ip: '203.0.113.34',
+        headers: {},
+        body: { password: 'angenommen-12345' },
+      }, ports());
+    }
+
+    async function userByEmail(email: string) {
+      const result = await postgres.admin.query<{ role: Role }>(
+        'SELECT role FROM users WHERE workspace_id = $1 AND email = $2',
+        [WORKSPACE_ID, email],
+      );
+      return result.rows[0] ?? null;
+    }
+
+    async function acceptedAt(email: string) {
+      const result = await postgres.admin.query<{ accepted_at: Date | null }>(
+        'SELECT accepted_at FROM auth_invitations WHERE workspace_id = $1 AND email = $2',
+        [WORKSPACE_ID, email],
+      );
+      return result.rows[0]?.accepted_at ?? null;
+    }
+
+    test('is refused when an admin created it (before G3)', async () => {
+      const { token, email } = await insertInvitation(ADMIN_ID, 'owner');
+
+      expect(await accept(token)).toMatchObject(ownerOnly);
+      expect(await userByEmail(email)).toBeNull();
+      expect(await acceptedAt(email)).toBeNull();
+    });
+
+    test('is refused when the inviting owner was demoted meanwhile', async () => {
+      const { token, email } = await insertInvitation(OWNER2_ID, 'owner');
+      await postgres.admin.query(`UPDATE users SET role = 'admin' WHERE id = $1`, [OWNER2_ID]);
+
+      expect(await accept(token)).toMatchObject(ownerOnly);
+      expect(await userByEmail(email)).toBeNull();
+    });
+
+    test('is refused when the inviting owner was disabled meanwhile', async () => {
+      const { token, email } = await insertInvitation(OWNER2_ID, 'owner');
+      await postgres.admin.query('UPDATE users SET disabled_at = now() WHERE id = $1', [OWNER2_ID]);
+
+      expect(await accept(token)).toMatchObject(ownerOnly);
+      expect(await userByEmail(email)).toBeNull();
+    });
+
+    test('still grants the owner role while the inviter is an active owner', async () => {
+      const { token, email } = await insertInvitation(OWNER2_ID, 'owner');
+
+      expect((await accept(token))?.status).toBe(200);
+      expect(await userByEmail(email)).toEqual({ role: 'owner' });
+      expect(await acceptedAt(email)).not.toBeNull();
+    });
+
+    test('leaves invitations for other roles untouched', async () => {
+      const { token, email } = await insertInvitation(ADMIN_ID, 'admin');
+
+      expect((await accept(token))?.status).toBe(200);
+      expect(await userByEmail(email)).toEqual({ role: 'admin' });
     });
   });
 });

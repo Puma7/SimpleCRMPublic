@@ -768,6 +768,7 @@ async function handleAcceptInvitation(
   });
   if (!result.ok) {
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
+    if (result.code === 'owner_management_requires_owner') return ownerManagementRequiresOwnerError();
     return invitationErrorResponse(result.code);
   }
 
