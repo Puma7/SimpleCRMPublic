@@ -1,5 +1,10 @@
 import { randomUUID } from 'crypto';
-import { MAX_INBOUND_RFC822_BYTES } from '@simplecrm/core';
+import {
+  MAX_INBOUND_RFC822_BYTES,
+  PGP_SIGNED_PARTIAL_STATUS,
+  extractArmoredPgpSignedMessage,
+  pgpCleartextSignatureCoversMessage,
+} from '@simplecrm/core';
 import { getDb } from '../sqlite-service';
 import { PGP_IDENTITIES_TABLE, PGP_PEER_KEYS_TABLE, EMAIL_MESSAGES_TABLE } from '../database-schema';
 import { LOCAL_OWNER_USER_ID } from '../mail-roadmap-migrations';
@@ -282,12 +287,15 @@ export async function verifySignedMessage(
     from_json: string | null;
   };
   if (!row) throw new Error('Nachricht nicht gefunden');
-  const armored =
+  // Only the signed block itself is verified; text after it is not covered by
+  // the signature and is checked separately below.
+  const armored = extractArmoredPgpSignedMessage(
     (row.body_text ?? '').trimStart().startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
-      ? row.body_text!
+      ? row.body_text
       : (row.body_html ?? '').trimStart().startsWith('-----BEGIN PGP SIGNED MESSAGE-----')
-        ? row.body_html!
-        : null;
+        ? row.body_html
+        : null,
+  );
   if (!armored) throw new Error('Keine signierte PGP-Nachricht');
   let senderEmail = '';
   try {
@@ -344,6 +352,17 @@ export async function verifySignedMessage(
         ? 'signed_untrusted_key'
         : 'signed_unknown_key';
     }
+  }
+  if (valid && !pgpCleartextSignatureCoversMessage({
+    bodyText: row.body_text,
+    bodyHtml: row.body_html,
+    armoredBlock: armored,
+    signedText: message.getText(),
+  })) {
+    // Unsigned text after the block (or a differing HTML part) would otherwise
+    // be shown under the sender's valid signature.
+    valid = false;
+    status = PGP_SIGNED_PARTIAL_STATUS;
   }
   db.prepare(
     `UPDATE ${EMAIL_MESSAGES_TABLE} SET pgp_status = ?, pgp_signer_fingerprint = ? WHERE id = ?`,

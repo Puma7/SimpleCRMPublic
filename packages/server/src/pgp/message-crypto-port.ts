@@ -2,6 +2,7 @@ import { MAX_INBOUND_RFC822_BYTES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
 import {
   PGP_SIGNED_PARTIAL_STATUS,
+  extractArmoredPgpSignedMessage,
   pgpCleartextSignatureCoversMessage,
   type PgpSignatureStatus,
 } from '@simplecrm/core';
@@ -867,19 +868,6 @@ function extractArmoredPgpMessage(...bodies: Array<string | null>): string | nul
     return end < 0
       ? body.slice(begin).trim()
       : body.slice(begin, end + PGP_MESSAGE_END.length).trim();
-  }
-  return null;
-}
-
-function extractArmoredPgpSignedMessage(...bodies: Array<string | null>): string | null {
-  for (const body of bodies) {
-    if (!body) continue;
-    const begin = body.indexOf(PGP_SIGNED_MESSAGE_BEGIN);
-    if (begin < 0) continue;
-    const end = body.indexOf(PGP_SIGNATURE_END, begin);
-    return end < 0
-      ? body.slice(begin).trim()
-      : body.slice(begin, end + PGP_SIGNATURE_END.length).trim();
   }
   return null;
 }

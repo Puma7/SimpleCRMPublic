@@ -63,6 +63,20 @@ async function insertSignedMessage(text: string, tamper = false): Promise<number
   );
 }
 
+async function signCleartext(text: string): Promise<string> {
+  const signingKeys = await openpgp.readPrivateKey({ armoredKey: bob.privateKey });
+  return String(await openpgp.sign({ message: await openpgp.createCleartextMessage({ text }), signingKeys }));
+}
+
+function insertMessageBody(uid: number, bodyText: string | null, bodyHtml: string | null): number {
+  return Number(
+    db.prepare(
+      `INSERT INTO email_messages (account_id, folder_id, uid, subject, body_text, body_html, from_json, date_received)
+       VALUES (1, 1, ?, 's', ?, ?, ?, '2026-01-01T00:00:00Z')`,
+    ).run(uid, bodyText, bodyHtml, JSON.stringify({ value: [{ address: 'bob@example.com' }] })).lastInsertRowid,
+  );
+}
+
 describe('desktop PGP with real openpgp', () => {
   // F-A7b-08: Importierte Schluessel landeten unter '[object Object]' statt der E-Mail, Verschluesseln/Pruefen fand sie nie.
   test('imports a peer key under the e-mail address of its user id', async () => {
@@ -137,6 +151,35 @@ describe('desktop PGP with real openpgp', () => {
     const result = await verifySignedMessage(messageId);
     expect(result.valid).toBe(false);
     expect(result.status).toBe('signed_invalid');
+  });
+
+  // C-A56: Ein alter, echt signierter Block eines verifizierten Partners machte auch angehaengten unsignierten Text oder einen abweichenden HTML-Teil 'signed_valid'.
+  test('reports signed_partial when unsigned text or a differing HTML part accompanies the signed block', async () => {
+    const { fingerprint } = await importPublicKeyArmored(bob.publicKey);
+    db.prepare("UPDATE pgp_peer_keys SET trust_level = 'verified'").run();
+    const block = await signCleartext('Hallo, anbei die Unterlagen.');
+    const fraud = 'NEUE IBAN: DE00 1234 5678 9000 0000 00. Bitte ab sofort dorthin ueberweisen.';
+    const suffixId = insertMessageBody(1, `${block}\n\n${fraud}\n`, null);
+    const htmlId = insertMessageBody(2, block, `<p>${fraud}</p>`);
+
+    for (const messageId of [suffixId, htmlId]) {
+      await expect(verifySignedMessage(messageId)).resolves.toEqual({ valid: false, fingerprint, status: 'signed_partial' });
+      expect(db.prepare('SELECT pgp_status, pgp_signer_fingerprint FROM email_messages WHERE id = ?').get(messageId))
+        .toEqual({ pgp_status: 'signed_partial', pgp_signer_fingerprint: fingerprint });
+    }
+  });
+
+  test('a block that is the whole message stays signed_valid (mailer whitespace, HTML rendering of the signed text)', async () => {
+    const { fingerprint } = await importPublicKeyArmored(bob.publicKey);
+    db.prepare("UPDATE pgp_peer_keys SET trust_level = 'verified'").run();
+    const block = await signCleartext('Hallo,\nanbei die Unterlagen.');
+    const crlfId = insertMessageBody(1, `\r\n${block.replace(/\n/g, '\r\n')}\r\n\r\n`, null);
+    const htmlArmorId = insertMessageBody(2, block, `<html><body><pre>${block.replace(/\n/g, '<br>\n')}</pre></body></html>`);
+    const htmlTextId = insertMessageBody(3, block, '<div>Hallo,<br>anbei die Unterlagen.</div>');
+
+    for (const messageId of [crlfId, htmlArmorId, htmlTextId]) {
+      await expect(verifySignedMessage(messageId)).resolves.toEqual({ valid: true, fingerprint, status: 'signed_valid' });
+    }
   });
 });
 
