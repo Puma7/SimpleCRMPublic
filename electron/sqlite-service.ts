@@ -2050,8 +2050,22 @@ export function createCustomer(customerData: any): any {
         '@affiliateLink', '@now'
     ];
 
+    // Every named placeholder needs a value (better-sqlite3 throws "Missing named
+    // parameter" otherwise); Automation-API bodies usually carry only a few fields.
+    const optional = (value: unknown) => (value === undefined ? null : value);
     const dataToInsert: any = {
         ...standardCustomerData,
+        firstName: optional(standardCustomerData.firstName),
+        company: optional(standardCustomerData.company),
+        email: optional(standardCustomerData.email),
+        phone: optional(standardCustomerData.phone),
+        mobile: optional(standardCustomerData.mobile),
+        street: optional(standardCustomerData.street),
+        zip: optional(standardCustomerData.zip ?? standardCustomerData.zipCode),
+        city: optional(standardCustomerData.city),
+        country: optional(standardCustomerData.country),
+        notes: optional(standardCustomerData.notes),
+        affiliateLink: optional(standardCustomerData.affiliateLink),
         now: now,
         status: standardCustomerData.status || 'Active'
     };
