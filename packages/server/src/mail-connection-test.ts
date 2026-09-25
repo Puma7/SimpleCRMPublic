@@ -72,6 +72,9 @@ const DEFAULT_TIMEOUT_MS = 25_000;
 // continuation/untagged lines, each arriving within the per-line timeout).
 const MAX_BUFFERED_RESPONSE_CHARS = 64 * 1024;
 const MAX_RESPONSE_LINES = 1000;
+// Each line just in time still let one response run for 1000 line timeouts;
+// a whole (multi-line) response gets twice the line timeout.
+const RESPONSE_DEADLINE_FACTOR = 2;
 
 export function createServerMailConnectionTestPort(
   options: ServerMailConnectionTestPortOptions = {},
@@ -480,11 +483,12 @@ async function testPop3Connection(input: ProtocolTestInput): Promise<MailConnect
 }
 
 async function pop3OffersStls(client: LineProtocolClient): Promise<boolean> {
+  const deadlineAt = client.responseDeadline();
   // CAPA is optional (RFC 2449); a server without it answers -ERR.
   if (!isPop3Ok(await client.command('CAPA'))) return false;
   let stls = false;
   for (let count = 0; count < MAX_RESPONSE_LINES; count += 1) {
-    const line = await client.readLine();
+    const line = await client.readLine(deadlineAt);
     if (line === '.') return stls;
     if (/^STLS\b/i.test(line)) stls = true;
   }
@@ -590,10 +594,11 @@ async function smtpCommand(client: LineProtocolClient, command: string): Promise
 }
 
 async function readSmtpResponse(client: LineProtocolClient): Promise<SmtpResponse> {
+  const deadlineAt = client.responseDeadline();
   const lines: string[] = [];
   for (;;) {
     if (lines.length >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
-    const line = await client.readLine();
+    const line = await client.readLine(deadlineAt);
     lines.push(line);
     const match = /^(\d{3})([ -])(.*)$/.exec(line);
     if (!match) {
@@ -790,10 +795,11 @@ class LineProtocolClient {
     tag: string,
     onUntagged?: (line: string) => void,
   ): Promise<{ ok: boolean; line: string }> {
+    const deadlineAt = this.responseDeadline();
     this.writeLine(command);
     for (let count = 0; ; count += 1) {
       if (count >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
-      const line = await this.readLine();
+      const line = await this.readLine(deadlineAt);
       if (line.toUpperCase().startsWith(`${tag.toUpperCase()} `)) {
         return { ok: new RegExp(`^${escapeRegExp(tag)}\\s+OK\\b`, 'i').test(line), line };
       }
@@ -801,15 +807,22 @@ class LineProtocolClient {
     }
   }
 
-  async readLine(): Promise<string> {
+  /** End of a whole (multi-line) response started now. */
+  responseDeadline(): number {
+    return Date.now() + RESPONSE_DEADLINE_FACTOR * this.timeoutMs;
+  }
+
+  async readLine(deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
     if (this.closedError) throw this.closedError;
     const existing = this.shiftLine();
     if (existing !== null) return existing;
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) throw this.failResponseDeadline();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Connection timed out'));
-      }, this.timeoutMs);
+        reject(remainingMs < this.timeoutMs ? this.failResponseDeadline() : new Error('Connection timed out'));
+      }, Math.min(this.timeoutMs, remainingMs));
       const cleanup = (): void => {
         clearTimeout(timer);
         const resolveIndex = this.waiters.indexOf(onLine);
@@ -870,6 +883,13 @@ class LineProtocolClient {
     this.waiters = [];
     this.errorWaiters = [];
     waiters.forEach((waiter) => waiter(error));
+  }
+
+  private failResponseDeadline(): Error {
+    const error = new Error('Zeitlimit der Server-Antwort ueberschritten');
+    this.rejectAll(error);
+    this.socket.destroy();
+    return error;
   }
 }
 

@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import net from 'net';
 
 import {
@@ -154,5 +155,103 @@ describe('server SMTP send response limits', () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+/**
+ * In-memory SMTP server socket for fake-timer tests: `respond` answers each
+ * command ('.' stands for the end of the message body) with a reply or starts
+ * a trickle of continuation lines that never ends.
+ */
+class TricklingSmtpSocket extends EventEmitter {
+  destroyed = false;
+  private trickle: ReturnType<typeof setInterval> | null = null;
+
+  constructor(
+    private readonly respond: (command: string) => string | { trickle: string; everyMs: number },
+  ) {
+    super();
+    setTimeout(() => this.emit('data', '220 ready\r\n'), 0);
+  }
+
+  write(chunk: string | Buffer): boolean {
+    const text = String(chunk);
+    const reply = this.respond(text.endsWith('\r\n.\r\n') ? '.' : text.replace(/\r\n$/, ''));
+    setTimeout(() => {
+      if (this.destroyed) return;
+      if (typeof reply === 'string') this.emit('data', reply);
+      else this.trickle = setInterval(() => this.emit('data', reply.trickle), reply.everyMs);
+    }, 0);
+    return true;
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    if (this.trickle) clearInterval(this.trickle);
+    this.emit('close');
+  }
+}
+
+function smtpReplies(trickleAfter: string, timeoutMs: number) {
+  return (command: string): string | { trickle: string; everyMs: number } => {
+    if (command === trickleAfter) return { trickle: '250-x\r\n', everyMs: timeoutMs - 1_000 };
+    if (command.startsWith('EHLO')) return '250-AUTH PLAIN\r\n250 OK\r\n';
+    if (command.startsWith('AUTH PLAIN')) return '235 ok\r\n';
+    if (command === 'DATA') return '354 go ahead\r\n';
+    return '250 OK\r\n';
+  };
+}
+
+// C-A68: SMTP replies were only bounded per line (90 s) and to 1000 lines, so a
+// hostile server could stretch one reply with a line every 89 s to about a day.
+describe('server SMTP send response deadline', () => {
+  const timeoutMs = 90_000;
+  const baseInput = {
+    host: 'smtp.example.com',
+    port: 587,
+    tls: false,
+    user: 'agent@example.com',
+    password: 'super-secret-password',
+    envelopeFrom: 'agent@example.com',
+    recipients: ['recipient@example.com'],
+    rfc822: 'Subject: Test\r\n\r\nbody',
+    timeoutMs,
+  };
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  async function send(socket: TricklingSmtpSocket) {
+    const outcome: { error?: Error; done: boolean } = { done: false };
+    void sendSmtpMessage({ ...baseInput, socketFactory: (async () => socket) as never }).then(
+      () => { outcome.done = true; },
+      (error: Error) => { outcome.done = true; outcome.error = error; },
+    );
+    return outcome;
+  }
+
+  test('gives up on a command reply that trickles in for more than five minutes', async () => {
+    const socket = new TricklingSmtpSocket(smtpReplies('EHLO simplecrm.local', timeoutMs));
+    const outcome = await send(socket);
+
+    await jest.advanceTimersByTimeAsync(4 * 60_000 + 50_000);
+    expect(outcome.done).toBe(false);
+    await jest.advanceTimersByTimeAsync(15_000);
+
+    expect(outcome.error?.message).toBe('Zeitlimit der Server-Antwort ueberschritten');
+    expect(socket.destroyed).toBe(true);
+  });
+
+  test('waits up to ten minutes for the reply to the message body (RFC 5321 4.5.3.2)', async () => {
+    const socket = new TricklingSmtpSocket(smtpReplies('.', timeoutMs));
+    const outcome = await send(socket);
+
+    await jest.advanceTimersByTimeAsync(9 * 60_000 + 50_000);
+    expect(outcome.done).toBe(false);
+    await jest.advanceTimersByTimeAsync(15_000);
+
+    expect(outcome.error?.message).toBe('Zeitlimit der Server-Antwort ueberschritten');
+    expect(socket.destroyed).toBe(true);
   });
 });

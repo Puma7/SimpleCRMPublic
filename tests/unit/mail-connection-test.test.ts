@@ -120,6 +120,53 @@ class ScriptedSocket extends EventEmitter {
   }
 }
 
+/**
+ * Server whose answer to the command matched by `trickleOn` never ends: after
+ * an optional first line it sends one more line every `everyMs` (fake timers).
+ */
+class TricklingSocket extends EventEmitter {
+  destroyed = false;
+  private trickle: ReturnType<typeof setInterval> | null = null;
+
+  constructor(
+    private readonly greeting: string,
+    private readonly trickleOn: (line: string) => { first?: string; line: string } | null,
+    private readonly everyMs: number,
+  ) {
+    super();
+  }
+
+  setEncoding(): this {
+    return this;
+  }
+
+  end(): void {}
+
+  destroy(): void {
+    this.destroyed = true;
+    if (this.trickle) clearInterval(this.trickle);
+  }
+
+  write(chunk: string | Buffer): boolean {
+    const command = String(chunk).replace(/\r\n$/, '');
+    const trickle = this.trickleOn(command);
+    setTimeout(() => {
+      if (this.destroyed) return;
+      if (!trickle) {
+        this.emit('data', /^\w+\d+ /.test(command) ? `${command.split(' ')[0]} OK\r\n` : '250 OK\r\n');
+        return;
+      }
+      if (trickle.first) this.emit('data', trickle.first);
+      this.trickle = setInterval(() => this.emit('data', trickle.line), this.everyMs);
+    }, 0);
+    return true;
+  }
+
+  greet(): void {
+    setTimeout(() => this.emit('data', this.greeting), 0);
+  }
+}
+
 function scriptedPort(socket: ScriptedSocket) {
   return createServerMailConnectionTestPort({
     socketFactory: (async () => {
@@ -439,5 +486,89 @@ describe('server mail connection test stored credentials', () => {
       user: 'user@example.com',
       password: 'typed',
     })).resolves.toEqual({ success: false, error: 'Server-Antwort hat zu viele Zeilen' });
+  });
+});
+
+// C-A81: the connection test bounded only each line (25 s) and the line count,
+// so a server answering with one line every 24 s kept a test busy for hours.
+describe('server mail connection test response deadline', () => {
+  const timeoutMs = 10_000;
+  const trickleEveryMs = timeoutMs - 1_000;
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  async function runUntilDeadline(
+    socket: TricklingSocket,
+    run: (port: ReturnType<typeof createServerMailConnectionTestPort>) => Promise<unknown>,
+  ) {
+    const port = createServerMailConnectionTestPort({
+      socketFactory: (async () => {
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs,
+    });
+    const outcome: { result?: unknown } = {};
+    void run(port).then((result) => { outcome.result = result; });
+    // Twice the line timeout per response: still running shortly before, done right after.
+    await jest.advanceTimersByTimeAsync(2 * timeoutMs - 1_000);
+    expect(outcome.result).toBeUndefined();
+    await jest.advanceTimersByTimeAsync(2_000);
+    return outcome.result;
+  }
+
+  test('IMAP test gives up on a command whose untagged lines never end', async () => {
+    const socket = new TricklingSocket(
+      '* OK ready\r\n',
+      (line) => (line.startsWith('a001 LOGIN') ? { line: '* x\r\n' } : null),
+      trickleEveryMs,
+    );
+
+    await expect(runUntilDeadline(socket, (port) => port.testImap({
+      workspaceId: 'workspace-a',
+      host: 'imap.example.com',
+      port: 993,
+      tls: true,
+      user: 'user@example.com',
+      password: 'typed',
+    }))).resolves.toEqual({ success: false, error: 'Zeitlimit der Server-Antwort ueberschritten' });
+    expect(socket.destroyed).toBe(true);
+  });
+
+  test('SMTP test gives up on a reply whose continuation lines never end', async () => {
+    const socket = new TricklingSocket(
+      '220 ready\r\n',
+      (line) => (line.startsWith('EHLO') ? { line: '250-x\r\n' } : null),
+      trickleEveryMs,
+    );
+
+    await expect(runUntilDeadline(socket, (port) => port.testSmtp({
+      workspaceId: 'workspace-a',
+      host: 'smtp.example.com',
+      port: 465,
+      tls: true,
+      user: 'user@example.com',
+      password: 'typed',
+    }))).resolves.toEqual({ success: false, error: 'Zeitlimit der Server-Antwort ueberschritten' });
+    expect(socket.destroyed).toBe(true);
+  });
+
+  test('POP3 test gives up on a CAPA list that never ends', async () => {
+    const socket = new TricklingSocket(
+      '+OK ready\r\n',
+      (line) => (line === 'CAPA' ? { first: '+OK capability list\r\n', line: 'X-FILLER\r\n' } : null),
+      trickleEveryMs,
+    );
+
+    await expect(runUntilDeadline(socket, (port) => port.testPop3({
+      workspaceId: 'workspace-a',
+      host: 'pop.example.com',
+      port: 110,
+      tls: false,
+      user: 'user@example.com',
+      password: 'typed',
+    }))).resolves.toEqual({ success: false, error: 'Zeitlimit der Server-Antwort ueberschritten' });
+    expect(socket.destroyed).toBe(true);
   });
 });
