@@ -228,3 +228,11 @@ Die wichtigsten neuen Befunde aus Codex' Liste:
 - `crm.read`-Nutzer erhalten die id-Invalidierung (id, customerId) auch für private Aufgaben anderer (Zeilenregel, war vorher so).
 - Desktop-POP3 UIDL/RETR laufen über node-pop3 nur mit dem Leerlauf-Timeout des Sockets (keine Gesamtfrist). Die Server-Prüfung der KI-Profil-`baseUrl` beim Speichern nutzt noch die ältere Adressliste; zur Laufzeit greift die vollständige Prüfung.
 - PR #192 ist in diesem PR vollständig enthalten. Wird #193 per Merge-Commit gemergt, markiert GitHub #192 automatisch als gemergt; bei Squash muss #192 von Hand geschlossen werden.
+
+## 8. Review auf dem PR (nach „Ready for review“)
+
+- **Codex-Review (P1):** Relay-Betreffregeln mit Flag `u`/`v` liefen ohne linearen V8-Fallback (`/^(a|aa)+$/u`: 1,3 s bei 34 Zeichen). Werden jetzt beim Speichern abgelehnt, `compileUserRegex` wirft dafür (`c634d2b`).
+- **Owner-Review, Blocker 1:** Desktop-Verbindungstests nutzten gespeicherte Zugangsdaten gegen einen beliebigen Host. Jetzt müssen Host, Port, TLS und Benutzer übereinstimmen, sonst ist ein neues Passwort nötig (`ffc4066`). Derselbe Weg über das Speichern des Kontos ist ebenfalls geschlossen: Host-, Port- oder TLS-Wechsel verlangt neue Zugangsdaten wie auf dem Server (`325564f`); bei OAuth-Konten ersetzt das neue Passwort die OAuth-Verknüpfung, damit kein Token an einen neuen Host geht (`1f60e21`).
+- **Owner-Review, Blocker 2:** Schleifen-Iterationen begannen je mit eigenem Schrittzähler (bis 500 × 500 Knoten je Lauf). Neu ist ein Gesamtbudget von 10.000 Knoten je Lauf in beiden Editionen; den Pfadzähler einfach weiterzureichen hätte legitime Schleifen mit 500 Einträgen blockiert (`c95193b`).
+- **Berichte im öffentlichen Repo:** Pascal hat entschieden, sie im Repo zu lassen (ein Nutzer im Intranet, keine offenen kritischen Lücken nach diesem PR).
+- **CI:** `build-and-test` lag am 20-Minuten-Limit und wurde zweimal per Timeout abgebrochen; das Limit ist auf 35 Minuten angehoben.
