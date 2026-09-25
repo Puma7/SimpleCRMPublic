@@ -397,10 +397,13 @@ function parseRelayMutation(
   if (!isPlainObject(body)) {
     return invalidRelay('Payload muss ein JSON-Objekt sein');
   }
+  // allowArbitraryRecipients was stored but never enforced and is gone
+  // (F-A3b-04). Older clients may still send it: accepted and ignored.
+  const ignored = new Set(['allowArbitraryRecipients']);
   const allowed = new Set([
     'label', 'enabled', 'trackingMode', 'trackingSubjectPatterns', 'allowHeaderOverride',
-    'maxRecipients', 'maxMessageBytes', 'rateLimitPerMin', 'allowArbitraryRecipients',
-    'followupWorkflowId',
+    'maxRecipients', 'maxMessageBytes', 'rateLimitPerMin', 'followupWorkflowId',
+    ...ignored,
   ]);
   const unknown = Object.keys(body).filter((key) => !allowed.has(key));
   if (unknown.length > 0) {
@@ -418,7 +421,7 @@ function parseRelayMutation(
     return invalidRelay('label ist erforderlich');
   }
 
-  for (const key of ['enabled', 'allowHeaderOverride', 'allowArbitraryRecipients'] as const) {
+  for (const key of ['enabled', 'allowHeaderOverride'] as const) {
     if (body[key] === undefined) continue;
     if (typeof body[key] !== 'boolean') {
       return invalidRelay(`${key} muss boolesch sein`);

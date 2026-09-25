@@ -115,6 +115,11 @@ Relay normal weiter — nur ohne Pixel.
   müssen zum erlaubten Konto der Zugangsdaten passen (Spoofing-Schutz).
 - Limits pro Relay: max. Empfänger/Mail, Nachrichtengröße, Rate-Limit
   pro Zugangsdaten (Token-Bucket, `451` bei Überschreitung).
+- Empfängeradressen werden nicht auf bekannte Kontakte beschränkt. Den früheren
+  Schalter `allowArbitraryRecipients` hat SimpleCRM nie durchgesetzt; er ist aus
+  API, IPC und UI entfernt (F-A3b-04). Ältere Clients dürfen ihn weiter senden,
+  der Server ignoriert ihn. Die DB-Spalte `smtp_relays.allow_arbitrary_recipients`
+  bleibt bis zu einer eigenen Migration ungenutzt stehen.
 - Eingehende `X-SimpleCRM-*`-Header werden beim Durchleiten **entfernt**
   (keine Steuer-Header-Injektion von außen).
 - Antworten: `535` (Login), `550 5.7.1` (From nicht erlaubt), `452` (zu viele

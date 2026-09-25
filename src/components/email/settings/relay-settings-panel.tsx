@@ -56,7 +56,6 @@ export type SmtpRelay = {
   maxRecipients: number
   maxMessageBytes: number
   rateLimitPerMin: number
-  allowArbitraryRecipients: boolean
   followupWorkflowId: number | null
   createdAt: string
   allowedAccounts: SmtpRelayAllowedAccount[]

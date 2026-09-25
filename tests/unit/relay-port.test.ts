@@ -444,7 +444,6 @@ describe('createPostgresSmtpRelayPort.loadRelayConfig', () => {
       maxRecipients: 50,
       maxMessageBytes: 10_485_760,
       rateLimitPerMin: 60,
-      allowArbitraryRecipients: false,
       followupWorkflowId: 7,
     });
   });
@@ -504,9 +503,10 @@ describe('createPostgresSmtpRelayAdminPort.listRelays', () => {
       maxRecipients: 50,
       maxMessageBytes: 10_485_760,
       rateLimitPerMin: 60,
-      allowArbitraryRecipients: false,
       followupWorkflowId: 7,
     });
+    // F-A3b-04 (E8): the never-enforced switch is no longer part of the record.
+    expect(relayA).not.toHaveProperty('allowArbitraryRecipients');
     expect(relayA.allowedAccounts).toEqual([
       { accountId: 100, fromAddress: null, emailAddress: 'sales@acme.test', displayName: 'Sales' },
       { accountId: 101, fromAddress: 'noreply@acme.test', emailAddress: 'support@acme.test', displayName: 'Support' },
@@ -551,7 +551,6 @@ describe('createPostgresSmtpRelayAdminPort.createRelay', () => {
         maxRecipients: 50,
         maxMessageBytes: 26_214_400,
         rateLimitPerMin: 60,
-        allowArbitraryRecipients: false,
         followupWorkflowId: null,
         createdAt: '2026-07-16T08:00:00.000Z',
         allowedAccounts: [],

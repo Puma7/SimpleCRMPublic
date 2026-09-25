@@ -54,7 +54,6 @@ function relayConfig(overrides: Partial<SmtpRelayConfig> = {}): SmtpRelayConfig 
     maxRecipients: 50,
     maxMessageBytes: 26_214_400,
     rateLimitPerMin: 60,
-    allowArbitraryRecipients: false,
     followupWorkflowId: 7,
     ...overrides,
   };

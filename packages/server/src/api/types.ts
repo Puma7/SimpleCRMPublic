@@ -5458,7 +5458,6 @@ export type SmtpRelayRecord = {
   maxRecipients: number;
   maxMessageBytes: number;
   rateLimitPerMin: number;
-  allowArbitraryRecipients: boolean;
   followupWorkflowId: number | null;
   createdAt: string;
   allowedAccounts: readonly SmtpRelayAllowedAccountRecord[];
@@ -5474,7 +5473,6 @@ export type SmtpRelayMutationInput = {
   maxRecipients?: number;
   maxMessageBytes?: number;
   rateLimitPerMin?: number;
-  allowArbitraryRecipients?: boolean;
   followupWorkflowId?: number | null;
 };
 

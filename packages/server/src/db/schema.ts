@@ -909,7 +909,11 @@ export type SmtpRelaysTable = {
   workspace_id: string;
   label: string;
   enabled: boolean;
-  allow_arbitrary_recipients: boolean;
+  /**
+   * Never enforced and no longer read or written (F-A3b-04); the column keeps
+   * its DEFAULT false until a migration drops it.
+   */
+  allow_arbitrary_recipients: Generated<boolean>;
   max_recipients: number;
   max_message_bytes: number;
   rate_limit_per_min: number;

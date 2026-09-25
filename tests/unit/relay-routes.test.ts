@@ -37,7 +37,6 @@ const relay: SmtpRelayRecord = {
   maxRecipients: 50,
   maxMessageBytes: 26_214_400,
   rateLimitPerMin: 60,
-  allowArbitraryRecipients: false,
   followupWorkflowId: 7,
   createdAt: '2026-07-01T00:00:00.000Z',
   allowedAccounts: [
@@ -299,6 +298,42 @@ describe('smtp relay routes', () => {
         values: { trackingMode: 'off', maxRecipients: 1000 },
       }),
     ]);
+  });
+
+  // F-A3b-04 (E8): allowArbitraryRecipients was stored but never enforced. The
+  // switch is gone from the API; old clients that still send it are not
+  // rejected, the value is simply dropped.
+  test('accepts and ignores the removed allowArbitraryRecipients field', async () => {
+    const creates: unknown[] = [];
+    const updates: unknown[] = [];
+    const api = apiFor(makeRelayPort({
+      async createRelay(input) {
+        creates.push(input.values);
+        return { ok: true, relay: { ...relay, label: input.values.label, allowedAccounts: [], credentials: [] } };
+      },
+      async updateRelay(input) { updates.push(input.values); return { ok: true, relay }; },
+    }));
+
+    const created = await api.handle({
+      method: 'POST',
+      path: '/api/v1/email/relays',
+      principal: admin,
+      body: { label: 'ERP Relay', allowArbitraryRecipients: true },
+    });
+    expect(created.status).toBe(201);
+    expect(creates).toEqual([{ label: 'ERP Relay' }]);
+    expect((created.body as { data: { relay: Record<string, unknown> } }).data.relay).not.toHaveProperty('allowArbitraryRecipients');
+
+    for (const value of [false, true, 'yes', null]) {
+      const updated = await api.handle({
+        method: 'PATCH',
+        path: `/api/v1/email/relays/${RELAY_ID}`,
+        principal: admin,
+        body: { allowArbitraryRecipients: value, maxRecipients: 20 },
+      });
+      expect(updated.status).toBe(200);
+    }
+    expect(updates).toEqual(Array.from({ length: 4 }, () => ({ maxRecipients: 20 })));
   });
 
   test('requires a label when creating a relay', async () => {

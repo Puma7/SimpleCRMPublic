@@ -894,7 +894,6 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     maxRecipients: positiveInt,
     maxMessageBytes: positiveInt,
     rateLimitPerMin: positiveInt,
-    allowArbitraryRecipients: z.boolean(),
     followupWorkflowId: positiveInt.nullable(),
     createdAt: z.string(),
     allowedAccounts: z.array(smtpRelayAllowedAccountSchema),
@@ -908,7 +907,6 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
     maxRecipients: z.number().int().min(1).max(1000).optional(),
     maxMessageBytes: positiveInt.optional(),
     rateLimitPerMin: positiveInt.optional(),
-    allowArbitraryRecipients: z.boolean().optional(),
     followupWorkflowId: positiveInt.nullable().optional(),
   };
   set(IPCChannels.Email.ListSmtpRelays, {
