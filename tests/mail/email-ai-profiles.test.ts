@@ -27,6 +27,7 @@ jest.mock('../../electron/email/email-ai-keytar', () => ({
 
 import { getEmailAiApiKey } from '../../electron/email/email-ai-keytar';
 import {
+  aiProfileMoveNeedsNewApiKey,
   clearAiProfileApiKey,
   createAiProfile,
   deleteAiProfile,
@@ -222,5 +223,31 @@ describe('email-ai-profiles', () => {
     expect(resolved.profileId).toBe(3);
     expect(resolved.apiKey).toBe('profile-key');
     expect(resolved.embeddingModel).toBe('emb-model');
+  });
+
+  // C-A16: Ein Profil mit gespeichertem Key liess sich ohne neuen Key auf einen anderen Host umstellen.
+  test('aiProfileMoveNeedsNewApiKey verlangt einen neuen Key nur bei Host- oder Anbieterwechsel mit gespeichertem Key', async () => {
+    profiles.push({
+      id: 4,
+      label: 'Firma',
+      provider: 'openai',
+      base_url: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      embedding_model: null,
+      keytar_account: 'k4',
+      is_default: 1,
+      sort_order: 0,
+    });
+    (keytar.getPassword as jest.Mock).mockResolvedValue('sk-firma');
+
+    expect(await aiProfileMoveNeedsNewApiKey(4, { baseUrl: 'https://collector.example/v1' })).toBe(true);
+    expect(await aiProfileMoveNeedsNewApiKey(4, { provider: ' OpenRouter ' })).toBe(true);
+    expect(await aiProfileMoveNeedsNewApiKey(4, { baseUrl: 'kein-url', apiKey: ' ' })).toBe(true);
+    expect(await aiProfileMoveNeedsNewApiKey(4, { baseUrl: 'https://collector.example/v1', apiKey: 'sk-neu' })).toBe(false);
+    expect(await aiProfileMoveNeedsNewApiKey(4, { provider: 'OPENAI', baseUrl: 'https://api.openai.com/v2/' })).toBe(false);
+    expect(await aiProfileMoveNeedsNewApiKey(99, { baseUrl: 'https://collector.example/v1' })).toBe(false);
+
+    (keytar.getPassword as jest.Mock).mockResolvedValue(null);
+    expect(await aiProfileMoveNeedsNewApiKey(4, { baseUrl: 'https://collector.example/v1' })).toBe(false);
   });
 });

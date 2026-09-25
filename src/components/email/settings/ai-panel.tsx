@@ -150,9 +150,9 @@ export function AiPanel() {
   }, [load, selectedId, serverClientMode])
 
   const selectedProfile = profiles.find((p) => p.id === selectedId)
-  // The server refuses to move a profile with a stored key to another origin or
-  // provider without a new key, so the stored one never reaches that host.
-  const apiKeyRequired = serverClientMode && selectedProfile?.hasApiKey === true && (
+  // Server and desktop refuse to move a profile with a stored key to another
+  // origin or provider without a new key, so the stored one never reaches that host.
+  const apiKeyRequired = selectedProfile?.hasApiKey === true && (
     provider.trim().toLowerCase() !== selectedProfile.provider.trim().toLowerCase()
     || urlOrigin(baseUrl) !== urlOrigin(selectedProfile.baseUrl)
   )

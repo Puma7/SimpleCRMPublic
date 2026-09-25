@@ -210,6 +210,35 @@ export function updateAiProfile(
     );
 }
 
+function urlOriginOrRaw(value: string): string {
+  try {
+    return new URL(value.trim()).origin;
+  } catch {
+    return value.trim().replace(/\/$/, '');
+  }
+}
+
+/**
+ * The stored API key belongs to the profile, not to a host: every AI call sends
+ * it to the profile's base_url. Moving a profile with a stored key to another
+ * origin or provider without a new key would hand that key to the new server,
+ * so such a move needs a new key (same rule as the server edition, F-A4-02).
+ */
+export async function aiProfileMoveNeedsNewApiKey(
+  id: number,
+  input: { provider?: string; baseUrl?: string; apiKey?: string },
+): Promise<boolean> {
+  if (input.apiKey?.trim()) return false;
+  const current = getAiProfileById(id);
+  if (!current) return false;
+  const providerChanged = input.provider !== undefined
+    && input.provider.trim().toLowerCase() !== current.provider.trim().toLowerCase();
+  const originChanged = input.baseUrl !== undefined
+    && urlOriginOrRaw(input.baseUrl) !== urlOriginOrRaw(current.base_url);
+  if (!providerChanged && !originChanged) return false;
+  return profileHasApiKey(id);
+}
+
 export function deleteAiProfile(id: number): void {
   const row = getAiProfileById(id);
   if (!row) return;

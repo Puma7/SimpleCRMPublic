@@ -196,6 +196,7 @@ import {
 import { saveEmailAiApiKey, deleteEmailAiApiKey } from '../email/email-ai-keytar';
 import {
   AI_PROVIDER_PRESETS,
+  aiProfileMoveNeedsNewApiKey,
   clearAiProfileApiKey,
   createAiProfile,
   deleteAiProfile,
@@ -1833,7 +1834,19 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(IPCChannels.Email.ListAiProfiles, async () => {
       await ensureDefaultAiProfiles();
-      return listAiProfiles();
+      // Zusaetzlich die Felder, die der Server-Client liefert (mapAiProfileRecord):
+      // das KI-Panel liest baseUrl, isDefault und hasApiKey, um bei einem
+      // Hostwechsel einen neuen Key zu verlangen.
+      return Promise.all(
+        listAiProfiles().map(async (p) => ({
+          ...p,
+          baseUrl: p.base_url,
+          embeddingModel: p.embedding_model,
+          isDefault: p.is_default === 1,
+          sortOrder: p.sort_order,
+          hasApiKey: await profileHasApiKey(p.id),
+        })),
+      );
     }, { logger }),
   );
 
@@ -1856,6 +1869,13 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
         await ensureDefaultAiProfiles();
         let profileId = payload.id;
         if (profileId != null && profileId > 0) {
+          // Wie auf dem Server (F-A4-02): der gespeicherte Key geht nie an einen neuen Host.
+          if (await aiProfileMoveNeedsNewApiKey(profileId, payload)) {
+            return {
+              success: false as const,
+              error: 'Zugangsdaten bei Serverwechsel neu eingeben: API-Key erforderlich (Base-URL oder Anbieter geändert)',
+            };
+          }
           updateAiProfile(profileId, {
             label: payload.label,
             provider: payload.provider,
