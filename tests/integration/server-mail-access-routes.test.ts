@@ -1773,6 +1773,73 @@ describe('server mailbox ACL migration', () => {
     ]);
   });
 
+  // F-A11a-04: Der Kontowechsel im Verfasser legte einen neuen Entwurf an; das Umhaengen per PATCH
+  // compose-draft braucht mail.draft.create auf dem Zielkonto wie POST /compose-drafts.
+  test('moving a draft to another account requires mail.draft.create on the target account', async () => {
+    const updateComposeDraft = jest.fn(async () => ({ ok: true as const, message: makeMessageRecord(MESSAGE_A) }));
+    const overrides: Partial<ServerApiPorts> = {
+      emailMessages: {
+        list: async () => ({ items: [], nextCursor: null }),
+        get: async () => null,
+        updateComposeDraft,
+      } as unknown as ServerApiPorts['emailMessages'],
+    };
+    const accountGrant = (accountId: number) => ({
+      resourceType: 'account' as const,
+      accountId,
+      folderId: null,
+      messageId: null,
+    });
+    const path = `/api/v1/email/messages/${MESSAGE_A}/compose-draft`;
+    const editOnDraftAccount = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.edit', [accountGrant(ACCOUNT_A)]],
+      ['mail.draft.create', [accountGrant(ACCOUNT_A)]],
+      ['mail.content.read', [accountGrant(ACCOUNT_A)]],
+    ]);
+
+    const deniedApi = createServerApi(makeHttpPorts({ grants: editOnDraftAccount, overrides }));
+    const denied = await deniedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal(),
+      body: { accountId: ACCOUNT_A_OTHER },
+    });
+    expect(denied.status).toBe(404);
+    const unknown = await deniedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal('owner'),
+      body: { accountId: 999_999 },
+    });
+    expect(unknown.status).toBe(404);
+    expect(updateComposeDraft).not.toHaveBeenCalled();
+
+    const withTargetCreate = new Map(editOnDraftAccount);
+    withTargetCreate.set('mail.draft.create', [accountGrant(ACCOUNT_A), accountGrant(ACCOUNT_A_OTHER)]);
+    const allowedApi = createServerApi(makeHttpPorts({ grants: withTargetCreate, overrides }));
+    const allowed = await allowedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal(),
+      body: { accountId: ACCOUNT_A_OTHER, subject: 'Angebot Mai' },
+    });
+    expect(allowed.status).toBe(200);
+    expect(updateComposeDraft).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: MESSAGE_A,
+      values: expect.objectContaining({ accountId: ACCOUNT_A_OTHER, subject: 'Angebot Mai' }),
+    }));
+
+    const invalid = await allowedApi.handle({
+      method: 'PATCH',
+      path,
+      principal: makePrincipal('owner'),
+      body: { accountId: 'zwei' },
+    });
+    expect(invalid.status).toBeGreaterThanOrEqual(400);
+    expect(invalid.status).toBeLessThan(500);
+    expect(updateComposeDraft).toHaveBeenCalledTimes(1);
+  });
+
   test('denies non-GET mail-scope writes for restricted account, folder, and message grants', async () => {
     const restrictedGrantCases: Array<readonly [
       string,

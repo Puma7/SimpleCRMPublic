@@ -1039,6 +1039,27 @@ async function assertSupplementalHttpPermissions(
     }
   }
 
+  if (canonicalPath === '/api/v1/email/messages/:messageId/compose-draft') {
+    // An accountId moves the draft to that account (composer "Von" switch). The
+    // base mail.draft.edit only covers the draft's current account; placing a
+    // draft in the target account is a draft creation there, so require
+    // mail.draft.create on it exactly like POST /compose-drafts (accountBody).
+    const targetAccountId = optionalPositiveInt(bodyField(req.body, 'accountId'));
+    if (targetAccountId !== undefined) {
+      const target = await ports.mailResourceLookup!.resolve({
+        workspaceId,
+        target: { kind: 'account', id: targetAccountId },
+      });
+      if (target.length !== 1) throw new MailAccessDeniedError();
+      await ports.mailAccess!.assertPermission({
+        workspaceId,
+        actor,
+        permission: 'mail.draft.create',
+        resource: target[0]!,
+      });
+    }
+  }
+
   if (
     canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send'
     || canonicalPath === '/api/v1/email/messages/:messageId/scheduled-send/retry'

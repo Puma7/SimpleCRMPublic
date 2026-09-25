@@ -287,7 +287,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/email/messages/{id}/remote-content-policy': { patch: { summary: 'Update remote content policy' } },
       '/email/messages/{id}/remote-content-policy/consume': { post: { summary: 'Consume one-shot remote content allow' } },
       '/email/messages/{id}/compose-draft': {
-        patch: { summary: 'Update compose draft' },
+        patch: { summary: 'Update compose draft (optional accountId moves it to another account)' },
         delete: { summary: 'Delete compose draft' },
       },
       '/email/messages/{id}/compose-draft-recovery-state': { get: { summary: 'Get compose draft recovery state' } },

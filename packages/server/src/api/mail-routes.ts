@@ -128,6 +128,7 @@ type EmailComposeDraftUpdateParseResult =
   | {
     ok: true;
     values: {
+      accountId?: number;
       subject?: string;
       bodyText?: string;
       bodyHtml?: string | null;
@@ -4049,6 +4050,7 @@ function parseComposeDraftUpdateBody(body: unknown): EmailComposeDraftUpdatePars
   }
   const errors: Array<{ field: string; message: string }> = [];
   const allowedFields = new Set([
+    'accountId',
     'subject',
     'bodyText',
     'bodyHtml',
@@ -4064,6 +4066,14 @@ function parseComposeDraftUpdateBody(body: unknown): EmailComposeDraftUpdatePars
     if (!allowedFields.has(key)) errors.push({ field: key, message: 'Feld ist nicht erlaubt' });
   }
   const values: Partial<Extract<EmailComposeDraftUpdateParseResult, { ok: true }>['values']> = {};
+
+  if (Object.prototype.hasOwnProperty.call(body, 'accountId')) {
+    // Composer "Von" switch: moves the draft; the policy enforcer requires
+    // mail.draft.create on the target account.
+    const parsed = normalizePositiveBodyInt(body.accountId, 'accountId');
+    if (parsed.ok) values.accountId = parsed.value;
+    else errors.push({ field: 'accountId', message: parsed.message });
+  }
 
   assignComposeText(values, errors, body, 'subject', 'subject', 1000);
   assignComposeText(values, errors, body, 'bodyText', 'bodyText', 2_000_000);

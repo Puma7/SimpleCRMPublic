@@ -256,6 +256,77 @@ describe('ComposeDialog: Verfasser-Inhalt bleibt bei Fehlern erhalten', () => {
     expect(channelCalls('email:create-compose-draft')).toHaveLength(1);
   });
 
+  // F-A11a-04: Der Kontowechsel im Modus 'neu' leerte Empfaenger, Betreff, Text und Anhaenge und liess
+  // den Inhalt als verwaisten Entwurf im alten Konto zurueck.
+  test('Kontowechsel haengt den Entwurf um und tauscht nur Konto und Signatur', async () => {
+    mockInvoke.mockImplementation((channel: string, payload?: unknown) => (
+      channel === 'email:get-compose-signature'
+        ? Promise.resolve({ html: `<p>Gruss aus Konto ${(payload as { accountId: number }).accountId}</p>` })
+        : defaultInvoke(channel, payload)
+    ));
+    await renderReadyCompose();
+    mockUpload.mockResolvedValueOnce({ path: 'ws/compose-drafts/42/a.pdf' });
+    dropFiles([new File(['a'], 'a.pdf', { type: 'application/pdf' })]);
+    await waitFor(() => expect(mockToastSuccess).toHaveBeenCalledWith('Anhang hochgeladen'));
+    fireEvent.change(screen.getByPlaceholderText('empfänger@example.com'), { target: { value: 'kunde@firma.de' } });
+    fireEvent.change(screen.getByLabelText('Betreff'), { target: { value: 'Angebot Mai' } });
+    fireEvent.change(screen.getByLabelText('Nachricht'), { target: { value: '<p>Hallo Frau Muster</p>' } });
+
+    fireEvent.change(screen.getByDisplayValue('Service'), { target: { value: '2' } });
+
+    await waitFor(() => expect(channelCalls('email:update-compose-draft')).toContainEqual([
+      'email:update-compose-draft',
+      { messageId: 42, accountId: 2 },
+    ]));
+    await waitFor(() => expect(screen.getByDisplayValue('Vertrieb')).toBeInTheDocument());
+    expect(channelCalls('email:create-compose-draft')).toHaveLength(1);
+    expect(screen.getByPlaceholderText('empfänger@example.com')).toHaveValue('kunde@firma.de');
+    expect(screen.getByLabelText('Betreff')).toHaveValue('Angebot Mai');
+    expect(screen.getByLabelText('Nachricht')).toHaveValue('<p>Hallo Frau Muster</p>');
+
+    await waitFor(() => expect(channelCalls('email:get-compose-signature')).toContainEqual([
+      'email:get-compose-signature',
+      expect.objectContaining({ accountId: 2 }),
+    ]));
+    fireEvent.click(screen.getByRole('button', { name: 'Senden' }));
+    await waitFor(() => expect(channelCalls('email:send-compose')).toHaveLength(1));
+    const sent = channelCalls('email:send-compose')[0]![1] as {
+      accountId: number;
+      draftMessageId: number;
+      bodyHtml: string;
+      attachmentPaths: string[];
+    };
+    expect(sent).toEqual(expect.objectContaining({
+      accountId: 2,
+      draftMessageId: 42,
+      subject: 'Angebot Mai',
+      to: 'kunde@firma.de',
+      attachmentPaths: ['ws/compose-drafts/42/a.pdf'],
+    }));
+    expect(sent.bodyHtml).toContain('Hallo Frau Muster');
+    expect(sent.bodyHtml).toContain('Gruss aus Konto 2');
+    expect(sent.bodyHtml).not.toContain('Gruss aus Konto 1');
+  });
+
+  test('Kontowechsel bricht ab, wenn der Entwurf nicht umgehaengt werden kann', async () => {
+    await renderReadyCompose();
+    fireEvent.change(screen.getByLabelText('Betreff'), { target: { value: 'Angebot Mai' } });
+    updateComposeDraftImpl = (payload) => (
+      payload.accountId === undefined
+        ? Promise.resolve({ success: true })
+        : Promise.reject(new Error('Kein Zugriff auf dieses Konto'))
+    );
+
+    fireEvent.change(screen.getByDisplayValue('Service'), { target: { value: '2' } });
+
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith(
+      'Das Konto konnte nicht gewechselt werden. Der Entwurf bleibt im bisherigen Konto.',
+    ));
+    expect(screen.getByDisplayValue('Service')).toBeInTheDocument();
+    expect(screen.getByLabelText('Betreff')).toHaveValue('Angebot Mai');
+    expect(channelCalls('email:create-compose-draft')).toHaveLength(1);
+  });
+
   // F-A11a-02: Parallele Uploads bildeten die Pfadliste aus demselben veralteten Stand und verwarfen einen Anhang.
   test('zwei parallel hochgeladene Anhaenge bleiben beide im Entwurf', async () => {
     await renderReadyCompose();

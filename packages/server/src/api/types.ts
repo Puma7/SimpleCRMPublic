@@ -2494,6 +2494,8 @@ export type EmailComposeDraftCreateInput = {
 };
 
 export type EmailComposeDraftUpdateInput = {
+  /** Moves the local draft to this account (composer "Von" switch); id and attachments stay. */
+  accountId?: number;
   subject?: string;
   bodyText?: string;
   bodyHtml?: string | null;

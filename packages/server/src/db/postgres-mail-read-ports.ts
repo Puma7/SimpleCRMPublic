@@ -1277,6 +1277,31 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
           if (!isLocalDraftUid(current)) return { ok: false as const, reason: 'not_local_draft' as const };
           const claimedConflict = await assertNoActiveScheduledSendClaimTx(trx, input.workspaceId, input.messageId);
           if (claimedConflict) return claimedConflict;
+          // Composer "Von" switch: move the draft (same id, so draft-local uploads
+          // under compose-drafts/<id>/ stay valid) into the target account's draft folder.
+          let accountMove: {
+            account_id: number;
+            account_source_sqlite_id: number;
+            folder_id: number;
+            folder_source_sqlite_id: number;
+            uid: number;
+            from_json: ReturnType<typeof composeDraftFromJson>;
+          } | undefined;
+          if (input.values.accountId !== undefined) {
+            const account = await selectEmailAccountByPublicId(trx, input.workspaceId, input.values.accountId);
+            if (!account) return { ok: false as const, reason: 'account_not_found' as const };
+            if (Number(account.id) !== Number(current.account_id)) {
+              const folder = await ensureServerComposeDraftFolder(trx, input.workspaceId, account);
+              accountMove = {
+                account_id: Number(account.id),
+                account_source_sqlite_id: Number(account.source_sqlite_id),
+                folder_id: Number(folder.id),
+                folder_source_sqlite_id: Number(folder.source_sqlite_id),
+                uid: await nextLocalDraftUid(trx, input.workspaceId, Number(account.id), Number(folder.id)),
+                from_json: composeDraftFromJson(account),
+              };
+            }
+          }
           if (input.values.draftAttachmentPaths !== undefined) {
             const kept = new Set(input.values.draftAttachmentPaths.map((value) => value.trim()));
             droppedAttachmentPaths = composeDraftAttachmentPathsFromStored(current.draft_attachment_paths_json)
@@ -1300,13 +1325,15 @@ export function createPostgresEmailMessageReadPort(options: PostgresMailReadPort
             || input.values.toJson !== undefined
             || input.values.ccJson !== undefined
             || input.values.bccJson !== undefined
-            || input.values.draftAttachmentPaths !== undefined;
+            || input.values.draftAttachmentPaths !== undefined
+            || accountMove !== undefined;
           const composeDraftUpdate = trx
             .updateTable('email_messages')
             .set({
               subject: input.values.subject ?? current.subject,
               body_text: bodyText,
               snippet,
+              ...(accountMove ?? {}),
               ...(input.values.bodyHtml === undefined ? {} : { body_html: input.values.bodyHtml }),
               ...(input.values.toJson === undefined ? {} : { to_json: input.values.toJson }),
               ...(input.values.fromJson === undefined ? {} : { from_json: input.values.fromJson }),
@@ -4891,14 +4918,7 @@ export async function createPostgresComposeDraftInTransaction(
       in_reply_to: null,
       references_header: null,
       subject: input.values.subject ?? '(Entwurf)',
-      from_json: addressJson({
-        value: [{
-          address: String(account.email_address).trim(),
-          ...(String(account.display_name ?? '').trim()
-            ? { name: String(account.display_name).trim() }
-            : {}),
-        }],
-      }),
+      from_json: composeDraftFromJson(account),
       to_json: input.values.toJson ?? null,
       cc_json: null,
       bcc_json: null,
@@ -4946,6 +4966,17 @@ export async function createPostgresComposeDraftInTransaction(
     .returning(emailMessageDetailColumns)
     .executeTakeFirstOrThrow();
   return { ok: true as const, message: mapEmailMessageRow(row, true) };
+}
+
+function composeDraftFromJson(account: Pick<EmailAccountRow, 'email_address' | 'display_name'>) {
+  return addressJson({
+    value: [{
+      address: String(account.email_address).trim(),
+      ...(String(account.display_name ?? '').trim()
+        ? { name: String(account.display_name).trim() }
+        : {}),
+    }],
+  });
 }
 
 async function ensureServerComposeDraftFolder(

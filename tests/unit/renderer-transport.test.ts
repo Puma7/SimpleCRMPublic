@@ -4367,6 +4367,24 @@ describe('renderer transport', () => {
     );
   });
 
+  // F-A11a-04: Der Kontowechsel im Verfasser haengt den Entwurf per PATCH compose-draft um.
+  test('maps the compose draft account move to the PATCH body', async () => {
+    const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({ data: { success: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.UpdateComposeDraft, {
+      messageId: 44,
+      accountId: 8,
+    })).resolves.toEqual({ success: true });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://crm.example.com/api/v1/email/messages/44/compose-draft',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ accountId: 8 }) }),
+    );
+  });
+
   test('uploads server-client compose attachments through the HTTP transport', async () => {
     const fetchImpl = jest.fn().mockResolvedValue({
       ok: true,

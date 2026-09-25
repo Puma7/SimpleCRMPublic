@@ -331,7 +331,7 @@ Implemented foundation:
   - `DELETE /api/v1/email/message-categories/:id`
   - `GET /api/v1/email/messages`
   - `GET /api/v1/email/messages/:id`
-  - `PATCH /api/v1/email/messages/:id/compose-draft`
+  - `PATCH /api/v1/email/messages/:id/compose-draft` (optional `accountId`: haengt den lokalen Entwurf samt Anhaengen in ein anderes Konto um, verlangt `mail.draft.create` auf dem Zielkonto; Kontowechsel im Verfasser)
   - `GET /api/v1/email/messages/:id/compose-draft-recovery-state`
   - `GET /api/v1/email/messages/:id/read-receipt-state`
   - `POST /api/v1/email/messages/:id/read-receipt-response`

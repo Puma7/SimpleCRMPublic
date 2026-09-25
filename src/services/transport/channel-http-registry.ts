@@ -5556,6 +5556,7 @@ function mapComposeDraftCreatePayload(value: Record<string, any>): Record<string
 
 function mapComposeDraftUpdatePayload(value: Record<string, any>): Record<string, unknown> {
   return pruneUndefined({
+    accountId: value.accountId === undefined ? undefined : positiveId(value.accountId, "email account id"),
     subject: value.subject === undefined ? undefined : composeTextValue(value.subject, "compose subject", 1000),
     bodyText: value.bodyText === undefined ? undefined : composeTextValue(value.bodyText, "compose body", 2_000_000),
     bodyHtml: value.bodyHtml === undefined ? undefined : composeTextValue(value.bodyHtml, "compose html", 2_000_000),

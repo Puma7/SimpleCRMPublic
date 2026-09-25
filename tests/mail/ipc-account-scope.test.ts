@@ -82,6 +82,13 @@ describe('resolveEmailChannelAccountId', () => {
     expect(resolveEmailChannelAccountId('email:get-message', { id: 5 })).toBeUndefined();
   });
 
+  // F-A11a-04: Mit dem neuen Umhaengen per accountId haette das Gate nur noch das Zielkonto geprueft.
+  it('gates update-compose-draft on the draft account, not on the move target', () => {
+    mockGetMessage.mockReturnValue({ account_id: 3 } as never);
+    expect(resolveEmailChannelAccountId('email:update-compose-draft', { messageId: 10, accountId: 7 })).toBe(3);
+    expect(mockGetMessage).toHaveBeenCalledWith(10);
+  });
+
   it('resolves accountId from object payload on scoped channels', () => {
     expect(
       resolveEmailChannelAccountId('email:send-message', { accountId: 2, messageId: 10 }),

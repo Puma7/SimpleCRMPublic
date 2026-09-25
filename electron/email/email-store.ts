@@ -1828,6 +1828,16 @@ export function setOutboundHold(messageId: number, hold: boolean, reason: string
     .run(hold ? 1 : 0, reason, messageId);
 }
 
+function nextLocalDraftUid(accountId: number, folderId: number): number {
+  const minRow = getDb()
+    .prepare(
+      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
+       WHERE account_id = ? AND folder_id = ? AND uid < 0 AND uid > ?`,
+    )
+    .get(accountId, folderId, POP3_UID_CEILING) as { m: number | null };
+  return minRow.m != null ? minRow.m - 1 : -1;
+}
+
 /** Negative IMAP UID: local compose draft only, never from server sync. */
 export function createComposeDraft(input: {
   accountId: number;
@@ -1841,13 +1851,7 @@ export function createComposeDraft(input: {
   const fromJson = acc?.email_address
     ? senderJsonFromMailbox(acc.email_address, acc.display_name)
     : null;
-  const minRow = getDb()
-    .prepare(
-      `SELECT MIN(uid) as m FROM ${EMAIL_MESSAGES_TABLE}
-       WHERE account_id = ? AND folder_id = ? AND uid < 0 AND uid > ?`,
-    )
-    .get(input.accountId, folder.id, POP3_UID_CEILING) as { m: number | null };
-  const uid = minRow.m != null ? minRow.m - 1 : -1;
+  const uid = nextLocalDraftUid(input.accountId, folder.id);
   const { id } = insertOrUpdateEmailMessage({
     accountId: input.accountId,
     folderId: folder.id,
@@ -2078,6 +2082,8 @@ export function markDraftAsSent(draftMessageId: number): void {
 export function updateComposeDraft(
   messageId: number,
   input: {
+    /** Moves the draft to this account (composer "Von" switch); id and attachments stay. */
+    accountId?: number;
     subject?: string;
     bodyText?: string;
     bodyHtml?: string | null;
@@ -2113,6 +2119,19 @@ export function updateComposeDraft(
     sets.push('reply_parent_message_id = ?');
     vals.push(input.replyParentMessageId);
   }
+  let accountMoved = false;
+  if (input.accountId !== undefined && input.accountId !== row.account_id) {
+    const account = getEmailAccountById(input.accountId);
+    if (!account) throw new Error('E-Mail-Konto nicht gefunden');
+    const folder = ensureInboxFolderForAccount(input.accountId);
+    sets.push('account_id = ?', 'folder_id = ?', 'uid = ?');
+    vals.push(input.accountId, folder.id, nextLocalDraftUid(input.accountId, folder.id));
+    if (input.fromJson === undefined) {
+      sets.push('from_json = ?');
+      vals.push(account.email_address ? senderJsonFromMailbox(account.email_address, account.display_name) : null);
+    }
+    accountMoved = true;
+  }
   // Inhaltliche Änderung entwertet die KI-Freigabe-Empfehlung — der
   // "Wartet auf Freigabe"-Zustand bezieht sich auf den geprüften Stand.
   // Auch der RFC-3834-Marker fällt: eine vom Menschen umgeschriebene Antwort
@@ -2125,7 +2144,8 @@ export function updateComposeDraft(
     input.toJson !== undefined ||
     input.ccJson !== undefined ||
     input.bccJson !== undefined ||
-    input.draftAttachmentPaths !== undefined;
+    input.draftAttachmentPaths !== undefined ||
+    accountMoved;
   if (contentEdited) {
     sets.push('approval_state = NULL', 'approval_reason = NULL', 'auto_submitted = 0');
   }

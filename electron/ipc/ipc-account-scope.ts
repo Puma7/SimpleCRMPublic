@@ -130,6 +130,13 @@ export function resolveEmailChannelAccountId(channel: string, payload: unknown):
     return messageId ? getEmailMessageById(messageId)?.account_id : undefined;
   }
 
+  // The draft is named by messageId; an optional accountId is the move target,
+  // which the handler checks separately. Gate on the draft's current account.
+  if (channel === 'email:update-compose-draft') {
+    const messageId = messageIdFromObject(payload);
+    return messageId ? getEmailMessageById(messageId)?.account_id : undefined;
+  }
+
   if (channel === 'email:update-account' || channel === 'email:delete-account') {
     const o = payload as { id?: unknown };
     if (typeof o?.id === 'number' && Number.isInteger(o.id) && o.id > 0) return o.id;

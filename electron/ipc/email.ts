@@ -698,9 +698,10 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
     registerIpcHandler(
       IPCChannels.Email.UpdateComposeDraft,
       async (
-        _event: IpcMainInvokeEvent,
+        event: IpcMainInvokeEvent,
         payload: {
           messageId: number;
+          accountId?: number;
           subject?: string;
           bodyText?: string;
           bodyHtml?: string;
@@ -712,6 +713,12 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           markReplyParentDone?: boolean;
         },
       ) => {
+        // Moving the draft (composer "Von" switch) places it in the target account:
+        // require the same access there as CreateComposeDraft. The IPC gate already
+        // checked the draft's current account (ipc-account-scope).
+        if (payload.accountId !== undefined && !canAccessEmailAccount(event, payload.accountId, 'ro')) {
+          throw new Error('Kein Zugriff auf dieses Konto');
+        }
         const toJson =
           payload.to !== undefined
             ? payload.to.trim()
@@ -731,6 +738,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
               : null
             : undefined;
         updateComposeDraft(payload.messageId, {
+          accountId: payload.accountId,
           subject: payload.subject,
           bodyText: payload.bodyText,
           bodyHtml: payload.bodyHtml,

@@ -1047,6 +1047,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
   set(IPCChannels.Email.UpdateComposeDraft, {
     payload: z.object({
       messageId: positiveInt,
+      /** Moves the local draft to this account (composer "Von" switch). */
+      accountId: positiveInt.optional(),
       subject: z.string().optional(),
       bodyText: z.string().optional(),
       bodyHtml: z.string().optional(),

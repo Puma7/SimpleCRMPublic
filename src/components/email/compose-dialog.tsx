@@ -831,18 +831,21 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
 
   const getEditorHtml = getFullComposeHtml
 
-  const reloadComposeSignature = useCallback(async (teamMemberId = composeTeamMemberId) => {
-    if (!isOpen || composeAccountId == null || composeIntent.mode === "forward") return
+  const reloadComposeSignature = useCallback(async (
+    teamMemberId = composeTeamMemberId,
+    accountId = composeAccountId,
+  ) => {
+    if (!isOpen || accountId == null || composeIntent.mode === "forward") return
     const requestId = ++signatureRequestRef.current
     try {
       const sigRes = await invokeRenderer(
         IPCChannels.Email.GetComposeSignature,
         {
-          accountId: composeAccountId,
+          accountId,
           ...(teamMemberId ? { teamMemberId } : {}),
         },
       ) as { html: string | null }
-      const ownSigHtml = await fetchOwnSignatureHtml(composeAccountId)
+      const ownSigHtml = await fetchOwnSignatureHtml(accountId)
       const baseSigHtml = ownSigHtml ?? sigRes.html
       const sourceMsg = getComposeSourceMessage(composeIntent)
       let customerForSig: CustomerOpt | null = null
@@ -857,7 +860,7 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
           customerForSig = null
         }
       }
-      const accountRow = accounts.find((a) => a.id === composeAccountId)
+      const accountRow = accounts.find((a) => a.id === accountId)
       const selectedTeamMember = teamMembers.find((member) => member.id === teamMemberId)
       const sigRaw = baseSigHtml
         ? interpolateSignatureTemplate(baseSigHtml, buildSignatureTemplateContext({
@@ -1976,10 +1979,37 @@ export function ComposeDialog({ accounts, teamMembers, cannedList, aiPrompts, on
                       toast.error("Entwurf konnte nicht gespeichert werden. Das Konto wurde nicht gewechselt.")
                       return
                     }
-                    initialisedDraftKeyRef.current = null
-                    setDraftId(null)
+                    if (draftId == null) {
+                      initialisedDraftKeyRef.current = null
+                      setComposeAccountId(id)
+                      setDraftBootstrapGen((g) => g + 1)
+                      return
+                    }
+                    // Den Entwurf umhaengen statt neu anlegen: Empfaenger, Text und
+                    // Anhaenge bleiben, nur Konto und Signatur wechseln.
+                    try {
+                      await invokeRenderer(IPCChannels.Email.UpdateComposeDraft, {
+                        messageId: draftId,
+                        accountId: id,
+                      })
+                    } catch (e) {
+                      logError("compose-dialog: move draft to account", e)
+                      toast.error("Das Konto konnte nicht gewechselt werden. Der Entwurf bleibt im bisherigen Konto.")
+                      return
+                    }
+                    initialisedDraftKeyRef.current = buildComposeDraftInitKey(composeIntent, id, draftBootstrapGen)
                     setComposeAccountId(id)
-                    setDraftBootstrapGen((g) => g + 1)
+                    setComposeSession(
+                      buildComposeSessionSnapshot(
+                        composeIntent,
+                        id,
+                        draftId,
+                        replyToId,
+                        { keepReplyOpenInInbox, pgpEncrypt, pgpSign },
+                      ),
+                    )
+                    setSignatureEditing(false)
+                    await reloadComposeSignature(composeTeamMemberId, id)
                   })()
                 }}
               >
