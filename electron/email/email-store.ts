@@ -32,6 +32,7 @@ import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from '../../shared/signature-template';
+import { escapeHtmlText } from '../../shared/compose-body';
 
 export type EmailAccountRow = {
   id: number;
@@ -456,12 +457,12 @@ function getTeamFallbackSignatureHtml(teamMemberId?: string | null): string | nu
     : undefined;
   if (selected?.signature_html?.trim()) return selected.signature_html.trim();
   if (selected) {
-    return `<p>Mit freundlichen Grüßen<br/>${selected.display_name}</p>`;
+    return `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(selected.display_name)}</p>`;
   }
   const withSig = rows.find((r) => r.signature_html?.trim());
   if (withSig?.signature_html) return withSig.signature_html.trim();
   if (rows.length > 0) {
-    return `<p>Mit freundlichen Grüßen<br/>${rows[0]!.display_name}</p>`;
+    return `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(rows[0]!.display_name)}</p>`;
   }
   return null;
 }
@@ -498,7 +499,7 @@ export function getComposeSignatureHtml(accountId: number, teamMemberId?: string
   } else {
     const teamFallback = getTeamFallbackSignatureHtml(teamMemberId);
     if (teamFallback) rawHtml = teamFallback;
-    else rawHtml = `<p>Mit freundlichen Grüßen<br/>${acc.display_name}</p>`;
+    else rawHtml = `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(acc.display_name)}</p>`;
   }
   if (!rawHtml.includes('{{')) return rawHtml;
   const teamMembers = listEmailTeamMembers();

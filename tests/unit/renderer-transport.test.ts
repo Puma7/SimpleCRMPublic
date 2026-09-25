@@ -8903,6 +8903,43 @@ describe('renderer transport', () => {
     );
   });
 
+  // F-N-fe-02: Die Fallback-Signatur setzte Team- und Kontonamen roh ins HTML; ein Name mit <img>/<a> wurde wirksames Markup.
+  test('GetComposeSignature escapes display names in the fallback signatures', async () => {
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 'agent-1', displayName: 'Anna <img src="https://x.example/p.png">', signatureHtml: null }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: 'Shop', emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))
+      .mockResolvedValueOnce(jsonResponse({
+        data: {
+          items: [{ id: 7, displayName: "Shop & O'Neil <b>", emailAddress: 'shop@example.com' }],
+          nextCursor: null,
+        },
+      }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, { accountId: 7 })).resolves.toEqual({
+      html: '<p>Mit freundlichen Grüßen<br/>Anna &lt;img src=&quot;https://x.example/p.png&quot;&gt;</p>',
+    });
+    await expect(transport.invoke(IPCChannels.Email.GetComposeSignature, { accountId: 7 })).resolves.toEqual({
+      html: '<p>Mit freundlichen Grüßen<br/>Shop &amp; O&#39;Neil &lt;b&gt;</p>',
+    });
+  });
+
   test('GetComposeSignature selects the requested team member fallback', async () => {
     const fetchImpl = jest.fn()
       .mockResolvedValueOnce(jsonResponse({ data: { items: [], nextCursor: null } }))

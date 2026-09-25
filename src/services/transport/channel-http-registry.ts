@@ -9,6 +9,7 @@ import {
   buildSignatureTemplateContext,
   interpolateSignatureTemplate,
 } from "@shared/signature-template"
+import { escapeHtmlText } from "@shared/compose-body"
 import { RendererTransportError } from "./renderer-transport"
 import {
   accountOverrideScopeFromPayload,
@@ -3201,7 +3202,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
           if (fallbackTeamMember?.signatureHtml?.trim()) {
             rawHtml = fallbackTeamMember.signatureHtml.trim()
           } else if (fallbackTeamMember?.displayName?.trim()) {
-            rawHtml = `<p>Mit freundlichen Grüßen<br/>${fallbackTeamMember.displayName}</p>`
+            rawHtml = `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(fallbackTeamMember.displayName)}</p>`
           }
         }
         const accountsBody = await context.fetchJson({
@@ -3212,7 +3213,7 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
           .map(mapEmailAccountRecord)
           .find((row) => row.id === accountId)
         if (!rawHtml && account?.display_name?.trim()) {
-          rawHtml = `<p>Mit freundlichen Grüßen<br/>${account.display_name}</p>`
+          rawHtml = `<p>Mit freundlichen Grüßen<br/>${escapeHtmlText(account.display_name)}</p>`
         }
         if (!rawHtml) return { html: null }
         if (!rawHtml.includes('{{')) return { html: rawHtml }

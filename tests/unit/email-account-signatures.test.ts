@@ -97,6 +97,30 @@ describe('email account signatures', () => {
     expect(getComposeSignatureHtml(account.id)).toContain('Shop Nord');
   });
 
+  // F-N-fe-02: Die Fallback-Signatur setzte display_name roh ins HTML; ein Team- oder Kontoname mit <img>/<a> wurde wirksames Markup.
+  it('escapes display names in the fallback signatures', () => {
+    teamMembers = [
+      { id: 'team-1', display_name: 'Anna <img src="https://x.example/p.png">', role: '', signature_html: null },
+      { id: 'team-2', display_name: "Ben & O'Neil <b>", role: '', signature_html: null },
+    ];
+    expect(getComposeSignatureHtml(account.id, 'team-2')).toBe(
+      '<p>Mit freundlichen Grüßen<br/>Ben &amp; O&#39;Neil &lt;b&gt;</p>',
+    );
+    expect(getComposeSignatureHtml(account.id)).toBe(
+      '<p>Mit freundlichen Grüßen<br/>Anna &lt;img src=&quot;https://x.example/p.png&quot;&gt;</p>',
+    );
+    teamMembers = [];
+    const originalName = account.display_name;
+    account.display_name = 'Shop <a href="https://evil.example">Nord</a>';
+    try {
+      expect(getComposeSignatureHtml(account.id)).toBe(
+        '<p>Mit freundlichen Grüßen<br/>Shop &lt;a href=&quot;https://evil.example&quot;&gt;Nord&lt;/a&gt;</p>',
+      );
+    } finally {
+      account.display_name = originalName;
+    }
+  });
+
   it('saveAccountSignature clears row when html is empty', () => {
     const { getDb } = jest.requireMock('../../electron/sqlite-service') as {
       getDb: () => { prepare: jest.Mock };
