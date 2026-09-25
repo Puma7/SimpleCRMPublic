@@ -242,6 +242,23 @@ export function saveLocalAuthUser(payload: SaveLocalAuthUserInput): AuthMutation
   const db = requireLocalAuthDb();
   const now = new Date().toISOString();
   if (payload.id) {
+    // Wie beim Loeschen und auf dem Server (last_owner_required): ohne aktiven
+    // Owner waeren Restore und Hard-Reset fuer niemanden mehr erreichbar.
+    const target = db
+      .prepare(`SELECT role FROM ${USERS_TABLE} WHERE id = ?`)
+      .get(payload.id) as { role: string } | undefined;
+    if (target?.role === 'owner' && (payload.role !== 'owner' || payload.isActive === false)) {
+      const otherOwners = (
+        db
+          .prepare(
+            `SELECT COUNT(*) AS c FROM ${USERS_TABLE} WHERE role = 'owner' AND is_active = 1 AND id != ?`,
+          )
+          .get(payload.id) as { c: number }
+      ).c;
+      if (otherOwners === 0) {
+        return { success: false, error: 'Mindestens ein aktiver Eigentümer muss bestehen bleiben' };
+      }
+    }
     const sets = ['display_name = ?', 'role = ?', 'is_active = ?'];
     const vals: unknown[] = [payload.displayName, payload.role, payload.isActive === false ? 0 : 1];
     if (payload.passphrase) {
