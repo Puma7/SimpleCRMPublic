@@ -3,7 +3,7 @@
 **Stand:** 2026-09-25
 **Basis:** `main` @ `134b808` (Merge #191), keine offenen PRs oder Issues
 **Arbeitsbranch:** `claude/jolly-cerf-hkvznl`
-**Status:** Phase 0–2 abgeschlossen; Phase 3 (Falsifikation) und Phase 4 (Fixes) laufen – Stand im Befundregister `findings.md`
+**Status:** Phase 0–4 abgeschlossen, Phase 5: Gates grün und Doku aktualisiert, PR folgt – Ergebnis in `abschlussbericht.md`, offene Entscheidungen in `freigabeliste-2.md`, Belege je Befund in `findings.md`
 
 ---
 

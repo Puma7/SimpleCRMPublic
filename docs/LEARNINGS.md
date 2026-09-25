@@ -29,6 +29,12 @@ Short, durable facts discovered during implementation. **Read before refactoring
 8. **Electron E2E** — use `launchAuthenticatedElectron` so suites get a temporary standalone profile, complete first-run authentication, and never depend on the developer's local account or database. The Chromium sandbox is the default; `SIMPLECRM_E2E_NO_SANDBOX=1` is only a local diagnostic fallback. CI stores Playwright artifacts and `test-results/electron-logs`.
 9. **Secrets** — Keytar / env, never commit API keys or mail passwords.
 10. **German UI** — user-facing strings in German; docs may be EN/DE mixed.
+11. **Embedded Postgres tests** — `initdb` refuses root; run `tests/integration/postgres-*` as a non-root user. Migrations must work under FORCE RLS as the non-superuser app role (helper `startMigratedEmbeddedPostgres`); a data backfill without `set_config` workspace context silently updates nothing (see migration 0053).
+12. **Secrets bound to endpoints** — changing a stored host/port/TLS (mail, MSSQL test) or an AI `baseUrl`/provider must require re-entering the secret server-side, otherwise the stored credential is sent to an attacker-chosen host.
+13. **Untrusted HTML/regex** — never strip HTML with backtracking regexes (`/<[^>]+>/`, `<style[\s\S]*?</style>`) on mail content; use the linear helpers in `packages/core/src/email/parse-utils.ts` (`plainTextFromHtml`, `stripHtmlTagsToText`, `replaceElementBlocks`). Insert user values with callback replacements so `$&`/`$'` are not patterns, and interpolate placeholders in a single pass.
+14. **Archive/parse differentials** — guard ZIP bombs with the same parser that later reads the file (JSZip for mammoth); yauzl can be shown different entries. mailparser `headerLines` are `{key,line}` objects — join `.line`.
+15. **Module cycles** — class exports in modules that sit in an import cycle (e.g. `electron/sqlite-service.ts`) are in the temporal dead zone during load and break `{ ...jest.requireActual() }` mocks; put error classes in their own module.
+16. **Operator scripts** — `docker/simplecrm`, `update.sh` and `restore-compose.sh` accept a `:`-separated `COMPOSE_FILE`; the SMTP relay override must be listed there or updates recreate the API without relay ports. `TRUST_PROXY` must be `uniquelocal`/CIDR, Fastify ≥ 5.12 ignores hop counts.
 9. **Ist-stand vs vision** — `WORKFLOW_PHASES.md` = implemented; `WORKFLOW_VISION.md` = long-term (many 🔲 are already done).
 
 ---

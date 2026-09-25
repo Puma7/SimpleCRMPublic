@@ -1,9 +1,9 @@
 # Agent handoff — SimpleCRM (E-Mail & Workflows)
 
-**Last updated:** 2026-07-26 (Workflow-Semantik Wellen 1–4 + Multinutzer-Server-Audit)
+**Last updated:** 2026-09-25 (Sicherheits- und Bug-Audit 2026-09, Branch `claude/jolly-cerf-hkvznl`)
 **Integration branch:** `cursor/workflow-system-improvements-07bc`
 **Start docs:** [`PRODUCT_REQUIREMENTS.md`](PRODUCT_REQUIREMENTS.md) · [`INDEX.md`](INDEX.md)
-**Current audit:** [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) (Workflow-Wellen); Multinutzer-Server: [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md); Mail/UX: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
+**Current audit:** [`.hermes/reports/audit-2026-09/abschlussbericht.md`](../.hermes/reports/audit-2026-09/abschlussbericht.md) (Register `findings.md`, offene Entscheidungen `freigabeliste-2.md`); earlier: [`.hermes/reports/workflow-waves-plan-audit-2026-07-26.md`](../.hermes/reports/workflow-waves-plan-audit-2026-07-26.md) (Workflow-Wellen); Multinutzer-Server: [`.hermes/reports/server-multiuser-system-audit-2026-07-26.md`](../.hermes/reports/server-multiuser-system-audit-2026-07-26.md); Mail/UX: [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md)
 
 ---
 
@@ -62,6 +62,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | E-Mail-Evidenz | Server-only, standardmäßig aus; SMTP/DSN/MDN/Pixel/Klick/Antwort als getrennte Signale mit Retention und Workflow-Variablen |
 | CRM-Aufgaben | Server und Desktop liefern `customerName`/`customer_name` mit Fallback Name → Vorname → Firma sowie `customerCompany`/`customer_company`; Aufgaben und Wiedervorlagen sind nach Firmen durchsuchbar |
 | Aufgaben/Kalender | `calendar_events.task_id` ist die kanonische 1:1-Verknuepfung; Erstellen, Verschieben, Entkoppeln und Loeschen laufen in PostgreSQL und SQLite atomar |
+| Audit 2026-09 | 196 Kandidaten → 137 behoben (je roter Regressionstest), 11 teilweise, 14 warten auf Entscheidung (`freigabeliste-2.md`); neue Migrationen 0052 (JTL-Schlüssel eindeutig) und 0053 (Aufgaben-Backfill); API-Container läuft als `node`; siehe Abschlussbericht |
 
 ---
 
@@ -92,6 +93,7 @@ Windows dev vs packaged: see [`MAIL_SINGLE_USER_LIMITS.md`](MAIL_SINGLE_USER_LIM
 | Settings: Konto-Overrides UI (Prompts/Canned/KB) | ✅ siehe `BACKLOG.md` |
 | IMAP multi-folder sync | `EMAIL_ROADMAP.md` |
 | Embeddings RAG | `WORKFLOW_VISION.md` (vision, not all 🔲 = todo) |
+| Audit 2026-09: offene Entscheidungen E1–E42 | [`.hermes/reports/audit-2026-09/freigabeliste-2.md`](../.hermes/reports/audit-2026-09/freigabeliste-2.md) |
 | Beta security and reliability audit | Code-Maßnahmen abgeschlossen; externe Release-Abnahmen siehe [`.hermes/reports/system-mail-ux-security-audit.md`](../.hermes/reports/system-mail-ux-security-audit.md), Abschnitt 6 |
 
 **Do not merge** stale branch `cursor/mail-category-dnd-and-ux-d125` (pre-main compose regressions).
