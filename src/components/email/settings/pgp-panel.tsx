@@ -30,6 +30,11 @@ type PeerKey = {
   source: string
 }
 
+/** Older imports stored the user-id object ('[object Object]') instead of the e-mail. */
+function peerKeyNeedsReimport(email: string): boolean {
+  return !email.includes("@")
+}
+
 export function PgpPanel() {
   const [identities, setIdentities] = useState<Identity[]>([])
   const [peers, setPeers] = useState<PeerKey[]>([])
@@ -230,9 +235,15 @@ export function PgpPanel() {
         <ul className="divide-y text-sm">
           {peers.map((p) => (
             <li key={p.id} className="flex items-center justify-between py-2">
-              <span>
-                {p.email} <span className="text-muted-foreground">({p.trust_level})</span>
-              </span>
+              {peerKeyNeedsReimport(p.email) ? (
+                <span className="text-destructive">
+                  Schlüssel {p.fingerprint.slice(0, 16)}… ohne E-Mail gespeichert – bitte neu importieren
+                </span>
+              ) : (
+                <span>
+                  {p.email} <span className="text-muted-foreground">({p.trust_level})</span>
+                </span>
+              )}
               <Button
                 type="button"
                 size="sm"

@@ -45,6 +45,26 @@ export async function listPgpIdentities(userId: string = LOCAL_OWNER_USER_ID) {
     .all(userId);
 }
 
+/**
+ * E-mail of the key's primary user id (fallback: first user id with an e-mail).
+ * `user.userID` is a UserIDPacket object, not a string.
+ */
+async function peerKeyEmail(key: OpenPgpPublicKey): Promise<string | null> {
+  const normalize = (value: string | undefined) => value?.trim().toLowerCase() || null;
+  try {
+    const { user } = await key.getPrimaryUser();
+    const email = normalize(user.userID?.email);
+    if (email) return email;
+  } catch {
+    // No valid primary user self-signature: fall back to the raw user ids.
+  }
+  for (const user of key.users) {
+    const email = normalize(user.userID?.email);
+    if (email) return email;
+  }
+  return null;
+}
+
 export async function importPublicKeyArmored(
   armor: string,
   userId: string = LOCAL_OWNER_USER_ID,
@@ -53,12 +73,14 @@ export async function importPublicKeyArmored(
   const openpgp = await loadOpenPgp();
   const key = await openpgp.readKey({ armoredKey: armor });
   const fp = key.getFingerprint().toLowerCase();
+  const email = await peerKeyEmail(key);
+  if (!email) throw new Error('Der Schlüssel enthält keine E-Mail-Adresse in der User-ID.');
   const db = getDb();
   if (!db) throw new Error('Database not initialized');
   db.prepare(
     `INSERT OR REPLACE INTO ${PGP_PEER_KEYS_TABLE} (email, fingerprint, public_key_armor, source, trust_level)
      VALUES (?, ?, ?, ?, 'imported')`,
-  ).run(String(key.users[0]?.userID ?? 'unknown'), fp, armor, source);
+  ).run(email, fp, armor, source);
   return { fingerprint: fp };
 }
 
@@ -282,16 +304,22 @@ export async function verifySignedMessage(
   const verificationKeys = await Promise.all(
     peers.map((p) => openpgp.readKey({ armoredKey: p.public_key_armor })),
   );
-  const message = await openpgp.readMessage({ armoredMessage: armored });
+  // Cleartext signatures ('BEGIN PGP SIGNED MESSAGE') need readCleartextMessage (as on the server).
+  const message = await openpgp.readCleartextMessage({ cleartextMessage: armored });
   const verification = await openpgp.verify({ message, verificationKeys });
   const sig0 = verification.signatures[0];
   let valid = false;
   let fp: string | undefined;
   if (sig0) {
+    // The signature carries a 16-hex key id (possibly of a subkey); map it to the
+    // peer key that contains it and report that key's full fingerprint.
+    const matchedIndex = verificationKeys.findIndex((key) => key.getKeys(sig0.keyID).length > 0);
+    fp = matchedIndex >= 0
+      ? peers[matchedIndex].fingerprint?.toLowerCase()
+      : sig0.keyID?.toHex?.()?.toLowerCase();
     try {
       await sig0.verified;
       valid = true;
-      fp = sig0.keyID?.toHex?.()?.toLowerCase();
     } catch {
       valid = false;
     }
