@@ -70,6 +70,8 @@ import {
 import {
   executeWorkflowAiDraftReply,
   executeWorkflowAiReviewDraft,
+  fingerprintReviewedDraft,
+  setDraftApprovalPending,
   type WorkflowAiDraftNodeDeps,
 } from './workflow-ai-draft-nodes';
 import type { PostgresSecretPort } from './db/postgres-secret-port';
@@ -5764,15 +5766,42 @@ async function sendWorkflowDraft(
   }
   const draftRow = await trx
     .selectFrom('email_messages')
-    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id'])
+    .select(['id', 'uid', 'folder_kind', 'subject', 'body_text', 'body_html', 'to_json', 'cc_json', 'bcc_json', 'draft_attachment_paths_json', 'ticket_code', 'account_id', 'scheduled_send_at'])
     .where('workspace_id', '=', context.workspaceId)
     .where('id', '=', draftId)
+    // Sperrt gegen ein paralleles Speichern (PATCH compose-draft), damit der
+    // Abgleich mit der geprueften Fassung unten bis zum Commit gilt.
+    .forUpdate()
     .executeTakeFirst();
   if (!draftRow) {
     return { status: 'error', port: 'error', message: `Entwurf ${draftId} nicht gefunden` };
   }
   if (draftRow.folder_kind !== 'draft' || (draftRow.uid as number) >= 0) {
     return { status: 'error', port: 'error', message: `Nachricht ${draftId} ist kein Entwurf` };
+  }
+
+  // Nach einem SEND der KI-Gegenpruefung laeuft dieser Knoten als eigener,
+  // spaeterer Job. Wurde der Entwurf dazwischen geaendert, ist die neue Fassung
+  // ungeprueft: nicht senden, sondern wie die Gegenpruefung selbst zur
+  // manuellen Freigabe zurueckstellen. Vor der Auto-Antwort-Reservierung, damit
+  // der zurueckgestellte Entwurf keinen Tages-Slot verbraucht.
+  // Ein noch eingeplanter Entwurf ist seitdem unveraendert (jedes Speichern
+  // nimmt die Planung zurueck): so bleibt die erneute Zustellung dieser
+  // Fortsetzung, deren erster Lauf Betreff und Text selbst angepasst hat, ein No-op.
+  const reviewedFingerprint = context.variables['ai.review.fingerprint'];
+  if (
+    typeof reviewedFingerprint === 'string'
+    && Number(context.variables['ai.review.draft_id']) === draftId
+    && draftRow.scheduled_send_at == null
+    && fingerprintReviewedDraft(draftRow) !== reviewedFingerprint
+  ) {
+    await setDraftApprovalPending(
+      trx,
+      context.workspaceId,
+      draftId,
+      'Entwurf wurde nach der KI-Prüfung geändert — bitte manuell freigeben',
+    );
+    return { status: 'skipped', port: 'default', message: 'send_draft_changed_after_review' };
   }
 
   if (context.direction === 'inbound') {

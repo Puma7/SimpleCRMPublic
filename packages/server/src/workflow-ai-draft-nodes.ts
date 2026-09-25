@@ -572,7 +572,7 @@ function knowledgeSourcesLabel(
     .join(', ');
 }
 
-function fingerprintReviewedDraft(draft: {
+export function fingerprintReviewedDraft(draft: {
   subject?: string | null;
   body_text?: string | null;
   body_html?: string | null;
@@ -1520,7 +1520,16 @@ export function createPostgresAiReviewDraftPort(
               workspaceId: input.workspaceId,
               messageId: input.messageId,
               continuation: { ...continuation, resumeNodeId },
-              variables: continuationVariables,
+              // Die Fortsetzung laeuft als eigener Job erst spaeter. Bis dahin
+              // kann jemand den Entwurf speichern — email.send_draft vergleicht
+              // deshalb mit genau der Fassung, die hier freigegeben wurde.
+              variables: port === 'send' && reviewedFingerprint !== null
+                ? {
+                  ...continuationVariables,
+                  'ai.review.draft_id': draftId,
+                  'ai.review.fingerprint': reviewedFingerprint,
+                }
+                : continuationVariables,
               now: now(),
             });
           },
