@@ -93,7 +93,7 @@ export function LoginCaptchaGate(props: {
   )
 }
 
-async function ensureTurnstileScript(): Promise<void> {
+export async function ensureTurnstileScript(): Promise<void> {
   if (window.turnstile) return
   const existing = document.getElementById(TURNSTILE_SCRIPT_ID)
   if (existing) {

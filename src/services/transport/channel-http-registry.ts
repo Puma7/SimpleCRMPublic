@@ -4661,6 +4661,15 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       transform: (body) => dataBody<unknown>(body),
     }
   }],
+  [IPCChannels.Returns.PortalConfig, ([payload]) => {
+    const input = objectPayload(payload, "portal config payload")
+    const token = String(input.token ?? "")
+    return {
+      method: "GET",
+      path: `/api/v1/portal/returns/${encodeURIComponent(token)}/config`,
+      transform: (body) => dataBody<unknown>(body),
+    }
+  }],
   [IPCChannels.Returns.PortalLookup, ([payload]) => {
     const input = objectPayload(payload, "portal lookup payload")
     const token = String(input.token ?? "")

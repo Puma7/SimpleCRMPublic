@@ -58,6 +58,9 @@ const PUBLIC_SURFACE: readonly string[] = [
   // Token-Pruefung; siehe returns-routes.
   'POST /api/v1/portal/returns/:token',
   'GET /api/v1/portal/returns/:token/:returnNumber',
+  // Liefert nur { captchaRequired, siteKey } fuer den Workspace des Tokens
+  // (F-A3a-03); gleiche Ratenbegrenzung und Token-Pruefung wie die Abfrage.
+  'GET /api/v1/portal/returns/:token/config',
   // Zaehlpixel. Muss aus fremden Mail-Clients erreichbar sein und antwortet
   // immer gleich, damit sich daraus nichts ablesen laesst.
   //
@@ -275,6 +278,7 @@ function canonicalize(path: string): string {
     .replace(/^\/api\/v1\/auth\/invitations\/x\/accept$/, '/api/v1/auth/invitations/:token/accept')
     .replace(/^\/api\/v1\/auth\/invitations\/x$/, '/api/v1/auth/invitations/:token')
     .replace(/^\/api\/v1\/portal\/returns\/x\/x$/, '/api/v1/portal/returns/:token/:returnNumber')
+    .replace(/^\/api\/v1\/portal\/returns\/x\/config$/, '/api/v1/portal/returns/:token/config')
     .replace(/^\/api\/v1\/portal\/returns\/x$/, '/api/v1/portal/returns/:token')
     .replace(/^\/t\/o\/x\.gif$/, '/t/o/:token.gif')
     .replace(/^\/t\/c\/x$/, '/t/c/:token');

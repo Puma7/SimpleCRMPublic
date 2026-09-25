@@ -182,6 +182,7 @@ const ReturnsChannels = literal({
   RevokePortalToken: 'returns:revoke-portal-token',
   PortalCreate: 'returns:portal-create',
   PortalLookup: 'returns:portal-lookup',
+  PortalConfig: 'returns:portal-config',
 });
 
 const FollowUpChannels = literal({

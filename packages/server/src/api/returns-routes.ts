@@ -512,8 +512,9 @@ async function handlePortalSettings(req: ApiRequest, ports: ServerApiPorts): Pro
 // ============================================================================
 // Public portal (Phase 5/6 — UNAUTHENTICATED)
 //
-// Two endpoints, both behind the per-workspace portal token:
+// Three endpoints, all behind the per-workspace portal token:
 //   POST /api/v1/portal/returns/:token            — create a return (CAPTCHA)
+//   GET  /api/v1/portal/returns/:token/config     — CAPTCHA requirement for the form
 //   GET  /api/v1/portal/returns/:token/:returnNo  — public status lookup
 //
 // Token-in-path keeps the workspace resolution close to the URL the customer
@@ -586,6 +587,18 @@ export async function handlePublicPortalRoute(
     }
     return handlePortalCreate(req, ports, createMatch[1] ?? '');
   }
+  // Matched before the status lookup: generated return numbers are R-<hex>,
+  // so the literal "config" segment can never shadow a real return.
+  const configMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/config$/.exec(req.path);
+  if (configMatch && req.method === 'GET') {
+    const limited = portalLookupLimiter.check(`lookup:${req.ip ?? 'unknown'}`);
+    if (!limited.ok) {
+      return error(429, 'rate_limited', 'Zu viele Anfragen — bitte später erneut versuchen', {
+        retryAfterSeconds: limited.retryAfterSeconds,
+      });
+    }
+    return handlePortalConfig(ports, configMatch[1] ?? '');
+  }
   const detailMatch = /^\/api\/v1\/portal\/returns\/([^/]+)\/([^/]+)$/.exec(req.path);
   if (detailMatch && req.method === 'GET') {
     const limited = portalLookupLimiter.check(`lookup:${req.ip ?? 'unknown'}`);
@@ -598,7 +611,7 @@ export async function handlePublicPortalRoute(
   }
   // 405 on a wrong-method match against a known path; null otherwise so the
   // outer dispatcher can fall through to its 404.
-  if (createMatch || detailMatch) return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
+  if (createMatch || configMatch || detailMatch) return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   return null;
 }
 
@@ -631,16 +644,16 @@ async function handlePortalCreate(
   if ('status' in resolved) return resolved;
   if (!ports.returns) return error(503, 'returns_unavailable', 'Returns API nicht konfiguriert');
 
-  // CAPTCHA: when the workspace has captcha enabled in its login security
-  // settings, the public create endpoint also requires a fresh challenge.
-  // When loginSecurity is NOT wired, portal create is rejected — public abuse
-  // must not rely on optional operator configuration.
+  // CAPTCHA: when the portal token's workspace has captcha enabled in its login
+  // security settings, the public create endpoint also requires a fresh
+  // challenge. When loginSecurity is NOT wired, portal create is rejected —
+  // public abuse must not rely on optional operator configuration.
   let captchaStatus: 'passed' | 'not_required' | 'unavailable' = 'unavailable';
   if (!ports.loginSecurity) {
     return error(503, 'portal_captcha_unavailable', 'Oeffentliches Retouren-Portal ist ohne Login-Sicherheitskonfiguration nicht verfuegbar');
   }
-  const loginConfig = await ports.loginSecurity.getLoginConfig();
-  if (loginConfig?.captcha.enabled) {
+  const captcha = await portalCaptchaConfig(ports.loginSecurity, resolved.workspaceId);
+  if (captcha.captchaRequired) {
     const challenge = isRecord(req.body) && typeof req.body.captchaChallenge === 'string'
       ? req.body.captchaChallenge
       : undefined;
@@ -672,6 +685,35 @@ async function handlePortalCreate(
     metadata: { actor: 'portal', ip: req.ip ?? null, captcha: captchaStatus },
   });
   return data(201, result.record);
+}
+
+/**
+ * The portal CAPTCHA follows the workspace behind the portal token — not the
+ * instance-wide login config, which is on as soon as ANY workspace enables
+ * its login CAPTCHA. It needs Turnstile configured on the instance.
+ */
+async function portalCaptchaConfig(
+  loginSecurity: NonNullable<ServerApiPorts['loginSecurity']>,
+  workspaceId: string,
+): Promise<{ captchaRequired: boolean; siteKey: string | null }> {
+  const loginConfig = await loginSecurity.getLoginConfig();
+  const siteKey = loginConfig?.captcha.provider === 'turnstile' ? loginConfig.captcha.siteKey : null;
+  if (!siteKey) return { captchaRequired: false, siteKey: null };
+  const settings = await loginSecurity.getWorkspaceSettings(workspaceId);
+  return settings.captchaEnabled
+    ? { captchaRequired: true, siteKey }
+    : { captchaRequired: false, siteKey: null };
+}
+
+async function handlePortalConfig(ports: ServerApiPorts, token: string): Promise<ApiResponse> {
+  const resolved = await resolvePortal(ports, token);
+  if ('status' in resolved) return resolved;
+  if (!ports.loginSecurity) {
+    return error(503, 'portal_captcha_unavailable', 'Oeffentliches Retouren-Portal ist ohne Login-Sicherheitskonfiguration nicht verfuegbar');
+  }
+  // Only these two fields leave the server: the site key is public by design.
+  const { captchaRequired, siteKey } = await portalCaptchaConfig(ports.loginSecurity, resolved.workspaceId);
+  return data(200, { captchaRequired, siteKey });
 }
 
 async function handlePortalLookup(

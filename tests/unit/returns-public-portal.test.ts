@@ -57,6 +57,16 @@ function makePortalSettings(resolution: Resolution): ReturnsPortalSettingsApiPor
   };
 }
 
+function workspaceCaptchaSettings(captchaEnabled: boolean) {
+  return async () => ({
+    captchaEnabled,
+    pinKeypadEnabled: false,
+    mfaEnabled: false,
+    mfaTotpEnabled: false,
+    mfaEmailEnabled: false,
+  });
+}
+
 function makeLoginSecurity(captchaEnabled = false) {
   return {
     async getLoginConfig() {
@@ -67,6 +77,7 @@ function makeLoginSecurity(captchaEnabled = false) {
         user: null,
       };
     },
+    getWorkspaceSettings: workspaceCaptchaSettings(captchaEnabled),
     assertCaptchaChallenge() { return true; },
   } as never;
 }
@@ -204,6 +215,7 @@ describe('public portal dispatcher', () => {
             user: null,
           };
         },
+        getWorkspaceSettings: workspaceCaptchaSettings(true),
         assertCaptchaChallenge() { return false; },
       } as never,
     };
@@ -235,6 +247,7 @@ describe('public portal dispatcher', () => {
             user: null,
           };
         },
+        getWorkspaceSettings: workspaceCaptchaSettings(true),
         assertCaptchaChallenge() { return true; },
       } as never,
     };
@@ -412,6 +425,134 @@ describe('public portal dispatcher', () => {
       ports,
     );
     expect(miss?.status).toBe(404);
+  });
+});
+
+// F-A3a-03: the portal CAPTCHA decision used the login CAPTCHA of ANY workspace, so one workspace's
+// setting blocked every other portal (403), and the portal page could never obtain a challenge.
+describe('portal CAPTCHA follows the workspace of the portal token', () => {
+  function workspaceLoginSecurity(input: {
+    anyWorkspaceCaptcha: boolean;
+    turnstileConfigured?: boolean;
+    workspaceCaptcha: Record<string, boolean>;
+    challengeValid?: boolean;
+  }) {
+    const settingsCalls: string[] = [];
+    const configured = input.turnstileConfigured ?? true;
+    const loginSecurity = {
+      async getLoginConfig() {
+        return {
+          captcha: {
+            enabled: configured && input.anyWorkspaceCaptcha,
+            provider: configured ? 'turnstile' : null,
+            siteKey: configured ? 'site-key' : null,
+          },
+          pinKeypad: { enabled: false },
+          mfa: { enabled: false, methods: [] },
+          user: null,
+        };
+      },
+      async getWorkspaceSettings(workspaceId: string) {
+        settingsCalls.push(workspaceId);
+        return {
+          captchaEnabled: input.workspaceCaptcha[workspaceId] ?? false,
+          pinKeypadEnabled: false,
+          mfaEnabled: false,
+          mfaTotpEnabled: false,
+          mfaEmailEnabled: false,
+        };
+      },
+      assertCaptchaChallenge() { return input.challengeValid ?? false; },
+    } as never;
+    return { loginSecurity, settingsCalls };
+  }
+
+  test('POST without challenge succeeds when only another workspace enabled CAPTCHA', async () => {
+    const { loginSecurity, settingsCalls } = workspaceLoginSecurity({
+      anyWorkspaceCaptcha: true,
+      workspaceCaptcha: { 'ws-other': true, [WS_ID]: false },
+    });
+    const result = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', body: { items: [{ quantity: 1 }] } }),
+      makePortalPorts({ loginSecurity }),
+    );
+    expect(result?.status).toBe(201);
+    expect(settingsCalls).toEqual([WS_ID]);
+  });
+
+  test('POST requires a challenge when the token workspace enabled CAPTCHA', async () => {
+    const { loginSecurity } = workspaceLoginSecurity({
+      anyWorkspaceCaptcha: true,
+      workspaceCaptcha: { [WS_ID]: true },
+    });
+    const result = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}`, { method: 'POST', body: { items: [{ quantity: 1 }] } }),
+      makePortalPorts({ loginSecurity }),
+    );
+    expect(result?.status).toBe(403);
+    expect((result?.body as { error: { code: string } }).error.code).toBe('captcha_required');
+  });
+
+  test('GET config reports only captchaRequired and siteKey for the token workspace', async () => {
+    const required = workspaceLoginSecurity({ anyWorkspaceCaptcha: true, workspaceCaptcha: { [WS_ID]: true } });
+    const requiredResult = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}/config`, { method: 'GET' }),
+      makePortalPorts({ loginSecurity: required.loginSecurity }),
+    );
+    expect(requiredResult?.status).toBe(200);
+    expect(requiredResult?.body).toEqual({ data: { captchaRequired: true, siteKey: 'site-key' } });
+    expect(required.settingsCalls).toEqual([WS_ID]);
+
+    const other = workspaceLoginSecurity({ anyWorkspaceCaptcha: true, workspaceCaptcha: { 'ws-other': true } });
+    const otherResult = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}/config`, { method: 'GET' }),
+      makePortalPorts({ loginSecurity: other.loginSecurity }),
+    );
+    expect(otherResult?.body).toEqual({ data: { captchaRequired: false, siteKey: null } });
+
+    const unconfigured = workspaceLoginSecurity({
+      anyWorkspaceCaptcha: true,
+      turnstileConfigured: false,
+      workspaceCaptcha: { [WS_ID]: true },
+    });
+    const unconfiguredResult = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}/config`, { method: 'GET' }),
+      makePortalPorts({ loginSecurity: unconfigured.loginSecurity }),
+    );
+    expect(unconfiguredResult?.body).toEqual({ data: { captchaRequired: false, siteKey: null } });
+  });
+
+  test('GET config is only served for valid tokens and never reaches the status lookup', async () => {
+    const lookups: string[] = [];
+    const unknown = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}/config`, { method: 'GET' }),
+      makePortalPorts({
+        returnsPortalSettings: makePortalSettings({ ok: false, reason: 'unknown_token' }),
+        returns: makeReturnsPort({
+          async getPublicByReturnNumber(input) { lookups.push(input.returnNumber); return makeRecord(); },
+        }),
+      }),
+    );
+    expect(unknown?.status).toBe(404);
+    expect((unknown?.body as { error: { code: string } }).error.code).toBe('portal_not_found');
+    expect(lookups).toEqual([]);
+  });
+
+  test('GET config shares the public portal rate limit', async () => {
+    const { loginSecurity } = workspaceLoginSecurity({ anyWorkspaceCaptcha: false, workspaceCaptcha: {} });
+    const ports = makePortalPorts({ loginSecurity });
+    for (let i = 0; i < 30; i++) {
+      const result = await handlePublicPortalRoute(
+        req(`/api/v1/portal/returns/${TOKEN}/config`, { method: 'GET', ip: '203.0.113.40' }),
+        ports,
+      );
+      expect(result?.status).toBe(200);
+    }
+    const blocked = await handlePublicPortalRoute(
+      req(`/api/v1/portal/returns/${TOKEN}/config`, { method: 'GET', ip: '203.0.113.40' }),
+      ports,
+    );
+    expect(blocked?.status).toBe(429);
   });
 });
 
