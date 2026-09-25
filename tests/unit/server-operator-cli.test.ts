@@ -188,6 +188,52 @@ describe('operator CLI compose-project consistency', () => {
   }));
 });
 
+describe('several compose files (SMTP relay override)', () => {
+  const ranOrSkipped = (fn: () => void) => () => {
+    if (!bashAvailable()) return;
+    fn();
+  };
+
+  // N-int-01: update, restore und der Wrapper nutzten nur die Basisdatei; mit aktivem Relay-Override verlor die API bei jedem Update die Relay-Ports und das TLS-Material.
+  test('a colon-separated COMPOSE_FILE reaches every compose call as separate -f flags', ranOrSkipped(() => {
+    const base = join(repoRoot, 'docker', 'docker-compose.yml');
+    const relay = join(repoRoot, 'docker', 'docker-compose.relay.yml');
+    const env = { COMPOSE_FILE: `${base}:${relay}` };
+    for (const args of [
+      ['docker/simplecrm', 'ps'],
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      ['docker/simplecrm', 'restore'],
+    ]) {
+      const res = runWithFakeDocker(args, { env });
+      expect(res.status).toBe(0);
+      const composeCalls = res.log.split('\n').filter((line) => line.startsWith('compose -p'));
+      expect(composeCalls.length).toBeGreaterThan(0);
+      for (const line of composeCalls) {
+        expect(line).toContain(`--project-directory ${join(repoRoot, 'docker')} -f ${base} -f ${relay} `);
+      }
+      expect(new Set(res.projectFlags)).toEqual(new Set(['docker']));
+    }
+  }));
+
+  test('update warns when the relay is enabled but its override is not part of COMPOSE_FILE', ranOrSkipped(() => {
+    const relay = join(repoRoot, 'docker', 'docker-compose.relay.yml');
+    const base = join(repoRoot, 'docker', 'docker-compose.yml');
+    const missing = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { SMTP_RELAY_ENABLED: 'true' } },
+    );
+    expect(missing.status).toBe(0);
+    expect(missing.stderr).toContain('COMPOSE_FILE does not include docker-compose.relay.yml');
+
+    const included = runWithFakeDocker(
+      ['docker/simplecrm', 'update', '--no-pull', '--no-backup'],
+      { env: { SMTP_RELAY_ENABLED: 'true', COMPOSE_FILE: `${base}:${relay}` } },
+    );
+    expect(included.status).toBe(0);
+    expect(included.stderr).not.toContain('docker-compose.relay.yml');
+  }));
+});
+
 describe('API volume ownership after the switch to a non-root image', () => {
   const ranOrSkipped = (fn: () => void) => () => {
     if (!bashAvailable()) return;

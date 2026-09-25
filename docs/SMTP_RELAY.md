@@ -47,6 +47,18 @@ mountet:
 docker compose -f docker/docker-compose.yml -f docker/docker-compose.relay.yml up -d
 ```
 
+Die Betriebsskripte (`docker/simplecrm`, `docker/update.sh`, `docker/restore-compose.sh`)
+nehmen die Override-Datei nur mit, wenn sie in `COMPOSE_FILE` steht (mehrere Dateien
+mit `:` getrennt, wie bei Docker Compose selbst). Sonst erstellen Update und Restore
+die API ohne Relay-Ports neu:
+
+```
+export COMPOSE_FILE="$PWD/docker/docker-compose.yml:$PWD/docker/docker-compose.relay.yml"
+sh docker/simplecrm update
+```
+
+`update.sh` warnt, wenn `SMTP_RELAY_ENABLED` gesetzt ist, die Override-Datei aber fehlt.
+
 In `.env` mindestens setzen: `SMTP_RELAY_ENABLED=true`, `SMTP_RELAY_HOSTNAME`,
 und `SMTP_RELAY_TLS_DIR` auf ein Host-Verzeichnis mit `cert.pem`+`key.pem` (Default
 `./relay-tls`; z. B. die Let's-Encrypt-Dateien für `SMTP_RELAY_HOSTNAME`).

@@ -8,7 +8,10 @@ COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 # correct when COMPOSE_FILE points outside docker/, and --project-directory below
 # stops a stray .env in the caller's PWD from shadowing the real one. A hardcoded
 # name here previously created a second, parallel stack by surprise.
-COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "$COMPOSE_FILE")" && pwd)"
+# COMPOSE_FILE may list several files separated by ':' like Docker Compose's own
+# variable, e.g. the base file plus docker-compose.relay.yml. The first one is
+# the main file and decides the project directory.
+COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "${COMPOSE_FILE%%:*}")" && pwd)"
 # Track whether the operator explicitly chose a project (vs. us deriving it), so
 # delegated scripts can refuse to silently operate on a different stack.
 if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then SIMPLECRM_PROJECT_EXPLICIT=1; else SIMPLECRM_PROJECT_EXPLICIT=0; fi
@@ -48,8 +51,16 @@ Optional env:
 USAGE
 }
 
+# One -f per entry of COMPOSE_FILE, in order. POSIX sh has no arrays: append
+# the flags behind the arguments, then rotate the arguments to the end.
 compose() {
-  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"
+  _argc=$#
+  _ifs=$IFS
+  IFS=':'
+  for _file in $COMPOSE_FILE; do set -- "$@" -f "$_file"; done
+  IFS=$_ifs
+  while [ "$_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _argc=$((_argc - 1)); done
+  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" "$@"
 }
 
 restore_drill() {

@@ -25,7 +25,10 @@ COMPOSE_FILE="${COMPOSE_FILE:-$SCRIPT_DIR/docker-compose.yml}"
 # than from this script's location) keeps us correct when COMPOSE_FILE points
 # outside docker/, and pinning --project-directory below stops a stray .env in
 # the caller's PWD from shadowing the real one.
-COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "$COMPOSE_FILE")" && pwd)"
+# COMPOSE_FILE may list several files separated by ':' like Docker Compose's own
+# variable, e.g. the base file plus docker-compose.relay.yml. The first one is
+# the main file and decides the project directory.
+COMPOSE_DIR="$(CDPATH= cd -- "$(dirname -- "${COMPOSE_FILE%%:*}")" && pwd)"
 # Did the operator explicitly choose a project, or are we deriving it? The
 # simplecrm wrapper passes this through (it always exports COMPOSE_PROJECT_NAME
 # for stack consistency, so the bare presence of the var isn't a reliable signal).
@@ -40,7 +43,17 @@ COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$COMPOSE_DIR")}"
 BRANCH="${BRANCH:-main}"
 export COMPOSE_PROJECT_NAME
 
-compose() { docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" -f "$COMPOSE_FILE" "$@"; }
+# One -f per entry of COMPOSE_FILE, in order. POSIX sh has no arrays: append
+# the flags behind the arguments, then rotate the arguments to the end.
+compose() {
+  _argc=$#
+  _ifs=$IFS
+  IFS=':'
+  for _file in $COMPOSE_FILE; do set -- "$@" -f "$_file"; done
+  IFS=$_ifs
+  while [ "$_argc" -gt 0 ]; do set -- "$@" "$1"; shift; _argc=$((_argc - 1)); done
+  docker compose -p "$COMPOSE_PROJECT_NAME" --project-directory "$COMPOSE_DIR" "$@"
+}
 say() { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 
 # The API image runs as the unprivileged node user (uid 1000). Hand it the
@@ -66,6 +79,19 @@ warn_unreadable_relay_tls_key() {
   if [ "$owner" != 1000 ] && [ $(( 0$mode & 4 )) -eq 0 ]; then
     printf 'WARNING: %s is not readable for uid 1000 (the API now runs as node); the SMTP relay will not start. Fix: chown 1000 %s\n' "$key" "$key" >&2
   fi
+}
+
+# The relay's ports and TLS mount live in docker-compose.relay.yml. Recreating
+# the API from the base file alone silently drops them, so an enabled relay
+# without its override in COMPOSE_FILE is worth a loud hint.
+warn_relay_override_missing() {
+  relay_enabled="${SMTP_RELAY_ENABLED:-}"
+  if [ -z "$relay_enabled" ] && [ -f "$COMPOSE_DIR/.env" ]; then
+    relay_enabled="$(sed -n 's/^SMTP_RELAY_ENABLED=["'"'"']\{0,1\}\([^"'"'"']*\).*/\1/p' "$COMPOSE_DIR/.env" | tail -n 1)"
+  fi
+  case "$relay_enabled" in true|1|yes) ;; *) return 0 ;; esac
+  case "$COMPOSE_FILE" in *docker-compose.relay.yml*) return 0 ;; esac
+  printf 'WARNING: SMTP_RELAY_ENABLED is set, but COMPOSE_FILE does not include docker-compose.relay.yml; the API is recreated without the relay ports. Use: COMPOSE_FILE=%s:%s/docker-compose.relay.yml\n' "$COMPOSE_FILE" "$COMPOSE_DIR" >&2
 }
 
 # True when Compose knows a (running or stopped) project named "$1".
@@ -166,6 +192,7 @@ say "[5/6] Draining old workers and restarting api + web"
 compose stop api
 fix_api_volume_ownership
 warn_unreadable_relay_tls_key
+warn_relay_override_missing
 compose up -d api caddy
 
 say "[6/6] Verifying"
