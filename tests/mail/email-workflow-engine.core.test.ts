@@ -334,6 +334,30 @@ describe('email-workflow-engine core', () => {
       expect(log).toContain('tag_attachment_meta:att');
       expect(log.some((l) => l.startsWith('ai_review_error:'))).toBe(true);
     });
+
+    // F-N-dwf-04: Der Mailtext wurde per String-replace eingesetzt; $&, $`, $' und $$ im Mailinhalt wirkten als Ersetzungsmuster.
+    test('ai_review inserts the mail text literally into the prompt template', async () => {
+      const mailText = "Betrag 5 $$ und $& sowie $` oder $'";
+      const msg = inboundRow({ subject: 'Pruefen', body_text: mailText });
+      mockListAiPrompts.mockReturnValue([
+        { id: 5, label: 'P', user_template: 'Pruefe: {{text}} Ende', target: 'full_body', profile_id: null, sort_order: 0 },
+      ]);
+      const def: WorkflowDefinitionV1 = {
+        version: 1,
+        rules: [
+          {
+            when: { field: 'subject', op: 'contains', value: 'Pruefen' },
+            then: [{ type: 'ai_review', promptId: 5 }],
+          },
+        ],
+      };
+      await runCompiledInboundRules(def, msg.id, msg, 1);
+      const user = String(mockRunChatCompletion.mock.calls[0]?.[1]);
+      expect(user.startsWith('Pruefe: ')).toBe(true);
+      expect(user.endsWith(' Ende')).toBe(true);
+      expect(user).toContain(mailText);
+      expect(user).not.toContain('{{text}}');
+    });
   });
 
   describe('runCompiledOutboundRules', () => {

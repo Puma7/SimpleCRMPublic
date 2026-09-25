@@ -225,7 +225,8 @@ async function runAiReviewStep(
     log.push('ai_review:prompt_not_found');
     return false;
   }
-  const user = p.user_template.replace(/\{\{text\}\}/g, text);
+  // Callback, not a string: `$&`, `$'` etc. in the mail text must stay literal.
+  const user = p.user_template.replace(/\{\{text\}\}/g, () => text);
   const blockKw = (step.blockKeyword ?? 'BLOCK').trim() || 'BLOCK';
   try {
     const out = await runChatCompletion(
