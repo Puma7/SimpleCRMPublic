@@ -661,13 +661,15 @@ async function handlePortalCreate(
     input: parsed.input,
   });
   if (!result.ok) return error(400, 'create_failed', result.error);
+  // The portal caller is anonymous: audit_events.actor_user_id is a uuid
+  // referencing users, so the origin goes into the metadata instead.
   await ports.audit?.record({
     workspaceId: resolved.workspaceId,
-    actorUserId: 'portal',
+    actorUserId: null,
     action: 'returns.portal.create',
     entityType: 'returns',
     entityId: result.record.returnNumber,
-    metadata: { ip: req.ip ?? null, captcha: captchaStatus },
+    metadata: { actor: 'portal', ip: req.ip ?? null, captcha: captchaStatus },
   });
   return data(201, result.record);
 }

@@ -251,38 +251,34 @@ async function createReturn(
 
   // Retry-safe insert: if the random return_number collides (vanishingly
   // unlikely with 4 random bytes per workspace), try again with a fresh one.
+  // ON CONFLICT DO NOTHING keeps the surrounding transaction usable; a caught
+  // unique violation would abort it and fail every later attempt.
   let insertedHeader: { id: number; return_number: string } | undefined;
-  let lastError: unknown;
-  for (let attempt = 0; attempt < RETURN_NUMBER_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < RETURN_NUMBER_MAX_ATTEMPTS && !insertedHeader; attempt++) {
     const returnNumber = generateReturnNumber();
-    try {
-      insertedHeader = await trx
-        .insertInto('returns')
-        .values({
-          workspace_id: workspaceId,
-          return_number: returnNumber,
-          customer_id: input.customerId ?? null,
-          email_message_id: input.emailMessageId ?? null,
-          jtl_order_number: input.jtlOrderNumber ?? null,
-          jtl_kauftrag: input.jtlKauftrag ?? null,
-          status: 'pending',
-          outcome: null,
-          customer_email: input.customerEmail ?? null,
-          customer_name: input.customerName ?? null,
-          notes: input.notes ?? null,
-        })
-        .returning(['id', 'return_number'])
-        .executeTakeFirstOrThrow();
-      break;
-    } catch (error) {
-      lastError = error;
-      if (!isUniqueViolation(error)) throw error;
-    }
+    insertedHeader = await trx
+      .insertInto('returns')
+      .values({
+        workspace_id: workspaceId,
+        return_number: returnNumber,
+        customer_id: input.customerId ?? null,
+        email_message_id: input.emailMessageId ?? null,
+        jtl_order_number: input.jtlOrderNumber ?? null,
+        jtl_kauftrag: input.jtlKauftrag ?? null,
+        status: 'pending',
+        outcome: null,
+        customer_email: input.customerEmail ?? null,
+        customer_name: input.customerName ?? null,
+        notes: input.notes ?? null,
+      })
+      .onConflict((oc) => oc.columns(['workspace_id', 'return_number']).doNothing())
+      .returning(['id', 'return_number'])
+      .executeTakeFirst();
   }
   if (!insertedHeader) {
     return {
       ok: false,
-      error: `Konnte keine eindeutige return_number erzeugen (${RETURN_NUMBER_MAX_ATTEMPTS} Versuche): ${describeError(lastError)}`,
+      error: `Konnte keine eindeutige return_number erzeugen (${RETURN_NUMBER_MAX_ATTEMPTS} Versuche)`,
     };
   }
 
@@ -626,15 +622,3 @@ function defaultGenerateReturnNumber(): string {
   return RETURN_NUMBER_PREFIX + randomBytes(RETURN_NUMBER_RANDOM_BYTES).toString('hex').toUpperCase();
 }
 
-function isUniqueViolation(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const code = (error as { code?: unknown }).code;
-  // Postgres `unique_violation` SQLSTATE.
-  return code === '23505';
-}
-
-function describeError(error: unknown): string {
-  if (!error) return 'unknown';
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
