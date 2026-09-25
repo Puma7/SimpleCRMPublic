@@ -1,46 +1,11 @@
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGES_TABLE, EMAIL_THREADS_TABLE } from '../database-schema';
+// Shared with the server resolver: only plausible msg-ids (id@right, >= 5 chars, no
+// brackets/whitespace) link conversations, so a bare token like "com" matches nothing. (C-A62)
+import { collectRelatedIds, normalizeThreadingMessageId } from '../../packages/core/src/email';
 import { createTicketCodeForAccount, extractKnownTicketFromSubject, getOrCreateThreadForTicket } from './email-ticket';
 import { rebuildThreadEdges } from './email-thread-aggregate';
 import { applyMessageThreadMetadata, confidenceForJwzAssign } from './email-thread-metadata';
-
-/** Shortest id accepted for linking conversations ("x@y.z"). */
-const MIN_MESSAGE_ID_LENGTH = 5;
-/** RFC 5322 msg-id body: id-left "@" id-right, no brackets or whitespace. */
-const MESSAGE_ID_SHAPE = /^[^\s<>]+@[^\s<>]+$/;
-
-function normId(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const s = raw.trim().replace(/^<|>$/g, '').toLowerCase();
-  // Only a plausible msg-id may link conversations: a sender-controlled bare token such
-  // as "com" would otherwise match unrelated threads of the account. (C-A62)
-  return s.length >= MIN_MESSAGE_ID_LENGTH && MESSAGE_ID_SHAPE.test(s) ? s : null;
-}
-
-function parseReferences(refs: string | null): string[] {
-  if (!refs) return [];
-  // Brackets separate ids like whitespace does ("<a@b><c@d>" is valid), matching how the
-  // SQL below tokenizes stored References headers.
-  return refs
-    .split(/[\s<>]+/)
-    .map((x) => normId(x))
-    .filter((x): x is string => Boolean(x));
-}
-
-const MAX_THREAD_REF_IDS = 64;
-
-function collectRelatedIds(messageId: string | null, inReplyTo: string | null, refs: string | null): string[] {
-  const s = new Set<string>();
-  const m = normId(messageId);
-  if (m) s.add(m);
-  const ir = normId(inReplyTo);
-  if (ir) s.add(ir);
-  for (const r of parseReferences(refs)) {
-    if (s.size >= MAX_THREAD_REF_IDS) break;
-    s.add(r);
-  }
-  return [...s];
-}
 
 function normHeaderCol(col: string): string {
   return `LOWER(TRIM(REPLACE(REPLACE(IFNULL(${col}, ''), '<', ''), '>', '')))`;
@@ -75,7 +40,7 @@ export function assignJwzThreadAndTicket(
 ): void {
   const ticketFromSubject = extractKnownTicketFromSubject(input.subject);
   const related = collectRelatedIds(input.messageIdHeader, input.inReplyTo, input.referencesHeader);
-  const myMid = normId(input.messageIdHeader);
+  const myMid = normalizeThreadingMessageId(input.messageIdHeader);
 
   if (related.length === 0 && !ticketFromSubject) {
     const ticket = createTicketCodeForAccount(accountId);
