@@ -417,6 +417,18 @@ async function testImapConnection(input: ProtocolTestInput): Promise<MailConnect
   try {
     const greeting = await client.readLine();
     if (/^\* BYE\b/i.test(greeting)) return { success: false, error: greeting };
+    // Like the sync (ImapFlow with secure=false): upgrade via STARTTLS when the
+    // server offers it, so LOGIN does not carry the password in plaintext.
+    if (!input.tls) {
+      let offersStartTls = false;
+      const capability = await client.commandUntilTagged('a000 CAPABILITY', 'a000', (line) => {
+        if (/^\*\s+CAPABILITY\s/i.test(line) && /\sSTARTTLS(\s|$)/i.test(line)) offersStartTls = true;
+      });
+      if (capability.ok && offersStartTls) {
+        const starttls = await client.commandUntilTagged('s000 STARTTLS', 's000');
+        if (starttls.ok) await upgradeClientToTls(client, input.host, input.timeoutMs);
+      }
+    }
     const login = await client.commandUntilTagged(
       `a001 LOGIN ${quoteImapString(input.user)} ${quoteImapString(input.password)}`,
       'a001',
@@ -746,13 +758,18 @@ class LineProtocolClient {
     this.socket.write(data);
   }
 
-  async commandUntilTagged(command: string, tag: string): Promise<{ ok: boolean; line: string }> {
+  async commandUntilTagged(
+    command: string,
+    tag: string,
+    onUntagged?: (line: string) => void,
+  ): Promise<{ ok: boolean; line: string }> {
     this.writeLine(command);
     for (;;) {
       const line = await this.readLine();
       if (line.toUpperCase().startsWith(`${tag.toUpperCase()} `)) {
         return { ok: new RegExp(`^${escapeRegExp(tag)}\\s+OK\\b`, 'i').test(line), line };
       }
+      onUntagged?.(line);
     }
   }
 

@@ -52,6 +52,46 @@ class FakeSmtpSocket extends EventEmitter {
   }
 }
 
+/** Scripted IMAP server: optional STARTTLS capability, rejects LOGIN. */
+class FakeImapSocket extends EventEmitter {
+  public readonly written: string[] = [];
+
+  constructor(private readonly options: { starttls: boolean }) {
+    super();
+  }
+
+  setEncoding(): this {
+    return this;
+  }
+
+  end(): void {}
+
+  destroy(): void {}
+
+  write(chunk: string | Buffer): boolean {
+    const line = String(chunk).replace(/\r\n$/, '');
+    this.written.push(line);
+    const [tag, command] = line.split(' ');
+    setTimeout(() => {
+      if (command === 'CAPABILITY') {
+        const starttls = this.options.starttls ? ' STARTTLS' : '';
+        this.emit('data', `* CAPABILITY IMAP4rev1${starttls} AUTH=PLAIN\r\n${tag} OK done\r\n`);
+      } else if (command === 'STARTTLS') {
+        this.emit('data', `${tag} OK Begin TLS negotiation now\r\n`);
+      } else if (command === 'LOGIN') {
+        this.emit('data', `${tag} NO denied\r\n`);
+      } else {
+        this.emit('data', `${tag} OK\r\n`);
+      }
+    }, 0);
+    return true;
+  }
+
+  greet(): void {
+    setTimeout(() => this.emit('data', '* OK fake IMAP ready\r\n'), 0);
+  }
+}
+
 function storedAccountRow() {
   return {
     id: 7,
@@ -263,5 +303,57 @@ describe('server mail connection test stored credentials', () => {
       user: 'a@example.com',
       password: 'x',
     })).resolves.toEqual({ success: false, error: 'getaddrinfo ENOTFOUND nicht-existent.invalid' });
+  });
+
+  // F-A4-05: without implicit TLS the IMAP test sent LOGIN with the (stored)
+  // password in plaintext, while the sync (ImapFlow, secure=false) upgrades
+  // via STARTTLS whenever the server offers it.
+  test('IMAP test without TLS upgrades via STARTTLS before sending LOGIN', async () => {
+    const socket = new FakeImapSocket({ starttls: true });
+    const port = createServerMailConnectionTestPort({
+      db: dbReturning({ ...storedAccountRow(), imap_port: 143, imap_tls: false }) as never,
+      secrets: { readSecret: async () => Buffer.from('stored-secret') } as never,
+      socketFactory: (async () => {
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs: 1234,
+    });
+
+    const result = await port.testImap({
+      workspaceId: 'workspace-a',
+      accountId: 7,
+      host: 'x',
+      port: 143,
+      tls: false,
+      user: '',
+    });
+
+    expect(result.success).toBe(false);
+    expect(socket.written.map((line) => line.split(' ')[1])).toEqual(['CAPABILITY', 'STARTTLS']);
+    expect(socket.written.join('\n')).not.toContain('stored-secret');
+  });
+
+  test('IMAP test without TLS logs in like the sync when the server offers no STARTTLS', async () => {
+    const socket = new FakeImapSocket({ starttls: false });
+    const port = createServerMailConnectionTestPort({
+      socketFactory: (async () => {
+        socket.greet();
+        return socket;
+      }) as never,
+      timeoutMs: 1234,
+    });
+
+    const result = await port.testImap({
+      workspaceId: 'workspace-a',
+      host: 'imap.example.com',
+      port: 143,
+      tls: false,
+      user: 'user@example.com',
+      password: 'typed',
+    });
+
+    expect(result).toEqual({ success: false, error: expect.stringMatching(/ NO denied$/) });
+    expect(socket.written.map((line) => line.split(' ')[1])).toEqual(['CAPABILITY', 'LOGIN']);
   });
 });

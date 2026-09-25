@@ -24970,7 +24970,8 @@ describe('server edition foundation', () => {
     const imapLines: string[] = [];
     const imapServer = await startLineServer((line, socket) => {
       imapLines.push(line);
-      if (line.startsWith('a001 LOGIN ')) socket.write('a001 OK login completed\r\n');
+      if (line === 'a000 CAPABILITY') socket.write('* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\na000 OK capability completed\r\n');
+      else if (line.startsWith('a001 LOGIN ')) socket.write('a001 OK login completed\r\n');
       else if (line.startsWith('a002 SELECT ')) socket.write('* FLAGS (\\Seen)\r\na002 OK select completed\r\n');
       else if (line.startsWith('a003 LOGOUT')) socket.write('* BYE logout\r\na003 OK logout completed\r\n');
       else socket.write('bad BAD unknown command\r\n');
@@ -25074,6 +25075,7 @@ describe('server edition foundation', () => {
         accessToken: 'oauth-access-token',
       })).resolves.toEqual({ success: true });
 
+      expect(imapLines).toContain('a000 CAPABILITY');
       expect(imapLines).toContain('a001 LOGIN "user@example.com" "secret"');
       expect(imapLines).toContain('a002 SELECT "INBOX"');
       expect(pop3Lines).toContain('USER user@example.com');
