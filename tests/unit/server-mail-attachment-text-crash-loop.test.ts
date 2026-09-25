@@ -7,12 +7,15 @@ import path from 'path';
 
 import JSZip from 'jszip';
 
-let releaseParse: (value: { value: string }) => void = () => undefined;
-const mockExtractRawText = jest.fn(
-  () => new Promise<{ value: string }>((resolve) => { releaseParse = resolve; }),
+let releaseParse: (text: string) => void = () => undefined;
+// The DOCX parse runs in a worker thread (C-A7); the test holds it at that call.
+const mockExtractDocx = jest.fn(
+  (): Promise<string> => new Promise<string>((resolve) => { releaseParse = resolve; }),
 );
 
-jest.mock('mammoth', () => ({ extractRawText: () => mockExtractRawText() }));
+jest.mock('../../packages/server/src/mail-attachment-docx', () => ({
+  extractDocxTextInWorker: () => mockExtractDocx(),
+}));
 
 import { extractTextForAttachmentRow } from '../../packages/server/src/mail-attachment-text';
 
@@ -72,17 +75,41 @@ describe('server attachment text extraction crash loop', () => {
         storage_path: 'bericht.docx',
       },
     );
-    for (let i = 0; i < 50 && mockExtractRawText.mock.calls.length === 0; i += 1) {
+    for (let i = 0; i < 50 && mockExtractDocx.mock.calls.length === 0; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(mockExtractRawText).toHaveBeenCalledTimes(1);
+    expect(mockExtractDocx).toHaveBeenCalledTimes(1);
 
     // Parser still running (in production: possibly about to crash the process).
     expect(updates).toEqual([{ content_text: null, text_extracted_at: expect.any(Date), updated_at: expect.any(Date) }]);
 
-    releaseParse({ value: 'Inhalt' });
+    releaseParse('Inhalt');
     await expect(pending).resolves.toBe(true);
     expect(updates).toHaveLength(2);
     expect(updates[1]).toMatchObject({ content_text: 'Inhalt' });
+  });
+
+  // C-A7: Stoesst der Parser-Worker an sein Heap-Limit oder das Timeout, bleibt die Zeile ohne Text markiert.
+  test('a worker stopped at its heap limit leaves the row marked without text', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'bombe.docx'), await buildMiniDocx());
+    mockExtractDocx.mockImplementationOnce(() => Promise.reject(new Error('DOCX parse stopped: heap limit 512 MB')));
+    const updates: AttachmentUpdate[] = [];
+
+    await expect(
+      extractTextForAttachmentRow(
+        { db: fakeDb(updates), attachmentsRoot: tmpDir, applyWorkspaceSession: async () => undefined },
+        {
+          id: 8,
+          workspace_id: WS,
+          filename_display: 'bombe.docx',
+          content_type: null,
+          size_bytes: fs.statSync(path.join(tmpDir, 'bombe.docx')).size,
+          storage_path: 'bombe.docx',
+        },
+      ),
+    ).resolves.toBe(false);
+    // Marked before the parse, marked again after the worker stopped: never with text.
+    expect(updates).toHaveLength(2);
+    expect(updates.every((update) => update.content_text === null)).toBe(true);
   });
 });

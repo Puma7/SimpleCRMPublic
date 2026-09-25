@@ -7,12 +7,15 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 let db: Database.Database;
-let releaseParse: (value: { value: string }) => void = () => undefined;
-const mockExtractRawText = jest.fn(
-  () => new Promise<{ value: string }>((resolve) => { releaseParse = resolve; }),
+let releaseParse: (text: string) => void = () => undefined;
+// The DOCX parse runs in a worker thread (C-A7); the test holds it at that call.
+const mockExtractDocx = jest.fn(
+  (): Promise<string> => new Promise<string>((resolve) => { releaseParse = resolve; }),
 );
 
-jest.mock('mammoth', () => ({ extractRawText: () => mockExtractRawText() }));
+jest.mock('../../electron/email/attachment-text-docx', () => ({
+  extractDocxTextInWorker: () => mockExtractDocx(),
+}));
 jest.mock('../../electron/sqlite-service', () => {
   const actual = jest.requireActual('../../electron/sqlite-service');
   return { ...actual, getDb: () => db };
@@ -58,10 +61,10 @@ describe('attachment text extraction crash loop', () => {
       { id, filename_display: 'bericht.docx', content_type: null, size_bytes: fs.statSync(file).size, storage_path: file },
       { attachmentsRoot: tmpDir },
     );
-    for (let i = 0; i < 50 && mockExtractRawText.mock.calls.length === 0; i += 1) {
+    for (let i = 0; i < 50 && mockExtractDocx.mock.calls.length === 0; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(mockExtractRawText).toHaveBeenCalledTimes(1);
+    expect(mockExtractDocx).toHaveBeenCalledTimes(1);
 
     // Parser still running (in production: possibly about to crash the process).
     const during = db.prepare('SELECT text_extracted_at FROM email_message_attachments WHERE id = ?').get(id) as {
@@ -69,10 +72,36 @@ describe('attachment text extraction crash loop', () => {
     };
     expect(during.text_extracted_at).not.toBeNull();
 
-    releaseParse({ value: 'Inhalt' });
+    releaseParse('Inhalt');
     await expect(pending).resolves.toBe(true);
     expect(db.prepare('SELECT text_content FROM email_message_attachments WHERE id = ?').get(id)).toEqual({
       text_content: 'Inhalt',
     });
+  });
+
+  // C-A7: Stoesst der Parser-Worker an sein Heap-Limit oder das Timeout, bleibt die Zeile ohne Text markiert.
+  test('a worker stopped at its heap limit leaves the row marked without text', async () => {
+    const file = path.join(tmpDir, 'bombe.docx');
+    fs.writeFileSync(file, await buildMiniDocx());
+    mockExtractDocx.mockImplementationOnce(() => Promise.reject(new Error('DOCX parse stopped: heap limit 512 MB')));
+    const id = Number(
+      db.prepare(
+        `INSERT INTO email_message_attachments (message_id, filename_display, content_type, size_bytes, storage_path)
+         VALUES (1, 'bombe.docx', NULL, ?, ?)`,
+      ).run(fs.statSync(file).size, file).lastInsertRowid,
+    );
+
+    await expect(
+      extractTextForAttachmentRow(
+        { id, filename_display: 'bombe.docx', content_type: null, size_bytes: fs.statSync(file).size, storage_path: file },
+        { attachmentsRoot: tmpDir },
+      ),
+    ).resolves.toBe(false);
+    const row = db.prepare('SELECT text_content, text_extracted_at FROM email_message_attachments WHERE id = ?').get(id) as {
+      text_content: string | null;
+      text_extracted_at: string | null;
+    };
+    expect(row.text_content).toBeNull();
+    expect(row.text_extracted_at).not.toBeNull();
   });
 });

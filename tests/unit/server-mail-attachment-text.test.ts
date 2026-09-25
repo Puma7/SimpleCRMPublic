@@ -1,11 +1,17 @@
 /**
  * @jest-environment node
  */
+import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { deflateRawSync } from 'node:zlib';
 
 import JSZip from 'jszip';
 
+import { extractDocxText, extractDocxTextInWorker } from '../../packages/server/src/mail-attachment-docx';
 import { extractAttachmentTextFromBuffer } from '../../packages/server/src/mail-attachment-text';
+
+// The DOCX worker loads the TS sources through tsx; map @simplecrm/core to src like Jest does.
+process.env.TSX_TSCONFIG_PATH ??= path.resolve(__dirname, '../setup/tsconfig.node-runtime.json');
 
 async function buildDocx(documentXml: string): Promise<Buffer> {
   const zip = new JSZip();
@@ -90,6 +96,15 @@ const CONTENT_TYPES_XML = Buffer.from(
 const DOCUMENT_XML_PREFIX =
   '<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>';
 const BOMB_PADDING = Buffer.alloc(40 * 1024 * 1024, 0x20);
+const MIB = 1024 * 1024;
+
+/** DOCX inside the inflate budget whose ~30 MiB of empty paragraphs mammoth turns into a multi-GB DOM. */
+function buildDomBomb(): Buffer {
+  return buildDeflatedZip([
+    ['[Content_Types].xml', CONTENT_TYPES_XML],
+    ['word/document.xml', Buffer.from(`${DOCUMENT_XML_PREFIX}${'<w:p/>'.repeat(5_000_000)}</w:body></w:document>`)],
+  ]);
+}
 
 describe('server attachment text extraction', () => {
   test('extracts an ordinary DOCX', async () => {
@@ -156,4 +171,65 @@ describe('server attachment text extraction', () => {
     expect(text.startsWith('Rechnung Rechnung')).toBe(true);
     expect(text.endsWith('Rechnung Ende')).toBe(true);
   });
+
+  test('ordinary DOCX give the worker the same text as the former in-process parse', async () => {
+    const documents = [
+      `${DOCUMENT_XML_PREFIX}<w:p><w:r><w:t>Hallo CRM</w:t></w:r></w:p></w:body></w:document>`,
+      `${DOCUMENT_XML_PREFIX}<w:p><w:r><w:t>Angebot für Müller &amp; Söhne</w:t></w:r></w:p>`
+        + '<w:p><w:r><w:t xml:space="preserve">Position 1</w:t><w:tab/><w:t>12,50 €</w:t><w:br/><w:t>Zeile 2</w:t></w:r></w:p>'
+        + '<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Zelle A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Zelle B</w:t></w:r></w:p></w:tc></w:tr></w:tbl>'
+        + '</w:body></w:document>',
+      `${DOCUMENT_XML_PREFIX}<w:p><w:r><w:t>${'Rechnung '.repeat(80_000)}Ende</w:t></w:r></w:p></w:body></w:document>`,
+    ];
+    for (const documentXml of documents) {
+      const docx = await buildDocx(documentXml);
+      const inProcess = await extractDocxText(docx);
+      expect(inProcess.length).toBeGreaterThan(0);
+      await expect(extractAttachmentTextFromBuffer(docx, 'docx')).resolves.toBe(inProcess);
+    }
+    await expect(extractAttachmentTextFromBuffer(await buildDocx(documents[1]), 'docx')).resolves.toBe(
+      'Angebot für Müller & Söhne Position 1 12,50 €Zeile 2 Zelle A Zelle B',
+    );
+  }, 60_000);
+
+  // C-A7: Das Parse-Timeout lehnte nur das Promise ab; mammoth rechnete im Hauptprozess weiter. Jetzt wird der Worker beendet.
+  test('terminates the parse worker when the timeout expires', async () => {
+    const terminate = jest.spyOn(Worker.prototype, 'terminate');
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await expect(extractDocxTextInWorker(buildDomBomb(), 300)).rejects.toThrow('DOCX parse stopped: timeout after 300 ms');
+    expect(terminate).toHaveBeenCalled();
+    await expect(terminate.mock.results[0]!.value).resolves.toEqual(expect.any(Number));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[mail] attachment text: DOCX parse stopped: timeout'));
+  }, 30_000);
+
+  // C-A7: Ein prozessweites --max-old-space-size (NODE_OPTIONS) hebt resourceLimits auf; dann beendet der Elternprozess den Worker.
+  test('stops the worker itself when a process-wide heap flag overrides its limit', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const terminate = jest.spyOn(Worker.prototype, 'terminate');
+    jest
+      .spyOn(Worker.prototype, 'getHeapStatistics')
+      .mockResolvedValue({ heap_size_limit: 4096 * MIB, used_heap_size: 600 * MIB } as Awaited<
+        ReturnType<Worker['getHeapStatistics']>
+      >);
+
+    await expect(extractDocxTextInWorker(buildDomBomb(), 30_000)).rejects.toThrow(
+      'DOCX parse stopped: heap limit 512 MB',
+    );
+    expect(terminate).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[mail] attachment text: DOCX parse stopped: heap limit'));
+  }, 30_000);
+
+  test('leaves the stop to V8 while the worker heap limit is in effect', async () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const stats = jest
+      .spyOn(Worker.prototype, 'getHeapStatistics')
+      .mockResolvedValue({ heap_size_limit: 560 * MIB, used_heap_size: 540 * MIB } as Awaited<
+        ReturnType<Worker['getHeapStatistics']>
+      >);
+
+    await expect(extractDocxTextInWorker(buildDomBomb(), 500)).rejects.toThrow(
+      'DOCX parse stopped: timeout after 500 ms',
+    );
+    expect(stats).toHaveBeenCalled();
+  }, 30_000);
 });

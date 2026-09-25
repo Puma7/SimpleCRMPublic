@@ -10,19 +10,17 @@
  * a manipulated row must not pull arbitrary files into the search index.
  */
 import fs from 'fs';
-import { createRequire } from 'module';
 import { getDb } from '../sqlite-service';
 import { EMAIL_MESSAGE_ATTACHMENTS_TABLE } from '../database-schema';
 import { getAttachmentsRootForExport } from './email-message-attachments-store';
 import { resolveStoredAttachmentPath } from './attachment-storage-path';
+import { extractDocxTextInWorker } from './attachment-text-docx';
 import {
-  assertDocxInflatesWithinLimit,
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
   capAttachmentText,
   plainTextFromHtml,
   type AttachmentTextKind,
-  type DocxZipLoader,
 } from './email-parse-utils';
 
 const BACKFILL_BATCH_SIZE = 25;
@@ -49,9 +47,9 @@ function resolveConfinedStoragePath(storagePath: string, attachmentsRoot?: strin
 }
 
 /**
- * Reject after ms. NB: the underlying parse promise cannot be cancelled and
- * may keep running detached — acceptable, the row is marked as tried and the
- * pipeline moves on.
+ * Reject after ms. NB: a pdf parse cannot be cancelled and may keep running
+ * detached — acceptable, the row is marked as tried and the pipeline moves
+ * on. The docx worker is terminated at the same deadline.
  */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
@@ -67,11 +65,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
       },
     );
   });
-}
-
-/** JSZip resolved from mammoth's own location, i.e. the parser mammoth reads the DOCX with. */
-function mammothJsZip(): DocxZipLoader {
-  return createRequire(require.resolve('mammoth'))('jszip') as DocxZipLoader;
 }
 
 /** Buffer -> plain text for a supported kind (caller checked size limits). */
@@ -94,12 +87,9 @@ export async function extractAttachmentTextFromBuffer(
         await parser.destroy().catch(() => undefined);
       }
     }
-    case 'docx': {
-      await assertDocxInflatesWithinLimit(buf, mammothJsZip());
-      const mammoth = await import('mammoth');
-      const result = await mammoth.extractRawText({ buffer: buf });
-      return capAttachmentText(result.value ?? '');
-    }
+    case 'docx':
+      // Inflate guard and mammoth run in a worker with its own heap limit (C-A7).
+      return extractDocxTextInWorker(buf, EXTRACT_TIMEOUT_MS);
   }
 }
 

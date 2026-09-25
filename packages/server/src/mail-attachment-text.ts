@@ -15,16 +15,13 @@
  */
 import { randomUUID } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 
 import {
-  assertDocxInflatesWithinLimit,
   ATTACHMENT_TEXT_MAX_BYTES,
   attachmentTextKind,
   capAttachmentText,
   plainTextFromHtml,
   type AttachmentTextKind,
-  type DocxZipLoader,
 } from '@simplecrm/core';
 import type { Kysely } from 'kysely';
 import yauzl from 'yauzl';
@@ -35,6 +32,7 @@ import {
   type ServerDatabase,
   type WorkspaceSessionApplier,
 } from './db';
+import { extractDocxTextInWorker } from './mail-attachment-docx';
 
 const BACKFILL_BATCH_SIZE = 25;
 const BACKFILL_POLL_INTERVAL_MS = 30_000;
@@ -69,9 +67,9 @@ const EXTRACTABLE_COLUMNS = [
 ] as const;
 
 /**
- * Reject after ms. NB: the underlying parse promise cannot be cancelled and
- * may keep running detached — acceptable, the row is marked as tried and the
- * pipeline moves on.
+ * Reject after ms. NB: a pdf parse cannot be cancelled and may keep running
+ * detached — acceptable, the row is marked as tried and the pipeline moves
+ * on. The docx worker is terminated at the same deadline.
  */
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
@@ -109,19 +107,11 @@ export async function extractAttachmentTextFromBuffer(
         await parser.destroy().catch(() => undefined);
       }
     }
-    case 'docx': {
+    case 'docx':
       await validateDocxArchive(buf);
-      await assertDocxInflatesWithinLimit(buf, mammothJsZip());
-      const mammoth = await import('mammoth');
-      const result = await mammoth.extractRawText({ buffer: buf });
-      return capAttachmentText(result.value ?? '');
-    }
+      // Inflate guard and mammoth run in a worker with its own heap limit (C-A7).
+      return extractDocxTextInWorker(buf, EXTRACT_TIMEOUT_MS);
   }
-}
-
-/** JSZip resolved from mammoth's own location, i.e. the parser mammoth reads the DOCX with. */
-function mammothJsZip(): DocxZipLoader {
-  return createRequire(require.resolve('mammoth'))('jszip') as DocxZipLoader;
 }
 
 async function validateDocxArchive(buf: Buffer): Promise<void> {
