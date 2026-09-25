@@ -91,6 +91,7 @@ export async function executeWorkflowForTrigger(input: {
         message: input.message,
         outbound: input.outbound,
         direction: input.direction,
+        dryRun: input.dryRun,
       });
       finishWorkflowRun(runId, { status: result.status, logJson: JSON.stringify(result.log) });
       return { runId, ...result };

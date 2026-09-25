@@ -13,6 +13,7 @@ export async function runCompiledWorkflow(input: {
   message?: EmailMessageRow | null;
   outbound?: OutboundDraftPayload | null;
   direction: string;
+  dryRun?: boolean;
 }): Promise<{
   status: 'ok' | 'error' | 'blocked';
   log: string[];
@@ -23,7 +24,7 @@ export async function runCompiledWorkflow(input: {
   try {
     const def = parseWorkflowDefinition(input.workflow.definition_json);
     if (input.direction === 'outbound' && input.outbound) {
-      const r = await runCompiledOutboundRules(def, input.outbound);
+      const r = await runCompiledOutboundRules(def, input.outbound, input.dryRun === true);
       return {
         status: r.blocked ? 'blocked' : 'ok',
         log: [...log, ...r.log],
@@ -37,6 +38,7 @@ export async function runCompiledWorkflow(input: {
         input.message.id,
         input.message,
         input.workflow.id,
+        input.dryRun === true,
       );
       return {
         status: 'ok',

@@ -126,33 +126,40 @@ async function executeInboundStep(
   row: EmailMessageRow,
   log: string[],
   workflowId: number,
+  dryRun: boolean,
 ): Promise<boolean> {
+  // Test-Läufe (dryRun) protokollieren nur, was passieren würde — wie der Graph-Runner.
+  const p = dryRun ? 'dry_run:' : '';
   switch (step.type) {
     case 'tag':
-      addMessageTag(messageId, step.tag);
-      log.push(`tag:${step.tag}`);
+      if (!dryRun) addMessageTag(messageId, step.tag);
+      log.push(`${p}tag:${step.tag}`);
       return true;
     case 'mark_seen':
-      setMessageSeenLocal(messageId, true, shouldSyncSeenStateToServer(row));
-      log.push('mark_seen');
+      if (!dryRun) setMessageSeenLocal(messageId, true, shouldSyncSeenStateToServer(row));
+      log.push(`${p}mark_seen`);
       return true;
     case 'archive':
-      setMessageArchived(messageId, true);
-      log.push('archive');
+      if (!dryRun) setMessageArchived(messageId, true);
+      log.push(`${p}archive`);
       return true;
     case 'hold_outbound':
-      setOutboundHold(messageId, true, step.reason);
-      log.push(`hold_outbound:${step.reason}`);
+      if (!dryRun) setOutboundHold(messageId, true, step.reason);
+      log.push(`${p}hold_outbound:${step.reason}`);
       return true;
     case 'set_category':
-      assignCategoryPathToMessage(messageId, step.path);
-      log.push(`category:${step.path}`);
+      if (!dryRun) assignCategoryPathToMessage(messageId, step.path);
+      log.push(`${p}category:${step.path}`);
       return true;
     case 'link_customer':
-      tryLinkMessageToCustomer(messageId);
-      log.push('link_customer');
+      if (!dryRun) tryLinkMessageToCustomer(messageId);
+      log.push(`${p}link_customer`);
       return true;
     case 'forward_copy': {
+      if (dryRun) {
+        log.push(`dry_run:forward_copy:${step.to}`);
+        return true;
+      }
       const { sendWorkflowForwardCopy } = await import('./email-forward-copy.js');
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [
@@ -181,14 +188,19 @@ async function executeInboundStep(
     }
     case 'tag_attachment_meta': {
       if (row.has_attachments) {
-        addMessageTag(messageId, step.tag);
-        log.push(`tag_attachment_meta:${step.tag}`);
+        if (!dryRun) addMessageTag(messageId, step.tag);
+        log.push(`${p}tag_attachment_meta:${step.tag}`);
       } else {
         log.push('tag_attachment_meta:skip');
       }
       return true;
     }
     case 'ai_review': {
+      // Wie ai.review im Graph: eingehend ohne KI-Aufruf im Test-Lauf.
+      if (dryRun) {
+        log.push('dry_run:ai_review');
+        return true;
+      }
       const ctx = buildInboundContext(row);
       const blocked = await runAiReviewStep(step, ctx.combined_text, log, row.account_id);
       if (blocked) {
@@ -247,17 +259,19 @@ async function executeOutboundStep(
   messageId: number,
   payload: OutboundDraftPayload,
   log: string[],
+  dryRun: boolean,
 ): Promise<'continue' | 'stop' | 'blocked'> {
+  // Im Dry-Run (Ausgangs-Vorschau, Test) nur das Urteil liefern, den Entwurf nicht sperren.
   if (step.type === 'hold_outbound') {
-    setOutboundHold(messageId, true, step.reason);
-    log.push(`hold_outbound:${step.reason}`);
+    if (!dryRun) setOutboundHold(messageId, true, step.reason);
+    log.push(`${dryRun ? 'dry_run:' : ''}hold_outbound:${step.reason}`);
     return 'blocked';
   }
   if (step.type === 'ai_review') {
     const ctx = buildOutboundContext(payload);
     const blocked = await runAiReviewStep(step, ctx.combined_text, log, payload.accountId);
     if (blocked) {
-      setOutboundHold(messageId, true, 'KI-Prüfung: Versand blockiert');
+      if (!dryRun) setOutboundHold(messageId, true, 'KI-Prüfung: Versand blockiert');
       return 'blocked';
     }
     return 'continue';
@@ -278,15 +292,17 @@ export async function runCompiledInboundRules(
   messageId: number,
   row: EmailMessageRow,
   workflowId: number,
+  dryRun = false,
 ): Promise<string[]> {
-  return runRulesInbound(def, messageId, row, workflowId);
+  return runRulesInbound(def, messageId, row, workflowId, dryRun);
 }
 
 export async function runCompiledOutboundRules(
   def: WorkflowDefinitionV1,
   payload: OutboundDraftPayload,
+  dryRun = false,
 ): Promise<{ blocked: boolean; log: string[] }> {
-  return runRulesOutbound(def, payload);
+  return runRulesOutbound(def, payload, dryRun);
 }
 
 async function runRulesInbound(
@@ -294,6 +310,7 @@ async function runRulesInbound(
   messageId: number,
   row: EmailMessageRow,
   workflowId: number,
+  dryRun: boolean,
 ): Promise<string[]> {
   const ctx = buildInboundContext(row);
   const log: string[] = [];
@@ -305,7 +322,7 @@ async function runRulesInbound(
     if (!evaluateWorkflowWhen(rule.when, ctx)) continue;
     log.push('rule_matched');
     for (const step of rule.then) {
-      const cont = await executeInboundStep(step, messageId, row, log, workflowId);
+      const cont = await executeInboundStep(step, messageId, row, log, workflowId, dryRun);
       if (!cont) return log;
     }
   }
@@ -315,6 +332,7 @@ async function runRulesInbound(
 async function runRulesOutbound(
   def: WorkflowDefinitionV1,
   payload: OutboundDraftPayload,
+  dryRun: boolean,
 ): Promise<{ blocked: boolean; log: string[] }> {
   const ctx = buildOutboundContext(payload);
   const log: string[] = [];
@@ -322,7 +340,7 @@ async function runRulesOutbound(
     if (!evaluateWorkflowWhen(rule.when, ctx)) continue;
     log.push('rule_matched');
     for (const step of rule.then) {
-      const r = await executeOutboundStep(step, payload.messageId, payload, log);
+      const r = await executeOutboundStep(step, payload.messageId, payload, log, dryRun);
       if (r === 'blocked') return { blocked: true, log };
       if (r === 'stop') return { blocked: false, log };
     }
