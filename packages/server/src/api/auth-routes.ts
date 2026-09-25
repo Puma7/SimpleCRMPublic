@@ -25,6 +25,12 @@ import {
   hasValidRefreshCsrf,
   readRefreshCredential,
 } from './auth-session-cookie';
+import {
+  passwordCheckEmail,
+  passwordCheckLockResponse,
+  recordFailedPasswordCheck,
+  recordSuccessfulPasswordCheck,
+} from './password-check-lockout';
 
 const DEFAULT_AUDIT_LIMIT = 100;
 const MAX_AUDIT_LIMIT = 500;
@@ -577,9 +583,18 @@ async function handleChangePassword(req: ApiRequest, ports: ServerApiPorts): Pro
   if (!currentPassword || !newPassword) {
     return error(400, 'validation_error', 'currentPassword und newPassword sind erforderlich');
   }
-  if (newPassword.length < 10) {
-    return error(400, 'validation_error', 'Das neue Passwort muss mindestens 10 Zeichen haben');
+  // Same length rules as initial setup, invitations and admin resets.
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
+    return error(400, 'validation_error', `Das neue Passwort muss mindestens ${MIN_PASSWORD_LENGTH} Zeichen haben`);
   }
+  if (newPassword.length > MAX_PASSWORD_LENGTH) {
+    return error(400, 'validation_error', `Das neue Passwort darf maximal ${MAX_PASSWORD_LENGTH} Zeichen haben`);
+  }
+
+  const ip = req.ip ?? '0.0.0.0';
+  const email = await passwordCheckEmail(ports, principal);
+  const locked = await passwordCheckLockResponse(ports, email, ip);
+  if (locked) return locked;
 
   const result = await ports.auth.changePassword({
     workspaceId: principal.workspaceId,
@@ -590,11 +605,13 @@ async function handleChangePassword(req: ApiRequest, ports: ServerApiPorts): Pro
   });
   if (!result.ok) {
     if (result.code === 'invalid_current') {
+      await recordFailedPasswordCheck(ports, { principal, email, ip, action: 'auth.password_change_failed' });
       return error(403, 'invalid_current_password', 'Aktuelles Passwort ist falsch');
     }
     return error(400, 'validation_error', 'Passwort konnte nicht geaendert werden');
   }
 
+  await recordSuccessfulPasswordCheck(ports, { principal, email, ip });
   await ports.audit?.record({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,

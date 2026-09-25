@@ -55,6 +55,7 @@ export function bucketForApiPath(method: string, path: string): RateLimitBucket 
     || path === '/api/v1/auth/initial-setup'
     || path === '/api/v1/auth/captcha-verify'
     || path === '/api/v1/auth/mfa/verify'
+    || path === '/api/v1/auth/change-password'
     || path.startsWith('/api/v1/auth/invitations/')
   ) {
     return 'auth-strict';

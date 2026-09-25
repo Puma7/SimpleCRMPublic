@@ -10,8 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-
-const MIN_PASSWORD_LENGTH = 10
+import { MIN_PASSWORD_LENGTH } from "@shared/auth-password-policy"
 
 // Self-service password change for the currently signed-in user. Only shown
 // when a real login session is active (authRequired) — the synthetic local

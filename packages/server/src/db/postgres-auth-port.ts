@@ -171,7 +171,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
         { workspaceId: input.workspaceId, role: 'admin' },
         async (trx) => trx
           .selectFrom('users')
-          .select(['id', 'role', 'disabled_at'])
+          .select(['id', 'email', 'role', 'disabled_at'])
           .where('id', '=', input.userId)
           .executeTakeFirst(),
         { applySession: options.applyWorkspaceSession },
@@ -179,6 +179,7 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
       if (!row) return null;
       return {
         id: row.id,
+        email: row.email,
         role: row.role,
         disabledAt: row.disabled_at ? toDate(row.disabled_at).toISOString() : null,
       };

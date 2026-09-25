@@ -157,6 +157,7 @@ Workspace-Flags in `sync_info` (siehe `packages/core/src/auth/login-security-set
 - **E-Mail-MFA-Zustellung** reserviert konkurrierende Anforderungen pro Benutzer und haelt waehrend SMTP keine DB-Transaktion offen.
 - **Pending-E-Mail-MFA** gibt nur dem reservierenden Login ein Challenge-Token; parallele Anfragen koennen das Versuchsbudget nicht vervielfachen.
 - **Login-Failure-Counter** (Brute-Force) in einer Transaktion inkrementiert.
+- **Passwort ändern** (`/auth/change-password`) prüft das aktuelle Passwort wie ein Login: gleiche (E-Mail, IP)-Staffelung, Rate-Limit `auth-strict`, Audit `auth.password_change_failed`; neues Passwort 12–1000 Zeichen wie bei Setup und Einladung.
 - **Kontoweite Abwehr** gegen verteiltes Raten — siehe unten.
 - **INITIAL_SETUP_TOKEN** verhindert unbemerktes Owner-Takeover bei exponiertem Setup-Endpunkt.
 

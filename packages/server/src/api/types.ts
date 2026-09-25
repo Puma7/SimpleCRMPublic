@@ -314,6 +314,7 @@ export type AuthApiPort = {
   // fetch the whole workspace user list.
   getUser?(input: { workspaceId: string; userId: string }): Promise<{
     id: string;
+    email?: string;
     role: 'owner' | 'admin' | 'user';
     disabledAt: string | null;
   } | null>;
