@@ -180,6 +180,30 @@ describe('registerDatabaseHandlers', () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain('FK constraint');
       });
+
+      // F-A10-10: the handler deleted deals, tasks and appointments without
+      // asking; it now reports them and only cascades after confirmation.
+      test('reports dependent records instead of cascading silently', async () => {
+        const dependents = { deals: 2, tasks: 1, appointments: 1 };
+        sqliteMocks.deleteCustomer.mockImplementation(() => {
+          throw Object.assign(new Error('Kunde hat verknüpfte Deals, Aufgaben oder Termine'), {
+            code: 'customer_has_dependents',
+            dependents,
+          });
+        });
+        const handler = handlers.get(IPCChannels.Db.DeleteCustomer);
+        const result = await handler({}, 1);
+        expect(result).toEqual({ success: false, error: 'customer_has_dependents', dependents });
+        expect(sqliteMocks.deleteCustomer).toHaveBeenCalledWith(1, { cascade: false });
+      });
+
+      test('passes the cascade confirmation through', async () => {
+        sqliteMocks.deleteCustomer.mockReturnValue(true);
+        const handler = handlers.get(IPCChannels.Db.DeleteCustomer);
+        const result = await handler({}, [1, { cascade: true }]);
+        expect(result).toEqual({ success: true });
+        expect(sqliteMocks.deleteCustomer).toHaveBeenCalledWith(1, { cascade: true });
+      });
     });
 
     describe('Db.GetDealsForCustomer', () => {

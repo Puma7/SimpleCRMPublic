@@ -975,11 +975,22 @@ export type CustomerApiPort = {
     id: number;
     values: CustomerMutationInput;
   }): Promise<CustomerRecord | null>;
+  /**
+   * Refuses (returns the dependent counts) while deals, tasks or appointments
+   * still reference the customer, unless `cascade` confirms deleting them too.
+   */
   delete?(input: {
     workspaceId: string;
     actorUserId: string;
     id: number;
-  }): Promise<CustomerRecord | null>;
+    cascade?: boolean;
+  }): Promise<CustomerRecord | { dependents: CustomerDependentsRecord } | null>;
+};
+
+export type CustomerDependentsRecord = {
+  deals: number;
+  tasks: number;
+  appointments: number;
 };
 
 export type DashboardStatsRecord = {

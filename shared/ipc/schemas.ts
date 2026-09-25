@@ -573,7 +573,11 @@ baseSchemaMap.set(IPCChannels.Db.UpdateCustomer, {
 });
 
 baseSchemaMap.set(IPCChannels.Db.DeleteCustomer, {
-  payload: z.number().int().positive(),
+  // Either the id, or [id, { cascade }] to confirm deleting dependent records.
+  payload: z.union([
+    z.number().int().positive(),
+    z.tuple([z.number().int().positive(), z.object({ cascade: z.boolean().optional() }).strict()]),
+  ]),
   result: standardResult,
 });
 

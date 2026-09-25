@@ -84,7 +84,7 @@ export function getServerOpenApiSpec(): Record<string, unknown> {
       '/customers/{id}': {
         get: { summary: 'Get customer' },
         patch: { summary: 'Update customer' },
-        delete: { summary: 'Delete customer' },
+        delete: { summary: 'Delete customer (409 customer_has_dependents with counts unless ?cascade=true)' },
       },
       '/products': {
         get: { summary: 'List products' },

@@ -1153,6 +1153,32 @@ describe('renderer transport', () => {
     ]);
   });
 
+  // F-A10-10: the server refuses a customer delete with dependents (409 with
+  // counters) until the client confirms with ?cascade=true.
+  test('maps the customer delete confirmation and surfaces the 409 counters', async () => {
+    const dependents = { deals: 1, tasks: 2, appointments: 0 };
+    const fetchImpl = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        error: { code: 'customer_has_dependents', message: 'Konflikt', details: { dependents } },
+      }, 409))
+      .mockResolvedValueOnce(jsonResponse({ data: { deleted: true } }));
+    const transport = createHttpRendererTransport({
+      baseUrl: 'https://crm.example.com',
+      fetchImpl,
+    });
+
+    await expect(transport.invoke(IPCChannels.Db.DeleteCustomer, 7)).rejects.toMatchObject({
+      status: 409,
+      code: 'customer_has_dependents',
+      details: { dependents },
+    });
+    await expect(transport.invoke(IPCChannels.Db.DeleteCustomer, 7, { cascade: true })).resolves.toEqual({ success: true });
+    expect(fetchImpl.mock.calls.map(([url, init]) => [url, (init as RequestInit).method])).toEqual([
+      ['https://crm.example.com/api/v1/customers/7', 'DELETE'],
+      ['https://crm.example.com/api/v1/customers/7?cascade=true', 'DELETE'],
+    ]);
+  });
+
   test('keeps a small deal list request to the requested number of deals', async () => {
     const deal = (id: number) => ({ id, sourceSqliteId: id, customerId: 2, name: `Deal ${id}`, value: '10', stage: 'Angebot' });
     const fetchImpl = jest.fn().mockResolvedValueOnce(jsonResponse({

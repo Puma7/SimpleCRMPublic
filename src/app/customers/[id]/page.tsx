@@ -50,6 +50,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import type { Customer, Deal, Task } from "@/services/data/types" // Updated import
 import { TASK_EVENT_COMPLETED_COLOR, TASK_EVENT_DEFAULT_COLOR } from "@/services/data/calendarService"
 import { CustomFieldsForm } from "@/components/custom-fields-form";
+import {
+  deleteCustomerChecked,
+  describeCustomerDependents,
+  type CustomerDependents,
+} from "@/services/data/customerDeletion"
 // Import the specific route definition
 import { customerDetailRoute } from "@/router"
 import { getPrimaryPhone, getFormattedPhone } from "@/lib/contact-utils"
@@ -81,6 +86,7 @@ export default function CustomerDetailPage() {
   const [customer, setCustomer] = useState<Customer | null>(null)
   const [isLoading, setIsLoading] = useState(true) // Add loading state
   const [isEditOpen, setIsEditOpen] = useState(false)
+  const [customerDependents, setCustomerDependents] = useState<CustomerDependents | null>(null)
   const [deals, setDeals] = useState<Deal[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [isLoadingRelated, setIsLoadingRelated] = useState(false)
@@ -257,19 +263,19 @@ export default function CustomerDetailPage() {
     }
   };
 
-  const handleDeleteCustomer = async () => {
+  const handleDeleteCustomer = async (cascade = false) => {
     if (!customer) return;
 
     try {
-      const result = await invokeRenderer(
-        IPCChannels.Db.DeleteCustomer,
-        Number(customer.id),
-      ) as { success?: boolean; error?: string };
-
-      if (result.success === false) {
-        throw new Error(result.error || "Customer delete failed");
+      // Deals, tasks and appointments are only deleted with the customer after
+      // the user confirmed it in the follow-up dialog.
+      const outcome = await deleteCustomerChecked(Number(customer.id), { cascade });
+      if (!outcome.deleted) {
+        setCustomerDependents(outcome.dependents);
+        return;
       }
 
+      setCustomerDependents(null);
       toast.success(`Kunde ${customer.name} gelöscht.`);
       navigate({ to: "/customers" });
     } catch (error) {
@@ -567,7 +573,7 @@ export default function CustomerDetailPage() {
                   <AlertDialogFooter>
                     <AlertDialogCancel>Abbrechen</AlertDialogCancel>
                     <AlertDialogAction
-                      onClick={handleDeleteCustomer}
+                      onClick={() => void handleDeleteCustomer()}
                       className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                     >
                       Löschen
@@ -576,6 +582,29 @@ export default function CustomerDetailPage() {
                 </AlertDialogContent>
               </AlertDialog>
               ) : null}
+              <AlertDialog
+                open={customerDependents !== null}
+                onOpenChange={(open) => { if (!open) setCustomerDependents(null) }}
+              >
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Verknüpfte Daten mitlöschen?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Zu diesem Kunden gehören {customerDependents ? describeCustomerDependents(customerDependents) : ""}.
+                      Wenn Sie den Kunden löschen, werden diese Daten ebenfalls gelöscht. Diese Aktion kann nicht rückgängig gemacht werden.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Abbrechen</AlertDialogCancel>
+                    <AlertDialogAction
+                      onClick={() => void handleDeleteCustomer(true)}
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                    >
+                      Mitlöschen
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           </div>
 

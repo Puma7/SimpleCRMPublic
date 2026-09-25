@@ -1210,9 +1210,12 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       },
     }
   }],
-  [IPCChannels.Db.DeleteCustomer, ([id]) => ({
+  [IPCChannels.Db.DeleteCustomer, ([id, options]) => ({
     method: "DELETE",
     path: `/api/v1/customers/${positiveId(id, "customer id")}`,
+    // Without the confirmation the server answers 409 customer_has_dependents
+    // (with the counts in the error details) while deals, tasks or appointments exist.
+    query: isRecord(options) && options.cascade === true ? { cascade: true } : undefined,
     transform: () => ({ success: true }),
   })],
   [IPCChannels.Db.GetTasksForCustomer, ([customerId]) => {

@@ -251,6 +251,35 @@ describe('automation handlers', () => {
     expect(r.status).toBe(400);
   });
 
+  // F-A10-10: the desktop automation API deleted a customer together with all
+  // of its deals, tasks and appointments; it now answers 409 like the server
+  // until the caller confirms with ?cascade=true.
+  test('DELETE /customers/:id refuses with 409 while dependent records exist', async () => {
+    const { CustomerService } = require('../../electron/services/customer-service') as {
+      CustomerService: { delete: jest.Mock };
+    };
+    const dependents = { deals: 1, tasks: 2, appointments: 1 };
+    CustomerService.delete.mockReturnValueOnce({
+      success: false,
+      error: 'customer_has_dependents',
+      dependents,
+    });
+    const auth = { authorization: 'Bearer scrm_test_key_12345678901234567890123456789012' };
+    const refused = mockReqRes({ method: 'DELETE', url: '/api/v1/customers/5', headers: auth });
+    await handleAutomationRequest(refused.req, refused.res);
+    const refusedResponse = await refused.done;
+    expect(refusedResponse.status).toBe(409);
+    expect(JSON.parse(refusedResponse.body)).toMatchObject({
+      error: { code: 'customer_has_dependents', details: { dependents } },
+    });
+    expect(CustomerService.delete).toHaveBeenLastCalledWith(5, { cascade: false });
+
+    const confirmed = mockReqRes({ method: 'DELETE', url: '/api/v1/customers/5?cascade=true', headers: auth });
+    await handleAutomationRequest(confirmed.req, confirmed.res);
+    expect((await confirmed.done).status).toBe(200);
+    expect(CustomerService.delete).toHaveBeenLastCalledWith(5, { cascade: true });
+  });
+
   test('returns 429 when rate limit exceeded', async () => {
     const key = 'scrm_test_key_12345678901234567890123456789012';
     for (let i = 0; i < 60; i++) {

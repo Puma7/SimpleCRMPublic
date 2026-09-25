@@ -132,7 +132,18 @@ async function dispatch(ctx: RouteContext, res: ServerResponse, apiScopes: Autom
     }
     if (method === 'DELETE') {
       if (!needScope(res, ['write'], apiScopes)) return;
-      const result = CustomerService.delete(id);
+      const cascadeRaw = query.get('cascade');
+      if (cascadeRaw !== null && cascadeRaw !== 'true' && cascadeRaw !== 'false') {
+        sendError(res, 400, 'invalid_cascade', 'cascade muss true oder false sein');
+        return;
+      }
+      const result = CustomerService.delete(id, { cascade: cascadeRaw === 'true' });
+      if ('dependents' in result && result.dependents) {
+        sendError(res, 409, 'customer_has_dependents', 'Kunde hat verknüpfte Deals, Aufgaben oder Termine', {
+          dependents: result.dependents,
+        });
+        return;
+      }
       if (!result.success) {
         sendError(res, 404, 'not_found', result.error ?? 'Kunde nicht gefunden');
         return;

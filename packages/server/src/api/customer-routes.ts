@@ -115,7 +115,7 @@ export async function handleCustomerRoute(
   if (req.method === 'DELETE') {
     const denied = rejectUnlessCrmWrite(principal);
     if (denied) return denied;
-    return handleDeleteCustomer(ports, principal, id);
+    return handleDeleteCustomer(req, ports, principal, id);
   }
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
 
@@ -202,6 +202,7 @@ async function handleUpdateCustomer(
 }
 
 async function handleDeleteCustomer(
+  req: ApiRequest,
   ports: ServerApiPorts,
   principal: AuthenticatedPrincipal,
   id: number,
@@ -209,13 +210,25 @@ async function handleDeleteCustomer(
   if (!ports.customers?.delete) {
     return error(503, 'customers_unavailable', 'Customer API nicht konfiguriert');
   }
+  const cascade = parseCascadeFlag(req.query?.cascade);
+  if (cascade === null) return error(400, 'invalid_cascade', 'cascade muss true oder false sein');
 
-  const customer = await ports.customers.delete({
+  const result = await ports.customers.delete({
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     id,
+    ...(cascade ? { cascade: true } : {}),
   });
-  if (!customer) return error(404, 'customer_not_found', 'Customer nicht gefunden');
+  if (!result) return error(404, 'customer_not_found', 'Customer nicht gefunden');
+  if ('dependents' in result) {
+    return error(
+      409,
+      'customer_has_dependents',
+      'Kunde hat verknüpfte Deals, Aufgaben oder Termine',
+      { dependents: result.dependents },
+    );
+  }
+  const customer = result;
 
   await ports.audit?.record({
     workspaceId: principal.workspaceId,
@@ -226,10 +239,17 @@ async function handleDeleteCustomer(
     metadata: {
       id: customer.id,
       sourceSqliteId: customer.sourceSqliteId,
+      ...(cascade ? { cascade: true } : {}),
     },
   });
   await publishCustomerEvent(ports, 'customer.deleted', principal.workspaceId, customer, principal.userId);
   return data(200, { deleted: true, customer });
+}
+
+function parseCascadeFlag(value: string | undefined): boolean | null {
+  if (value === undefined || value === '' || value === 'false') return false;
+  if (value === 'true') return true;
+  return null;
 }
 
 async function publishCustomerEvent(

@@ -169,11 +169,18 @@ export function registerDatabaseHandlers(options: DatabaseHandlersOptions) {
   );
 
   disposers.push(
-    registerIpcHandler(IPCChannels.Db.DeleteCustomer, async (_event, customerId: number) => {
+    registerIpcHandler(IPCChannels.Db.DeleteCustomer, async (_event, payload: number | [number, { cascade?: boolean }?]) => {
+      const [customerId, options] = Array.isArray(payload) ? payload : [payload, undefined];
       try {
-        const result = deleteCustomer(customerId);
+        const result = deleteCustomer(customerId, { cascade: options?.cascade === true });
         return { success: result };
       } catch (error) {
+        // Deals, tasks or appointments still belong to the customer: report
+        // them so the UI can ask before deleting them too.
+        const dependents = (error as { code?: string; dependents?: unknown }).code === 'customer_has_dependents'
+          ? (error as { dependents?: unknown }).dependents
+          : undefined;
+        if (dependents) return { success: false, error: 'customer_has_dependents', dependents };
         logger.error(`IPC Error deleting customer ${customerId}:`, error);
         return { success: false, error: (error as Error).message };
       }

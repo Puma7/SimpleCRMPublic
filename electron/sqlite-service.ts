@@ -2191,12 +2191,47 @@ export function updateCustomer(id: number, customerData: any): any {
     }
 }
 
-export function deleteCustomer(id: number): boolean {
+export type CustomerDependents = { deals: number; tasks: number; appointments: number };
+
+/**
+ * Thrown by deleteCustomer while deals, tasks or appointments still belong to
+ * the customer and the caller has not confirmed deleting them too.
+ */
+export class CustomerHasDependentsError extends Error {
+    readonly code = 'customer_has_dependents';
+
+    constructor(readonly dependents: CustomerDependents) {
+        super('Kunde hat verknüpfte Deals, Aufgaben oder Termine');
+        this.name = 'CustomerHasDependentsError';
+    }
+}
+
+function countCustomerDependents(db: Database.Database, id: number): CustomerDependents {
+    return db.prepare(`
+        SELECT
+            (SELECT COUNT(*) FROM ${DEALS_TABLE} WHERE customer_id = @id) AS deals,
+            (SELECT COUNT(*) FROM ${TASKS_TABLE} WHERE customer_id = @id) AS tasks,
+            (SELECT COUNT(*) FROM ${CALENDAR_EVENTS_TABLE} e
+                JOIN ${TASKS_TABLE} t ON t.id = e.task_id
+                WHERE t.customer_id = @id) AS appointments
+    `).get({ id }) as CustomerDependents;
+}
+
+export function deleteCustomer(id: number, options: { cascade?: boolean } = {}): boolean {
     // Use a transaction to ensure all operations succeed or fail together
     const db = getDb();
     db.prepare('BEGIN TRANSACTION').run();
 
     try {
+        // Deals (with positions), tasks and their appointments go with the
+        // customer through ON DELETE CASCADE, so only do that when confirmed.
+        if (!options.cascade) {
+            const dependents = countCustomerDependents(db, id);
+            if (dependents.deals + dependents.tasks + dependents.appointments > 0) {
+                throw new CustomerHasDependentsError(dependents);
+            }
+        }
+
         // Delete custom field values first (though the foreign key would handle this)
         deleteAllCustomFieldValuesForCustomer(id);
 
@@ -2211,7 +2246,9 @@ export function deleteCustomer(id: number): boolean {
     } catch (error) {
         // If anything fails, roll back the transaction
         db.prepare('ROLLBACK').run();
-        console.error('Error deleting customer:', error);
+        if (!(error instanceof CustomerHasDependentsError)) {
+            console.error('Error deleting customer:', error);
+        }
         throw error;
     }
 }

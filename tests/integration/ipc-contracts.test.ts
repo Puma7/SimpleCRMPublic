@@ -49,6 +49,20 @@ describe('IPC contracts', () => {
     expect(() => getResultSchema(IPCChannels.Setup.ResetDeployConfig).parse({ success: true })).not.toThrow();
   });
 
+  // F-A10-10: DeleteCustomer carries an optional cascade confirmation.
+  test('accepts a customer delete with and without cascade confirmation', () => {
+    const schema = getPayloadSchema(IPCChannels.Db.DeleteCustomer);
+    expect(() => schema.parse(7)).not.toThrow();
+    expect(() => schema.parse([7, { cascade: true }])).not.toThrow();
+    expect(() => schema.parse([7, { cascade: 'yes' }])).toThrow();
+    expect(() => schema.parse(-1)).toThrow();
+    expect(() => getResultSchema(IPCChannels.Db.DeleteCustomer).parse({
+      success: false,
+      error: 'customer_has_dependents',
+      dependents: { deals: 1, tasks: 0, appointments: 0 },
+    })).not.toThrow();
+  });
+
   test('validates deal payload schemas', () => {
     const addPayload = {
       dealId: 1,

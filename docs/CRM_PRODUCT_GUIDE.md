@@ -66,6 +66,7 @@ Kalender (calendar_events)
 - Stammdaten: Name, Firma, E-Mail, Telefon, Adresse, Notizen, Status, Affiliate-Link.
 - **JTL:** `jtl_kKunde`, Kundennummer, Sync-Zeitstempel — Datensätze können aus der Wawi stammen oder **lokal** angelegt werden (`jtl_kKunde` null).
 - **E-Mail-Verknüpfung:** Im E-Mail-Modul kann eine Nachricht einem Kunden zugeordnet werden; Workflows und Textbausteine nutzen `{{customer.*}}`.
+- **Löschen:** Hat der Kunde Deals, Aufgaben oder Termine, lehnen beide Editionen das Löschen zunächst ab und nennen die Anzahl (Server: `409 customer_has_dependents` mit `details.dependents`). Erst nach Bestätigung im Dialog („Mitlöschen“, API: `DELETE /api/v1/customers/:id?cascade=true`, IPC: `db:delete-customer` mit `[id, { cascade: true }]`) werden Deals samt Positionen, Aufgaben und deren Termine in einer Transaktion mitgelöscht.
 
 ### Deal
 
