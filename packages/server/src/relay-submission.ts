@@ -268,6 +268,7 @@ export function createRelaySubmissionPipeline(
       // 3. Header-From spoofing check: the header From must resolve to the
       //    SAME allowed account as the (already validated) envelope From.
       let account: SmtpRelayRoutingAccount;
+      let validatedFrom: { address: string; name: string };
       try {
         // Exactly one From mailbox required: a multi-address From header
         // (RFC5322 permits a comma-separated mailbox-list here) could carry
@@ -296,7 +297,8 @@ export function createRelaySubmissionPipeline(
             false,
           );
         }
-        const headerFrom = fromAddresses[0]!.address;
+        validatedFrom = fromAddresses[0]!;
+        const headerFrom = validatedFrom.address;
         const headerAccount = await deps.relayPort.resolveRoutingAccount({
           workspaceId,
           relayId,
@@ -486,6 +488,7 @@ export function createRelaySubmissionPipeline(
       // a UTF-8 round-trip before hitting the wire). sendSmtpMessage + the
       // sent-copy appender both accept Buffers.
       let outgoingRfc822: string | Buffer;
+      let rebuiltFromMismatch = false;
       // Rebuild ONLY when tracking was actually applied (a tracking row/token
       // exists). If the rule/header requested tracking but prepareOutbound
       // declined (plain-text/no HTML, policy disabled, HTML over the limit),
@@ -497,7 +500,9 @@ export function createRelaySubmissionPipeline(
         const cc = mailboxListFromAddressJson(parsed.ccJson);
         const replyTo = mailboxListFromAddressJson(parsed.replyToJson);
         outgoingRfc822 = buildComposeRfc822({
-          from: mailboxListFromAddressJson(parsed.fromJson) || String(account.email_address),
+          // Only the one mailbox validated in step 3, never a re-serialization
+          // of the whole parsed From list.
+          from: formatMailbox(validatedFrom),
           // A message with no To: header (Bcc-only / undisclosed recipients)
           // must NOT fall back to the envelope recipient list here — that
           // list is exactly what Bcc exists to keep hidden, and every
@@ -518,6 +523,9 @@ export function createRelaySubmissionPipeline(
           attachments: composeAttachmentsFromParsed(parsed.attachments),
           date: now(),
         });
+        // Defense in depth: whatever the compose encoder made of the display
+        // name, the rebuilt header must still name exactly the validated sender.
+        rebuiltFromMismatch = !hasOnlyFromMailbox(outgoingRfc822, validatedFrom.address);
       } else {
         let outgoing = stripSimplecrmHeaders(input.rfc822);
         if (!incomingMessageId) {
@@ -537,6 +545,7 @@ export function createRelaySubmissionPipeline(
       const failSend = async (
         message: string,
         retryable: boolean = true,
+        code: RelaySubmissionFailureCode = 'relay_failed',
       ): Promise<RelaySubmissionResult> => {
         try {
           await store.updateSubmission({
@@ -553,8 +562,16 @@ export function createRelaySubmissionPipeline(
             error: errorMessage(error),
           });
         }
-        return failure('relay_failed', message, retryable);
+        return failure(code, message, retryable);
       };
+
+      if (rebuiltFromMismatch) {
+        return failSend(
+          'Header-From der Tracking-Nachricht weicht vom freigegebenen Absender ab',
+          false,
+          'from_mismatch',
+        );
+      }
 
       // 7. Resolve SMTP auth for the routing account and relay the message.
       //    A THROW here (readSecret / getSyncInfo hits a transient DB/secret
@@ -873,9 +890,30 @@ function parsedAddressEntries(value: unknown): Array<{ address: string; name: st
 }
 
 function mailboxListFromAddressJson(value: unknown): string {
-  return parsedAddressEntries(value)
-    .map((entry) => (entry.name ? `${entry.name} <${entry.address}>` : entry.address))
-    .join(', ');
+  return parsedAddressEntries(value).map(formatMailbox).join(', ');
+}
+
+/**
+ * The parser hands back DECODED display names (quotes and encoded-words gone),
+ * so a name like `ceo@bank.example, Team` written back bare is split by the
+ * compose encoder at the comma into a second mailbox. Always emit the name as
+ * an RFC 5322 quoted-string.
+ */
+function formatMailbox(entry: { address: string; name: string }): string {
+  if (!entry.name) return entry.address;
+  const quoted = entry.name.replace(/[\r\n]+/g, ' ').replace(/[\\"]/g, '\\$&');
+  return `"${quoted}" <${entry.address}>`;
+}
+
+/** True when the message has exactly one From header naming exactly `address`. */
+function hasOnlyFromMailbox(rfc822: Buffer, address: string): boolean {
+  const values = readTopLevelHeaderValues(rfc822, 'from');
+  if (values.length !== 1) return false;
+  const entries = addressparser(values[0]!);
+  if (entries.length !== 1) return false;
+  const entry = entries[0]!;
+  return !('group' in entry)
+    && entry.address.trim().toLowerCase() === address.trim().toLowerCase();
 }
 
 function safeJsonParse(raw: string): unknown {

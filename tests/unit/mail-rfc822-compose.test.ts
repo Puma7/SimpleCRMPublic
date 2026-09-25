@@ -204,4 +204,10 @@ describe('buildComposeRfc822', () => {
     expect(encodeMailboxListHeader('back\\slash <x@y.de>')).toBe('"back\\\\slash" <x@y.de>');
     expect(encodeMailboxListHeader('say "hi" <x@y.de>')).toBe('"say \\"hi\\"" <x@y.de>');
   });
+
+  // C-A60: Ein schon gequoteter Anzeigename mit quoted-pairs wurde doppelt escaped statt einmal neu gequotet.
+  it('re-quotes a quoted-string display name with quoted-pairs exactly once', () => {
+    expect(encodeMailboxListHeader('"say \\"hi\\", ceo@x.de" <x@y.de>')).toBe('"say \\"hi\\", ceo@x.de" <x@y.de>');
+    expect(encodeMailboxListHeader('"back\\\\slash" <x@y.de>')).toBe('"back\\\\slash" <x@y.de>');
+  });
 });
