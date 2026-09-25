@@ -105,7 +105,10 @@ function releaseWorkflowTriggerClaim(event: CrmWorkflowEvent): void {
 }
 
 function markWorkflowTriggerFired(event: CrmWorkflowEvent): void {
-  setSyncInfo(workflowTriggerDedupKey(event), '1');
+  // Deal-Stufen entprellen nur per Zeitstempel: '1' gilt in dedupStillActive
+  // als dauerhaft aktiv und sperrte denselben Stufenwechsel für immer.
+  const value = event.trigger === 'crm.deal_stage_changed' ? String(Date.now()) : '1';
+  setSyncInfo(workflowTriggerDedupKey(event), value);
 }
 
 function stringsForEvent(event: CrmWorkflowEvent): Record<string, string> {

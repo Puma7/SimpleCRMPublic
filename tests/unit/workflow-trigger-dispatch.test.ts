@@ -63,6 +63,31 @@ describe('workflow-trigger-dispatch dedup', () => {
     expect(mockSetSyncInfo).toHaveBeenCalled();
   });
 
+  // F-N-dwf-02: Nach einem erfolgreichen Lauf wurde '1' gespeichert; dedupStillActive wertet das als aktiv, derselbe Stufenwechsel feuerte nie wieder.
+  test('deal stage fires again after the debounce window following a successful run', async () => {
+    const { executeWorkflowForTrigger } = await import(
+      '../../electron/workflow/workflow-executor'
+    );
+    (executeWorkflowForTrigger as jest.Mock).mockResolvedValue({ status: 'ok' });
+    const start = 1_800_000_000_000;
+    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+    try {
+      await fireDealStageChangedWorkflows(4, 2, 'lead', 'won');
+      now.mockReturnValue(start + 1_000);
+      await fireDealStageChangedWorkflows(4, 2, 'lead', 'won');
+      expect(executeWorkflowForTrigger).toHaveBeenCalledTimes(1);
+
+      now.mockReturnValue(start + 60_000);
+      await fireDealStageChangedWorkflows(4, 2, 'lead', 'won');
+      expect(executeWorkflowForTrigger).toHaveBeenCalledTimes(2);
+      expect(Number(store.get('workflow_trigger_fired:crm.deal_stage_changed:4:lead:won')))
+        .toBeGreaterThan(1_000_000_000_000);
+    } finally {
+      now.mockRestore();
+      (executeWorkflowForTrigger as jest.Mock).mockReset();
+    }
+  });
+
   test('deal stage key includes old and new stage', async () => {
     await fireDealStageChangedWorkflows(9, 1, 'open', 'closed');
 
