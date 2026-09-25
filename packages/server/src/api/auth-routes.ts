@@ -385,6 +385,7 @@ async function handleSaveUser(
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     actorIsAdmin: requireAdmin(principal),
+    ...(principal.sessionId ? { actorSessionId: principal.sessionId } : {}),
     ...saveValues,
   });
   if (!result.ok) {
@@ -585,6 +586,7 @@ async function handleChangePassword(req: ApiRequest, ports: ServerApiPorts): Pro
     userId: principal.userId,
     currentPassword,
     newPassword,
+    ...(principal.sessionId ? { currentSessionId: principal.sessionId } : {}),
   });
   if (!result.ok) {
     if (result.code === 'invalid_current') {

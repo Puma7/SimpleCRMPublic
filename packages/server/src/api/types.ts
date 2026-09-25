@@ -175,6 +175,8 @@ export type AuthUserSaveInput = {
   actorUserId: string;
   /** Only owners/admins may assign or change roles; delegated managers cannot. */
   actorIsAdmin: boolean;
+  /** Session of the acting admin; kept alive when an admin resets its own password. */
+  actorSessionId?: string;
   id?: string;
   email: string;
   displayName: string;
@@ -327,6 +329,8 @@ export type AuthApiPort = {
     userId: string;
     currentPassword: string;
     newPassword: string;
+    /** The caller's own session survives; every other session of the user is revoked. */
+    currentSessionId?: string;
   }): Promise<{ ok: true } | { ok: false; code: 'invalid_current' | 'not_found' }>;
   createInvitation?(input: AuthInvitationCreateInput): Promise<AuthInvitationCreateResult>;
   getInvitationByToken?(input: { token: string }): Promise<AuthInvitationLookupResult>;

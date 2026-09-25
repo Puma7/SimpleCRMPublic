@@ -273,6 +273,11 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             ])
             .executeTakeFirst();
           if (!updated) return { ok: false as const, code: 'not_found' as const };
+          // An admin password reset must lock out whoever still holds a session of
+          // this user (the admin's own session only matters on a self-reset).
+          if (input.password) {
+            await revokeUserSessions(trx, input.workspaceId, input.id, now(), input.actorSessionId);
+          }
           return { ok: true as const, user: mapAdminUser(updated) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -334,6 +339,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
             .where('id', '=', input.userId)
             .where('workspace_id', '=', input.workspaceId)
             .execute();
+          // A password change is how a user ends a compromised session, so every
+          // other session must stop working now; only the caller's own survives.
+          await revokeUserSessions(trx, input.workspaceId, input.userId, now(), input.currentSessionId);
           return { ok: true as const };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1118,6 +1126,25 @@ async function countActiveOwners(
     .where('id', '!=', exceptId)
     .executeTakeFirst();
   return Number(row?.count ?? 0);
+}
+
+// Access tokens are bound to their refresh-token row (resolveAccessTokenPrincipal
+// rejects a revoked row), so revoking the rows ends both token kinds at once.
+async function revokeUserSessions(
+  db: Kysely<ServerDatabase> | Transaction<ServerDatabase>,
+  workspaceId: string,
+  userId: string,
+  revokedAt: Date,
+  keepSessionId?: string,
+): Promise<void> {
+  let query = db
+    .updateTable('refresh_tokens')
+    .set({ revoked_at: revokedAt })
+    .where('workspace_id', '=', workspaceId)
+    .where('user_id', '=', userId)
+    .where('revoked_at', 'is', null);
+  if (keepSessionId) query = query.where('id', '!=', keepSessionId);
+  await query.execute();
 }
 
 function randomToken(bytes: number): string {
