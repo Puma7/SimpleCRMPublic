@@ -1640,6 +1640,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       failResult,
     ]),
   });
+  // Tageslimit der Auto-Antwort wie auf dem Server: Ganzzahl 1..50.
+  const autoReplyMaxPerSenderPerDay = z.number().int().min(1).max(50);
   set(IPCChannels.Email.GetWorkflowAutomationSettings, {
     payload: voidPayload,
     result: z.object({
@@ -1648,6 +1650,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       senderWhitelist: z.string(),
       senderBlacklist: z.string(),
       spamScoreThreshold: z.string(),
+      autoReplyEnabled: z.boolean(),
+      autoReplyMaxPerSenderPerDay,
     }),
   });
   set(IPCChannels.Email.SetWorkflowAutomationSettings, {
@@ -1657,6 +1661,8 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       senderWhitelist: z.string().optional(),
       senderBlacklist: z.string().optional(),
       spamScoreThreshold: z.string().optional(),
+      autoReplyEnabled: z.boolean().optional(),
+      autoReplyMaxPerSenderPerDay: autoReplyMaxPerSenderPerDay.optional(),
     }),
     result: standardResult,
   });
