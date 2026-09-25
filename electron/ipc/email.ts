@@ -3095,9 +3095,14 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListThreadMessages,
-      async (_event: IpcMainInvokeEvent, payload: { threadId: string; limit?: number; offset?: number }) => {
+      async (event: IpcMainInvokeEvent, payload: { threadId: string; limit?: number; offset?: number }) => {
         const { listThreadMessages } = await import('../email/email-thread-aggregate.js');
-        return listThreadMessages(payload.threadId, payload.limit ?? 50, payload.offset ?? 0);
+        return listThreadMessages(
+          payload.threadId,
+          payload.limit ?? 50,
+          payload.offset ?? 0,
+          mailScopeSessionFromEvent(event),
+        );
       },
       { logger },
     ),
@@ -3143,9 +3148,9 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
   disposers.push(
     registerIpcHandler(
       IPCChannels.Email.ListThreadAliasWarnings,
-      async () => {
+      async (event: IpcMainInvokeEvent) => {
         const { listPendingThreadAliasWarnings } = await import('../email/email-thread-heuristics.js');
-        return listPendingThreadAliasWarnings(50);
+        return listPendingThreadAliasWarnings(50, mailScopeSessionFromEvent(event));
       },
       { logger, requireAuth: true },
     ),

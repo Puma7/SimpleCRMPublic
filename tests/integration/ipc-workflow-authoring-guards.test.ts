@@ -109,6 +109,8 @@ jest.mock('../../electron/workflow/workflow-versions', () => ({
 
 jest.mock('../../electron/workflow/knowledge-base', () => ({
   ...jest.requireActual('../../electron/workflow/knowledge-base'),
+  // Die Konto-ACL loest die Wissensbasis-ID auf; "Retouren" ist global (ohne Konto).
+  getKnowledgeBaseById: jest.fn(() => ({ id: 9, name: 'Retouren', account_id: null })),
   listKnowledgeBases: jest.fn(() => [{ id: 9, name: 'Retouren' }]),
   getKnowledgeBaseDocument: jest.fn(() => ({ content: '# Retouren', fileName: 'retouren.md' })),
   createKnowledgeBase: jest.fn(() => 9),

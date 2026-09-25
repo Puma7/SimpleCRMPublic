@@ -72,6 +72,12 @@ export function listKnowledgeBases(scope?: AccountOverrideScope): KnowledgeBaseR
   return scope === undefined ? rows : resolveScopedAccountOverrides(rows, scope);
 }
 
+export function getKnowledgeBaseById(id: number): KnowledgeBaseRow | undefined {
+  return getDb()
+    .prepare(`SELECT * FROM ${WORKFLOW_KNOWLEDGE_BASES_TABLE} WHERE id = ?`)
+    .get(id) as KnowledgeBaseRow | undefined;
+}
+
 function knowledgeMarkdownPath(knowledgeBaseId: number): string {
   return path.join(knowledgeStorageDir(), `${knowledgeBaseId}.md`);
 }

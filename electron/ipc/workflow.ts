@@ -301,7 +301,8 @@ export function registerWorkflowHandlers(options: {
         const { approveDraftSend } = await import('../workflow/draft-approval-actions.js');
         return approveDraftSend(draftId);
       },
-      { logger },
+      // Wie SendCompose: Freigeben versendet ueber das Konto des Entwurfs.
+      { logger, accountAccess: 'rw' },
     ),
   );
 
@@ -316,7 +317,7 @@ export function registerWorkflowHandlers(options: {
         const { dismissDraftApproval } = await import('../workflow/draft-approval-actions.js');
         return dismissDraftApproval(draftId);
       },
-      { logger },
+      { logger, accountAccess: 'rw' },
     ),
   );
 

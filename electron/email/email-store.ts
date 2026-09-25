@@ -1098,6 +1098,16 @@ export function getEmailMessageById(id: number): EmailMessageRow | undefined {
   return stmt.get(id) as EmailMessageRow | undefined;
 }
 
+/** Owning account per message id; unknown ids are missing from the map. Bulk lists are schema-capped at 500. */
+export function getMessageAccountIds(messageIds: readonly number[]): Map<number, number> {
+  const ids = [...new Set(messageIds)];
+  if (ids.length === 0) return new Map();
+  const rows = getDb()
+    .prepare(`SELECT id, account_id FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${ids.map(() => '?').join(',')})`)
+    .all(...ids) as { id: number; account_id: number }[];
+  return new Map(rows.map((r) => [r.id, r.account_id]));
+}
+
 /** POP3 synthetic UIDs stay at or below this (drafts use uid > POP3_UID_CEILING). */
 export const POP3_UID_CEILING = -1_000_000;
 

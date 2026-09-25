@@ -8,7 +8,7 @@ import type { SessionRole } from '../auth/session-store';
 import { canAccessLocalAccount } from '../auth/auth-store';
 import type { AccountAccessLevel } from '../auth/account-access';
 import { ipcChannelCountsAsActivity, ipcChannelRequiresAuth } from '../../shared/ipc/channel-auth-policy';
-import { resolveEmailChannelAccountId } from './ipc-account-scope';
+import { resolveEmailChannelAccountScope } from './ipc-account-scope';
 
 export interface RegisterIpcOptions {
   logger?: Pick<typeof console, 'debug' | 'info' | 'warn' | 'error'>;
@@ -82,16 +82,27 @@ export function registerIpcHandler<C extends InvokeChannel>(
         if (requireRole && !requireRole.includes(session.role)) {
           throw new Error('Keine Berechtigung');
         }
-        const accountId =
-          accountScope?.(parsedPayload) ?? resolveEmailChannelAccountId(channel, parsedPayload);
-        if (accountId != null) {
-          if (!canAccessLocalAccount({
-            userId: session.userId,
-            accountId,
-            access: accountAccess,
-            role: session.role,
-          })) {
+        const scopedAccountId = accountScope?.(parsedPayload);
+        const scope = scopedAccountId != null
+          ? { kind: 'accounts' as const, accountIds: [scopedAccountId] }
+          : resolveEmailChannelAccountScope(channel, parsedPayload);
+        if (scope.kind === 'unresolved') {
+          // The payload names a mailbox object that maps to no account (e.g. unknown
+          // id). Only owner/admin, who pass every account check, may reach the handler.
+          if (session.role !== 'owner' && session.role !== 'admin') {
             throw new Error('Kein Zugriff auf dieses Konto');
+          }
+        } else if (scope.kind === 'accounts') {
+          // All accounts are checked before the handler runs: a bulk call is rejected as a whole.
+          for (const accountId of scope.accountIds) {
+            if (!canAccessLocalAccount({
+              userId: session.userId,
+              accountId,
+              access: accountAccess,
+              role: session.role,
+            })) {
+              throw new Error('Kein Zugriff auf dieses Konto');
+            }
           }
         }
       }
