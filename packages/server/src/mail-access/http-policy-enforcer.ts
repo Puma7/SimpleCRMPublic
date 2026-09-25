@@ -8,6 +8,7 @@ import type {
   ServerApiPorts,
 } from '../api/types';
 import { error, requirePrincipal } from '../api/http';
+import { isDraftLocalAttachmentPath } from './draft-attachment-path';
 import {
   assertMailRoutePolicy,
   type MailResourceResolution,
@@ -990,16 +991,12 @@ async function assertSupplementalHttpPermissions(
       const draftMessageId = draftResource && draftResource.type === 'message'
         ? draftResource.messageId
         : undefined;
-      const draftLocalPrefix = draftMessageId === undefined
-        ? undefined
-        : `${workspaceId}/compose-drafts/${draftMessageId}/`;
       for (const rawPath of rawAttachmentPaths) {
         if (typeof rawPath !== 'string' || rawPath.length === 0) throw new MailAccessDeniedError();
-        // Draft-local upload carve-out: under this draft's folder and no `..` escape.
+        // Draft-local upload carve-out: a single file directly in this draft's folder.
         if (
-          draftLocalPrefix
-          && rawPath.startsWith(draftLocalPrefix)
-          && !rawPath.split('/').includes('..')
+          draftMessageId !== undefined
+          && isDraftLocalAttachmentPath(rawPath, workspaceId, draftMessageId)
         ) {
           continue;
         }
@@ -1124,9 +1121,8 @@ async function assertSupplementalHttpPermissions(
             workspaceId,
             draftId,
           });
-          const draftLocalPrefix = `${workspaceId}/compose-drafts/${draftId}/`;
           for (const path of paths ?? []) {
-            if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+            if (isDraftLocalAttachmentPath(path, workspaceId, draftId)) continue;
             const owners = await ports.mailResourceLookup.resolve({
               workspaceId,
               target: { kind: 'attachment_path', path },

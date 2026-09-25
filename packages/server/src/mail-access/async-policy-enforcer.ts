@@ -35,6 +35,7 @@ import {
   type ServerJobPolicyEntry,
 } from '../jobs/policy';
 import type { MailJobAuthorization, QueuedJob } from '../jobs/types';
+import { isDraftLocalAttachmentPath } from './draft-attachment-path';
 import { MailAccessDeniedError } from './service';
 import type {
   MailAccessActor,
@@ -928,9 +929,8 @@ async function assertScheduledSendDraftAndAttachmentAccess(
     draftId,
   });
   if (!paths || paths.length === 0) return;
-  const draftLocalPrefix = `${job.workspaceId}/compose-drafts/${draftId}/`;
   for (const path of paths) {
-    if (path.startsWith(draftLocalPrefix) && !path.split('/').includes('..')) continue;
+    if (isDraftLocalAttachmentPath(path, job.workspaceId, draftId)) continue;
     const owners = await ports.mailResourceLookup.resolve({
       workspaceId: job.workspaceId,
       target: { kind: 'attachment_path', path },

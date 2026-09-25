@@ -1210,6 +1210,26 @@ describe('server mail job and event ACL', () => {
     expect(service.assertions.some((entry) => entry.permission === 'mail.attachment.read')).toBe(false);
   });
 
+  // C-A9: Die Entwurfs-Ausnahme pruefte nur Praefix und split('/'), sodass ein Pfad mit Backslash-Traversal ohne Anhang-Pruefung als Entwurfs-Upload durchging.
+  test('scheduled send exempts only a single plain segment inside the draft upload folder', async () => {
+    for (const path of [
+      'workspace-a/compose-drafts/12/..\\..\\..\\workspace-b\\email-attachments\\555\\secret.pdf',
+      'workspace-a/compose-drafts/12/sub/file.pdf',
+      'workspace-a/compose-drafts/12/..',
+      'workspace-a/compose-drafts/12/.',
+      'workspace-a/compose-drafts/12/',
+      'workspace-a/compose-drafts/12/C:secret.pdf',
+      'workspace-a/compose-drafts/12/file.pdf\0.txt',
+    ]) {
+      const ports = makePolicyPorts({ scheduledDraftAttachmentPaths: new Map([[12, [path]]]) });
+      await expect(enforceMailJobPolicy(job({
+        type: 'mail.send.scheduled',
+        payload: { workspaceId: 'workspace-a', actorUserId: 'user-a', draftId: 12, accountId: 7 },
+      }), ports)).rejects.toMatchObject({ nonRetryable: true });
+      expect(ports.lookups).toContainEqual({ kind: 'attachment_path', path });
+    }
+  });
+
   test('scheduled send requires mail.attachment.suspicious_download for a risky stored attachment (R47-1)', async () => {
     const path = 'workspace-a/synced/owned.pdf'; // owning message 12, held mail.attachment.read
     // An executable display name additionally requires suspicious_download, mirroring the

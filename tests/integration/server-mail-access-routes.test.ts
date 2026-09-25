@@ -2217,6 +2217,45 @@ describe('server mailbox ACL migration', () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
+  // C-A9: Die Entwurfs-Ausnahme pruefte nur Praefix und split('/'), sodass ein Pfad mit Backslash-Traversal ohne Anhang-Pruefung als Entwurfs-Upload durchging.
+  test('compose send exempts only a single plain segment inside the draft upload folder', async () => {
+    const getMessage = jest.fn(async () => makeMessageRecord(MESSAGE_A));
+    const send = jest.fn(async () => ({ ok: true as const, messageId: MESSAGE_A, accountId: ACCOUNT_A }));
+    const editSend = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+      ['mail.draft.edit', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+      ['mail.send', [{ resourceType: 'account', accountId: ACCOUNT_A, folderId: null, messageId: null }]],
+    ]);
+    const api = createServerApi(makeHttpPorts({
+      grants: editSend,
+      overrides: { emailMessages: { get: getMessage }, emailComposeSender: { send } },
+    }));
+    const draftFolder = `${WORKSPACE_A}/compose-drafts/${MESSAGE_A}`;
+
+    for (const attachmentPath of [
+      `${draftFolder}/..\\..\\..\\workspace-b\\email-attachments\\555\\secret.pdf`,
+      `${draftFolder}/sub/file.pdf`,
+      `${draftFolder}/..`,
+      `${draftFolder}/C:secret.pdf`,
+      `${draftFolder}/file.pdf\0.txt`,
+    ]) {
+      const denied = await api.handle({
+        method: 'POST',
+        path: '/api/v1/email/compose/send',
+        principal: makePrincipal(),
+        body: {
+          accountId: ACCOUNT_A,
+          draftMessageId: MESSAGE_A,
+          subject: 'S',
+          bodyText: 'B',
+          to: 'recipient@example.test',
+          attachmentPaths: [attachmentPath],
+        },
+      });
+      expect(denied.status).toBe(404);
+    }
+    expect(send).not.toHaveBeenCalled();
+  });
+
   // F-A6-05: Weiterleiten in der Server-Edition verlor alle Anhaenge; der Server kopiert sie jetzt per
   // Anhang-ID in den Entwurf und prueft dabei dieselben Rechte wie beim Herunterladen.
   test('forwarding a stored attachment into a draft requires the download grants on the source attachment', async () => {

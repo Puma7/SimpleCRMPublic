@@ -1183,6 +1183,68 @@ describe('mail ACL rollout central use', () => {
     ]));
   });
 
+  // C-A9: Die Entwurfs-Ausnahme pruefte nur Praefix und split('/'), sodass ein Pfad mit Backslash-Traversal ohne Anhang-Pruefung als Entwurfs-Upload durchging.
+  test('approve-draft-send exempts only a single plain segment inside the draft upload folder', async () => {
+    const draftFolder = `${WORKSPACE_A}/compose-drafts/${MESSAGE_A}`;
+    const makeApi = (attachmentPath: string) => {
+      const approveDraftSend = jest.fn(async () => ({ ok: true as const }));
+      const pathLookups: string[] = [];
+      const api = createServerApi({
+        ...makeCentralPorts({
+          async assertPermission() {},
+          async resolveScope() {
+            return { kind: 'restricted' as const, accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] };
+          },
+        }),
+        emailMessages: {
+          async list() { return { items: [], nextCursor: null }; },
+          async get() { return null; },
+          approveDraftSend,
+        } as unknown as ServerApiPorts['emailMessages'],
+        mailResourceLookup: {
+          async resolve(input) {
+            if (input.target.kind === 'attachment_path') {
+              pathLookups.push(input.target.path);
+              return [];
+            }
+            return [messageResource()];
+          },
+          async resolveScheduledDraftReplyParent() {
+            return null;
+          },
+          async resolveScheduledDraftAttachmentPaths() {
+            return [attachmentPath];
+          },
+        },
+      });
+      return { api, approveDraftSend, pathLookups };
+    };
+
+    const local = makeApi(`${draftFolder}/ab12-file.pdf`);
+    await expect(local.api.handle({
+      method: 'POST',
+      path: `/api/v1/email/messages/${MESSAGE_A}/approve-draft-send`,
+      principal: principal(),
+    })).resolves.toMatchObject({ status: 200 });
+    expect(local.pathLookups).toEqual([]);
+
+    for (const attachmentPath of [
+      `${draftFolder}/..\\..\\..\\${WORKSPACE_B}\\email-attachments\\555\\secret.pdf`,
+      `${draftFolder}/sub/file.pdf`,
+      `${draftFolder}/C:secret.pdf`,
+      `${draftFolder}/file.pdf\0.txt`,
+    ]) {
+      const denied = makeApi(attachmentPath);
+      await expect(denied.api.handle({
+        method: 'POST',
+        path: `/api/v1/email/messages/${MESSAGE_A}/approve-draft-send`,
+        principal: principal(),
+      })).resolves.toMatchObject({ status: 404 });
+      expect(denied.pathLookups).toEqual([attachmentPath]);
+      expect(denied.approveDraftSend).not.toHaveBeenCalled();
+    }
+  });
+
   test('pgp verify POST requires content-read in addition to triage', async () => {
     // verifyMessage parses the hidden signed body and returns signature validity +
     // signer fingerprint, so a triage-only delegate without content access must be
