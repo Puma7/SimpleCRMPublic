@@ -72,6 +72,7 @@ import {
   executeWorkflowAiDraftReply,
   executeWorkflowAiReviewDraft,
   fingerprintReviewedDraft,
+  firstReplyAddress,
   setDraftApprovalPending,
   type WorkflowAiDraftNodeDeps,
 } from './workflow-ai-draft-nodes';
@@ -3856,6 +3857,10 @@ async function createWorkflowComposeDraft(
     '---',
     context.strings.combined_text ?? '',
   ].filter((part) => part.length > 0).join('\n\n');
+  // Antwort an Reply-To bzw. Absender der aktuellen Nachricht, verknuepft wie
+  // bei ai.agent/ai.draft_reply — sonst kann email.send_draft den Entwurf nie
+  // verschicken (kein Empfaenger) und er haengt an keinem Verlauf.
+  const replyTo = context.message ? firstReplyAddress(context.message) : null;
   const draft = await createPostgresComposeDraftInTransaction(trx, {
     workspaceId: context.workspaceId,
     accountId,
@@ -3863,10 +3868,19 @@ async function createWorkflowComposeDraft(
       accountId,
       subject: replySubject(context.strings.subject),
       bodyText: body,
+      ...(replyTo ? { toJson: { value: [{ address: replyTo }] } } : {}),
     },
   });
   if (!draft.ok) {
     return { status: 'error', port: 'error', message: `Entwurf konnte nicht erstellt werden: ${draft.reason}` };
+  }
+  if (context.messageId !== null) {
+    await trx
+      .updateTable('email_messages')
+      .set({ reply_parent_message_id: context.messageId })
+      .where('workspace_id', '=', context.workspaceId)
+      .where('id', '=', Number(draft.message.id))
+      .execute();
   }
   return {
     status: 'ok',

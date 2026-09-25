@@ -15,6 +15,7 @@ jest.mock('../../electron/email/email-store', () => ({
   setOutboundHold: jest.fn(),
   getEmailAccountById: jest.fn(),
   createComposeDraft: jest.fn(() => 42),
+  updateComposeDraft: jest.fn(),
 }));
 
 jest.mock('../../electron/email/email-crm-store', () => ({
@@ -64,6 +65,7 @@ jest.mock('../../electron/workflow/draft-send-prep', () => ({
 import {
   addMessageTag,
   createComposeDraft,
+  updateComposeDraft,
   setMessageAssignedTo,
   setMessageSpam,
   setMessageSpamStatus,
@@ -156,6 +158,20 @@ describe('email.create_draft', () => {
     const r = await node.execute(ctx({ dryRun: true }), { bodyPrefix: 'x' }, 'n1');
     expect(r).toMatchObject({ status: 'ok', message: 'dry-run draft' });
     expect(createComposeDraft).not.toHaveBeenCalled();
+  });
+
+  // F-A9-12: der Entwurf hatte weder Empfaenger noch Antwortbezug, ein
+  // nachfolgendes email.send_draft verschickte deshalb nie etwas.
+  test('adressiert den Entwurf an Reply-To/Absender und verknuepft ihn als Antwort', async () => {
+    const message = {
+      ...baseMessage,
+      from_json: JSON.stringify([{ address: 'kunde@firma.de', name: 'Kunde' }]),
+      raw_headers: 'From: kunde@firma.de\r\nReply-To: Antwort <antwort@firma.de>\r\n',
+    };
+    await node.execute(ctx({ message: message as never }), { bodyPrefix: 'Danke' }, 'n1');
+    const input = (createComposeDraft as jest.Mock).mock.calls[0]![0];
+    expect(JSON.parse(input.toJson)).toEqual({ value: [{ address: 'antwort@firma.de' }] });
+    expect(updateComposeDraft).toHaveBeenCalledWith(42, { replyParentMessageId: 7 });
   });
 });
 

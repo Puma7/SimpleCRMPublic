@@ -469,7 +469,7 @@ function optionalPositiveInt(value: unknown): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-function firstReplyAddress(message: {
+export function firstReplyAddress(message: {
   from_json: unknown;
   raw_headers?: string | null;
 }): string | null {

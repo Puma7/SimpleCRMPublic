@@ -10950,6 +10950,68 @@ describe('server edition foundation', () => {
     ]);
   });
 
+  // F-A9-12: email.create_draft created a reply draft without recipient and
+  // without reply parent, so create_draft -> send_draft never sent anything.
+  test('postgres email.create_draft addresses the reply so email.send_draft can send it', async () => {
+    const now = new Date('2026-07-04T11:02:00.000Z');
+    const { db, rows } = makeWorkflowExecutionDb({
+      workflows: [{
+        id: 36,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 360,
+        trigger_name: 'inbound',
+        enabled: true,
+        definition_json: { version: 1, rules: [] },
+        graph_json: {
+          version: 1,
+          nodes: [
+            { id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } },
+            { id: 'draft-1', type: 'registry', data: { nodeType: 'email.create_draft', config: { bodyPrefix: 'Danke', runOnEveryInbound: true } } },
+            { id: 'send-1', type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id', runOutboundReview: false, runOnEveryInbound: true } } },
+          ],
+          edges: [
+            { id: 'edge-1', source: 'trigger-1', target: 'draft-1' },
+            { id: 'edge-2', source: 'draft-1', target: 'send-1' },
+          ],
+        },
+        execution_mode: 'graph',
+      }],
+      messages: [{
+        id: 23,
+        workspace_id: WORKSPACE_A_ID,
+        source_sqlite_id: 230,
+        account_id: 7,
+        subject: 'Eingang',
+        from_json: { value: [{ address: 'customer@example.com' }] },
+        to_json: { value: [{ address: 'agent@example.com' }] },
+        cc_json: null,
+        raw_headers: 'From: customer@example.com\r\nReply-To: Kunde <antwort@example.com>\r\nSubject: Eingang',
+        snippet: 'Bitte antworten',
+        body_text: 'Bitte antworten.',
+        body_html: null,
+        has_attachments: false,
+        attachments_json: null,
+      }],
+      accounts: [{ id: 7, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 7 }],
+      folders: [{ id: 70, workspace_id: WORKSPACE_A_ID, source_sqlite_id: 700, account_id: 7, path: 'INBOX' }],
+      syncInfo: [{ workspace_id: WORKSPACE_A_ID, key: 'auto_reply_enabled', value: 'true' }],
+    });
+    const port = createPostgresWorkflowExecutionJobPort({ db, now: () => now, applyWorkspaceSession: async () => undefined });
+
+    await port.execute({ workspaceId: WORKSPACE_A_ID, workflowId: 36, messageId: 23, triggerName: 'inbound', context: {} });
+
+    const draft = rows.messages.find((message) => message.folder_kind === 'draft');
+    expect(draft).toMatchObject({
+      to_json: { value: [{ address: 'antwort@example.com' }] },
+      reply_parent_message_id: 23,
+      scheduled_send_at: now,
+    });
+    expect(rows.steps.map((step) => [step.node_type, step.status, step.message])).toEqual([
+      ['email.create_draft', 'ok', null],
+      ['email.send_draft', 'ok', 'send_draft_queued_auto'],
+    ]);
+  });
+
   test('postgres workflow execution job port creates local compose drafts', async () => {
     const now = new Date('2026-07-04T11:01:50.000Z');
     const { db, rows, rowLocks } = makeWorkflowExecutionDb({

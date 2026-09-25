@@ -184,16 +184,22 @@ export function registerEmailNodes(register: Reg): void {
     canvasType: 'registry',
     defaultConfig: { bodyPrefix: '' },
     execute: async (ctx, config) => {
-      const { row } = requireMessage(ctx);
+      const { row, messageId } = requireMessage(ctx);
       if (ctx.dryRun) return { status: 'ok', message: 'dry-run draft' };
-      const { createComposeDraft } = await import('../../email/email-store.js');
+      const { createComposeDraft, updateComposeDraft } = await import('../../email/email-store.js');
+      const { recipientJsonFromField } = await import('../../../shared/email-recipient-parse.js');
       const prefix = String(config.bodyPrefix ?? '');
       const body = `${prefix}\n\n---\n${ctx.strings.combined_text}`.trim();
+      // Antwort an Reply-To bzw. Absender, verknuepft wie bei ai.agent — sonst
+      // kann email.send_draft den Entwurf nie verschicken (kein Empfaenger).
+      const toJson = recipientJsonFromField(primaryReplyRecipient(row));
       const id = createComposeDraft({
         accountId: row.account_id,
         subject: row.subject?.startsWith('Re:') ? row.subject : `Re: ${row.subject ?? ''}`,
         bodyText: body,
+        ...(toJson ? { toJson } : {}),
       });
+      updateComposeDraft(id, { replyParentMessageId: messageId });
       return { status: 'ok', variables: { 'draft.id': id } };
     },
   });
