@@ -82,6 +82,7 @@ import {
 import {
   MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD,
   POST_PROCESS_RETRY_JOB_MARKER_FIELD,
+  TRUSTED_SERVICE_JOB_MARKER_FIELD,
 } from '../../packages/server/src/jobs';
 import {
   SERVER_POSTGRES_MAJOR,
@@ -5312,7 +5313,7 @@ describe('server edition foundation', () => {
         payload: {
           workspaceId: WORKSPACE_A_ID,
           messageId: 31,
-          actorUserId: USER_A_ID,
+          [TRUSTED_SERVICE_JOB_MARKER_FIELD]: expect.stringMatching(/^simplecrm:trusted-service:/),
           trigger: 'inbound',
           force: false,
         },
@@ -5325,7 +5326,7 @@ describe('server edition foundation', () => {
         payload: {
           workspaceId: WORKSPACE_A_ID,
           messageId: 31,
-          actorUserId: USER_A_ID,
+          [TRUSTED_SERVICE_JOB_MARKER_FIELD]: expect.stringMatching(/^simplecrm:trusted-service:/),
         },
         runAfter: new Date('2026-07-04T09:03:00.000Z'),
         maxAttempts: 3,
