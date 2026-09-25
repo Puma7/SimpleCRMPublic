@@ -154,3 +154,101 @@ wait "$pid"
     expect(result.files).toEqual([]);
   });
 });
+
+// restore.sh gegen Stubs: psql meldet die Erweiterungen der Zieldatenbank,
+// pg_restore liefert fuer -l ein Inhaltsverzeichnis und protokolliert sonst
+// seine Argumente und die per -L uebergebene Liste.
+const runRestore = (restoreRole: string) => {
+  const output = execFileSync('bash', ['-s'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    input: String.raw`
+set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+
+cat > "$tmp/bin/psql" <<'STUB'
+#!/bin/sh
+case "$*" in
+  *pg_extension*) echo 'plpgsql,pgcrypto,pg_trgm' ;;
+esac
+STUB
+
+cat > "$tmp/bin/pg_restore" <<'STUB'
+#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = '-l' ]; then
+    cat <<'TOC'
+;
+; Archive created at 2026-06-05 02:00:00 UTC
+;
+2; 3079 16386 EXTENSION - pgcrypto
+5448; 0 0 COMMENT - EXTENSION pgcrypto
+3; 3079 16423 EXTENSION - pg_trgm
+5447; 0 0 COMMENT - EXTENSION pg_trgm
+4; 3079 16500 EXTENSION - citext
+5449; 0 0 COMMENT - EXTENSION citext
+230; 1259 16600 TABLE public customers simplecrm_app
+4100; 0 16600 TABLE DATA public customers simplecrm_app
+TOC
+    exit 0
+  fi
+done
+printf '%s\n' "$@" > "$STUB_STATE/pg_restore.args"
+previous=''
+for arg in "$@"; do
+  if [ "$previous" = '-L' ]; then
+    cat "$arg" > "$STUB_STATE/pg_restore.list"
+  fi
+  previous="$arg"
+done
+STUB
+chmod +x "$tmp/bin/psql" "$tmp/bin/pg_restore"
+printf 'PGDMP' > "$tmp/legacy.dump"
+
+export PATH="$tmp/bin:$PATH"
+export STUB_STATE="$tmp"
+export DATABASE_URL='postgres://stub/simplecrm'
+export PG_RESTORE_ROLE='` + restoreRole + String.raw`'
+sh docker/restore.sh "$tmp/legacy.dump" 2>/dev/null
+echo '--- list'
+cat "$tmp/pg_restore.list" 2>/dev/null || true
+echo '--- args'
+cat "$tmp/pg_restore.args"
+`,
+  });
+  const [list, args] = output.split('--- args\n');
+  return {
+    args: args.trim().split('\n'),
+    list: list.replace('--- list\n', '').trim().split('\n').filter((line) => line !== ''),
+  };
+};
+
+describe('docker restore.sh', () => {
+  // F-A12-02: pg_restore --clean lief ohne --single-transaction, jeder Fehler hinterliess eine halb ersetzte Produktivdatenbank; zugleich scheiterte jeder In-Place-Restore an DROP/COMMENT ON EXTENSION fuer Erweiterungen, die dem Admin gehoeren.
+  test.each([
+    ['with PG_RESTORE_ROLE', 'simplecrm_app'],
+    ['without PG_RESTORE_ROLE', ''],
+  ])('restores atomically and leaves existing extensions alone (%s)', (_label, restoreRole) => {
+    if (!bashAvailable()) {
+      return;
+    }
+
+    const { args, list } = runRestore(restoreRole);
+
+    expect(args).toEqual(expect.arrayContaining(['--single-transaction', '--clean', '--if-exists', '--no-owner', '-L']));
+    if (restoreRole) {
+      expect(args).toContain(`--role=${restoreRole}`);
+    }
+    expect(list).toEqual([
+      ';',
+      '; Archive created at 2026-06-05 02:00:00 UTC',
+      ';',
+      '4; 3079 16500 EXTENSION - citext',
+      '5449; 0 0 COMMENT - EXTENSION citext',
+      '230; 1259 16600 TABLE public customers simplecrm_app',
+      '4100; 0 16600 TABLE DATA public customers simplecrm_app',
+    ]);
+  });
+});

@@ -523,6 +523,14 @@ pg_restore --role="$PG_RESTORE_ROLE" --clean --if-exists --no-owner --dbname "$D
 `PG_RESTORE_ROLE=simplecrm_app`, so restored objects are owned by the
 application role again and later migrations keep working.
 
+The restore runs as **one transaction** (`--single-transaction`): any error rolls
+the whole restore back and leaves the database exactly as it was, instead of
+half replaced. Extensions that already exist in the target database
+(`pgcrypto`, `pg_trgm`, created by `postgres-init` as the admin role) are left
+alone — the application role cannot drop or comment on them, and inside one
+transaction that alone would roll back every in-place restore. In a fresh
+database without them, the dump creates them as before.
+
 Two things to know before you rely on it:
 
 **Restoring an older dump onto the current database does not work across a
@@ -531,7 +539,8 @@ restore — objects created by later migrations are not in the archive and stay
 put. If such a newer table has a foreign key into an older one, the drop fails:
 restoring a pre-0038 dump onto a current database makes `pg_restore` try to
 `DROP TABLE workspaces` while `mail_acl_bindings` still references it, which
-errors out without `CASCADE` and aborts the whole restore. `restore-compose.sh`
+errors out without `CASCADE` and aborts the whole restore; the transaction is
+rolled back, so the database keeps its previous state. `restore-compose.sh`
 then stops before migrations and before restarting the services.
 
 **For a rollback across migrations, restore into an empty database.** Drop and
