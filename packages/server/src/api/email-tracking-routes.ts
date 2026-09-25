@@ -1,3 +1,5 @@
+import { createHmac, randomBytes } from 'node:crypto';
+
 import type {
   ApiErrorBody,
   ApiRequest,
@@ -16,6 +18,7 @@ import {
   EmailTrackingPolicyValidationError,
 } from '../email-tracking';
 import { data, error, positiveIntFromPath, requireAdmin, requireCapability, requirePrincipal } from './http';
+import { rateLimitClientKey } from '../security/rate-limit-client-key';
 
 const PUBLIC_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const PUBLIC_OPEN_ROUTE_PATTERN = /^\/t\/o\/([^/]+)\.gif$/;
@@ -57,32 +60,79 @@ const PIXEL_HEADERS = {
 
 type RateEntry = { startedAt: number; count: number };
 
+/**
+ * Fixed-window limiter with bounded memory. Live counters are never evicted:
+ * evicting them let a flood of throwaway tokens reset a real token's counter.
+ * Entries stay in window-start order, so expired ones are dropped cheaply from
+ * the front. Keys arriving while every exact slot is live share a fixed table
+ * of keyed-hash overflow counters, so a flood can at worst throttle, never
+ * reset, and memory stays bounded.
+ */
 export function createEmailTrackingRateLimiter(options: {
   limit: number;
   windowMs: number;
   maxKeys?: number;
+  overflowBuckets?: number;
 }) {
   const entries = new Map<string, RateEntry>();
   const maxKeys = options.maxKeys ?? 10_000;
+  const overflow: RateEntry[] = Array.from(
+    { length: options.overflowBuckets ?? 4_096 },
+    () => ({ startedAt: Number.NEGATIVE_INFINITY, count: 0 }),
+  );
+  const overflowSecret = randomBytes(32);
+  let overflowLiveUntil = Number.NEGATIVE_INFINITY;
+  const live = (entry: RateEntry, now: number) => now - entry.startedAt < options.windowMs;
+  const overflowEntry = (key: string) => overflow[
+    createHmac('sha256', overflowSecret).update(key).digest().readUInt32BE(0) % overflow.length
+  ]!;
+  const dropExpired = (now: number) => {
+    for (const [key, entry] of entries) {
+      if (live(entry, now)) break;
+      entries.delete(key);
+    }
+  };
+  const currentEntry = (key: string, now: number): RateEntry | null => {
+    const current = entries.get(key);
+    if (current) return live(current, now) ? current : null;
+    // A key counted in an overflow bucket keeps that window even after exact
+    // slots free up; otherwise the end of a flood would reset it early.
+    if (now >= overflowLiveUntil) return null;
+    const bucket = overflowEntry(key);
+    return live(bucket, now) ? bucket : null;
+  };
   return {
     check(key: string, now = Date.now()): boolean {
-      const current = entries.get(key);
-      if (!current || now - current.startedAt >= options.windowMs) {
-        if (!current && entries.size >= maxKeys) {
-          const oldest = entries.keys().next().value as string | undefined;
-          if (oldest) entries.delete(oldest);
-        }
-        entries.set(key, { startedAt: now, count: 1 });
+      const current = currentEntry(key, now);
+      if (current) {
+        if (current.count >= options.limit) return false;
+        current.count += 1;
         return true;
       }
-      if (current.count >= options.limit) return false;
-      current.count += 1;
       entries.delete(key);
-      entries.set(key, current);
+      dropExpired(now);
+      if (entries.size < maxKeys) {
+        entries.set(key, { startedAt: now, count: 1 });
+      } else {
+        const bucket = overflowEntry(key);
+        bucket.startedAt = now;
+        bucket.count = 1;
+        overflowLiveUntil = now + options.windowMs;
+      }
       return true;
+    },
+    /** Read-only: true when the key's current window is already used up. */
+    exhausted(key: string, now = Date.now()): boolean {
+      const current = currentEntry(key, now);
+      return Boolean(current && current.count >= options.limit);
     },
     reset(): void {
       entries.clear();
+      overflowLiveUntil = Number.NEGATIVE_INFINITY;
+      for (const bucket of overflow) {
+        bucket.startedAt = Number.NEGATIVE_INFINITY;
+        bucket.count = 0;
+      }
     },
   };
 }
@@ -155,12 +205,16 @@ export async function handlePublicEmailTrackingRoute(
   if (matchedRoute.kind === 'public_open') {
     if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
     const token = match[1] ?? '';
-    const rateKey = `open:${req.ip ?? 'unknown'}`;
+    const tokenKey = `open-token:${token}`;
+    // An exhausted token must not charge the shared IP bucket, and the IP
+    // limit is charged before a token slot so one client cannot fill the
+    // token limiter with throwaway tokens faster than its IP allowance.
     if (
       ports.emailTracking
       && PUBLIC_TOKEN_PATTERN.test(token)
-      && openTokenRateLimiter.check(`open-token:${token}`)
-      && openIpRateLimiter.check(rateKey)
+      && !openTokenRateLimiter.exhausted(tokenKey)
+      && openIpRateLimiter.check(`open:${rateLimitClientKey(req.ip)}`)
+      && openTokenRateLimiter.check(tokenKey)
     ) {
       await withPublicTimeout(ports.emailTracking.recordPublicOpen({
         token,
@@ -175,9 +229,11 @@ export async function handlePublicEmailTrackingRoute(
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const token = match[1] ?? '';
   if (!ports.emailTracking || !PUBLIC_TOKEN_PATTERN.test(token)) return publicLinkUnavailable();
+  const tokenKey = `click-token:${token}`;
   if (
-    !clickTokenRateLimiter.check(`click-token:${token}`)
-    || !clickIpRateLimiter.check(`click:${req.ip ?? 'unknown'}`)
+    clickTokenRateLimiter.exhausted(tokenKey)
+    || !clickIpRateLimiter.check(`click:${rateLimitClientKey(req.ip)}`)
+    || !clickTokenRateLimiter.check(tokenKey)
   ) {
     return error(429, 'rate_limited', 'Zu viele Anfragen');
   }
