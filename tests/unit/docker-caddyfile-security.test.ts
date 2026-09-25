@@ -16,3 +16,48 @@ describe('Docker Caddy security headers', () => {
     expect(caddyfile).toMatch(/handle @backend \{\s*(?:#[^\n]*\s*)*request_body \{\s*max_size 40MiB\s*\}/);
   });
 });
+
+// Inhalt eines Caddyfile-Blocks ab der Zeile, auf die `opener` passt, per
+// Klammerzaehlung bis zur schliessenden Klammer.
+function caddyBlock(caddyfile: string, opener: RegExp): string {
+  const match = opener.exec(caddyfile);
+  if (!match) throw new Error(`block ${opener} not found in docker/Caddyfile`);
+  let depth = 0;
+  for (let index = match.index; index < caddyfile.length; index += 1) {
+    const char = caddyfile[index];
+    if (char === '{') depth += 1;
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return caddyfile.slice(match.index, index + 1);
+    }
+  }
+  throw new Error(`block ${opener} is not closed in docker/Caddyfile`);
+}
+
+describe('Docker Caddy access log', () => {
+  // F-A1-09: Das Access-Log schrieb Einladungs-Token (Pfad und ?invite=) und das Access-Token aus dem WebSocket-Subprotokoll im Klartext.
+  test('redacts invitation tokens and the WebSocket access token before writing', () => {
+    const caddyfile = readFileSync(resolve(process.cwd(), 'docker/Caddyfile'), 'utf8');
+    const log = caddyBlock(caddyfile, /^\tlog \{$/m);
+
+    expect(log).toContain('output file /var/log/access.log');
+    expect(log).toMatch(/format filter \{[\s\S]*wrap json/);
+    // Caddy schwaerzt von sich aus nur Cookie/Authorization. Der Server
+    // bestaetigt das Subprotokoll in der Antwort, also beide Richtungen.
+    expect(log).toMatch(/^\s*request>headers>Sec-Websocket-Protocol delete$/m);
+    expect(log).toMatch(/^\s*resp_headers>Sec-Websocket-Protocol delete$/m);
+
+    const uriFilter = /^\s*request>uri regexp "([^"]+)" "([^"]+)"$/m.exec(log);
+    expect(uriFilter).not.toBeNull();
+    // Go-RE2 und JavaScript werten dieses Muster und `$1` gleich aus.
+    const redact = (uri: string) => uri.replace(new RegExp(uriFilter![1], 'g'), uriFilter![2]);
+    const token = 'aW52aXRhdGlvbi10b2tlbi1zZW50aW5lbC0wMTIzNDU2';
+
+    expect(redact(`/api/v1/auth/invitations/${token}`)).toBe('/api/v1/auth/invitations/[redacted]');
+    expect(redact(`/api/v1/auth/invitations/${token}/accept`)).toBe('/api/v1/auth/invitations/[redacted]/accept');
+    expect(redact(`/login?invite=${token}`)).toBe('/login?invite=[redacted]');
+    expect(redact(`/login?lang=de&invite=${token}&next=1`)).toBe('/login?lang=de&invite=[redacted]&next=1');
+    expect(redact('/api/v1/auth/invitations')).toBe('/api/v1/auth/invitations');
+    expect(redact('/api/v1/events?since=42')).toBe('/api/v1/events?since=42');
+  });
+});

@@ -37,8 +37,20 @@
 		file_server
 	}
 
+	# Other bearer-like secrets are redacted rather than skipped, so the requests
+	# stay visible. Caddy on its own only hides Cookie and Authorization: the
+	# event stream carries the access token as WebSocket subprotocol (echoed in
+	# the response), and invitation links carry the invitation token in the path
+	# (/api/v1/auth/invitations/<token>) or the query (/login?invite=<token>).
 	log {
 		output file /var/log/access.log
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>Sec-Websocket-Protocol delete
+				resp_headers>Sec-Websocket-Protocol delete
+				request>uri regexp "(/api/v1/auth/invitations/|[?&]invite=)[^/?&#]+" "$1[redacted]"
+			}
+		}
 	}
 }

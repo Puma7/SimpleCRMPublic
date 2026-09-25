@@ -323,7 +323,8 @@ describe('server edition repository boundaries', () => {
     expect(caddyfile).toContain('X-Content-Type-Options nosniff');
     expect(caddyfile).toContain('encode gzip zstd');
     expect(caddyfile).toContain('output file /var/log/access.log');
-    expect(caddyfile).toContain('format json');
+    // Still JSON, now through the redacting filter encoder (F-A1-09).
+    expect(caddyfile).toContain('wrap json');
     // Static SPA serving with client-side routing fallback, backend paths proxied.
     expect(caddyfile).toContain('root * /srv/dist');
     expect(caddyfile).toContain('try_files {path} /index.html');

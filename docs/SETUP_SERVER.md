@@ -146,7 +146,11 @@ automatically (no `?serverUrl=` query and no extra `CORS_ALLOWED_ORIGINS` entry
 needed for the served app).
 
 Caddy deliberately excludes `/t/*` from access logs because those paths contain opaque
-bearer-like tracking tokens. Keep this rule when replacing the bundled proxy. Configure
+bearer-like tracking tokens. It also redacts the other bearer-like secrets before a line is
+written: the access token the event stream sends as WebSocket subprotocol
+(`Sec-WebSocket-Protocol`, request and response) and invitation tokens in
+`/api/v1/auth/invitations/<token>` and `/login?invite=<token>`; the API redacts invitation
+tokens in its own request log as well. Keep these rules when replacing the bundled proxy. Configure
 `TRUST_PROXY` only for known proxy addresses (the bundled stack uses `uniquelocal`, the private
 compose network Caddy runs on; hop counts such as `1` are not supported since fastify 5.12);
 IP-based classification and abuse limits use the resolved client IP. After setup, e-mail tracking remains disabled until an owner/admin records

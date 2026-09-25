@@ -131,6 +131,9 @@ export function redactSecrets(message: string): string {
   return message
     .replace(/\/t\/o\/[A-Za-z0-9_-]{43}\.gif/g, '/t/o/[redacted].gif')
     .replace(/\/t\/c\/[A-Za-z0-9_-]{43}/g, '/t/c/[redacted]')
+    // Invitation tokens are bearer secrets too: whoever holds one can accept the
+    // invitation. Same pattern as the access-log filter in docker/Caddyfile.
+    .replace(/(\/api\/v1\/auth\/invitations\/|[?&]invite=)[^/?&#\s"]+/g, '$1[redacted]')
     .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [redacted]')
     .replace(/("?(?:password|passwd|secret|token|api[_-]?key)"?\s*[:=]\s*)("?)([^"\s,}]+)/gi, '$1$2[redacted]');
 }

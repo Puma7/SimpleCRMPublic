@@ -72,6 +72,33 @@ describe('server log store', () => {
     expect(redactSecrets(`GET /t/c/${token}`)).toBe('GET /t/c/[redacted]');
   });
 
+  // F-A1-09: Einladungs-Token im Pfad (/api/v1/auth/invitations/<token>[/accept]) und in ?invite= landeten unredigiert in stdout/Docker-Logs.
+  test('redacts invitation tokens before writing pino output', () => {
+    const token = 'aW52aXRhdGlvbi10b2tlbi1zZW50aW5lbC0wMTIzNDU2';
+    const output: string[] = [];
+    const stream = createPinoLogCaptureStream(createServerLogStore(), {
+      write: (chunk) => output.push(chunk),
+    });
+
+    stream.write(`${JSON.stringify({
+      level: 30,
+      req: { method: 'GET', url: `/api/v1/auth/invitations/${token}` },
+      msg: 'incoming request',
+    })}\n`);
+    stream.write(`${JSON.stringify({
+      level: 30,
+      req: { method: 'POST', url: `/api/v1/auth/invitations/${token}/accept` },
+      msg: 'incoming request',
+    })}\n`);
+
+    expect(output.join('')).not.toContain(token);
+    expect(output.join('')).toContain('"/api/v1/auth/invitations/[redacted]"');
+    expect(output.join('')).toContain('"/api/v1/auth/invitations/[redacted]/accept"');
+    expect(redactSecrets(`GET /login?invite=${token}&next=1`)).toBe('GET /login?invite=[redacted]&next=1');
+    // Anlegen/Auflisten ohne Token bleibt lesbar.
+    expect(redactSecrets('POST /api/v1/auth/invitations')).toBe('POST /api/v1/auth/invitations');
+  });
+
   test('persists to the file and reloads on restart (survives rebuild)', () => {
     const files = new Map<string, string>();
     const dirs = new Set<string>(['/data']);
