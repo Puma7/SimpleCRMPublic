@@ -102,6 +102,7 @@ describe('desktop workflow http.request transport', () => {
         };
         if (path === '/to-loopback') return redirect(302, `http://127.0.0.1:${port}/secret`);
         if (path === '/to-intranet') return redirect(302, `http://intranet.example.com:${port}/secret`);
+        if (path === '/to-nat64') return redirect(302, `http://nat64.example.com:${port}/secret`);
         if (path === '/to-other') return redirect(302, `http://other.example.com:${port}/echo`);
         if (path === '/see-other') return redirect(303, '/echo');
         if (path === '/temp-cross-host') return redirect(307, `http://other.example.com:${port}/echo`);
@@ -152,6 +153,8 @@ describe('desktop workflow http.request transport', () => {
       if (host === 'api.example.com') return [{ address: API_IP, family: 4 }];
       if (host === 'other.example.com') return [{ address: OTHER_IP, family: 4 }];
       if (host === 'intranet.example.com') return [{ address: '192.168.1.10', family: 4 }];
+      // NAT64 form of 169.254.169.254 (cloud metadata service).
+      if (host === 'nat64.example.com') return [{ address: '64:ff9b::a9fe:a9fe', family: 6 }];
       throw new Error(`unexpected lookup ${host}`);
     });
   });
@@ -176,6 +179,17 @@ describe('desktop workflow http.request transport', () => {
 
     expect(hits.map((h) => h.path)).toEqual(['/to-intranet']);
     expect(mockLookup).toHaveBeenCalledWith('intranet.example.com', expect.anything());
+  });
+
+  // N-cx-05: the per-hop check let IPv6 forms of internal IPv4 addresses (here
+  // NAT64 to the metadata service) through, which the server already blocks.
+  test('rejects a redirect to an allowlisted host that resolves to a NAT64 metadata address', async () => {
+    await expect(
+      httpNode().execute(ctx(false), { method: 'GET', url: api('/to-nat64') }, 'http'),
+    ).rejects.toThrow('DNS-Auflösung zeigt auf blockierte Adresse');
+
+    expect(hits.map((h) => h.path)).toEqual(['/to-nat64']);
+    expect(pinnedCalls).toHaveLength(1);
   });
 
   // C-C4: the connection re-resolved DNS after the check (rebinding to loopback).
