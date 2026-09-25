@@ -61,7 +61,11 @@ Because of this, the restore path treats the metadata file as untrusted input:
 table names out of `backup-<stamp>.meta` are validated as identifiers and
 quoted by the server rather than pasted into SQL. `restore.sh` and
 `restore-drill.sh` connect as the admin role, so a manipulated backup must not
-be able to smuggle statements in through that file.
+be able to smuggle statements in through that file. For the same reason the
+row-count check only counts real tables in `public` (and calls only
+`pg_catalog` functions): a listed name that the dump turned into a view or any
+other object is reported as unreadable and fails the check instead of being
+evaluated with admin rights.
 
 ## What The Backup Does **Not** Contain
 

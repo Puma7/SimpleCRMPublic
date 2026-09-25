@@ -293,7 +293,9 @@ describe('server edition repository boundaries', () => {
     expect(restoreDrill).toContain('CREATE DATABASE \\"$DRILL_DB_SQL\\" OWNER \\"$PG_APP_USER_SQL\\"');
     expect(restoreDrill).toContain('pg_restore --role="$PG_RESTORE_ROLE" --no-owner --dbname "$DRILL_DATABASE_URL" "$DUMP_PATH"');
     expect(restoreDrill).toContain('DROP DATABASE IF EXISTS');
-    expect(restoreDrill).toContain('SELECT count(*) FROM workspaces');
+    // C-A55: kein rohes count(*) als Admin ueber einen Namen aus dem Dump.
+    expect(restoreDrill).toContain('backup_metadata_count "$DRILL_DATABASE_URL" workspaces');
+    expect(restoreDrill).not.toContain('SELECT count(*) FROM workspaces');
     expect(postgresInit).toContain('CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE');
     expect(postgresInit).toContain('ALTER DATABASE %I OWNER TO %I');
     expect(postgresInit).toContain('CREATE EXTENSION IF NOT EXISTS pgcrypto');

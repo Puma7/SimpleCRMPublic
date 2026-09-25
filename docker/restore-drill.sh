@@ -128,7 +128,12 @@ fi
 # belegt, dass die Wiederherstellung nicht abgestuerzt ist, nicht dass die Daten
 # vollstaendig sind. Jetzt wird gegen die Zeilenzahlen geprueft, die das Backup
 # selbst festgehalten hat — eine halb leere Sicherung faellt damit auf.
-psql "$DRILL_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM workspaces;" >/dev/null
+# Kein rohes count(*) ueber einen Namen aus dem Dump: waere workspaces dort eine
+# View ueber eine Funktion, liefe diese hier mit der Admin-Rolle.
+if [ "$(backup_metadata_count "$DRILL_DATABASE_URL" workspaces)" = 'n/a' ]; then
+  echo "restore drill: workspaces is not a readable table after restore" >&2
+  exit 1
+fi
 if [ -n "$METADATA_PATH" ]; then
   verify_backup_metadata "$METADATA_PATH" "$DRILL_DATABASE_URL" 'restore drill'
 fi

@@ -252,3 +252,70 @@ describe('docker restore.sh', () => {
     ]);
   });
 });
+
+// restore-drill.sh gegen Stubs: psql protokolliert jede Anweisung und spielt
+// eine Drill-Datenbank, in der der Dump workspaces als VIEW angelegt hat. Eine
+// Katalogabfrage mit relkind-Pruefung sieht darin keine Tabelle ('n/a'); jede
+// andere Abfrage auf workspaces wertet die View aus und wird vermerkt.
+const runRestoreDrill = () => {
+  const output = execFileSync('bash', ['-s'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    input: String.raw`
+set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+mkdir -p "$tmp/bin"
+
+cat > "$tmp/bin/psql" <<'STUB'
+#!/bin/sh
+sql="$*"
+previous=''
+for arg in "$@"; do
+  if [ "$previous" = '-f' ] && [ "$arg" = '-' ]; then
+    sql="$(cat)"
+  fi
+  previous="$arg"
+done
+case "$sql" in
+  *relkind*) echo 'n/a' ;;
+  *workspaces*) echo 'workspaces view evaluated' >> "$STUB_STATE/evaluated"; echo 1 ;;
+esac
+exit 0
+STUB
+
+cat > "$tmp/bin/pg_restore" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
+chmod +x "$tmp/bin/psql" "$tmp/bin/pg_restore"
+printf 'PGDMP' > "$tmp/drill.dump"
+
+export PATH="$tmp/bin:$PATH"
+export STUB_STATE="$tmp"
+export DATABASE_URL='postgres://stub/simplecrm'
+status=0
+sh docker/restore-drill.sh "$tmp/drill.dump" 2>"$tmp/stderr" >/dev/null || status=$?
+echo "status=$status"
+cat "$tmp/stderr"
+cat "$tmp/evaluated" 2>/dev/null || true
+`,
+  });
+  const [statusLine, ...rest] = output.trim().split(/\r?\n/);
+  return { status: Number(statusLine.replace('status=', '')), output: rest.join('\n') };
+};
+
+describe('docker restore-drill.sh', () => {
+  // C-A55: Der Drill zaehlte workspaces mit einem rohen count(*) als Admin, sodass eine View aus dem Dump an dieser Stelle mit Superuser-Rechten ausgewertet wurde.
+  test('does not evaluate a workspaces view from the dump and fails instead', () => {
+    if (!bashAvailable()) {
+      return;
+    }
+
+    const result = runRestoreDrill();
+
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain('workspaces is not a readable table after restore');
+    expect(result.output).not.toContain('workspaces view evaluated');
+  });
+});

@@ -153,7 +153,11 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining('string_agg(DISTINCT key_id'));
     expect(metadata).not.toEqual(expect.stringContaining('SIMPLECRM_MASTER_KEY='));
     // Fehlende Tabellen duerfen ein Backup nicht verhindern.
-    expect(metadata).toEqual(expect.stringContaining("to_regclass(format('public.%I', :'tbl')) IS NULL"));
+    // C-A55: Gezaehlt wird nur eine echte Tabelle; to_regclass allein nahm auch
+    // eine View aus dem Dump, die dann als Admin ausgewertet wurde.
+    expect(metadata).toEqual(expect.stringContaining("AND c.relname = :'tbl'"));
+    expect(metadata).toEqual(expect.stringContaining("AND c.relkind IN ('r', 'p'))"));
+    expect(metadata).not.toEqual(expect.stringContaining("to_regclass(format('public.%I', :'tbl'))"));
     // Und die Anweisung muss ueber stdin laufen: mit -c reicht psql den Text
     // unveraendert an den Server durch und ersetzt :'tbl' ueberhaupt nicht —
     // die Zaehlung liefe dann fuer jede Tabelle auf einen Fehler hinaus.
@@ -200,7 +204,7 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).not.toMatch(/to_regclass\('public\.\$2'\)/);
     expect(metadata).not.toMatch(/FROM \$2/);
     expect(metadata).toEqual(expect.stringContaining("-v tbl=\"$2\""));
-    expect(metadata).toEqual(expect.stringContaining("format('public.%I', :'tbl')"));
+    expect(metadata).toEqual(expect.stringContaining("FROM public.%I', :'tbl')"));
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_is_identifier "$2" ||'));
     expect(metadata).toEqual(expect.stringContaining('which is not a valid table name'));
     // Und die Zahl muss eine Zahl sein. Wurde 'n/a' uebersprungen und alles

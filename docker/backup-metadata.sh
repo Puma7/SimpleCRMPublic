@@ -379,11 +379,24 @@ backup_metadata_is_identifier() {
 # `format('%I', ...)` serverseitig einen Bezeichner. Die Anweisung kommt ueber
 # stdin (-f -), nicht ueber -c: mit -c reicht psql den Text unveraendert an den
 # Server weiter und ersetzt gar keine Variablen.
+#
+# Gezaehlt wird nur eine ECHTE Tabelle (relkind 'r'/'p') in public. Die Pruefung
+# laeuft mit der Admin-Rolle gegen Objekte aus dem Dump: ein to_regclass allein
+# nahm auch eine View, und deren count(*) fuehrte die Funktion dahinter als
+# Superuser aus. Alles andere ergibt 'n/a', und die Pruefung faellt durch.
+# Aus demselben Grund steht vor jeder Funktion pg_catalog: der Dump kann in
+# public eine gleichnamige Funktion mit passenderer Signatur ablegen.
 BACKUP_METADATA_TABLE_COUNT_SQL="
-  SELECT CASE WHEN to_regclass(format('public.%I', :'tbl')) IS NULL
+  SELECT CASE WHEN NOT EXISTS (
+      SELECT 1
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public'
+        AND c.relname = :'tbl'
+        AND c.relkind IN ('r', 'p'))
     THEN 'n/a'
-    ELSE (xpath('/row/c/text()', query_to_xml(
-            format('SELECT count(*) AS c FROM public.%I', :'tbl'),
+    ELSE (pg_catalog.xpath('/row/c/text()', pg_catalog.query_to_xml(
+            pg_catalog.format('SELECT pg_catalog.count(*) AS c FROM public.%I', :'tbl'),
             false, true, '')))[1]::text
   END"
 
