@@ -110,6 +110,7 @@ export function createPostgresEmailGdprExportPort(
         exportedAt: now,
         includeSensitiveTracking: input.includeSensitiveTracking === true,
         mailScope: input.mailScope,
+        mailContentScope: input.mailContentScope,
       }).catch((error) => {
         try {
           archive.abort();
@@ -230,6 +231,7 @@ async function writeExportArchive(
     exportedAt: Date;
     includeSensitiveTracking: boolean;
     mailScope?: MailSqlScope;
+    mailContentScope?: MailSqlScope;
   },
 ): Promise<void> {
   await withWorkspaceTransaction(
@@ -237,7 +239,7 @@ async function writeExportArchive(
     { workspaceId: input.workspaceId, role: 'system' },
     async (trx) => {
       await appendAccounts(trx, input.workspaceId, input.archive, input.mailScope);
-      await appendMessageIndex(trx, input.workspaceId, input.archive, input.mailScope);
+      await appendMessageIndex(trx, input.workspaceId, input.archive, input.mailScope, input.mailContentScope);
       await appendInternalNotes(trx, input.workspaceId, input.archive, input.mailScope);
       await appendWorkflows(trx, input.workspaceId, input.archive, input.mailScope);
       await appendWorkflowRuns(trx, input.workspaceId, input.archive, input.mailScope);
@@ -370,9 +372,19 @@ async function appendMessageIndex(
   workspaceId: string,
   archive: ExportArchive,
   mailScope: MailSqlScope | undefined,
+  mailContentScope: MailSqlScope | undefined,
 ): Promise<void> {
   const stream = new PassThrough();
   archive.append(stream, { name: 'messages_index.jsonl' });
+  // The snippet is body-derived content: like the list routes, blank it for rows
+  // outside the caller's mail.content.read scope. undefined ⇒ no gating.
+  const contentPredicate = mailScopePredicate(mailContentScope, {
+    accountId: 'email_messages.account_id',
+    folderId: 'email_messages.folder_id',
+    messageId: 'email_messages.id',
+    assignedToUserId: 'email_messages.assigned_to_user_id',
+    assignedTo: 'email_messages.assigned_to',
+  });
   let cursor = 0;
   for (;;) {
     let query = trx
@@ -395,6 +407,9 @@ async function appendMessageIndex(
         'imap_thread_id',
         'created_at',
       ])
+      .select(contentPredicate
+        ? kyselySql<boolean>`(${contentPredicate})`.as('content_readable')
+        : kyselySql<boolean>`true`.as('content_readable'))
       .where('workspace_id', '=', workspaceId);
     const scopePredicate = mailScopePredicate(mailScope, {
       accountId: 'email_messages.account_id',
@@ -410,8 +425,8 @@ async function appendMessageIndex(
       .limit(MESSAGE_BATCH)
       .execute();
     if (batch.length === 0) break;
-    for (const row of batch) {
-      stream.write(`${JSON.stringify({ ...row, id: Number(row.id) })}\n`);
+    for (const { content_readable: contentReadable, ...row } of batch) {
+      stream.write(`${JSON.stringify({ ...row, id: Number(row.id), snippet: contentReadable === false ? null : row.snippet })}\n`);
       cursor = Number(row.id);
     }
     if (batch.length < MESSAGE_BATCH) break;

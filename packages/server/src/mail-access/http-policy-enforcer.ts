@@ -350,11 +350,14 @@ export async function enforceMailHttpPolicy(
         ports,
       );
       const isContentPath = scope.kind !== 'all' && MESSAGE_CONTENT_SCOPE_PATHS.has(entry.route.path);
-      const contentScope = isContentPath ? await resolveContentScope() : undefined;
+      const isExportPath = scope.kind !== 'all' && ATTACHMENT_EXPORT_SCOPE_PATHS.has(entry.route.path);
+      // The GDPR export's message index carries the body-derived snippet, so it needs the
+      // content scope just like the list/search routes.
+      const contentScope = isContentPath || isExportPath ? await resolveContentScope() : undefined;
       // Resolve the caller's mail.attachment.read scope for the content list/search routes
       // (attachment-text search gating) AND for the GDPR export (attachment-bytes gating,
       // R51-1). Owner/admin never reach here (scope 'all' skips the wrapper).
-      const attachmentScope = isContentPath || (scope.kind !== 'all' && ATTACHMENT_EXPORT_SCOPE_PATHS.has(entry.route.path))
+      const attachmentScope = isContentPath || isExportPath
         ? await resolveAttachmentScope()
         : undefined;
       const signatureScope = scope.kind !== 'all' && ACCOUNT_SIGNATURE_BODY_SCOPE_PATHS.has(entry.route.path)
@@ -645,6 +648,7 @@ export function portsWithMailAccessContext(
         export: (input) => ports.emailGdprExport!.export({
           ...scopedInput(input),
           ...(attachmentScope ? { mailAttachmentScope: attachmentScope } : {}),
+          ...(contentScope ? { mailContentScope: contentScope } : {}),
         }),
       },
     } : {}),

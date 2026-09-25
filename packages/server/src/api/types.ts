@@ -2996,6 +2996,9 @@ export type EmailGdprExportApiPort = {
     // scope, so a mail.export delegate lacking attachment.read cannot bulk-exfiltrate attachment
     // content the dedicated attachment routes would deny. Absent ⇒ scope 'all' ⇒ no gating. (R51-1)
     mailAttachmentScope?: MailSqlScope;
+    // Same for the caller's mail.content.read scope: the message index blanks the body-derived
+    // snippet of messages outside it, as the list routes do. Absent ⇒ no gating.
+    mailContentScope?: MailSqlScope;
   }): Promise<EmailGdprExportResult>;
 };
 

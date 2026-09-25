@@ -1510,6 +1510,44 @@ describe('server mailbox ACL migration', () => {
     expect(observedScopes).toEqual(Array.from({ length: 6 }, () => ({ kind: 'none' })));
   });
 
+  // F-A2a-03: the GDPR export authorized on mail.export but wrote the
+  // body-derived snippet of every in-scope message, while the list routes
+  // redact it for callers lacking mail.content.read.
+  test('injects the content scope into the GDPR export for restricted callers', async () => {
+    const observedContentScopes: Array<MailSqlScope | undefined> = [];
+    const overrides: Partial<ServerApiPorts> = {
+      emailGdprExport: {
+        async export(input) {
+          observedContentScopes.push((input as typeof input & { mailContentScope?: MailSqlScope }).mailContentScope);
+          return { ok: true, filename: 'empty.zip', stream: Readable.from([]) };
+        },
+      },
+    };
+    const exportGrant = { resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null };
+    const exportOnly = createServerApi(makeHttpPorts({
+      grants: new Map([['mail.export', [exportGrant]]]),
+      overrides,
+    }));
+    const contentAuthorized = createServerApi(makeHttpPorts({
+      grants: new Map([
+        ['mail.export', [exportGrant]],
+        ['mail.content.read', [exportGrant]],
+      ]),
+      overrides,
+    }));
+    const request = { method: 'GET' as const, path: '/api/v1/email/gdpr-export', query: { skipAttachments: 'true' } };
+
+    expect((await exportOnly.handle({ ...request, principal: makePrincipal() })).status).toBe(200);
+    expect((await contentAuthorized.handle({ ...request, principal: makePrincipal() })).status).toBe(200);
+    expect((await exportOnly.handle({ ...request, principal: makePrincipal('owner') })).status).toBe(200);
+
+    expect(observedContentScopes).toEqual([
+      { kind: 'none' },
+      { kind: 'restricted', accountIds: [ACCOUNT_A], folderIds: [], messageIds: [] },
+      undefined,
+    ]);
+  });
+
   test('injects the content scope into triage mutations so restricted callers get redacted rows', async () => {
     const observedContentScopes: Array<MailSqlScope | undefined> = [];
     const overrides: Partial<ServerApiPorts> = {
@@ -3867,6 +3905,65 @@ describe('server mailbox ACL migration', () => {
       expect(accounts[0]?.imap_host).toBe('');
       expect(accounts[0]?.oauth_provider).toBeNull();
     } finally {
+      await db.destroy();
+    }
+  });
+
+  // F-A2a-03: messages_index.jsonl carried the body-derived snippet for callers
+  // whose mail.content.read scope does not cover the message.
+  test('omits the snippet from a PostgreSQL GDPR export outside the content scope', async () => {
+    await ensureScopedGrantFixtures();
+    await client.query(`UPDATE email_messages SET snippet = 'GEHEIMER BODY' WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}`);
+    const db = createApplicationDb();
+    try {
+      const access = new MailAccessService(createPostgresMailAccessPort({ db }));
+      const exportScope = await access.resolveScope({
+        workspaceId: WORKSPACE_A,
+        actor: { workspaceId: WORKSPACE_A, userId: USER_FOLDER, isOwner: false, isAdmin: false },
+        permission: 'mail.export',
+      });
+      const contentScope = await resolveContentScope(db, USER_FOLDER);
+      const exportSnippets = async (mailContentScope: MailSqlScope): Promise<Array<string | null>> => {
+        const entries = new Map<string, string>();
+        const pendingStreams: Array<{ name: string; stream: Readable }> = [];
+        let finalizeExport: (() => void) | undefined;
+        const finalized = new Promise<void>((resolve) => { finalizeExport = resolve; });
+        const archive = {
+          on() { return archive; },
+          pipe() { return archive; },
+          append(content: string | Buffer | Readable, options: { name: string }) {
+            if (content instanceof Readable) pendingStreams.push({ name: options.name, stream: content });
+            else entries.set(options.name, Buffer.isBuffer(content) ? content.toString('utf8') : content);
+            return archive;
+          },
+          async finalize() {
+            for (const pending of pendingStreams) {
+              entries.set(pending.name, (await readableToBuffer(pending.stream)).toString('utf8'));
+            }
+            finalizeExport?.();
+          },
+          abort() { finalizeExport?.(); },
+        };
+        const exporter = createPostgresEmailGdprExportPort({
+          db,
+          attachmentsRoot: postgresDir,
+          archiveFactory: () => archive,
+          outputStreamFactory: () => new PassThrough(),
+        });
+        const result = await exporter.export({
+          ...withMailScope({ workspaceId: WORKSPACE_A, skipAttachments: true }, exportScope),
+          mailContentScope,
+        } as Parameters<typeof exporter.export>[0]);
+        expect(result.ok).toBe(true);
+        await finalized;
+        return (entries.get('messages_index.jsonl') ?? '').trim().split('\n').filter(Boolean)
+          .map((line) => (JSON.parse(line) as { snippet: string | null }).snippet);
+      };
+
+      expect(await exportSnippets({ kind: 'none' })).toEqual([null]);
+      expect(await exportSnippets(contentScope)).toEqual(['GEHEIMER BODY']);
+    } finally {
+      await client.query(`UPDATE email_messages SET snippet = NULL WHERE workspace_id = '${WORKSPACE_A}' AND id = ${MESSAGE_A}`);
       await db.destroy();
     }
   });
