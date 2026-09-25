@@ -13,6 +13,7 @@ import {
   isWorkflowKnowledgeRefreshEvent,
   subscribeServerEvents,
 } from "@/services/transport"
+import { useAuth } from "@/components/auth/auth-context"
 import { hasLocalIpc, invokeIpc } from "../types"
 import { KnowledgeMarkdownEditor } from "./knowledge-markdown-editor"
 import {
@@ -74,6 +75,10 @@ function downloadMarkdown(content: string, fileName: string): void {
 
 export function KnowledgePanel() {
   const serverClientMode = getRendererTransport().kind === "http"
+  const { user } = useAuth()
+  // Desktop (G1): die Wissensbasis-Schreibkanaele verlangen per IPC Owner/Admin
+  // (Server-Paritaet workflows.manage); alle anderen lesen und exportieren nur.
+  const canEditKnowledge = serverClientMode || user?.role === "owner" || user?.role === "admin"
   const browserImportInputRef = useRef<HTMLInputElement | null>(null)
   const [list, setList] = useState<Kb[]>([])
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -359,16 +364,23 @@ export function KnowledgePanel() {
         </Select>
       </div>
 
-      <div className="flex gap-2">
-        <Input
-          placeholder="Neuer Bereich (z. B. Retouren, Versand)"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-        />
-        <Button type="button" onClick={() => void createKb()}>
-          Anlegen
-        </Button>
-      </div>
+      {canEditKnowledge ? (
+        <div className="flex gap-2">
+          <Input
+            placeholder="Neuer Bereich (z. B. Retouren, Versand)"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+          />
+          <Button type="button" onClick={() => void createKb()}>
+            Anlegen
+          </Button>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          Nur lesbar: Wissensbasen können nur von Ownern und Admins angelegt, geändert oder
+          gelöscht werden.
+        </p>
+      )}
 
       <ul className="max-h-48 shrink-0 divide-y overflow-y-auto rounded-lg border lg:max-h-56">
         {filteredList.length === 0 ? (
@@ -398,16 +410,18 @@ export function KnowledgePanel() {
                   ) : null}
                 </span>
               </button>
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="h-8 w-8 shrink-0 text-destructive"
-                title="Löschen"
-                onClick={() => void deleteKb(kb.id, kb.name)}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
+              {canEditKnowledge ? (
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 shrink-0 text-destructive"
+                  title="Löschen"
+                  onClick={() => void deleteKb(kb.id, kb.name)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
             </li>
           ))
         )}
@@ -417,7 +431,7 @@ export function KnowledgePanel() {
         <div className="flex min-h-0 flex-1 flex-col space-y-3 rounded-lg border p-4">
           {(() => {
             const selectedKb = list.find((k) => k.id === selectedId)
-            if (!selectedKb) return null
+            if (!selectedKb || !canEditKnowledge) return null
             return (
               <AccountOverrideActions
                 row={selectedKb}
@@ -456,14 +470,20 @@ export function KnowledgePanel() {
                 <Download className="mr-1 h-3.5 w-3.5" />
                 .md speichern
               </Button>
-              <Button type="button" variant="outline" size="sm" onClick={() => void importMd()}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={!canEditKnowledge}
+                onClick={() => void importMd()}
+              >
                 <Upload className="mr-1 h-3.5 w-3.5" />
                 .md hochladen
               </Button>
               <Button
                 type="button"
                 size="sm"
-                disabled={saving || !dirty}
+                disabled={!canEditKnowledge || saving || !dirty}
                 onClick={() => void saveDocument()}
               >
                 {saving ? (
@@ -494,6 +514,7 @@ export function KnowledgePanel() {
                     setDirty(true)
                   }}
                   height="100%"
+                  readOnly={!canEditKnowledge}
                 />
               </div>
             </div>

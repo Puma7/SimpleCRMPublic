@@ -349,7 +349,9 @@ export function registerWorkflowHandlers(options: {
         });
         return { success: true as const, id };
       },
-      { logger },
+      // G1: Wissensbasen speisen die KI-Knoten der Workflows; schreiben nur
+      // Owner/Admin (Server: workflows.manage). Lesen bleibt offen.
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -390,7 +392,7 @@ export function registerWorkflowHandlers(options: {
         updateKnowledgeBase(payload.id, patch);
         return { success: true as const };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -398,7 +400,7 @@ export function registerWorkflowHandlers(options: {
     registerIpcHandler(IPCChannels.Email.DeleteKnowledgeBase, async (_event: IpcMainInvokeEvent, id: number) => {
       deleteKnowledgeBase(id);
       return { success: true as const };
-    }, { logger }),
+    }, { logger, requireRole: ['owner', 'admin'] }),
   );
 
   disposers.push(
@@ -411,7 +413,7 @@ export function registerWorkflowHandlers(options: {
         const id = addTextChunk(payload.knowledgeBaseId, payload.title, payload.content);
         return { success: true as const, id };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -444,7 +446,7 @@ export function registerWorkflowHandlers(options: {
           };
         }
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 
@@ -478,7 +480,7 @@ export function registerWorkflowHandlers(options: {
         const id = importFileToKnowledgeBase(payload.knowledgeBaseId, r.filePaths[0]);
         return { success: true as const, id };
       },
-      { logger },
+      { logger, requireRole: ['owner', 'admin'] },
     ),
   );
 

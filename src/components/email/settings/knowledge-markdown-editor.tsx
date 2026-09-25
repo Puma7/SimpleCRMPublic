@@ -6,12 +6,14 @@ type Props = {
   value: string
   onChange: (value: string) => void
   height?: string
+  readOnly?: boolean
 }
 
 export function KnowledgeMarkdownEditor({
   value,
   onChange,
   height = "min(360px, calc(100vh - 14rem))",
+  readOnly = false,
 }: Props) {
   return (
     <div className="overflow-hidden rounded-md border" style={{ height }}>
@@ -26,6 +28,7 @@ export function KnowledgeMarkdownEditor({
             className="min-h-[280px] w-full rounded-md border-0 bg-background p-3 font-mono text-sm"
             value={value}
             onChange={(e) => onChange(e.target.value)}
+            readOnly={readOnly}
             spellCheck={false}
           />
         }
@@ -37,6 +40,7 @@ export function KnowledgeMarkdownEditor({
           wordWrap: "on",
           automaticLayout: true,
           padding: { top: 12 },
+          readOnly,
         }}
       />
     </div>

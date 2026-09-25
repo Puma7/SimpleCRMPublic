@@ -107,6 +107,18 @@ jest.mock('../../electron/workflow/workflow-versions', () => ({
   })),
 }));
 
+jest.mock('../../electron/workflow/knowledge-base', () => ({
+  ...jest.requireActual('../../electron/workflow/knowledge-base'),
+  listKnowledgeBases: jest.fn(() => [{ id: 9, name: 'Retouren' }]),
+  getKnowledgeBaseDocument: jest.fn(() => ({ content: '# Retouren', fileName: 'retouren.md' })),
+  createKnowledgeBase: jest.fn(() => 9),
+  updateKnowledgeBase: jest.fn(),
+  deleteKnowledgeBase: jest.fn(),
+  addTextChunk: jest.fn(() => 5),
+  saveKnowledgeBaseDocument: jest.fn(),
+  importFileToKnowledgeBase: jest.fn(() => 6),
+}));
+
 import { dialog } from 'electron';
 import { IPCChannels } from '../../shared/ipc/channels';
 import { listMessageIdsForWorkflowBackfill } from '../../electron/email/email-store';
@@ -121,6 +133,14 @@ import { runInboundWorkflowsForMessage } from '../../electron/email/email-workfl
 import { setImapDeleteOptIn } from '../../electron/email/email-imap-move';
 import { writeSyncInfo } from '../../electron/sync-info-store';
 import { saveWorkflowVersion } from '../../electron/workflow/workflow-versions';
+import {
+  addTextChunk,
+  createKnowledgeBase,
+  deleteKnowledgeBase,
+  importFileToKnowledgeBase,
+  saveKnowledgeBaseDocument,
+  updateKnowledgeBase,
+} from '../../electron/workflow/knowledge-base';
 import { clearAllSessions, createSession, type SessionRole } from '../../electron/auth/session-store';
 import { registerEmailHandlers } from '../../electron/ipc/email';
 import { registerWorkflowHandlers } from '../../electron/ipc/workflow';
@@ -270,6 +290,46 @@ describe('Desktop-Workflow-Autorenkanaele (G1)', () => {
         .resolves.toMatchObject({ imapDeleteOptIn: false, httpAllowlist: '' });
       await expect(invoke(IPCChannels.Email.ExportWorkflowBundle, event, 42))
         .resolves.toMatchObject({ success: true });
+    }
+  });
+});
+
+const knowledgeChannels = [
+  [IPCChannels.Email.CreateKnowledgeBase, { name: 'Retouren', accountId: null, knowledgeContext: 'inbound' }],
+  [IPCChannels.Email.UpdateKnowledgeBase, { id: 9, name: 'Retouren neu' }],
+  [IPCChannels.Email.DeleteKnowledgeBase, 9],
+  [IPCChannels.Email.AddKnowledgeChunk, { knowledgeBaseId: 9, title: 'Frist', content: '30 Tage' }],
+  [IPCChannels.Email.SaveKnowledgeBaseDocument, { knowledgeBaseId: 9, content: '# Retouren' }],
+  [IPCChannels.Email.ImportKnowledgeFile, { knowledgeBaseId: 9 }],
+] as const;
+
+describe('Desktop-Wissensbasis-Schreibkanaele (G1, Paritaet workflows.manage)', () => {
+  // G1: Wissensbasen speisen KI-Knoten der Workflows; auf dem Desktop durfte jede Rolle sie anlegen, ueberschreiben und loeschen (Server: workflows.manage).
+  test.each(knowledgeChannels)('%s lehnt Agent und Viewer ab, ohne die Wissensbasis anzufassen', async (channel, payload) => {
+    for (const role of ['agent', 'viewer'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).rejects.toThrow('Keine Berechtigung');
+    }
+    expect(createKnowledgeBase).not.toHaveBeenCalled();
+    expect(updateKnowledgeBase).not.toHaveBeenCalled();
+    expect(deleteKnowledgeBase).not.toHaveBeenCalled();
+    expect(addTextChunk).not.toHaveBeenCalled();
+    expect(saveKnowledgeBaseDocument).not.toHaveBeenCalled();
+    expect(importFileToKnowledgeBase).not.toHaveBeenCalled();
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+  });
+
+  test.each(knowledgeChannels)('%s bleibt fuer Owner und Admin offen', async (channel, payload) => {
+    for (const role of ['owner', 'admin'] as const) {
+      await expect(invoke(channel, eventFor(role), payload)).resolves.toMatchObject({ success: true });
+    }
+  });
+
+  test('lesende Wissensbasis-Kanaele bleiben fuer alle Rollen offen', async () => {
+    for (const role of ['agent', 'viewer'] as const) {
+      const event = eventFor(role);
+      await expect(invoke(IPCChannels.Email.ListKnowledgeBases, event)).resolves.toEqual([{ id: 9, name: 'Retouren' }]);
+      await expect(invoke(IPCChannels.Email.GetKnowledgeBaseDocument, event, 9))
+        .resolves.toEqual({ success: true, content: '# Retouren', fileName: 'retouren.md' });
     }
   });
 });
