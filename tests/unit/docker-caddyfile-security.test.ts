@@ -61,3 +61,24 @@ describe('Docker Caddy access log', () => {
     expect(redact('/api/v1/events?since=42')).toBe('/api/v1/events?since=42');
   });
 });
+
+describe('Docker Caddy HSTS', () => {
+  // F-A12-06: Caddy setzte kein Strict-Transport-Security, der erste http://-Aufruf blieb fuer SSL-Stripping offen.
+  test('sends a conservative HSTS header for the public domain, not for localhost', () => {
+    const caddyfile = readFileSync(resolve(process.cwd(), 'docker/Caddyfile'), 'utf8');
+
+    const hsts = /^\theader (@\S+ )?Strict-Transport-Security "([^"]+)"$/m.exec(caddyfile);
+    expect(hsts).not.toBeNull();
+    const [, matcher, value] = hsts!;
+    const maxAge = /^max-age=(\d+)$/.exec(value);
+    expect(maxAge).not.toBeNull();
+    expect(Number(maxAge![1])).toBeGreaterThanOrEqual(15552000);
+    // includeSubDomains/preload wuerden fremde Subdomains des Betreibers bzw.
+    // die Browser-Preload-Liste mitbinden, das bleibt dessen Entscheidung.
+    expect(value).not.toMatch(/includeSubDomains|preload/i);
+    // HSTS gilt im Browser fuer alle Ports des Hosts; ein lokaler Testlauf auf
+    // localhost soll andere lokale http-Dienste nicht ein Jahr lang sperren.
+    expect(matcher).toBeDefined();
+    expect(caddyfile).toContain(`${matcher.trim()} not host localhost 127.0.0.1`);
+  });
+});

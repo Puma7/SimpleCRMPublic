@@ -11,6 +11,14 @@
 		-X-Powered-By
 	}
 
+	# HSTS closes the plain-http first visit that SSL stripping relies on. One
+	# year, without includeSubDomains and preload: those would bind the
+	# operator's other subdomains and the browser preload list, which is their
+	# call (docs/SETUP_SERVER.md). Not for localhost: browsers apply HSTS to every
+	# port of a host, so a local test run would lock other local http services.
+	@hsts not host localhost 127.0.0.1
+	header @hsts Strict-Transport-Security "max-age=31536000"
+
 	# API, public email evidence endpoints, health probes, OpenAPI and the
 	# SSE/WebSocket event stream (/api/v1/events) go to Fastify. Tracking URLs
 	# are intentionally excluded from access logs because their paths contain

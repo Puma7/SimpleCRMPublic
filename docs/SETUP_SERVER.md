@@ -105,6 +105,15 @@ For a real domain, use:
 curl -fsS https://crm.example.com/health
 ```
 
+For any `PUBLIC_DOMAIN` other than `localhost`/`127.0.0.1`, Caddy sends
+`Strict-Transport-Security: max-age=31536000` (HSTS, one year). After the first HTTPS visit a
+browser refuses plain `http://` for that host, which closes the first-visit SSL-stripping gap.
+Only point `PUBLIC_DOMAIN` at a host that will keep serving HTTPS. `includeSubDomains` and
+`preload` are deliberately not set: they would also force HTTPS on your other subdomains or put
+the domain on the browsers' preload list. Add them in `docker/Caddyfile` only if every subdomain
+serves HTTPS. `localhost` is excluded because browsers apply HSTS to every port of a host, so a
+local smoke test would otherwise lock other local `http://localhost` services.
+
 ## Optional Profiles
 
 The standard stack intentionally starts only Caddy, API, migrations, and PostgreSQL. The optional services from the implementation plan are opt-in:
