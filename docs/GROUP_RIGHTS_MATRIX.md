@@ -16,7 +16,7 @@
 | Workflows | `workflows.view` → `run` → `edit` → `manage` | Support+ nur ausführen; Backoffice bearbeiten |
 | Einstellungen | `settings.view` → `settings.manage` | Support: keines; Admin-Delegierte: manage |
 | Tracking | `tracking.view` | Evidenz/Tracking |
-| Benutzer | `users.manage` | Nur Ordinary-User (kein Owner/Admin) |
+| Benutzer | `users.manage` | Nur Ordinary-User (kein Owner/Admin), die nicht mehr Rechte haben als der Delegierte (siehe unten) |
 
 Höhere Stufe impliziert niedrigere (Expand beim Auth in `expandUserGroupCapabilities`).
 
@@ -39,6 +39,27 @@ Höhere Stufe impliziert niedrigere (Expand beim Auth in `expandUserGroupCapabil
 | Benutzer CRUD | `users.manage` |
 
 Owner/Admin: implizit alle Capabilities.
+
+### Grenzen von `users.manage` (Delegierte ohne Admin-Rolle)
+
+Ein Delegierter mit `users.manage` darf ein bestehendes Konto nur dann speichern
+(inklusive Passwort, E-Mail, Deaktivieren), löschen oder dessen Login-PIN setzen,
+wenn das Zielkonto
+
+1. die Rolle `user` hat (kein Owner/Admin, `isForbiddenUserMutation`),
+2. über seine Gruppen (`user_group_members` + `user_group_permissions`, expandiert)
+   nur Capabilities hält, die der Delegierte selbst auch hat, und
+3. keine Mail-ACL-Bindings besitzt, weder direkt noch über eine Gruppe.
+
+Sonst antwortet der Server mit **403 `target_more_privileged`**. Grund: Ein
+Passwort-Reset würde sonst die Anmeldung als Zielkonto und damit dessen
+Gruppenrechte bzw. Postfach-Freigaben übertragen (F-A2b-06). Mail-ACLs werden
+nicht einzeln verglichen; jedes Binding macht das Zielkonto „höher berechtigt“.
+Das eigene Konto ist ausgenommen (dort gibt es nichts zu gewinnen), Anlegen neuer
+Benutzer bleibt unverändert. Die Prüfung läuft in derselben Transaktion wie der
+Schreibzugriff (`postgres-auth-port.ts`, reine Regel `isTargetMorePrivileged` in
+`packages/server/src/api/capabilities.ts`). Solche Konten bearbeitet ein
+Owner/Admin.
 
 ## Vorlagen
 

@@ -175,6 +175,8 @@ export type AuthUserSaveInput = {
   actorUserId: string;
   /** Only owners/admins may assign or change roles; delegated managers cannot. */
   actorIsAdmin: boolean;
+  /** Expanded group capabilities of a delegated manager (see isTargetMorePrivileged). */
+  actorCapabilities?: readonly string[];
   /** Session of the acting admin; kept alive when an admin resets its own password. */
   actorSessionId?: string;
   id?: string;
@@ -191,7 +193,11 @@ export type AuthUserSaveInput = {
 
 export type AuthUserSaveResult =
   | { ok: true; user: AuthUserAdminRecord }
-  | { ok: false; code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' | 'role_change_forbidden' };
+  | {
+    ok: false;
+    code: 'not_found' | 'duplicate_email' | 'password_required' | 'last_owner_required' | 'role_change_forbidden'
+      | 'target_more_privileged';
+  };
 
 export type AuthInvitationCreateInput = {
   workspaceId: string;
@@ -326,8 +332,12 @@ export type AuthApiPort = {
     workspaceId: string;
     actorUserId: string;
     actorIsAdmin: boolean;
+    actorCapabilities?: readonly string[];
     id: string;
-  }): Promise<{ ok: true } | { ok: false; code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' }>;
+  }): Promise<
+    | { ok: true }
+    | { ok: false; code: 'not_found' | 'last_owner_required' | 'role_change_forbidden' | 'target_more_privileged' }
+  >;
   changePassword?(input: {
     workspaceId: string;
     userId: string;

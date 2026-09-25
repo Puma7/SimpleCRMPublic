@@ -103,3 +103,21 @@ export function isForbiddenUserMutation(
   if (existingRole !== undefined && existingRole !== 'user') return true;
   return false;
 }
+
+/**
+ * A delegated user manager (users.manage but not admin) may only save, delete
+ * or set a login PIN for an account that holds nothing they do not hold
+ * themselves: otherwise a password reset lets them log in as the target and
+ * take over its group capabilities or mailbox delegations. Capabilities are
+ * compared expanded, so a lower module level implied by a higher one counts.
+ * Mail ACL bindings are not compared piecewise: any binding on the target,
+ * direct or through a group, makes it more privileged. Owners/admins are exempt.
+ */
+export function isTargetMorePrivileged(
+  actorCapabilities: readonly string[] | null | undefined,
+  target: Readonly<{ grantedCapabilities: readonly string[]; hasMailAclBindings: boolean }>,
+): boolean {
+  if (target.hasMailAclBindings) return true;
+  const actor = new Set(expandUserGroupCapabilities(actorCapabilities));
+  return expandUserGroupCapabilities(target.grantedCapabilities).some((capability) => !actor.has(capability));
+}

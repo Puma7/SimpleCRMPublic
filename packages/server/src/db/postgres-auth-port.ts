@@ -18,7 +18,7 @@ import type {
   AuthUserRecord,
   TokenPair,
 } from '../api';
-import { expandUserGroupCapabilities, isForbiddenUserMutation } from '../api/capabilities';
+import { expandUserGroupCapabilities, isForbiddenUserMutation, isTargetMorePrivileged } from '../api/capabilities';
 import type { AuthInvitationRow, ServerDatabase, UserRow } from './schema';
 import { withWorkspaceTransaction, type WorkspaceSessionApplier } from './workspace-context';
 
@@ -243,6 +243,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           if (isForbiddenUserMutation(input.actorIsAdmin, input.role, existing.role)) {
             return { ok: false as const, code: 'role_change_forbidden' as const };
           }
+          if (await delegatedTargetIsMorePrivileged(trx, input, existing.id)) {
+            return { ok: false as const, code: 'target_more_privileged' as const };
+          }
 
           // isActive is optional: an update that does not send it (a rename by an API
           // client, a stale form) must not re-enable a user another admin disabled.
@@ -302,6 +305,9 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           // revoke that principal's sessions. Mirrors the saveUser guard.
           if (isForbiddenUserMutation(input.actorIsAdmin, existing.role, existing.role)) {
             return { ok: false as const, code: 'role_change_forbidden' as const };
+          }
+          if (await delegatedTargetIsMorePrivileged(trx, input, existing.id)) {
+            return { ok: false as const, code: 'target_more_privileged' as const };
           }
           if (existing.role === 'owner') {
             const otherOwnerCount = await countActiveOwners(trx, input.workspaceId, input.id);
@@ -1042,6 +1048,50 @@ async function withCrossWorkspaceAuthTransaction<T>(
     run,
     { applySession: applyWorkspaceSession },
   );
+}
+
+// Reads the target's group capabilities and mail ACL bindings (direct or through
+// a group) inside the caller's mutation transaction, so the decision and the
+// write see the same memberships. The actor's own account is never "more
+// privileged" than the actor.
+async function delegatedTargetIsMorePrivileged(
+  trx: Transaction<ServerDatabase>,
+  input: Readonly<{
+    workspaceId: string;
+    actorUserId: string;
+    actorIsAdmin: boolean;
+    actorCapabilities?: readonly string[];
+  }>,
+  targetId: string,
+): Promise<boolean> {
+  if (input.actorIsAdmin || targetId === input.actorUserId) return false;
+  const permissionRows = await trx
+    .selectFrom('user_group_members')
+    .innerJoin('user_group_permissions', (join) => join
+      .onRef('user_group_permissions.group_id', '=', 'user_group_members.group_id')
+      .onRef('user_group_permissions.workspace_id', '=', 'user_group_members.workspace_id'))
+    .select('user_group_permissions.permission as permission')
+    .where('user_group_members.workspace_id', '=', input.workspaceId)
+    .where('user_group_members.user_id', '=', targetId)
+    .execute();
+  const binding = await trx
+    .selectFrom('mail_acl_bindings')
+    .select('id')
+    .where('workspace_id', '=', input.workspaceId)
+    .where((eb) => eb.or([
+      eb('subject_user_id', '=', targetId),
+      eb('subject_group_id', 'in', eb
+        .selectFrom('user_group_members')
+        .select('group_id')
+        .where('workspace_id', '=', input.workspaceId)
+        .where('user_id', '=', targetId)),
+    ]))
+    .limit(1)
+    .executeTakeFirst();
+  return isTargetMorePrivileged(input.actorCapabilities, {
+    grantedCapabilities: permissionRows.map((row) => String(row.permission)),
+    hasMailAclBindings: binding !== undefined,
+  });
 }
 
 async function selectUserById(

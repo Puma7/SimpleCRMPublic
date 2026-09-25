@@ -3,6 +3,7 @@ import {
   USER_GROUP_CAPABILITY_KEYS,
   expandUserGroupCapabilities,
   isForbiddenUserMutation,
+  isTargetMorePrivileged,
   isUserGroupCapability,
   normalizeStoredUserGroupPermissions,
 } from '../../packages/server/src/api/capabilities';
@@ -114,5 +115,26 @@ describe('user group capabilities', () => {
     expect(forbiddenForNonAdmin('user')).toBe(false);
     expect(forbiddenForNonAdmin('admin')).toBe(true);
     expect(forbiddenForNonAdmin('owner')).toBe(true);
+  });
+
+  // F-A2b-06: users.manage delegates could reset 'user' accounts that hold more
+  // group capabilities or mailbox delegations than they do.
+  test('a delegate may only manage targets whose rights are a subset of their own', () => {
+    const helpdesk = ['users.manage', 'crm.write'];
+    const target = (grantedCapabilities: string[], hasMailAclBindings = false) => ({
+      grantedCapabilities,
+      hasMailAclBindings,
+    });
+    expect(isTargetMorePrivileged(helpdesk, target([]))).toBe(false);
+    expect(isTargetMorePrivileged(helpdesk, target(['crm.read']))).toBe(false);
+    expect(isTargetMorePrivileged(helpdesk, target(['crm.write', 'users.manage']))).toBe(false);
+    expect(isTargetMorePrivileged(helpdesk, target(['settings.view']))).toBe(true);
+    expect(isTargetMorePrivileged(['settings.view', 'users.manage'], target(['email_settings.manage']))).toBe(true);
+    expect(isTargetMorePrivileged(['settings.manage', 'users.manage'], target(['email_settings.manage']))).toBe(false);
+    expect(isTargetMorePrivileged(['workflows.edit'], target(['workflows.run']))).toBe(false);
+    expect(isTargetMorePrivileged(['workflows.run'], target(['workflows.edit']))).toBe(true);
+    expect(isTargetMorePrivileged(undefined, target(['crm.read']))).toBe(true);
+    expect(isTargetMorePrivileged(helpdesk, target(['unknown.key']))).toBe(false);
+    expect(isTargetMorePrivileged(helpdesk, target([], true))).toBe(true);
   });
 });

@@ -412,6 +412,7 @@ async function handleSaveUser(
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     actorIsAdmin: requireAdmin(principal),
+    actorCapabilities: principal.capabilities ?? [],
     ...(principal.sessionId ? { actorSessionId: principal.sessionId } : {}),
     ...saveValues,
   });
@@ -420,6 +421,7 @@ async function handleSaveUser(
     if (result.code === 'duplicate_email') return error(409, 'auth_user_duplicate_email', 'E-Mail ist bereits vergeben');
     if (result.code === 'password_required') return error(400, 'validation_error', 'Passwort ist fuer neue Benutzer erforderlich');
     if (result.code === 'role_change_forbidden') return error(403, 'forbidden', 'Nur Owner/Admins dürfen Rollen vergeben oder ändern');
+    if (result.code === 'target_more_privileged') return targetMorePrivilegedError();
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 
@@ -486,6 +488,14 @@ async function handleSaveUser(
   return data(parsed.values.id ? 200 : 201, publicAdminUser(savedUser));
 }
 
+function targetMorePrivilegedError(): ApiResponse {
+  return error(
+    403,
+    'target_more_privileged',
+    'Dieses Konto hat Rechte oder Postfach-Freigaben, die Sie selbst nicht besitzen. Nur Administratoren dürfen es ändern oder löschen.',
+  );
+}
+
 async function handleDeleteUser(
   req: ApiRequest,
   ports: ServerApiPorts,
@@ -519,6 +529,7 @@ async function handleDeleteUser(
     workspaceId: principal.workspaceId,
     actorUserId: principal.userId,
     actorIsAdmin: requireAdmin(principal),
+    actorCapabilities: principal.capabilities ?? [],
     id,
   });
   if (!result.ok) {
@@ -526,6 +537,7 @@ async function handleDeleteUser(
     if (result.code === 'role_change_forbidden') {
       return error(403, 'forbidden', 'Nur Administratoren dürfen privilegierte Konten löschen');
     }
+    if (result.code === 'target_more_privileged') return targetMorePrivilegedError();
     return error(409, 'last_owner_required', 'Mindestens ein aktiver Owner muss erhalten bleiben');
   }
 
