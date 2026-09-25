@@ -118,6 +118,27 @@ function buildDeflatedZip(files: Array<[string, Buffer]>): Buffer {
   return Buffer.concat([...localParts, centralDirectory, end]);
 }
 
+/** DOCX whose document.xml inflates far beyond its compressed size. */
+async function buildExpandingDocx(uncompressedTextBytes: number): Promise<Buffer> {
+  const JSZip = (await import('jszip')).default;
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types/>');
+  zip.file(
+    'word/document.xml',
+    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${'a'.repeat(uncompressedTextBytes)}</w:t></w:r></w:p></w:body></w:document>`,
+  );
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 1 } });
+}
+
+/** Rewrites the central-directory uncompressed size of every entry (lying archive). */
+function forgeDeclaredSizes(zipBuf: Buffer, declared: number): Buffer {
+  const out = Buffer.from(zipBuf);
+  for (let i = out.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])); i >= 0; i = out.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), i + 4)) {
+    out.writeUInt32LE(declared, i + 24);
+  }
+  return out;
+}
+
 describe('attachment text extraction', () => {
   let tmpDir: string;
 
@@ -217,6 +238,26 @@ describe('attachment text extraction', () => {
       /DOCX archive exceeds safe expansion limit/,
     );
   }, 30_000);
+
+  // F-A7b-12: Nur die komprimierte Groesse war begrenzt; eine DOCX-Zip-Bombe wurde im Hauptprozess vollstaendig entpackt und geparst.
+  test('buffer extraction: docx archives that expand beyond the limit are rejected before parsing', async () => {
+    const bomb = await buildExpandingDocx(34 * 1024 * 1024);
+    expect(bomb.length).toBeLessThan(1024 * 1024);
+    await expect(extractAttachmentTextFromBuffer(bomb, 'docx')).rejects.toThrow(/expansion/i);
+  }, 60_000);
+
+  test('buffer extraction: docx archives with forged small entry sizes are still stopped', async () => {
+    const forged = forgeDeclaredSizes(await buildExpandingDocx(34 * 1024 * 1024), 64);
+    await expect(extractAttachmentTextFromBuffer(forged, 'docx')).rejects.toThrow();
+  }, 60_000);
+
+  test('buffer extraction: docx archives with too many entries are rejected', async () => {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    for (let i = 0; i < 2100; i += 1) zip.file(`word/part${i}.xml`, '<x/>');
+    const buf = await zip.generateAsync({ type: 'nodebuffer' });
+    await expect(extractAttachmentTextFromBuffer(buf, 'docx')).rejects.toThrow(/expansion/i);
+  }, 60_000);
 
   test('row extraction stores text and marks the row', async () => {
     const file = path.join(tmpDir, 'brief.txt');

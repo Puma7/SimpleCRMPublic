@@ -137,6 +137,9 @@ export async function extractTextForAttachmentRow(
       return false;
     }
     const buf = await fs.promises.readFile(resolvedPath);
+    // Mark as tried before parsing: if a parse takes the process down, the
+    // backfill must not pick the same row again on every start.
+    markExtracted(row.id, null);
     const text = await withTimeout(extractAttachmentTextFromBuffer(buf, kind), EXTRACT_TIMEOUT_MS);
     markExtracted(row.id, text.length > 0 ? text : null);
     return text.length > 0;
