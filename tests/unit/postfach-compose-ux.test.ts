@@ -28,7 +28,11 @@ jest.mock('quill', () => ({ __esModule: true, default: class MockQuill {} }));
 jest.mock('quill/dist/quill.snow.css', () => ({}));
 jest.mock('@/styles/compose-quill.css', () => ({}));
 
-import { handleSubjectTabToEditor } from '../../src/components/email/compose-dialog';
+import {
+  handleSubjectTabToEditor,
+  hydrateComposeFieldsFromDraftMessage,
+} from '../../src/components/email/compose-dialog';
+import type { EmailMessage } from '../../src/components/email/types';
 
 describe('compose subject tab routing', () => {
   it('moves plain Tab focus from subject to the message editor', () => {
@@ -82,6 +86,31 @@ describe('compose subject tab routing', () => {
 
     expect(preventDefault).not.toHaveBeenCalled();
     expect(focus).not.toHaveBeenCalled();
+  });
+});
+
+describe('compose draft hydration', () => {
+  // F-A11a-01: Klartext-Entwuerfe (body_html null) wurden ungeescaped als HTML in den Composer geladen.
+  it('escapes a plain-text draft body instead of interpreting it as markup', () => {
+    const existing = {
+      id: 42,
+      body_html: null,
+      body_text:
+        'Hallo <img src="https://attacker.example/p.png"> <a href="https://phish.example">Rechnung</a>\n'
+        + '& <Kunde> <!-- simplecrm-quote --><img src="https://attacker.example/q.png">',
+      draft_attachment_paths_json: null,
+    } as unknown as EmailMessage;
+
+    const hydrated = hydrateComposeFieldsFromDraftMessage(existing);
+
+    expect(hydrated.editorHtml).not.toMatch(/<img/i);
+    expect(hydrated.editorHtml).not.toMatch(/<a\s/i);
+    expect(hydrated.editorHtml).toContain('&lt;img');
+    expect(hydrated.editorHtml).toContain('&amp; &lt;Kunde&gt;');
+    expect(hydrated.editorHtml).toContain('<br');
+    // Ein Zonenmarker im Fremdtext darf keine Zitat- oder Signaturzone abspalten.
+    expect(hydrated.quotedHtml).toBe('');
+    expect(hydrated.signatureHtml).toBe('');
   });
 });
 

@@ -62,6 +62,7 @@ import { getTranslationSettings } from "@/lib/translation-settings"
 import {
   buildReplyComposeHtml,
   composeAiContextText,
+  escapeHtmlText,
   mergeComposeHtml,
   mergeComposeZones,
   mergeEditorAndSignature,
@@ -177,7 +178,7 @@ function getComposeContextMessageId(
   return replyToId
 }
 
-function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
+export function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
   replyToId: number | null
   editorHtml: string
   signatureHtml: string
@@ -187,7 +188,7 @@ function hydrateComposeFieldsFromDraftMessage(existing: EmailMessage): {
   const html = existing.body_html
     ? existing.body_html
     : existing.body_text
-      ? sanitizeComposeHtml(`<p>${existing.body_text.replace(/\n/g, "<br/>")}</p>`)
+      ? sanitizeComposeHtml(`<p>${escapeHtmlText(existing.body_text).replace(/\n/g, "<br/>")}</p>`)
       : ""
   const split = splitAndSanitizeComposeHtml(html, sanitizeComposeHtml)
   return {

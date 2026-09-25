@@ -163,7 +163,7 @@ export function buildQuotedBlockHtml(quotedPlain: string): string {
   return `<p>${escapeHtmlText(quotedPlain).replace(/\n/g, '<br/>')}</p>`;
 }
 
-function escapeHtmlText(value: string): string {
+export function escapeHtmlText(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
