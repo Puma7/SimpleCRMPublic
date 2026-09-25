@@ -141,6 +141,48 @@ describe('sendComposeDraft', () => {
     expect(mockSendSmtp).not.toHaveBeenCalled();
   });
 
+  // F-A7b-13: Nach SMTP-Commit uebernahm die Wiederaufnahme geaenderte Felder in Entwurf und Gesendet-Kopie, obwohl diese Fassung nie versendet wurde.
+  it('finalizes a committed SMTP send from the stored draft and ignores edited fields', async () => {
+    mockGetMessage.mockReturnValue({
+      id: 10,
+      uid: -1,
+      account_id: 1,
+      folder_kind: 'draft',
+      subject: 'Hi',
+      body_text: 'Original',
+      body_html: null,
+      message_id: '<committed@local>',
+      to_json: JSON.stringify({ value: [{ address: 'orig@a.de' }] }),
+      cc_json: null,
+      bcc_json: null,
+      draft_attachment_paths_json: null,
+      in_reply_to: null,
+      references_header: null,
+      ticket_code: null,
+    });
+    mockGetSyncInfo.mockImplementation((key: string) =>
+      key === 'email_compose_smtp_ok:10' ? '1' : null,
+    );
+    mockGetAccount.mockReturnValue({ id: 1, email_address: 'me@shop.test', protocol: 'imap' });
+
+    const r = await sendComposeDraft({
+      accountId: 1,
+      draftMessageId: 10,
+      subject: 'Hi',
+      bodyText: 'Geaendert',
+      to: 'neu@b.de',
+    });
+
+    expect(r).toEqual({ ok: true, recoveredSentAppend: true });
+    expect(mockSendSmtp).not.toHaveBeenCalled();
+    expect(mockUpdateDraft).not.toHaveBeenCalled();
+    const { appendSentToImap } = jest.requireMock('../../electron/email/email-imap-append') as {
+      appendSentToImap: jest.Mock;
+    };
+    expect(appendSentToImap).toHaveBeenCalledTimes(1);
+    expect(appendSentToImap.mock.calls[0][0]).toMatchObject({ to: 'orig@a.de', text: 'Original' });
+  });
+
   it('skips second SMTP when commit flag is set', async () => {
     mockGetMessage.mockReturnValue({
       id: 10,

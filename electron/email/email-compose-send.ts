@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   extractDeliveryAddressesFromRecipientField,
+  recipientFieldFromJson,
   recipientJsonFromField,
   senderJsonFromMailbox,
   validateRecipientField,
@@ -43,6 +44,7 @@ import {
 } from './email-inline-images';
 import { persistLocalComposeAttachments } from './email-message-attachments-store';
 import { EMAIL_MESSAGES_TABLE } from '../database-schema';
+import { parseDraftAttachmentPathsJson } from '../../shared/compose-draft-attachments';
 
 function maxComposeAttachmentBytes(): number {
   const mb = parseInt(getSyncInfo('email_max_attachment_mb') || '25', 10);
@@ -240,22 +242,20 @@ async function finalizeSentDraft(input: {
   return { sentAppendWarning: joinWarnings(warnings) };
 }
 
-/** SMTP already succeeded (crash recovery): skip outbound/attachment gates, finalize only. */
+/**
+ * SMTP already succeeded (crash recovery): skip outbound/attachment gates, finalize only.
+ * Recipients, body and attachments come from the stored draft, which the original
+ * send wrote before SMTP — edits made after the commit were never delivered.
+ */
 async function finalizeCommittedSmtpDraft(
   input: {
     accountId: number;
     draftMessageId: number;
     subject: string;
-    bodyText: string;
-    to: string;
-    cc?: string;
-    bcc?: string;
     inReplyToMessageId?: number | null;
     requestReadReceipt?: boolean;
-    attachmentPaths?: string[];
   },
   draft: NonNullable<ReturnType<typeof getEmailMessageById>>,
-  html: string | null,
 ): Promise<
   | { ok: true; warning?: string; recoveredSentAppend: true }
   | { ok: false; error: string }
@@ -263,12 +263,15 @@ async function finalizeCommittedSmtpDraft(
   const acc = getEmailAccountById(input.accountId);
   if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
-  const smtpTo = extractDeliveryAddressesFromRecipientField(input.to).join(', ');
-  const smtpCc = input.cc?.trim()
-    ? extractDeliveryAddressesFromRecipientField(input.cc).join(', ')
+  const sentTo = recipientFieldFromJson(draft.to_json);
+  const sentCc = recipientFieldFromJson(draft.cc_json);
+  const sentBcc = recipientFieldFromJson(draft.bcc_json);
+  const smtpTo = extractDeliveryAddressesFromRecipientField(sentTo).join(', ');
+  const smtpCc = sentCc.trim()
+    ? extractDeliveryAddressesFromRecipientField(sentCc).join(', ')
     : undefined;
-  const smtpBcc = input.bcc?.trim()
-    ? extractDeliveryAddressesFromRecipientField(input.bcc).join(', ')
+  const smtpBcc = sentBcc.trim()
+    ? extractDeliveryAddressesFromRecipientField(sentBcc).join(', ')
     : undefined;
   const outboundMessageId =
     draft.message_id?.trim() || generateOutboundMessageId(acc.email_address);
@@ -276,7 +279,7 @@ async function finalizeCommittedSmtpDraft(
   const ticket = draft.ticket_code?.trim();
   const finalSubject = ticket ? ensureTicketInSubject(subjectBase, ticket) : subjectBase;
   const requestReceipt = resolveRequestReadReceipt(acc, input.requestReadReceipt);
-  const recoveredAttachments = (input.attachmentPaths ?? [])
+  const recoveredAttachments = parseDraftAttachmentPathsJson(draft.draft_attachment_paths_json)
     .filter((attachmentPath) => {
       try {
         return fs.statSync(attachmentPath).isFile();
@@ -294,8 +297,8 @@ async function finalizeCommittedSmtpDraft(
     cc: smtpCc,
     bcc: smtpBcc,
     subject: finalSubject,
-    text: input.bodyText,
-    html: html || undefined,
+    text: draft.body_text ?? '',
+    html: draft.body_html || undefined,
     messageId: outboundMessageId,
     inReplyTo: draft.in_reply_to ?? undefined,
     references: draft.references_header ?? undefined,
@@ -383,6 +386,20 @@ export async function sendComposeDraft(input: {
     const acc = getEmailAccountById(input.accountId);
     if (!acc) return { ok: false, error: 'Konto nicht gefunden' };
 
+    // Checked before anything is written back to the draft: after a committed
+    // SMTP send the draft row is the only record of what actually went out.
+    if (isSmtpCommitted(input.draftMessageId)) {
+      const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
+      clearOutboundHoldForResend(input.draftMessageId);
+      const recovered = await finalizeCommittedSmtpDraft(input, draft);
+      maybeMarkReplyParentDone(
+        input.inReplyToMessageId,
+        input.draftMessageId,
+        input.markReplyParentDone,
+      );
+      return recovered;
+    }
+
     let bodyText = input.bodyText;
     const html = input.bodyHtml ?? draft.body_html ?? undefined;
     if (input.pgpEncrypt) {
@@ -432,16 +449,6 @@ export async function sendComposeDraft(input: {
 
     const { clearOutboundHoldForResend } = await import('./email-outbound-review.js');
     clearOutboundHoldForResend(input.draftMessageId);
-
-    if (isSmtpCommitted(input.draftMessageId)) {
-      const recovered = await finalizeCommittedSmtpDraft(input, draft, html ?? null);
-      maybeMarkReplyParentDone(
-        input.inReplyToMessageId,
-        input.draftMessageId,
-        input.markReplyParentDone,
-      );
-      return recovered;
-    }
 
     const outbound = await evaluateOutboundWorkflows({
       messageId: input.draftMessageId,

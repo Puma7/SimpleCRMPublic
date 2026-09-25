@@ -363,6 +363,8 @@ describe('email-compose-send expanded', () => {
     const fp = path.join(dir, 'recover.pdf');
     fs.writeFileSync(fp, 'pdf');
     mockGetSyncInfo.mockImplementation((key: string) => (key === 'email_compose_smtp_ok:10' ? '1' : null));
+    // Recovery reads the attachment list the original send stored on the draft (F-A7b-13).
+    mockGetMessage.mockImplementation(() => ({ ...draft(), draft_attachment_paths_json: JSON.stringify([fp]) }));
 
     const r = await sendComposeDraft({
       accountId: 1,
