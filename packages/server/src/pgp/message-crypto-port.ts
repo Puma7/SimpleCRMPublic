@@ -1,3 +1,4 @@
+import { MAX_INBOUND_RFC822_BYTES } from '@simplecrm/core';
 import { sql as kyselySql, type Kysely } from 'kysely';
 
 import type {
@@ -45,6 +46,12 @@ const PGP_MESSAGE_END = '-----END PGP MESSAGE-----';
 const PGP_SIGNED_MESSAGE_BEGIN = '-----BEGIN PGP SIGNED MESSAGE-----';
 const PGP_SIGNATURE_END = '-----END PGP SIGNATURE-----';
 const PGP_SIGNATURE_BEGIN = '-----BEGIN PGP SIGNATURE-----';
+/**
+ * openpgp inflates compressed data packets without limit by default, so a
+ * small ciphertext could expand to gigabytes in the API process. No decrypted
+ * plaintext needs to be larger than the largest inbound mail we accept.
+ */
+const PGP_DECRYPT_CONFIG = { maxDecompressedMessageSize: MAX_INBOUND_RFC822_BYTES };
 const ENCRYPTABLE_TRUST_LEVELS = ['verified', 'tofu', 'imported'] as const;
 const VERIFIED_SIGNATURE_TRUST_LEVELS = ['verified', 'tofu'] as const;
 
@@ -121,6 +128,7 @@ export function createPostgresPgpMessageCryptoPort(
         const decrypted = await openpgp.decrypt({
           message,
           decryptionKeys: decryptedKey,
+          config: PGP_DECRYPT_CONFIG,
         });
 
         return {
@@ -255,6 +263,7 @@ export function createPostgresPgpMessageCryptoPort(
           message,
           decryptionKeys: decryptedKey,
           format: 'binary',
+          config: PGP_DECRYPT_CONFIG,
         });
 
         return {
