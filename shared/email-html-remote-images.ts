@@ -105,15 +105,37 @@ function blockRemoteInStyleBlock(styleBody: string): string {
     .replace(/url\s*\(\s*['"]?(?:https?:)?\/\/[^)'"]+['"]?\s*\)/gi, 'url(about:blank)');
 }
 
+/**
+ * Same result as
+ * `html.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_, open, inner, close) => open + transform(inner) + close)`,
+ * but linear: the lazy regex rescans to the end of the mail for every unclosed
+ * `<style`, which is quadratic on hostile HTML (N-redos-03). If one opening tag
+ * has no `>` or no closing tag after it, no later one has either, so the scan
+ * stops there. The parts are rebuilt by slicing, so '$&' etc. in the style text
+ * stay literal.
+ */
+export function mapStyleBlockContents(html: string, transform: (inner: string) => string): string {
+  const open = /<style\b/gi;
+  const close = /<\/style>/gi;
+  let out = '';
+  let cursor = 0;
+  for (;;) {
+    open.lastIndex = cursor;
+    const start = open.exec(html);
+    if (!start) break;
+    const openEnd = html.indexOf('>', start.index + start[0].length);
+    if (openEnd === -1) break;
+    close.lastIndex = openEnd + 1;
+    const end = close.exec(html);
+    if (!end) break;
+    out += `${html.slice(cursor, openEnd + 1)}${transform(html.slice(openEnd + 1, end.index))}${end[0]}`;
+    cursor = end.index + end[0].length;
+  }
+  return cursor === 0 ? html : out + html.slice(cursor);
+}
+
 function blockRemoteInStyleTags(html: string): string {
-  // Rebuild from the captured parts: re-running String.replace on the match
-  // would treat '$&' etc. in the style text as patterns and hit the first
-  // occurrence of the text, which may sit in an attribute of the opening tag.
-  return html.replace(
-    /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
-    (_full, open: string, inner: string, close: string) =>
-      `${open}${blockRemoteInStyleBlock(inner)}${close}`,
-  );
+  return mapStyleBlockContents(html, blockRemoteInStyleBlock);
 }
 
 function rewriteTagsMatching(

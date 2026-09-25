@@ -2,6 +2,7 @@ import {
   blockRemoteImagesInHtml,
   htmlHasRemoteResources,
   isRemoteUrl,
+  mapStyleBlockContents,
 } from '../../shared/email-html-remote-images';
 
 describe('blockRemoteImagesInHtml', () => {
@@ -89,6 +90,57 @@ describe('blockRemoteImagesInHtml', () => {
   test('leaves a harmless style block with dollar signs byte-identical', () => {
     const html = '<style>p::after { content: "$5 $& $\'"; }</style><p>x</p>';
     expect(blockRemoteImagesInHtml(html)).toBe(html);
+  });
+
+  // F-N-redos-03: Die <style>-Regex lief bei nicht geschlossenen <style>-Tags quadratisch (140 KB wiederholtes <style> kostete 1,4 s im Renderer).
+  test('stays linear for many unclosed style tags', () => {
+    for (const html of [
+      '<style>'.repeat(40_000),
+      '<style media="x">'.repeat(15_000),
+      `<style>a{background:url(https://x.test/p.png)}</style>${'<style>'.repeat(40_000)}`,
+      '<style'.repeat(40_000),
+    ]) {
+      const started = Date.now();
+      const out = blockRemoteImagesInHtml(html);
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(out).not.toContain('https://x.test');
+    }
+  });
+
+  // F-N-redos-03: Der lineare Scan muss exakt das Ergebnis der bisherigen Regex liefern.
+  test('mapStyleBlockContents matches the previous style regex', () => {
+    const transform = (inner: string) => `[${inner.length}:${inner.toUpperCase()}]`;
+    const legacy = (html: string) => html.replace(
+      /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
+      (_full, open: string, inner: string, close: string) => `${open}${transform(inner)}${close}`,
+    );
+    const samples = [
+      '',
+      '<p>kein Style</p>',
+      '<style>a{}</style>',
+      '<STYLE type="text/css">b{}</Style><style>c{}</STYLE>',
+      '<style>unverschlossen',
+      '<styles>kein Treffer</style>',
+      '<style-x>Grenze</style>',
+      '<style x="a>b">innen</style>',
+      '<style><style>doppelt</style></style>',
+      '<style>$& $1 $\'</style>',
+    ];
+    const tokens = ['<style', '<STYLE', '<styles', '<style-', '>', '</style>', '</STYLE>', '</style >', '<', '/', ' ', 'a', 'ü', '\n', '"', '$&'];
+    let seed = 0x5eed03;
+    const random = () => {
+      seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff;
+      return seed / 0x80000000;
+    };
+    for (let n = 0; n < 5000; n += 1) {
+      const count = Math.floor(random() * 16);
+      let html = '';
+      for (let i = 0; i < count; i += 1) html += tokens[Math.floor(random() * tokens.length)];
+      samples.push(html);
+    }
+    for (const html of samples) {
+      expect(mapStyleBlockContents(html, transform)).toBe(legacy(html));
+    }
   });
 
   test('isRemoteUrl', () => {
