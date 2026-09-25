@@ -1109,6 +1109,11 @@ export function createPostgresWorkflowDelayedJobReadPort(
               .execute();
             await cancelQueuedDelayedJobExecute(trx, input.workspaceId, input.id);
           }
+          // The queued continuation's run_after decides when the delay resumes;
+          // execute_at alone is display only. Move it with a reschedule.
+          if (values.executeAt !== undefined && row.status === 'pending') {
+            await rescheduleQueuedDelayedJobExecute(trx, input.workspaceId, input.id, row.execute_at);
+          }
           return { ok: true, job: mapWorkflowDelayedJobRow(row, true) };
         },
         { applySession: options.applyWorkspaceSession },
@@ -1162,6 +1167,22 @@ async function cancelQueuedDelayedJobExecute(
 ): Promise<void> {
   await trx
     .deleteFrom('job_queue')
+    .where('workspace_id', '=', workspaceId)
+    .where('type', '=', 'workflow.execute')
+    .where('locked_at', 'is', null)
+    .where(kyselySql<boolean>`payload->>'delayedJobId' = ${String(delayedJobId)}`)
+    .execute();
+}
+
+async function rescheduleQueuedDelayedJobExecute(
+  trx: WorkspaceTransaction,
+  workspaceId: string,
+  delayedJobId: number,
+  executeAt: Date | string,
+): Promise<void> {
+  await trx
+    .updateTable('job_queue')
+    .set({ run_after: executeAt, updated_at: new Date() })
     .where('workspace_id', '=', workspaceId)
     .where('type', '=', 'workflow.execute')
     .where('locked_at', 'is', null)

@@ -157,6 +157,28 @@ describe('manual cancel of a delayed inbound workflow keeps the priority chain m
     ]);
   });
 
+  // F-A8-05: PATCH executeAt aenderte nur die Anzeige; die wartende Fortsetzung lief weiter zum alten Zeitpunkt.
+  test('rescheduling a waiting delay moves its queued continuation', async () => {
+    const delayedJobId = await startDelayedChain();
+    const executeAt = new Date(Date.now() + 5 * 60_000);
+    executeAt.setMilliseconds(0);
+
+    await expect(createPostgresWorkflowDelayedJobReadPort({ db }).update!({
+      workspaceId: WORKSPACE_ID,
+      actorUserId: OWNER_ID,
+      id: delayedJobId,
+      values: { executeAt: executeAt.toISOString() },
+      mailScope: { kind: 'all' },
+    })).resolves.toMatchObject({ ok: true });
+
+    const runAfter = await postgres.admin.query<{ run_after: Date }>(
+      `SELECT run_after FROM job_queue
+       WHERE workspace_id = $1 AND type = 'workflow.execute' AND payload->>'delayedJobId' = $2`,
+      [WORKSPACE_ID, String(delayedJobId)],
+    );
+    expect(runAfter.rows.map((row) => new Date(row.run_after).toISOString())).toEqual([executeAt.toISOString()]);
+  });
+
   test('a continuation that still runs after the cancel does not advance the chain a second time', async () => {
     const delayedJobId = await startDelayedChain();
     const continuation = (await queuedJobs())[0]!;
