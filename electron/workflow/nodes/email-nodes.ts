@@ -132,6 +132,12 @@ export function registerEmailNodes(register: Reg): void {
       const { row, messageId } = requireMessage(ctx);
       const to = String(config.to ?? '').trim();
       if (!to) return { status: 'skipped' };
+      // Anti-Loop: eine zurückkommende Weiterleitungskopie ist eine neue
+      // Nachricht und fällt nicht unter die Dedup-Tabelle (message, workflow, dest).
+      const { isAutoForwardedMessage } = await import('../../email/email-automation-headers.js');
+      if (isAutoForwardedMessage(row.raw_headers)) {
+        return { status: 'skipped', message: 'skip:auto_forwarded_source' };
+      }
       if (ctx.dryRun) return { status: 'ok', message: `dry-run forward ${to}` };
       const subj = row.subject ? `Fwd: ${row.subject}` : 'Weitergeleitet';
       const body = [row.body_text ?? row.snippet ?? '', '', '---', `Original: ${ctx.strings.from_address}`].join('\n');

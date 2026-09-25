@@ -35,6 +35,18 @@ export function isAutomatedInboundMessage(rawHeaders: string | null | undefined)
 }
 
 /**
+ * Kopie einer automatischen Weiterleitung ("Auto-Submitted: auto-forwarded";
+ * so markieren beide Editionen die Kopien von email.forward_copy). Sie erneut
+ * weiterzuleiten schliesst eine Weiterleitungsschleife. Andere Automaten-Mails
+ * (auto-generated, Precedence: bulk, etwa Rechnungen) bleiben weiterleitbar.
+ */
+export function isAutoForwardedMessage(rawHeaders: string | null | undefined): boolean {
+  const headers = (rawHeaders ?? '').toLowerCase();
+  if (!headers) return false;
+  return headerValue(headers, 'auto-submitted') === 'auto-forwarded';
+}
+
+/**
  * Strengere Variante für vollautomatische KI-Antworten: zusätzlich
  * Newsletter/Verteiler ausschließen — die KOMPLETTE RFC-2369-Familie plus
  * List-Id. Besonders kritisch ist List-Post: replyAddressesFromRawHeaders

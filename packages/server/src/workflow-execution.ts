@@ -16,6 +16,7 @@ import {
   emailAddressForDelivery,
   generateTicketCode,
   interpolateWorkflowPlaceholders,
+  isAutoForwardedMessage,
   isTrashMailboxName,
   isUnsafeAutoReplyTarget,
   listBuiltinWorkflowNodeCatalog,
@@ -4083,6 +4084,11 @@ async function scheduleWorkflowForwardCopyJob(
   const to = workflowForwardCopyRecipient(config.to);
   if (!to.ok) return { status: 'error', port: 'error', message: to.message };
   if (!to.value) return { status: 'skipped', port: 'default', message: 'Empfaenger fehlt' };
+  // Anti-Loop: eine zurueckkommende Weiterleitungskopie ist eine neue Nachricht
+  // und faellt nicht unter die Dedup-Tabelle (Quellnachricht, Workflow, Ziel).
+  if (isAutoForwardedMessage(context.message?.raw_headers)) {
+    return { status: 'skipped', port: 'default', message: 'skip:auto_forwarded_source' };
+  }
 
   const resumeNodeId = resolveResumeNodeAfter(doc, node.id);
   const payload: Record<string, unknown> = {
