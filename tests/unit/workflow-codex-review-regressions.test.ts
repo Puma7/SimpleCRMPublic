@@ -593,7 +593,8 @@ describe('codex review regression guards', () => {
     // bleiben, sonst markiert ein spaeter fertiger Geschwisterzweig den
     // unvollstaendigen Workflow als angewendet.
     const queuePort = readRepoFile('packages/server/src/db/postgres-job-queue-port.ts');
-    expect(queuePort.match(/\{ error: true \},/g)).toHaveLength(2);
+    // failJob, failJobTerminal und die Stale-Lock-Freigabe am Versuchslimit (F-A2c-05).
+    expect(queuePort.match(/\{ error: true \},/g)).toHaveLength(3);
     expect(graphile).toMatch(
       /completeInboundDeferredJoinSiblingOnPgClient\([\s\S]*?error: true,/,
     );

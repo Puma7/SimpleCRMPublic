@@ -21,6 +21,8 @@ import {
   type WorkspaceTransaction,
 } from './workspace-context';
 
+const STALE_LOCK_RELEASED_ERROR = 'Worker-Sperre abgelaufen (Worker vermutlich abgestuerzt)';
+
 export type PostgresJobQueuePortOptions = Readonly<{
   db: Kysely<ServerDatabase>;
   now?: () => Date;
@@ -136,18 +138,37 @@ export function createPostgresJobQueuePort(options: PostgresJobQueuePortOptions)
         // locked_at. Without this guard we would null out that fresh lock,
         // letting a third worker run the job concurrently (double execution)
         // and orphaning the real owner's complete()/fail().
+        //
+        // A stale lock means the worker most likely died inside the handler, so
+        // neither complete() nor fail() ran. Count that as a failed attempt;
+        // otherwise a job that crashes its worker is re-claimed forever with
+        // attempts=0 and never reaches max_attempts.
+        const releasedAt = now();
         const released = await db
           .updateTable('job_queue')
           .set({
             locked_at: null,
             locked_by: null,
-            updated_at: now(),
+            attempts: kyselySql<number>`attempts + 1`,
+            last_error: STALE_LOCK_RELEASED_ERROR,
+            updated_at: releasedAt,
           })
           .where('id', 'in', ids)
           .where('locked_at', 'is not', null)
           .where('locked_at', '<', input.staleBefore)
           .returningAll()
           .execute();
+
+        for (const row of released) {
+          if (row.attempts < row.max_attempts) continue;
+          // Terminal like failJob: release the join slot and advance the inbound chain.
+          await enqueueNextInboundWorkflowAfterTerminalChildFailure(
+            db,
+            jobPayloadRecord(row.payload),
+            releasedAt,
+            { error: true },
+          );
+        }
 
         return released.map(mapJob);
       });
