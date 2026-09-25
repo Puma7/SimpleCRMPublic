@@ -387,15 +387,31 @@ export function MessageList({
           )
         } else if (action === "restore") {
           let restored = 0
+          let firstError: string | null = null
           for (const id of ids) {
-            const r = await invokeRenderer(IPCChannels.Email.RestoreMessage, id) as { success: boolean }
+            const r = await invokeRenderer(IPCChannels.Email.RestoreMessage, id) as {
+              success: boolean
+              error?: string
+            }
             if (r.success) restored += 1
+            else firstError ??= r.error ?? null
           }
-          toast.success(
-            restored === 1
-              ? "1 Nachricht wiederhergestellt"
-              : `${restored} Nachrichten wiederhergestellt`,
-          )
+          if (restored === 0) {
+            toast.error(firstError ?? "Wiederherstellen fehlgeschlagen")
+            return
+          }
+          const failed = ids.length - restored
+          if (failed > 0) {
+            toast.warning(
+              `${restored} von ${ids.length} Nachrichten wiederhergestellt (${failed} fehlgeschlagen${firstError ? `: ${firstError}` : ""})`,
+            )
+          } else {
+            toast.success(
+              restored === 1
+                ? "1 Nachricht wiederhergestellt"
+                : `${restored} Nachrichten wiederhergestellt`,
+            )
+          }
         } else if (action === "unsnooze") {
           for (const id of ids) {
             await invokeRenderer(IPCChannels.Email.SnoozeMessage, { messageId: id, until: null })

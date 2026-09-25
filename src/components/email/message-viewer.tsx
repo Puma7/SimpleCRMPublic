@@ -616,7 +616,19 @@ export function MessageViewer(props: Props) {
   }
 
   const handleSoftDelete = async () => {
-    await invokeRenderer(IPCChannels.Email.SoftDeleteMessage, selectedMessage.id)
+    try {
+      const r = await invokeRenderer(
+        IPCChannels.Email.SoftDeleteMessage,
+        selectedMessage.id,
+      ) as { success?: boolean; error?: string } | null
+      if (r?.success === false) {
+        toast.error(r.error ?? "Löschen fehlgeschlagen")
+        return
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Löschen fehlgeschlagen")
+      return
+    }
     toast.success("In den Papierkorb verschoben")
     await advanceSelectionAfterMessageRemoved(selectedMessage.id)
   }
@@ -636,7 +648,19 @@ export function MessageViewer(props: Props) {
   }
 
   const handleRestore = async () => {
-    await invokeRenderer(IPCChannels.Email.RestoreMessage, selectedMessage.id)
+    try {
+      const r = await invokeRenderer(
+        IPCChannels.Email.RestoreMessage,
+        selectedMessage.id,
+      ) as { success?: boolean; error?: string } | null
+      if (r?.success === false) {
+        toast.error(r.error ?? "Wiederherstellen fehlgeschlagen")
+        return
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Wiederherstellen fehlgeschlagen")
+      return
+    }
     toast.success("Wiederhergestellt (vorheriger Ordner)")
     await refreshCurrentMessage()
     await refreshList({ preserveSelection: true })

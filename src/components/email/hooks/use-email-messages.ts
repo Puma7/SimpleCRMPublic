@@ -667,6 +667,7 @@ export function useEmailMessages() {
         trash: "Papierkorb",
       }
       let ok = 0
+      let firstError: string | null = null
       try {
         for (const id of ids) {
           const r = (await invokeRenderer(IPCChannels.Email.MoveMessageToView, {
@@ -674,12 +675,24 @@ export function useEmailMessages() {
             view: targetView,
           })) as { success: boolean; error?: string }
           if (r.success) ok += 1
+          else firstError ??= r.error ?? null
         }
-        toast.success(
-          ok === 1 ? `Nachricht → ${labels[targetView]}` : `${ok} Nachrichten → ${labels[targetView]}`,
-        )
+        if (ok === 0) {
+          toast.error(firstError ?? "Verschieben fehlgeschlagen")
+          return false
+        }
+        const failed = ids.length - ok
+        if (failed > 0) {
+          toast.warning(
+            `${ok} von ${ids.length} Nachrichten → ${labels[targetView]} (${failed} fehlgeschlagen${firstError ? `: ${firstError}` : ""})`,
+          )
+        } else {
+          toast.success(
+            ok === 1 ? `Nachricht → ${labels[targetView]}` : `${ok} Nachrichten → ${labels[targetView]}`,
+          )
+        }
         await refreshList({ preserveSelection: true })
-        return ok > 0
+        return true
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Verschieben fehlgeschlagen")
         if (ok > 0) await refreshList({ preserveSelection: true })
