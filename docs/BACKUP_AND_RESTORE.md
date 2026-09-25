@@ -25,6 +25,14 @@ This document covers the current Docker backup, restore, restore-drill, and doct
   check itself does not see. The same yardstick on both sides, or the warning
   contradicts the behaviour.
 
+The dump and the archives are written the same way, as `*.partial`, and only
+get their final names once all of them are complete; the manifest comes last.
+A run that fails or is stopped (`INT`/`TERM`) before the manifest exists removes
+everything it wrote, so a truncated dump is never picked by `restore` or counted
+by retention. A run killed hard (`SIGKILL`, e.g. after the `docker compose stop`
+grace period) can leave `*.partial` files behind; no script picks them up, and
+they can be deleted while no backup is running.
+
 If the counts cannot be taken, the backup still runs — the dump is the valuable
 part — but records `row_counts=failed`. **`restore.sh` then refuses to start**,
 before `pg_restore` touches anything, because such a backup cannot be checked

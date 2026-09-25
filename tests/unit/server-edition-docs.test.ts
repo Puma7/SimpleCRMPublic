@@ -203,7 +203,10 @@ describe('server edition AP-12 operator docs', () => {
     expect(metadata).toEqual(expect.stringContaining('backup_metadata_partial_path'));
     expect(metadata).toMatch(/meta_path="\$\(backup_metadata_partial_path/);
     expect(backup).toMatch(/write_backup_metadata[\s\S]*?pg_dump -Fc[\s\S]*?publish_backup_metadata/);
-    expect(backup).toEqual(expect.stringContaining("trap 'rm -f \"$BACKUP_DIR/$METADATA_FILE.partial\"'"));
+    // Aufgeraeumt wird sie im EXIT-Trap zusammen mit dem unfertigen Dump und
+    // den Archiven (F-A12-03); Verhalten in server-backup-restore-scripts.test.ts.
+    expect(backup).toMatch(/discard_unfinished_backup\(\) \{\s*\n\s*rm -f \\\s*\n\s*"\$BACKUP_DIR\/\$METADATA_FILE\.partial"/);
+    expect(backup).toEqual(expect.stringContaining('trap discard_unfinished_backup EXIT'));
     // Und die Pruefbarkeit wird VOR dem Zerstoerenden entschieden: hinterher
     // waeren die Produktivdaten schon ersetzt und der Abbruch liesse die
     // Anwendung ausgeschaltet zurueck.

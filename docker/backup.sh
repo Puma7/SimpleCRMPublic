@@ -33,9 +33,42 @@ write_backup_metadata "$DATABASE_URL" "$BACKUP_DIR" "$STAMP"
 # Bis der Dump liegt, heisst die Datei .partial und ist damit fuer die
 # Aufraeumung eines parallel laufenden Backups unsichtbar (Begruendung in
 # backup-metadata.sh). Bricht dieser Lauf vorher ab, bleibt kein Rest liegen.
-trap 'rm -f "$BACKUP_DIR/$METADATA_FILE.partial"' EXIT INT TERM
+#
+# Dump und Archive ebenso: sie entstehen als .partial und bekommen ihren
+# endgueltigen Namen erst, wenn alle fertig geschrieben sind. Die Umleitung
+# direkt auf db-<stamp>.dump legte die Datei sofort an; ein abgebrochener
+# pg_dump hinterliess dann einen abgeschnittenen Dump, den der Restore als
+# neuesten waehlt und die Aufbewahrung als Tages-Backup zaehlt (und dafuer den
+# intakten Satz desselben Tages loescht). Ein SIGKILL, etwa nach der
+# Grace-Period von `docker compose stop`, laesst so nur .partial-Dateien zurueck,
+# die kein Suchmuster trifft. Ein Satz gilt erst mit seiner Pruefsummenliste als
+# fertig: scheitert der Lauf vorher, wird auch schon Umbenanntes entfernt.
+#
+# INT/TERM muessen den Lauf beenden. Ein Trap ohne exit faengt das Signal nur
+# ab, und das Skript liefe danach weiter.
+discard_unfinished_backup() {
+  rm -f \
+    "$BACKUP_DIR/$METADATA_FILE.partial" \
+    "$BACKUP_DIR/$DB_DUMP.partial" \
+    "$BACKUP_DIR/$ATTACHMENTS_ARCHIVE.partial" \
+    "$BACKUP_DIR/$AUDIT_ARCHIVE.partial"
+  remove_backup_set "$BACKUP_DIR" "$STAMP"
+}
+trap discard_unfinished_backup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP"
+pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP.partial"
+
+if [ -d "$ATTACHMENTS_DIR" ]; then
+  tar -C "$ATTACHMENTS_DIR" -cf "$BACKUP_DIR/$ATTACHMENTS_ARCHIVE.partial" .
+fi
+
+if [ -d "$AUDIT_ARCHIVE_DIR" ]; then
+  tar -C "$AUDIT_ARCHIVE_DIR" -cf "$BACKUP_DIR/$AUDIT_ARCHIVE.partial" .
+fi
+
+mv "$BACKUP_DIR/$DB_DUMP.partial" "$BACKUP_DIR/$DB_DUMP"
 
 # Den Fingerabdruck aus dem fertigen Dump nachtragen. Er soll sagen, welcher
 # Schluessel zu DIESEM Dump gehoert — das beantwortet keine Abfrage der
@@ -44,15 +77,12 @@ pg_dump -Fc "$DATABASE_URL" > "$BACKUP_DIR/$DB_DUMP"
 refresh_backup_metadata_master_key "$BACKUP_DIR" "$STAMP"
 
 publish_backup_metadata "$BACKUP_DIR" "$STAMP"
-trap - EXIT INT TERM
 
-if [ -d "$ATTACHMENTS_DIR" ]; then
-  tar -C "$ATTACHMENTS_DIR" -cf "$BACKUP_DIR/$ATTACHMENTS_ARCHIVE" .
-fi
-
-if [ -d "$AUDIT_ARCHIVE_DIR" ]; then
-  tar -C "$AUDIT_ARCHIVE_DIR" -cf "$BACKUP_DIR/$AUDIT_ARCHIVE" .
-fi
+for archive in "$ATTACHMENTS_ARCHIVE" "$AUDIT_ARCHIVE"; do
+  if [ -f "$BACKUP_DIR/$archive.partial" ]; then
+    mv "$BACKUP_DIR/$archive.partial" "$BACKUP_DIR/$archive"
+  fi
+done
 
 (
   cd "$BACKUP_DIR"
@@ -67,5 +97,6 @@ fi
     sha256sum "$AUDIT_ARCHIVE" >> "$CHECKSUM_MANIFEST"
   fi
 )
+trap - EXIT INT TERM
 
 prune_backup_retention "$BACKUP_DIR"
