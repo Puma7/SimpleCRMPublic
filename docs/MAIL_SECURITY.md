@@ -51,6 +51,17 @@ Header werden ignoriert.
 
 Regeln: `packages/core/src/email/authentication-results.ts`.
 
+## Verdächtige Anhänge
+
+Eine gemeinsame Liste in `packages/core/src/email/attachment-safety.ts`
+entscheidet in beiden Editionen: Programme und Skripte, Windows-Verknüpfungen
+(`.lnk`, `.url`, …), Java (`.jar`), Disk-Images (`.iso`, `.img`, `.vhd`),
+Office-Dateien mit Makros (`.docm`, `.xlsm`, …) sowie macOS-/Linux-Starter. Punkte
+und Leerzeichen am Ende des Namens zählen nicht (`Rechnung.lnk. `). Der Desktop
+fragt vor dem Öffnen nach; auf dem Server brauchen Download, PGP-Entschlüsselung,
+Weiterleiten und DSGVO-Export solcher Dateien zusätzlich das Recht
+`mail.attachment.suspicious_download` („Verdächtige Anhänge laden“).
+
 ## Workflow-Variablen
 
 - `auth.spf`, `auth.dkim`, `auth.dmarc`, `auth.arc` — `pass`, `fail`, `softfail`, `none`, …

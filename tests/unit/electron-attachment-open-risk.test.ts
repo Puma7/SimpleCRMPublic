@@ -1,3 +1,5 @@
+import { isPotentiallyDangerousAttachment as coreIsPotentiallyDangerousAttachment } from '@simplecrm/core';
+
 import { isPotentiallyDangerousAttachment } from '../../electron/ipc/attachment-open-risk';
 
 describe('desktop attachment open guard', () => {
@@ -55,5 +57,11 @@ describe('desktop attachment open guard', () => {
     for (const name of ['report.pdf', 'photo.PNG', 'sheet.xlsx', 'letter.docx', 'notes.txt', 'archive.zip', 'README', '.exe']) {
       expect(isPotentiallyDangerousAttachment(name)).toBe(false);
     }
+  });
+
+  // F-A7-05 (E9): desktop and server kept separate lists that drifted apart;
+  // the desktop guard now is the shared core classification.
+  test('uses the shared core classification (single source for both editions)', () => {
+    expect(isPotentiallyDangerousAttachment).toBe(coreIsPotentiallyDangerousAttachment);
   });
 });

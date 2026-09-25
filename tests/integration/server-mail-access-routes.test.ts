@@ -2461,6 +2461,60 @@ describe('server mailbox ACL migration', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
+  // F-A7-05 (E9): shortcuts, disk images and macro documents were missing from
+  // the server list, so mail.attachment.read alone downloaded them.
+  test.each(['Rechnung.lnk', 'Setup.iso', 'Angebot.docm', 'app.jar', 'Rechnung.lnk. '])(
+    'downloading %p requires mail.attachment.suspicious_download',
+    async (filename) => {
+      const getAttachmentContent = jest.fn(async () => ({
+        ok: true as const,
+        record: {
+          id: 701,
+          filename,
+          contentType: 'application/octet-stream',
+          sizeBytes: 7,
+          contentSha256: null,
+          content: new Uint8Array(Buffer.from('payload')),
+        },
+      }));
+      const account = [{ resourceType: 'account' as const, accountId: ACCOUNT_A, folderId: null, messageId: null }];
+      const readOnly = new Map<MailPermission, readonly import('../../packages/server/src/mail-access/types').MailAccessGrant[]>([
+        ['mail.attachment.read', account],
+      ]);
+      const download = (grants: typeof readOnly) => createServerApi(makeHttpPorts({
+        grants,
+        overrides: {
+          emailAttachments: {
+            get: async () => ({
+              id: 701,
+              sourceSqliteId: 701,
+              messageSourceSqliteId: Number(MESSAGE_A),
+              messageId: MESSAGE_A,
+              filename,
+              contentType: 'application/octet-stream',
+              sizeBytes: 7,
+              contentSha256: null,
+              updatedAt: '2026-07-19T12:00:00.000Z',
+            }),
+          },
+          emailAttachmentContent: { get: getAttachmentContent },
+        } as unknown as Partial<ServerApiPorts>,
+      })).handle({
+        method: 'GET',
+        path: '/api/v1/email/attachments/701/content',
+        principal: makePrincipal(),
+      });
+
+      const denied = await download(readOnly);
+      expect(denied).toMatchObject({ status: 404, body: { error: { code: 'mail_resource_not_found' } } });
+      expect(getAttachmentContent).not.toHaveBeenCalled();
+
+      const allowed = await download(new Map(readOnly).set('mail.attachment.suspicious_download', account));
+      expect(allowed.status).toBe(200);
+      expect(getAttachmentContent).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test('classifies the decrypted PGP attachment name for the suspicious-download grant', async () => {
     const attachmentRecord = (filename: string) => ({
       get: async () => ({
