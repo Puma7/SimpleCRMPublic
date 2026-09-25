@@ -121,6 +121,33 @@ describe('server mail job and event ACL', () => {
     ]);
   });
 
+  // F-A8-01: Der Kettenschritt nach endgueltigem Fehlschlag landete in der globalen Queue 'workflow' aller Workspaces.
+  test('graphile terminal chain advance enqueues the next workflow on the workspace workflow queue', async () => {
+    const added: Array<{ id: string; spec: unknown }> = [];
+    const taskList = buildGraphileTaskList(
+      {
+        'ai.classify': async () => {
+          throw new Error('classify permanently failed');
+        },
+      } satisfies JobHandlerRegistry,
+      makePolicyPorts({}),
+    );
+    await expect(taskList['ai.classify']?.({
+      workspaceId: 'workspace-a',
+      actorUserId: 'user-a',
+      messageId: 12,
+      context: { inboundWorkflowChain: { workflowIds: [10, 20], index: 0 } },
+    }, {
+      job: { id: 'g3', attempts: 3, max_attempts: 3 },
+      addJob: async (id, _payload, spec) => { added.push({ id, spec }); },
+    } as never)).rejects.toThrow('classify permanently failed');
+
+    expect(added).toEqual([{
+      id: 'workflow.execute',
+      spec: expect.objectContaining({ queueName: 'workflow-workspace-a' }),
+    }]);
+  });
+
   test('graphile task-list carries the authorized delayed message linkage to workflow execution', async () => {
     let handledJob: QueuedJob | null = null;
     const ports = makePolicyPorts({

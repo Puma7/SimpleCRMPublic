@@ -2454,6 +2454,34 @@ describe('server edition foundation', () => {
     })).toThrow('unsupported server job type');
   });
 
+  // F-A8-01: Die Queues 'ai', 'spam', 'mail', 'webhook' und 'workflow' waren global und serialisierten die Jobs aller Workspaces.
+  test('graphile shared-kind queues serialize per workspace instead of across workspaces', () => {
+    const types = [
+      'ai.reply_suggestion',
+      'ai.classify',
+      'mail.spam.score',
+      'mail.vacation.auto_reply',
+      'webhook.fire',
+      'workflow.execute',
+      'workflow.http_request',
+    ] as const;
+    for (const type of types) {
+      const specA = graphileSpecFromJob({ type, workspaceId: 'workspace-a', payload: { workspaceId: 'workspace-a', messageId: 1, workflowId: 2 } });
+      const specA2 = graphileSpecFromJob({ type, workspaceId: 'workspace-a', payload: { workspaceId: 'workspace-a', messageId: 3, workflowId: 4 } });
+      const specB = graphileSpecFromJob({ type, workspaceId: 'workspace-b', payload: { workspaceId: 'workspace-b', messageId: 1, workflowId: 2 } });
+      // Within one workspace the kind stays serialized (inbound chain order unchanged) ...
+      expect(specA.queueName).toEqual(expect.any(String));
+      expect(specA.queueName).toBe(specA2.queueName);
+      // ... but another workspace no longer waits behind it.
+      expect(specB.queueName).not.toBe(specA.queueName);
+    }
+    expect(graphileSpecFromJob({ type: 'workflow.execute', workspaceId: 'workspace-a', payload: { workflowId: 2 } }).queueName)
+      .toBe('workflow-workspace-a');
+    expect(graphileQueueNameForJob('ai.agent', {}, 'workspace-b')).toBe('ai-workspace-b');
+    // Mail syncs keep their per-account queue.
+    expect(graphileQueueNameForJob('mail.sync.imap', { accountId: 42 }, 'workspace-a')).toBe('account-42');
+  });
+
   test('graphile queue port enqueues validated server jobs through worker utils', async () => {
     const added: Array<{ identifier: string; payload: Record<string, unknown>; spec: unknown }> = [];
     const removed: string[] = [];

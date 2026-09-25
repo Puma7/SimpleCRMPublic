@@ -465,11 +465,15 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
             `SELECT graphile_worker.add_job(
                $1::text,
                $2::json,
-               'workflow',
+               $3::text,
                now(),
                3
              )`,
-            ['workflow.execute', JSON.stringify(nextPayload)],
+            [
+              'workflow.execute',
+              JSON.stringify(nextPayload),
+              graphileQueueNameForJob('workflow.execute', nextPayload, target.workspaceId),
+            ],
           );
           await client.query('COMMIT');
         } catch (inner) {
@@ -487,7 +491,7 @@ async function maybeAdvanceInboundChainAfterGraphileTerminalFailure(
     if (helpers?.addJob && nextPayload) {
       await helpers.addJob('workflow.execute', nextPayload, {
         maxAttempts: 3,
-        queueName: 'workflow',
+        queueName: graphileQueueNameForJob('workflow.execute', nextPayload, target.workspaceId),
       });
     }
   } catch (advanceErr) {
@@ -504,7 +508,7 @@ function asPgResult(value: unknown): { rowCount?: number | null } {
 export function graphileSpecFromJob(input: EnqueueJobInput): GraphileTaskSpec {
   const type = assertServerJobType(input.type);
   return {
-    queueName: graphileQueueNameForJob(type, input.payload),
+    queueName: graphileQueueNameForJob(type, input.payload, input.workspaceId),
     runAt: input.runAfter,
     maxAttempts: normalizeMaxAttempts(input.maxAttempts),
     jobKey: graphileJobKeyForJob(type, input.payload, input.workspaceId),
@@ -512,11 +516,28 @@ export function graphileSpecFromJob(input: EnqueueJobInput): GraphileTaskSpec {
   };
 }
 
-export function graphileQueueNameForJob(type: ServerJobType, payload: JobPayload): string | undefined {
+export function graphileQueueNameForJob(
+  type: ServerJobType,
+  payload: JobPayload,
+  workspaceId?: string,
+): string | undefined {
   const accountId = graphileKeyScalar(payload.accountId);
   if ((type === 'mail.sync.imap' || type === 'mail.sync.pop3') && accountId) {
     return `account-${accountId}`;
   }
+  const kind = graphileSharedQueueKind(type);
+  if (!kind) return undefined;
+  // Graphile arbeitet eine benannte Queue strikt nacheinander ab, ueber alle
+  // Worker hinweg. Ein Name nur nach Art ('ai', 'workflow', ...) reihte deshalb
+  // jeden Workspace hinter jeden anderen. Mit dem Workspace im Namen bleibt die
+  // Reihenfolge innerhalb eines Workspaces (Inbound-Kette, Spam -> Workflow)
+  // erhalten, Workspaces laufen aber nebeneinander. Ohne Workspace bleibt der
+  // bisherige gemeinsame Name.
+  const workspaceKey = graphileKeyScalar(workspaceId) ?? graphileKeyScalar(payload.workspaceId);
+  return workspaceKey ? `${kind}-${workspaceKey}` : kind;
+}
+
+function graphileSharedQueueKind(type: ServerJobType): string | undefined {
   if (
     type === 'ai.reply_suggestion'
     || type === 'ai.agent'
