@@ -10,6 +10,8 @@ export async function testSmtpConnection(input: {
   host: string;
   port: number;
   secure: boolean;
+  /** Account TLS switch; without implicit TLS it requires STARTTLS (as sendSmtpForAccount). Default true. */
+  tls?: boolean;
   user: string;
   pass?: string;
   accessToken?: string;
@@ -21,10 +23,14 @@ export async function testSmtpConnection(input: {
     ? { type: 'OAuth2', user: input.user, accessToken: input.accessToken }
     : { user: input.user, pass: input.pass ?? '' };
 
+  // STARTTLS must not stay opportunistic: a stripped EHLO would otherwise
+  // send the stored password in clear text.
+  const requireTLS = !input.secure && (input.tls ?? true);
   const transporter = nodemailer.createTransport({
     host,
     port: input.port,
     secure: input.secure,
+    requireTLS,
     auth,
   });
   try {

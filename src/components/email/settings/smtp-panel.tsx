@@ -153,6 +153,7 @@ export function SmtpPanel({ embeddedAccountId }: SmtpPanelProps) {
           host,
           port: parseInt(smtpPort, 10) || 587,
           secure: smtpTls && (parseInt(smtpPort, 10) || 587) === 465,
+          tls: smtpTls,
           user,
           password: smtpPass || undefined,
           smtpUseImapAuth: smtpImapAuth,

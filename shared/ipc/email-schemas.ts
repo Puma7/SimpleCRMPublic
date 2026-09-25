@@ -248,6 +248,7 @@ export function applyEmailIpcSchemas(map: Map<InvokeChannel, SchemaEntry>): void
       host: nonEmptyString,
       port: z.number().int().positive(),
       secure: z.boolean(),
+      tls: z.boolean().optional(),
       user: nonEmptyString,
       password: z.string().optional(),
       smtpUseImapAuth: z.boolean().optional(),

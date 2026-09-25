@@ -1339,6 +1339,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           host: string;
           port: number;
           secure: boolean;
+          tls?: boolean;
           user: string;
           password?: string;
           smtpUseImapAuth?: boolean;
@@ -1372,6 +1373,7 @@ export function registerEmailHandlers(options: EmailHandlersOptions): Disposer {
           host: payload.host,
           port: payload.port,
           secure: payload.secure,
+          tls: payload.tls,
           user: payload.user,
           pass: pass || undefined,
           accessToken,
