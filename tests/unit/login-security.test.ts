@@ -347,6 +347,7 @@ describe('login security service MFA gate', () => {
       workspaceId: user.workspaceId,
       method: 'totp',
       issuedAt: new Date('2026-01-01T12:00:00.000Z'),
+      passwordHash: user.passwordHash,
     });
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -410,6 +411,7 @@ describe('login security service MFA gate', () => {
       workspaceId: user.workspaceId,
       method: 'totp',
       issuedAt: new Date('2026-01-01T12:00:00.000Z'),
+      passwordHash: user.passwordHash,
     });
 
     // A wrong code records a failed-login against the (email,ip) lockout —
@@ -477,6 +479,7 @@ describe('login security service MFA gate', () => {
       workspaceId: user.workspaceId,
       method: 'totp',
       issuedAt: new Date('2026-01-01T12:00:00.000Z'),
+      passwordHash: user.passwordHash,
     });
 
     await expect(service.completeMfaLogin({
@@ -566,6 +569,7 @@ describe('login security service MFA gate', () => {
       workspaceId: user.workspaceId,
       method: 'totp',
       issuedAt: new Date(issuedAt),
+      passwordHash: user.passwordHash,
     });
     const firstChallenge = challenge('2026-01-01T11:59:50.000Z');
     const secondChallenge = challenge('2026-01-01T11:59:55.000Z');
@@ -582,6 +586,73 @@ describe('login security service MFA gate', () => {
     })).resolves.toEqual({ ok: false, code: 'mfa_code_invalid' });
     expect(issueTokenPair).toHaveBeenCalledTimes(1);
     expect(recordFailedLogin).toHaveBeenCalledTimes(1);
+  });
+
+  // C-A15: Eine vor dem Passwortwechsel ausgestellte MFA-Challenge liess sich danach noch zu einer Sitzung abschliessen.
+  test('an MFA challenge does not outlive a password change of its user', async () => {
+    const secret = generateTotpSecret();
+    const validCode = generateSync({ secret });
+    const user = { ...mfaUser, mfaMethod: 'totp' as const, passwordHash: 'hash-before-change' };
+    let currentUser = user;
+    const issueTokenPair = jest.fn(async (): Promise<{
+      accessToken: string;
+      refreshToken: string;
+      expiresInSeconds: number;
+    } | null> => ({
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSeconds: 3600,
+    }));
+    const workspaceDb = createWorkspaceLookupDb(user.email);
+    const service = createLoginSecurityService({
+      db: workspaceDb.db as never,
+      syncInfo: { getMany: async () => [], setMany: async () => undefined },
+      listPublicWorkspaceSettings: async () => [DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS],
+      secrets: {
+        readSecret: async () => Buffer.from(secret),
+        writeSecret: async () => ({ id: 'secret-id' }),
+        deleteSecret: async () => undefined,
+      } as never,
+      auth: {
+        findUserByEmail: async () => currentUser,
+        recordSuccessfulLogin: async () => undefined,
+        recordFailedLogin: async () => 1,
+        issueTokenPair,
+      } as never,
+      accessTokenSigner: signer,
+      config: {},
+      challengeStore,
+      applyWorkspaceSession: workspaceDb.applyWorkspaceSession,
+      now: () => new Date('2026-01-01T12:00:00.000Z'),
+    });
+    const begin = () => service.beginMfaIfRequired({
+      user,
+      workspaceSettings: { ...DEFAULT_AUTH_SECURITY_WORKSPACE_SETTINGS, mfaEnabled: true, mfaTotpEnabled: true },
+    });
+
+    // The password changed after the challenge was issued.
+    const staleStep = await begin();
+    if (staleStep.kind !== 'mfa_required') throw new Error('expected an MFA challenge');
+    currentUser = { ...user, passwordHash: 'hash-after-change' };
+    await expect(service.completeMfaLogin({
+      mfaChallengeToken: staleStep.mfaChallengeToken,
+      code: validCode,
+    })).resolves.toEqual({ ok: false, code: 'mfa_challenge_invalid' });
+    expect(issueTokenPair).not.toHaveBeenCalled();
+
+    // The password changes between the user lookup and the session issue: the
+    // port refuses the no longer current hash and the login must not succeed.
+    currentUser = user;
+    issueTokenPair.mockResolvedValueOnce(null);
+    const racingStep = await begin();
+    if (racingStep.kind !== 'mfa_required') throw new Error('expected an MFA challenge');
+    await expect(service.completeMfaLogin({
+      mfaChallengeToken: racingStep.mfaChallengeToken,
+      code: validCode,
+    })).resolves.toEqual({ ok: false, code: 'mfa_challenge_invalid' });
+    expect(issueTokenPair).toHaveBeenCalledWith(expect.objectContaining({
+      expectedPasswordHash: 'hash-before-change',
+    }));
   });
 
   test('releases the MFA transaction before SMTP and rejects a concurrent challenge', async () => {

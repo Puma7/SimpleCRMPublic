@@ -1,4 +1,5 @@
 import type { Kysely } from 'kysely';
+import { Client } from 'pg';
 
 import { handleAuthRoute } from '../../packages/server/src/api/auth-routes';
 import type {
@@ -84,6 +85,49 @@ describe('password change revokes other sessions against PostgreSQL', () => {
     return { method, path, body, principal, ip: '203.0.113.9', headers: {} };
   }
 
+  async function openSessionIds(userId: string): Promise<string[]> {
+    const result = await postgres.admin.query<{ id: string }>(
+      'SELECT id::text AS id FROM refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL ORDER BY id',
+      [userId],
+    );
+    return result.rows.map((row) => row.id);
+  }
+
+  /** Second connection that holds row locks inside an open transaction. */
+  async function lockHolder(): Promise<Client> {
+    const client = new Client({
+      host: '127.0.0.1',
+      port: postgres.port,
+      user: 'postgres',
+      password: 'regression-test-superuser-password',
+      database: 'postgres',
+    });
+    await client.connect();
+    await client.query('BEGIN');
+    return client;
+  }
+
+  /** Waits until at least `minimum` backends are blocked on a lock (no timing guesses). */
+  async function waitForLockWaiters(minimum: number, description: string): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt <= 10_000) {
+      const result = await postgres.admin.query<{ waiting: string }>(
+        'SELECT count(DISTINCT pid)::text AS waiting FROM pg_locks WHERE NOT granted',
+      );
+      if (Number(result.rows[0]?.waiting ?? 0) >= minimum) return;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    throw new Error(`Timed out waiting for ${description}`);
+  }
+
+  async function storedPasswordHash(userId: string): Promise<string> {
+    const result = await postgres.admin.query<{ password_hash: string }>(
+      'SELECT password_hash FROM users WHERE id = $1',
+      [userId],
+    );
+    return result.rows[0]!.password_hash;
+  }
+
   // F-A1-02: a password change left every other refresh-token session (e.g. a stolen one) valid.
   test('changing the own password revokes every other session but keeps the current one', async () => {
     const current = await auth.issueTokenPair({ user: userRecord(MEMBER_ID, 'user'), device: 'laptop' });
@@ -163,5 +207,93 @@ describe('password change revokes other sessions against PostgreSQL', () => {
 
     expect(response?.status).toBe(200);
     expect(await sessionStillValid(member)).toBe(true);
+  });
+
+  // C-A15: Eine gleichzeitige Refresh-Rotation liess ihren Nachfolger den Passwortwechsel ueberleben.
+  test('a concurrent refresh rotation does not outlive the password change', async () => {
+    const current = await auth.issueTokenPair({ user: userRecord(MEMBER_ID, 'user'), device: 'laptop' });
+    const stolen = await auth.issueTokenPair({ user: userRecord(MEMBER_ID, 'user'), device: 'stolen' });
+    const currentSessionId = principalOf(current!).sessionId!;
+    const holder = await lockHolder();
+    try {
+      // Holds the stolen token row, so the rotation stops right before revoking it.
+      await holder.query('SELECT id FROM refresh_tokens WHERE id = $1 FOR UPDATE', [principalOf(stolen!).sessionId]);
+      const rotation = auth.rotateRefreshToken({ refreshToken: stolen!.refreshToken });
+      await waitForLockWaiters(1, 'the rotation to wait for the stolen token row');
+      const change = auth.changePassword!({
+        workspaceId: WORKSPACE_ID,
+        userId: MEMBER_ID,
+        currentPassword: OLD_PASSWORD,
+        newPassword: NEW_PASSWORD,
+        currentSessionId,
+      });
+      await waitForLockWaiters(2, 'the password change to wait for the rotation');
+      await holder.query('COMMIT');
+
+      const [rotated, changed] = await Promise.all([rotation, change]);
+      expect(changed).toEqual({ ok: true });
+      if (!rotated || !('tokens' in rotated)) throw new Error('rotation should have issued a successor');
+      expect(await sessionStillValid(rotated.tokens)).toBe(false);
+      expect(await openSessionIds(MEMBER_ID)).toEqual([currentSessionId]);
+    } finally {
+      await holder.query('ROLLBACK').catch(() => undefined);
+      await holder.end();
+    }
+  });
+
+  // C-A15: Ein mit dem alten Passwort geprueftes Login bekam nach einem zwischenzeitlichen Wechsel trotzdem eine Sitzung.
+  test('a login verified against the old password gets no session once the password changed', async () => {
+    const current = await auth.issueTokenPair({ user: userRecord(MEMBER_ID, 'user'), device: 'laptop' });
+    const currentSessionId = principalOf(current!).sessionId!;
+    const racingAuth: AuthApiPort = {
+      ...auth,
+      async verifyPassword(password, passwordHash) {
+        const valid = await auth.verifyPassword(password, passwordHash);
+        // The password change commits between verification and session issue.
+        await auth.changePassword!({
+          workspaceId: WORKSPACE_ID,
+          userId: MEMBER_ID,
+          currentPassword: OLD_PASSWORD,
+          newPassword: NEW_PASSWORD,
+          currentSessionId,
+        });
+        return valid;
+      },
+    };
+
+    const response = await handleAuthRoute(
+      {
+        method: 'POST',
+        path: '/api/v1/auth/login',
+        body: { email: 'member@example.test', password: OLD_PASSWORD },
+        ip: '203.0.113.10',
+        headers: {},
+      },
+      { auth: racingAuth } as ServerApiPorts,
+    );
+
+    expect(response?.status).toBe(401);
+    expect(await openSessionIds(MEMBER_ID)).toEqual([currentSessionId]);
+  });
+
+  // C-B3: Die Sitzungsausgabe wartete nicht auf einen laufenden Passwortwechsel und las noch den alten Hash.
+  test('issuing a session waits for a running password change and then refuses the old hash', async () => {
+    const oldHash = await storedPasswordHash(MEMBER_ID);
+    const holder = await lockHolder();
+    try {
+      await holder.query('UPDATE users SET password_hash = $2 WHERE id = $1', [MEMBER_ID, await hashPassword(NEW_PASSWORD)]);
+      const issued = auth.issueTokenPair({
+        user: { ...userRecord(MEMBER_ID, 'user'), passwordHash: oldHash },
+        expectedPasswordHash: oldHash,
+      });
+      await waitForLockWaiters(1, 'the session issue to wait for the password change');
+      await holder.query('COMMIT');
+
+      await expect(issued).resolves.toBeNull();
+      expect(await openSessionIds(MEMBER_ID)).toEqual([]);
+    } finally {
+      await holder.query('ROLLBACK').catch(() => undefined);
+      await holder.end();
+    }
   });
 });

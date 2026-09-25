@@ -412,7 +412,14 @@ export type AuthApiPort = {
   issueTokenPair(input: {
     user: AuthUserRecord;
     device?: string;
-  }): Promise<TokenPair>;
+    /**
+     * Nur ausstellen, wenn users.password_hash noch diesem Wert entspricht
+     * (geprueft unter FOR SHARE, also nach einem parallel laufenden
+     * Passwortwechsel); sonst null. Login und MFA-Abschluss reichen den Hash
+     * durch, mit dem sie das Passwort geprueft haben.
+     */
+    expectedPasswordHash?: string;
+  }): Promise<TokenPair | null>;
   rotateRefreshToken(input: {
     refreshToken: string;
   }): Promise<

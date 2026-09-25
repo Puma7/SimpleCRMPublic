@@ -311,7 +311,9 @@ async function handleLogin(req: ApiRequest, ports: ServerApiPorts): Promise<ApiR
   }
 
   await ports.auth.recordSuccessfulLogin({ userId: user.id, email, ip });
-  const tokens = await ports.auth.issueTokenPair({ user, device });
+  // Ein seit der Pruefung oben gewechseltes Passwort liefert keine Sitzung mehr.
+  const tokens = await ports.auth.issueTokenPair({ user, device, expectedPasswordHash: user.passwordHash });
+  if (!tokens) return error(401, 'invalid_credentials', 'Ungültige Zugangsdaten');
   await ports.audit?.record({
     workspaceId: user.workspaceId,
     actorUserId: user.id,

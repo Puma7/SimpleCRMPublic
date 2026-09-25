@@ -35,6 +35,7 @@ import {
 import { hashLoginPin, verifyLoginPin } from '../security/login-pin-hash';
 import {
   issueMfaChallengeToken,
+  mfaChallengeMatchesPassword,
   parseMfaChallengeToken,
 } from '../security/mfa-challenge';
 import type { AccessTokenSigner } from '../security/access-token';
@@ -269,6 +270,7 @@ export function createLoginSecurityService(input: {
           workspaceId: user.workspaceId,
           method: user.mfaMethod,
           issuedAt: now(),
+          passwordHash: user.passwordHash,
         }),
       };
     },
@@ -294,6 +296,11 @@ export function createLoginSecurityService(input: {
       }
       if (user.disabledAt) {
         return { ok: false, code: 'user_disabled' };
+      }
+      // A password change or admin reset since the challenge was issued ends it
+      // too; otherwise the old password would still yield a session.
+      if (!mfaChallengeMatchesPassword(claims, user.passwordHash)) {
+        return { ok: false, code: 'mfa_challenge_invalid' };
       }
 
       // Feed MFA failures into the same (email,ip) lockout used by /login. The
@@ -353,7 +360,9 @@ export function createLoginSecurityService(input: {
         email: user.email,
         ip: ip ?? '0.0.0.0',
       });
-      const tokens = await input.auth.issueTokenPair({ user, device });
+      // The port refuses if the password changes after the lookup above.
+      const tokens = await input.auth.issueTokenPair({ user, device, expectedPasswordHash: user.passwordHash });
+      if (!tokens) return { ok: false, code: 'mfa_challenge_invalid' };
       return { ok: true, user, tokens };
     },
 

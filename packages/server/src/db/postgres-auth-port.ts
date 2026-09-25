@@ -685,13 +685,28 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           userId: input.user.id,
           role: input.user.role,
         },
-        async (trx) => issueTokenPair(
-          trx as unknown as Kysely<ServerDatabase>,
-          options.accessTokenSigner,
-          input.user,
-          input.device,
-          now(),
-        ),
+        async (trx) => {
+          if (input.expectedPasswordHash !== undefined) {
+            // FOR SHARE waits for a running password change (UPDATE users, then
+            // revokeUserSessions). Before it, the change's revocation sees this
+            // session; after it, the old hash no longer matches.
+            const current = await trx
+              .selectFrom('users')
+              .select('password_hash')
+              .where('workspace_id', '=', input.user.workspaceId)
+              .where('id', '=', input.user.id)
+              .forShare()
+              .executeTakeFirst();
+            if (!current || current.password_hash !== input.expectedPasswordHash) return null;
+          }
+          return issueTokenPair(
+            trx as unknown as Kysely<ServerDatabase>,
+            options.accessTokenSigner,
+            input.user,
+            input.device,
+            now(),
+          );
+        },
         { applySession: options.applyWorkspaceSession },
       );
     },
@@ -736,6 +751,21 @@ export function createPostgresAuthPort(options: PostgresAuthPortOptions): AuthAp
           await revokeUserSessions(trx, existing.workspace_id, existing.user_id, now());
           return { reuseDetected: true as const, userId: existing.user_id, workspaceId: existing.workspace_id };
         }
+
+        // Serialize with a password change or admin reset (UPDATE users, then
+        // revokeUserSessions), as in issueTokenPair. Without it, a revocation
+        // that started while this rotation held its token row waited for the
+        // row, skipped it as revoked and missed the successor, which its
+        // statement snapshot could not see yet. Lock the user before the token
+        // row, otherwise the two transactions deadlock.
+        const lockedUser = await trx
+          .selectFrom('users')
+          .select('id')
+          .where('workspace_id', '=', existing.workspace_id)
+          .where('id', '=', existing.user_id)
+          .forShare()
+          .executeTakeFirst();
+        if (!lockedUser) return null;
 
         const revokedAt = now();
         const revokeResult = await trx
