@@ -648,11 +648,12 @@ export function WorkflowShell() {
       graphJson,
       cronExpr: w.cron_expr,
       scheduleAccountId: w.schedule_account_id,
-      enabled: w.enabled,
+      // Wie der Desktop-Import: erst prüfen, dann selbst aktivieren.
+      enabled: false,
       executionMode: w.execution_mode ?? "graph",
       engineVersion: w.engine_version ?? 1,
     }) as { success: boolean; id?: number | null }
-    toast.success("Workflow importiert.")
+    toast.success("Workflow importiert (deaktiviert) – bitte prüfen und dann aktivieren.")
     await load()
     if (res.id != null) {
       const imported = await invokeRenderer(

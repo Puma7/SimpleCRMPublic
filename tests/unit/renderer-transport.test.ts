@@ -6545,6 +6545,9 @@ describe('renderer transport', () => {
       'https://crm.example.com/api/v1/workflows/by-source/-23',
       expect.objectContaining({ method: 'GET' }),
     );
+    // F-A9-13 (Server, E28): Der Import uebernahm `enabled` aus der Datei; ein
+    // fremder Workflow war sofort aktiv. Importe starten wie auf dem Desktop
+    // deaktiviert, auch wenn das Bundle `enabled: true` traegt.
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
       'https://crm.example.com/api/v1/workflows',
@@ -6558,7 +6561,7 @@ describe('renderer transport', () => {
           graph: null,
           cronExpr: null,
           scheduleAccountId: null,
-          enabled: true,
+          enabled: false,
           executionMode: 'graph',
           engineVersion: 1,
         }),

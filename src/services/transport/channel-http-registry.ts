@@ -6362,7 +6362,9 @@ function workflowImportMutationBody(value: unknown): Record<string, unknown> {
     graph,
     cronExpr: workflow.cron_expr,
     scheduleAccountId: workflow.schedule_account_id,
-    enabled: workflow.enabled,
+    // Importe bleiben deaktiviert, bis jemand den Graphen geprueft und selbst
+    // aktiviert hat (wie der Desktop-Import) — sonst liefe eine fremde Datei sofort.
+    enabled: false,
     executionMode: workflow.execution_mode ?? "graph",
     engineVersion: workflow.engine_version ?? 1,
   }
