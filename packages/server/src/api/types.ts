@@ -1078,6 +1078,7 @@ export type FollowUpApiPort = {
     actorUserId: string;
     taskId: number;
     snoozedUntil: string;
+    viewer?: TaskViewer;
   }): Promise<{ success: boolean; error?: string }>;
 };
 

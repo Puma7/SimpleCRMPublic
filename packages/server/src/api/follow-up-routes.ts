@@ -72,6 +72,7 @@ export async function handleFollowUpRoute(
       actorUserId: principal.userId,
       taskId,
       snoozedUntil: parsed.snoozedUntil,
+      viewer: { userId: principal.userId, role: principal.role },
     }));
   }
 

@@ -109,6 +109,7 @@ describe('server follow-up API', () => {
       actorUserId: 'user-1',
       taskId: 9,
       snoozedUntil: '2026-06-04T10:30:00.000Z',
+      viewer: { userId: 'user-1', role: 'owner' },
     });
     expect(invalidBody.status).toBe(400);
     expect((invalidBody.body as any).error.code).toBe('validation_error');

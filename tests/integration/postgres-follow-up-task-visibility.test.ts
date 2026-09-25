@@ -157,4 +157,30 @@ describe('follow-up queues and dashboard respect task visibility (PostgreSQL)', 
     });
     expect((ownerUpcoming.body as any).data).toHaveLength(4);
   });
+
+  // F-A2b-04: the snooze endpoint updated any task in the workspace by id, so
+  // a member with crm.write could hide tasks assigned only to others from
+  // their queues although PATCH /api/v1/tasks/:id rejects them with 404.
+  test('a member cannot snooze a task that is not visible to them', async () => {
+    const snooze = (taskId: number) => api.handle({
+      method: 'PATCH',
+      path: `/api/v1/follow-up/tasks/${taskId}/snooze`,
+      body: { snoozedUntil: '2099-01-01T00:00:00.000Z' },
+      principal: outsider,
+    });
+
+    const hidden = await snooze(TASK_PRIVATE);
+    expect(hidden.status).toBe(200);
+    expect((hidden.body as any).data).toEqual({ success: false, error: 'Task not found' });
+    const own = await snooze(TASK_OUTSIDER_OWN);
+    expect((own.body as any).data).toEqual({ success: true });
+
+    const rows = await postgres.admin.query<{ id: string; snoozed_until: Date | null }>(
+      'SELECT id, snoozed_until FROM tasks WHERE workspace_id = $1 ORDER BY id',
+      [WORKSPACE_ID],
+    );
+    const snoozed = new Map(rows.rows.map((row) => [Number(row.id), row.snoozed_until]));
+    expect(snoozed.get(TASK_PRIVATE)).toBeNull();
+    expect(snoozed.get(TASK_OUTSIDER_OWN)).toEqual(new Date('2099-01-01T00:00:00.000Z'));
+  });
 });

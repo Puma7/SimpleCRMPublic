@@ -266,6 +266,7 @@ export function createPostgresFollowUpPort(options: PostgresFollowUpPortOptions)
             })
             .where('workspace_id', '=', input.workspaceId)
             .where('id', '=', input.taskId)
+            .where((eb) => taskVisibilityExpression(eb, input.workspaceId, input.viewer))
             .returning('id')
             .executeTakeFirst();
           return row ? { success: true } : { success: false, error: 'Task not found' };
