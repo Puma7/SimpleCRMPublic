@@ -78,6 +78,10 @@ export function ApplyWorkflowMenu({
   // Mail-Workflows ein garantierter 403; dort bleibt nur der Dry-Run.
   const canRunSideEffectWorkflowsLive =
     !serverClientMode || user?.role === "owner" || user?.role === "admin"
+  // Desktop (G1): workflow:execute-now verlangt per IPC fuer JEDEN Graphen
+  // Owner/Admin — anderen Rollen bleibt dort nur der Dry-Run.
+  const canRunWorkflowsLive =
+    serverClientMode || user?.role === "owner" || user?.role === "admin"
 
   const loadWorkflows = useCallback(async () => {
     setLoadingList(true)
@@ -106,6 +110,7 @@ export function ApplyWorkflowMenu({
   )
 
   const liveRunBlocked = (row: WorkflowRow): boolean => {
+    if (!canRunWorkflowsLive) return true
     if (canRunSideEffectWorkflowsLive) return false
     if (!row.graph_json) return false
     try {
