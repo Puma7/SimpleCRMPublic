@@ -1737,7 +1737,7 @@ function parseRecipientField(raw: string): { candidates: string[]; invalid: stri
   for (const chunk of raw.split(/[,;]+/)) {
     const text = chunk.trim();
     if (!text) continue;
-    const match = /^(.+)<([^>]+)>$/.exec(text);
+    const match = /^(.*)<([^>]+)>$/.exec(text);
     if (!match && !text.includes('@') && !text.includes('<')) {
       nameFragments.push(text);
       continue;

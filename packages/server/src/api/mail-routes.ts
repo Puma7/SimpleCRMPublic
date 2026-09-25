@@ -4299,7 +4299,7 @@ function extractEmailAddressesFromRecipientField(raw: string): string[] {
   for (const chunk of raw.split(/[,;]+/)) {
     const text = chunk.trim();
     if (!text) continue;
-    const match = /^(.+)<([^>]+)>$/.exec(text);
+    const match = /^(.*)<([^>]+)>$/.exec(text);
     const candidate = (match ? match[2] : text)?.trim() ?? '';
     if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/i.test(candidate)) {
       // Drafts store delivery addresses (scheduled send reads them back):

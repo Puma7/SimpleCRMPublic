@@ -15,7 +15,7 @@ export function extractEmailAddressesFromRecipientField(
   for (const chunk of chunks) {
     const t = chunk.trim()
     if (!t) continue
-    const m = t.match(/^(.+)<([^>]+)>$/)
+    const m = t.match(/^(.*)<([^>]+)>$/)
     const candidate = (m ? m[2] : t).trim()
     if (ADDR_CORE.test(candidate)) {
       out.push(opts?.preservePlusAddressing ? candidate.trim().toLowerCase() : normalizeEmailAddress(candidate))
@@ -36,7 +36,7 @@ function parseRecipientField(raw: string): { candidates: string[]; invalid: stri
   for (const chunk of raw.split(/[,;]+/)) {
     const t = chunk.trim()
     if (!t) continue
-    const m = t.match(/^(.+)<([^>]+)>$/)
+    const m = t.match(/^(.*)<([^>]+)>$/)
     if (!m && !t.includes('@') && !t.includes('<')) {
       nameFragments.push(t)
       continue

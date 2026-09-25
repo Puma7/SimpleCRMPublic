@@ -73,6 +73,14 @@ describe('email recipient mapping', () => {
     });
   });
 
+  // RFC 5322 angle-addr without display name ("<a@b.de>") is a valid entry.
+  it('accepts a bare angle address without display name', () => {
+    expect(validateRecipientField('<kunde@firma.de>', 'An')).toEqual({ ok: true });
+    expect(JSON.parse(recipientJsonFromField('<Kunde+Tag@Firma.de>, b@example.com')!)).toEqual({
+      value: [{ address: 'Kunde+Tag@firma.de' }, { address: 'b@example.com' }],
+    });
+  });
+
   it('recipientFieldFromJson round-trips compose fields', () => {
     const json = recipientJsonFromField('Shop <shop@example.com>, b@example.com');
     expect(recipientFieldFromJson(json)).toBe('shop@example.com, b@example.com');

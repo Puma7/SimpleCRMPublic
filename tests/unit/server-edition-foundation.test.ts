@@ -25842,6 +25842,11 @@ describe('server edition foundation', () => {
     await expect(send({ to: 'Mueller, Hans <hans@firma.de>' })).resolves.toMatchObject({ ok: true });
     expect(smtpSends[0]!.recipients).toEqual(['hans@firma.de']);
 
+    // RFC 5322 angle-addr without display name is a valid recipient, not an invalid token.
+    smtpSends.length = 0;
+    await expect(send({ to: '<Kunde+Tag@Firma.de>' })).resolves.toMatchObject({ ok: true });
+    expect(smtpSends[0]!.recipients).toEqual(['Kunde+Tag@firma.de']);
+
     smtpSends.length = 0;
     updates.length = 0;
     await expect(send({ to: 'kunde@firma.de, chef@firma' })).resolves.toEqual({
