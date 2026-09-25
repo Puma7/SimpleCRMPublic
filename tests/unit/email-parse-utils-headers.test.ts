@@ -21,6 +21,14 @@ describe('formatMailparserHeaderValue', () => {
     ).toBe('Shop <shop@example.com>');
   });
 
+  // F-N-redos-01: HTML-Headerwerte wurden per /<[^>]+>/g gestrippt; unverschlossene '<' liefen quadratisch.
+  it('strips html header values in linear time with the same result', () => {
+    expect(formatMailparserHeaderValue({ html: '<span>Shop</span>  &lt;x&gt; <b' })).toBe('Shop &lt;x&gt; <b');
+    const started = Date.now();
+    formatMailparserHeaderValue({ html: '<'.repeat(50_000) });
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
   it('formats structured content-type', () => {
     expect(
       formatMailparserHeaderValue({

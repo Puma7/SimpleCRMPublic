@@ -272,7 +272,7 @@ export function formatMailparserHeaderValue(val: unknown): string {
     const o = val as Record<string, unknown>;
     if (typeof o.text === 'string' && o.text.trim()) return o.text.trim();
     if (typeof o.html === 'string' && o.html.trim()) {
-      return o.html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      return stripHtmlTagsToText(o.html);
     }
     if (Array.isArray(o.value)) {
       const parts = o.value
