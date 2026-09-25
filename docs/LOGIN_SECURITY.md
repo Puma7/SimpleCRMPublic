@@ -70,7 +70,7 @@ Einstellungen liegen in `sync_info` (Keys `auth_security_*`). PATCH auf `/api/v1
 
 **Einstellungen → Benutzer**:
 
-- **PIN setzen / ändern / zurücksetzen** (Admin oder eigener Account)
+- **PIN setzen / ändern / zurücksetzen** (Admin oder Benutzerverwalter mit `users.manage`, über die normale Benutzeränderung)
 - **TOTP einrichten** (QR + Bestätigungscode)
 - **E-Mail-MFA aktivieren** (Code per Invite-SMTP)
 - **MFA deaktivieren**
@@ -129,8 +129,7 @@ PIN-Eingabe wird nach E-Mail-Wechsel zurückgesetzt.
 | POST | `/api/v1/auth/login` | — | Passwort-Login; kann `mfaRequired` zurückgeben |
 | POST | `/api/v1/auth/mfa/verify` | — | MFA-Challenge abschließen |
 | GET/PATCH | `/api/v1/auth/security-settings` | Admin | Workspace-Toggles |
-| POST | `/api/v1/auth/users/{id}/pin` | Admin / self | PIN setzen |
-| DELETE | `/api/v1/auth/users/{id}/pin` | Admin / self | PIN entfernen |
+| PATCH | `/api/v1/auth/users/{id}` | Admin oder `users.manage` | PIN setzen (`loginPin`: 6 Ziffern) oder entfernen (`loginPin: ""`); der Body trägt wie jede Benutzeränderung `email`, `displayName` und `role`. Beim Anlegen (`POST /api/v1/auth/users`) kann `loginPin` gleich mitgesetzt werden |
 | POST | `/api/v1/auth/users/{id}/mfa/totp/setup` | Admin / self | TOTP-Secret + otpauth-URI |
 | POST | `/api/v1/auth/users/{id}/mfa/totp/confirm` | Admin / self + Step-up | TOTP aktivieren |
 | POST | `/api/v1/auth/users/{id}/mfa/email` | Admin / self + Step-up | E-Mail-MFA aktivieren |
