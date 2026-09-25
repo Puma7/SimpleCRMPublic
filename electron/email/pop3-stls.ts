@@ -7,6 +7,12 @@ type Pop3CommandClass = typeof import(
 ).default;
 
 const CAPA_MAX_LINES = 1_000;
+// Each line just in time still let the CAPA list run for 1000 line timeouts;
+// the whole list gets twice the line timeout (as in the server edition).
+const CAPA_DEADLINE_FACTOR = 2;
+// CAPA/STLS answers are a few short lines: more unread data than this (a line
+// without end or a flood) comes from a hostile or broken server.
+const MAX_BUFFERED_CHARS = 64 * 1024;
 const LISTENER_EVENTS = ['data', 'error', 'close', 'end'] as const;
 
 /**
@@ -68,12 +74,13 @@ async function negotiateStls(pop3: Pop3Instance): Promise<void> {
 }
 
 async function offersStls(raw: Socket, reader: RawLineReader): Promise<boolean> {
+  const deadlineAt = reader.responseDeadline();
   raw.write('CAPA\r\n');
   // CAPA is optional (RFC 2449); a server without it answers -ERR.
   if (!/^\+OK\b/i.test(await reader.readLine())) return false;
   let stls = false;
   for (let count = 0; count < CAPA_MAX_LINES; count += 1) {
-    const line = await reader.readLine();
+    const line = await reader.readLine(deadlineAt);
     if (line === '.') return stls;
     if (/^STLS\b/i.test(line)) stls = true;
   }
@@ -141,6 +148,11 @@ class RawLineReader {
   private disposed = false;
   private readonly onData = (chunk: Buffer | string): void => {
     this.buffer += typeof chunk === 'string' ? chunk : chunk.toString('latin1');
+    if (this.buffer.length > MAX_BUFFERED_CHARS) {
+      this.buffer = '';
+      this.fail(new Error('POP3-Serverantwort zu groß'));
+      return;
+    }
     this.flush();
   };
   private readonly onError = (error: Error): void => this.fail(error);
@@ -152,10 +164,19 @@ class RawLineReader {
     socket.on('close', this.onClose);
   }
 
-  readLine(): Promise<string> {
+  /** End of a whole (multi-line) answer started now. */
+  responseDeadline(): number {
+    return Date.now() + CAPA_DEADLINE_FACTOR * this.timeoutMs;
+  }
+
+  readLine(deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
     if (this.failure) return Promise.reject(this.failure);
+    const remainingMs = deadlineAt - Date.now();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.fail(new Error('timeout')), this.timeoutMs);
+      const timer = setTimeout(
+        () => this.fail(new Error(remainingMs < this.timeoutMs ? 'Zeitlimit der Server-Antwort überschritten' : 'timeout')),
+        Math.min(this.timeoutMs, Math.max(remainingMs, 0)),
+      );
       this.waiter = {
         resolve: (line) => {
           clearTimeout(timer);
