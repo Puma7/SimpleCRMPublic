@@ -90,8 +90,15 @@ export const arrayToCSV = (data: Record<string, any>[]): string => {
   if (!data || data.length === 0) return '';
   const headers = Object.keys(data[0]);
   const escape = (val: any): string => {
-    const str = val === null || val === undefined ? '' : String(val);
-    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+    let str = val === null || val === undefined ? '' : String(val);
+    // Formula injection: Excel/LibreOffice evaluate a cell starting with
+    // = + - @ (or tab/CR) as a formula. Prefix such text with ' so it stays
+    // text. Signed numbers and phone numbers ("+49 30 1234-56") cannot carry
+    // a function call and are left as they are.
+    if (typeof val === 'string' && /^[=+\-@\t\r]/.test(str) && !/^[+-]?[\d\s()./-]*$/.test(str)) {
+      str = `'${str}`;
+    }
+    if (/[",\n\r]/.test(str)) {
       return `"${str.replace(/"/g, '""')}"`;
     }
     return str;
