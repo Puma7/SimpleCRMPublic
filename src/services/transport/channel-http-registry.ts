@@ -1854,6 +1854,8 @@ const routeBuilders = new Map<InvokeChannel, RouteBuilder>([
       return {
         mode: result.mode === "enforce" ? "enforce" as const : "shadow" as const,
         delegationGrantsAccess: result.delegationGrantsAccess === true,
+        delegationGrantsReadSendAccess: result.delegationGrantsReadSendAccess === true,
+        nonComparableRightsEffective: result.nonComparableRightsEffective !== false,
       }
     },
   })],

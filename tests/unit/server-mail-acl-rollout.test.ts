@@ -2256,6 +2256,12 @@ describe('mail ACL rollout central use', () => {
           ready: true,
           telemetryHealthy: true,
           diagnosticCode: null,
+          // F-D2-04: Im Shadow-Modus wirken Lese- und Senderechte einer
+          // Delegation noch nicht, nicht vergleichbare Rechte (Export, Loeschen,
+          // Konto verwalten …) aber sofort. Die API sagt beides getrennt.
+          delegationGrantsAccess: false,
+          delegationGrantsReadSendAccess: false,
+          nonComparableRightsEffective: true,
         }),
       },
     });

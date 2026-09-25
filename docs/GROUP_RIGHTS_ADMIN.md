@@ -73,8 +73,12 @@ haben trotzdem ein leeres Postfach, weil die Legacy-Seite sie nicht kennt. In
 der Server-Edition schreibt **nichts** in `user_account_access`; die Tabelle
 füllt sich nur beim Import aus einer SQLite-Desktop-Installation. Für einen
 Workspace ohne diesen Import ist die Legacy-Antwort deshalb konstant „nein".
-Das Delegations-Panel weist im Shadow-Modus ausdrücklich darauf hin, und
-`doctor.sh` meldet solche Workspaces als `mail_acl_shadow_without_legacy`.
+Das Delegations-Panel weist im Shadow-Modus ausdrücklich darauf hin. Die
+Readiness-API (`GET /api/v1/email/acl-rollout/readiness`) liefert dazu
+`delegationGrantsReadSendAccess` (Lese- und Senderechte wirken erst mit
+`enforce`) und `nonComparableRightsEffective` (die übrigen Rechte wirken sofort);
+`delegationGrantsAccess` bleibt als gleichbedeutendes Altfeld zu
+`delegationGrantsReadSendAccess` erhalten. `doctor.sh` meldet solche Workspaces als `mail_acl_shadow_without_legacy`.
 Migration `0050_mail_acl_shadow_without_legacy` räumt bestehende Fälle auf: sie
 setzt genau die Workspaces auf `enforce`, die im Shadow-Modus stehen und keine
 einzige Legacy-Zeile haben — dort ist der Vergleich beweisbar leer.

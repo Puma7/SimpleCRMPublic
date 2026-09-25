@@ -86,7 +86,13 @@ function serializeReadiness(
     // Ausdruecklich mitgeliefert, weil die Oberflaeche sonst nicht sagen kann,
     // WARUM eine Delegation gerade nichts bewirkt: im Shadow-Modus erlaubt
     // weiterhin die Alt-ACL, die Bindings koennen nur einschraenken.
+    // delegationGrantsAccess bleibt fuer bestehende Clients und meint nur
+    // Lese- und Senderechte. Nicht vergleichbare Rechte (Export, Loeschen,
+    // Konto und Delegation verwalten, Triage) gibt es nur in der neuen ACL,
+    // sie wirken deshalb auch im Shadow-Modus sofort.
     delegationGrantsAccess: readiness.mode === 'enforce',
+    delegationGrantsReadSendAccess: readiness.mode === 'enforce',
+    nonComparableRightsEffective: true,
     ...(readiness.diagnostic ? { diagnostic: readiness.diagnostic } : {}),
   };
 }
