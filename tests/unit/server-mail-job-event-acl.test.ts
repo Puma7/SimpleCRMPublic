@@ -971,6 +971,45 @@ describe('server mail job and event ACL', () => {
     }), makePolicyPorts({ workflowGraphs: graphs }))).rejects.toMatchObject({ nonRetryable: true });
   });
 
+  // C-A69: A message-less (webhook) workflow.execute resolved to non_mail and returned before the send_draft target check, so it could mutate a draft without mail.draft.edit.
+  test('rechecks the send_draft target for message-less webhook workflow runs', async () => {
+    const sendStaticGraph = { nodes: [{ type: 'registry', data: { nodeType: 'email.send_draft', config: { draftId: 13 } } }] };
+    const sendDynamicGraph = { nodes: [
+      { type: 'registry', data: { nodeType: 'logic.set_variable', config: { name: 'draft.id', value: '{{webhook.draft_id}}' } } },
+      { type: 'registry', data: { nodeType: 'email.send_draft', config: { draftIdVariable: 'draft.id' } } },
+    ] };
+    const graphs = new Map<number, unknown>([[757, sendStaticGraph], [758, sendDynamicGraph]]);
+    const webhookRun = (actorUserId: string, workflowId: number) => job({
+      type: 'workflow.execute',
+      payload: { workspaceId: 'workspace-a', actorUserId, workflowId, triggerName: 'webhook.incoming' },
+    });
+
+    // Static target: mail.draft.edit on draft 13 is asserted; revoked → denied.
+    await expect(enforceMailJobPolicy(
+      webhookRun('user-a', 757),
+      makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) }),
+    )).rejects.toMatchObject({ nonRetryable: true });
+    const allowed = makePolicyPorts({ workflowGraphs: graphs });
+    await enforceMailJobPolicy(webhookRun('user-a', 757), allowed);
+    expect(allowed.assertions).toEqual([expect.objectContaining({
+      permission: 'mail.draft.edit',
+      resource: { type: 'message', accountId: '7', folderId: '8', messageId: '13' },
+    })]);
+
+    // Runtime-computed target: a non-owner run is denied fail-closed, the owner may run it.
+    await expect(enforceMailJobPolicy(webhookRun('user-a', 758), makePolicyPorts({ workflowGraphs: graphs })))
+      .rejects.toMatchObject({ nonRetryable: true });
+    await enforceMailJobPolicy(webhookRun('owner-a', 758), makePolicyPorts({ workflowGraphs: graphs }));
+
+    // Trusted-service runs stay unchecked.
+    const service = makePolicyPorts({ workflowGraphs: graphs, denyPermissions: new Set(['mail.draft.edit']) });
+    await enforceMailJobPolicy(job({
+      type: 'workflow.execute',
+      payload: buildTrustedServiceJobPayload({ workspaceId: 'workspace-a', workflowId: 757 }),
+    }), service);
+    expect(service.assertions).toEqual([]);
+  });
+
   test('rechecks side-effect privilege for MANUAL-marked workflow child jobs, not compose-originated ones', async () => {
     const MARK = MANUAL_ADMIN_WORKFLOW_EXECUTE_MARKER_FIELD;
     // ai.pick_canned is covered separately: a user actor now always returns a

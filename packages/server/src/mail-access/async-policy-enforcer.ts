@@ -186,6 +186,14 @@ export async function enforceMailJobPolicy(
     // skipped. (The default-account case — email.account_id = the context message's account —
     // is covered by the resource-gated draft.create recheck further down.)
     await assertWorkflowExecuteDraftCreateAccountPrivilege(job, actor.actor, requiredPorts);
+    // Same for send_draft targets (C-A69): the check needs no resources, and a message-less
+    // (e.g. webhook) run would otherwise return below and mutate the target draft unchecked.
+    try {
+      await assertWorkflowExecuteSendDraftStaticTargetPrivilege(job, actor.actor, requiredPorts);
+    } catch (error) {
+      if (isAccessDenied(error)) throw new MailAsyncAuthorizationError(error);
+      throw error;
+    }
   }
   const resolved = await resolveJobResources(job, policy, requiredPorts);
   // A compose-originated (user) ai.pick_canned loads canned templates under the
@@ -374,7 +382,6 @@ export async function enforceMailJobPolicy(
         resolved.resources.resources,
         requiredPorts,
       );
-      await assertWorkflowExecuteSendDraftStaticTargetPrivilege(job, actor.actor, requiredPorts);
     }
     return pickCannedAuthorization ?? resolved.authorization;
   } catch (error) {
