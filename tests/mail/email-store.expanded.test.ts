@@ -202,7 +202,7 @@ describe('email-store expanded', () => {
     mock.stmt.get.mockImplementation(() => ({
       ...mock.messageRow,
       uid: -5,
-      folder_kind: 'drafts',
+      folder_kind: 'draft',
     }));
     const draftId = createComposeDraft({
       accountId: 1,

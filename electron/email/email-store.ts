@@ -1111,6 +1111,15 @@ export function getMessageAccountIds(messageIds: readonly number[]): Map<number,
 /** POP3 synthetic UIDs stay at or below this (drafts use uid > POP3_UID_CEILING). */
 export const POP3_UID_CEILING = -1_000_000;
 
+/**
+ * A local compose draft, and nothing else with a negative uid: received POP3 mail
+ * (uid <= POP3_UID_CEILING, pop3_uidl set) and sent local copies (folder 'sent')
+ * must not be edited or permanently deleted through the draft functions.
+ */
+function isLocalComposeDraftRow(row: Pick<EmailMessageRow, 'uid' | 'pop3_uidl' | 'folder_kind'>): boolean {
+  return row.uid < 0 && row.uid > POP3_UID_CEILING && row.pop3_uidl == null && row.folder_kind === 'draft';
+}
+
 export function allocatePop3NegativeUid(accountId: number, folderId: number): number {
   const row = getDb()
     .prepare(
@@ -1688,11 +1697,17 @@ export function bulkSetMessagesDoneLocal(
 export function bulkDeleteLocalComposeDrafts(messageIds: number[]): number {
   if (messageIds.length === 0) return 0;
   const placeholders = messageIds.map(() => '?').join(',');
+  const draftIds = (
+    getDb()
+      .prepare(`SELECT id, uid, pop3_uidl, folder_kind FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${placeholders})`)
+      .all(...messageIds) as Pick<EmailMessageRow, 'id' | 'uid' | 'pop3_uidl' | 'folder_kind'>[]
+  )
+    .filter(isLocalComposeDraftRow)
+    .map((row) => row.id);
+  if (draftIds.length === 0) return 0;
   const r = getDb()
-    .prepare(
-      `DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${placeholders}) AND uid < 0`,
-    )
-    .run(...messageIds);
+    .prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id IN (${draftIds.map(() => '?').join(',')})`)
+    .run(...draftIds);
   return r.changes;
 }
 
@@ -1962,7 +1977,7 @@ export function deleteLocalComposeDraft(messageId: number): void {
   if (!row) {
     throw new Error('Entwurf nicht gefunden');
   }
-  if (row.uid >= 0) {
+  if (!isLocalComposeDraftRow(row)) {
     throw new Error('Nur lokale Entwürfe können endgültig gelöscht werden');
   }
   getDb().prepare(`DELETE FROM ${EMAIL_MESSAGES_TABLE} WHERE id = ?`).run(messageId);
@@ -2106,7 +2121,7 @@ export function updateComposeDraft(
   },
 ): void {
   const row = getEmailMessageById(messageId);
-  if (!row || row.uid >= 0) {
+  if (!row || !isLocalComposeDraftRow(row)) {
     throw new Error('Nur lokale Entwürfe (negative UID) können hier bearbeitet werden');
   }
   const subj = input.subject !== undefined ? input.subject : row.subject;
