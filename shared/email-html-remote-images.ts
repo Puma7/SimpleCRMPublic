@@ -106,8 +106,13 @@ function blockRemoteInStyleBlock(styleBody: string): string {
 }
 
 function blockRemoteInStyleTags(html: string): string {
-  return html.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_full, inner: string) =>
-    _full.replace(inner, blockRemoteInStyleBlock(inner)),
+  // Rebuild from the captured parts: re-running String.replace on the match
+  // would treat '$&' etc. in the style text as patterns and hit the first
+  // occurrence of the text, which may sit in an attribute of the opening tag.
+  return html.replace(
+    /(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi,
+    (_full, open: string, inner: string, close: string) =>
+      `${open}${blockRemoteInStyleBlock(inner)}${close}`,
   );
 }
 

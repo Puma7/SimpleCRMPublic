@@ -73,6 +73,24 @@ describe('blockRemoteImagesInHtml', () => {
     expect(out).not.toContain('https://t.example');
   });
 
+  // F-A6-06: Der bereinigte Style-Text ging als Ersetzungs-String an String.replace ('$&' holte die Remote-URL zurueck) und ersetzte nur das erste Vorkommen.
+  test.each([
+    ['$&', '<style>$& b{} a{background:url(https://x.test/p.png)}</style>'],
+    ['$`', '<style>$` b{} a{background:url(https://x.test/p.png)}</style>'],
+    ["$'", "<style>a{background:url(https://x.test/p.png)} b{} $'</style>"],
+    ['title attribute', '<style title="a{background:url(https://x.test/p)}">a{background:url(https://x.test/p)}</style>'],
+  ])('blocks remote url in style block with replacement pattern trick (%s)', (_case, html) => {
+    const out = blockRemoteImagesInHtml(html);
+    const styleBody = /<style\b[^>]*>([\s\S]*?)<\/style>/i.exec(out)?.[1] ?? '';
+    expect(styleBody).toContain('url(about:blank)');
+    expect(styleBody).not.toContain('https://x.test');
+  });
+
+  test('leaves a harmless style block with dollar signs byte-identical', () => {
+    const html = '<style>p::after { content: "$5 $& $\'"; }</style><p>x</p>';
+    expect(blockRemoteImagesInHtml(html)).toBe(html);
+  });
+
   test('isRemoteUrl', () => {
     expect(isRemoteUrl('https://a.com')).toBe(true);
     expect(isRemoteUrl('//a.com/x')).toBe(true);
