@@ -14,6 +14,9 @@
  * `allowInsecureAuth: false` the server neither advertises nor accepts AUTH
  * until the connection has been upgraded via STARTTLS.
  */
+import { readFile } from 'node:fs/promises';
+import { createSecureContext } from 'node:tls';
+
 import { SMTPServer } from 'smtp-server';
 import type {
   SMTPServerDataStream,
@@ -65,6 +68,14 @@ export type InboundSmtpServiceOptions = Readonly<{
   portSmtps?: number;
   tlsKey: Buffer | string;
   tlsCert: Buffer | string;
+  /**
+   * Files the key/cert were read from. When both are set they are re-read
+   * every tlsReloadIntervalMs, and a renewed certificate (e.g. Let's Encrypt)
+   * is served to new connections without a restart.
+   */
+  tlsKeyFile?: string;
+  tlsCertFile?: string;
+  tlsReloadIntervalMs?: number;
   /** Global message size cap; a smaller per-relay limit still applies. */
   maxMessageBytes?: number;
   maxConnections?: number;
@@ -79,6 +90,8 @@ export type InboundSmtpService = Readonly<{
   stop(): Promise<void>;
   /** The ACTUAL bound ports (relevant when a port was requested as 0). */
   ports: Readonly<{ submission: number; smtps: number }>;
+  /** Re-reads the TLS files now; resolves true when a new key/cert went live. */
+  reloadTls(): Promise<boolean>;
 }>;
 
 export const INBOUND_SMTP_DEFAULT_SUBMISSION_PORT = 587;
@@ -86,6 +99,7 @@ export const INBOUND_SMTP_DEFAULT_SMTPS_PORT = 465;
 export const INBOUND_SMTP_DEFAULT_MAX_MESSAGE_BYTES = 26_214_400;
 export const INBOUND_SMTP_DEFAULT_MAX_CONNECTIONS = 50;
 export const INBOUND_SMTP_DEFAULT_SOCKET_TIMEOUT_MS = 120_000;
+export const INBOUND_SMTP_DEFAULT_TLS_RELOAD_INTERVAL_MS = 15 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Per-credential token bucket (in-memory, lazily refilled — no interval)
@@ -447,10 +461,51 @@ export async function startInboundSmtpService(
     smtpsPort,
   });
 
+  // The key/cert used to be read once at start, so a renewed certificate never
+  // went live until a restart. Compare the files' contents and swap the secure
+  // context of both listeners for new connections; a pair that does not load
+  // (e.g. a half-written renewal) keeps the current one active.
+  let activeTls: { key: Buffer; cert: Buffer } = {
+    key: Buffer.from(options.tlsKey),
+    cert: Buffer.from(options.tlsCert),
+  };
+  const reloadTls = async (): Promise<boolean> => {
+    if (!options.tlsKeyFile || !options.tlsCertFile) return false;
+    let key: Buffer;
+    let cert: Buffer;
+    try {
+      [key, cert] = await Promise.all([readFile(options.tlsKeyFile), readFile(options.tlsCertFile)]);
+    } catch (error) {
+      log.warn('inbound smtp tls reload skipped', { error: errorMessage(error) });
+      return false;
+    }
+    if (key.equals(activeTls.key) && cert.equals(activeTls.cert)) return false;
+    try {
+      createSecureContext({ key, cert });
+    } catch (error) {
+      log.warn('inbound smtp tls reload rejected', { error: errorMessage(error) });
+      return false;
+    }
+    for (const server of [submissionServer, smtpsServer]) server.updateSecureContext({ key, cert });
+    activeTls = { key, cert };
+    log.info('inbound smtp tls certificate reloaded', {});
+    return true;
+  };
+  const reloadTimer = options.tlsKeyFile && options.tlsCertFile
+    ? setInterval(() => {
+      void reloadTls().catch((error: unknown) => {
+        log.warn('inbound smtp tls reload failed', { error: errorMessage(error) });
+      });
+    }, options.tlsReloadIntervalMs ?? INBOUND_SMTP_DEFAULT_TLS_RELOAD_INTERVAL_MS)
+    : null;
+  reloadTimer?.unref();
+
   let stopped: Promise<void> | undefined;
   return {
     ports: { submission: submissionPort, smtps: smtpsPort },
+    reloadTls,
     stop() {
+      if (reloadTimer) clearInterval(reloadTimer);
       stopped ??= Promise.all([
         closeSmtpServer(submissionServer),
         closeSmtpServer(smtpsServer),

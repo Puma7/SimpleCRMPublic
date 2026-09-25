@@ -1796,6 +1796,8 @@ async function startConfiguredInboundSmtpService(input: {
       bindHost: config.bindHost,
       tlsKey,
       tlsCert,
+      tlsKeyFile: config.tlsKeyFile,
+      tlsCertFile: config.tlsCertFile,
       maxMessageBytes: config.maxMessageBytes,
       maxConnections: config.maxConnections,
       socketTimeoutMs: config.socketTimeoutMs,

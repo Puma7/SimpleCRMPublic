@@ -33,7 +33,12 @@ Ohne lesbares Zertifikat/Key startet der Relay **nicht** (die API läuft normal
 weiter; Fehlermeldung im Log unter `[smtp-relay]`). Caddy proxyt nur HTTP —
 die Ports 587/465 müssen zusätzlich zum Container durchgereicht werden; das TLS
 des Relays kommt aus den beiden PEM-Dateien (z. B. dieselben Let's-Encrypt-
-Dateien, die Caddy nutzt).
+Dateien, die Caddy nutzt). Der Relay liest beide Dateien alle 15 Minuten neu
+ein; ein erneuertes Zertifikat gilt dann ohne Neustart für neue Verbindungen.
+Passen Schlüssel und Zertifikat (noch) nicht zusammen, bleibt das bisherige
+aktiv und das Log meldet `inbound smtp tls reload rejected`. Werden die Dateien
+nach `SMTP_RELAY_TLS_DIR` kopiert, muss die Kopie nach jeder Erneuerung
+wiederholt werden (z. B. per Cron).
 
 ### Docker Compose
 

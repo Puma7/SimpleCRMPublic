@@ -1,8 +1,11 @@
 /**
  * @jest-environment node
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import * as tls from 'node:tls';
 
 import * as nodemailer from 'nodemailer';
 
@@ -31,6 +34,8 @@ const GOOD_AUTH = { user: 'erp-user', pass: 'relay-secret' };
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures', 'relay-tls');
 const TLS_KEY = readFileSync(path.join(FIXTURES_DIR, 'key.pem'));
 const TLS_CERT = readFileSync(path.join(FIXTURES_DIR, 'cert.pem'));
+const RENEWED_TLS_KEY = readFileSync(path.join(FIXTURES_DIR, 'renewed-key.pem'));
+const RENEWED_TLS_CERT = readFileSync(path.join(FIXTURES_DIR, 'renewed-cert.pem'));
 
 // --- Fakes -------------------------------------------------------------------
 
@@ -415,6 +420,111 @@ describe('startInboundSmtpService', () => {
       code,
       error: message,
     }));
+  });
+});
+
+async function implicitTlsPeerCn(port: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect({ host: '127.0.0.1', port, rejectUnauthorized: false, servername: 'localhost' }, () => {
+      const cn = String(socket.getPeerCertificate().subject?.CN ?? '');
+      socket.destroy();
+      resolve(cn);
+    });
+    socket.once('error', reject);
+  });
+}
+
+async function starttlsPeerCn(port: number): Promise<string> {
+  const plain = net.connect(port, '127.0.0.1');
+  let buffered = '';
+  const waitFor = (pattern: RegExp) => new Promise<void>((resolve, reject) => {
+    const check = () => {
+      if (!pattern.test(buffered)) return;
+      plain.off('data', onData);
+      buffered = '';
+      resolve();
+    };
+    const onData = (chunk: Buffer) => {
+      buffered += chunk.toString('latin1');
+      check();
+    };
+    plain.on('data', onData);
+    plain.once('error', reject);
+    check();
+  });
+  await waitFor(/^220 /m);
+  plain.write('EHLO relay-test\r\n');
+  await waitFor(/^250 /m);
+  plain.write('STARTTLS\r\n');
+  await waitFor(/^220 /m);
+  return new Promise((resolve, reject) => {
+    const secure = tls.connect({ socket: plain, rejectUnauthorized: false, servername: 'localhost' }, () => {
+      const cn = String(secure.getPeerCertificate().subject?.CN ?? '');
+      secure.destroy();
+      resolve(cn);
+    });
+    secure.once('error', reject);
+  });
+}
+
+// F-A3b-05: the relay read its TLS certificate once at start, so a renewed (Let's Encrypt) certificate never went live.
+describe('startInboundSmtpService TLS reload', () => {
+  let tlsDir: string;
+  let keyFile: string;
+  let certFile: string;
+
+  beforeEach(() => {
+    tlsDir = mkdtempSync(path.join(os.tmpdir(), 'relay-tls-'));
+    keyFile = path.join(tlsDir, 'key.pem');
+    certFile = path.join(tlsDir, 'cert.pem');
+    writeFileSync(keyFile, TLS_KEY);
+    writeFileSync(certFile, TLS_CERT);
+  });
+
+  afterEach(() => {
+    rmSync(tlsDir, { recursive: true, force: true });
+  });
+
+  it('serves a renewed certificate on both ports after the files change', async () => {
+    const { ports } = await startService({ service: { tlsKeyFile: keyFile, tlsCertFile: certFile } });
+    expect(await implicitTlsPeerCn(ports.smtps)).toBe('localhost');
+    expect(await starttlsPeerCn(ports.submission)).toBe('localhost');
+
+    writeFileSync(keyFile, RENEWED_TLS_KEY);
+    writeFileSync(certFile, RENEWED_TLS_CERT);
+    await expect(service!.reloadTls()).resolves.toBe(true);
+
+    expect(await implicitTlsPeerCn(ports.smtps)).toBe('relay-renewed.localhost');
+    expect(await starttlsPeerCn(ports.submission)).toBe('relay-renewed.localhost');
+    await expect(service!.reloadTls()).resolves.toBe(false);
+  });
+
+  it('checks the files periodically on its own', async () => {
+    const { ports } = await startService({
+      service: { tlsKeyFile: keyFile, tlsCertFile: certFile, tlsReloadIntervalMs: 25 },
+    });
+    writeFileSync(keyFile, RENEWED_TLS_KEY);
+    writeFileSync(certFile, RENEWED_TLS_CERT);
+
+    let cn = '';
+    for (let attempt = 0; attempt < 80 && cn !== 'relay-renewed.localhost'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      cn = await implicitTlsPeerCn(ports.smtps);
+    }
+    expect(cn).toBe('relay-renewed.localhost');
+  });
+
+  it('keeps the active certificate when the renewed files do not match', async () => {
+    const warn = jest.fn();
+    const { ports } = await startService({
+      service: { tlsKeyFile: keyFile, tlsCertFile: certFile, log: { ...silentLog, warn } },
+    });
+    // Half-written renewal: new certificate, old key.
+    writeFileSync(certFile, RENEWED_TLS_CERT);
+
+    await expect(service!.reloadTls()).resolves.toBe(false);
+    expect(await implicitTlsPeerCn(ports.smtps)).toBe('localhost');
+    expect(warn).toHaveBeenCalledWith('inbound smtp tls reload rejected', expect.any(Object));
   });
 });
 
