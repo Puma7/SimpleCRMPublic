@@ -55,12 +55,17 @@ sofort für alle Mitglieder, weil Capabilities pro Request aufgelöst werden.
 
 Der ACL-Rollout kennt `shadow` und `enforce`.
 
-**Im Shadow-Modus gewährt eine Delegation gar nichts.** Wer ein Postfach sehen
-darf, entscheidet dort weiterhin die Legacy-ACL (`user_account_access`); die
-Bindings können nur zusätzlich **einschränken**. Die Sichtbarkeitsfilter
-(Zuweisung, Kategorie, Tag) greifen dabei bereits echt — sonst wären
-konfigurierte Bindings wirkungslos und der Vergleich aussagelos. Wer in einem
-Shadow-Workspace einen Filter setzt, verändert also sofort die Sichtbarkeit.
+**Im Shadow-Modus gewährt eine Delegation keine Lese- und Senderechte.** Wer ein
+Postfach sehen, darin Entwürfe schreiben oder daraus senden darf, entscheidet
+dort weiterhin die Legacy-ACL (`user_account_access`); für diese Rechte können
+die Bindings nur zusätzlich **einschränken**. Alle übrigen Rechte (Triage,
+Kommentieren, verdächtige Anhänge laden, Als Konto senden, Löschen, Exportieren,
+Konto verwalten, Delegation verwalten) kennt die Legacy-ACL nicht: über sie
+entscheidet auch im Shadow-Modus allein die Delegation, sie wirken also
+**sofort**. Die Sichtbarkeitsfilter (Zuweisung, Kategorie, Tag) greifen dabei
+bereits echt — sonst wären konfigurierte Bindings wirkungslos und der Vergleich
+aussagelos. Wer in einem Shadow-Workspace einen Filter setzt, verändert also
+sofort die Sichtbarkeit.
 
 Das ist die wichtigste Falle des Modus: Eine vollständige Delegation lässt sich
 anlegen, speichern und in der Liste betrachten — und die betroffenen Benutzer

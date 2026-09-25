@@ -124,11 +124,13 @@ export function MailDelegationPanel() {
   /**
    * Wirkt eine Delegation in diesem Workspace ueberhaupt?
    *
-   * Im Shadow-Modus des ACL-Rollouts erlaubt weiterhin die Alt-ACL; Bindings
-   * koennen dort nur EINSCHRAENKEN. Wer das nicht weiss, richtet eine
-   * vollstaendige Delegation ein, sieht sie gespeichert in der Liste stehen —
-   * und die Mitarbeiter haben trotzdem ein leeres Postfach. Genau diesen
-   * stummen Zustand macht der Hinweis unten sichtbar.
+   * Im Shadow-Modus des ACL-Rollouts erlaubt fuer Lesen, Entwuerfe und Senden
+   * weiterhin die Alt-ACL; Bindings koennen diese Rechte dort nur
+   * EINSCHRAENKEN. Wer das nicht weiss, richtet eine vollstaendige Delegation
+   * ein, sieht sie gespeichert in der Liste stehen — und die Mitarbeiter haben
+   * trotzdem ein leeres Postfach. Genau diesen stummen Zustand macht der
+   * Hinweis unten sichtbar. Alle uebrigen Rechte kennt die Alt-ACL nicht; die
+   * entscheidet auch im Shadow-Modus allein das Binding, sie wirken also sofort.
    *
    * `null` heisst "unbekannt": die Readiness-Route ist admin-only, ein
    * Delegationsverwalter ohne Admin-Rolle bekommt dort 403. Dann wird nichts
@@ -536,14 +538,21 @@ export function MailDelegationPanel() {
           role="status"
           className="space-y-1 rounded-md border border-amber-500/50 bg-amber-500/10 p-4 text-sm"
         >
-          <p className="font-medium">Delegationen gewähren hier derzeit keinen Zugriff.</p>
+          <p className="font-medium">Lese- und Senderechte gewähren hier derzeit keinen Zugriff.</p>
           <p className="text-muted-foreground">
-            Dieser Workspace steht im Shadow-Modus des ACL-Rollouts. Dort entscheidet weiterhin die
-            alte Kontoberechtigung darüber, wer ein Postfach sehen darf; die Bindings unten können
-            nur zusätzlich <em>einschränken</em>. Betroffene Benutzer sehen deshalb ein leeres
-            Postfach, obwohl die Delegation gespeichert ist. Ein Administrator schaltet den
-            Workspace mit <code>POST /api/v1/email/acl-rollout/enforce</code> um; danach wirkt
-            diese Seite wie konfiguriert.
+            Dieser Workspace steht im Shadow-Modus des ACL-Rollouts. Wer ein Postfach lesen, darin
+            Entwürfe schreiben oder daraus senden darf, entscheidet dort weiterhin die alte
+            Kontoberechtigung; für diese Rechte können die Bindings unten nur zusätzlich{" "}
+            <em>einschränken</em>. Betroffene Benutzer sehen deshalb ein leeres Postfach, obwohl die
+            Delegation gespeichert ist. Ein Administrator schaltet den Workspace mit{" "}
+            <code>POST /api/v1/email/acl-rollout/enforce</code> um; danach wirkt diese Seite wie
+            konfiguriert.
+          </p>
+          <p className="text-muted-foreground">
+            Alle übrigen Rechte (Triage, Kommentieren, Verdächtige Anhänge laden, Als Konto senden,
+            Löschen, Exportieren, Konto verwalten, Delegation verwalten) kennt die alte
+            Kontoberechtigung nicht. Sie wirken schon im Shadow-Modus sofort, allein nach den
+            Bindings unten.
           </p>
         </div>
       ) : null}

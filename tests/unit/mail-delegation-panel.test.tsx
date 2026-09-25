@@ -299,6 +299,29 @@ describe('MailDelegationPanel', () => {
     expect(hinweis.textContent).toContain('acl-rollout/enforce');
   });
 
+  // F-D2-04: Der Shadow-Hinweis behauptete, Delegationen gewaehrten gar keinen Zugriff, obwohl die nicht vergleichbaren Rechte sofort wirken.
+  test('nennt im Shadow-Modus die Rechte, die trotzdem sofort wirken', async () => {
+    // Nur Lesen, Entwuerfe und Senden gleicht der Shadow-Modus mit der Alt-ACL
+    // ab. Loeschen, Exportieren, Konto verwalten usw. kennt die Alt-ACL nicht —
+    // die entscheidet schon jetzt allein das Binding. Wer dem pauschalen
+    // "keinen Zugriff" glaubt, vergibt sie vorab und gibt sie damit sofort frei.
+    mockInvoke.mockImplementation((channel: string, payload?: Record<string, unknown>) => {
+      if (channel === 'email:get-mail-acl-rollout-readiness') {
+        return Promise.resolve({ mode: 'shadow', delegationGrantsAccess: false });
+      }
+      return defaultInvoke(channel, payload);
+    });
+
+    render(<MailDelegationPanel />);
+
+    const hinweis = await screen.findByRole('status');
+    expect(hinweis.textContent).not.toContain('Delegationen gewähren hier derzeit keinen Zugriff');
+    for (const recht of ['Löschen', 'Exportieren', 'Konto verwalten', 'Triage', 'Delegation verwalten']) {
+      expect(hinweis.textContent).toContain(recht);
+    }
+    expect(hinweis.textContent).toContain('sofort');
+  });
+
   test('zeigt den Hinweis nicht im enforce-Modus und nicht ohne Auskunft', async () => {
     render(<MailDelegationPanel />);
     expect((await screen.findAllByText('Alice')).length).toBeGreaterThan(0);
