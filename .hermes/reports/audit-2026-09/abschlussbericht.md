@@ -1,7 +1,7 @@
 # Abschlussbericht: Sicherheits- und Bug-Audit SimpleCRM
 
 **Stand:** 2026-09-25 · **Basis:** `main` @ `134b808` · **Branch:** `claude/jolly-cerf-hkvznl`
-**Unterlagen:** `masterplan.md` (Vorgehen), `findings.md` (Befundregister mit Belegen je Befund), `freigabeliste.md` (Entscheidungen Teil 1), `freigabeliste-2.md` (offene Entscheidungen), `baseline.md`, `inventories/`
+**Unterlagen:** `masterplan.md` (Vorgehen), `findings.md` (Befundregister mit Belegen je Befund), `freigabeliste.md` (Entscheidungen Teil 1), `freigabeliste-2.md` (Entscheidungen Teil 2), `freigabeliste-3.md` (Entscheidungen zu den Codex-Befunden), `codex-abgleich.md` (alle 110 Codex-Einträge mit Urteil und Commit), `baseline.md`, `inventories/`
 
 ## 1. Ergebnis in Zahlen
 
@@ -9,13 +9,14 @@
 |---|---:|
 | Kandidaten aus der Suche (Phase 2), Zitate mechanisch geprüft | 196, davon 0 halluziniert |
 | Duplikate | 21 |
-| Widerlegt / By Design | 5 / 7 |
-| **Behoben** (roter Regressionstest, dann Fix) | **162**, das sind alle bestätigten und plausiblen Befunde |
+| Widerlegt / By Design | 5 / 5 (F-A7-01 und F-A2b-05 sind durch die Freigaben G1 und G3 inzwischen behoben) |
+| **Behoben** (roter Regressionstest, dann Fix) | **164**, das sind alle bestätigten und plausiblen Befunde plus die zwei revidierten By-Design-Einstufungen |
 | Dokumentiert statt behoben (Info, Architektur) | 1 (F-A2c-04: zusammengesetzte Fremdschlüssel, eigenes Vorhaben) |
-| Neue Befunde aus der Fix-Phase, behoben | 21 (siehe `findings.md`, Abschnitt „Neue Befunde“) |
-| Entscheidungen Freigabeliste Teil 1 / Teil 2 | 15 / 42, alle umgesetzt |
-| Commits auf dem Branch | 235 |
-| Neue Testdateien | 129 |
+| Neue Befunde aus der Fix-Phase, behoben | 25 (siehe `findings.md`, Abschnitt „Neue Befunde“; N-cx-01 bis N-cx-04 aus dem Codex-Abgleich) |
+| Codex-Befunde aus PR #192 (Anhang A/B/C) | 110 Einträge: 78 in diesem Durchgang behoben, 30 waren durch frühere Commits dieses PRs schon geschlossen, 2 By-Design, 0 offen (siehe Abschnitt 7) |
+| Entscheidungen Freigabeliste Teil 1 / Teil 2 / Teil 3 | 15 / 42 / 12, alle umgesetzt |
+| Commits auf dem Branch | 305 (davon 62 nach dem Merge von PR #192) |
+| Neue Testdateien | 184 (einschließlich der Tests aus PR #192) |
 
 ## 2. Vorgehen (Kurzfassung)
 
@@ -30,7 +31,8 @@
 6. **Fixes:**
    - Je Befund zuerst ein Regressionstest, der vor dem Fix rot war; danach der kleinste Fix an der Ursache, ein Commit pro Befund.
    - Parallele Agenten in eigenen Worktrees; ich habe jeden Diff geprüft, per cherry-pick übernommen, Konflikte zusammengeführt und nach jedem Paket die volle Testbasis laufen lassen.
-7. **Abnahme:** alle CI-Gates lokal (Abschnitt 5) und CI auf dem PR.
+7. **Codex-Abgleich:** PR #192 (paralleler Codex-Lauf) ist per Merge-Commit `37c5d02` übernommen. Seine 110 ungeprüften Einträge wurden einzeln auf dem gemergten Stand nachvollzogen, gegen dieses Register abgeglichen und wie oben behandelt: roter Test, Fix, ein Commit pro Ursache; Punkte mit Nebenwirkung über Freigabeliste Teil 3.
+8. **Abnahme:** alle CI-Gates lokal (Abschnitt 5) und CI auf dem PR.
 
 ## 3. Was behoben ist (nach Bereichen)
 
@@ -130,9 +132,9 @@ Jeder Eintrag lässt sich im Register (`findings.md`) mit Commit und Testdatei n
   - Die lineare V8-Engine greift nicht bei gebundenen Wiederholungen über 16 (`(a|a){0,30}b`) und nicht bei Relay-Mustern mit Flag `u` oder `v`.
   - Bereits gespeicherte Muster mit Lookaround oder Rückverweis laufen ungeschützt weiter; sie werden erst beim nächsten Speichern abgelehnt.
   - Vorschlag: zusätzlich `--enable-experimental-regexp-engine` und beim Speichern prüfen, ob das Muster mit dem Flag `l` kompiliert.
-- **Authentication-Results (E6):**
-  - Die Header werden nur genutzt, wenn die Live-DNS-Prüfung ausfällt, und nur mit passender authserv-id.
-  - Weicht die authserv-id eines Anbieters von der Domain des IMAP-Hosts ab (z. B. Gmail mit `mx.google.com`), fehlt dieser Fallback, bis im Konto eine eigene authserv-id eingetragen ist.
+- **Authentication-Results (E6, G8):**
+  - Die Header werden nur genutzt, wenn die Live-DNS-Prüfung ausfällt, nur das oberste Feld zählt, und nur mit passender authserv-id.
+  - Weicht die authserv-id eines Anbieters von der Domain des IMAP-Hosts ab (z. B. Gmail mit `mx.google.com`) oder setzt ein zusätzlicher interner Hop ein eigenes Feld darüber, fehlt dieser Fallback. Auf dem Server hilft eine eigene authserv-id im Konto; der Desktop hat dafür kein Feld.
 - **Regex-Suche:** Legitime Suchen über sehr große Postfächer brechen nach 10 s ab. Pro Nutzer laufen höchstens zwei Suchen gleichzeitig; der Zähler gilt je Prozess.
 - **Webhooks und Portal (E4):**
   - Webhook-Bodies über 64 KiB bekommen 413.
@@ -144,7 +146,6 @@ Jeder Eintrag lässt sich im Register (`findings.md`) mit Commit und Testdatei n
   - Die umgebaute Release-Pipeline (Build ohne Token, Publish-Job) läuft erst beim nächsten Tag wirklich.
   - Das macOS-Auto-Update bleibt aus, bis eine Signatur mit Apple Developer ID vorliegt (siehe `docs/RELEASE.md`).
 - **Nicht angefasst (außerhalb des Auftrags):**
-  - Die Desktop-Kontoverwaltung zeigt Nicht-Admins weiter die Knöpfe; die Aktion selbst wird abgelehnt.
   - Die MDN-Ausgangsprüfung wertet den Text der eingegangenen Mail aus statt den MDN-Text.
   - Das Deals-Kanban ist auf 100 Einträge begrenzt.
   - Toter Code `workflowDelayedJobs.create`.
@@ -186,3 +187,41 @@ In der CI aufgefallen und behoben:
     - 429 `regex_search_busy`.
     - 403 `target_more_privileged`.
 - Die Doku ist ergänzt: `SETUP_SERVER.md`, `SMTP_RELAY.md`, `BACKUP_AND_RESTORE.md`, `THREAT_MODEL.md`, `GROUP_RIGHTS_ADMIN.md`, `EMAIL_EVIDENCE_TRACKING.md`, `USER_GUIDE_WORKFLOWS.md`, `WORKFLOW_PHASES.md`, `LOGIN_SECURITY.md`.
+- **API-, IPC- und Betriebsänderungen aus dem Codex-Abgleich (Teil 3):**
+  - Neue Ablehnungen auf dem Server: 403 für `POST`/`PATCH /api/v1/returns` ohne `crm.write`; 403 `owner_management_requires_owner`, wenn ein Nicht-Owner Owner vergibt, einlädt oder Owner-Konten ändert (auch beim Annehmen alter Owner-Einladungen); 403 für Editoren ohne `workflows.manage`, die einen aktiven Seiteneffekt-Workflow stilllegen oder umbauen; 404 bei mehrdeutigen Legacy-Konto-IDs; `compile-graph` meldet „Workflow-Graph zu komplex“ im bestehenden Format.
+  - Additiv: optionales Feld `tls` beim SMTP-Verbindungstest. `/ai/transform-text` ignoriert `customerId` ohne `crm.read`.
+  - WebSocket/Replay: Nicht-Mail-Ereignisse nur noch mit dem Leserecht der REST-Route (Automation-Keys nur Admin, Workflows/Wissen `workflows.view`, CRM `crm.read`).
+  - MFA-Challenges, die vor dem Update ausgestellt wurden (höchstens 5 Minuten gültig), werden einmalig abgelehnt.
+  - **Betrieb (G9):** `restore.sh` und der Restore-Drill melden sich als `simplecrm_app` an; ein manueller Aufruf mit Admin-`DATABASE_URL` wird mit Hinweis abgelehnt. `PG_RESTORE_ROLE` entfällt, neu ist `RESTORE_DRILL_MAINTENANCE_DATABASE_URL` (Standard: Admin-Verbindung, nur für CREATE/DROP der Drill-DB).
+  - Desktop-IPC: neuer Preload-Kanal `email:register-dropped-compose-attachments`; Workflow-, Wissensbasis-, Konto-, Verbindungstest-, OAuth-Abschluss- und Konto-Signatur-Kanäle nur Owner/Admin; alle mutierenden Konto-Kanäle verlangen `rw`; unauflösbare Objekt-IDs nur Owner/Admin.
+
+## 7. Codex-Abgleich (PR #192)
+
+Pascal hat zusätzlich einen Codex-Lauf auf demselben Ausgangsstand (`134b808`) machen lassen (PR #192, Entwurf). Er ist per Merge-Commit `37c5d02` vollständig in diesen PR übernommen: strikte Proxy-Vertrauensregel (Hop-Zahlen werden abgelehnt; `update.sh` bricht vorher mit Hinweis ab), Prod-Deps-Stage im API-Image, Abhängigkeits-Updates (Overrides beider Seiten zusammengeführt), Quill-Clipboard-Härtung, Tests und drei Anhänge mit 110 ungeprüften Einträgen.
+
+**Vorgehen:** Sechs thematische Prüf-Agenten haben jeden Eintrag auf dem gemergten Stand nachvollzogen (Einstieg bis Senke mit Datei und Zeile, Halluzinationsprüfung, Abgleich mit diesem Register, Prüfung, ob unser Fix Codex' konkrete Variante wirklich abdeckt). Danach wie im Hauptaudit: roter Test, kleinster Fix, ein Commit pro Ursache (Betreff mit Codex-IDs), Punkte mit Nebenwirkung über `freigabeliste-3.md` (G1–G12, alle Empfehlungen freigegeben).
+
+**Ergebnis** (Einzelheiten je Eintrag in `codex-abgleich.md`):
+
+| Ergebnis | Einträge |
+|---|---:|
+| In diesem Durchgang behoben | 78 |
+| Durch frühere Commits dieses PRs schon geschlossen (im Code nachvollzogen) | 30 |
+| By-Design (LAN-Automation als Opt-in; zweiter Workspace im Produkt nicht anlegbar) | 2 |
+| Offen | 0 |
+
+Die wichtigsten neuen Befunde aus Codex' Liste:
+- **Desktop-Rollen:** Agent und Viewer konnten Code-Workflows (JavaScript/Python mit den Rechten des Programms) anlegen, damit waren E15–E17 umgehbar (G1). Verbindungstests schickten gespeicherte Passwörter an beliebige Hosts. Objekt-IDs ohne aufgelöstes Konto liefen an der Konto-ACL vorbei. Owner-Verwaltung nur noch durch Owner (G3).
+- **Server:** Nicht-Mail-Ereignisse (Automation-Keys, Workflows, Wissen, CRM) gingen per WebSocket an alle. Race zwischen Passwortwechsel und Token-Rotation. Delegations-Manager konnten fremde Bindings per POST/PATCH einengen. Retouren ohne `crm.write`. Mutationsantworten ohne Anhang- und Eltern-Projektion. Windows-Pfadtrenner in der Anhang-Ausnahme. Relay-Anzeigename wurde zu zwei Absendern. Dry-Run führte Aliase live aus.
+- **Ressourcen:** CID-Inline-Bilder (157 KB Rohmail → 136 Mio. Zeichen HTML, ab 700 KB Prozessabsturz), exponentielle Graph-Kompilierung, DOCX-DOM-Explosion trotz Byte-Budget (jetzt Worker, G7), POP3-/SMTP-Antworten ohne Gesamtfrist, Backup-Manifest ohne Grenze.
+- **Infra:** Restore und Drill liefen als Superuser, Dump-SQL konnte per `RESET ROLE` zurück (G9); die Metadatenprüfung wertete Views als Admin aus.
+- **Beim Beheben neu gefunden:** N-cx-01 (Auto-Antwort-Einstellungen gingen auf dem Desktop verloren), N-cx-02 (Server-Entwurfsfunktionen trafen empfangene POP3-Mails), N-cx-03 (CRM-Ereignisse ohne `crm.read`), N-cx-04 (Desktop-Sitzungen überlebten Rollen- und Passwortwechsel).
+
+**Restpunkte aus dem Codex-Abgleich** (bewusst nicht umgesetzt oder außerhalb der Freigaben):
+- Desktop: Eine pauschale Owner/Admin-Pflicht für alle KI-Profil- und Spam-Einstellungen (C-B16) nimmt Agenten Rechte und ist nicht freigegeben. Die gefährlichen Teile (Key-Umleitung, Rspamd-Ziel) sind behoben.
+- Workflows: Kein Autor-Recheck beim Cron-Feuern (bräuchte eine Migration); ein aktiver Workflow mit Override-Schlüssel, aber harmlosem Graphen, bleibt für Editoren abschaltbar. `mssql.query`/`jtl.order_context` lesen im Server-Dry-Run live (G11, dokumentiert). Ein ausgehender Desktop-Dry-Run ohne Vorschau ruft die KI weiter auf, sperrt aber nichts.
+- PDF-Extraktion läuft weiter im Hauptprozess (nur Dateigrenze und Timeout). Pro Prozess bis zu zwei DOCX-Worker gleichzeitig (je ca. 550 MB Heap).
+- Eine POP3-Zeile über 1 MiB bricht die Verbindung ab und wird beim nächsten Sync erneut versucht (RFC-Grenze 998 Zeichen).
+- `GET /auth/invitations/:token` zeigt eine alte Owner-Einladung eines inzwischen nicht mehr berechtigten Einladenden noch als gültig an; das Annehmen scheitert korrekt.
+- `crm.read`-Nutzer erhalten die id-Invalidierung (id, customerId) auch für private Aufgaben anderer (Zeilenregel, war vorher so).
+- PR #192 ist in diesem PR vollständig enthalten. Wird #193 per Merge-Commit gemergt, markiert GitHub #192 automatisch als gemergt; bei Squash muss #192 von Hand geschlossen werden.

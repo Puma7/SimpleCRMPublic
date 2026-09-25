@@ -6,15 +6,14 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 
 | Status | Anzahl |
 |---|---:|
-| BEHOBEN | 76 |
+| BEHOBEN | 78 |
 | erledigt (Register) | 30 |
-| OFFEN | 2 |
 | By-Design | 2 |
 
 | Codex-ID | Titel | Triage | Register | Status | Commits | Hinweis |
 |---|---|---|---|---|---|---|
 | C-A1 | Desktop viewers can schedule workflows that execute privileged code | Teilweise (Rest behoben) | A7-01, A9-13 | BEHOBEN | `aa968e7` | G1: Workflow- und Wissensbasis-Bearbeitung auf dem Desktop nur Owner/Admin; revidiert F-A7-01. Autor-Recheck beim Cron-Feuern bräuchte eine Migration (nicht umgesetzt). |
-| C-A2 | Read-only desktop mailbox delegates can schedule or retry outbound mail | Neu, bestätigt | – | BEHOBEN | `4959809` `0771bd8` | Explizite rw-Stufen an allen mutierenden Kanälen; Akteur-Revalidierung beim geplanten Versand: G6. |
+| C-A2 | Read-only desktop mailbox delegates can schedule or retry outbound mail | Neu, bestätigt | – | BEHOBEN | `24afc01` `4959809` `0771bd8` | Explizite rw-Stufen an allen mutierenden Kanälen; geplanter Versand prüft vor SMTP das Schreibrecht des Planenden (G6). |
 | C-A3 | Desktop workflow HTTP redirects and DNS changes bypass the destination guard | Neu, bestätigt | – | BEHOBEN | `dde1661` |  |
 | C-A4 | Desktop users can open or save attachments from unauthorized mailboxes | Duplikat, bereits behoben | A7b-06 | erledigt (Register) | – |  |
 | C-A5 | Ordinary desktop users can export installation-wide data | Duplikat, bereits behoben | A7b-01, A7-04 | erledigt (Register) | – |  |
@@ -39,10 +38,10 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 | C-A24 | Testing a compiled desktop workflow performs live mail actions | Neu, bestätigt | – | BEHOBEN | `27a4755` `a5060a8` |  |
 | C-A25 | Unresolved desktop resource IDs bypass mailbox permissions | Teilweise (Rest behoben) | A7b-06, A7-03 | BEHOBEN | `27a4755` | Objekt-IDs lösen ihr Konto auf, Unauflösbares nur Owner/Admin; Server-Parität N-cx-02. |
 | C-A26 | Restricted desktop users can export all data and replace the application database | Duplikat, bereits behoben | A7b-01, A7-04 | erledigt (Register) | – |  |
-| C-A27 | Read-only mailbox users can edit credentials and send scheduled drafts | Teilweise (Rest behoben) | A7-03 | BEHOBEN | `0771bd8` | Explizite rw-Stufen an allen mutierenden Kanälen; Akteur-Revalidierung beim geplanten Versand: G6. |
+| C-A27 | Read-only mailbox users can edit credentials and send scheduled drafts | Teilweise (Rest behoben) | A7-03 | BEHOBEN | `24afc01` `0771bd8` | Explizite rw-Stufen an allen mutierenden Kanälen; geplanter Versand prüft vor SMTP das Schreibrecht des Planenden (G6). |
 | C-A28 | Any desktop session can read and replace global OAuth application secrets | Duplikat, bereits behoben | N-ds-02, A7-08 | erledigt (Register) | – |  |
 | C-A29 | Caller-supplied account scope bypasses existing template ownership | Neu, bestätigt | – | BEHOBEN | `27a4755` | Objekt-IDs lösen ihr Konto auf, Unauflösbares nur Owner/Admin; Server-Parität N-cx-02. |
-| C-A30 | Sandboxed renderer can attach host files without a picker grant | Neu, plausibel | – | OFFEN | – |  |
+| C-A30 | Sandboxed renderer can attach host files without a picker grant | Neu, plausibel | – | BEHOBEN | `cfaee8f` | G12: Grant-Register im Main-Prozess (Picker, Drag-and-drop über Preload, Entwurfs- und Weiterleitungspfade). |
 | C-A31 | Mail mutation responses bypass attachment and reply-parent visibility | Neu, bestätigt | – | BEHOBEN | `edda382` |  |
 | C-A32 | Customer and product update keys are interpolated into SQLite statements | Duplikat, bereits behoben | A10-02, A6-02, N-ds-01 | erledigt (Register) | – |  |
 | C-A33 | A stale message-policy response can enable remote content in another email | Neu, bestätigt | – | BEHOBEN | `6c693e4` |  |
@@ -64,7 +63,7 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 | C-A49 | Desktop object-ID operations bypass mailbox ownership checks | Teilweise (Rest behoben) | A7b-06, A7-03 | BEHOBEN | `27a4755` | Objekt-IDs lösen ihr Konto auf, Unauflösbares nur Owner/Admin; Server-Parität N-cx-02. |
 | C-A50 | Deleting an account can erase another mailbox's attachments | Duplikat, bereits behoben | A7b-07 | erledigt (Register) | – |  |
 | C-A51 | Unprivileged desktop users can redirect scanned mail to an external server | Neu, bestätigt | – | BEHOBEN | `5942070` | Parität zum Server: Rspamd-URL ändern und testen nur Owner/Admin. |
-| C-A52 | Read-only desktop mailbox grants permit composing and sending mail | Teilweise (Rest behoben) | A7-03 | BEHOBEN | `0771bd8` | Explizite rw-Stufen an allen mutierenden Kanälen; Akteur-Revalidierung beim geplanten Versand: G6. |
+| C-A52 | Read-only desktop mailbox grants permit composing and sending mail | Teilweise (Rest behoben) | A7-03 | BEHOBEN | `24afc01` `0771bd8` | Explizite rw-Stufen an allen mutierenden Kanälen; geplanter Versand prüft vor SMTP das Schreibrecht des Planenden (G6). |
 | C-A53 | Global OAuth and webhook secrets are readable and replaceable by ordinary desktop users | Teilweise (Rest behoben) | N-ds-02, A7-08 | BEHOBEN | `09417d0` | FireWebhookWorkflow per IPC nur Owner/Admin (Rest N-ds-02). |
 | C-A54 | Optional LAN automation sends reusable API keys over plaintext HTTP | By-Design | – | By-Design | – | LAN-Automation ist Opt-in, Standard Loopback, nur Admin; TLS-Terminierung extern dokumentiert. |
 | C-A55 | Backup verification evaluates restored database objects as administrator | Neu, bestätigt | – | BEHOBEN | `d63dcc4` `e7e466a` | G9: Restore/Drill als eingeschränkte Rolle; Metadatenprüfung nur echte Tabellen, pg_catalog-qualifiziert. |
@@ -91,7 +90,7 @@ Codex hat 110 Einträge hinterlassen (Anhang A 82, B 17, C 11), viele davon Dupl
 | C-A76 | Workflow read-only MSSQL guards allow SELECT INTO writes | Neu, bestätigt | – | BEHOBEN | `8d2622d` `0401bbe` | Validator gehärtet (beide Editionen); mssql.query liest im Server-Dry-Run weiter live (G11, dokumentiert: nur db_datareader). |
 | C-A77 | PGP decrypt operations permit unbounded compressed message expansion | Duplikat, bereits behoben | A13A14-05 | erledigt (Register) | – |  |
 | C-A78 | Desktop mail IPC skips authorization for unresolved target objects | Teilweise (Rest behoben) | A7-03, A7b-06 | BEHOBEN | `27a4755` | Objekt-IDs lösen ihr Konto auf, Unauflösbares nur Owner/Admin; Server-Parität N-cx-02. |
-| C-A79 | Compose operations use a reply parent without authorizing its account | Neu, bestätigt | – | OFFEN | – |  |
+| C-A79 | Compose operations use a reply parent without authorizing its account | Neu, bestätigt | – | BEHOBEN | `85a9204` | G5: Elternbezug nur mit Leserecht am Elternkonto, „erledigt“ nur mit rw. |
 | C-A80 | POP3 size limits apply after an unbounded line is buffered | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `ae70574` |  |
 | C-A81 | SMTP sending and connection probes accept unbounded server responses | Teilweise (Rest behoben) | A4-06 | BEHOBEN | `991cf68` |  |
 | C-A82 | Small workflow graphs can exhaust synchronous API compilation | Neu, bestätigt | – | BEHOBEN | `e3ad18d` |  |
