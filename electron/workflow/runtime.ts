@@ -507,11 +507,14 @@ export async function runWorkflowGraph(input: GraphRunInput): Promise<GraphRunRe
 
   let merged: GraphRunResult = { log, status: 'ok', blocked: false, blockReason: null };
   for (const edge of outs) {
+    // The branch log starts as a copy of `log`; only its new tail is merged
+    // back, otherwise every trigger edge re-appended the whole history.
+    const logLengthBefore = log.length;
     const branchLog = [...log, `branch:${edge.target}`];
     const branchCtx = cloneWorkflowContext(ctx);
     const branchGate: InboundBranchGate = { conditionOk: false };
     const r = await walkGraph(branchCtx, doc, edge.target, branchLog, undefined, undefined, branchGate);
-    merged.log.push(...r.log);
+    for (const line of r.log.slice(logLengthBefore)) merged.log.push(line);
     if (r.blocked) return r;
     // Spam-chain stop ends the whole inbound priority chain — bail immediately.
     if (r.inboundChainStop) {

@@ -191,3 +191,32 @@ describe('desktop logic.loop guards', () => {
     expect(result.log.length).toBeLessThan(100);
   });
 });
+
+describe('desktop trigger branches', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  // F-N-dwf-03: Jede Trigger-Kante haengte eine Kopie des gesamten bisherigen Logs an; das Log verdoppelte sich je Kante.
+  test('appends only the new log entries of each trigger branch', async () => {
+    const calls = new Map<string, number>();
+    installCountingNode(calls);
+    const targets = ['a', 'b', 'c', 'd', 'e', 'f'];
+
+    const result = await run(
+      [trigger, ...targets.map((id) => countNode(id))],
+      targets.map((id) => ({ id: `e-${id}`, source: 'trigger', target: id })),
+      '',
+    );
+
+    expect(result.status).toBe('ok');
+    for (const id of targets) expect(calls.get(id)).toBe(1);
+    expect(result.log.filter((line) => line === 'graph_run_start')).toHaveLength(1);
+    for (const id of targets) {
+      expect(result.log.filter((line) => line === `branch:${id}`)).toHaveLength(1);
+    }
+    const branchStarts = targets.map((id) => result.log.indexOf(`branch:${id}`));
+    expect(branchStarts).toEqual([...branchStarts].sort((x, y) => x - y));
+    expect(result.log.length).toBeLessThan(40);
+  });
+});
