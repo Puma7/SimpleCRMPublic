@@ -236,11 +236,18 @@ Beim Beheben gefunden (nicht Teil der 196 Kandidaten). Jeder BEHOBEN-Eintrag ist
 | N-ds-02 | FREIGABE_NOETIG | Mittel | Desktop | OAuth-Client-Secrets und Webhook-Secret per IPC an jeden angemeldeten Nutzer; Set-Kanaele ohne Rollenpruefung |
 | N-dwf-01 | BEHOBEN (`486c745`) | Niedrig | Desktop | runtime.ts:297/307 Schleifen-Log verdoppelt sich je Durchlauf (RangeError ab ~15-20 Eintraegen) |
 | N-dwf-02 | BEHOBEN (`575e0e6`) | Niedrig | Desktop | workflow-trigger-dispatch.ts:247 Deal-Stufen-Dedup '1' als Dauersperre |
+| N-dwf-03 | BEHOBEN (`4f86b86`) | Niedrig | Desktop | Desktop-Log verdoppelt sich je Trigger-Kante |
+| N-dwf-04 | BEHOBEN (`29fd908`) | Niedrig | Desktop | KI-Pruefschritt: $-Muster aus Mailtext im Prompt |
+| N-dwf-05 | BEHOBEN (`0a22f5d`) | Niedrig | Desktop | Antwortvorschlag interpoliert mehrfach (Platzhalter-Injektion, Prompt-Aufblaehung) |
 | N-fe-01 | BEHOBEN (`f2312d2`) | Niedrig | beide | Textbaustein: Kundenname roh ins Compose-HTML (compose-dialog ~1690, applyCannedTemplate types.ts:364) |
 | N-fe-02 | BEHOBEN (`abfbc92`) | Niedrig | beide | Fallback-Signaturen setzen display_name roh ein (electron/email/email-store.ts:459/464, channel-http-registry.ts:3169) |
 | N-fe-03 | BEHOBEN (`7b72017`) | Niedrig | Server | smtp-panel.tsx:120-150 meldet Verbindungstest-Erfolg fuer ungepruefte Werte (wie A11a-06) |
 | N-int-01 | BEHOBEN (`fb8e87d`) | Mittel | Infra | Betriebsskripte nutzen nur die Basis-Compose-Datei: SMTP-Relay nach jedem Update/Restore still aus |
+| N-ipc-01 | OFFEN | Niedrig | Desktop | electron/ipc/email.ts:1956 KI-Umformung ersetzt {{text}} per String-replace + zweiter Durchlauf |
+| N-pgp-01 | BEHOBEN (`2e97e73`) | Mittel | Server | Server-Peer-Key-Import speichert [object Object] statt E-Mail (PGP-Zuordnung per E-Mail wirkungslos) |
 | N-redos-01 | BEHOBEN (`e95dad0 … 43e0c00`) | Mittel | beide | Quadratische HTML-Strip-Regex (spam-features 3,5 s/Mail, outbound-review kubisch, Renderer-Freeze u.a.) |
+| N-redos-02 | BEHOBEN (`72fe6d4 554bfdf 6e5d394`) | Niedrig | beide | Weitere quadratische HTML-Strip-Regex (Versand, KI-Signaturen); compose-body/compose-dialog nicht reproduzierbar (DOMPurify-Ausgabe) |
+| N-redos-03 | OFFEN | Niedrig | beide | shared/email-html-remote-images.ts:113 <style>-Regex quadratisch bei nicht geschlossenen Tags (140 KB -> 1,4 s) |
 | N-sm-01 | BEHOBEN (`e338ffb`) | Mittel | beide | rawHeadersFromParsed (core parse-utils.ts:269) verkettet Header-Objekte zu [object Object] -> Header-Pruefungen greifen bei synchronisierten Mails nicht |
 | N-sm-02 | BEHOBEN (`0fda5ba`) | Niedrig | Desktop | Desktop IMAP-Sync UID n+1:* (email-imap-sync.ts:144) wie A5-06 |
 | N-srv-01 | BEHOBEN (`6713c77`) | Niedrig | Server | Server-Schleife erbt Haltepunkte nicht (L1->L2->L1) und Block-Port-Walk setzt stepCount zurueck |

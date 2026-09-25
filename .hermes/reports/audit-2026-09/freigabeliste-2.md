@@ -2,6 +2,12 @@
 
 **Stand:** 2026-09-25 · Grundlage: Befundregister `findings.md` (Status `FREIGABE_NOETIG` und `TEILWEISE`)
 
+## Entscheidung (2026-09-25)
+
+Pascal hat **alle Empfehlungen E1–E42** freigegeben und den PR sofort als Draft gewünscht. Bei E31, E41 und E42 lautet die Empfehlung „so lassen und dokumentieren“. Umsetzung und Commits stehen im Befundregister.
+
+---
+
 Die Fix-Agenten haben an diesen Stellen bewusst angehalten. Der Defekt ist jeweils bestätigt, aber der Fix braucht eine Migration, ändert einen API- oder IPC-Vertrag, schränkt Rechte legitimer Nutzer ein oder lässt mehrere vertretbare Semantiken zu. Die Empfehlung steht jeweils zuerst. Alles andere aus dem Audit ist behoben (siehe `abschlussbericht.md`).
 
 ## A. Sicherheit Server (aus dem Internet erreichbar)
