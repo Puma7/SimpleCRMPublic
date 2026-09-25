@@ -8,6 +8,8 @@ import {
 
 async function startSmtpServer(onLine: (line: string, socket: net.Socket) => void, greeting = '220 SMTP ready\r\n') {
   const server = net.createServer((socket) => {
+    // The client may drop the connection mid-write (response limits).
+    socket.on('error', () => undefined);
     socket.write(greeting);
     let buffer = '';
     socket.on('data', (chunk) => {
@@ -114,5 +116,43 @@ describe('server SMTP diagnostics', () => {
     expect(serialized).not.toContain('secret body');
     expect(serialized).not.toContain('recipient@example.com');
     expect(serialized).not.toContain('agent@example.com');
+  });
+});
+
+// F-A4-06: the SMTP send client buffered server data without limit and
+// collected continuation lines forever, so a hostile or compromised SMTP
+// server could grow worker memory or keep a send busy indefinitely.
+describe('server SMTP send response limits', () => {
+  const baseInput = {
+    host: '127.0.0.1',
+    tls: false,
+    user: 'agent@example.com',
+    password: 'super-secret-password',
+    envelopeFrom: 'agent@example.com',
+    recipients: ['recipient@example.com'],
+    rfc822: 'Subject: Test\r\n\r\nbody',
+    timeoutMs: 1000,
+  };
+
+  test('stops at an oversized server line instead of buffering it', async () => {
+    const server = await startSmtpServer(() => undefined, `220 ${'x'.repeat(200 * 1024)}`);
+    try {
+      await expect(sendSmtpMessage({ ...baseInput, port: server.port })).rejects.toThrow('Server-Antwort zu gross');
+    } finally {
+      await server.close();
+    }
+  });
+
+  test('stops at a response with too many continuation lines', async () => {
+    const server = await startSmtpServer((line, socket) => {
+      if (line === 'EHLO simplecrm.local') socket.write('250-x\r\n'.repeat(1500));
+      else socket.write('250 OK\r\n');
+    });
+    try {
+      await expect(sendSmtpMessage({ ...baseInput, port: server.port }))
+        .rejects.toThrow('Server-Antwort hat zu viele Zeilen');
+    } finally {
+      await server.close();
+    }
   });
 });

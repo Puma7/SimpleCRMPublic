@@ -92,6 +92,44 @@ class FakeImapSocket extends EventEmitter {
   }
 }
 
+/** Server that answers each written line with whatever `respond` returns. */
+class ScriptedSocket extends EventEmitter {
+  constructor(
+    private readonly greeting: string,
+    private readonly respond: (line: string) => string,
+  ) {
+    super();
+  }
+
+  setEncoding(): this {
+    return this;
+  }
+
+  end(): void {}
+
+  destroy(): void {}
+
+  write(chunk: string | Buffer): boolean {
+    const reply = this.respond(String(chunk).replace(/\r\n$/, ''));
+    setTimeout(() => this.emit('data', reply), 0);
+    return true;
+  }
+
+  greet(): void {
+    setTimeout(() => this.emit('data', this.greeting), 0);
+  }
+}
+
+function scriptedPort(socket: ScriptedSocket) {
+  return createServerMailConnectionTestPort({
+    socketFactory: (async () => {
+      socket.greet();
+      return socket;
+    }) as never,
+    timeoutMs: 500,
+  });
+}
+
 function storedAccountRow() {
   return {
     id: 7,
@@ -355,5 +393,51 @@ describe('server mail connection test stored credentials', () => {
 
     expect(result).toEqual({ success: false, error: expect.stringMatching(/ NO denied$/) });
     expect(socket.written.map((line) => line.split(' ')[1])).toEqual(['CAPABILITY', 'LOGIN']);
+  });
+
+  // F-A4-06: the line client buffered without limit and looped over untagged or
+  // continuation lines forever, so a hostile mail server could grow memory
+  // (one endless line) or keep the test busy (endless response lines).
+  test('SMTP test stops at an oversized server line instead of buffering it', async () => {
+    const socket = new ScriptedSocket(`220 ${'x'.repeat(200 * 1024)}`, () => '');
+
+    await expect(scriptedPort(socket).testSmtp({
+      workspaceId: 'workspace-a',
+      host: 'smtp.example.com',
+      port: 465,
+      tls: true,
+      user: 'user@example.com',
+      password: 'typed',
+    })).resolves.toEqual({ success: false, error: 'Server-Antwort zu gross' });
+  });
+
+  test('SMTP test stops at a response with too many continuation lines', async () => {
+    const socket = new ScriptedSocket('220 ready\r\n', (line) => (
+      line.startsWith('EHLO') ? '250-x\r\n'.repeat(1500) : '250 OK\r\n'
+    ));
+
+    await expect(scriptedPort(socket).testSmtp({
+      workspaceId: 'workspace-a',
+      host: 'smtp.example.com',
+      port: 465,
+      tls: true,
+      user: 'user@example.com',
+      password: 'typed',
+    })).resolves.toEqual({ success: false, error: 'Server-Antwort hat zu viele Zeilen' });
+  });
+
+  test('IMAP test stops at a command answered with too many untagged lines', async () => {
+    const socket = new ScriptedSocket('* OK ready\r\n', (line) => (
+      line.startsWith('a001 LOGIN') ? '* x\r\n'.repeat(1500) : `${line.split(' ')[0]} OK\r\n`
+    ));
+
+    await expect(scriptedPort(socket).testImap({
+      workspaceId: 'workspace-a',
+      host: 'imap.example.com',
+      port: 993,
+      tls: true,
+      user: 'user@example.com',
+      password: 'typed',
+    })).resolves.toEqual({ success: false, error: 'Server-Antwort hat zu viele Zeilen' });
   });
 });

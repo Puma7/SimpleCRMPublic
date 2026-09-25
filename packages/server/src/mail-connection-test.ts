@@ -67,6 +67,11 @@ type StoredAccountConnectionSettings = Readonly<{
 }>;
 
 const DEFAULT_TIMEOUT_MS = 25_000;
+// A connection test only reads short status lines. Bound what a hostile
+// server can make us buffer (one endless line) or loop over (endless
+// continuation/untagged lines, each arriving within the per-line timeout).
+const MAX_BUFFERED_RESPONSE_CHARS = 64 * 1024;
+const MAX_RESPONSE_LINES = 1000;
 
 export function createServerMailConnectionTestPort(
   options: ServerMailConnectionTestPortOptions = {},
@@ -570,6 +575,7 @@ async function smtpCommand(client: LineProtocolClient, command: string): Promise
 async function readSmtpResponse(client: LineProtocolClient): Promise<SmtpResponse> {
   const lines: string[] = [];
   for (;;) {
+    if (lines.length >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
     const line = await client.readLine();
     lines.push(line);
     const match = /^(\d{3})([ -])(.*)$/.exec(line);
@@ -764,7 +770,8 @@ class LineProtocolClient {
     onUntagged?: (line: string) => void,
   ): Promise<{ ok: boolean; line: string }> {
     this.writeLine(command);
-    for (;;) {
+    for (let count = 0; ; count += 1) {
+      if (count >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
       const line = await this.readLine();
       if (line.toUpperCase().startsWith(`${tag.toUpperCase()} `)) {
         return { ok: new RegExp(`^${escapeRegExp(tag)}\\s+OK\\b`, 'i').test(line), line };
@@ -811,13 +818,18 @@ class LineProtocolClient {
     this.buffer += chunk;
     for (;;) {
       const line = this.shiftLine();
-      if (line === null) return;
+      if (line === null) break;
       const waiter = this.waiters.shift();
       if (!waiter) {
         this.buffer = `${line}\r\n${this.buffer}`;
-        return;
+        break;
       }
       waiter(line);
+    }
+    if (this.buffer.length > MAX_BUFFERED_RESPONSE_CHARS) {
+      this.buffer = '';
+      this.rejectAll(new Error('Server-Antwort zu gross'));
+      this.socket.destroy();
     }
   }
 

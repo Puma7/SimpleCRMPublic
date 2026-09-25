@@ -58,6 +58,11 @@ export type SmtpSendDiagnosticEvent = Readonly<{
 }>;
 
 const DEFAULT_TIMEOUT_MS = 90_000;
+// SMTP replies are short status lines (RFC 5321: 512 octets). Bound what a
+// hostile server can make us buffer (one endless line) or collect (endless
+// continuation lines, each arriving within the per-line timeout).
+const MAX_BUFFERED_RESPONSE_BYTES = 64 * 1024;
+const MAX_RESPONSE_LINES = 1000;
 
 /**
  * Failure before any part of the message body was transmitted (connect,
@@ -209,6 +214,7 @@ async function smtpCommand(client: LineProtocolClient, command: string): Promise
 async function readSmtpResponse(client: LineProtocolClient): Promise<SmtpResponse> {
   const lines: string[] = [];
   for (;;) {
+    if (lines.length >= MAX_RESPONSE_LINES) throw new Error('Server-Antwort hat zu viele Zeilen');
     const line = await client.readLine();
     lines.push(line);
     const match = /^(\d{3})([ -])(.*)$/.exec(line);
@@ -473,6 +479,7 @@ class LineProtocolClient {
     resolve: (line: string) => void;
     reject: (error: Error) => void;
   }> = [];
+  private failure: Error | null = null;
   private socket: net.Socket;
 
   constructor(socket: net.Socket, private readonly timeoutMs: number) {
@@ -494,6 +501,7 @@ class LineProtocolClient {
   }
 
   readLine(): Promise<string> {
+    if (this.failure) return Promise.reject(this.failure);
     const existing = this.shiftLine();
     if (existing !== null) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {
@@ -538,6 +546,12 @@ class LineProtocolClient {
     socket.on('data', (chunk) => {
       this.buffer = Buffer.concat([this.buffer, Buffer.from(chunk)]);
       this.flushWaiters();
+      if (this.buffer.length > MAX_BUFFERED_RESPONSE_BYTES) {
+        this.buffer = Buffer.alloc(0);
+        this.failure = new Error('Server-Antwort zu gross');
+        this.rejectWaiters(this.failure);
+        socket.destroy();
+      }
     });
     socket.once('error', (error) => this.rejectWaiters(error));
     socket.once('close', () => this.rejectWaiters(new Error('Connection closed')));
