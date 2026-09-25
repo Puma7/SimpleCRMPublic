@@ -671,7 +671,7 @@ export function createPostgresEmailTrackingService(
     async recordPublicOpen(input) {
       if (!crypto) return;
       const resolver = await resolvePublicToken(options.db, crypto, input.token, 'open', now());
-      if (!resolver) return;
+      if (!resolver?.recordable) return;
       await recordPublicInteraction({
         db: options.db,
         crypto,
@@ -718,6 +718,7 @@ export function createPostgresEmailTrackingService(
       } catch {
         return null;
       }
+      if (!resolver.recordable) return { targetUrl };
       void recordPublicInteraction({
         db: options.db,
         crypto,
@@ -1683,6 +1684,9 @@ type PublicResolver = {
   linkId: string | null;
   collectDerivedMetadata: boolean;
   collectRawMetadata: boolean;
+  // false once the token or its tracking was revoked or expired: a click still
+  // redirects to the stored target, but no evidence is recorded any more.
+  recordable: boolean;
 };
 
 async function resolvePublicToken(
@@ -1702,12 +1706,11 @@ async function resolvePublicToken(
       .where('token_hash', '=', tokenHash)
       .executeTakeFirst();
   });
-  if (
-    !resolver
-    || resolver.token_kind !== kind
-    || resolver.revoked_at
-    || toDate(resolver.expires_at).getTime() <= now.getTime()
-  ) return null;
+  if (!resolver || resolver.token_kind !== kind) return null;
+  const resolverActive = !resolver.revoked_at && toDate(resolver.expires_at).getTime() > now.getTime();
+  // A revoked/expired pixel has nothing left to do. Clicks still need the
+  // stored target so links in already delivered mails keep working.
+  if (!resolverActive && kind === 'open') return null;
   return withWorkspaceTransaction(
     db,
     { workspaceId: resolver.workspace_id, role: 'system' },
@@ -1718,7 +1721,11 @@ async function resolvePublicToken(
         .where('workspace_id', '=', resolver.workspace_id)
         .where('id', '=', resolver.tracking_message_id)
         .executeTakeFirst();
-      if (!tracking || tracking.revoked_at || toDate(tracking.token_expires_at).getTime() <= now.getTime()) return null;
+      if (!tracking) return null;
+      const recordable = resolverActive
+        && !tracking.revoked_at
+        && toDate(tracking.token_expires_at).getTime() > now.getTime();
+      if (!recordable && kind === 'open') return null;
       return {
         workspaceId: resolver.workspace_id,
         trackingMessageId: resolver.tracking_message_id,
@@ -1726,6 +1733,7 @@ async function resolvePublicToken(
         linkId: resolver.link_id,
         collectDerivedMetadata: Boolean(tracking.collect_derived_metadata),
         collectRawMetadata: Boolean(tracking.collect_raw_metadata),
+        recordable,
       };
     },
   );

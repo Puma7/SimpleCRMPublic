@@ -169,6 +169,39 @@ describe('email tracking routes', () => {
     expect(unsafe.status).toBe(404);
   });
 
+  // F-A3a-04: deleted or unknown click links answered customers with a raw JSON error instead of a readable page.
+  test('answers unknown or deleted click links with a neutral German HTML page', async () => {
+    const unknown = await apiFor(makeTrackingPort()).handle({ method: 'GET', path: `/t/c/${TOKEN}` });
+    const malformed = await apiFor(makeTrackingPort()).handle({ method: 'GET', path: '/t/c/not-a-token' });
+
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers).toMatchObject({
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store, private',
+      'Content-Security-Policy': "default-src 'none'",
+      'X-Content-Type-Options': 'nosniff',
+    });
+    expect(typeof unknown.body).toBe('string');
+    expect(unknown.body).toContain('<html lang="de">');
+    expect(unknown.body).toContain('Link nicht mehr verfügbar');
+    expect(unknown.body).not.toContain('tracking_not_found');
+    expect(malformed).toEqual(unknown);
+  });
+
+  test('never redirects to a target taken from the request URL', async () => {
+    const api = apiFor(makeTrackingPort({
+      async resolvePublicClick() { return { targetUrl: 'https://customer.example/invoice/7' }; },
+    }));
+
+    const response = await api.handle({
+      method: 'GET',
+      path: `/t/c/${TOKEN}`,
+      query: { url: 'https://evil.example/', redirect: 'https://evil.example/' },
+    });
+    expect(response.status).toBe(302);
+    expect(response.headers?.Location).toBe('https://customer.example/invoice/7');
+  });
+
   test('allows workspace users to read policy/timeline but only admins to mutate evidence', async () => {
     const mutations: string[] = [];
     const timelineReads: unknown[] = [];

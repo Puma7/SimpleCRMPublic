@@ -37,7 +37,10 @@ Voraussetzungen:
 
 Jede materielle Änderung der Tracking-Konfiguration verlangt in UI und API eine neue Bestätigung. Das
 Deaktivieren widerruft bestehende Tokens. Das Deaktivieren nur einer Signalart widerruft die
-zugehörigen Pixel- beziehungsweise Klick-Tokens.
+zugehörigen Pixel- beziehungsweise Klick-Tokens. Widerrufene oder abgelaufene Klick-Links in bereits
+versendeten Mails leiten weiterhin auf ihr gespeichertes Ziel, zeichnen aber nichts mehr auf. Erst wenn
+das Linkziel gelöscht ist (Löschung der Tracking-Daten, Bereinigung nach Token-Ablauf), zeigt der Link
+eine neutrale Hinweisseite „Link nicht mehr verfügbar“.
 
 Das Tracking-Häkchen im Compose-Dialog erscheint nur bei aktivierter Richtlinie; ein
 `trackingOverride: true` wird serverseitig ignoriert, solange die Richtlinie deaktiviert ist.

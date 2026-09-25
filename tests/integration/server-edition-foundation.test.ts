@@ -1962,6 +1962,13 @@ describe('server edition repository boundaries', () => {
       });
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toBe('image/gif');
+
+      // F-A3a-04: a deleted/unknown click link reaches the recipient as a readable German HTML page, not JSON.
+      const click = await app.inject({ method: 'GET', url: `/t/c/${token}`, headers: { origin: 'null' } });
+      expect(click.statusCode).toBe(404);
+      expect(click.headers['content-type']).toBe('text/html; charset=utf-8');
+      expect(click.body).toContain('Link nicht mehr verfügbar');
+      expect(click.body).not.toContain('tracking_not_found');
     } finally {
       await app.close();
     }

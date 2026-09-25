@@ -27,6 +27,16 @@ const TRACKING_REVOKE_PATTERN = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\
 const TRACKING_RECLASSIFY_PATTERN = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/reclassify$/;
 const TRACKING_IP_INSIGHT_PATTERN = /^\/api\/v1\/email\/messages\/([^/]+)\/tracking\/events\/([^/]+)\/ip-insight$/;
 const PUBLIC_OPERATION_TIMEOUT_MS = 1_500;
+const PUBLIC_LINK_UNAVAILABLE_HTML = [
+  '<!doctype html>',
+  '<html lang="de">',
+  '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+  '<title>Link nicht mehr verfügbar</title></head>',
+  '<body><h1>Link nicht mehr verfügbar</h1>',
+  '<p>Dieser Link ist nicht mehr gültig. Bitte wenden Sie sich an den Absender der E-Mail, ',
+  'wenn Sie den Inhalt noch benötigen.</p></body>',
+  '</html>',
+].join('\n');
 const MAX_REDIRECT_URL_LENGTH = 8_192;
 const PIXEL_BYTES = Uint8Array.from([
   71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0, 0, 0, 0,
@@ -164,7 +174,7 @@ export async function handlePublicEmailTrackingRoute(
 
   if (req.method !== 'GET') return error(405, 'method_not_allowed', 'Methode nicht erlaubt');
   const token = match[1] ?? '';
-  if (!ports.emailTracking || !PUBLIC_TOKEN_PATTERN.test(token)) return trackingNotFound();
+  if (!ports.emailTracking || !PUBLIC_TOKEN_PATTERN.test(token)) return publicLinkUnavailable();
   if (
     !clickTokenRateLimiter.check(`click-token:${token}`)
     || !clickIpRateLimiter.check(`click:${req.ip ?? 'unknown'}`)
@@ -179,7 +189,7 @@ export async function handlePublicEmailTrackingRoute(
     headers: req.headers ?? {},
   })).catch(() => null);
   const targetUrl = safeRedirectUrl(result?.targetUrl ?? null);
-  if (!targetUrl) return trackingNotFound();
+  if (!targetUrl) return publicLinkUnavailable();
   return {
     status: 302,
     body: undefined,
@@ -405,6 +415,24 @@ function safeRedirectUrl(value: string | null): string | null {
 
 function trackingNotFound(): ApiResponse<ApiErrorBody> {
   return error(404, 'tracking_not_found', 'Tracking-Link nicht gefunden oder abgelaufen');
+}
+
+// Recipients land here from a mail client, so a deleted or unknown click link
+// gets a short human-readable page instead of an API error body. It stays
+// neutral: unknown, erased and pruned tokens look identical.
+function publicLinkUnavailable(): ApiResponse<string> {
+  return {
+    status: 404,
+    body: PUBLIC_LINK_UNAVAILABLE_HTML,
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store, private',
+      'Content-Security-Policy': "default-src 'none'",
+      'Referrer-Policy': 'no-referrer',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Robots-Tag': 'noindex',
+    },
+  };
 }
 
 function canonicalPositiveDecimalEventId(value: string | undefined): string | null {
