@@ -1,4 +1,4 @@
-import type { WorkflowGraphDocument, WorkflowGraphNode } from './email-workflow-graph';
+import type { WorkflowGraphDocument, WorkflowGraphEdge, WorkflowGraphNode } from './email-workflow-graph';
 
 // Mirror of packages/core/src/workflow/graph-validate.ts for the electron /
 // renderer transport (which uses the shared graph types, not @simplecrm/core).
@@ -132,10 +132,25 @@ export function findOutboundGraphTraps(
   if (!triggerNode) return [];
 
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
-  const outgoing = (id: string) =>
-    doc.edges
-      .filter((edge) => edge.source === id)
-      .sort((a, b) => a.id.localeCompare(b.id));
+  // Kanten einmal je Quelle gruppiert, damit ein Schritt nicht alle Kanten des
+  // Graphen durchsucht.
+  const edgesBySource = new Map<string, WorkflowGraphEdge[]>();
+  for (const edge of doc.edges) {
+    const list = edgesBySource.get(edge.source);
+    if (list) list.push(edge);
+    else edgesBySource.set(edge.source, [edge]);
+  }
+  const outgoingCache = new Map<string, WorkflowGraphEdge[]>();
+  const outgoing = (id: string) => {
+    let outs = outgoingCache.get(id);
+    if (!outs) {
+      outs = (edgesBySource.get(id) ?? [])
+        .filter((edge) => edge.source === id)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      outgoingCache.set(id, outs);
+    }
+    return outs;
+  };
 
   const issues: OutboundGraphIssue[] = [];
   const seen = new Set<string>();
@@ -150,13 +165,21 @@ export function findOutboundGraphTraps(
     }
   };
 
-  const walk = (nodeId: string, pathVisited: Set<string>, holdPath = false): void => {
+  // Jeder Zustand (Knoten, holdPath) wird nur einmal untersucht: Wieder
+  // zusammenlaufende Bedingungen verdoppeln sonst je Ebene die Zahl der Pfade,
+  // 20 Ebenen blockierten den Event-Loop fuer Sekunden (C-A63). `onPath`
+  // erkennt Zyklen wie zuvor die Pfadmenge. Ohne Zyklus ist das Ergebnis
+  // dasselbe; mit Zyklus bleibt es nicht leer, nennt aber evtl. weniger Knoten.
+  const onPath = new Set<string>([triggerNode.id]);
+  const finished = new Set<string>();
+
+  const walk = (nodeId: string, holdPath = false): void => {
     const node = byId.get(nodeId);
     if (!node) {
       add({ code: 'dead_end', nodeId });
       return;
     }
-    if (pathVisited.has(nodeId)) {
+    if (onPath.has(nodeId)) {
       add({ code: 'dead_end', nodeId });
       return;
     }
@@ -166,54 +189,61 @@ export function findOutboundGraphTraps(
       return;
     }
     if (isHoldNode(node)) return;
-    const next = new Set(pathVisited).add(nodeId);
-    const outs = outgoing(nodeId);
+    const state = `${holdPath ? 'hold' : 'send'}:${nodeId}`;
+    if (finished.has(state)) return;
+    finished.add(state);
+    onPath.add(nodeId);
+    try {
+      const outs = outgoing(nodeId);
 
-    if (isYesNoBranchNode(node)) {
-      const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
-      const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
-      if (yesEdge) walk(yesEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
-      if (noEdge) walk(noEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
-      return;
-    }
-
-    const portBranch = namedPortBranch(node);
-    if (portBranch) {
-      for (const port of portBranch.ports) {
-        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
-        // Parität zu pickEdge/pickCompileEdge: `ok` fällt auf eine unbeschriftete
-        // Default-Kante zurück (Altgraphen vor den benannten Ports). Ohne diesen
-        // Fallback meldet der Validator einen lauffähigen Graphen als dead_end
-        // und das Speichern scheitert mit 422.
-        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefaultLabel) : undefined);
-        const isReleasePort = portBranch.releasePorts.includes(port);
-        if (edge) {
-          walk(edge.target, next, holdPath || !isReleasePort);
-        } else if (isReleasePort) {
-          add({ code: 'dead_end', nodeId });
-        }
+      if (isYesNoBranchNode(node)) {
+        const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
+        const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
+        if (yesEdge) walk(yesEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
+        if (noEdge) walk(noEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
+        return;
       }
-      return;
-    }
 
-    if (outs.length === 0) {
+      const portBranch = namedPortBranch(node);
+      if (portBranch) {
+        for (const port of portBranch.ports) {
+          const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+          // Parität zu pickEdge/pickCompileEdge: `ok` fällt auf eine unbeschriftete
+          // Default-Kante zurück (Altgraphen vor den benannten Ports). Ohne diesen
+          // Fallback meldet der Validator einen lauffähigen Graphen als dead_end
+          // und das Speichern scheitert mit 422.
+          const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefaultLabel) : undefined);
+          const isReleasePort = portBranch.releasePorts.includes(port);
+          if (edge) {
+            walk(edge.target, holdPath || !isReleasePort);
+          } else if (isReleasePort) {
+            add({ code: 'dead_end', nodeId });
+          }
+        }
+        return;
+      }
+
+      if (outs.length === 0) {
+        if (!holdPath) add({ code: 'dead_end', nodeId });
+        return;
+      }
+      const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
+      if (defaultEdge) {
+        walk(defaultEdge.target, holdPath);
+        return;
+      }
+      // Every outgoing edge is labeled and none is a default/unlabeled edge, so
+      // pickEdge(..., 'default') returns undefined: the runtime stops here and the
+      // draft is never released — a dead end.
       if (!holdPath) add({ code: 'dead_end', nodeId });
-      return;
+    } finally {
+      onPath.delete(nodeId);
     }
-    const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
-    if (defaultEdge) {
-      walk(defaultEdge.target, next, holdPath);
-      return;
-    }
-    // Every outgoing edge is labeled and none is a default/unlabeled edge, so
-    // pickEdge(..., 'default') returns undefined: the runtime stops here and the
-    // draft is never released — a dead end.
-    if (!holdPath) add({ code: 'dead_end', nodeId });
   };
 
-  for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));
+  for (const edge of outgoing(triggerNode.id)) walk(edge.target);
   if (outgoing(triggerNode.id).length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
 
   return issues;

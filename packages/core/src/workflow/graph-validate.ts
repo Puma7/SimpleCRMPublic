@@ -1,5 +1,5 @@
 import { isTrashMailboxName } from '../email/imap-mailbox-names';
-import type { WorkflowGraphDocument, WorkflowGraphNode } from './graph-types';
+import type { WorkflowGraphDocument, WorkflowGraphEdge, WorkflowGraphNode } from './graph-types';
 import { edgeIsDefault, outgoing, pickEdge, resolveResumeNodeAfter } from './graph-walk-utils';
 import { chainStopFlagEnabled, NODE_CHAIN_STOP_CONFIG_KEY } from './node-chain-stop';
 
@@ -814,11 +814,25 @@ export function findOutboundGraphTraps(
 
   const byId = new Map(doc.nodes.map((node) => [node.id, node]));
   // Sort like graph-walk-utils.outgoing so duplicate edges resolve to the same
-  // one the engine would pick.
-  const outgoing = (id: string) =>
-    doc.edges
-      .filter((edge) => edge.source === id)
-      .sort((a, b) => a.id.localeCompare(b.id));
+  // one the engine would pick. Kanten einmal je Quelle gruppiert, damit ein
+  // Schritt nicht alle Kanten des Graphen durchsucht.
+  const edgesBySource = new Map<string, WorkflowGraphEdge[]>();
+  for (const edge of doc.edges) {
+    const list = edgesBySource.get(edge.source);
+    if (list) list.push(edge);
+    else edgesBySource.set(edge.source, [edge]);
+  }
+  const outgoingCache = new Map<string, WorkflowGraphEdge[]>();
+  const outgoing = (id: string) => {
+    let outs = outgoingCache.get(id);
+    if (!outs) {
+      outs = (edgesBySource.get(id) ?? [])
+        .filter((edge) => edge.source === id)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      outgoingCache.set(id, outs);
+    }
+    return outs;
+  };
 
   const issues: OutboundGraphIssue[] = [];
   const seen = new Set<string>();
@@ -833,13 +847,21 @@ export function findOutboundGraphTraps(
     }
   };
 
-  const walk = (nodeId: string, pathVisited: Set<string>, holdPath = false): void => {
+  // Jeder Zustand (Knoten, holdPath) wird nur einmal untersucht: Wieder
+  // zusammenlaufende Bedingungen verdoppeln sonst je Ebene die Zahl der Pfade,
+  // 20 Ebenen blockierten den Event-Loop fuer Sekunden (C-A63). `onPath`
+  // erkennt Zyklen wie zuvor die Pfadmenge. Ohne Zyklus ist das Ergebnis
+  // dasselbe; mit Zyklus bleibt es nicht leer, nennt aber evtl. weniger Knoten.
+  const onPath = new Set<string>([triggerNode.id]);
+  const finished = new Set<string>();
+
+  const walk = (nodeId: string, holdPath = false): void => {
     const node = byId.get(nodeId);
     if (!node) {
       add({ code: 'dead_end', nodeId }); // edge to a missing/deleted node
       return;
     }
-    if (pathVisited.has(nodeId)) {
+    if (onPath.has(nodeId)) {
       add({ code: 'dead_end', nodeId }); // loop that never releases
       return;
     }
@@ -849,60 +871,67 @@ export function findOutboundGraphTraps(
       return;
     }
     if (isHoldNode(node)) return; // explicit, intended hold — safe terminal
-    const next = new Set(pathVisited).add(nodeId);
-    const outs = outgoing(nodeId);
+    const state = `${holdPath ? 'hold' : 'send'}:${nodeId}`;
+    if (finished.has(state)) return;
+    finished.add(state);
+    onPath.add(nodeId);
+    try {
+      const outs = outgoing(nodeId);
 
-    if (isYesNoBranchNode(node)) {
-      const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
-      const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
-      if (yesEdge) walk(yesEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
-      if (noEdge) walk(noEdge.target, next, holdPath);
-      else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
-      return;
-    }
-
-    const portBranch = namedPortBranch(node);
-    if (portBranch) {
-      for (const port of portBranch.ports) {
-        const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
-        // `ok` fällt zur Laufzeit auf eine unbeschriftete Default-Kante zurück
-        // (pickEdge, Abwärtskompatibilität für Graphen aus der Zeit vor den
-        // benannten Ports). Der Validator muss dieselbe Kante akzeptieren, sonst
-        // meldet er einen lauffähigen Altgraphen als dead_end — und
-        // outboundWorkflowGuardError lehnt jedes Speichern mit 422 ab.
-        const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefault) : undefined);
-        const isReleasePort = portBranch.releasePorts.includes(port);
-        if (edge) {
-          walk(edge.target, next, holdPath || !isReleasePort);
-        } else if (isReleasePort) {
-          // Missing ok/send port — a successful verdict could never release mail.
-          add({ code: 'dead_end', nodeId });
-        }
-        // Missing block/error/hold ports fail closed at runtime (draft stays held).
+      if (isYesNoBranchNode(node)) {
+        const yesEdge = outs.find((edge) => labelIsYes(edge.label ?? ''));
+        const noEdge = outs.find((edge) => labelIsNo(edge.label ?? ''));
+        if (yesEdge) walk(yesEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'yes' });
+        if (noEdge) walk(noEdge.target, holdPath);
+        else add({ code: 'dangling_condition_port', nodeId, missing: 'no' });
+        return;
       }
-      return;
-    }
 
-    if (outs.length === 0) {
-      if (!holdPath) add({ code: 'dead_end', nodeId }); // intentional hold branch terminal
-      return;
+      const portBranch = namedPortBranch(node);
+      if (portBranch) {
+        for (const port of portBranch.ports) {
+          const labelled = outs.find((candidate) => (candidate.label ?? '').toLowerCase() === port);
+          // `ok` fällt zur Laufzeit auf eine unbeschriftete Default-Kante zurück
+          // (pickEdge, Abwärtskompatibilität für Graphen aus der Zeit vor den
+          // benannten Ports). Der Validator muss dieselbe Kante akzeptieren, sonst
+          // meldet er einen lauffähigen Altgraphen als dead_end — und
+          // outboundWorkflowGuardError lehnt jedes Speichern mit 422 ab.
+          const edge = labelled ?? (port === 'ok' ? outs.find(edgeIsDefault) : undefined);
+          const isReleasePort = portBranch.releasePorts.includes(port);
+          if (edge) {
+            walk(edge.target, holdPath || !isReleasePort);
+          } else if (isReleasePort) {
+            // Missing ok/send port — a successful verdict could never release mail.
+            add({ code: 'dead_end', nodeId });
+          }
+          // Missing block/error/hold ports fail closed at runtime (draft stays held).
+        }
+        return;
+      }
+
+      if (outs.length === 0) {
+        if (!holdPath) add({ code: 'dead_end', nodeId }); // intentional hold branch terminal
+        return;
+      }
+      // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
+      // default edge exists, follow ONLY it — auxiliary edges (e.g. an "error"
+      // branch) are not taken, so they must not be treated as reachable traps.
+      const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
+      if (defaultEdge) {
+        walk(defaultEdge.target, holdPath);
+        return;
+      }
+      // Every outgoing edge is labeled (e.g. success/error) and none is a
+      // default/unlabeled edge, so pickEdge(..., 'default') returns undefined:
+      // the runtime stops here and the draft is never released — a dead end.
+      if (!holdPath) add({ code: 'dead_end', nodeId });
+    } finally {
+      onPath.delete(nodeId);
     }
-    // Non-branch node: the runtime follows pickEdge(..., 'default'). When a
-    // default edge exists, follow ONLY it — auxiliary edges (e.g. an "error"
-    // branch) are not taken, so they must not be treated as reachable traps.
-    const defaultEdge = outs.find((edge) => labelIsDefault(edge.label ?? ''));
-    if (defaultEdge) {
-      walk(defaultEdge.target, next, holdPath);
-      return;
-    }
-    // Every outgoing edge is labeled (e.g. success/error) and none is a
-    // default/unlabeled edge, so pickEdge(..., 'default') returns undefined:
-    // the runtime stops here and the draft is never released — a dead end.
-    if (!holdPath) add({ code: 'dead_end', nodeId });
   };
 
-  for (const edge of outgoing(triggerNode.id)) walk(edge.target, new Set([triggerNode.id]));
+  for (const edge of outgoing(triggerNode.id)) walk(edge.target);
   if (outgoing(triggerNode.id).length === 0) add({ code: 'dead_end', nodeId: triggerNode.id });
 
   return issues;

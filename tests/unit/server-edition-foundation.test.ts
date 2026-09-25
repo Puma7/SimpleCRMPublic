@@ -36662,6 +36662,43 @@ describe('server edition foundation', () => {
     expect(unauthorized.status).toBe(401);
   });
 
+  // C-A82: 20 wieder zusammenlaufende Bedingungen (rund 8 KB) liessen die Compile-Route 2^20 Regeln erzeugen und den Event-Loop fuer alle Mandanten sekundenlang blockieren.
+  test('server workflow graph compile route rejects a path explosion like other invalid graphs', async () => {
+    const api = createServerApi(makeServerApiPorts());
+    const principal = { userId: USER_A_ID, workspaceId: WORKSPACE_A_ID, role: 'user' as const, capabilities: ['crm.write', 'workflows.manage'] };
+    const nodes: Array<Record<string, unknown>> = [{ id: 'trigger-1', type: 'trigger', data: { kind: 'inbound' } }];
+    const edges: Array<Record<string, unknown>> = [{ id: 'edge-t', source: 'trigger-1', target: 'c0' }];
+    for (let i = 0; i < 20; i++) {
+      const next = i + 1 < 20 ? `c${i + 1}` : 'end';
+      nodes.push(
+        { id: `c${i}`, type: 'condition', data: { field: 'subject', op: 'contains', value: `x${i}` } },
+        { id: `a${i}`, type: 'action', data: { actionType: 'tag', tag: `a${i}` } },
+        { id: `b${i}`, type: 'action', data: { actionType: 'tag', tag: `b${i}` } },
+      );
+      edges.push(
+        { id: `y${i}`, source: `c${i}`, target: `a${i}`, label: 'yes' },
+        { id: `n${i}`, source: `c${i}`, target: `b${i}`, label: 'no' },
+        { id: `ea${i}`, source: `a${i}`, target: next },
+        { id: `eb${i}`, source: `b${i}`, target: next },
+      );
+    }
+    nodes.push({ id: 'end', type: 'action', data: { actionType: 'tag', tag: 'end' } });
+
+    const started = Date.now();
+    const compiled = await api.handle({
+      method: 'POST',
+      path: '/api/v1/workflows/compile-graph',
+      body: { version: 1, nodes, edges },
+      principal,
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(compiled.status).toBe(200);
+    expect((compiled.body as any).data).toEqual({
+      success: false,
+      error: expect.stringContaining('Workflow-Graph zu komplex'),
+    });
+  });
+
   test('side-effect workflow gate guards the write against a concurrent patch', async () => {
     // Zwei parallele PATCHes auf einen deaktivierten, harmlosen Workflow — einer
     // liefert einen Seiteneffekt-Graphen, der andere enabled: true. Beide pruefen
